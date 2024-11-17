@@ -1,3 +1,5 @@
+//./lib/models/api_service.dart
+
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -7,9 +9,8 @@ class ApiService {
   // List of potential base URLs for the API
   final List<String> baseUrls = [
     'http://10.0.2.2:8000', // For Android emulator
-    'http://192.168.1.100:8000', // Replace with your machine's IP for physical devices
-    'http://127.0.0.1:8000', // For local development
-    'http://localhost:8000', // Localhost fallback
+    'http://127.0.0.1:8000', // For iOS simulator
+    'http://localhost:8000', //fallback
   ];
 
   String? _cachedBaseUrl;
