@@ -1,10 +1,11 @@
+# main.py
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers.protected import protected_router
-from routers.signup import signup_router
-from routers.auth import auth_router
-from routers.chat import router as chat_router
+from routers.auth_router import auth_router
+from routers.protected_router import protected_router
+from routers.chat_router import chat_router
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -18,12 +19,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include the signup and the login router
-app.include_router(signup_router)
+# Include routers
 app.include_router(auth_router)
 app.include_router(protected_router)
 app.include_router(chat_router)
 
-@app.get("/ping")
-async def ping():
-    return {"message": "pong"}
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        app,  # Pass the app instance directly
+        host="0.0.0.0",
+        port=8000,
+        reload=True
+    )
+
+    #uvicorn main:app --reload

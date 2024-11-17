@@ -1,18 +1,21 @@
-#./routers/chat.py
+# routers/chat_router.py
 
 from fastapi import APIRouter, HTTPException
+
 from models.chat import ChatRequest, ChatResponse
 from utils.generate_response import generate_response
 
-router = APIRouter()
+chat_router = APIRouter()
 
-@router.post("/chat", response_model=ChatResponse)
+@chat_router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    if not request.message.strip():
+    message = request.message.strip()
+    if not message:
         raise HTTPException(status_code=400, detail="Message must not be empty")
-    response_message = generate_response(request.message.strip())
+
+    response_message = generate_response(message)
     return ChatResponse(message=response_message)
 
-# @router.api_route('/ping')
-# async def ping():
-#     return {"message": "Pong!"}
+@chat_router.get("/ping")
+async def ping():
+    return {"message": "Pong!"}

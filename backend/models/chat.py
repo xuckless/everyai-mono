@@ -1,4 +1,4 @@
-# ./models/chat.py
+# ./models/chat_router.py
 
 from pydantic import BaseModel
 

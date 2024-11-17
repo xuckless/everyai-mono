@@ -1,18 +1,21 @@
-from sqlalchemy import create_engine, MetaData
-from sqlalchemy.orm import sessionmaker
+# db/db.py
 
-DATABASE_URL = "postgresql://postgres.vlozlvclzjfwakuptfqr:fozfik-xothyn-9woNmy@aws-0-us-west-1.pooler.supabase.com:6543/postgres"
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+import os
+from dotenv import load_dotenv
 
-# Create the database engine
+load_dotenv()
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL environment variable is not set")
+
 engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
-# Create MetaData instance
-metadata = MetaData()
-
-# Create a session factory
-SessionLocal = sessionmaker(bind=engine)
-
-# Dependency to get the database session
 def get_db():
     db = SessionLocal()
     try:
