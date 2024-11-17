@@ -80,15 +80,16 @@ class ApiService {
       if (response.statusCode >= 200 && response.statusCode < 300) {
         return jsonDecode(response.body);
       } else {
-        // Log and throw error for non-success responses
-        throw Exception(
-            'Request failed with status: ${response.statusCode}, Body: ${response.body}');
+        // Parse error response and throw specific messages
+        final errorBody = jsonDecode(response.body);
+        throw Exception(errorBody['detail'] ?? 'An unknown error occurred');
       }
     } catch (e) {
       print("POST Request Failed: $e");
       throw Exception('Failed to make POST request: $e');
     }
   }
+
 
   // Signup API integration
   Future<dynamic> signUp(String email, String password) async {
@@ -100,11 +101,25 @@ class ApiService {
 
   // Login API integration
   Future<dynamic> login(String email, String password) async {
-    return await post(
-      'login',
-      {'email': email, 'password': password},
-    );
+    try {
+      final response = await post(
+        'login',
+        {'email': email, 'password': password},
+      );
+
+      // Extract and store the token securely
+      if (response.containsKey('access_token')) {
+        await const FlutterSecureStorage()
+            .write(key: "access_token", value: response['access_token']);
+        return {"success": true, "message": "Login successful"};
+      } else {
+        return {"success": false, "message": "Invalid response from server"};
+      }
+    } catch (e) {
+      return {"success": false, "message": e.toString()};
+    }
   }
+
 
   // Chat feature API integration
   Future<dynamic> chat(String message) async {

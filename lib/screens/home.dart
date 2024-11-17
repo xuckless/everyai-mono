@@ -1,312 +1,161 @@
-//./lib/screens/home.dart
-
 import 'package:flutter/material.dart';
-import 'package:second_times_the_charm/screens/chat_screen.dart';
-import 'package:second_times_the_charm/screens/sign_up.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-
 import '../models/api_service.dart';
+import 'chat_screen.dart';
+import 'sign_up.dart';
 
-// -----------------------------
-
-class MyHomePage extends StatefulWidget{
-  final String title; //field
+class MyHomePage extends StatefulWidget {
+  final String title;
 
   const MyHomePage({super.key, required this.title});
 
-  State<MyHomePage> createState() => _MyHomeState();
+  @override
+  State<MyHomePage> createState() => _MyHomePageState();
 }
 
-// -------------------------------
-
-class _MyHomeState extends State<MyHomePage> {
-  String _loginValue = "";
-
+class _MyHomePageState extends State<MyHomePage> {
   final _formKey = GlobalKey<FormState>();
   final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
 
-  void _setLoginValue() {
-    setState(() {
-      _loginValue = "Login key is pressed";
-    });
-  }
+  bool _isLoading = false;
+  String? _errorMessage;
 
-  final _secureStorage = const FlutterSecureStorage();
-
-  void _validateLogin() async {
+  void _handleLogin() async {
     if (_formKey.currentState!.validate()) {
+      setState(() {
+        _isLoading = true;
+        _errorMessage = null;
+      });
+
       final apiService = ApiService();
-      final email = _emailController.text;
-      final password = 'dummy_password'; // Retrieve this from your password field
+      final email = _emailController.text.trim();
+      final password = _passwordController.text.trim();
+
       try {
         final response = await apiService.login(email, password);
-        if (response['access_token'] != null) {
-          // Store the token securely
-          await _secureStorage.write(key: "access_token", value: response['access_token']);
-
-          // Navigate to the chat screen
+        if (response['success']) {
+          // Store the token and navigate to chat screen
+          await _secureStorage.write(
+              key: "access_token", value: response['access_token']);
           Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (context) => ChatScreen(title: "ChatScreen"),
+              builder: (context) => const ChatScreen(title: "Chat Screen"),
             ),
           );
         } else {
-          _showError("Invalid login credentials");
+          setState(() {
+            _errorMessage = response['message'];
+          });
         }
-      } catch (e) {
-        _showError("Failed to login: $e");
+      } on Exception catch (e) {
+        // Use the error message directly from the Exception thrown in `post`
+        setState(() {
+          _errorMessage = e.toString().replaceFirst('Exception: ', '');
+        });
+      } finally {
+        setState(() {
+          _isLoading = false;
+        });
       }
-    } else {
-      _resetLoginValue();
     }
   }
 
 
-  void _showError(String message) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Error"),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.of(context).pop();
-            },
-            child: const Text("OK"),
-          ),
-        ],
-      ),
-    );
-  }
 
-
-  void _resetLoginValue() {
-    setState(() {
-      _loginValue = "";
-    });
-  }
-
-  void _navigateToSignUpPage(BuildContext context) {
+  void _navigateToSignUpPage() {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (context) => SignUpPage(title: 'Welcome Home')),
+      MaterialPageRoute(builder: (context) => const SignUpPage(title: "Sign Up")),
     );
   }
-
-  void _navigateToChatPage(BuildContext context) {
-    _validateLogin();
-  }
-
-
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text("EveryAI (Beta)"),
-        backgroundColor: Theme
-            .of(context)
-            .colorScheme
-            .inversePrimary,
+        title: Text(widget.title),
         centerTitle: true,
       ),
-
-
       body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            Text("Welcome to EveryAI beta.",
-              style: Theme.of(context).textTheme.headlineSmall,),
-
-            // Text
-            ConstrainedBox(
-              constraints: BoxConstraints(
-                maxHeight: 50,
-                maxWidth: 150,
-              ),
-              child: Column (
-                children: [
-                  Text("$_loginValue")
-                ],
-              ),
-            ),
-
-            // Text Fields
-            ConstrainedBox(
-              constraints: BoxConstraints(
-                maxWidth: 380,
-                maxHeight: 200,
-                minWidth: 150,
-                minHeight: 75
-            ),
-              child: Form(
-                key: _formKey,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    TextFormField(
-                      onFieldSubmitted: (text) {
-                        _navigateToChatPage(context);
-                      },
-                      decoration: InputDecoration(
-                        labelText: "Email",
-                        border: UnderlineInputBorder(),
-                      ),
-                      validator: (value){
-                        if (value == null || value.isEmpty){
-                          return 'Please enter your email';
-                        } return null;
-                      },
-                      controller: _emailController,
-                    ),
-                    TextFormField(
-                      onFieldSubmitted: (text) {
-                        _navigateToChatPage(context);
-                      },
-                      decoration: InputDecoration(
-                        labelText: "Password",
-                        border: UnderlineInputBorder(),
-                      ),
-                      validator: (value){
-                        if (value == null || value.isEmpty){
-                          return 'Please enter your password';
-                        } return null;
-                      },
-                      obscureText: true,
-                    ),
-                  ],
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16.0),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  "Welcome to EveryAI beta.",
+                  style: Theme.of(context).textTheme.headlineSmall,
                 ),
-              )
-            ),
-
-            // Login/Signup buttons
-            ConstrainedBox(
-              constraints: BoxConstraints(
-                maxHeight: 50,
-                maxWidth: 250,
-              ),
-
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: <Widget>[
-                  Container(decoration: BoxDecoration(
-                    border: Border.all(
-                      color: Colors.transparent,
-                      width:10.0
-                    ),
-                    borderRadius: BorderRadius.circular(0),
+                const SizedBox(height: 16),
+                // Email Input
+                TextFormField(
+                  controller: _emailController,
+                  decoration: const InputDecoration(
+                    labelText: "Email",
                   ),
-                    child: ElevatedButton(
-                      onPressed: () {
-                        _navigateToChatPage(context);
-                        },
-                      child: Text("Login"),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Theme.of(context).colorScheme.primary,
-                        foregroundColor: Colors.white,
-                      )
-                    ),
-                  ), //Container
-
-                  Container(decoration: BoxDecoration(
-                    border: Border.all(
-                        color: Colors.transparent,
-                        width:10.0
-                    ),
-                    borderRadius: BorderRadius.circular(0),
+                  validator: (value) {
+                    if (value == null || value.isEmpty) {
+                      return 'Please enter your email';
+                    }
+                    if (!RegExp(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+                        .hasMatch(value)) {
+                      return 'Please enter a valid email address';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 16),
+                // Password Input
+                TextFormField(
+                  controller: _passwordController,
+                  decoration: const InputDecoration(
+                    labelText: "Password",
                   ),
-                    child: ElevatedButton(
-                      onPressed: () {
-                        _navigateToSignUpPage(context);
-                      },
-                      child: Text("Sign Up"),
-                    ),
-                  ), //Container
-
+                  obscureText: true,
+                  validator: (value) {
+                    if (value == null || value.isEmpty) {
+                      return 'Please enter your password';
+                    }
+                    if (value.length < 6) {
+                      return 'Password must be at least 6 characters long';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 16),
+                // Error Message
+                if (_errorMessage != null) ...[
+                  Text(
+                    _errorMessage!,
+                    style: const TextStyle(color: Colors.red),
+                  ),
+                  const SizedBox(height: 16),
                 ],
-              ),
-            ),
-
-            // forgot password button
-            FloatingActionButton.extended(
-              onPressed: () {
-                print("Forgot Password Pressed");
-              },
-              label: Text(
-                "Forgot Password",
-                style: TextStyle(
-                  fontSize: 14,
-                  decoration: TextDecoration.underline,
+                // Login Button
+                ElevatedButton(
+                  onPressed: _isLoading ? null : _handleLogin,
+                  child: _isLoading
+                      ? const CircularProgressIndicator(
+                    valueColor: AlwaysStoppedAnimation(Colors.white),
+                  )
+                      : const Text("Login"),
                 ),
-              ),
-              backgroundColor: Colors.transparent, // Transparent background
-              elevation: 0, // Remove shadow
-              highlightElevation: 0, // Remove shadow when pressed
-            ),
-
-            // Other sign in options
-            ConstrainedBox(
-              constraints: BoxConstraints(
-                  maxWidth: 380,
-                  maxHeight: 120,
-                  minWidth: 150,
-                  minHeight: 75
-              ),
-              child: Center(
-                child: Row (
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: <Widget>[
-
-                    Container(decoration: BoxDecoration(
-                      border: Border.all(
-                          color: Colors.transparent,
-                          width:10.0
-                      ),
-                      borderRadius: BorderRadius.circular(0),
-                    ),
-                      child: FloatingActionButton.large(
-                        onPressed: null,
-                        child: Icon(Icons.grade),
-                      ),
-                    ),
-
-                    Container(decoration: BoxDecoration(
-                      border: Border.all(
-                          color: Colors.transparent,
-                          width:10.0
-                      ),
-                      borderRadius: BorderRadius.circular(0),
-                    ),
-                      child: FloatingActionButton.large(
-                        onPressed: null,
-                        child: Icon(Icons.grade),
-                      ),
-                    ),
-
-                    Container(decoration: BoxDecoration(
-                      border: Border.all(
-                          color: Colors.transparent,
-                          width:10.0
-                      ),
-                      borderRadius: BorderRadius.circular(0),
-                    ),
-                      child: FloatingActionButton.large(
-                        onPressed: null,
-                        child: Icon(Icons.grade),
-                      ),
-                    ),
-
-                  ],
+                const SizedBox(height: 16),
+                // Sign Up Button
+                TextButton(
+                  onPressed: _navigateToSignUpPage,
+                  child: const Text("Don't have an account? Sign Up"),
                 ),
-              )
+              ],
             ),
-
-          ],
-        )
-      )
+          ),
+        ),
+      ),
     );
   }
 }
