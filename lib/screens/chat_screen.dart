@@ -23,7 +23,7 @@ class _ChatScreenState extends State<ChatScreen>{
   final TextEditingController _messageController = TextEditingController();
   List<Map<String, dynamic>> _messages = [];
 
-  final ApiService _apiService = ApiService('http://10.0.2.2:8000');
+  final ApiService _apiService = ApiService('http://127.0.0.1:8000'); //http://10.0.2.2:8000
 
   final FocusNode _focusNode = FocusNode();
 
@@ -99,7 +99,7 @@ class _ChatScreenState extends State<ChatScreen>{
             ConstrainedBox(
               constraints: BoxConstraints(
                 maxWidth: MediaQuery.of(context).size.width,
-                maxHeight: 100
+                maxHeight: 150
               ),
               child: Container(
                 // color: Colors.lightGreen,
