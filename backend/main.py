@@ -1,26 +1,23 @@
 from fastapi import FastAPI
-from routers.chat import router as chat_router
-
 from fastapi.middleware.cors import CORSMiddleware
+from routers.signup import signup_router  # Import the router instance
 
-
-
+# Initialize FastAPI app
 app = FastAPI()
-app.include_router(chat_router)
 
+# Add CORS middleware if needed
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For development, allow all origins. Specify in production.
+    allow_origins=["*"],  # Replace "*" with specific origins if needed
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-if __name__ == '__main__':
-    import uvicorn
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True
-    )
+# Include the signup router
+app.include_router(signup_router)
+
+# Ping endpoint for health check
+@app.get("/ping")
+async def ping():
+    return {"message": "pong"}

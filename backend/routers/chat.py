@@ -11,6 +11,6 @@ async def chat(request: ChatRequest):
     response_message = generate_response(request.message.strip())
     return ChatResponse(message=response_message)
 
-@router.api_route('/ping')
-async def ping():
-    return {"message": "Pong!"}
+# @router.api_route('/ping')
+# async def ping():
+#     return {"message": "Pong!"}
