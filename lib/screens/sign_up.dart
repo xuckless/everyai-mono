@@ -127,11 +127,12 @@ class _SignUpState extends State<SignUpPage>{
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: <Widget>[
-                Container(decoration: BoxDecoration(
-                  border: Border.all(
-                      color: Colors.transparent,
-                      width:10.0
-                  ),
+                Container(
+                  decoration: BoxDecoration(
+                    border: Border.all(
+                        color: Colors.transparent,
+                        width:10.0
+                    ),
                   borderRadius: BorderRadius.circular(0),
                 ),
                   child: ElevatedButton(
