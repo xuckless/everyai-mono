@@ -19,35 +19,30 @@ class ApiService {
 
   // Fetch the available base URL
   Future<String> _getAvailableBaseUrl() async {
-    // Use cached base URL if still valid
-    if (_cachedBaseUrl != null && await _isServerAvailable(_cachedBaseUrl!)) {
+    // Return the cached base URL if it's set
+    if (_cachedBaseUrl != null) {
       return _cachedBaseUrl!;
     }
 
-    // Iterate through the base URLs to find one that's reachable
+    // Check each base URL in the list
     for (String url in baseUrls) {
       if (await _isServerAvailable(url)) {
-        _cachedBaseUrl = url; // Cache successful base URL
+        _cachedBaseUrl = url; // Cache the successful base URL
         return url;
       }
     }
 
-    // Throw an error if no base URLs are available
     throw Exception('No available base URLs');
   }
 
-  // Check server availability for a given URL
+  // Method to check if the server is available
   Future<bool> _isServerAvailable(String url) async {
     try {
-      print("Checking URL: $url");
       final response = await http
           .get(Uri.parse('$url/ping'))
           .timeout(const Duration(seconds: 3));
-
-      print("Response from $url: ${response.statusCode}");
       return response.statusCode == 200;
-    } catch (e) {
-      print("Error checking $url: $e");
+    } catch (_) {
       return false;
     }
   }
