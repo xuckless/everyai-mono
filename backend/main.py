@@ -1,6 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers.signup import signup_router  # Import the router instance
+
+from routers.protected import protected_router
+from routers.signup import signup_router
+from routers.auth import auth_router
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -14,10 +17,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include the signup router
+# Include the signup and the login router
 app.include_router(signup_router)
+app.include_router(auth_router)
+app.include_router(protected_router)
 
-# Ping endpoint for health check
 @app.get("/ping")
 async def ping():
     return {"message": "pong"}
