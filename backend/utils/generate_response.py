@@ -1,3 +1,5 @@
+#./utils/generate_response.py
+
 def generate_response(message: str) -> str:
     if "hello" in message.lower():
         return "Hi there! How can I assist you today?"
