@@ -10,3 +10,7 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Message must not be empty")
     response_message = generate_response(request.message.strip())
     return ChatResponse(message=response_message)
+
+@router.api_route('/ping')
+async def ping():
+    return {"message": "Pong!"}
