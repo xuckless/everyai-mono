@@ -30,6 +30,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  http: ^0.13.5  # Using a caret (^) for compatible updates
+  provider: ^6.0.5 # Using a caret for compatible updates
+
 
 
   # The following adds the Cupertino Icons font to your application.

@@ -13,10 +13,10 @@ class ChatBox extends StatelessWidget {
         padding: EdgeInsets.all(10),
         margin: EdgeInsets.symmetric(vertical: 5, horizontal: 10),
         decoration: BoxDecoration(
-          color: isSentByUser ? Colors.grey : Theme.of(context).primaryColor,
+          color: isSentByUser ? Colors.grey : Theme.of(context).primaryColorDark,
           borderRadius: BorderRadius.circular(10),
         ),
-        child: Text(
+        child: SelectableText(
           message,
           style: TextStyle(color: isSentByUser ? Colors.black : Colors.white),
         ),

@@ -105,6 +105,9 @@ class _MyHomeState extends State<MyHomePage> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     TextFormField(
+                      onFieldSubmitted: (text) {
+                        _navigateToChatPage(context);
+                      },
                       decoration: InputDecoration(
                         labelText: "Email",
                         border: UnderlineInputBorder(),
@@ -117,6 +120,9 @@ class _MyHomeState extends State<MyHomePage> {
                       controller: _emailController,
                     ),
                     TextFormField(
+                      onFieldSubmitted: (text) {
+                        _navigateToChatPage(context);
+                      },
                       decoration: InputDecoration(
                         labelText: "Password",
                         border: UnderlineInputBorder(),

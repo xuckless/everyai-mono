@@ -21,6 +21,8 @@ class _ChatScreenState extends State<ChatScreen>{
   final TextEditingController _messageController = TextEditingController();
   List<Map<String, dynamic>> _messages = [];
 
+  final FocusNode _focusNode = FocusNode();
+
   void _sendMessage(){
     if (_messageController.text.trim().isNotEmpty){
       setState(() {
@@ -29,10 +31,11 @@ class _ChatScreenState extends State<ChatScreen>{
           'isSentByUser': true,
         });
         _messageController.clear();
+        _focusNode.requestFocus();
       });
 
 
-      Future.delayed(Duration(seconds: 3), () {
+      Future.delayed(Duration(seconds: 1), () {
         setState(() {
           _messages.add({
             'text': "This is a simulated response",
@@ -104,6 +107,10 @@ class _ChatScreenState extends State<ChatScreen>{
                       ),
                       child: TextFormField(
                         controller: _messageController,
+                        focusNode: _focusNode,
+                        onFieldSubmitted: (text) {
+                          _sendMessage();
+                        },
                         decoration: InputDecoration(
                           fillColor: Theme.of(context).primaryColorLight,
                           labelText: "Chat",
