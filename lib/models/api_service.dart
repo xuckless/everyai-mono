@@ -4,24 +4,20 @@ import 'package:http/http.dart' as http;
 
 class ApiService {
   final List<String> baseUrls = [
-    'http://10.0.2.2:8000',
-    'http://192.168.1.100:8000',
-    'http://127.0.0.1:8000',
-    'http://localhost:8000',
-    ''
+    'http://10.0.2.2:8000',     // Android emulator
+    'http://127.0.0.1:8000',    // iOS simulator or macOS app
+    'http://localhost:8000',    // Web or other environments
+
   ];
 
   String? _cachedBaseUrl;
 
   ApiService();
 
-
   Future<String> _getAvailableBaseUrl() async {
-    // Try the cached base URL first
+    // Return the cached base URL if it's set
     if (_cachedBaseUrl != null) {
-      if (await _isServerAvailable(_cachedBaseUrl!)) {
-        return _cachedBaseUrl!;
-      }
+      return _cachedBaseUrl!;
     }
 
     // Check each base URL in the list
@@ -47,9 +43,9 @@ class ApiService {
     }
   }
 
-
-  // Basic post feature
+  // Basic POST feature
   Future<dynamic> post(String endpoint, Map<String, dynamic> body) async {
+    // Use the cached base URL
     String baseUrl = await _getAvailableBaseUrl();
     final url = Uri.parse('$baseUrl/$endpoint');
 
@@ -65,15 +61,34 @@ class ApiService {
       if (response.statusCode == 200) {
         return jsonDecode(response.body);
       } else {
-        throw Exception(
-            'Request failed with status: ${response.statusCode}');
+        throw Exception('Request failed with status: ${response.statusCode}');
       }
     } catch (e) {
       // Invalidate the cached base URL if the request fails
-      if (e is http.ClientException || e is TimeoutException) {
-        _cachedBaseUrl = null;
+      _cachedBaseUrl = null;
+
+      // Retry with a new base URL if possible
+      try {
+        // Attempt to get a new available base URL
+        String newBaseUrl = await _getAvailableBaseUrl();
+        final newUrl = Uri.parse('$newBaseUrl/$endpoint');
+
+        final response = await http
+            .post(
+          newUrl,
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode(body),
+        )
+            .timeout(const Duration(seconds: 5));
+
+        if (response.statusCode == 200) {
+          return jsonDecode(response.body);
+        } else {
+          throw Exception('Request failed with status: ${response.statusCode}');
+        }
+      } catch (e) {
+        throw Exception('Failed to make POST request after retry: $e');
       }
-      throw Exception('Failed to make POST request: $e');
     }
   }
 
