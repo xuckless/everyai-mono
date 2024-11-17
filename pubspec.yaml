@@ -32,6 +32,7 @@ dependencies:
     sdk: flutter
   http: ^0.13.5  # Using a caret (^) for compatible updates
   provider: ^6.0.5 # Using a caret for compatible updates
+  flutter_secure_storage: ^7.0.0 # for securely storing JWT tokens
 
 
 

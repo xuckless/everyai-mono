@@ -1,6 +1,11 @@
+//./lib/screens/home.dart
+
 import 'package:flutter/material.dart';
 import 'package:second_times_the_charm/screens/chat_screen.dart';
 import 'package:second_times_the_charm/screens/sign_up.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+import '../models/api_service.dart';
 
 // -----------------------------
 
@@ -26,14 +31,56 @@ class _MyHomeState extends State<MyHomePage> {
     });
   }
 
-   bool _validateLogin(){
-    if (_formKey.currentState!.validate()){
-      _setLoginValue();
-      return true;
+  final _secureStorage = const FlutterSecureStorage();
+
+  void _validateLogin() async {
+    if (_formKey.currentState!.validate()) {
+      final apiService = ApiService();
+      final email = _emailController.text;
+      final password = 'dummy_password'; // Retrieve this from your password field
+      try {
+        final response = await apiService.login(email, password);
+        if (response['access_token'] != null) {
+          // Store the token securely
+          await _secureStorage.write(key: "access_token", value: response['access_token']);
+
+          // Navigate to the chat screen
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => ChatScreen(title: "ChatScreen"),
+            ),
+          );
+        } else {
+          _showError("Invalid login credentials");
+        }
+      } catch (e) {
+        _showError("Failed to login: $e");
+      }
+    } else {
+      _resetLoginValue();
     }
-    _resetLoginValue();
-    return false;
   }
+
+
+  void _showError(String message) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Error"),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+            },
+            child: const Text("OK"),
+          ),
+        ],
+      ),
+    );
+  }
+
 
   void _resetLoginValue() {
     setState(() {
@@ -48,14 +95,10 @@ class _MyHomeState extends State<MyHomePage> {
     );
   }
 
-  void _navigateToChatPage(BuildContext context){
-    if (_validateLogin()){
-      Navigator.push(context,
-        MaterialPageRoute(builder: (context) => ChatScreen(title: "ChatScreen")),
-      );
-    }
-    return;
+  void _navigateToChatPage(BuildContext context) {
+    _validateLogin();
   }
+
 
 
   @override

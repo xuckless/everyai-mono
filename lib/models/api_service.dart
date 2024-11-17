@@ -1,83 +1,104 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
 class ApiService {
+  // List of potential base URLs for the API
   final List<String> baseUrls = [
-    'http://10.0.2.2:8000',
-    'http://192.168.1.100:8000',
-    'http://127.0.0.1:8000',
-    'http://localhost:8000',
-    ''
+    'http://10.0.2.2:8000', // For Android emulator
+    'http://192.168.1.100:8000', // Replace with your machine's IP for physical devices
+    'http://127.0.0.1:8000', // For local development
+    'http://localhost:8000', // Localhost fallback
   ];
 
   String? _cachedBaseUrl;
 
   ApiService();
 
-
+  // Fetch the available base URL
   Future<String> _getAvailableBaseUrl() async {
-    // Try the cached base URL first
-    if (_cachedBaseUrl != null) {
-      if (await _isServerAvailable(_cachedBaseUrl!)) {
-        return _cachedBaseUrl!;
-      }
+    // Use cached base URL if still valid
+    if (_cachedBaseUrl != null && await _isServerAvailable(_cachedBaseUrl!)) {
+      return _cachedBaseUrl!;
     }
 
-    // Check each base URL in the list
+    // Iterate through the base URLs to find one that's reachable
     for (String url in baseUrls) {
       if (await _isServerAvailable(url)) {
-        _cachedBaseUrl = url; // Cache the successful base URL
+        _cachedBaseUrl = url; // Cache successful base URL
         return url;
       }
     }
 
+    // Throw an error if no base URLs are available
     throw Exception('No available base URLs');
   }
 
-  // Method to check if the server is available
+  // Check server availability for a given URL
   Future<bool> _isServerAvailable(String url) async {
     try {
+      print("Checking URL: $url");
       final response = await http
           .get(Uri.parse('$url/ping'))
           .timeout(const Duration(seconds: 3));
+
+      print("Response from $url: ${response.statusCode}");
       return response.statusCode == 200;
-    } catch (_) {
+    } catch (e) {
+      print("Error checking $url: $e");
       return false;
     }
   }
 
-
-  // Basic post feature
+  // Generalized POST method for API requests
   Future<dynamic> post(String endpoint, Map<String, dynamic> body) async {
     String baseUrl = await _getAvailableBaseUrl();
     final url = Uri.parse('$baseUrl/$endpoint');
+
+    final token = await const FlutterSecureStorage().read(key: "access_token");
+    final headers = {
+      'Content-Type': 'application/json',
+      if (token != null) 'Authorization': 'Bearer $token',
+    };
+
+    print("POST Request to: $url");
+    print("Request Body: $body");
 
     try {
       final response = await http
           .post(
         url,
-        headers: {'Content-Type': 'application/json'},
+        headers: headers,
         body: jsonEncode(body),
       )
           .timeout(const Duration(seconds: 5));
 
-      if (response.statusCode == 200) {
+      print("Response: ${response.statusCode}");
+      print("Response Body: ${response.body}");
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
         return jsonDecode(response.body);
       } else {
+        // Log and throw error for non-success responses
         throw Exception(
-            'Request failed with status: ${response.statusCode}');
+            'Request failed with status: ${response.statusCode}, Body: ${response.body}');
       }
     } catch (e) {
-      // Invalidate the cached base URL if the request fails
-      if (e is http.ClientException || e is TimeoutException) {
-        _cachedBaseUrl = null;
-      }
+      print("POST Request Failed: $e");
       throw Exception('Failed to make POST request: $e');
     }
   }
 
-  // POST request for Login page
+  // Signup API integration
+  Future<dynamic> signUp(String email, String password) async {
+    return await post(
+      'signup',
+      {'email': email, 'password': password},
+    );
+  }
+
+  // Login API integration
   Future<dynamic> login(String email, String password) async {
     return await post(
       'login',
@@ -85,13 +106,7 @@ class ApiService {
     );
   }
 
-  Future<dynamic> signUp(String name, String email, String password) async {
-    return await post(
-      'sign-up',
-      {'name': name, 'email': email, 'password': password},
-    );
-  }
-
+  // Chat feature API integration
   Future<dynamic> chat(String message) async {
     return await post(
       'chat',
