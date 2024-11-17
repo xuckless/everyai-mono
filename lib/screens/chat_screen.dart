@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:second_times_the_charm/models/api_service.dart';
 import 'package:second_times_the_charm/screens/home.dart';
 import 'package:second_times_the_charm/widgets/chat_box.dart';
 
@@ -9,6 +10,7 @@ class ChatScreen extends StatefulWidget{
 
   const ChatScreen({super.key, required this.title});
 
+  @override
   State<ChatScreen> createState() => _ChatScreenState();
 
 }
@@ -21,10 +23,12 @@ class _ChatScreenState extends State<ChatScreen>{
   final TextEditingController _messageController = TextEditingController();
   List<Map<String, dynamic>> _messages = [];
 
+  final ApiService _apiService = ApiService('http://10.0.2.2:8000');
+
   final FocusNode _focusNode = FocusNode();
 
-  void _sendMessage(){
-    if (_messageController.text.trim().isNotEmpty){
+  void _sendMessage() async {
+    if (_messageController.text.trim().isNotEmpty) {
       setState(() {
         _messages.add({
           'text': _messageController.text.trim(),
@@ -34,21 +38,33 @@ class _ChatScreenState extends State<ChatScreen>{
         _focusNode.requestFocus();
       });
 
-
-      Future.delayed(Duration(seconds: 1), () {
-        setState(() {
-          _messages.add({
-            'text': "This is a simulated response",
-            'isSentByUser': false,
-          }); // Add bot response
-        });
-      });
+      try {
+        final response = await _apiService.chat(_messages.last['text']);
+        _receiveMessage(response['message']);
+      } catch (e) {
+        print('Error occurred: $e'); // Print the error
+        _receiveMessage("Error: Could not fetch response.");
+      }
     }
-  }
 
 
 
+      // Future.delayed(Duration(seconds: 1), () {
+      //   _receiveMessage("This is a simulated response");
+      // });
+    }
 
+
+  void _receiveMessage(String text){
+    setState(() {
+      _messages.add(
+        {
+          'text': text,
+          'isSentByUser': false,
+        }
+      );
+    });
+    }
 
 
   @override

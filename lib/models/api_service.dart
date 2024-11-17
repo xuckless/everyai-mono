@@ -52,5 +52,14 @@ class ApiService {
     );
   }
 
+  Future<dynamic> chat(String message) async {
+    return await post(
+      'chat',
+      {
+        'message': message
+      }
+    );
+  }
+
 
 }
