@@ -46,12 +46,6 @@ class _ChatScreenState extends State<ChatScreen>{
         _receiveMessage("Error: Could not fetch response.");
       }
     }
-
-
-
-      // Future.delayed(Duration(seconds: 1), () {
-      //   _receiveMessage("This is a simulated response");
-      // });
     }
 
 
