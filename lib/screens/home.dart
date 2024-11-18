@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:second_times_the_charm/widgets/default_app_bar.dart';
 import '../models/api_service.dart';
 import 'chat_screen.dart';
 import 'sign_up.dart';
@@ -22,45 +23,51 @@ class _MyHomePageState extends State<MyHomePage> {
   bool _isLoading = false;
   String? _errorMessage;
 
-  void _handleLogin() async {
-    if (_formKey.currentState!.validate()) {
-      setState(() {
-        _isLoading = true;
-        _errorMessage = null;
-      });
+  final String subtitle = "Where every AI resides";
 
-      final apiService = ApiService();
-      final email = _emailController.text.trim();
-      final password = _passwordController.text.trim();
+  // void _handleLogin() async {
+  //   if (_formKey.currentState!.validate()) {
+  //     setState(() {
+  //       _isLoading = true;
+  //       _errorMessage = null;
+  //     });
+  //
+  //     final apiService = ApiService();
+  //     final email = _emailController.text.trim();
+  //     final password = _passwordController.text.trim();
+  //
+  //     try {
+  //       final response = await apiService.login(email, password);
+  //       if (response['success']) {
+  //         // Store the token and navigate to chat screen
+  //         await _secureStorage.write(
+  //             key: "access_token", value: response['access_token']);
+  //         Navigator.push(
+  //           context,
+  //           MaterialPageRoute(
+  //             builder: (context) => const ChatScreen(title: "Chat Screen"),
+  //           ),
+  //         );
+  //       } else {
+  //         setState(() {
+  //           _errorMessage = response['message'];
+  //         });
+  //       }
+  //     } on Exception catch (e) {
+  //       // Use the error message directly from the Exception thrown in `post`
+  //       setState(() {
+  //         _errorMessage = e.toString().replaceFirst('Exception: ', '');
+  //       });
+  //     } finally {
+  //       setState(() {
+  //         _isLoading = false;
+  //       });
+  //     }
+  //   }
+  // }
 
-      try {
-        final response = await apiService.login(email, password);
-        if (response['success']) {
-          // Store the token and navigate to chat screen
-          await _secureStorage.write(
-              key: "access_token", value: response['access_token']);
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => const ChatScreen(title: "Chat Screen"),
-            ),
-          );
-        } else {
-          setState(() {
-            _errorMessage = response['message'];
-          });
-        }
-      } on Exception catch (e) {
-        // Use the error message directly from the Exception thrown in `post`
-        setState(() {
-          _errorMessage = e.toString().replaceFirst('Exception: ', '');
-        });
-      } finally {
-        setState(() {
-          _isLoading = false;
-        });
-      }
-    }
+  void _handleLogin() {
+    _navigateToLoginPage();
   }
 
 
@@ -72,13 +79,24 @@ class _MyHomePageState extends State<MyHomePage> {
     );
   }
 
+  void _navigateToLoginPage() {
+    Navigator.push(
+        context,
+        MaterialPageRoute(builder: (context) => const ChatScreen(title: 'ChatScreen'))
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.title),
-        centerTitle: true,
+      appBar: DefaultAppBar(
+        subtitle: subtitle,
+        actions: [
+
+        ],
       ),
+
+
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(16.0),

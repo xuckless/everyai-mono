@@ -1,196 +1,170 @@
-//./lib/screens/chat_screen.dart
-
 import 'package:flutter/material.dart';
 import 'package:second_times_the_charm/models/api_service.dart';
-import 'package:second_times_the_charm/screens/home.dart';
-import 'package:second_times_the_charm/widgets/chat_box.dart';
+import 'package:second_times_the_charm/widgets/chat_body.dart';
+import 'package:second_times_the_charm/widgets/default_app_bar.dart';
+import '../models/chat_models.dart'; // Importing the chat models metadata
+import '../widgets/chat_drawer.dart';
+import '../widgets/chat_pop_up_menu.dart';
 
-// ------------------------------
-
-class ChatScreen extends StatefulWidget{
-  final String title;
+// Main screen for the chat interface
+class ChatScreen extends StatefulWidget {
+  final String title; // Title for the screen
 
   const ChatScreen({super.key, required this.title});
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
-
 }
 
+class _ChatScreenState extends State<ChatScreen> {
+  // List of available versions for the currently selected chat model
+  List<Map<String, String>> availableVersions = [];
 
-// ----------------------------------
-
-class _ChatScreenState extends State<ChatScreen>{
-
+  // Controller for handling user input in the chat
   final TextEditingController _messageController = TextEditingController();
+
+  // List of messages for the current chat session
   List<Map<String, dynamic>> _messages = [];
 
+  // Service to handle API calls for chat
   final ApiService _apiService = ApiService();
 
+  // Current suffix (unique identifier) for the selected chat version
   String suffix = "";
 
+  // Subtitle displayed under the AppBar title, representing the selected chat version
+  String subtitle = 'GPT-4o-mini';
 
+  // Focus node for managing keyboard focus on the chat input
   final FocusNode _focusNode = FocusNode();
 
+
+
+  // Method to send a message and handle API response
   void _sendMessage() async {
     if (_messageController.text.trim().isNotEmpty) {
       setState(() {
+        // Add the user's message to the chat
         _messages.add({
           'text': _messageController.text.trim(),
           'isSentByUser': true,
         });
-        _messageController.clear();
-        _focusNode.requestFocus();
+        _messageController.clear(); // Clear the input field
+        _focusNode.requestFocus(); // Keep the keyboard focused
       });
 
       try {
-        final response;
-        if (suffix != ""){
-          response = await _apiService.d_chat(_messages.last['text'], suffix);
-        }
-        else{
-          response = await _apiService.chat(_messages.last['text']);
-        }
+        // Send the message to the backend and fetch the response
+        final response = suffix.isNotEmpty
+            ? await _apiService.d_chat(_messages.last['text'], suffix)
+            : await _apiService.chat(_messages.last['text']);
 
-        _receiveMessage(response['message']);
+        _receiveMessage(response['message']); // Display the response
       } catch (e) {
-        print('Error occurred: $e'); // Print the error
-        _receiveMessage("Error: Could not fetch response.");
+        _receiveMessage("Error: Could not fetch response."); // Show error message
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error: $e")),
+        );
       }
     }
-    }
+  }
 
-  void _setChat(String suffix) {
+
+
+  // Method to add a received message to the chat
+  void _receiveMessage(String text) {
     setState(() {
-      this.suffix = suffix;
+      _messages.add({
+        'text': text,
+        'isSentByUser': false,
+      });
     });
   }
 
-  void _receiveMessage(String text){
+
+
+  // Method to switch chat models and initialize versions for the new model
+  void _switchChatModel(String modelName) {
     setState(() {
-      _messages.add(
-        {
-          'text': text,
-          'isSentByUser': false,
-        }
-      );
+      final selectedModel = chatModels.firstWhere((model) => model["name"] == modelName);
+
+      // Set suffix and subtitle based on the first version of the new model
+      suffix = selectedModel["versions"][0]['name']!;
+      subtitle = selectedModel["versions"][0]['suffix']!;
+
+      // Update available versions for the new model
+      availableVersions = selectedModel["versions"];
+
+      // Clear messages for the new chat instance
+      _messages.clear();
     });
-    }
+
+    // Debugging logs to ensure proper updates
+    print("Subtitle updated to: $subtitle");
+    print("Suffix updated to: $suffix");
+
+    // Close the drawer after selection
+    Navigator.of(context).pop();
+  }
+
+
+
+
+  void _updateVersion(String versionName) {
+    setState(() {
+      suffix = versionName;
+
+      final selectedVersion =
+      availableVersions.firstWhere((version) => version["name"] == versionName);
+      subtitle = selectedVersion["suffix"]!;
+    });
+
+    print("Subtitle updated to: $subtitle");
+    print("Suffix updated to: $suffix");
+  }
+
+
+
+  @override
+  void initState() {
+    super.initState();
+
+    // Initialize the screen with the default ChatGPT model and its first version
+    final initialModel = chatModels.firstWhere((model) => model["name"] == "ChatGPT");
+    suffix = initialModel["versions"][0]["name"]!; // Set suffix to the first version's name
+    subtitle = initialModel["versions"][0]["suffix"]!; // Set subtitle to the first version's suffix
+    availableVersions = initialModel["versions"]; // Load available versions
+  }
+
 
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text("EveryAI (Beta)"),
-        backgroundColor: Theme
-            .of(context)
-            .colorScheme
-            .inversePrimary,
-        centerTitle: true,
-        
+      appBar: DefaultAppBar(
+        subtitle: subtitle, // Display the current version as a subtitle
         actions: [
-          PopupMenuButton<String>(
-            onSelected: (value) {
-              if (value == "GPT-4o-mini"){
-                _setChat("GPT-4o-mini");
-              } else if (value == "GPT-3.5-turbo"){
-                _setChat("GPT-3.5-turbo");
-              }
-            },
-            itemBuilder: (BuildContext context){
-              return [
-                PopupMenuItem(
-                  value: "GPT-4o-mini",
-                  child: Text("GPT-4o-mini"),
-                ),
-                PopupMenuItem(
-                  value: "GPT-3.5-turbo",
-                  child: Text("GPT-3.5 Turbo"),
-                ),
-              ];
-            },
-          )
+
+          // Popup menu for switching between versions
+          ChatPopUpMenu(
+            availableVersions: availableVersions,
+            onVersionSelected: _updateVersion, // Handle version selection
+          ),
         ],
       ),
 
 
-      body: Center(
-        child: Column(
-          children: [
-            Expanded(
-              child: SingleChildScrollView(
-                reverse: true,
-                child: Container(
-                  // height: MediaQuery.of(context).size.height ,
-                  // width: MediaQuery.of(context).size.width,
-                  color: Colors.transparent,
-                  child: Column(
-                    children: _messages.map((message) {
-                      return ChatBox(message: message['text'], isSentByUser: message['isSentByUser'],
-                      );
-                    }).toList(),
-                  ),
-                ),
-              )
-            ),
+      drawer: ChatDrawer(
+        onModelSelected: _switchChatModel, // Handle model switching
+      ),
 
 
-            //bottom bar
-            ConstrainedBox(
-              constraints: BoxConstraints(
-                maxWidth: MediaQuery.of(context).size.width,
-                maxHeight: 150
-              ),
-              child: Container(
-                // color: Colors.lightGreen,
-                child: Row(
-                  children: [
-                    //chat box
-                    Container(
-                      width: MediaQuery.of(context).size.width - 70,
-                      decoration: BoxDecoration(
-                        // color: Colors.lime,
-                        border: Border.all(
-                          color: Colors.transparent,
-                          width: 10.0,
-                        )
-                      ),
-                      child: TextFormField(
-                        controller: _messageController,
-                        focusNode: _focusNode,
-                        onFieldSubmitted: (text) {
-                          _sendMessage();
-                        },
-                        decoration: InputDecoration(
-                          fillColor: Theme.of(context).primaryColorLight,
-                          labelText: "Chat",
-                          border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(4.0)
-                          ),
-                        ),
-                      ),
-                    ),
-                    Container(
-                      width: 70,
-                      decoration: BoxDecoration(
-                        // color: Colors.redAccent,
-                        border: Border.all(
-                          color: Colors.transparent,
-                          width: 10,
-                        )
-                      ),
-                      child: FloatingActionButton(
-                        onPressed: _sendMessage,
-                        child: Icon(Icons.arrow_upward),
-                      ),
-                    ),
-                  ],
-                )
-              ),
-            )
-          ],
-        ),
+      // Body of the screen, displaying the chat and input
+      body: ChatBody(
+        messages: _messages, // Pass the list of messages
+        messageController: _messageController, // Pass the input controller
+        focusNode: _focusNode, // Manage keyboard focus
+        onSendMessage: _sendMessage, // Handle sending messages
       ),
     );
   }
