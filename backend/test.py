@@ -1,6 +1,8 @@
 import pytest
 import httpx
 
+import utils.generate_response
+
 BASE_URL = "http://127.0.0.1:8000"
 
 @pytest.fixture(scope="session")
@@ -51,4 +53,26 @@ def test_chat(client):
     assert response.status_code == 200
     data = response.json()
     assert "message" in data
-    assert data["message"] == "Hi there! How can I assist you today?"
+    assert len(data["message"]) > 0
+
+
+def test_gpt_chat(client):
+    """Test the GPT chat endpoint."""
+    # Define a test input message
+    test_message = "What is the capital of France?"
+
+    # Send a request to the chat endpoint
+    response = client.post("/chat", json={"message": test_message})
+
+    # Ensure the response status code is correct
+    assert response.status_code == 200
+
+    # Parse the response JSON
+    data = response.json()
+
+    # Verify the response contains the expected fields
+    assert "message" in data
+
+    # Example: Verify GPT's response matches expectations (adjust based on actual response logic)
+    expected_response = "The capital of France is Paris."
+    assert data["message"] == expected_response
