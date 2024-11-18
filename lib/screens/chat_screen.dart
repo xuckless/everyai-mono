@@ -27,6 +27,8 @@ class _ChatScreenState extends State<ChatScreen>{
 
   final ApiService _apiService = ApiService();
 
+  String suffix = "";
+
 
   final FocusNode _focusNode = FocusNode();
 
@@ -42,7 +44,14 @@ class _ChatScreenState extends State<ChatScreen>{
       });
 
       try {
-        final response = await _apiService.chat(_messages.last['text']);
+        final response;
+        if (suffix != ""){
+          response = await _apiService.d_chat(_messages.last['text'], suffix);
+        }
+        else{
+          response = await _apiService.chat(_messages.last['text']);
+        }
+
         _receiveMessage(response['message']);
       } catch (e) {
         print('Error occurred: $e'); // Print the error
@@ -51,6 +60,11 @@ class _ChatScreenState extends State<ChatScreen>{
     }
     }
 
+  void _setChat(String suffix) {
+    setState(() {
+      this.suffix = suffix;
+    });
+  }
 
   void _receiveMessage(String text){
     setState(() {
@@ -74,6 +88,30 @@ class _ChatScreenState extends State<ChatScreen>{
             .colorScheme
             .inversePrimary,
         centerTitle: true,
+        
+        actions: [
+          PopupMenuButton<String>(
+            onSelected: (value) {
+              if (value == "GPT-4o-mini"){
+                _setChat("GPT-4o-mini");
+              } else if (value == "GPT-3.5-turbo"){
+                _setChat("GPT-3.5-turbo");
+              }
+            },
+            itemBuilder: (BuildContext context){
+              return [
+                PopupMenuItem(
+                  value: "GPT-4o-mini",
+                  child: Text("GPT-4o-mini"),
+                ),
+                PopupMenuItem(
+                  value: "GPT-3.5-turbo",
+                  child: Text("GPT-3.5 Turbo"),
+                ),
+              ];
+            },
+          )
+        ],
       ),
 
 

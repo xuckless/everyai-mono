@@ -95,6 +95,9 @@ class _MyHomePageState extends State<MyHomePage> {
                 // Email Input
                 TextFormField(
                   controller: _emailController,
+                  onFieldSubmitted: (text) {
+                    _handleLogin();
+                  },
                   decoration: const InputDecoration(
                     labelText: "Email",
                   ),
@@ -113,6 +116,9 @@ class _MyHomePageState extends State<MyHomePage> {
                 // Password Input
                 TextFormField(
                   controller: _passwordController,
+                  onFieldSubmitted: (text) {
+                    _handleLogin();
+                  },
                   decoration: const InputDecoration(
                     labelText: "Password",
                   ),

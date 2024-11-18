@@ -124,4 +124,12 @@ class ApiService {
       {'message': message},
     );
   }
+
+  // Dynamic chat function that configures which gpt you're talking to.
+  Future<dynamic> d_chat(String message, String suffix) async {
+    return await post (
+      'chat/gpt',
+      {'message': message, 'model': suffix},
+    );
+  }
 }
