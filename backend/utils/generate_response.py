@@ -32,3 +32,20 @@ def generate_response(message: str) -> str:
     except Exception as e:
         # Handle and return error
         return f"An error occurred while generating: {e}"
+
+
+def specific_response(message: str, model: str) -> str:
+    try:
+        # Create a chat completion
+        completion = client.chat.completions.create(
+            model=model,  # Replace with appropriate model if different
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": message}
+            ]
+        )
+        # Return the model's response
+        return completion.choices[0].message.content
+    except Exception as e:
+        # Handle and return error
+        return f"An error occurred while generating: {e}"

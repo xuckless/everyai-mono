@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from routers.auth_router import auth_router
 from routers.protected_router import protected_router
 from routers.chat_router import chat_router
+from routers.gpt_router import gpt_router
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -23,6 +24,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(protected_router)
 app.include_router(chat_router)
+app.include_router(gpt_router)
 
 
 if __name__ == "__main__":

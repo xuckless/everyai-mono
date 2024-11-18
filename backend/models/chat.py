@@ -7,3 +7,8 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     message: str
+
+
+class GPTRequestModel(BaseModel):
+    message: str
+    model: str
