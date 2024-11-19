@@ -8,7 +8,7 @@ plugins {
 android {
     namespace = "alidirect.dev.second_times_the_charm"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    ndkVersion = "28.0.12433566"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8

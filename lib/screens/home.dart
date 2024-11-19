@@ -3,6 +3,7 @@ import 'package:second_times_the_charm/widgets/custom_button.dart';
 import 'package:second_times_the_charm/widgets/custom_form.dart';
 import 'package:second_times_the_charm/models/navigation.dart';
 import 'package:second_times_the_charm/widgets/default_app_bar.dart';
+import '../models/api_service.dart';
 import 'chat_screen.dart';
 import 'sign_up.dart';
 import '../models/login_handler.dart';
@@ -59,7 +60,18 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
 
+  void _handleGoogleLogin() async {
+    final apiService = ApiService();
 
+    try {
+      await apiService.googleLogin();
+      // Handle successful login, e.g., navigate to the next screen
+      navigateToPage(context, const ChatScreen(title: "Chat Screen"));
+    } catch (e) {
+      print("Google Login Failed: $e");
+      setErrorMessage("Failed to log in with Google. Please try again.");
+    }
+  }
 
 
 
@@ -119,6 +131,8 @@ class _MyHomePageState extends State<MyHomePage> {
                 onPressed: () => navigateToPage(context, const SignUpPage(title: "Sign Up")),
                 child: const Text("Don't have an account? Sign Up"),
               ),
+
+              CustomButton(text: "login with google" , onPressed: _handleGoogleLogin),
             ],
           )
         ),

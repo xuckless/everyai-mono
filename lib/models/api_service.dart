@@ -4,6 +4,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
+import 'package:google_sign_in/google_sign_in.dart';
+import 'dart:io';
 
 class ApiService {
   // List of potential base URLs for the API
@@ -131,5 +133,42 @@ class ApiService {
       'chat/gpt',
       {'message': message, 'model': suffix},
     );
+  }
+
+  Future<void> googleLogin() async {
+    final GoogleSignIn googleSignIn = GoogleSignIn(
+      scopes: ['email'],
+      serverClientId: '903732364114-a9d45n9fbroggcu23m7s3f7ti8ce7kf9.apps.googleusercontent.com',
+    );
+    final GoogleSignInAccount? account = await googleSignIn.signIn();
+
+    if (account == null) {
+      throw Exception('Google Sign In Failed');
+    }
+
+    final GoogleSignInAuthentication auth = await account.authentication;
+    final token = auth.idToken;
+
+    if (token == null) {
+      throw Exception('Google Sign failed to provide token');
+    }
+
+    // Determine the platform
+    String platform = Platform.isIOS ? 'ios' : 'android';
+
+    // Send token and platform to the server
+    final response = await post('google_login', {
+      'token': token,
+      'platform': platform,
+    });
+
+    if (response.containsKey('access_token')) {
+      await const FlutterSecureStorage().write(
+        key: "access_token",
+        value: response['access_token'],
+      );
+    } else {
+      throw Exception('Invalid response from server');
+    }
   }
 }
