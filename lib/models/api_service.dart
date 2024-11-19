@@ -13,6 +13,7 @@ class ApiService {
     'http://10.0.2.2:8000', // For Android emulator
     'http://127.0.0.1:8000', // For iOS simulator
     'http://localhost:8000', //fallback
+    'https://everyai-backend-7k8g.onrender.com' // online
   ];
 
   String? _cachedBaseUrl;
