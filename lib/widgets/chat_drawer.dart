@@ -8,8 +8,6 @@ class ChatDrawer extends StatelessWidget {
 
   const ChatDrawer({Key? key, required this.onModelSelected}) : super(key: key);
 
-
-
   @override
   Widget build(BuildContext context) {
     final loginHandler = LoginHandler();
@@ -26,37 +24,65 @@ class ChatDrawer extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  "Chat Switcher",
+                  "Every AI",
                   style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                     color: Colors.white,
-                  )
-                ),
-
-                Padding(
-                  padding: const EdgeInsets.all(8.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      CustomButton(
-                          text: "Market",
-                          onPressed: () => null,
-                      ),
-
-                      const SizedBox(height: 16),
-
-                      CustomButton(
-                        text: "Logout",
-                        onPressed: () => loginHandler.handleLogout(context),
-                      ),
-                    ],
                   ),
-
                 ),
-
+                const SizedBox(height: 8), // Add spacing between title and buttons
+                Column(
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Padding(
+                            padding: const EdgeInsets.all(2.0),
+                            child: CustomButton(
+                              text: "Market",
+                              onPressed: () => null,
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: Padding(
+                            padding: const EdgeInsets.all(2.0),
+                            child: CustomButton(
+                              text: "Logout",
+                              onPressed: () => loginHandler.handleLogout(context),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Padding(
+                            padding: const EdgeInsets.all(2.0),
+                            child: CustomButton(
+                              text: "Profile",
+                              onPressed: () => null,
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: Padding(
+                            padding: const EdgeInsets.all(2.0),
+                            child: CustomButton(
+                              text: "Dashboard",
+                              onPressed: () => null,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ],
             ),
           ),
-
           ...chatModels.map((chat) {
             return ListTile(
               title: Text(chat["name"]!), // Display the name of the chat model
