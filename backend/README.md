@@ -123,4 +123,8 @@ Contact
 
 If you have any questions or need assistance, feel free to reach out.
 
+how to migrate the database:
+run this command : alembic revision --autogenerate -m "Describe your changes"
+then run this command : alembic upgrade head
+
 Happy coding!

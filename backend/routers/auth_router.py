@@ -1,15 +1,22 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+# routers/auth_router.py
 
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from sqlalchemy.orm import Session
+import requests
+from utils.security import verify_google_token
+
+from config import GOOGLE_CLIENT_ID_IOS, GOOGLE_CLIENT_ID_ANDROID
 from db.db import get_db
 from db.models import User
-from models.auth import LoginRequest, SignUpRequest, TokenResponse
+from models.auth import LoginRequest, SignUpRequest, TokenResponse, GoogleLoginRequest
 from utils.security import (
     verify_password,
     get_password_hash,
     create_access_token,
 )
 
+GOOGLE_CLIENT_ID_IOS;
+GOOGLE_CLIENT_ID_ANDROID;
 auth_router = APIRouter()
 
 
@@ -40,5 +47,40 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
+    token = create_access_token(subject=str(user.id))
+    return TokenResponse(access_token=token)
+
+
+@auth_router.post("/google_login", response_model=TokenResponse)
+def google_login(request: GoogleLoginRequest, db: Session = Depends(get_db)):
+    token = request.token
+    platform = request.platform
+
+    if platform == "ios":
+        client_id = GOOGLE_CLIENT_ID_IOS
+    elif platform == "android":
+        client_id = GOOGLE_CLIENT_ID_ANDROID
+    else:
+        raise HTTPException(status_code=400, detail="Invalid platform")
+
+    token_info = verify_google_token(token, client_id)
+    if not token_info:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid Google token",
+        )
+
+    #check if user already exists
+    email = token_info.get("email")
+    google_id = token_info.get("sub")
+    user = db.query(User).filter(User.google_id == google_id).first()
+
+    #if user does not exist, create a new user
+    if not user:
+        user = User(email=email, google_id=google_id)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
     token = create_access_token(subject=str(user.id))
     return TokenResponse(access_token=token)
