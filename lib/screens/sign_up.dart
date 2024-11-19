@@ -1,149 +1,114 @@
 import 'package:flutter/material.dart';
-import 'package:second_times_the_charm/screens/home.dart';
-import '../models/api_service.dart';
+import 'package:second_times_the_charm/widgets/custom_button.dart';
+import 'package:second_times_the_charm/widgets/custom_form.dart';
+import 'package:second_times_the_charm/widgets/default_app_bar.dart';
+import '../models/sign_up_handler.dart';
+import '../models/navigation.dart';
+import 'home.dart';
 
 class SignUpPage extends StatefulWidget {
   final String title;
 
   const SignUpPage({super.key, required this.title});
 
-  State<SignUpPage> createState() => _SignUpState();
+  @override
+  State<SignUpPage> createState() => _SignUpPageState();
 }
 
-class _SignUpState extends State<SignUpPage> {
+class _SignUpPageState extends State<SignUpPage> {
   final _formKey = GlobalKey<FormState>();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
+  final TextEditingController _confirmPasswordController = TextEditingController();
 
-  void _validateAndSignUp() async {
-    if (_formKey.currentState!.validate()) {
-      final apiService = ApiService();
-      final email = _emailController.text.trim();
-      final password = _passwordController.text.trim();
+  final SignUpHandler _signUpHandler = SignUpHandler();
 
-      try {
-        final response = await apiService.signUp(email, password);
-        if (response['message'] == "User created successfully") {
-          _gotoHomePage(context); // Navigate to the login page
-        } else {
-          _showError("Signup failed: ${response['message']}");
-        }
-      } catch (e) {
-        _showError("Failed to sign up: $e");
-      }
-    }
+  bool _isLoading = false;
+  String? _errorMessage;
+
+  void _showError(String? message) {
+    setState(() {
+      _errorMessage = message;
+    });
   }
 
-  void _showError(String message) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Error"),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.of(context).pop();
-            },
-            child: const Text("OK"),
-          ),
-        ],
-      ),
-    );
+  void _onSuccess() {
+    navigateToPage(context, const MyHomePage(title: "Login")); // Navigate to login on success
   }
 
-  void _gotoHomePage(BuildContext context) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => MyHomePage(title: 'Login Page')),
+  void _setLoading(bool isLoading) {
+    setState(() {
+      _isLoading = isLoading;
+    });
+  }
+
+  final String subtitle = "Join EveryAI today!";
+
+  void _handleSignUp() {
+    _signUpHandler.validateAndSignUp(
+      formKey: _formKey,
+      emailController: _emailController,
+      passwordController: _passwordController,
+      confirmPasswordController: _confirmPasswordController,
+      setLoading: _setLoading,
+      showError: _showError,
+      onSuccess: _onSuccess,
     );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text("EveryAI (Beta)"),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        centerTitle: true,
+      appBar: DefaultAppBar(
+        subtitle: subtitle,
+        actions: [],
       ),
       body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            Text(
-              "Sign Up Today!",
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-
-            // Form Fields
-            ConstrainedBox(
-              constraints: const BoxConstraints(
-                maxWidth: 380,
-                maxHeight: 310,
-                minWidth: 150,
-                minHeight: 75,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                "Create Your Account",
+                style: Theme.of(context).textTheme.headlineMedium,
               ),
-              child: Form(
-                key: _formKey,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    TextFormField(
-                      controller: _emailController,
-                      decoration: const InputDecoration(
-                        labelText: "Email",
-                        border: UnderlineInputBorder(),
-                      ),
-                      validator: (value) {
-                        if (value == null || value.isEmpty) {
-                          return 'Please enter your email';
-                        }
-                        if (!RegExp(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
-                            .hasMatch(value)) {
-                          return 'Please enter a valid email address';
-                        }
-                        return null;
-                      },
-                    ),
-                    TextFormField(
-                      controller: _passwordController,
-                      decoration: const InputDecoration(
-                        labelText: "Password",
-                        border: UnderlineInputBorder(),
-                      ),
-                      validator: (value) {
-                        if (value == null || value.isEmpty) {
-                          return 'Please enter your password';
-                        }
-                        if (value.length < 6) {
-                          return 'Password must be at least 6 characters long';
-                        }
-                        return null;
-                      },
-                      obscureText: true,
-                    ),
-                  ],
+              const SizedBox(height: 16),
+              Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: CustomForm(
+                  formKey: _formKey,
+                  emailController: _emailController,
+                  passwordController: _passwordController,
+                  confirmPasswordController: _confirmPasswordController,
+                  nameField: false,
+                  email: true,
+                  password: true,
+                  confirmPassword: true,
+                  onSubmit: _handleSignUp, // Triggered on Enter
                 ),
               ),
-            ),
-
-            // Sign Up Button
-            ConstrainedBox(
-              constraints: const BoxConstraints(
-                maxHeight: 50,
-                maxWidth: 250,
-              ),
-              child: ElevatedButton(
-                onPressed: _validateAndSignUp,
-                child: const Text("Sign Up"),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Theme.of(context).colorScheme.primary,
-                  foregroundColor: Colors.white,
+              if (_errorMessage != null)
+                Text(
+                  _errorMessage!,
+                  style: const TextStyle(color: Colors.red),
                 ),
+              const SizedBox(height: 16),
+              CustomButton(
+                text: 'Sign Up',
+                onPressed: _isLoading ? null : _handleSignUp,
+                isLoading: _isLoading,
               ),
-            ),
-          ],
+              const SizedBox(height: 16),
+              TextButton(
+                onPressed: () => navigateToPage(
+                  context,
+                  const MyHomePage(title: "Login"),
+                ),
+                child: const Text("Already have an account? Login"),
+              ),
+            ],
+          ),
         ),
       ),
     );
