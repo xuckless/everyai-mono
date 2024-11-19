@@ -1,14 +1,14 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // For LogicalKeyboardKey
+import 'package:flutter/services.dart';
 
 class ChatTextFormField extends StatefulWidget {
   final TextEditingController messageController;
-  final FocusNode focusNode;
+  final FocusNode focusNode; // Renamed for consistency
   final VoidCallback onSendMessage;
 
   const ChatTextFormField({
     required this.messageController,
-    required this.focusNode,
+    required this.focusNode, // Updated parameter name
     required this.onSendMessage,
     Key? key,
   }) : super(key: key);
@@ -43,19 +43,34 @@ class _ChatTextFormFieldState extends State<ChatTextFormField> {
     });
   }
 
-  KeyEventResult _handleKeyEvent(RawKeyEvent event) {
-    if (event is RawKeyDownEvent &&
-        event.logicalKey == LogicalKeyboardKey.enter) {
-      if (event.isShiftPressed) {
-        // Add a newline if Shift is pressed
-        final newValue = "${widget.messageController.text}\n";
+  void _resetMaxLines() {
+    setState(() {
+      _maxLines = 1;
+    });
+  }
+
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.enter) {
+      if (HardwareKeyboard.instance.logicalKeysPressed
+          .contains(LogicalKeyboardKey.shiftLeft) ||
+          HardwareKeyboard.instance.logicalKeysPressed
+              .contains(LogicalKeyboardKey.shiftRight)) {
+        final text = widget.messageController.text;
+        final selection = widget.messageController.selection;
+        final newText = text.replaceRange(
+          selection.start,
+          selection.end,
+          '\n',
+        );
         widget.messageController.value = TextEditingValue(
-            text: newValue,
-            selection: TextSelection.collapsed(offset: newValue.length));
+          text: newText,
+          selection: TextSelection.collapsed(offset: selection.start + 1),
+        );
         return KeyEventResult.handled;
       } else {
-        // Send message on Enter
         widget.onSendMessage();
+        widget.messageController.clear();
+        _resetMaxLines();
         return KeyEventResult.handled;
       }
     }
@@ -64,20 +79,21 @@ class _ChatTextFormFieldState extends State<ChatTextFormField> {
 
   @override
   Widget build(BuildContext context) {
-    return RawKeyboardListener(
+    return Focus(
       focusNode: _keyboardListenerFocusNode,
-      onKey: _handleKeyEvent,
+      onKeyEvent: (FocusNode node, KeyEvent event) => _handleKeyEvent(node, event),
       child: TextFormField(
         controller: widget.messageController,
         focusNode: widget.focusNode,
         maxLines: _maxLines,
         minLines: 1,
         keyboardType: TextInputType.multiline,
+        textInputAction: TextInputAction.newline,
         decoration: InputDecoration(
-          fillColor: Theme.of(context).primaryColorLight,
+          fillColor: Theme.of(context).colorScheme.primaryContainer,
           labelText: "Chat",
           border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(4.0),
+            borderRadius: BorderRadius.circular(8.0),
           ),
         ),
       ),

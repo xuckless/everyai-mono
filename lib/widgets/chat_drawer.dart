@@ -42,6 +42,8 @@ class ChatDrawer extends StatelessWidget {
                           onPressed: () => null,
                       ),
 
+                      const SizedBox(height: 16),
+
                       CustomButton(
                         text: "Logout",
                         onPressed: () => loginHandler.handleLogout(context),
