@@ -4,6 +4,7 @@ import 'api_service.dart';
 class SignUpHandler {
   Future<void> validateAndSignUp({
     required GlobalKey<FormState> formKey,
+    required TextEditingController nameController,
     required TextEditingController emailController,
     required TextEditingController passwordController,
     required TextEditingController confirmPasswordController,
@@ -21,12 +22,13 @@ class SignUpHandler {
       setLoading(true);
 
       final apiService = ApiService();
+      final name = nameController.text.trim();
       final email = emailController.text.trim();
       final password = passwordController.text.trim();
 
       try {
-        final response = await apiService.signUp(email, password);
-        if (response['message'] == "User created successfully") {
+        final response = await apiService.signUp(name, email, password);
+        if (response.containsKey('access_token')) {
           onSuccess(); // Trigger success callback
         } else {
           showError("Signup failed: ${response['message']}");

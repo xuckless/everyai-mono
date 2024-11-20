@@ -17,6 +17,7 @@ class SignUpPage extends StatefulWidget {
 
 class _SignUpPageState extends State<SignUpPage> {
   final _formKey = GlobalKey<FormState>();
+  final TextEditingController _nameController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _confirmPasswordController = TextEditingController();
@@ -47,6 +48,7 @@ class _SignUpPageState extends State<SignUpPage> {
   void _handleSignUp() {
     _signUpHandler.validateAndSignUp(
       formKey: _formKey,
+      nameController: _nameController,
       emailController: _emailController,
       passwordController: _passwordController,
       confirmPasswordController: _confirmPasswordController,
@@ -78,10 +80,11 @@ class _SignUpPageState extends State<SignUpPage> {
                 padding: const EdgeInsets.all(8.0),
                 child: CustomForm(
                   formKey: _formKey,
+                  nameController: _nameController,
                   emailController: _emailController,
                   passwordController: _passwordController,
                   confirmPasswordController: _confirmPasswordController,
-                  nameField: false,
+                  nameField: true,
                   email: true,
                   password: true,
                   confirmPassword: true,
