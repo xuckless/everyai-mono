@@ -119,8 +119,19 @@ __pycache__/
 
 	•	If additional dependencies are added, include them in the pip install command or create a requirements.txt file.
 
+How to migrate the database
+first, you need to install alembic
+pip install alembic
+
+then run this command : alembic revision --autogenerate -m "Describe your changes"
+then run this command : alembic upgrade head
+
 Contact
 
 If you have any questions or need assistance, feel free to reach out.
+
+how to migrate the database:
+run this command : alembic revision --autogenerate -m "Describe your changes"
+then run this command : alembic upgrade head
 
 Happy coding!

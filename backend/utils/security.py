@@ -1,5 +1,9 @@
+# utils/security.py
+
 from datetime import datetime, timedelta
+from http.client import responses
 from typing import Optional
+import requests
 
 import jwt
 from passlib.context import CryptContext
@@ -24,3 +28,15 @@ def create_access_token(subject: str, expires_delta: Optional[timedelta] = None)
     to_encode = {"exp": expire, "sub": subject}
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+def verify_google_token(token: str, client_id: str):
+    try:
+        response = requests.get(f"https://oauth2.googleapis.com/tokeninfo?id_token={token}")
+        token_info = response.json()
+
+        if response.status_code != 200 or token_info.get("aud") != client_id:
+            return None
+
+        return token_info
+    except Exception as e:
+        return None

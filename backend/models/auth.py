@@ -1,4 +1,4 @@
-# models/auth_2.py
+# models/auth.py
 
 from pydantic import BaseModel, EmailStr
 
@@ -13,3 +13,7 @@ class SignUpRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+class GoogleLoginRequest(BaseModel):
+    token: str
+    platform: str
