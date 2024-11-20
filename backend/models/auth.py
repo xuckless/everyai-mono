@@ -7,8 +7,8 @@ class LoginRequest(BaseModel):
     password: str
 
 class SignUpRequest(BaseModel):
+    uuid: str
     email: EmailStr
-    password: str
 
 class TokenResponse(BaseModel):
     access_token: str

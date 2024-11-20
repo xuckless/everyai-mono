@@ -1,9 +1,10 @@
 # routers/auth_router.py
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-import requests
-from utils.security import verify_google_token
+
+from utils.handle_google_login import handle_google_login
+
 
 from config import GOOGLE_CLIENT_ID_IOS, GOOGLE_CLIENT_ID_ANDROID
 from db.db import get_db
@@ -11,7 +12,6 @@ from db.models import User
 from models.auth import LoginRequest, SignUpRequest, TokenResponse, GoogleLoginRequest
 from utils.security import (
     verify_password,
-    get_password_hash,
     create_access_token,
 )
 
@@ -20,23 +20,22 @@ GOOGLE_CLIENT_ID_ANDROID;
 auth_router = APIRouter()
 
 
-@auth_router.post("/signup", response_model=TokenResponse)
+@auth_router.post("/signup", status_code=status.HTTP_200_OK)
 def sign_up(request: SignUpRequest, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter(User.email == request.email).first()
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered",
-        )
-    new_user = User(
-        email=request.email,
-        password_hash=get_password_hash(request.password),
-    )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    token = create_access_token(subject=str(new_user.id))
-    return TokenResponse(access_token=token)
+    try:
+        # Create a new user
+        new_user = User(id=request.uuid, email=request.email)  # Using UUID as the ID here
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+
+        # Return success response
+        return {"success": True, "message": "User created successfully", "uuid": new_user.id}
+
+    except Exception as e:
+        # Handle unexpected errors
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
 @auth_router.post("/login", response_model=TokenResponse)
@@ -53,34 +52,4 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
 
 @auth_router.post("/google_login", response_model=TokenResponse)
 def google_login(request: GoogleLoginRequest, db: Session = Depends(get_db)):
-    token = request.token
-    platform = request.platform
-
-    if platform == "ios":
-        client_id = GOOGLE_CLIENT_ID_IOS
-    elif platform == "android":
-        client_id = GOOGLE_CLIENT_ID_ANDROID
-    else:
-        raise HTTPException(status_code=400, detail="Invalid platform")
-
-    token_info = verify_google_token(token, client_id)
-    if not token_info:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid Google token",
-        )
-
-    #check if user already exists
-    email = token_info.get("email")
-    google_id = token_info.get("sub")
-    user = db.query(User).filter(User.google_id == google_id).first()
-
-    #if user does not exist, create a new user
-    if not user:
-        user = User(email=email, google_id=google_id)
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-
-    token = create_access_token(subject=str(user.id))
-    return TokenResponse(access_token=token)
+    return handle_google_login(request.token, request.platform, db)

@@ -1,13 +1,14 @@
 from fastapi import APIRouter, HTTPException
 
 from models.chat import GPTRequestModel, ChatResponse
+from routers import PROTECTED_ROUTE
 from utils.generate_response import specific_response
 
-gpt_router = APIRouter(prefix="/chat")
+gpt_router = APIRouter(prefix="/protected/chat")
 
 
 
-@gpt_router.post("/gpt", response_model=ChatResponse)
+@gpt_router.post(f"/gpt", response_model=ChatResponse)
 async def gpt_mini(chat: GPTRequestModel):
     message = chat.message.strip()
     model = chat.model.lower().strip()

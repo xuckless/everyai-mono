@@ -1,0 +1,1 @@
+PROTECTED_ROUTE='/p'
