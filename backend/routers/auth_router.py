@@ -22,6 +22,12 @@ auth_router = APIRouter()
 
 @auth_router.post("/signup", response_model=TokenResponse)
 def sign_up(request: SignUpRequest, db: Session = Depends(get_db)):
+    if not request.name.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Name cannot be empty",
+        )
+
     existing_user = db.query(User).filter(User.email == request.email).first()
     if existing_user:
         raise HTTPException(
@@ -29,6 +35,7 @@ def sign_up(request: SignUpRequest, db: Session = Depends(get_db)):
             detail="Email already registered",
         )
     new_user = User(
+        name=request.name,
         email=request.email,
         password_hash=get_password_hash(request.password),
     )
@@ -71,13 +78,20 @@ def google_login(request: GoogleLoginRequest, db: Session = Depends(get_db)):
         )
 
     #check if user already exists
+    name = token_info.get("name")
     email = token_info.get("email")
     google_id = token_info.get("sub")
     user = db.query(User).filter(User.google_id == google_id).first()
 
+    #update the name even if the user already exists
+    if user:
+        user.name = name
+        db.commit()
+        db.refresh(user)
+
     #if user does not exist, create a new user
     if not user:
-        user = User(email=email, google_id=google_id)
+        user = User(name=name, email=email, google_id=google_id)
         db.add(user)
         db.commit()
         db.refresh(user)
