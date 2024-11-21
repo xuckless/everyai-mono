@@ -5,7 +5,9 @@ import jwt
 from db.db import get_db
 from db.models import User
 from config import SECRET_KEY, ALGORITHM
-from routers.protected_router import oauth2_scheme
+from routers import OAUTH2_SCHEME
+
+oauth2_scheme = OAUTH2_SCHEME
 
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
