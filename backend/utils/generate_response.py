@@ -59,7 +59,7 @@ def specific_response(message: str, model: str) -> str:
         assistant_response = completion.choices[0].message.content
         conversation_history.append({"role": "assistant", "content": assistant_response})
         # Return the model's response
-        return assistant_response
+        return assistant_response.encode('utf-8').decode('utf-8')
     except Exception as e:
         # Handle and return error
         return f"An error occurred while generating: {e}"
