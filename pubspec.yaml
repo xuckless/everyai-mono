@@ -29,15 +29,65 @@ dev_dependencies:
 flutter:
   uses-material-design: true
 
+  fonts:
+    # NotoSans Font Family
+    - family: NotoSans
+      fonts:
+        - asset: lib/fonts/Noto_Sans/static/NotoSans-Regular.ttf
+        - asset: lib/fonts/Noto_Sans/static/NotoSans-Bold.ttf
+          weight: 700
+        - asset: lib/fonts/Noto_Sans/static/NotoSans-Italic.ttf
+          style: italic
+        - asset: lib/fonts/Noto_Sans/static/NotoSans-BoldItalic.ttf
+          weight: 700
+          style: italic
+
+    # EB Garamond Font Family
+    - family: EBGaramond
+      fonts:
+        - asset: lib/fonts/EB_Garamond/static/EBGaramond-Regular.ttf
+        - asset: lib/fonts/EB_Garamond/static/EBGaramond-Bold.ttf
+          weight: 700
+        - asset: lib/fonts/EB_Garamond/static/EBGaramond-Italic.ttf
+          style: italic
+        - asset: lib/fonts/EB_Garamond/static/EBGaramond-BoldItalic.ttf
+          weight: 700
+          style: italic
+
+    # Source Code Pro Font Family (Monospace)
+    - family: SourceCodePro
+      fonts:
+        - asset: lib/fonts/Source_Code_Pro/static/SourceCodePro-Regular.ttf
+        - asset: lib/fonts/Source_Code_Pro/static/SourceCodePro-Bold.ttf
+          weight: 700
+        - asset: lib/fonts/Source_Code_Pro/static/SourceCodePro-Italic.ttf
+          style: italic
+        - asset: lib/fonts/Source_Code_Pro/static/SourceCodePro-BoldItalic.ttf
+          weight: 700
+          style: italic
+
+    # Philosopher Font Family
+    - family: Philosopher
+      fonts:
+        - asset: lib/fonts/Philosopher/Philosopher-Regular.ttf
+        - asset: lib/fonts/Philosopher/Philosopher-Bold.ttf
+          weight: 700
+        - asset: lib/fonts/Philosopher/Philosopher-Italic.ttf
+          style: italic
+        - asset: lib/fonts/Philosopher/Philosopher-BoldItalic.ttf
+          weight: 700
+          style: italic
+
   # Uncomment and add assets as needed
   # assets:
   #   - images/
   #   - assets/
 
-  # Uncomment to define custom fonts
-  # fonts:
-  #   - family: YourFontFamily
-  #     fonts:
-  #       - asset: fonts/YourFont-Regular.ttf
-  #       - asset: fonts/YourFont-Bold.ttf
-  #         weight: 700
+#   Uncomment to define custom fonts
+#   fonts:
+#     - family: YourFontFamily
+#       fonts:
+#         - asset: fonts/YourFont-Regular.ttf
+#         - asset: fonts/YourFont-Bold.ttf
+#           weight: 700
+
