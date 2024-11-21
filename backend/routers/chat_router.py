@@ -8,9 +8,9 @@ from routers import PROTECTED_ROUTE
 from utils.generate_response import generate_response
 from utils.validate_current_user import get_current_user
 
-chat_router = APIRouter(prefix='/protected', tags=['protected'])
+chat_router = APIRouter(prefix='', tags=['protected'])
 
-@chat_router.post(f"{PROTECTED_ROUTE}/chat", response_model=ChatResponse)
+@chat_router.post(f"/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, current_user: User = Depends(get_current_user)):
     message = request.message.strip()
     if not message:

@@ -1,10 +1,11 @@
 from fastapi import APIRouter, HTTPException
+from starlette.responses import JSONResponse
 
 from models.chat import GPTRequestModel, ChatResponse
 from routers import PROTECTED_ROUTE
 from utils.generate_response import specific_response
 
-gpt_router = APIRouter(prefix="/protected/chat")
+gpt_router = APIRouter(prefix="/chat")
 
 
 
@@ -19,6 +20,6 @@ async def gpt_mini(chat: GPTRequestModel):
     print(model)
 
     response = specific_response(message, model)
-    return ChatResponse(message=response)
+    return JSONResponse(content={"message": response}, media_type="application/json; charset=utf-8")
 
 
