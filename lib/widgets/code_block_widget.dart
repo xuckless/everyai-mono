@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 class CodeBlockWidget extends StatelessWidget {
   final String codeContent;
 
-  const CodeBlockWidget({Key? key, required this.codeContent}) : super(key: key);
+  const CodeBlockWidget({super.key, required this.codeContent});
 
   @override
   Widget build(BuildContext context) {

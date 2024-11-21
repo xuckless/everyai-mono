@@ -132,7 +132,11 @@ class _MyHomePageState extends State<MyHomePage> {
                 child: const Text("Don't have an account? Sign Up"),
               ),
 
-              CustomButton(text: "login with google" , onPressed: _handleGoogleLogin),
+              CustomButton(
+                text: "Login with google",
+                onPressed: _isLoading ? null : _handleGoogleLogin,
+                isLoading: _isLoading,
+              ),
             ],
           )
         ),

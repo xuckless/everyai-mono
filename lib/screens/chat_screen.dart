@@ -24,7 +24,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _messageController = TextEditingController();
 
   // List of messages for the current chat session
-  List<Map<String, dynamic>> _messages = [];
+  final List<Map<String, dynamic>> _messages = [];
 
   // Service to handle API calls for chat
   final ApiService _apiService = ApiService();

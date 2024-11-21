@@ -6,7 +6,7 @@ import '../models/login_handler.dart';
 class ChatDrawer extends StatelessWidget {
   final Function(String) onModelSelected; // Callback for switching chat models
 
-  const ChatDrawer({Key? key, required this.onModelSelected}) : super(key: key);
+  const ChatDrawer({super.key, required this.onModelSelected});
 
   @override
   Widget build(BuildContext context) {
@@ -40,7 +40,7 @@ class ChatDrawer extends StatelessWidget {
                             padding: const EdgeInsets.all(2.0),
                             child: CustomButton(
                               text: "Market",
-                              onPressed: () => null,
+                              onPressed: () {},
                             ),
                           ),
                         ),
@@ -63,7 +63,7 @@ class ChatDrawer extends StatelessWidget {
                             padding: const EdgeInsets.all(2.0),
                             child: CustomButton(
                               text: "Profile",
-                              onPressed: () => null,
+                              onPressed: () {},
                             ),
                           ),
                         ),
@@ -72,7 +72,7 @@ class ChatDrawer extends StatelessWidget {
                             padding: const EdgeInsets.all(2.0),
                             child: CustomButton(
                               text: "Dashboard",
-                              onPressed: () => null,
+                              onPressed: () {},
                             ),
                           ),
                         ),
@@ -90,7 +90,7 @@ class ChatDrawer extends StatelessWidget {
                 onModelSelected(chat["name"]!); // Trigger the callback
               },
             );
-          }).toList(),
+          }),
         ],
       ),
     );

@@ -1,15 +1,14 @@
 import 'package:flutter/material.dart';
-import '../models/chat_models.dart';
 
 class ChatPopUpMenu extends StatelessWidget {
   final List<Map<String, String>> availableVersions;
   final Function(String) onVersionSelected;
 
   const ChatPopUpMenu({
-    Key? key,
+    super.key,
     required this.availableVersions,
     required this.onVersionSelected,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

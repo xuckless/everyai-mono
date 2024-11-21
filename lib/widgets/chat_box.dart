@@ -5,7 +5,7 @@ class ChatBox extends StatelessWidget {
   final String message;
   final bool isSentByUser;
 
-  const ChatBox({required this.message, required this.isSentByUser});
+  const ChatBox({super.key, required this.message, required this.isSentByUser});
 
   @override
   Widget build(BuildContext context) {

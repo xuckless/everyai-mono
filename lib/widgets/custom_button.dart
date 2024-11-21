@@ -8,13 +8,13 @@ class CustomButton extends StatelessWidget {
   final bool isLoading; // New parameter for loading state
 
   const CustomButton({
-    Key? key,
+    super.key,
     required this.text,
     this.onPressed,
     this.color,
     this.minimumSize,
     this.isLoading = false, // Default to not loading
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

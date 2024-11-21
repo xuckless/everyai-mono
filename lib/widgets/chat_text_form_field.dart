@@ -10,8 +10,8 @@ class ChatTextFormField extends StatefulWidget {
     required this.messageController,
     required this.focusNode, // Updated parameter name
     required this.onSendMessage,
-    Key? key,
-  }) : super(key: key);
+    super.key,
+  });
 
   @override
   State<ChatTextFormField> createState() => _ChatTextFormFieldState();

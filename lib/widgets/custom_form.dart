@@ -15,7 +15,7 @@ class CustomForm extends StatelessWidget {
   final VoidCallback? onSubmit;
 
   const CustomForm({
-    Key? key,
+    super.key,
     required this.formKey,
     this.nameController,
     this.emailController,
@@ -26,11 +26,11 @@ class CustomForm extends StatelessWidget {
     required this.password,
     required this.confirmPassword,
     this.onSubmit,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    return SizedBox(
       width: 350,
       child: Form(
         key: formKey,

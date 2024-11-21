@@ -6,10 +6,10 @@ class DefaultAppBar extends StatelessWidget implements PreferredSizeWidget {
   final List<Widget>? actions;
 
   const DefaultAppBar({
-    Key? key,
+    super.key,
     required this.subtitle,
     this.actions,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
