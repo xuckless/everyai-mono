@@ -19,11 +19,6 @@ async def gpt_mini(chat: GPTRequestModel):
         if not message:
             raise HTTPException(status_code=400, detail="Message must not be empty")
 
-        # Validate the model
-        valid_models = ["gpt-3.5-turbo", "gpt-4o-mini"]
-        if model not in valid_models:
-            raise HTTPException(status_code=400, detail=f"Invalid model specified. Allowed models: {valid_models}")
-
         print(f"Using model: {model}")
 
         # Call the specific_response function to process the message
@@ -47,3 +42,13 @@ async def gpt_mini(chat: GPTRequestModel):
     except Exception as e:
         # Catch-all for unexpected errors
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
+@gpt_router.post('/gemini', response_model=ChatResponse)
+async def gpt_gemini(chat: GPTRequestModel):
+    return JSONResponse(content={"message": "Gemini models are yet to be set up."}, media_type="application/json; charset=utf-8")
+
+
+@gpt_router.post('/llama', response_model=ChatResponse)
+async def gpt_gemini(chat: GPTRequestModel):
+    return JSONResponse(content={"message": "Llama models are yet to be set up."}, media_type="application/json; charset=utf-8")
