@@ -53,13 +53,34 @@ class _ChatScreenState extends State<ChatScreen> {
         _focusNode.requestFocus(); // Keep the keyboard focused
       });
 
-      try {
-        // Send the message to the backend and fetch the response
-        final response = suffix.isNotEmpty
-            ? await _apiService.d_chat(_messages.last['text'], suffix)
-            : await _apiService.chat(_messages.last['text']);
+      // try {
+      //   // Send the message to the backend and fetch the response
+      //   final response = suffix.isNotEmpty
+      //       ? await _apiService.d_chat(_messages.last['text'], suffix)
+      //       : await _apiService.chat(_messages.last['text']);
+      //
+      //   _receiveMessage(response['message']); // Display the response
+      // }
 
-        _receiveMessage(response['message']); // Display the response
+      try{
+
+        // Sort through available model and go to the 'selectedModel':
+        final selectedModel = chatModels.firstWhere((model) =>
+          model['versions'].any((version) => version['name'] == suffix)
+        );
+
+        // call the selected model's function
+        final function = selectedModel['function'];
+
+        // check if function is valid (True if the function actually exists)
+        if (function is Function){
+          //Same old Post Request, (see api_service)
+          final response = await function(_messages.last['text'], suffix);
+          _receiveMessage(response['message']);
+        } else {
+          throw Exception("Function not found, for selected ChatBot");
+        }
+
       } catch (e) {
         _receiveMessage("Error: Could not fetch response."); // Show error message
         ScaffoldMessenger.of(context).showSnackBar(
