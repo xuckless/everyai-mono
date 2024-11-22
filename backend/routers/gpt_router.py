@@ -1,24 +1,49 @@
-from fastapi import APIRouter, HTTPException
-
 from models.chat import GPTRequestModel, ChatResponse
 from routers import PROTECTED_ROUTE
 from utils.generate_response import specific_response
 
-gpt_router = APIRouter(prefix="/protected/chat")
+from fastapi import HTTPException, APIRouter
+from fastapi.responses import JSONResponse
+from httpx import TimeoutException, HTTPStatusError, RequestError
+
+gpt_router = APIRouter(prefix="/chat")
 
 
-
-@gpt_router.post(f"/gpt", response_model=ChatResponse)
+@gpt_router.post("/gpt", response_model=ChatResponse)
 async def gpt_mini(chat: GPTRequestModel):
-    message = chat.message.strip()
-    model = chat.model.lower().strip()
-    if not message:
-        raise HTTPException(status_code=400, detail="Message must not be empty")
+    try:
+        message = chat.message.strip()
+        model = chat.model.lower().strip()
 
-    valid_models = ["gpt-3.5-turbo", "gpt-4o-mini"]
-    print(model)
+        # Check for empty message
+        if not message:
+            raise HTTPException(status_code=400, detail="Message must not be empty")
 
-    response = specific_response(message, model)
-    return ChatResponse(message=response)
+        # Validate the model
+        valid_models = ["gpt-3.5-turbo", "gpt-4o-mini"]
+        if model not in valid_models:
+            raise HTTPException(status_code=400, detail=f"Invalid model specified. Allowed models: {valid_models}")
 
+        print(f"Using model: {model}")
 
+        # Call the specific_response function to process the message
+        response = specific_response(message, model)
+
+        # Return the response
+        return JSONResponse(content={"message": response}, media_type="application/json; charset=utf-8")
+
+    except TimeoutException:
+        # Handle API timeout
+        raise HTTPException(status_code=504, detail="The request to the external service timed out. Please try again.")
+
+    except HTTPStatusError as e:
+        # Handle HTTP errors from the external API
+        raise HTTPException(status_code=e.response.status_code, detail=f"External API error: {e.response.text}")
+
+    except RequestError as e:
+        # Handle request-related errors
+        raise HTTPException(status_code=502, detail=f"Request to the external service failed: {str(e)}")
+
+    except Exception as e:
+        # Catch-all for unexpected errors
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")

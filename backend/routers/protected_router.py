@@ -1,9 +1,7 @@
 from fastapi import APIRouter, Depends
-from fastapi.security import OAuth2PasswordBearer
 from db.models import User
 from utils.validate_current_user import get_current_user
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 protected_router = APIRouter(prefix="/p", tags=["Protected"])
 
