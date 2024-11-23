@@ -138,14 +138,12 @@ class ApiService {
 
   Future<dynamic> g_chat(String message, String suffix) async {
     return await post (
-      // TODO: Implement google gemini API INTO THIS
       'chat/gemini',
       {'message': message, 'model': suffix}
     );
   }
 
   Future<dynamic> f_chat(String message, String suffix) async {
-    // TODO: IMPLEMENT LLAMA MODEL API INTO THIS
 
     return await post (
         'chat/llama',

@@ -2,7 +2,6 @@
 
 import 'package:second_times_the_charm/models/api_service.dart';
 
-// TODO: IMPLEMENTING THE FUNCTIONS TYPE INTO THE MAP.
 
 ApiService apiService = ApiService();
 
