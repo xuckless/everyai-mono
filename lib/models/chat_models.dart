@@ -9,9 +9,9 @@ final List<Map<String, dynamic>> chatModels = [
   {
     "name": "ChatGPT",
     "versions": [
-      {"name": "GPT-4o-mini", "suffix": "GPT-4o-mini"},
-      {"name": "GPT-3.5-turbo", "suffix": "GPT-3.5 Turbo"},
-      {"name": "GPT-4o", "suffix": "GPT-4o"}
+      {"name": "GPT-4o-mini", "suffix": "GPT 4o mini"},
+      {"name": "GPT-3.5-turbo", "suffix": "GPT 3.5 Turbo"},
+      {"name": "GPT-4o", "suffix": "GPT 4o"}
     ],
     "function": (String message, String suffix) => apiService.d_chat(message, suffix),
   },
@@ -26,8 +26,10 @@ final List<Map<String, dynamic>> chatModels = [
   {
     "name": "Gemini",
     "versions": [
-      {"name": "Gemini-alpha", "suffix": "Gemini Alpha"},
-      {"name": "Gemini-beta", "suffix": "Gemini Beta"},
+      {"name": "gemini-1.5-flash", "suffix": "Gemini 1.5 Flash"},
+      {"name": "gemini-1.5-flash-8b", "suffix": "Gemini 1.5 Flash 8B"},
+      {"name": "gemini-1.5-pro", "suffix": "Gemini 1.5 Pro"},
+      {"name": "gemini-1.0-pro", "suffix":"Gemini 1.0 Pro"},
     ],
     "function": (String message, String suffix) => apiService.g_chat(message, suffix),
   },
