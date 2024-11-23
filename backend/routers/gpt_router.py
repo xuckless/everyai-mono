@@ -1,6 +1,6 @@
 from models.chat import GPTRequestModel, ChatResponse
 from routers import PROTECTED_ROUTE
-from utils.generate_response import specific_response
+import utils.generate_response as responses
 
 from fastapi import HTTPException, APIRouter
 from fastapi.responses import JSONResponse
@@ -22,7 +22,7 @@ async def gpt_mini(chat: GPTRequestModel):
         print(f"Using model: {model}")
 
         # Call the specific_response function to process the message
-        response = specific_response(message, model)
+        response = responses.specific_response(message, model)
 
         # Return the response
         return JSONResponse(content={"message": response}, media_type="application/json; charset=utf-8")
@@ -46,7 +46,22 @@ async def gpt_mini(chat: GPTRequestModel):
 
 @gpt_router.post('/gemini', response_model=ChatResponse)
 async def gpt_gemini(chat: GPTRequestModel):
-    return JSONResponse(content={"message": "Gemini models are yet to be set up."}, media_type="application/json; charset=utf-8")
+    try:
+        propmt = chat.message.strip()
+        model = chat.model.lower()
+
+        print(f"Using model: {model}")
+
+        response = responses.gemini_response(propmt, model)
+
+        return JSONResponse(content={"message": response},
+                            media_type="application/json; charset=utf-8")
+    except Exception as e:
+        # Catch-all for unexpected errors
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
+
 
 
 @gpt_router.post('/llama', response_model=ChatResponse)

@@ -21,7 +21,7 @@ if not DATABASE_URL:
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
-    raise ValueError("No key found in the environment")
+    raise ValueError("No OPENAI_API_KEY found in the environment")
 
 GOOGLE_CLIENT_ID_ANDROID = os.getenv("GOOGLE_CLIENT_ID_ANDROID")
 if not GOOGLE_CLIENT_ID_ANDROID:
@@ -30,3 +30,7 @@ if not GOOGLE_CLIENT_ID_ANDROID:
 GOOGLE_CLIENT_ID_IOS = os.getenv("GOOGLE_CLIENT_ID_IOS")
 if not GOOGLE_CLIENT_ID_IOS:
     raise ValueError("No GOOGLE_CLIENT_ID_IOS set for the application")
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    raise ValueError("No GEMINI_API_KEY found in the environment")

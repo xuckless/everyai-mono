@@ -1,7 +1,13 @@
 # ./utils/generate_response.py
-from openai.types.chat import ChatCompletionMessage
+
 import config
 from openai import OpenAI
+
+import google.generativeai as genai
+import os
+
+genai.configure(api_key=config.GEMINI_API_KEY)
+
 
 # Initialize the OpenAI client
 client = OpenAI()
@@ -63,3 +69,12 @@ def specific_response(message: str, model: str) -> str:
     except Exception as e:
         # Handle and return error
         return f"An error occurred while generating: {e}"
+
+
+def gemini_response(message: str, model: str) -> str:
+    try:
+        model = genai.GenerativeModel(model)
+        response = model.generate_content(message)
+        return response.text
+    except Exception as ex:
+        return f'An error occurred while generating: {ex}'
