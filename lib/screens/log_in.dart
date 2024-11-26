@@ -2,12 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:second_times_the_charm/widgets/custom_button.dart';
 import 'package:second_times_the_charm/widgets/custom_form.dart';
 import 'package:second_times_the_charm/models/navigation.dart';
-import 'package:second_times_the_charm/widgets/default_app_bar.dart';
 import '../models/api_service.dart';
 import 'home_screen.dart';
 import 'sign_up.dart';
 import '../models/login_handler.dart';
-
 
 class MyHomePage extends StatefulWidget {
   final String title;
@@ -23,10 +21,7 @@ class _MyHomePageState extends State<MyHomePage> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
 
-
   final LoginHandler _loginService = LoginHandler();
-
-
 
   bool _isLoading = false;
   String? _errorMessage;
@@ -43,10 +38,7 @@ class _MyHomePageState extends State<MyHomePage> {
     });
   }
 
-
   final String subtitle = "Where every AI resides";
-
-
 
   void _handleLogin() {
     navigateToPage(context, const ChatScreen(title: "Chat Screen"));
@@ -58,7 +50,6 @@ class _MyHomePageState extends State<MyHomePage> {
     //     setErrorMessage: setErrorMessage,
     //     setLoading: setLoading);
   }
-
 
   void _handleGoogleLogin() async {
     final apiService = ApiService();
@@ -72,8 +63,6 @@ class _MyHomePageState extends State<MyHomePage> {
       setErrorMessage("Failed to log in with Google. Please try again.");
     }
   }
-
-
 
   @override
   Widget build(BuildContext context) {
@@ -101,25 +90,25 @@ class _MyHomePageState extends State<MyHomePage> {
               padding: const EdgeInsets.all(16.0),
               child: Container(
                 width: 365, // Width of the rectangle
-                height: 450, // Height of the rectangle
                 padding: const EdgeInsets.all(16.0), // Padding inside the rectangle
                 decoration: BoxDecoration(
-                  color: Color(0xFF181C26), // Background color of the rectangle
+                  color: const Color(0xFF181C26), // Background color of the rectangle
                   borderRadius: BorderRadius.circular(8), // Rounded corners
                   boxShadow: [
                     BoxShadow(
                       color: Colors.black.withOpacity(0.2), // Shadow color
-                      offset: Offset(0, 2), // Slight shadow at the top
+                      offset: const Offset(0, 2), // Slight shadow at the top
                       blurRadius: 4, // Soft shadow appearance
                     ),
                     BoxShadow(
                       color: Colors.black.withOpacity(0.4), // Shadow color
-                      offset: Offset(0, 8), // More pronounced shadow at the bottom
+                      offset: const Offset(0, 8), // More pronounced shadow at the bottom
                       blurRadius: 8, // Stronger blur for the bottom shadow
                     ),
                   ],
                 ),
                 child: Column(
+                  mainAxisSize: MainAxisSize.min, // Adjust height to content
                   mainAxisAlignment: MainAxisAlignment.center, // Center vertically
                   crossAxisAlignment: CrossAxisAlignment.center, // Center horizontally
                   children: [
@@ -145,7 +134,7 @@ class _MyHomePageState extends State<MyHomePage> {
                     SizedBox(
                       width: 315, // Match the input field width
                       child: CustomButton(
-                        color: Color(0xFF2F60D9),
+                        color: const Color(0xFF2F60D9),
                         text: 'Login',
                         onPressed: _isLoading ? null : _handleLogin,
                         isLoading: _isLoading,
@@ -160,11 +149,11 @@ class _MyHomePageState extends State<MyHomePage> {
                     SizedBox(
                       width: 315, // Match the input field width
                       child: CustomButton(
-                        color: Color(0xFF2F1555),
+                        color: const Color(0xFF2F1555),
                         text: "Login with Google",
                         onPressed: _isLoading ? null : _handleGoogleLogin,
                         isLoading: _isLoading,
-                        leadingIcon: Image.asset('assets/google_logo.png', height: 24, width: 24,),
+                        leadingIcon: Image.asset('assets/google_logo.png', height: 24, width: 24),
                       ),
                     ),
                     TextButton(
@@ -182,13 +171,8 @@ class _MyHomePageState extends State<MyHomePage> {
               ),
             ),
           ),
-
-
         ],
       ),
     );
   }
-
-
-
 }

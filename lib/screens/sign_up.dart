@@ -81,25 +81,25 @@ class _SignUpPageState extends State<SignUpPage> {
               padding: const EdgeInsets.all(16.0),
               child: Container(
                 width: 365, // Width of the rectangle
-                height: 550, // Height of the rectangle (adjusted for additional fields)
                 padding: const EdgeInsets.all(16.0), // Padding inside the rectangle
                 decoration: BoxDecoration(
-                  color: Color(0xFF181C26), // Background color of the rectangle
+                  color: const Color(0xFF181C26), // Background color of the rectangle
                   borderRadius: BorderRadius.circular(8), // Rounded corners
                   boxShadow: [
                     BoxShadow(
                       color: Colors.black.withOpacity(0.2), // Shadow color
-                      offset: Offset(0, 2), // Slight shadow at the top
+                      offset: const Offset(0, 2), // Slight shadow at the top
                       blurRadius: 4, // Soft shadow appearance
                     ),
                     BoxShadow(
                       color: Colors.black.withOpacity(0.4), // Shadow color
-                      offset: Offset(0, 8), // More pronounced shadow at the bottom
+                      offset: const Offset(0, 8), // More pronounced shadow at the bottom
                       blurRadius: 8, // Stronger blur for the bottom shadow
                     ),
                   ],
                 ),
                 child: Column(
+                  mainAxisSize: MainAxisSize.min, // Adjust height to content
                   mainAxisAlignment: MainAxisAlignment.center, // Center vertically
                   crossAxisAlignment: CrossAxisAlignment.center, // Center horizontally
                   children: [
@@ -126,7 +126,7 @@ class _SignUpPageState extends State<SignUpPage> {
                     SizedBox(
                       width: 315, // Match the input field width
                       child: CustomButton(
-                        color: Color(0xFF2F60D9),
+                        color: const Color(0xFF2F60D9),
                         text: 'Sign Up',
                         onPressed: _isLoading ? null : _handleSignUp,
                         isLoading: _isLoading,
