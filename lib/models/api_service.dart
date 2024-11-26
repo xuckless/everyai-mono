@@ -91,10 +91,10 @@ class ApiService {
 
 
   // Signup API integration
-  Future<dynamic> signUp(String email, String password) async {
+  Future<dynamic> signUp(String name, String email, String password) async {
     return await post(
       'signup',
-      {'email': email, 'password': password},
+      {'name': name, 'email': email, 'password': password},
     );
   }
 
