@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'dart:io';
 
 class ChatTextFormField extends StatefulWidget {
   final TextEditingController messageController;
@@ -79,12 +80,19 @@ class _ChatTextFormFieldState extends State<ChatTextFormField> {
 
   @override
   Widget build(BuildContext context) {
+    final bool isIOS = Platform.isIOS;
+
     return Focus(
       focusNode: _keyboardListenerFocusNode,
       onKeyEvent: (FocusNode node, KeyEvent event) =>
           _handleKeyEvent(node, event),
       child: Container(
-        margin: const EdgeInsets.all(8.0), // Adjust spacing around the field
+        margin: EdgeInsets.fromLTRB(
+          8.0,
+          8.0,
+          8.0,
+          isIOS ? 18.3 : 8.0, // Add extra margin for iOS at the bottom
+        ),
         decoration: BoxDecoration(
           color: const Color(0xFF2A3041), // Background color
           borderRadius: BorderRadius.circular(9999.0), // Fully rounded field
@@ -107,7 +115,7 @@ class _ChatTextFormFieldState extends State<ChatTextFormField> {
                     horizontal: 16.0,
                   ), // Adjust padding inside the input
                   border: InputBorder.none, // No visible border
-                  hintText: "Type a message...",
+                  hintText: "Type a message",
                   hintStyle: TextStyle(color: Colors.white54), // Placeholder style
                 ),
               ),
@@ -133,5 +141,4 @@ class _ChatTextFormFieldState extends State<ChatTextFormField> {
       ),
     );
   }
-
 }

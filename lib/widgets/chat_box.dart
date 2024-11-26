@@ -14,10 +14,9 @@ class ChatBox extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.all(10),
         margin: const EdgeInsets.symmetric(vertical: 5, horizontal: 10),
-        decoration: BoxDecoration(
-          color: isSentByUser ? Colors.grey : Theme.of(context).primaryColorDark,
-          borderRadius: BorderRadius.circular(10),
-        ),
+        decoration: isSentByUser ? BoxDecoration(
+          color: const Color(0xFF2A3041),
+          borderRadius: BorderRadius.circular(10)) : null,
         child: _buildRichText(context),
       ),
     );
@@ -29,7 +28,7 @@ class ChatBox extends StatelessWidget {
         children: RichTextParser.parseMessage(message, context),
       ),
       style: TextStyle(
-        color: isSentByUser ? Colors.black : Colors.white,
+        color: Colors.white,
         fontFamily: 'NotoSans',
         fontSize: 15,
       ),
