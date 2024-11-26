@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 import requests
 from utils.security import verify_google_token
 
-from config import GOOGLE_CLIENT_ID_IOS, GOOGLE_CLIENT_ID_ANDROID
+from config import GOOGLE_CLIENT_ID_IOS, GOOGLE_CLIENT_ID_ANDROID, GOOGLE_CLIENT_ID_WEB
 from db.db import get_db
 from db.models import User
 from models.auth import LoginRequest, SignUpRequest, TokenResponse, GoogleLoginRequest
@@ -17,6 +17,7 @@ from utils.security import (
 
 GOOGLE_CLIENT_ID_IOS;
 GOOGLE_CLIENT_ID_ANDROID;
+GOOGLE_CLIENT_ID_WEB;
 auth_router = APIRouter()
 
 
@@ -63,6 +64,8 @@ def google_login(request: GoogleLoginRequest, db: Session = Depends(get_db)):
         client_id = GOOGLE_CLIENT_ID_IOS
     elif platform == "android":
         client_id = GOOGLE_CLIENT_ID_ANDROID
+    elif platform == "web":
+        client_id = GOOGLE_CLIENT_ID_WEB
     else:
         raise HTTPException(status_code=400, detail="Invalid platform")
 
