@@ -56,7 +56,7 @@ class CustomForm extends StatelessWidget {
                     },
                     onFieldSubmitted: (_) => onSubmit?.call(),
                   ),
-                  const SizedBox(height: 12), // Adjustable space
+                  const SizedBox(height: 30), // Adjustable space
                 ],
               ),
             if (email)
@@ -110,7 +110,7 @@ class CustomForm extends StatelessWidget {
                     },
                     onFieldSubmitted: (_) => onSubmit?.call(),
                   ),
-                  const SizedBox(height: 12), // Adjustable space
+                  const SizedBox(height: 30), // Adjustable space
                 ],
               ),
             if (confirmPassword)
@@ -137,7 +137,7 @@ class CustomForm extends StatelessWidget {
                     },
                     onFieldSubmitted: (_) => onSubmit?.call(),
                   ),
-                  const SizedBox(height: 12), // Adjustable space
+                  const SizedBox(height: 30), // Adjustable space
                 ],
               ),
           ],

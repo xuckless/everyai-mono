@@ -125,7 +125,6 @@ class _SignUpPageState extends State<SignUpPage> {
                         _errorMessage!,
                         style: const TextStyle(color: Colors.red),
                       ),
-                    const SizedBox(height: 16),
                     SizedBox(
                       width: 315, // Match the input field width
                       child: CustomButton(
