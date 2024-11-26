@@ -162,6 +162,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: const Color(0xFF181C26), // Set the background color of the screen
       appBar: DefaultAppBar(
         subtitle: subtitle, // Display the current version as a subtitle
         actions: [

@@ -50,19 +50,19 @@ class ChatBody extends StatelessWidget {
                 ),
               ),
             ),
-            Container(
-              width: 70,
-              decoration: BoxDecoration(
-                border: Border.all(
-                  color: Colors.transparent,
-                  width: 10,
-                ),
-              ),
-              child: FloatingActionButton(
-                onPressed: onSendMessage,
-                child: Icon(Icons.arrow_upward),
-              ),
-            ),
+            // Container(
+            //   width: 70,
+            //   decoration: BoxDecoration(
+            //     border: Border.all(
+            //       color: Colors.transparent,
+            //       width: 10,
+            //     ),
+            //   ),
+            //   child: FloatingActionButton(
+            //     onPressed: onSendMessage,
+            //     child: Icon(Icons.arrow_upward),
+            //   ),
+            // ),
           ],
         ),
       ],

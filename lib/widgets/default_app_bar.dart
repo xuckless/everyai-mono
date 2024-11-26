@@ -19,7 +19,9 @@ class DefaultAppBar extends StatelessWidget implements PreferredSizeWidget {
         children: [
           Text(
             title,
-            style: Theme.of(context).textTheme.headlineMedium,
+            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+              color: Theme.of(context).colorScheme.onPrimary,
+            ),
           ),
           if (subtitle.isNotEmpty)
             Text(
@@ -30,7 +32,7 @@ class DefaultAppBar extends StatelessWidget implements PreferredSizeWidget {
             ),
         ],
       ),
-      backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+      backgroundColor: Color(0xFF2A3041),
       centerTitle: true,
       actions: actions,
     );
