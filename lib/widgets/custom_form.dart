@@ -37,81 +37,113 @@ class CustomForm extends StatelessWidget {
         child: Column(
           children: [
             if (nameField)
-              Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: TextFormField(
-                  controller: nameController,
-                  decoration: const InputDecoration(labelText: "Name"),
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return "Please enter your name";
-                    }
-                    return null;
-                  },
-                  onFieldSubmitted: (_) => onSubmit?.call(),
-                ),
+              Column(
+                children: [
+                  TextFormField(
+                    controller: nameController,
+                    decoration: const InputDecoration(
+                      labelText: "Name",
+                      filled: true,
+                      fillColor: Colors.white,
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                    ),
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return "Please enter your name";
+                      }
+                      return null;
+                    },
+                    onFieldSubmitted: (_) => onSubmit?.call(),
+                  ),
+                  const SizedBox(height: 12), // Adjustable space
+                ],
               ),
             if (email)
-              Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: TextFormField(
-                  controller: emailController,
-                  decoration: const InputDecoration(labelText: "Email"),
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return "Please enter your email";
-                    }
-                    if (!RegExp(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
-                        .hasMatch(value)) {
-                      return "Please enter a valid email address";
-                    }
-                    return null;
-                  },
-                  onFieldSubmitted: (_) => onSubmit?.call(),
-                ),
+              Column(
+                children: [
+                  TextFormField(
+                    controller: emailController,
+                    decoration: const InputDecoration(
+                      labelText: "Email",
+                      filled: true,
+                      fillColor: Colors.white,
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                    ),
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return "Please enter your email";
+                      }
+                      if (!RegExp(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+                          .hasMatch(value)) {
+                        return "Please enter a valid email address";
+                      }
+                      return null;
+                    },
+                    onFieldSubmitted: (_) => onSubmit?.call(),
+                  ),
+                  const SizedBox(height: 30), // Adjustable space
+                ],
               ),
             if (password)
-              Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: TextFormField(
-                  controller: passwordController,
-                  decoration: const InputDecoration(labelText: "Password"),
-                  obscureText: true,
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return "Please enter your password";
-                    }
-                    if (value.length < 6) {
-                      return "Password must be at least 6 characters long";
-                    }
-                    return null;
-                  },
-                  onFieldSubmitted: (_) => onSubmit?.call(),
-                ),
+              Column(
+                children: [
+                  TextFormField(
+                    controller: passwordController,
+                    decoration: const InputDecoration(
+                      labelText: "Password",
+                      filled: true,
+                      fillColor: Colors.white,
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                    ),
+                    obscureText: true,
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return "Please enter your password";
+                      }
+                      if (value.length < 6) {
+                        return "Password must be at least 6 characters long";
+                      }
+                      return null;
+                    },
+                    onFieldSubmitted: (_) => onSubmit?.call(),
+                  ),
+                  const SizedBox(height: 12), // Adjustable space
+                ],
               ),
             if (confirmPassword)
-              Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: TextFormField(
-                  controller: confirmPasswordController,
-                  decoration: const InputDecoration(labelText: "Confirm Password"),
-                  obscureText: true,
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return "Please confirm your password";
-                    }
-                    if (value != passwordController?.text) {
-                      return "Passwords do not match";
-                    }
-                    return null;
-                  },
-                  onFieldSubmitted: (_) => onSubmit?.call(),
-                ),
+              Column(
+                children: [
+                  TextFormField(
+                    controller: confirmPasswordController,
+                    decoration: const InputDecoration(
+                      labelText: "Confirm Password",
+                      filled: true,
+                      fillColor: Colors.white,
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                    ),
+                    obscureText: true,
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return "Please confirm your password";
+                      }
+                      if (value != passwordController?.text) {
+                        return "Passwords do not match";
+                      }
+                      return null;
+                    },
+                    onFieldSubmitted: (_) => onSubmit?.call(),
+                  ),
+                  const SizedBox(height: 12), // Adjustable space
+                ],
               ),
-            const SizedBox(height: 16),
           ],
         ),
       ),
     );
   }
+
 }

@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:second_times_the_charm/widgets/custom_button.dart';
 import 'package:second_times_the_charm/widgets/custom_form.dart';
-import 'package:second_times_the_charm/widgets/default_app_bar.dart';
 import '../models/sign_up_handler.dart';
 import '../models/navigation.dart';
-import 'home.dart';
+import 'log_in.dart';
 
 class SignUpPage extends StatefulWidget {
   final String title;
@@ -59,57 +58,97 @@ class _SignUpPageState extends State<SignUpPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: DefaultAppBar(
-        subtitle: subtitle,
-        actions: [],
-      ),
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                "Create Your Account",
-                style: Theme.of(context).textTheme.headlineMedium,
+      backgroundColor: const Color(0xFF181C26),
+      resizeToAvoidBottomInset: false,
+      body: Stack(
+        children: [
+          // Top Positioned "EveryAI (beta)"
+          Positioned(
+            top: 150, // Distance from the top of the screen
+            left: 0,
+            right: 0,
+            child: Text(
+              "EveryAI (beta)",
+              textAlign: TextAlign.center, // Center the text horizontally
+              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                color: Colors.white,
               ),
-              const SizedBox(height: 16),
-              Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: CustomForm(
-                  formKey: _formKey,
-                  emailController: _emailController,
-                  passwordController: _passwordController,
-                  confirmPasswordController: _confirmPasswordController,
-                  nameField: false,
-                  email: true,
-                  password: true,
-                  confirmPassword: true,
-                  onSubmit: _handleSignUp, // Triggered on Enter
-                ),
-              ),
-              if (_errorMessage != null)
-                Text(
-                  _errorMessage!,
-                  style: const TextStyle(color: Colors.red),
-                ),
-              const SizedBox(height: 16),
-              CustomButton(
-                text: 'Sign Up',
-                onPressed: _isLoading ? null : _handleSignUp,
-                isLoading: _isLoading,
-              ),
-              const SizedBox(height: 16),
-              TextButton(
-                onPressed: () => navigateToPage(
-                  context,
-                  const MyHomePage(title: "Login"),
-                ),
-                child: const Text("Already have an account? Login"),
-              ),
-            ],
+            ),
           ),
-        ),
+          // Centered content inside a rectangle
+          Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16.0),
+              child: Container(
+                width: 365, // Width of the rectangle
+                height: 550, // Height of the rectangle (adjusted for additional fields)
+                padding: const EdgeInsets.all(16.0), // Padding inside the rectangle
+                decoration: BoxDecoration(
+                  color: Color(0xFF181C26), // Background color of the rectangle
+                  borderRadius: BorderRadius.circular(8), // Rounded corners
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.2), // Shadow color
+                      offset: Offset(0, 2), // Slight shadow at the top
+                      blurRadius: 4, // Soft shadow appearance
+                    ),
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.4), // Shadow color
+                      offset: Offset(0, 8), // More pronounced shadow at the bottom
+                      blurRadius: 8, // Stronger blur for the bottom shadow
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center, // Center vertically
+                  crossAxisAlignment: CrossAxisAlignment.center, // Center horizontally
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(8.0),
+                      child: CustomForm(
+                        formKey: _formKey,
+                        emailController: _emailController,
+                        passwordController: _passwordController,
+                        confirmPasswordController: _confirmPasswordController,
+                        nameField: false,
+                        email: true,
+                        password: true,
+                        confirmPassword: true,
+                        onSubmit: _handleSignUp, // Triggered on Enter
+                      ),
+                    ),
+                    if (_errorMessage != null)
+                      Text(
+                        _errorMessage!,
+                        style: const TextStyle(color: Colors.red),
+                      ),
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      width: 315, // Match the input field width
+                      child: CustomButton(
+                        color: Color(0xFF2F60D9),
+                        text: 'Sign Up',
+                        onPressed: _isLoading ? null : _handleSignUp,
+                        isLoading: _isLoading,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    TextButton(
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.white,
+                      ),
+                      onPressed: () => navigateToPage(
+                        context,
+                        const MyHomePage(title: "Login"),
+                      ),
+                      child: const Text("Already have an account? Login"),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
