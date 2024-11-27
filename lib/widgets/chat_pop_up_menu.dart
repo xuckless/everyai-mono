@@ -12,18 +12,19 @@ class ChatPopUpMenu extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return PopupMenuButton<String>(
-      onSelected: (value) {
-        onVersionSelected(value); // Trigger the callback
-      },
-      itemBuilder: (BuildContext context) {
-        return availableVersions.map((version) {
-          return PopupMenuItem<String>(
-            value: version["name"], // Pass the version's name as the value
-            child: Text(version["suffix"]!), // Display the version's suffix
-          );
-        }).toList();
-      },
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: availableVersions.map((version) {
+        return ListTile(
+          title: Text(
+            version["suffix"]!,
+            style: TextStyle(color: Colors.white), // Change text color here
+          ),
+          onTap: () {
+            onVersionSelected(version["name"]!);
+          },
+        );
+      }).toList(),
     );
   }
 }

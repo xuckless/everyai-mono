@@ -30,7 +30,7 @@ class LoginHandler {
           // Store the token and navigate to chat screen
           await _secureStorage.write(
               key: "access_token", value: response['access_token']);
-          navigateToPage(context, ChatScreen(title: "chat screen"));
+          navigateToPage(context, HomeScreen(title: "Home screen"));
         } else {
           setErrorMessage(response['message']);
         }

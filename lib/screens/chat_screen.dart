@@ -1,46 +1,162 @@
 import 'package:flutter/material.dart';
-import 'package:second_times_the_charm/models/api_service.dart';
-import 'package:second_times_the_charm/widgets/chat_body.dart';
-import 'package:second_times_the_charm/widgets/default_app_bar.dart';
-import 'package:second_times_the_charm/widgets/menu_drawer.dart';
 import '../models/chat_models.dart'; // Importing the chat models metadata
-import '../widgets/chat_pop_up_menu.dart';
+import '../widgets/default_app_bar.dart';
+import '../widgets/menu_drawer.dart';
+import '../models/api_service.dart';
+import '../widgets/chat_body.dart';
+import '../widgets/chat_pop_up_menu.dart'; // Import the ChatPopUpMenu
 
-// Main screen for the chat interface
-class ChatScreen extends StatefulWidget {
-  final String title; // Title for the screen
+class HomeScreen extends StatefulWidget {
+  final String title;
 
-  const ChatScreen({super.key, required this.title});
+  const HomeScreen({super.key, required this.title});
 
   @override
-  State<ChatScreen> createState() => _ChatScreenState();
+  State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
-  // List of available versions for the currently selected chat model
+class _HomeScreenState extends State<HomeScreen> {
   List<Map<String, String>> availableVersions = [];
-
-  // Controller for handling user input in the chat
   final TextEditingController _messageController = TextEditingController();
-
-  // List of messages for the current chat session
   final List<Map<String, dynamic>> _messages = [];
-
-  // Service to handle API calls for chat
-  final ApiService _apiService = ApiService();
-
-  // Current suffix (unique identifier) for the selected chat version
   String suffix = "";
-
-  // Subtitle displayed under the AppBar title, representing the selected chat version
   String subtitle = 'GPT-4o-mini';
-
-  // Focus node for managing keyboard focus on the chat input
   final FocusNode _focusNode = FocusNode();
+  bool _isMenuVisible = false; // State variable to control menu visibility
 
+  void _updateVersion(String versionName) {
+    setState(() {
+      suffix = versionName;
+      final selectedVersion =
+      availableVersions.firstWhere((version) => version["name"] == versionName);
+      subtitle = selectedVersion["suffix"]!;
+    });
 
+    print("Subtitle updated to: $subtitle");
+    print("Suffix updated to: $suffix");
+  }
 
-  // Method to send a message and handle API response
+  @override
+  void initState() {
+    super.initState();
+    final initialModel = chatModels.firstWhere((model) => model["name"] == "ChatGPT");
+    suffix = initialModel["versions"][0]["name"]!;
+    subtitle = initialModel["versions"][0]["suffix"]!;
+    availableVersions = initialModel["versions"];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Calculate the desired width as a percentage of screen width
+    final double screenWidth = MediaQuery.of(context).size.width;
+    final double desiredWidth = screenWidth * 0.5; // 50% of screen width
+    final double maxWidth = 300.0; // Maximum width
+    final double minWidth = 150.0; // Minimum width
+
+    // Ensure the popupWidth is within the min and max bounds
+    final double popupWidth = desiredWidth.clamp(minWidth, maxWidth);
+
+    return Stack(
+      children: [
+        Scaffold(
+          backgroundColor: const Color(0xFF181C26),
+          appBar: DefaultAppBar(
+            subtitle: subtitle,
+            actions: [],
+            onSubtitleTap: () {
+              setState(() {
+                _isMenuVisible = !_isMenuVisible; // Toggle menu visibility
+              });
+            },
+          ),
+          drawer: DrawerComponent(
+            onModelSelected: (modelName) {
+              setState(() {
+                final selectedModel =
+                chatModels.firstWhere((model) => model["name"] == modelName);
+                suffix = selectedModel["versions"][0]["name"]!;
+                subtitle = selectedModel["versions"][0]["suffix"]!;
+                availableVersions = selectedModel["versions"];
+                _messages.clear();
+                _isMenuVisible = false; // Hide menu if visible
+              });
+            },
+          ),
+          body: ChatBody(
+            messages: _messages,
+            messageController: _messageController,
+            focusNode: _focusNode,
+            onSendMessage: _sendMessage, // Use your existing _sendMessage method
+          ),
+        ),
+        // Use AnimatedSwitcher for smooth transitions
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 300),
+          transitionBuilder: (Widget child, Animation<double> animation) {
+            return FadeTransition(
+              opacity: animation,
+              child: child,
+            );
+          },
+          child: _isMenuVisible
+              ? Stack(
+            key: const ValueKey('popupStack'),
+            children: [
+              // Overlay to detect taps outside the menu
+              Positioned.fill(
+                key: const ValueKey('overlay'),
+                child: GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _isMenuVisible = false; // Hide menu when tapping outside
+                    });
+                  },
+                  behavior: HitTestBehavior.translucent,
+                  child: Container(
+                    color: Colors.black.withOpacity(0.3), // Semi-transparent overlay
+                  ),
+                ),
+              ),
+              // Popup Menu Positioned at the desired location
+              Positioned(
+                key: const ValueKey('popupMenu'),
+                top: 75 + MediaQuery.of(context).padding.top + 8, // AppBar height + status bar + spacing
+                left: (screenWidth - popupWidth) / 2, // Center horizontally
+                child: Material(
+                  color: Colors.transparent,
+                  child: Container(
+                    width: popupWidth, // Set the constrained width
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF2A3041), // Background color of the menu
+                      borderRadius: BorderRadius.circular(8),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Colors.black26,
+                          blurRadius: 4,
+                          offset: Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: ChatPopUpMenu(
+                      availableVersions: availableVersions,
+                      onVersionSelected: (versionName) {
+                        _updateVersion(versionName);
+                        setState(() {
+                          _isMenuVisible = false; // Hide menu after selection
+                        });
+                      },
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          )
+              : const SizedBox.shrink(), // Empty widget when menu is not visible
+        ),
+      ],
+    );
+  }
+
   void _sendMessage() async {
     if (_messageController.text.trim().isNotEmpty) {
       setState(() {
@@ -53,34 +169,22 @@ class _ChatScreenState extends State<ChatScreen> {
         _focusNode.requestFocus(); // Keep the keyboard focused
       });
 
-      // try {
-      //   // Send the message to the backend and fetch the response
-      //   final response = suffix.isNotEmpty
-      //       ? await _apiService.d_chat(_messages.last['text'], suffix)
-      //       : await _apiService.chat(_messages.last['text']);
-      //
-      //   _receiveMessage(response['message']); // Display the response
-      // }
-
-      try{
-
+      try {
         // Sort through available model and go to the 'selectedModel':
         final selectedModel = chatModels.firstWhere((model) =>
-          model['versions'].any((version) => version['name'] == suffix)
-        );
+            model['versions'].any((version) => version['name'] == suffix));
 
-        // call the selected model's function
+        // Call the selected model's function
         final function = selectedModel['function'];
 
-        // check if function is valid (True if the function actually exists)
-        if (function is Function){
-          //Same old Post Request, (see api_service)
+        // Check if function is valid
+        if (function is Function) {
+          // Same old Post Request, (see api_service)
           final response = await function(_messages.last['text'], suffix);
           _receiveMessage(response['message']);
         } else {
-          throw Exception("Function not found, for selected ChatBot");
+          throw Exception("Function not found for the selected ChatBot");
         }
-
       } catch (e) {
         _receiveMessage("Error: Could not fetch response."); // Show error message
         ScaffoldMessenger.of(context).showSnackBar(
@@ -90,9 +194,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-
-
-  // Method to add a received message to the chat
   void _receiveMessage(String text) {
     setState(() {
       _messages.add({
@@ -100,97 +201,5 @@ class _ChatScreenState extends State<ChatScreen> {
         'isSentByUser': false,
       });
     });
-  }
-
-
-
-  // Method to switch chat models and initialize versions for the new model
-  void _switchChatModel(String modelName) {
-    setState(() {
-      final selectedModel = chatModels.firstWhere((model) => model["name"] == modelName);
-
-      // Set suffix and subtitle based on the first version of the new model
-      suffix = selectedModel["versions"][0]['name']!;
-      subtitle = selectedModel["versions"][0]['suffix']!;
-
-      // Update available versions for the new model
-      availableVersions = selectedModel["versions"];
-
-      // Clear messages for the new chat instance
-      _messages.clear();
-    });
-
-    // Debugging logs to ensure proper updates
-    print("Subtitle updated to: $subtitle");
-    print("Suffix updated to: $suffix");
-
-    // Close the drawer after selection
-    Navigator.of(context).pop();
-  }
-
-
-
-
-  void _updateVersion(String versionName) {
-    setState(() {
-      suffix = versionName;
-
-      final selectedVersion =
-      availableVersions.firstWhere((version) => version["name"] == versionName);
-      subtitle = selectedVersion["suffix"]!;
-    });
-
-    print("Subtitle updated to: $subtitle");
-    print("Suffix updated to: $suffix");
-  }
-
-
-
-  @override
-  void initState() {
-    super.initState();
-
-    // Initialize the screen with the default ChatGPT model and its first version
-    final initialModel = chatModels.firstWhere((model) => model["name"] == "ChatGPT");
-    suffix = initialModel["versions"][0]["name"]!; // Set suffix to the first version's name
-    subtitle = initialModel["versions"][0]["suffix"]!; // Set subtitle to the first version's suffix
-    availableVersions = initialModel["versions"]; // Load available versions
-  }
-
-
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF181C26), // Set the background color of the screen
-      appBar: DefaultAppBar(
-        subtitle: subtitle, // Display the current version as a subtitle
-        actions: [
-
-          // Popup menu for switching between versions
-          ChatPopUpMenu(
-            availableVersions: availableVersions,
-            onVersionSelected: _updateVersion, // Handle version selection
-          ),
-        ],
-      ),
-
-
-      //add the drawer to the screen
-      drawer: DrawerComponent(
-        onModelSelected: _switchChatModel,
-      ),
-      drawerEdgeDragWidth: MediaQuery.of(context).size.width,
-
-
-      // Body of the screen, displaying the chat and input
-      body: ChatBody(
-        messages: _messages, // Pass the list of messages
-        messageController: _messageController, // Pass the input controller
-        focusNode: _focusNode, // Manage keyboard focus
-        onSendMessage: _sendMessage, // Handle sending messages
-      ),
-      drawerScrimColor: Colors.transparent,
-    );
   }
 }

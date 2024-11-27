@@ -41,7 +41,7 @@ class _MyHomePageState extends State<MyHomePage> {
   final String subtitle = "Where every AI resides";
 
   void _handleLogin() {
-    navigateToPage(context, const ChatScreen(title: "Chat Screen"));
+    navigateToPage(context, const HomeScreen(title: "Chat Screen"));
     // _loginService.handleLogin(
     //     context: context,
     //     formKey: _formKey,
@@ -57,7 +57,7 @@ class _MyHomePageState extends State<MyHomePage> {
     try {
       await apiService.googleLogin();
       // Handle successful login, e.g., navigate to the next screen
-      navigateToPage(context, const ChatScreen(title: "Chat Screen"));
+      navigateToPage(context, const HomeScreen(title: "Home Screen"));
     } catch (e) {
       print("Google Login Failed: $e");
       setErrorMessage("Failed to log in with Google. Please try again.");
