@@ -14,6 +14,7 @@ final List<Map<String, dynamic>> chatModels = [
       {"name": "GPT-4o", "suffix": "GPT 4o"}
     ],
     "function": (String message, String suffix) => apiService.d_chat(message, suffix),
+    "picture": "assets/models/chatgpt.webp",
   },
   {
     "name": "Llama",
@@ -22,6 +23,7 @@ final List<Map<String, dynamic>> chatModels = [
       {"name": "Llama-v2", "suffix": "Llama Version 2"},
     ],
     "function": (String message, String suffix) => apiService.f_chat(message, suffix),
+    "picture": "assets/models/Llama.jpeg",
   },
   {
     "name": "Gemini",
@@ -32,5 +34,18 @@ final List<Map<String, dynamic>> chatModels = [
       {"name": "gemini-1.0-pro", "suffix":"Gemini 1.0 Pro"},
     ],
     "function": (String message, String suffix) => apiService.g_chat(message, suffix),
+    "picture": "assets/models/gemini.png",
+
+  },
+  {
+    "name": "Claude",
+    "versions": [
+      {"name": "Claude-3-Haiku", "suffix": "Claude 3 Haiku"},
+      {"name": "Claude-3-Sonnet", "suffix": "Claude 3 Sonnet"},
+      {"name": "Claude-3-Opus", "suffix": "Claude 3 Opus"},
+    ],
+    "function": (String message, String suffix) => apiService.g_chat(message, suffix),
+    "picture": "assets/models/claude.webp",
+
   },
 ];

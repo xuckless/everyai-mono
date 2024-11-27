@@ -25,17 +25,25 @@ class DefaultAppBar extends StatelessWidget implements PreferredSizeWidget {
         leading: customLeading ??
             Padding(
               padding: EdgeInsets.zero, // Remove any extra padding
-              child: IconButton(
-                color: Colors.white,
-                icon: Image.asset(
-                  './assets/panel-right.png', height: 20, width: 20,
-                  fit: BoxFit.contain,
-                ),
-                onPressed: () {
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent, // Ensure taps are detected
+                onTap: () {
                   Scaffold.of(context).openDrawer(); // Manually open the drawer
                 },
+                child: Container(
+                  alignment: Alignment.center, // Ensure the icon is centered
+                  height: kToolbarHeight, // Match AppBar height
+                  width: 56, // Typical width for leading icons
+                  child: Image.asset(
+                    './assets/panel-right.png',
+                    height: 20, // Icon height
+                    width: 20, // Icon width
+                    fit: BoxFit.contain, // Keep the image's aspect ratio
+                  ),
+                ),
               ),
             ),
+
         titleSpacing: 0, // Ensures no spacing between leading and title
         title: Row(
           mainAxisAlignment: MainAxisAlignment.start,

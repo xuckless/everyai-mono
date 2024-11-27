@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:second_times_the_charm/models/api_service.dart';
 import 'package:second_times_the_charm/widgets/chat_body.dart';
 import 'package:second_times_the_charm/widgets/default_app_bar.dart';
+import 'package:second_times_the_charm/widgets/menu_drawer.dart';
 import '../models/chat_models.dart'; // Importing the chat models metadata
-import '../widgets/chat_drawer.dart';
 import '../widgets/chat_pop_up_menu.dart';
 
 // Main screen for the chat interface
@@ -176,8 +176,9 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
 
 
-      drawer: ChatDrawer(
-        onModelSelected: _switchChatModel, // Handle model switching
+      //add the drawer to the screen
+      drawer: DrawerComponent(
+        onModelSelected: _switchChatModel,
       ),
 
 
@@ -188,6 +189,7 @@ class _ChatScreenState extends State<ChatScreen> {
         focusNode: _focusNode, // Manage keyboard focus
         onSendMessage: _sendMessage, // Handle sending messages
       ),
+      drawerScrimColor: Colors.transparent,
     );
   }
 }
