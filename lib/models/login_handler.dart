@@ -3,7 +3,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:second_times_the_charm/models/navigation.dart';
 import 'package:second_times_the_charm/screens/log_in.dart';
 import 'api_service.dart';
-import '../screens/home_screen.dart';
+import '../screens/chat_screen.dart';
 
 class LoginHandler {
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();

@@ -3,7 +3,7 @@ import 'package:second_times_the_charm/widgets/custom_button.dart';
 import 'package:second_times_the_charm/widgets/custom_form.dart';
 import 'package:second_times_the_charm/models/navigation.dart';
 import '../models/api_service.dart';
-import 'home_screen.dart';
+import 'chat_screen.dart';
 import 'sign_up.dart';
 import '../models/login_handler.dart';
 
