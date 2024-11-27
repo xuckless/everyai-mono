@@ -180,6 +180,7 @@ class _ChatScreenState extends State<ChatScreen> {
       drawer: DrawerComponent(
         onModelSelected: _switchChatModel,
       ),
+      drawerEdgeDragWidth: MediaQuery.of(context).size.width,
 
 
       // Body of the screen, displaying the chat and input
