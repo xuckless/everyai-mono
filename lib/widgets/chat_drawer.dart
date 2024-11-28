@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:second_times_the_charm/models/navigation.dart';
+import 'package:second_times_the_charm/screens/marketplace.dart';
 import 'package:second_times_the_charm/widgets/custom_button.dart';
 import '../models/chat_models.dart';
 import '../models/login_handler.dart';
@@ -40,7 +42,7 @@ class ChatDrawer extends StatelessWidget {
                             padding: const EdgeInsets.all(2.0),
                             child: CustomButton(
                               text: "Market",
-                              onPressed: () {},
+                              onPressed: () => navigateToPage(context, Marketplace(title: 'Marketplace')),
                             ),
                           ),
                         ),

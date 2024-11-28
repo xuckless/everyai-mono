@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:second_times_the_charm/models/navigation.dart';
+import 'package:second_times_the_charm/screens/marketplace.dart';
 import 'dart:io';
 import 'myLibrary.dart';
 
@@ -31,34 +33,38 @@ class DrawerComponent extends StatelessWidget {
                     onModelSelected: onModelSelected, // Pass the callback to LibrarySquare
                   ),
                   const SizedBox(height: 16),
-                  Container(
-                    width: 270,
-                    height: 45,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(8),
-                      color: const Color(0xFF2A3041),
-                    ),
-                    child: Center(
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.store, // Choose the icon you want
-                            color: Colors.white,
-                            size: 20,
-                          ),
-                          const SizedBox(width: 8), // Add some space between the icon and the text
-                          Text(
-                            "MarketPlace",
-                            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+
+                  GestureDetector(
+                    onTap: () => navigateToPage(context, Marketplace(title: 'Marketplace')),
+                    child: Container(
+                      width: 270,
+                      height: 45,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        color: const Color(0xFF2A3041),
+                      ),
+                      child: Center(
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.store, // Choose the icon you want
                               color: Colors.white,
-                              fontSize: 16,
+                              size: 20,
                             ),
-                          ),
-                        ],
+                            const SizedBox(width: 8), // Add some space between the icon and the text
+                            Text(
+                              "MarketPlace",
+                              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                                color: Colors.white,
+                                fontSize: 16,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
-                  )
+                  ),
                 ],
               ),
             ),
