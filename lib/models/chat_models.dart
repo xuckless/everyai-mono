@@ -2,9 +2,17 @@
 
 import 'package:second_times_the_charm/models/api_service.dart';
 
-
+/// An instance of [ApiService] to handle API interactions.
 ApiService apiService = ApiService();
 
+/// A list of available chat models, each with its own versions, associated
+/// chat functions, and corresponding image assets.
+///
+/// Each chat model is represented as a `Map<String, dynamic>` containing:
+/// - **name**: The display name of the chat model.
+/// - **versions**: A list of available versions for the model, each with its own name and suffix.
+/// - **function**: A callback function that sends messages using the selected model.
+/// - **picture**: The asset path to the model's representative image.
 final List<Map<String, dynamic>> chatModels = [
   {
     "name": "ChatGPT",
@@ -35,7 +43,6 @@ final List<Map<String, dynamic>> chatModels = [
     ],
     "function": (String message, String suffix) => apiService.g_chat(message, suffix),
     "picture": "assets/models/gemini.png",
-
   },
   {
     "name": "Claude",
@@ -46,6 +53,5 @@ final List<Map<String, dynamic>> chatModels = [
     ],
     "function": (String message, String suffix) => apiService.g_chat(message, suffix),
     "picture": "assets/models/claude.webp",
-
   },
 ];

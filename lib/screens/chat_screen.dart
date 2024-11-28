@@ -1,3 +1,5 @@
+// home_screen.dart
+
 import 'package:flutter/material.dart';
 import '../models/chat_models.dart'; // Importing the chat models metadata
 import '../widgets/default_app_bar.dart';
@@ -6,9 +8,19 @@ import '../models/api_service.dart';
 import '../widgets/chat_body.dart';
 import '../widgets/chat_pop_up_menu.dart'; // Import the ChatPopUpMenu
 
+/// The main screen of the application where users can interact with chat functionalities.
+///
+/// The `HomeScreen` widget provides a user interface for displaying chat messages,
+/// sending new messages, and selecting different chat models. It includes features such
+/// as a custom app bar, navigation drawer, chat body, and a popup menu for selecting
+/// chat versions.
 class HomeScreen extends StatefulWidget {
+  /// The title displayed in the app bar.
   final String title;
 
+  /// Creates an instance of [HomeScreen].
+  ///
+  /// - [title]: The title displayed in the app bar.
   const HomeScreen({super.key, required this.title});
 
   @override
@@ -16,14 +28,30 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  /// List of available chat model versions.
   List<Map<String, String>> availableVersions = [];
-  final TextEditingController _messageController = TextEditingController();
-  final List<Map<String, dynamic>> _messages = [];
-  String suffix = "";
-  String subtitle = 'GPT-4o-mini';
-  final FocusNode _focusNode = FocusNode();
-  bool _isMenuVisible = false; // State variable to control menu visibility
 
+  /// Controller for the message input field.
+  final TextEditingController _messageController = TextEditingController();
+
+  /// List of chat messages, each containing text and a flag indicating the sender.
+  final List<Map<String, dynamic>> _messages = [];
+
+  /// Suffix used to identify the selected chat model version.
+  String suffix = "";
+
+  /// Subtitle displayed in the app bar, indicating the current chat model.
+  String subtitle = 'GPT-4o-mini';
+
+  /// Focus node for managing focus on the message input field.
+  final FocusNode _focusNode = FocusNode();
+
+  /// State variable to control the visibility of the popup menu.
+  bool _isMenuVisible = false;
+
+  /// Updates the selected chat model version based on user selection.
+  ///
+  /// - [versionName]: The name of the selected version.
   void _updateVersion(String versionName) {
     setState(() {
       suffix = versionName;
@@ -39,6 +67,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    // Initialize the default chat model version
     final initialModel = chatModels.firstWhere((model) => model["name"] == "ChatGPT");
     suffix = initialModel["versions"][0]["name"]!;
     subtitle = initialModel["versions"][0]["suffix"]!;
@@ -59,10 +88,10 @@ class _HomeScreenState extends State<HomeScreen> {
     return Stack(
       children: [
         Scaffold(
-          backgroundColor: const Color(0xFF181C26),
+          backgroundColor: const Color(0xFF181C26), // Sets the background color
           appBar: DefaultAppBar(
             subtitle: subtitle,
-            actions: [],
+            actions: [], // Add any additional actions here
             onSubtitleTap: () {
               setState(() {
                 _isMenuVisible = !_isMenuVisible; // Toggle menu visibility
@@ -77,7 +106,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 suffix = selectedModel["versions"][0]["name"]!;
                 subtitle = selectedModel["versions"][0]["suffix"]!;
                 availableVersions = selectedModel["versions"];
-                _messages.clear();
+                _messages.clear(); // Clear messages when model changes
                 _isMenuVisible = false; // Hide menu if visible
               });
             },
@@ -89,7 +118,7 @@ class _HomeScreenState extends State<HomeScreen> {
             onSendMessage: _sendMessage, // Use your existing _sendMessage method
           ),
         ),
-        // Use AnimatedSwitcher for smooth transitions
+        // Use AnimatedSwitcher for smooth transitions of the popup menu
         AnimatedSwitcher(
           duration: const Duration(milliseconds: 300),
           transitionBuilder: (Widget child, Animation<double> animation) {
@@ -157,6 +186,10 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// Sends a message entered by the user.
+  ///
+  /// This method adds the user's message to the chat, sends it to the backend API,
+  /// and handles the response by adding the AI's reply to the chat.
   void _sendMessage() async {
     if (_messageController.text.trim().isNotEmpty) {
       setState(() {
@@ -170,22 +203,23 @@ class _HomeScreenState extends State<HomeScreen> {
       });
 
       try {
-        // Sort through available model and go to the 'selectedModel':
+        // Find the selected model based on the suffix
         final selectedModel = chatModels.firstWhere((model) =>
             model['versions'].any((version) => version['name'] == suffix));
 
-        // Call the selected model's function
+        // Retrieve the function associated with the selected model
         final function = selectedModel['function'];
 
-        // Check if function is valid
+        // Check if the function is valid
         if (function is Function) {
-          // Same old Post Request, (see api_service)
+          // Make the post request using the API service
           final response = await function(_messages.last['text'], suffix);
           _receiveMessage(response['message']);
         } else {
           throw Exception("Function not found for the selected ChatBot");
         }
       } catch (e) {
+        // Handle errors by displaying an error message
         _receiveMessage("Error: Could not fetch response."); // Show error message
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text("Error: $e")),
@@ -194,6 +228,9 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  /// Receives and displays a message from the AI.
+  ///
+  /// - [text]: The message text to display.
   void _receiveMessage(String text) {
     setState(() {
       _messages.add({
