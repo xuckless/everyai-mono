@@ -14,3 +14,10 @@ void navigateOneWay(BuildContext context, Widget page) {
   );
   Navigator.pop(context);
 }
+
+Future<void> navigateTo(BuildContext context, Widget page) async {
+  await Navigator.push(
+    context,
+    MaterialPageRoute(builder: (context) => page),
+  );
+}

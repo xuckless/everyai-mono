@@ -1,4 +1,4 @@
-// home_screen.dart
+// chat_screen.dart
 
 import 'package:flutter/material.dart';
 import '../models/chat_models.dart'; // Importing the chat models metadata
@@ -14,20 +14,20 @@ import '../widgets/chat_pop_up_menu.dart'; // Import the ChatPopUpMenu
 /// sending new messages, and selecting different chat models. It includes features such
 /// as a custom app bar, navigation drawer, chat body, and a popup menu for selecting
 /// chat versions.
-class HomeScreen extends StatefulWidget {
+class ChatScreen extends StatefulWidget {
   /// The title displayed in the app bar.
   final String title;
 
-  /// Creates an instance of [HomeScreen].
+  /// Creates an instance of [ChatScreen].
   ///
   /// - [title]: The title displayed in the app bar.
-  const HomeScreen({super.key, required this.title});
+  const ChatScreen({super.key, required this.title});
 
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
+  State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _ChatScreenState extends State<ChatScreen> {
   /// List of available chat model versions.
   List<Map<String, String>> availableVersions = [];
 
@@ -71,8 +71,12 @@ class _HomeScreenState extends State<HomeScreen> {
     final initialModel = chatModels.firstWhere((model) => model["name"] == "ChatGPT");
     suffix = initialModel["versions"][0]["name"]!;
     subtitle = initialModel["versions"][0]["suffix"]!;
-    availableVersions = initialModel["versions"];
+    // availableVersions = initialModel["versions"];
+    availableVersions = (initialModel['versions'] as List<Map<String, String>>)
+            .where((version) => chatModelAddedStatus[initialModel['name']]!)
+            .toList();
   }
+
 
   @override
   Widget build(BuildContext context) {
@@ -105,7 +109,13 @@ class _HomeScreenState extends State<HomeScreen> {
                 chatModels.firstWhere((model) => model["name"] == modelName);
                 suffix = selectedModel["versions"][0]["name"]!;
                 subtitle = selectedModel["versions"][0]["suffix"]!;
-                availableVersions = selectedModel["versions"];
+                // availableVersions = selectedModel["versions"];
+                setState(() {
+                  availableVersions = (selectedModel['versions'] as List<Map<String, String>>)
+                      .where((version) => chatModelAddedStatus[selectedModel['name']]!)
+                      .toList();
+                });
+                print("Filtered versions: $availableVersions");
                 _messages.clear(); // Clear messages when model changes
                 _isMenuVisible = false; // Hide menu if visible
               });

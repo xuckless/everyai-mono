@@ -68,11 +68,11 @@ class _MyHomePageState extends State<MyHomePage> {
 
   /// Handles the standard login process.
   ///
-  /// Currently, this method directly navigates to the [HomeScreen] without
+  /// Currently, this method directly navigates to the [ChatScreen] without
   /// performing actual authentication. Uncomment the [LoginHandler] logic
   /// to enable real login functionality.
   void _handleLogin() {
-    navigateToPage(context, const HomeScreen(title: "Chat Screen"));
+    navigateToPage(context, const ChatScreen(title: "Chat Screen"));
     // Uncomment the following lines to enable real login functionality
     /*
     _loginService.handleLogin(
@@ -88,7 +88,7 @@ class _MyHomePageState extends State<MyHomePage> {
   /// Handles the Google login process.
   ///
   /// Uses the [ApiService] to perform Google authentication. On successful
-  /// login, navigates to the [HomeScreen]. Displays an error message if the
+  /// login, navigates to the [ChatScreen]. Displays an error message if the
   /// login fails.
   void _handleGoogleLogin() async {
     final apiService = ApiService();
@@ -96,7 +96,7 @@ class _MyHomePageState extends State<MyHomePage> {
     try {
       await apiService.googleLogin();
       // Handle successful login, e.g., navigate to the HomeScreen
-      navigateToPage(context, const HomeScreen(title: "Home Screen"));
+      navigateToPage(context, const ChatScreen(title: "Home Screen"));
     } catch (e) {
       // Log the error and display an error message to the user
       print("Google Login Failed: $e");

@@ -52,7 +52,11 @@ class DrawerComponent extends StatelessWidget {
 
                   // GestureDetector to handle navigation to the Marketplace page
                   GestureDetector(
-                    onTap: () => navigateToPage(context, Marketplace(title: 'Marketplace')),
+                    onTap: () async {
+                      await navigateTo(context, Marketplace(title: 'Marketplace'));
+                      // Trigger a refresh for the LibrarySquare when returning
+                      (context as Element).markNeedsBuild();
+                    },
                     child: Container(
                       width: 270, // Sets the width of the Marketplace button
                       height: 45, // Sets the height of the Marketplace button

@@ -1,5 +1,3 @@
-// library_square.dart
-
 import 'package:flutter/material.dart';
 import '../models/chat_models.dart'; // Ensure correct path
 
@@ -8,7 +6,7 @@ import '../models/chat_models.dart'; // Ensure correct path
 /// The `LibrarySquare` widget presents a titled container with a list of selectable
 /// chat models. Each model is displayed with an image and name, and selecting a
 /// model triggers a callback with the model's name.
-class LibrarySquare extends StatelessWidget {
+class LibrarySquare extends StatefulWidget {
   /// The title displayed at the top of the library square.
   final String title;
 
@@ -28,7 +26,17 @@ class LibrarySquare extends StatelessWidget {
   }) : super(key: key);
 
   @override
+  _LibrarySquareState createState() => _LibrarySquareState();
+}
+
+class _LibrarySquareState extends State<LibrarySquare> {
+  @override
   Widget build(BuildContext context) {
+    // Filter chat models to only include those marked as true in chatModelAddedStatus
+    final filteredChatModels = chatModels
+        .where((chat) => chatModelAddedStatus[chat['name']] ?? false)
+        .toList();
+
     return Container(
       width: 270, // Sets the width of the library square
       height: 250, // Sets the height of the library square
@@ -44,7 +52,7 @@ class LibrarySquare extends StatelessWidget {
             Align(
               alignment: Alignment.center, // Centers the title horizontally
               child: Text(
-                title,
+                widget.title,
                 style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                   color: Colors.white, // Sets the text color to white
                   fontSize: 16, // Sets the font size
@@ -57,12 +65,12 @@ class LibrarySquare extends StatelessWidget {
               padding: EdgeInsets.zero, // Removes default padding
               shrinkWrap: true, // Sizes the list to fit its children
               physics: const NeverScrollableScrollPhysics(), // Disables scrolling
-              itemCount: chatModels.length, // Number of items in the list
+              itemCount: filteredChatModels.length, // Number of items in the list
               itemBuilder: (context, index) {
-                final chat = chatModels[index]; // Retrieves the current chat model
+                final chat = filteredChatModels[index]; // Retrieves the current chat model
                 return GestureDetector(
                   onTap: () {
-                    onModelSelected(chat["name"]); // Invokes the callback with the model name
+                    widget.onModelSelected(chat["name"]); // Invokes the callback with the model name
                   },
                   child: Column(
                     children: [

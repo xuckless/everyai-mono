@@ -55,3 +55,13 @@ final List<Map<String, dynamic>> chatModels = [
     "picture": "assets/models/claude.webp",
   },
 ];
+
+Map<String, bool> chatModelAddedStatus = {
+  for (var model in chatModels) model['name']: false
+};
+
+void toggleModelStatus(String modelName) {
+  if (chatModelAddedStatus.containsKey(modelName)) {
+    chatModelAddedStatus[modelName] = !chatModelAddedStatus[modelName]!;
+  }
+}

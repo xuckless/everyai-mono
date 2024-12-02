@@ -51,7 +51,7 @@ class LoginHandler {
           await _secureStorage.write(
               key: "access_token", value: response['access_token']);
           // Navigate to the HomeScreen
-          navigateToPage(context, HomeScreen(title: "Home screen"));
+          navigateToPage(context, ChatScreen(title: "Home screen"));
         } else {
           // If login fails, display the error message returned by the API
           setErrorMessage(response['message']);
