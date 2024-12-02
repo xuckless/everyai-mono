@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/chat_models.dart'; // Importing the chat models metadata
 import '../widgets/default_app_bar.dart';
 import '../widgets/menu_drawer.dart';
-import '../models/api_service.dart';
+// import '../models/api_service.dart';
 import '../widgets/chat_body.dart';
 import '../widgets/chat_pop_up_menu.dart'; // Import the ChatPopUpMenu
 
@@ -47,6 +47,7 @@ class _ChatScreenState extends State<ChatScreen> {
   /// Suffix used to identify the selected version of the current model.
   String selectedVersion = "GPT-4o-mini"; // Default version
 
+  // This is what the pop up menu displays on the user screen
   String selectedVersionDisplay = "GPT 4o mini";
 
   @override
