@@ -57,7 +57,8 @@ final List<Map<String, dynamic>> chatModels = [
 ];
 
 Map<String, bool> chatModelAddedStatus = {
-  for (var model in chatModels) model['name']: false
+  for (var model in chatModels)
+    model['name']: model['name'] == 'ChatGPT' ? true : false
 };
 
 void toggleModelStatus(String modelName) {

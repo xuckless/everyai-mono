@@ -27,7 +27,11 @@ class _MarketplaceState extends State<Marketplace>{
   Widget build(BuildContext context){
     return Scaffold(
       backgroundColor: const Color(0xFF181C26), // Sets the background color
-      appBar: DefaultAppBar(subtitle: 'Marketplace'),
+      appBar: DefaultAppBar(
+          subtitle: 'Marketplace',
+        onPopUpTap: () => null,
+        popUpText: " ",
+      ),
 
       body: Stack(
         children: [

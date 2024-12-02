@@ -17,11 +17,11 @@ class ChatPopUpMenu extends StatelessWidget {
       children: availableVersions.map((version) {
         return ListTile(
           title: Text(
-            version["suffix"]!,
-            style: TextStyle(color: Colors.white), // Change text color here
+            version["suffix"]!, // Display the suffix as the text in the menu
+            style: const TextStyle(color: Colors.white),
           ),
           onTap: () {
-            onVersionSelected(version["name"]!);
+            onVersionSelected(version["name"]!); // Pass the version name when selected
           },
         );
       }).toList(),
