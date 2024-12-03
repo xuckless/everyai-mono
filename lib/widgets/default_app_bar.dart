@@ -58,30 +58,30 @@ class DefaultAppBar extends StatelessWidget implements PreferredSizeWidget {
       child: AppBar(
         // Leading widget, either custom or default behavior.
         leading: customLeading ??
-            Builder(builder: (context) {
-              if (Scaffold.hasDrawer(context)) {
-                return GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () => Scaffold.of(context).openDrawer(),
-                  child: Container(
-                    alignment: Alignment.center,
-                    height: kToolbarHeight,
-                    width: 56,
-                    child: Image.asset(
-                      './assets/panel-right.png', // Drawer icon asset.
-                      height: 20,
-                      width: 20,
-                      fit: BoxFit.contain,
-                    ),
+          Builder(builder: (context) {
+            if (Scaffold.hasDrawer(context)) {
+              return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => Scaffold.of(context).openDrawer(),
+                child: Container(
+                  alignment: Alignment.center,
+                  height: kToolbarHeight,
+                  width: 56,
+                  child: Image.asset(
+                    './assets/panel-right.png', // Drawer icon asset.
+                    height: 20,
+                    width: 20,
+                    fit: BoxFit.contain,
                   ),
-                );
-              } else {
-                return IconButton(
-                  icon: const Icon(Icons.arrow_back),
-                  onPressed: () => Navigator.of(context).pop(),
-                );
-              }
-            }),
+                ),
+              );
+            } else {
+              return IconButton(
+                icon: const Icon(Icons.arrow_back),
+                onPressed: () => Navigator.of(context).pop(),
+              );
+            }
+          }),
 
         titleSpacing: 0, // Removes default title spacing.
         backgroundColor: const Color(0xFF2A3041), // Sets AppBar background color.

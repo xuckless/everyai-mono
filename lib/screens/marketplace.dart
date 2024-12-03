@@ -1,4 +1,3 @@
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:second_times_the_charm/models/chat_models.dart';
 import 'package:second_times_the_charm/widgets/default_app_bar.dart';
@@ -24,12 +23,13 @@ class _MarketplaceState extends State<Marketplace>{
     });
   }
 
+  @override
   Widget build(BuildContext context){
     return Scaffold(
       backgroundColor: const Color(0xFF181C26), // Sets the background color
       appBar: DefaultAppBar(
           subtitle: 'Marketplace',
-        onPopUpTap: () => null,
+        onPopUpTap: () {},
         popUpText: " ",
       ),
 

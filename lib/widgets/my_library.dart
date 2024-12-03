@@ -22,10 +22,10 @@ class LibrarySquare extends StatefulWidget {
   /// - [title]: The title displayed at the top of the library square.
   /// - [onModelSelected]: The callback function triggered upon selecting a model.
   const LibrarySquare({
-    Key? key,
+    super.key,
     required this.title,
     required this.onModelSelected,
-  }) : super(key: key);
+  });
 
   @override
   _LibrarySquareState createState() => _LibrarySquareState();

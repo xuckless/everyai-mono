@@ -22,9 +22,9 @@ class DrawerComponent extends StatelessWidget {
   ///
   /// - [onModelSelected]: A required callback function triggered upon selecting a chat model.
   const DrawerComponent({
-    Key? key,
+    super.key,
     required this.onModelSelected,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
