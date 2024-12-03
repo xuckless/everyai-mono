@@ -1,8 +1,7 @@
 # routers/auth_router.py
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-import requests
 from utils.security import verify_google_token
 
 from config import GOOGLE_CLIENT_ID_IOS, GOOGLE_CLIENT_ID_ANDROID, GOOGLE_CLIENT_ID_WEB
@@ -15,9 +14,9 @@ from utils.security import (
     create_access_token,
 )
 
-GOOGLE_CLIENT_ID_IOS;
-GOOGLE_CLIENT_ID_ANDROID;
-GOOGLE_CLIENT_ID_WEB;
+# GOOGLE_CLIENT_ID_IOS;
+# GOOGLE_CLIENT_ID_ANDROID;
+# GOOGLE_CLIENT_ID_WEB;
 auth_router = APIRouter()
 
 
@@ -40,8 +39,6 @@ def sign_up(request: SignUpRequest, db: Session = Depends(get_db)):
     db.refresh(new_user)
     token = create_access_token(subject=str(new_user.id))
     return TokenResponse(access_token=token)
-
-
 
 @auth_router.post("/login", response_model=TokenResponse)
 def login(request: LoginRequest, db: Session = Depends(get_db)):
@@ -76,13 +73,13 @@ def google_login(request: GoogleLoginRequest, db: Session = Depends(get_db)):
             detail="Invalid Google token",
         )
 
-    #check if user already exists
+    # check if user already exists
     email = token_info.get("email")
     google_id = token_info.get("sub")
     name = token_info.get("name")
     user = db.query(User).filter(User.google_id == google_id).first()
 
-    #if user does not exist, create a new user
+    # if user does not exist, create a new user
     if not user:
         user = User(name=name, email=email, google_id=google_id)
         db.add(user)
