@@ -1,22 +1,35 @@
 # routers/auth_router.py
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    status,
+)
 from sqlalchemy.orm import Session
 from utils.security import verify_google_token
 
-from config import GOOGLE_CLIENT_ID_IOS, GOOGLE_CLIENT_ID_ANDROID, GOOGLE_CLIENT_ID_WEB
+from config import (
+    GOOGLE_CLIENT_ID_IOS,
+    GOOGLE_CLIENT_ID_ANDROID,
+    GOOGLE_CLIENT_ID_WEB
+)
+
 from db.db import get_db
 from db.models import User
-from models.auth import LoginRequest, SignUpRequest, TokenResponse, GoogleLoginRequest
+
+from models.auth import (
+    LoginRequest,
+    SignUpRequest,
+    TokenResponse,
+    GoogleLoginRequest
+)
 from utils.security import (
     verify_password,
     get_password_hash,
     create_access_token,
 )
 
-# GOOGLE_CLIENT_ID_IOS;
-# GOOGLE_CLIENT_ID_ANDROID;
-# GOOGLE_CLIENT_ID_WEB;
 auth_router = APIRouter()
 
 
