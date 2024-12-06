@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:second_times_the_charm/models/app_colors.dart';
 
 /// A customizable AppBar widget with enhanced layout and functionality.
 ///
@@ -84,7 +85,7 @@ class DefaultAppBar extends StatelessWidget implements PreferredSizeWidget {
           }),
 
         titleSpacing: 0, // Removes default title spacing.
-        backgroundColor: const Color(0xFF2A3041), // Sets AppBar background color.
+        backgroundColor: AppColors.primary, // Sets AppBar background color.
 
         title: Row(
           children: [

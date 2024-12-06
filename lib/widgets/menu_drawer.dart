@@ -2,8 +2,10 @@
 
 import 'package:flutter/material.dart';
 import 'package:second_times_the_charm/models/navigation.dart';
+import 'package:second_times_the_charm/screens/account.dart';
 import 'package:second_times_the_charm/screens/marketplace.dart';
 import 'dart:io';
+import '../models/app_colors.dart';
 import 'my_library.dart';
 
 /// A widget that represents the application's navigation drawer.
@@ -91,18 +93,24 @@ class DrawerComponent extends StatelessWidget {
             ),
             const Spacer(), // Pushes the Settings section to the bottom
             const Divider(
-              color: Color(0xFF2A3041), // Sets the color of the divider
+              color: AppColors.divider, // Sets the color of the divider
               thickness: 1, // Sets the thickness of the divider
             ),
-            Container(
-              padding: EdgeInsets.all(isIOS ? 16 : 8), // Adaptive padding based on platform
-              child: Align(
-                alignment: Alignment.centerLeft, // Aligns the Settings text to the left
-                child: Text(
-                  "Settings",
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Colors.white, // Sets the text color
-                    fontSize: 16, // Sets the font size
+            GestureDetector(
+              onTap: () async {
+                await navigateTo(context, Account(title: 'Settings'));
+                (context as Element).markNeedsBuild();
+              },
+              child: Container(
+                padding: EdgeInsets.all(isIOS ? 20 : 12), // Adaptive padding based on platform
+                child: Align(
+                  alignment: Alignment.centerLeft, // Aligns the Settings text to the left
+                  child: Text(
+                    "Account",
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: Colors.white, // Sets the text color
+                      fontSize: 16, // Sets the font size
+                    ),
                   ),
                 ),
               ),

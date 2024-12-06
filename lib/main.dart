@@ -27,7 +27,7 @@ class MyApp extends StatelessWidget {
       // Defines the theme of the application using a color scheme.
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.deepPurple, // Primary color seed
+          seedColor: const Color(0xFF181C26), // Primary color seed
           secondary: Colors.amber,      // Secondary color
         ),
         useMaterial3: true, // Enables Material Design 3
