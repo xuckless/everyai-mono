@@ -38,3 +38,7 @@ if not GOOGLE_CLIENT_ID_WEB:
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     raise ValueError("No GEMINI_API_KEY found in the environment")
+
+GROK_API_KEY = os.getenv("GROK_API_KEY")
+if not GROK_API_KEY:
+    raise ValueError("No GROK_API_KEY found in the environment")

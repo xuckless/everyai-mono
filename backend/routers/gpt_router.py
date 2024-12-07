@@ -65,5 +65,23 @@ async def gpt_gemini(chat: GPTRequestModel):
 
 
 @gpt_router.post('/llama', response_model=ChatResponse)
-async def gpt_gemini(chat: GPTRequestModel):
+async def gpt_llama(chat: GPTRequestModel):
     return JSONResponse(content={"message": "Llama models are yet to be set up."}, media_type="application/json; charset=utf-8")
+
+
+
+@gpt_router.post('/xai', response_model=ChatResponse)
+async def gpt_xai(chat: GPTRequestModel):
+    try:
+        promt = chat.message
+        model = chat.model.lower()
+
+        print(f"Using model: {model}")
+
+        response = responses.xai_response(promt, model)
+        return JSONResponse(
+            content={"message": response},
+            media_type = "application/json; charset=utf-8"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")

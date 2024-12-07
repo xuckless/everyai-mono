@@ -1,4 +1,6 @@
 # ./utils/generate_response.py
+import requests
+import json
 
 import config
 from openai import OpenAI
@@ -78,3 +80,47 @@ def gemini_response(message: str, model: str) -> str:
         return response.text
     except Exception as ex:
         return f'An error occurred while generating: {ex}'
+
+
+
+
+xai_message_history = [
+            {
+                "role": "system",
+                "content": "You are Grok, a chatbot AI assistant"
+            },
+]
+
+import requests
+
+
+def xai_response(message: str, model: str) -> str:
+    url = "https://api.x.ai/v1/chat/completions"
+    xai_message_history.append({"role": "user", "content": message})
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {config.GROK_API_KEY}"
+    }
+
+    payload = {
+        "messages": xai_message_history,
+        "model": model,
+        "stream": False,
+        "temperature": 0
+    }
+
+    response = requests.post(url, headers=headers, json=payload)
+    response.raise_for_status()
+
+    response_body = response.json()
+    print(response_body)
+
+    # Try to extract the content. If it fails, return an empty string.
+    try:
+        content = response_body["choices"][0]["message"]["content"]
+        return str(content)
+    except (KeyError, IndexError, TypeError):
+        # If the structure isn't what we expect or doesn't have the fields,
+        # just return an empty string.
+        return "xai is under maintainance"
