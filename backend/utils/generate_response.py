@@ -119,6 +119,7 @@ def xai_response(message: str, model: str) -> str:
     # Try to extract the content. If it fails, return an empty string.
     try:
         content = response_body["choices"][0]["message"]["content"]
+        xai_message_history.append({"role": "assistant", "content": content})
         return str(content)
     except (KeyError, IndexError, TypeError):
         # If the structure isn't what we expect or doesn't have the fields,
