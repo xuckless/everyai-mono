@@ -54,6 +54,14 @@ final List<Map<String, dynamic>> chatModels = [
     "function": (String message, String suffix) => apiService.g_chat(message, suffix),
     "picture": "assets/models/claude.webp",
   },
+  {
+    "name": "X-Ai",
+    "versions": [
+      {"name": "grok-beta", "suffix": "Grok Beta"},
+    ],
+    "function": (String message, String suffix) => apiService.xai_chat(message, suffix),
+    "picture": "assets/models/xai.webp",
+  },
 ];
 
 Map<String, bool> chatModelAddedStatus = {

@@ -236,6 +236,14 @@ class ApiService {
     );
   }
 
+
+  Future<dynamic> xai_chat(String message, String suffix) async {
+    return await post(
+      'chat/xai',
+      {'message': message, 'model': suffix},
+    );
+  }
+
   /// Handles Google Sign-In authentication.
   ///
   /// Initiates the Google Sign-In process, retrieves the authentication token,
