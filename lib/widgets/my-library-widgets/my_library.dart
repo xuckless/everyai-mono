@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../models/chat_models.dart'; // Ensure correct path
+import '../../models/chat_models.dart'; // Ensure correct path
 
 /// A widget that displays a square library containing a list of chat models.
 ///

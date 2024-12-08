@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:second_times_the_charm/widgets/default_app_bar.dart';
+import 'package:second_times_the_charm/widgets/app-bar-widgets/default_app_bar.dart';
 
-import '../models/app_colors.dart';
+import '../models/global-resource/app_colors.dart';
 
 
 class Account extends StatefulWidget {
@@ -30,6 +30,8 @@ class _AccountState extends State<Account>{
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: DefaultAppBar(subtitle: 'Account', popUpText: ''),
+
+      body: Center(),
     );
   }
 

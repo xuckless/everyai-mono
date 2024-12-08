@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import '../models/chat_models.dart'; // Importing the chat models metadata
-import '../widgets/default_app_bar.dart';
-import '../widgets/menu_drawer.dart';
+import '../widgets/app-bar-widgets/default_app_bar.dart';
+import '../widgets/my-library-widgets/menu_drawer.dart';
 // import '../models/api_service.dart';
-import '../widgets/chat_body.dart';
-import '../widgets/chat_pop_up_menu.dart'; // Import the ChatPopUpMenu
+import '../widgets/chat-screen-widgets/chat_body.dart';
+import '../widgets/app-bar-widgets/chat_pop_up_menu.dart'; // Import the ChatPopUpMenu
 
 /// The main screen of the application where users can interact with chat functionalities.
 ///

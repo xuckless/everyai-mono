@@ -1,11 +1,11 @@
 // drawer_component.dart
 
 import 'package:flutter/material.dart';
-import 'package:second_times_the_charm/models/navigation.dart';
+import 'package:second_times_the_charm/models/utils/navigation.dart';
 import 'package:second_times_the_charm/screens/account.dart';
 import 'package:second_times_the_charm/screens/marketplace.dart';
 import 'dart:io';
-import '../models/app_colors.dart';
+import '../../models/global-resource/app_colors.dart';
 import 'my_library.dart';
 
 /// A widget that represents the application's navigation drawer.

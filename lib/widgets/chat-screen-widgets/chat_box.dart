@@ -1,7 +1,7 @@
 // chat_box.dart
 
 import 'package:flutter/material.dart';
-import '../models/rich_text_parser.dart';
+import '../../models/utils/rich_text_parser.dart';
 
 /// A widget that represents an individual chat message in the chat interface.
 ///

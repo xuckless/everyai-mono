@@ -1,7 +1,7 @@
 // sign_up_handler.dart
 
 import 'package:flutter/material.dart';
-import 'api_service.dart';
+import '../api/api_service.dart';
 
 /// A handler class responsible for managing user registration processes,
 /// including validating input data and communicating with the backend API.

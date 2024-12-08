@@ -1,6 +1,6 @@
 // ./lib/data/chat_models.dart
 
-import 'package:second_times_the_charm/models/api_service.dart';
+import 'package:second_times_the_charm/models/api/api_service.dart';
 
 /// An instance of [ApiService] to handle API interactions.
 ApiService apiService = ApiService();

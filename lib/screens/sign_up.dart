@@ -1,10 +1,10 @@
 // sign_up_page.dart
 
 import 'package:flutter/material.dart';
-import 'package:second_times_the_charm/widgets/custom_button.dart';
-import 'package:second_times_the_charm/widgets/custom_form.dart';
-import '../models/sign_up_handler.dart';
-import '../models/navigation.dart';
+import 'package:second_times_the_charm/widgets/global-resource/custom_button.dart';
+import 'package:second_times_the_charm/widgets/global-resource/custom_form.dart';
+import '../models/utils/sign_up_handler.dart';
+import '../models/utils/navigation.dart';
 import 'log_in.dart';
 
 /// A stateful widget that represents the sign-up page of the application.

@@ -1,13 +1,13 @@
 // my_home_page.dart
 
 import 'package:flutter/material.dart';
-import 'package:second_times_the_charm/widgets/custom_button.dart';
-import 'package:second_times_the_charm/widgets/custom_form.dart';
-import 'package:second_times_the_charm/models/navigation.dart';
-import '../models/api_service.dart';
+import 'package:second_times_the_charm/widgets/global-resource/custom_button.dart';
+import 'package:second_times_the_charm/widgets/global-resource/custom_form.dart';
+import 'package:second_times_the_charm/models/utils/navigation.dart';
+import '../models/api/api_service.dart';
 import 'chat_screen.dart';
 import 'sign_up.dart';
-import '../models/login_handler.dart';
+import '../models/utils/login_handler.dart';
 
 /// The main home page of the application where users can log in.
 ///

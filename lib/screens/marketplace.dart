@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:second_times_the_charm/models/chat_models.dart';
-import 'package:second_times_the_charm/widgets/default_app_bar.dart';
+import 'package:second_times_the_charm/widgets/app-bar-widgets/default_app_bar.dart';
 
 class Marketplace extends StatefulWidget{
   final String title;

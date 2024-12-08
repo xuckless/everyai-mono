@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:second_times_the_charm/models/app_colors.dart';
+import 'package:second_times_the_charm/models/global-resource/app_colors.dart';
 
 /// A customizable AppBar widget with enhanced layout and functionality.
 ///

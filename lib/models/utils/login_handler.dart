@@ -2,10 +2,10 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:second_times_the_charm/models/navigation.dart';
+import 'package:second_times_the_charm/models/utils/navigation.dart';
 import 'package:second_times_the_charm/screens/log_in.dart';
-import 'api_service.dart';
-import '../screens/chat_screen.dart';
+import '../api/api_service.dart';
+import '../../screens/chat_screen.dart';
 
 /// A handler class responsible for managing user authentication processes,
 /// including login and logout functionalities.

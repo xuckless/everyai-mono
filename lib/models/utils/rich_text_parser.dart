@@ -1,7 +1,7 @@
 // rich_text_parser.dart
 
 import 'package:flutter/material.dart';
-import '../widgets/code_block_widget.dart';
+import '../../widgets/chat-screen-widgets/code_block_widget.dart';
 
 /// A utility class that parses markdown-like text into a list of [InlineSpan]s.
 ///
