@@ -1,123 +1,196 @@
-// rich_text_parser.dart
-
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:markdown/markdown.dart' as md;
+import 'package:flutter_tex/flutter_tex.dart'; // Import flutter_tex for LaTeX support
 import '../../widgets/chat-screen-widgets/code_block_widget.dart';
 
-/// A utility class that parses markdown-like text into a list of [InlineSpan]s.
-///
-/// The `RichTextParser` class provides a static method `parseMessage` which takes a
-/// message string containing markdown-like syntax and converts it into a list of
-/// [InlineSpan]s. This allows for rich text rendering within Flutter widgets like [RichText].
 class RichTextParser {
-  /// Parses the given [message] and converts it into a list of [InlineSpan]s.
-  ///
-  /// The parser handles the following markdown-like syntaxes:
-  /// - Headings (### Heading)
-  /// - Bold (**bold text**)
-  /// - Italic (*italic text*)
-  /// - Code blocks (```code```)
-  /// - Inline code (`code`)
-  /// - List items (- item)
-  ///
-  /// If the parser encounters any errors, it defaults to rendering the entire message as plain text.
-  ///
-  /// [message]: The input string containing markdown-like syntax.
-  /// [context]: The build context used for theme-related styling.
-  ///
-  /// Returns a list of [InlineSpan]s representing the parsed message.
+  /// Parses the given [message] and returns a list of [InlineSpan] for rendering in rich text.
   static List<InlineSpan> parseMessage(String message, BuildContext context) {
     final List<InlineSpan> spans = [];
 
-    // Combined regular expression to match different markdown syntaxes.
-    final RegExp combinedRegex = RegExp(
-      r'(###\s*(.+?)\n)|'         // Headings (### Heading)
-      r'(\*\*(.+?)\*\*)|'         // Bold (**bold text**)
-      r'(\*(.+?)\*)|'             // Italic (*italic text*)
-      r'```([\s\S]*?)```|'        // Code block (```code```)
-      r'`([^`]+)`|'               // Inline code (`code`)
-      r'(-\s(.+))',               // List items (- item)
-      dotAll: true,                // Enables '.' to match newline characters
+    // Parse Markdown into an AST (Abstract Syntax Tree)
+    final md.Document document = md.Document(
+      inlineSyntaxes: [md.CodeSyntax()],
+      extensionSet: md.ExtensionSet.gitHubFlavored,
     );
 
-    int currentIndex = 0; // Tracks the current position in the message string
+    final List<md.Node> nodes = document.parseLines(message.split('\n'));
 
-    try {
-      // Iterate over all matches found by the combined regex
-      combinedRegex.allMatches(message).forEach((match) {
-        // Add any text before the current match as plain text
-        if (match.start > currentIndex) {
-          spans.add(TextSpan(
-            text: message.substring(currentIndex, match.start),
-          ));
-        }
-
-        // Handle Heading
-        if (match.group(1) != null) {
-          spans.add(TextSpan(
-            text: match.group(2), // Extracted heading text
-            style: TextStyle(
-              fontSize: 21.0,
-              fontWeight: FontWeight.bold,
-              color: Colors.blue,
-            ),
-          ));
-        }
-        // Handle Bold
-        else if (match.group(3) != null) {
-          spans.add(TextSpan(
-            text: match.group(4), // Extracted bold text
-            style: const TextStyle(fontWeight: FontWeight.bold),
-          ));
-        }
-        // Handle Italic
-        else if (match.group(5) != null) {
-          spans.add(TextSpan(
-            text: match.group(6), // Extracted italic text
-            style: const TextStyle(fontStyle: FontStyle.italic),
-          ));
-        }
-        // Handle Code Block
-        else if (match.group(7) != null) {
-          spans.add(WidgetSpan(
-            child: CodeBlockWidget(codeContent: match.group(7) ?? ""),
-          ));
-        }
-        // Handle Inline Code
-        else if (match.group(8) != null) {
-          spans.add(TextSpan(
-            text: match.group(8), // Extracted inline code
-            style: const TextStyle(
-              fontFamily: 'SourceCodePro',
-              fontSize: 15,
-              backgroundColor: Colors.grey,
-              color: Colors.black,
-            ),
-          ));
-        }
-        // Handle List Item
-        else if (match.group(9) != null) {
-          spans.add(TextSpan(
-            text: "- ${match.group(10)}\n", // Extracted list item
-            style: const TextStyle(fontWeight: FontWeight.normal),
-          ));
-        }
-
-        currentIndex = match.end; // Update the current index to the end of the match
-      });
-
-      // Add any remaining text after the last match as plain text
-      if (currentIndex < message.length) {
-        spans.add(TextSpan(
-          text: message.substring(currentIndex),
-        ));
+    for (final node in nodes) {
+      if (node is md.Element) {
+        spans.addAll(_parseElement(node));
+      } else if (node is md.Text) {
+        spans.add(TextSpan(text: node.text));
       }
-    } catch (e, stackTrace) {
-      // Log the error and fallback to rendering the entire message as plain text
-      debugPrint("Error in RichTextParser.parseMessage: $e");
-      debugPrint(stackTrace.toString());
-      spans.add(TextSpan(text: message));
     }
 
     return spans;
+  }
+
+  /// Parses individual Markdown elements and returns a list of [InlineSpan].
+  static List<InlineSpan> _parseElement(md.Element element) {
+    final List<InlineSpan> spans = [];
+
+    switch (element.tag) {
+      case 'h1':
+        spans.add(_styledText('${element.textContent}\n\n', fontSize: 24, fontWeight: FontWeight.bold));
+        break;
+      case 'h2':
+        spans.add(_styledText('${element.textContent}\n\n', fontSize: 20, fontWeight: FontWeight.bold));
+        break;
+      case 'h3':
+        spans.add(_styledText('${element.textContent}\n\n', fontSize: 18, fontWeight: FontWeight.bold));
+        break;
+      case 'ul':
+        spans.addAll(_parseList(element, bullet: '• '));
+        spans.add(const TextSpan(text: '\n')); // Add spacing after lists
+        break;
+      case 'ol':
+        spans.addAll(_parseList(element, isOrdered: true));
+        spans.add(const TextSpan(text: '\n')); // Add spacing after lists
+        break;
+      case 'blockquote':
+        spans.add(_buildBlockquote(element.textContent));
+        spans.add(const TextSpan(text: '\n\n')); // Add spacing after blockquotes
+        break;
+      case 'pre':
+        spans.add(_buildCodeBlock(element.textContent.trim()));
+        spans.add(const TextSpan(text: '\n\n')); // Add spacing after code blocks
+        break;
+      case 'strong':
+        spans.add(_styledText(element.textContent, fontWeight: FontWeight.bold));
+        break;
+      case 'em':
+        spans.add(_styledText(element.textContent, fontStyle: FontStyle.italic));
+        break;
+      case 'code':
+        spans.add(_styledText(
+          element.textContent,
+          fontFamily: 'SourceCodePro',
+          backgroundColor: Colors.grey.shade200,
+          color: Colors.black,
+        ));
+        break;
+      case 'latex': // Add support for LaTeX
+        spans.add(_buildLatex(element.textContent));
+        break;
+      case 'a':
+        spans.add(_buildLink(element.textContent, element.attributes['href'] ?? ''));
+        break;
+      case 'hr':
+        spans.add(_buildDivider());
+        spans.add(const TextSpan(text: '\n\n')); // Add spacing after horizontal rules
+        break;
+      default:
+        spans.add(TextSpan(text: element.textContent));
+    }
+
+    return spans;
+  }
+
+  /// Parses list elements and returns [InlineSpan]s.
+  static List<InlineSpan> _parseList(md.Element list, {String bullet = '', bool isOrdered = false, int indentLevel = 0}) {
+    final List<InlineSpan> spans = [];
+    int index = 1;
+
+    for (final item in list.children ?? []) {
+      if (item is md.Element && item.tag == 'li') {
+        final prefix = isOrdered ? '$index. ' : bullet;
+
+        // Add indentation for nested lists
+        final String indentation = '  ' * indentLevel;
+
+        spans.add(_styledText('$indentation$prefix${item.textContent}\n', fontSize: 14));
+
+        // Check for nested lists within this list item
+        for (final child in item.children ?? []) {
+          if (child is md.Element && (child.tag == 'ul' || child.tag == 'ol')) {
+            spans.addAll(_parseList(child, bullet: '• ', isOrdered: child.tag == 'ol', indentLevel: indentLevel + 1));
+          }
+        }
+
+        index++;
+      }
+    }
+
+    return spans;
+  }
+
+  /// Builds a LaTeX widget span using flutter_tex.
+  static WidgetSpan _buildLatex(String latexContent) {
+    return WidgetSpan(
+      child: TeXView(
+        child: TeXViewDocument(
+          latexContent,
+          style: const TeXViewStyle(
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Returns a styled text span.
+  static TextSpan _styledText(
+      String text, {
+        double? fontSize,
+        FontWeight? fontWeight,
+        FontStyle? fontStyle,
+        String? fontFamily,
+        Color? color,
+        Color? backgroundColor,
+      }) {
+    return TextSpan(
+      text: text,
+      style: TextStyle(
+        fontSize: fontSize,
+        fontWeight: fontWeight,
+        fontStyle: fontStyle,
+        fontFamily: fontFamily,
+        color: color,
+        backgroundColor: backgroundColor,
+      ),
+    );
+  }
+
+  /// Builds a blockquote widget span.
+  static WidgetSpan _buildBlockquote(String text) {
+    return WidgetSpan(
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 8.0),
+        padding: const EdgeInsets.all(8.0),
+        decoration: BoxDecoration(
+          color: Colors.grey.shade200,
+          border: Border(left: BorderSide(width: 4.0, color: Colors.grey.shade500)),
+        ),
+        child: Text(
+          text,
+          style: const TextStyle(fontStyle: FontStyle.italic, color: Colors.grey),
+        ),
+      ),
+    );
+  }
+
+  /// Builds a code block widget span.
+  static WidgetSpan _buildCodeBlock(String codeContent) {
+    return WidgetSpan(
+      child: CodeBlockWidget(codeContent: codeContent),
+    );
+  }
+
+  /// Builds a divider widget span.
+  static WidgetSpan _buildDivider() {
+    return WidgetSpan(
+      child: Divider(color: Colors.grey, thickness: 1.0),
+    );
+  }
+
+  /// Builds a link text span with a tap recognizer.
+  static TextSpan _buildLink(String text, String url) {
+    return TextSpan(
+      text: text,
+      style: const TextStyle(color: Colors.blue, decoration: TextDecoration.underline),
+      recognizer: TapGestureRecognizer()..onTap = () => debugPrint('Link tapped: $url'),
+    );
   }
 }

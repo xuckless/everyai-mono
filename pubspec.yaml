@@ -15,11 +15,13 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  http: ^0.13.5  # HTTP package for making network requests
+  http: ^1.2.2  # HTTP package for making network requests
   provider: ^6.0.5 # State management package
-  flutter_secure_storage: ^8.1.0 # Updated version for secure storage
+  flutter_secure_storage: ^9.2.2 # Updated version for secure storage
   cupertino_icons: ^1.0.8 # Icons for iOS
   google_sign_in: ^6.2.2 # Google Sign-In package
+  flutter_markdown: ^0.7.4+3 # markdown parser
+  flutter_tex: ^4.0.9 # flutter tex
 
 dev_dependencies:
   flutter_test:
