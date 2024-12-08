@@ -1,11 +1,11 @@
 name: second_times_the_charm
-description: "Second Iteration"
+description: "EveryAI in your pocket"
 
 # Prevent accidental publication to pub.dev
 publish_to: 'none'
 
 # Application version
-version: 1.0.0+1
+version: 0.0.1+1
 
 # Dart SDK version
 environment:
