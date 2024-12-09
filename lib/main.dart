@@ -18,6 +18,18 @@ class MyApp extends StatelessWidget {
   /// Creates an instance of MyApp.
   const MyApp({super.key});
 
+  /// Builds the widget tree for the application.
+  ///
+  /// This method is responsible for creating and returning the root [MaterialApp]
+  /// widget, which defines the overall structure and theme of the application.
+  ///
+  /// [context] is the build context, which contains information about the location
+  /// of this widget in the widget tree. It's not directly used in this method but
+  /// is required by the [build] method signature.
+  ///
+  /// Returns a [Widget], specifically a [MaterialApp], which serves as the root
+  /// of the application's widget tree. This [MaterialApp] includes the app's title,
+  /// theme configuration, and the initial route (home screen).
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
