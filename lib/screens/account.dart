@@ -23,15 +23,20 @@ class _AccountState extends State<Account>{
 
 
 
-
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: DefaultAppBar(subtitle: 'Account', popUpText: ''),
 
-      body: Center(),
+      body: Expanded(
+        child: Column (
+          crossAxisAlignment: CrossAxisAlignment.center,
+
+          children: [
+          ],
+        ),
+      ),
     );
   }
 

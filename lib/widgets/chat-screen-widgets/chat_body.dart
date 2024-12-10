@@ -77,7 +77,7 @@ class ChatBody extends StatelessWidget {
             Container(
               width: 70, // Width of the send button container
               decoration: BoxDecoration(
-                border: Border.all(
+                 border: Border.all(
                   color: Colors.transparent,
                   width: 10,
                 ),
