@@ -5,6 +5,7 @@ import 'package:second_times_the_charm/widgets/global-resource/custom_button.dar
 import 'package:second_times_the_charm/widgets/global-resource/custom_form.dart';
 import 'package:second_times_the_charm/models/utils/navigation.dart';
 import '../models/api/api_service.dart';
+import '../models/api/auth_service.dart';
 import 'chat_screen.dart';
 import 'sign_up.dart';
 import '../models/utils/login_handler.dart';
@@ -92,9 +93,10 @@ class _MyHomePageState extends State<MyHomePage> {
   /// login fails.
   void _handleGoogleLogin() async {
     final apiService = ApiService();
+    final authService = AuthService(apiService);
 
     try {
-      await apiService.googleLogin();
+      await authService.googleLogin();
       // Handle successful login, e.g., navigate to the HomeScreen
       navigateToPage(context, const ChatScreen(title: "Home Screen"));
     } catch (e) {

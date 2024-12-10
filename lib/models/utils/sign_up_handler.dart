@@ -2,6 +2,7 @@
 
 import 'package:flutter/material.dart';
 import '../api/api_service.dart';
+import '../api/auth_service.dart';
 
 /// A handler class responsible for managing user registration processes,
 /// including validating input data and communicating with the backend API.
@@ -40,14 +41,15 @@ class SignUpHandler {
 
       setLoading(true); // Show loading indicator
 
-      final apiService = ApiService(); // Initialize the API service
+      final apiService = ApiService();
+      final authService = AuthService(apiService);
       final name = nameController.text.trim(); // Get and trim name input
       final email = emailController.text.trim(); // Get and trim email input
       final password = passwordController.text.trim(); // Get and trim password input
 
       try {
         // Attempt to sign up using the API service
-        final response = await apiService.signUp(name, email, password);
+        final response = await authService.signUp(name, email, password);
         if (response['access_token'] != null) {
           onSuccess(); // Trigger success callback
         } else {

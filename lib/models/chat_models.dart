@@ -1,9 +1,11 @@
-// ./lib/data/chat_models.dart
-
 import 'package:second_times_the_charm/models/api/api_service.dart';
+import 'api/chat_service.dart';
 
 /// An instance of [ApiService] to handle API interactions.
-ApiService apiService = ApiService();
+final ApiService apiService = ApiService();
+
+/// An instance of [ChatService] initialized with the [ApiService].
+final ChatService chatService = ChatService(apiService);
 
 /// A list of available chat models, each with its own versions, associated
 /// chat functions, and corresponding image assets.
@@ -21,7 +23,7 @@ final List<Map<String, dynamic>> chatModels = [
       {"name": "GPT-3.5-turbo", "suffix": "GPT 3.5 Turbo"},
       {"name": "GPT-4o", "suffix": "GPT 4o"}
     ],
-    "function": (String message, String suffix) => apiService.d_chat(message, suffix),
+    "function": (String message, String suffix) => chatService.gptChat(message, suffix),
     "picture": "assets/models/chatgpt.webp",
   },
   {
@@ -30,7 +32,7 @@ final List<Map<String, dynamic>> chatModels = [
       {"name": "Llama-v1", "suffix": "Llama Version 1"},
       {"name": "Llama-v2", "suffix": "Llama Version 2"},
     ],
-    "function": (String message, String suffix) => apiService.f_chat(message, suffix),
+    "function": (String message, String suffix) => chatService.llamaChat(message, suffix),
     "picture": "assets/models/Llama.jpeg",
   },
   {
@@ -39,9 +41,9 @@ final List<Map<String, dynamic>> chatModels = [
       {"name": "gemini-1.5-flash-8b", "suffix": "Gemini 1.5 Flash 8B"},
       {"name": "gemini-1.5-flash", "suffix": "Gemini 1.5 Flash"},
       {"name": "gemini-1.5-pro", "suffix": "Gemini 1.5 Pro"},
-      {"name": "gemini-1.0-pro", "suffix":"Gemini 1.0 Pro"},
+      {"name": "gemini-1.0-pro", "suffix": "Gemini 1.0 Pro"},
     ],
-    "function": (String message, String suffix) => apiService.g_chat(message, suffix),
+    "function": (String message, String suffix) => chatService.geminiChat(message, suffix),
     "picture": "assets/models/gemini.png",
   },
   {
@@ -51,7 +53,7 @@ final List<Map<String, dynamic>> chatModels = [
       {"name": "Claude-3-Sonnet", "suffix": "Claude 3 Sonnet"},
       {"name": "Claude-3-Opus", "suffix": "Claude 3 Opus"},
     ],
-    "function": (String message, String suffix) => apiService.g_chat(message, suffix),
+    "function": (String message, String suffix) => chatService.gptChat(message, suffix),
     "picture": "assets/models/claude.webp",
   },
   {
@@ -59,7 +61,7 @@ final List<Map<String, dynamic>> chatModels = [
     "versions": [
       {"name": "grok-beta", "suffix": "Grok Beta"},
     ],
-    "function": (String message, String suffix) => apiService.xai_chat(message, suffix),
+    "function": (String message, String suffix) => chatService.xaiChat(message, suffix),
     "picture": "assets/models/xai.webp",
   },
 ];

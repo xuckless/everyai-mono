@@ -8,6 +8,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'dart:io';
 
 import '../utils/TokenManager.dart';
+import 'auth_service.dart';
 
 /// A service class responsible for handling all API interactions.
 ///
@@ -122,203 +123,6 @@ class ApiService {
     }
   }
 
-
-
-  /// Registers a new user by sending their [name], [email], and [password] to the API.
-  ///
-  /// - [name]: The full name of the user.
-  /// - [email]: The user's email address.
-  /// - [password]: The user's chosen password.
-  ///
-  /// Returns the API response as a decoded JSON object.
-  ///
-  /// Throws an [Exception] if the registration fails.
-  Future<dynamic> signUp(String name, String email, String password) async {
-    return await post(
-      'signup', // API endpoint for user registration
-      {'name': name, 'email': email, 'password': password}, // Request body
-    );
-  }
-
-  /// Authenticates a user by sending their [email] and [password] to the API.
-  ///
-  /// Upon successful authentication, stores the received access token securely.
-  ///
-  /// - [email]: The user's email address.
-  /// - [password]: The user's password.
-  ///
-  /// Returns a map indicating success status and a message.
-  ///
-  /// Example:
-  /// ```dart
-  /// {
-  ///   "success": true,
-  ///   "message": "Login successful"
-  /// }
-  /// ```
-  Future<dynamic> login(String email, String password) async {
-    try {
-      final response = await post(
-        'login',
-        {'email': email, 'password': password},
-      );
-
-      if (response.containsKey('access_token') && response.containsKey('refresh_token')) {
-        // Store the access token in memory
-        TokenManager().setAccessToken(response['access_token']);
-
-        // Store the refresh token securely
-        await const FlutterSecureStorage().write(
-          key: "refresh_token",
-          value: response['refresh_token'],
-        );
-
-        // Store the refresh token expiry (consistent with Google login)
-        final DateTime refreshTokenExpiry = DateTime.now().add(Duration(days: 30));
-        await const FlutterSecureStorage().write(
-          key: "refresh_token_expiry",
-          value: refreshTokenExpiry.toIso8601String(),
-        );
-
-        return {
-          "success": true,
-          "message": "Login successful",
-          "access_token": response['access_token'],
-          "refresh_token": response['refresh_token']
-        };
-      } else {
-        return {"success": false, "message": "Invalid response from server"};
-      }
-    } catch (e) {
-      return {"success": false, "message": e.toString()};
-    }
-  }
-
-
-  /// Sends a chat message to the AI model.
-  ///
-  /// - [message]: The user's message to be sent.
-  ///
-  /// Returns the AI's response as a decoded JSON object.
-  ///
-  /// Throws an [Exception] if the request fails.
-  Future<dynamic> chat(String message) async {
-    return await post(
-      'chat', // API endpoint for chat
-      {'message': message}, // Request body
-    );
-  }
-
-  /// Sends a chat message to a dynamically selected GPT model.
-  ///
-  /// - [message]: The user's message to be sent.
-  /// - [suffix]: The identifier for the selected GPT model version.
-  ///
-  /// Returns the AI's response as a decoded JSON object.
-  ///
-  /// Throws an [Exception] if the request fails.
-  Future<dynamic> d_chat(String message, String suffix) async {
-    return await post(
-      'chat/gpt', // API endpoint for GPT chat
-      {'message': message, 'model': suffix}, // Request body
-    );
-  }
-
-  /// Sends a chat message to the Gemini AI model.
-  ///
-  /// - [message]: The user's message to be sent.
-  /// - [suffix]: The identifier for the selected Gemini model version.
-  ///
-  /// Returns the AI's response as a decoded JSON object.
-  ///
-  /// Throws an [Exception] if the request fails.
-  Future<dynamic> g_chat(String message, String suffix) async {
-    return await post(
-      'chat/gemini', // API endpoint for Gemini chat
-      {'message': message, 'model': suffix}, // Request body
-    );
-  }
-
-  /// Sends a chat message to the LLaMA AI model.
-  ///
-  /// - [message]: The user's message to be sent.
-  /// - [suffix]: The identifier for the selected LLaMA model version.
-  ///
-  /// Returns the AI's response as a decoded JSON object.
-  ///
-  /// Throws an [Exception] if the request fails.
-  Future<dynamic> f_chat(String message, String suffix) async {
-    return await post(
-      'chat/llama', // API endpoint for LLaMA chat
-      {'message': message, 'model': suffix}, // Request body
-    );
-  }
-
-  Future<dynamic> xai_chat(String message, String suffix) async {
-    return await post(
-      'chat/xai',
-      {'message': message, 'model': suffix},
-    );
-  }
-
-
-
-  /// Handles Google Sign-In authentication.
-  ///
-  /// Initiates the Google Sign-In process, retrieves the authentication token,
-  /// and sends it to the backend server for verification and user creation/login.
-  ///
-  /// Throws an [Exception] if the sign-in process fails at any step.
-  Future<void> googleLogin() async {
-    final GoogleSignIn googleSignIn = GoogleSignIn(
-      scopes: ['email'],
-      serverClientId: '903732364114-a9d45n9fbroggcu23m7s3f7ti8ce7kf9.apps.googleusercontent.com',
-    );
-
-    final GoogleSignInAccount? account = await googleSignIn.signIn();
-    final DateTime refreshTokenExpiry = DateTime.now().add(Duration(days: 30)); // Refresh token expiry
-
-    if (account == null) {
-      throw Exception('Google Sign In Failed');
-    }
-
-    final GoogleSignInAuthentication auth = await account.authentication;
-    final token = auth.idToken;
-
-    if (token == null) {
-      throw Exception('Google Sign failed to provide token');
-    }
-
-    String platform = Platform.isIOS ? 'ios' : 'android';
-
-    final response = await post('google_login', {
-      'token': token,
-      'platform': platform,
-    });
-
-    if (response.containsKey('access_token') && response.containsKey('refresh_token')) {
-      // Store the access token in memory
-      TokenManager().setAccessToken(response['access_token']);
-
-      // Store the refresh token securely
-      await const FlutterSecureStorage().write(
-        key: "refresh_token",
-        value: response['refresh_token'],
-      );
-
-      // Store the refresh token expiry
-      await const FlutterSecureStorage().write(
-        key: "refresh_token_expiry",
-        value: refreshTokenExpiry.toIso8601String(),
-      );
-
-      print("Refresh token saved: ${response['refresh_token']}");
-      print("Refresh token expiry: $refreshTokenExpiry");
-    } else {
-      throw Exception('Invalid response from server');
-    }
-  }
-
   Future<dynamic> refreshToken(String refreshToken) async {
     try {
       final response = await post(
@@ -339,43 +143,11 @@ class ApiService {
     }
   }
 
-  Future<bool> refreshAccessToken() async {
-    final refreshToken = await const FlutterSecureStorage().read(key: "refresh_token");
-
-    if (refreshToken == null) {
-      print("No refresh token found");
-      return false;
-    }
-
-    try {
-      final response = await post(
-        'refresh_token',
-        {'refresh_token': refreshToken},
-      );
-
-      if (response.containsKey('access_token') && response.containsKey('refresh_token')) {
-
-        // Update the access token in memory
-        TokenManager().setAccessToken(
-          response['access_token'],
-          expiresIn: response['expires_in'],
-        );
-        return true;
-      } else {
-        print("Invalid refresh token response");
-        return false;
-      }
-    } catch (e) {
-      print("Error refreshing access token: $e");
-      return false;
-    }
-  }
-
-  Future<dynamic> makeAuthenticatedRequest(String endpoint, Map<String, dynamic> body) async {
+  Future<dynamic> makeAuthenticatedRequest(String endpoint, Map<String, dynamic> body, AuthService authService) async {
     try {
       // Ensure the access token is valid
       if (!TokenManager().isAccessTokenValid()) {
-        final isRefreshed = await refreshAccessToken();
+        final isRefreshed = await authService.refreshAccessToken();
         if (!isRefreshed) {
           throw Exception("Unable to refresh access token");
         }
@@ -394,8 +166,8 @@ class ApiService {
       if (e.toString().contains("401") || e.toString().contains("Unauthorized")) {
         print("Access token might be expired. Attempting refresh...");
 
-        // Attempt to refresh the access token
-        final isRefreshed = await refreshAccessToken();
+        // Attempt to refresh the access token using AuthService
+        final isRefreshed = await authService.refreshAccessToken();
         if (isRefreshed) {
           // Retry the request with the new access token
           final newAccessToken = TokenManager().accessToken;
@@ -412,6 +184,7 @@ class ApiService {
       throw Exception("API Request Failed: $e");
     }
   }
+
 
 
 

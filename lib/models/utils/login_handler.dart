@@ -7,6 +7,7 @@ import 'package:second_times_the_charm/models/utils/navigation.dart';
 import 'package:second_times_the_charm/screens/log_in.dart';
 import '../api/api_service.dart';
 import '../../screens/chat_screen.dart';
+import '../api/auth_service.dart';
 import 'TokenManager.dart';
 
 /// A handler class responsible for managing user authentication processes,
@@ -42,12 +43,13 @@ class LoginHandler {
       setErrorMessage(null);
 
       final apiService = ApiService();
+      final authService = AuthService(apiService);
       final email = emailController.text.trim();
       final password = passwordController.text.trim();
 
       try {
         // Login via API
-        final response = await apiService.login(email, password);
+        final response = await authService.login(email, password);
         if (response['success']) {
           // Store tokens
           TokenManager().setAccessToken(response['access_token']);
@@ -104,7 +106,8 @@ class LoginHandler {
 
       // Attempt to refresh the access token
       final apiService = ApiService();
-      final isRefreshed = await apiService.refreshAccessToken();
+      final authService = AuthService(apiService);
+      final isRefreshed = await authService.refreshAccessToken();
       return isRefreshed;
     } catch (e) {
       print("Error during token validation: $e");
