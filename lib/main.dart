@@ -25,7 +25,6 @@ void main() async {
 Future<Widget> determineInitialScreen(LoginHandler loginHandler) async {
   try {
     final isValidToken = await loginHandler.validateTokenLocally();
-
     if (isValidToken) {
       print("Valid token found. Redirecting to ChatScreen.");
       return ChatScreen(title: "Home screen");
@@ -38,7 +37,6 @@ Future<Widget> determineInitialScreen(LoginHandler loginHandler) async {
     return const MyHomePage(title: 'Login');
   }
 }
-
 /// The root widget of the application.
 class MyApp extends StatelessWidget {
   final Widget initialScreen;
