@@ -1,28 +1,15 @@
-// drawer_component.dart
-
 import 'package:flutter/material.dart';
 import 'package:second_times_the_charm/models/utils/navigation.dart';
 import 'package:second_times_the_charm/screens/account.dart';
 import 'package:second_times_the_charm/screens/marketplace.dart';
 import 'dart:io';
 import '../../models/global-resource/app_colors.dart';
+import '../../models/utils/login_handler.dart';
 import 'my_library.dart';
 
-/// A widget that represents the application's navigation drawer.
-///
-/// The `DrawerComponent` provides a sidebar navigation menu that includes:
-/// - A `LibrarySquare` section for selecting chat models.
-/// - A navigation option to the Marketplace.
-/// - A Settings section.
-///
-/// It adapts padding based on the platform (iOS or others) to ensure consistent UI.
 class DrawerComponent extends StatelessWidget {
-  /// Callback function invoked when a chat model is selected from the `LibrarySquare`.
   final Function(String) onModelSelected;
 
-  /// Creates an instance of [DrawerComponent].
-  ///
-  /// - [onModelSelected]: A required callback function triggered upon selecting a chat model.
   const DrawerComponent({
     super.key,
     required this.onModelSelected,
@@ -30,57 +17,53 @@ class DrawerComponent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Determines if the current platform is iOS for adaptive padding.
     final bool isIOS = Platform.isIOS;
+    final loginHandler = LoginHandler(); // Create an instance of LoginHandler
 
     return Drawer(
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.zero, // No border radius for the drawer
+        borderRadius: BorderRadius.zero,
       ),
       child: Container(
-        color: const Color(0xFF181C26), // Sets the background color of the drawer
+        color: const Color(0xFF181C26),
         child: Column(
           children: [
-            const SizedBox(height: 70), // Adds vertical space at the top
+            const SizedBox(height: 70),
             Center(
               child: Column(
                 children: [
-                  // Integrates the LibrarySquare widget for chat model selection
                   LibrarySquare(
                     title: "My Library",
-                    onModelSelected: onModelSelected, // Passes the callback to LibrarySquare
+                    onModelSelected: onModelSelected,
                   ),
-                  const SizedBox(height: 16), // Adds spacing between LibrarySquare and Marketplace
-
-                  // GestureDetector to handle navigation to the Marketplace page
+                  const SizedBox(height: 16),
                   GestureDetector(
                     onTap: () async {
                       await navigateTo(context, Marketplace(title: 'Marketplace'));
-                      // Trigger a refresh for the LibrarySquare when returning
                       (context as Element).markNeedsBuild();
                     },
                     child: Container(
-                      width: 270, // Sets the width of the Marketplace button
-                      height: 45, // Sets the height of the Marketplace button
+                      width: 270,
+                      height: 45,
                       decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(8), // Rounds the corners
-                        color: const Color(0xFF2A3041), // Sets the background color
+                        borderRadius: BorderRadius.circular(8),
+                        color: const Color(0xFF2A3041),
                       ),
                       child: Center(
                         child: Row(
-                          mainAxisSize: MainAxisSize.min, // Wraps the row to its content
+                          mainAxisSize: MainAxisSize.min,
                           children: [
                             Icon(
-                              Icons.store, // Icon representing the Marketplace
-                              color: Colors.white, // Sets the icon color
-                              size: 20, // Sets the icon size
+                              Icons.store,
+                              color: Colors.white,
+                              size: 20,
                             ),
-                            const SizedBox(width: 8), // Adds horizontal spacing between icon and text
+                            const SizedBox(width: 8),
                             Text(
                               "MarketPlace",
                               style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                                color: Colors.white, // Sets the text color
-                                fontSize: 16, // Sets the font size
+                                color: Colors.white,
+                                fontSize: 16,
                               ),
                             ),
                           ],
@@ -91,29 +74,41 @@ class DrawerComponent extends StatelessWidget {
                 ],
               ),
             ),
-            const Spacer(), // Pushes the Settings section to the bottom
+            const Spacer(),
             const Divider(
-              color: AppColors.divider, // Sets the color of the divider
-              thickness: 1, // Sets the thickness of the divider
+              color: AppColors.divider,
+              thickness: 1,
             ),
-            GestureDetector(
-              onTap: () async {
-                await navigateTo(context, Account(title: 'Settings'));
-                (context as Element).markNeedsBuild();
-              },
-              child: Container(
-                padding: EdgeInsets.all(isIOS ? 20 : 12), // Adaptive padding based on platform
-                child: Align(
-                  alignment: Alignment.centerLeft, // Aligns the Settings text to the left
-                  child: Text(
-                    "Account",
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: Colors.white, // Sets the text color
-                      fontSize: 16, // Sets the font size
+            Row(
+              children: [
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () async {
+                      await navigateTo(context, Account(title: 'Settings'));
+                      (context as Element).markNeedsBuild();
+                    },
+                    child: Container(
+                      padding: EdgeInsets.all(isIOS ? 20 : 12),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          "Account",
+                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: Colors.white,
+                            fontSize: 16,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ),
-              ),
+                IconButton(
+                  icon: Icon(Icons.logout, color: Colors.white),
+                  onPressed: () async {
+                    await loginHandler.handleLogout(context); // Call the logout logic
+                  },
+                ),
+              ],
             ),
           ],
         ),

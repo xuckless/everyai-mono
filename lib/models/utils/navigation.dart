@@ -12,7 +12,6 @@ void navigateOneWay(BuildContext context, Widget page) {
       context,
       MaterialPageRoute(builder: (context) => page ),
   );
-  Navigator.pop(context);
 }
 
 Future<void> navigateTo(BuildContext context, Widget page) async {

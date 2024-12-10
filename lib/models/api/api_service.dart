@@ -7,6 +7,8 @@ import 'package:http/http.dart' as http;
 import 'package:google_sign_in/google_sign_in.dart';
 import 'dart:io';
 
+import '../utils/TokenManager.dart';
+
 /// A service class responsible for handling all API interactions.
 ///
 /// The [ApiService] class manages HTTP requests to the backend server,
@@ -81,27 +83,24 @@ class ApiService {
   /// - [body]: The JSON body of the POST request.
   ///
   /// Throws an [Exception] if the request fails or the server returns an error.
-  Future<dynamic> post(String endpoint, Map<String, dynamic> body) async {
-    // Retrieve an available base URL
+  Future<dynamic> post(String endpoint, Map<String, dynamic> body, {Map<String, String>? headers}) async {
     String baseUrl = await _getAvailableBaseUrl();
     final url = Uri.parse('$baseUrl/$endpoint');
 
-    // Read the access token from secure storage, if available
-    final token = await const FlutterSecureStorage().read(key: "access_token");
-    final headers = {
+    // Merge default headers with custom headers
+    final defaultHeaders = {
       'Content-Type': 'application/json',
-      if (token != null) 'Authorization': 'Bearer $token', // Include token if present
     };
+    final mergedHeaders = {...defaultHeaders, if (headers != null) ...headers};
 
     print("POST Request to: $url");
     print("Request Body: $body");
 
     try {
-      // Send the POST request with headers and body
       final response = await http
           .post(
         url,
-        headers: headers,
+        headers: mergedHeaders,
         body: jsonEncode(body),
       )
           .timeout(const Duration(seconds: 15)); // Timeout after 15 seconds
@@ -109,19 +108,21 @@ class ApiService {
       print("Response: ${response.statusCode}");
       print("Response Body: ${response.body}");
 
-      // Check if the response status code indicates success
       if (response.statusCode >= 200 && response.statusCode < 300) {
-        return jsonDecode(response.body); // Return the decoded JSON response
+        return jsonDecode(response.body); // Return decoded JSON
+      } else if (response.statusCode == 401) {
+        throw Exception("Unauthorized");
       } else {
-        // Parse error response and throw specific messages
         final errorBody = jsonDecode(response.body);
         throw Exception(errorBody['detail'] ?? 'An unknown error occurred');
       }
     } catch (e) {
       print("POST Request Failed: $e");
-      throw Exception('Failed to make POST request: $e'); // Rethrow as a generic exception
+      throw Exception('Failed to make POST request: $e');
     }
   }
+
+
 
   /// Registers a new user by sending their [name], [email], and [password] to the API.
   ///
@@ -158,24 +159,41 @@ class ApiService {
   Future<dynamic> login(String email, String password) async {
     try {
       final response = await post(
-        'login', // API endpoint for user login
-        {'email': email, 'password': password}, // Request body
+        'login',
+        {'email': email, 'password': password},
       );
 
-      // Extract and store the access token securely if present
-      if (response.containsKey('access_token')) {
+      if (response.containsKey('access_token') && response.containsKey('refresh_token')) {
+        // Store the access token in memory
+        TokenManager().setAccessToken(response['access_token']);
+
+        // Store the refresh token securely
         await const FlutterSecureStorage().write(
-          key: "access_token",
-          value: response['access_token'],
+          key: "refresh_token",
+          value: response['refresh_token'],
         );
-        return {"success": true, "message": "Login successful"};
+
+        // Store the refresh token expiry (consistent with Google login)
+        final DateTime refreshTokenExpiry = DateTime.now().add(Duration(days: 30));
+        await const FlutterSecureStorage().write(
+          key: "refresh_token_expiry",
+          value: refreshTokenExpiry.toIso8601String(),
+        );
+
+        return {
+          "success": true,
+          "message": "Login successful",
+          "access_token": response['access_token'],
+          "refresh_token": response['refresh_token']
+        };
       } else {
         return {"success": false, "message": "Invalid response from server"};
       }
     } catch (e) {
-      return {"success": false, "message": e.toString()}; // Return error message
+      return {"success": false, "message": e.toString()};
     }
   }
+
 
   /// Sends a chat message to the AI model.
   ///
@@ -236,13 +254,14 @@ class ApiService {
     );
   }
 
-
   Future<dynamic> xai_chat(String message, String suffix) async {
     return await post(
       'chat/xai',
       {'message': message, 'model': suffix},
     );
   }
+
+
 
   /// Handles Google Sign-In authentication.
   ///
@@ -251,48 +270,150 @@ class ApiService {
   ///
   /// Throws an [Exception] if the sign-in process fails at any step.
   Future<void> googleLogin() async {
-    // Initialize GoogleSignIn with the required scopes and client ID
     final GoogleSignIn googleSignIn = GoogleSignIn(
       scopes: ['email'],
-      serverClientId:
-      '903732364114-a9d45n9fbroggcu23m7s3f7ti8ce7kf9.apps.googleusercontent.com',
+      serverClientId: '903732364114-a9d45n9fbroggcu23m7s3f7ti8ce7kf9.apps.googleusercontent.com',
     );
 
-    // Attempt to sign in the user
     final GoogleSignInAccount? account = await googleSignIn.signIn();
+    final DateTime refreshTokenExpiry = DateTime.now().add(Duration(days: 30)); // Refresh token expiry
 
-    // If the user cancels the sign-in, throw an exception
     if (account == null) {
       throw Exception('Google Sign In Failed');
     }
 
-    // Retrieve the authentication tokens
     final GoogleSignInAuthentication auth = await account.authentication;
     final token = auth.idToken;
 
-    // If no token is retrieved, throw an exception
     if (token == null) {
       throw Exception('Google Sign failed to provide token');
     }
 
-    // Determine the platform (iOS or Android) for backend processing
     String platform = Platform.isIOS ? 'ios' : 'android';
 
-    // Send the token and platform information to the backend server
     final response = await post('google_login', {
       'token': token,
       'platform': platform,
     });
 
-    // If the response contains an access token, store it securely
-    if (response.containsKey('access_token')) {
+    if (response.containsKey('access_token') && response.containsKey('refresh_token')) {
+      // Store the access token in memory
+      TokenManager().setAccessToken(response['access_token']);
+
+      // Store the refresh token securely
       await const FlutterSecureStorage().write(
-        key: "access_token",
-        value: response['access_token'],
+        key: "refresh_token",
+        value: response['refresh_token'],
       );
+
+      // Store the refresh token expiry
+      await const FlutterSecureStorage().write(
+        key: "refresh_token_expiry",
+        value: refreshTokenExpiry.toIso8601String(),
+      );
+
+      print("Refresh token saved: ${response['refresh_token']}");
+      print("Refresh token expiry: $refreshTokenExpiry");
     } else {
-      // If no access token is received, throw an exception
       throw Exception('Invalid response from server');
     }
   }
+
+  Future<dynamic> refreshToken(String refreshToken) async {
+    try {
+      final response = await post(
+        'refresh_token',
+        {'refresh_token': refreshToken},
+      );
+
+      if (response.containsKey('access_token')) {
+        return {
+          "success": true,
+          "access_token": response['access_token'],
+        };
+      } else {
+        return {"success": false, "message": "Invalid refresh token"};
+      }
+    } catch (e) {
+      return {"success": false, "message": e.toString()};
+    }
+  }
+
+  Future<bool> refreshAccessToken() async {
+    final refreshToken = await const FlutterSecureStorage().read(key: "refresh_token");
+
+    if (refreshToken == null) {
+      print("No refresh token found");
+      return false;
+    }
+
+    try {
+      final response = await post(
+        'refresh_token',
+        {'refresh_token': refreshToken},
+      );
+
+      if (response.containsKey('access_token') && response.containsKey('refresh_token')) {
+
+        // Update the access token in memory
+        TokenManager().setAccessToken(
+          response['access_token'],
+          expiresIn: response['expires_in'],
+        );
+        return true;
+      } else {
+        print("Invalid refresh token response");
+        return false;
+      }
+    } catch (e) {
+      print("Error refreshing access token: $e");
+      return false;
+    }
+  }
+
+  Future<dynamic> makeAuthenticatedRequest(String endpoint, Map<String, dynamic> body) async {
+    try {
+      // Ensure the access token is valid
+      if (!TokenManager().isAccessTokenValid()) {
+        final isRefreshed = await refreshAccessToken();
+        if (!isRefreshed) {
+          throw Exception("Unable to refresh access token");
+        }
+      }
+
+      // Use the valid access token for the API request
+      final accessToken = TokenManager().accessToken;
+
+      final response = await post(endpoint, body, headers: {
+        'Authorization': 'Bearer $accessToken',
+      });
+
+      return response;
+    } catch (e) {
+      // Detect 401 Unauthorized errors and attempt token refresh
+      if (e.toString().contains("401") || e.toString().contains("Unauthorized")) {
+        print("Access token might be expired. Attempting refresh...");
+
+        // Attempt to refresh the access token
+        final isRefreshed = await refreshAccessToken();
+        if (isRefreshed) {
+          // Retry the request with the new access token
+          final newAccessToken = TokenManager().accessToken;
+          final retryResponse = await post(endpoint, body, headers: {
+            'Authorization': 'Bearer $newAccessToken',
+          });
+          return retryResponse;
+        } else {
+          throw Exception("Unable to refresh access token");
+        }
+      }
+
+      // Re-throw other exceptions
+      throw Exception("API Request Failed: $e");
+    }
+  }
+
+
+
+
 }
