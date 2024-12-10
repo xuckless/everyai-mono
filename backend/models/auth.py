@@ -13,8 +13,12 @@ class SignUpRequest(BaseModel):
 
 class TokenResponse(BaseModel):
     access_token: str
+    refresh_token: str
     token_type: str = "bearer"
 
 class GoogleLoginRequest(BaseModel):
     token: str
     platform: str
+
+class TokenRequest(BaseModel):
+    refresh_token: str

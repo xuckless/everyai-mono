@@ -1,4 +1,5 @@
 # routers/auth_router.py
+from datetime import datetime, timezone
 
 from fastapi import (
     APIRouter,
@@ -6,13 +7,15 @@ from fastapi import (
     HTTPException,
     status,
 )
+
+import jwt
 from sqlalchemy.orm import Session
-from utils.security import verify_google_token
+from utils.security import verify_google_token, generate_refresh_token, generate_refresh_token_expiry
 
 from config import (
     GOOGLE_CLIENT_ID_IOS,
     GOOGLE_CLIENT_ID_ANDROID,
-    GOOGLE_CLIENT_ID_WEB
+    GOOGLE_CLIENT_ID_WEB,
 )
 
 from db.db import get_db
@@ -22,13 +25,14 @@ from models.auth import (
     LoginRequest,
     SignUpRequest,
     TokenResponse,
-    GoogleLoginRequest
+    GoogleLoginRequest, TokenRequest
 )
 from utils.security import (
     verify_password,
     get_password_hash,
     create_access_token,
 )
+from utils.validate_current_user import get_current_user
 
 auth_router = APIRouter()
 
@@ -50,8 +54,20 @@ def sign_up(request: SignUpRequest, db: Session = Depends(get_db)):
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-    token = create_access_token(subject=str(new_user.id))
-    return TokenResponse(access_token=token)
+
+    #generate tokens
+    access_token = create_access_token(subject=str(new_user.id))
+    refresh_token = generate_refresh_token()
+    refresh_token_expiry = generate_refresh_token_expiry()
+
+    #save the refresh token to the database
+    new_user.refresh_token = refresh_token
+    new_user.refresh_token_expiry = refresh_token_expiry
+    db.commit()
+
+    return TokenResponse(
+        access_token=access_token, refresh_token=refresh_token
+    )
 
 @auth_router.post("/login", response_model=TokenResponse)
 def login(request: LoginRequest, db: Session = Depends(get_db)):
@@ -61,9 +77,19 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
-    token = create_access_token(subject=str(user.id))
-    return TokenResponse(access_token=token)
 
+    #generates tokens
+    access_token = create_access_token(subject=str(user.id)) #access token
+    refresh_token = generate_refresh_token() #refresh token
+    refresh_token_expiry = generate_refresh_token_expiry() #refresh token expiry
+
+    #save the refresh token to the database
+    user.refresh_token = refresh_token
+    user.refresh_token_expiry = refresh_token_expiry
+    db.commit()
+
+    return TokenResponse(access_token=access_token,
+                         refresh_token=refresh_token)
 
 @auth_router.post("/google_login", response_model=TokenResponse)
 def google_login(request: GoogleLoginRequest, db: Session = Depends(get_db)):
@@ -99,5 +125,60 @@ def google_login(request: GoogleLoginRequest, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(user)
 
-    token = create_access_token(subject=str(user.id))
-    return TokenResponse(access_token=token)
+    #generates tokens
+    access_token = create_access_token(subject=str(user.id)) #access token
+    refresh_token = generate_refresh_token() #refresh token
+    refresh_token_expiry = generate_refresh_token_expiry()
+
+    #save the refresh token to the database
+    user.refresh_token = refresh_token
+    user.refresh_token_expiry = refresh_token_expiry
+    db.commit()
+
+    return TokenResponse(access_token=access_token,
+                         refresh_token=refresh_token)
+
+@auth_router.post("/refresh_token", response_model=TokenResponse)
+def refresh_token(request: TokenRequest, db: Session = Depends(get_db)):
+    refresh_token = request.refresh_token
+    print(f"Received refresh_token: {refresh_token}")
+
+    # Check if the refresh token exists in the database
+    user = db.query(User).filter(User.refresh_token == refresh_token).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token",
+        )
+
+    print(f"User found: {user}")
+
+    # Generate a new access token (keep the same refresh token)
+    new_access_token = create_access_token(subject=str(user.id))
+
+    print(f"Returning new access token: {new_access_token}")
+    return TokenResponse(
+        access_token=new_access_token,
+        refresh_token=refresh_token,  # Return the same refresh token
+    )
+
+
+@auth_router.delete("/delete-account", status_code=status.HTTP_200_OK)
+def delete_account(db: Session = Depends(get_db),user_id: str = Depends(get_current_user),):
+    # Retrieve the user
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    # Revoke the refresh token
+    user.refresh_token = None
+
+    # Delete the user from the database
+    db.delete(user)
+    db.commit()
+
+    return {"message": "Account deleted successfully"}

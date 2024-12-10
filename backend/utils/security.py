@@ -1,7 +1,8 @@
 # utils/security.py
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from http.client import responses
+from secrets import token_urlsafe
 from typing import Optional
 import requests
 
@@ -22,12 +23,20 @@ def get_password_hash(password: str) -> str:
 
 def create_access_token(subject: str, expires_delta: Optional[timedelta] = None) -> str:
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode = {"exp": expire, "sub": subject}
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+#generate the long-lived refresh token
+def generate_refresh_token():
+    return token_urlsafe(64)
+
+def generate_refresh_token_expiry(days=30):
+    print(datetime.now(timezone.utc) + timedelta(days=days))
+    return datetime.now(timezone.utc) + timedelta(days=days)
 
 def verify_google_token(token: str, client_id: str):
     try:

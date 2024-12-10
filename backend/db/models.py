@@ -14,4 +14,6 @@ class User(Base):
     email = Column(String, unique=True, nullable=False)
     password_hash = Column(String, unique=True, nullable=True)
     google_id = Column(String, nullable=True)
+    refresh_token = Column(String, nullable=True)
+    refresh_token_expiry = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=func.now())
