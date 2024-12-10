@@ -51,7 +51,7 @@ class _LibrarySquareState extends State<LibrarySquare> {
 
     return Container(
       width: 270, // Sets the width of the library square
-      height: 250, // Sets the height of the library square
+      height: 317, // Sets the height of the library square
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(8), // Rounds the corners of the container
         color: const Color(0xFF2A3041), // Sets the background color
@@ -59,73 +59,69 @@ class _LibrarySquareState extends State<LibrarySquare> {
       child: Padding(
         padding: const EdgeInsets.all(16.0), // Adds padding inside the container
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start, // Aligns children to the start
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            // Title of the library square
-            Align(
-              alignment: Alignment.center, // Centers the title horizontally
-              child: Text(
-                widget.title,
-                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                  color: Colors.white, // Sets the text color to white
-                  fontSize: 16, // Sets the font size
-                ),
+            Text(
+              widget.title,
+              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                color: Colors.white, // Sets the text color to white
+                fontSize: 16, // Sets the font size
               ),
             ),
-            const SizedBox(height: 8), // Adds vertical spacing below the title
-
-            // Builds a list of chat models
-            ListView.builder(
-              padding: EdgeInsets.zero, // Removes default padding
-              shrinkWrap: true, // Sizes the list to fit its children
-              physics: const NeverScrollableScrollPhysics(), // Disables scrolling
-              itemCount: filteredChatModels.length, // Number of items in the list
-              itemBuilder: (context, index) {
-                final chat = filteredChatModels[index]; // Retrieves the current chat model
-                return Row(
-                  children: [
-                    // Displays the model's image
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(20), // Rounds the image corners
-                      child: Image.asset(
-                        chat['picture'], // Path to the model's image asset
-                        width: 32, // Sets the image width
-                        height: 32, // Sets the image height
-                        fit: BoxFit.cover, // Ensures the image scales to cover the space
-                      ),
-                    ),
-                    const SizedBox(width: 8), // Adds spacing between image and text
-
-                    // Displays the model's name as a separate button
-                    Expanded(
-                      child: GestureDetector(
-                        onTap: () {
-                          widget.onModelSelected(chat["name"]); // Invokes the callback with the model name
-                          Navigator.pop(context); // Closes the drawer
-                        },
-                        child: Text(
-                          chat['name'], // The name of the chat model
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: Colors.white70, // Sets the text color to white with opacity
-                            fontSize: 18, // Sets the font size
+            Expanded(
+              child: ListView.builder(
+                padding: EdgeInsets.zero, // Removes default padding
+                itemCount: filteredChatModels.length, // Number of items in the list
+                itemBuilder: (context, index) {
+                  final chat = filteredChatModels[index]; // Retrieves the current chat model
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4.0), // Adds spacing between rows
+                    child: Row(
+                      children: [
+                        // Displays the model's image
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(20), // Rounds the image corners
+                          child: Image.asset(
+                            chat['picture'], // Path to the model's image asset
+                            width: 32, // Sets the image width
+                            height: 32, // Sets the image height
+                            fit: BoxFit.cover, // Ensures the image scales to cover the space
                           ),
                         ),
-                      ),
-                    ),
+                        const SizedBox(width: 8), // Adds spacing between image and text
 
-                    // Adds a `(-)` button to remove the model from "My Library"
-                    IconButton(
-                      onPressed: () {
-                        _removeModel(chat['name']); // Calls the method to remove the model
-                      },
-                      icon: const Icon(
-                        Icons.remove, // The `(-)` icon
-                        color: Colors.white, // Sets the icon color to white
-                      ),
+                        // Displays the model's name as a selectable button
+                        Expanded(
+                          child: GestureDetector(
+                            onTap: () {
+                              widget.onModelSelected(chat['name']); // Invokes the callback with the model name
+                              Navigator.pop(context); // Closes the drawer
+                            },
+                            child: Text(
+                              chat['name'], // The name of the chat model
+                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                color: Colors.white70, // Sets the text color to white with opacity
+                                fontSize: 18, // Sets the font size
+                              ),
+                            ),
+                          ),
+                        ),
+
+                        // Adds a `(-)` button to remove the model from "My Library"
+                        IconButton(
+                          onPressed: () {
+                            _removeModel(chat['name']); // Calls the method to remove the model
+                          },
+                          icon: const Icon(
+                            Icons.remove, // The `(-)` icon
+                            color: Colors.white, // Sets the icon color to white
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
-                );
-              },
+                  );
+                },
+              ),
             ),
           ],
         ),

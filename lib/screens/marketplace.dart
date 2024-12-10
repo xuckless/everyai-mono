@@ -24,44 +24,44 @@ class _MarketplaceState extends State<Marketplace>{
   }
 
   @override
-  Widget build(BuildContext context){
+  Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF181C26), // Sets the background color
+      backgroundColor: const Color(0xFF181C26),
       appBar: DefaultAppBar(
-          subtitle: 'Marketplace',
+        subtitle: 'Marketplace',
         onPopUpTap: () {},
         popUpText: " ",
       ),
-
       body: Stack(
         children: [
-          ListView.builder(
-            itemCount: chatModels
-              .where((model) => !chatModelAddedStatus[model['name']]!)
-              .length,
-            itemBuilder: (context, index) {
-              // Get models that are false
-              final model = chatModels
+          Expanded(
+            child: ListView.builder(
+              itemCount: chatModels
                   .where((model) => !chatModelAddedStatus[model['name']]!)
-                  .toList()[index];
-              return ListTile(
-                leading: Image.asset(
-                  model['picture'],
-                  width: 50,
-                  height: 50,
-                ),
-                title: Text(
-                  model['name'],
-                  style: TextStyle(color: Colors.white),
-                ),
-                trailing: ElevatedButton(
+                  .length,
+              itemBuilder: (context, index) {
+                final model = chatModels
+                    .where((model) => !chatModelAddedStatus[model['name']]!)
+                    .toList()[index];
+                return ListTile(
+                  leading: Image.asset(
+                    model['picture'],
+                    width: 50,
+                    height: 50,
+                  ),
+                  title: Text(
+                    model['name'],
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                  trailing: ElevatedButton(
                     onPressed: () => _toggleModel(model['name']),
-                    child: Icon(Icons.add)),
-              );
-            }
+                    child: const Icon(Icons.add),
+                  ),
+                );
+              },
+            ),
           ),
         ],
       ),
     );
-  }
-}
+  }}

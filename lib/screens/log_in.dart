@@ -73,16 +73,16 @@ class _MyHomePageState extends State<MyHomePage> {
   /// performing actual authentication. Uncomment the [LoginHandler] logic
   /// to enable real login functionality.
   void _handleLogin() {
-    // navigateToPage(context, const ChatScreen(title: "Chat Screen"));
+    navigateToPage(context, const ChatScreen(title: "Chat Screen"));
     // Uncomment the following lines to enable real login functionality
 
-    _loginService.handleLogin(
-        context: context,
-        formKey: _formKey,
-        emailController: _emailController,
-        passwordController: _passwordController,
-        setErrorMessage: setErrorMessage,
-        setLoading: setLoading);
+    // _loginService.handleLogin(
+    //     context: context,
+    //     formKey: _formKey,
+    //     emailController: _emailController,
+    //     passwordController: _passwordController,
+    //     setErrorMessage: setErrorMessage,
+    //     setLoading: setLoading);
 
   }
 
