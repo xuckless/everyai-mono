@@ -53,4 +53,11 @@ class ChatService {
       {'message': message, 'model': suffix}, // Request body
     );
   }
+
+  Future<dynamic> claudeChat(String message, String suffix) async {
+    return await _apiService.post(
+      'chat/claude', // API endpoint for Claude chat
+      {'message': message, 'model': suffix}, // Request body
+    );
+  }
 }
