@@ -4,11 +4,21 @@ import json
 
 import config
 from openai import OpenAI
+import requests
+
 
 import google.generativeai as genai
+import anthropic
 import os
 
+from config import CLAUDE_API_KEY
+
 genai.configure(api_key=config.GEMINI_API_KEY)
+
+#initialize claude client
+client = anthropic.Anthropic(
+    api_key=config.CLAUDE_API_KEY,
+)
 
 
 # Initialize the OpenAI client
@@ -83,7 +93,6 @@ def gemini_response(message: str, model: str) -> str:
 
 
 
-
 xai_message_history = [
             {
                 "role": "system",
@@ -91,7 +100,6 @@ xai_message_history = [
             },
 ]
 
-import requests
 
 
 def xai_response(message: str, model: str) -> str:
@@ -125,3 +133,33 @@ def xai_response(message: str, model: str) -> str:
         # If the structure isn't what we expect or doesn't have the fields,
         # just return an empty string.
         return "xai is under maintainance"
+
+
+import anthropic
+
+import anthropic
+
+def claude_response(message: str, model: str, max_tokens: int) -> str:
+    try:
+        # Initialize the Anthropic client
+        client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)  # Replace with your actual API key
+
+        # Use the Messages API
+        response = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            messages=[
+                {"role": "user", "content": message}
+            ]
+        )
+
+        # Extract the content text
+        if response.content and isinstance(response.content, list):
+            # Join text from all TextBlock elements if there are multiple
+            return ''.join(block.text for block in response.content if hasattr(block, 'text'))
+        else:
+            return "No valid content found in the response."
+    except Exception as ex:
+        print(f"Error occurred: {ex}")
+        return f"An error occurred while generating: {ex}"
+

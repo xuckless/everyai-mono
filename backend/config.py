@@ -42,3 +42,7 @@ if not GEMINI_API_KEY:
 GROK_API_KEY = os.getenv("GROK_API_KEY")
 if not GROK_API_KEY:
     raise ValueError("No GROK_API_KEY found in the environment")
+
+CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
+if not CLAUDE_API_KEY:
+    raise ValueError("No CLAUDE_API_KEY found in the environment")

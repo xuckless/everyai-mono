@@ -61,13 +61,9 @@ async def gpt_gemini(chat: GPTRequestModel):
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
-
-
-
 @gpt_router.post('/llama', response_model=ChatResponse)
 async def gpt_llama(chat: GPTRequestModel):
     return JSONResponse(content={"message": "Llama models are yet to be set up."}, media_type="application/json; charset=utf-8")
-
 
 
 @gpt_router.post('/xai', response_model=ChatResponse)
@@ -85,3 +81,24 @@ async def gpt_xai(chat: GPTRequestModel):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+@gpt_router.post('/claude', response_model=ChatResponse)
+async def anthropic_claude(chat: GPTRequestModel):
+    try:
+        prompt = chat.message.strip()
+        model = chat.model.lower()
+        max_tokens = chat.max_tokens
+
+        print(f"Using model: {model}")
+
+        # Call the SDK-based response function
+        response_text = responses.claude_response(prompt, model, max_tokens)
+
+        return JSONResponse(
+            content={"message": response_text},
+            media_type="application/json; charset=utf-8"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+

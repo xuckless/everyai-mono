@@ -12,3 +12,4 @@ class ChatResponse(BaseModel):
 class GPTRequestModel(BaseModel):
     message: str
     model: str
+    max_tokens: int=1024 #default value for max_tokens of model output; not all models require this parameter
