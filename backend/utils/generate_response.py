@@ -15,12 +15,6 @@ from config import CLAUDE_API_KEY
 
 genai.configure(api_key=config.GEMINI_API_KEY)
 
-#initialize claude client
-client = anthropic.Anthropic(
-    api_key=config.CLAUDE_API_KEY,
-)
-
-
 # Initialize the OpenAI client
 client = OpenAI()
 client.api_key = config.OPENAI_API_KEY
@@ -133,11 +127,6 @@ def xai_response(message: str, model: str) -> str:
         # If the structure isn't what we expect or doesn't have the fields,
         # just return an empty string.
         return "xai is under maintainance"
-
-
-import anthropic
-
-import anthropic
 
 def claude_response(message: str, model: str, max_tokens: int) -> str:
     try:
