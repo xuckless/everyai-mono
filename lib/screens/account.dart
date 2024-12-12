@@ -27,7 +27,9 @@ class _AccountState extends State<Account>{
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: DefaultAppBar(subtitle: 'Account', popUpText: ''),
+      appBar: DefaultAppBar(
+        popUpText: '',
+      ),
 
       body: Expanded(
         child: Column (

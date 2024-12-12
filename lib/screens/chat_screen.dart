@@ -50,6 +50,9 @@ class _ChatScreenState extends State<ChatScreen> {
   // This is what the pop up menu displays on the user screen
   String selectedVersionDisplay = "GPT 4o mini";
 
+  /// Image asset path for the currently selected model.
+  String selectedModelImage = "assets/models/chatgpt.webp"; // Default image
+
   @override
   void initState() {
     super.initState();
@@ -67,6 +70,7 @@ class _ChatScreenState extends State<ChatScreen> {
         .toList();
     selectedVersion = availableVersions.isNotEmpty ? availableVersions[0]["name"]! : "";
     selectedVersionDisplay = availableVersions.isNotEmpty ? availableVersions[0]["suffix"]! : "";
+    selectedModelImage = modelDetails['picture'];
   }
 
   /// Updates the selected chat model and resets the available versions.
@@ -77,7 +81,7 @@ class _ChatScreenState extends State<ChatScreen> {
   /// - [modelName]: The name of the model to select.
   void _updateModel(String modelName) {
     setState(() {
-      selectedModel = modelName; // Ensure subtitle displays model name
+      selectedModel = modelName; // Ensure image displays model name
       _updateAvailableVersions(modelName); // Refresh available versions
       _messages.clear(); // Clear chat messages when switching models
     });
@@ -169,9 +173,14 @@ class _ChatScreenState extends State<ChatScreen> {
     return Stack(
       children: [
         Scaffold(
-          backgroundColor: const Color(0xFF181C26), // Sets the background color
+          backgroundColor: const Color(0xFF181C26),
           appBar: DefaultAppBar(
-            subtitle: selectedModel, // Display the model name as the subtitle
+            image: Image.asset(
+              selectedModelImage,
+              height: 35,
+              width: 35,
+              fit: BoxFit.cover, // Adjust fit as needed
+            ),
             popUpText: selectedVersionDisplay,
             onPopUpTap: () {
               setState(() {
@@ -226,7 +235,7 @@ class _ChatScreenState extends State<ChatScreen> {
               // Popup Menu Positioned at the desired location
               Positioned(
                 top: 75 + MediaQuery.of(context).padding.top + 8, // AppBar height + status bar + spacing
-                right: 16, // Position menu to the right
+                right: 5, // Position menu to the right
                 child: Material(
                   color: Colors.transparent,
                   child: Container(
@@ -245,7 +254,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     child: ChatPopUpMenu(
                       availableVersions: availableVersions,
                       onVersionSelected: (versionName) {
-                        _updateVersion(versionName); // Update the version and subtitle
+                        _updateVersion(versionName); // Update the version and image
                         setState(() {
                           _isMenuVisible = false; // Hide menu after selection
                         });

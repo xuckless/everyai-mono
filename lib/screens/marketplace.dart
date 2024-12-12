@@ -28,9 +28,7 @@ class _MarketplaceState extends State<Marketplace>{
     return Scaffold(
       backgroundColor: const Color(0xFF181C26),
       appBar: DefaultAppBar(
-        subtitle: 'Marketplace',
-        onPopUpTap: () {},
-        popUpText: " ",
+        popUpText: '',
       ),
       body: Stack(
         children: [

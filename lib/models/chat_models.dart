@@ -38,10 +38,10 @@ final List<Map<String, dynamic>> chatModels = [
   {
     "name": "Gemini",
     "versions": [
-      {"name": "gemini-1.5-flash-8b", "suffix": "Gemini 1.5 Flash 8B"},
-      {"name": "gemini-1.5-flash", "suffix": "Gemini 1.5 Flash"},
-      {"name": "gemini-1.5-pro", "suffix": "Gemini 1.5 Pro"},
-      {"name": "gemini-1.0-pro", "suffix": "Gemini 1.0 Pro"},
+      {"name": "gemini-1.5-flash-8b", "suffix": "1.5 Flash 8B"},
+      {"name": "gemini-1.5-flash", "suffix": "1.5 Flash"},
+      {"name": "gemini-1.5-pro", "suffix": "1.5 Pro"},
+      {"name": "gemini-1.0-pro", "suffix": "1.0 Pro"},
     ],
     "function": (String message, String suffix) => chatService.geminiChat(message, suffix),
     "picture": "assets/models/gemini.png",
