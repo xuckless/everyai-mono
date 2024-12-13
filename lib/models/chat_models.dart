@@ -19,9 +19,9 @@ final List<Map<String, dynamic>> chatModels = [
   {
     "name": "ChatGPT",
     "versions": [
-      {"name": "GPT-4o-mini", "suffix": "GPT 4o mini"},
-      {"name": "GPT-3.5-turbo", "suffix": "GPT 3.5 Turbo"},
-      {"name": "GPT-4o", "suffix": "GPT 4o"}
+      {"name": "GPT-4o-mini", "suffix": " 4o mini"},
+      {"name": "GPT-3.5-turbo", "suffix": " 3.5 Turbo"},
+      {"name": "GPT-4o", "suffix": " 4o"}
     ],
     "function": (String message, String suffix) => chatService.gptChat(message, suffix),
     "picture": "assets/models/chatgpt.webp",
@@ -49,9 +49,9 @@ final List<Map<String, dynamic>> chatModels = [
   {
     "name": "Claude",
     "versions": [
-      {"name": "claude-3-5-haiku-latest", "suffix": "Claude 3 Haiku"},
-      {"name": "claude-3-5-sonnet-latest", "suffix": "Claude 3 Sonnet"},
-      {"name": "claude-3-opus-latest", "suffix": "Claude 3 Opus"},
+      {"name": "claude-3-5-haiku-latest", "suffix": " 3.5 Haiku"},
+      {"name": "claude-3-5-sonnet-latest", "suffix": " 3.5 Sonnet"},
+      {"name": "claude-3-opus-latest", "suffix": " 3 Opus"},
     ],
     "function": (String message, String suffix) => chatService.claudeChat(message, suffix),
     "picture": "assets/models/claude.webp",
@@ -62,7 +62,7 @@ final List<Map<String, dynamic>> chatModels = [
       {"name": "grok-beta", "suffix": "Grok Beta"},
     ],
     "function": (String message, String suffix) => chatService.xaiChat(message, suffix),
-    "picture": "assets/models/xai.webp",
+    "picture": "assets/models/xai.jpg",
   },
 ];
 

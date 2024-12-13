@@ -177,8 +177,8 @@ class _ChatScreenState extends State<ChatScreen> {
           appBar: DefaultAppBar(
             image: Image.asset(
               selectedModelImage,
-              height: 35,
-              width: 35,
+              height: 25,
+              width: 25,
               fit: BoxFit.cover, // Adjust fit as needed
             ),
             popUpText: selectedVersionDisplay,

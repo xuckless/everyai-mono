@@ -13,7 +13,7 @@ class DefaultAppBar extends StatelessWidget implements PreferredSizeWidget {
   const DefaultAppBar({
     super.key,
     this.title = "EveryAI",
-    this.image, // image is now optional and can be any widget
+    this.image,
     this.popUp,
     this.actions,
     this.customLeading,
