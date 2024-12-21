@@ -25,6 +25,7 @@ final List<Map<String, dynamic>> chatModels = [
     ],
     "function": (String message, String suffix) => chatService.gptChat(message, suffix),
     "picture": "assets/models/chatgpt.webp",
+    "category": "Text-To-Text",
   },
   {
     "name": "Llama",
@@ -34,6 +35,7 @@ final List<Map<String, dynamic>> chatModels = [
     ],
     "function": (String message, String suffix) => chatService.llamaChat(message, suffix),
     "picture": "assets/models/Llama.jpeg",
+    "category": "Text-To-Text",
   },
   {
     "name": "Gemini",
@@ -45,6 +47,7 @@ final List<Map<String, dynamic>> chatModels = [
     ],
     "function": (String message, String suffix) => chatService.geminiChat(message, suffix),
     "picture": "assets/models/gemini.png",
+    "category": "Text-To-Text",
   },
   {
     "name": "Claude",
@@ -55,6 +58,7 @@ final List<Map<String, dynamic>> chatModels = [
     ],
     "function": (String message, String suffix) => chatService.claudeChat(message, suffix),
     "picture": "assets/models/claude.webp",
+    "category": "Text-To-Text",
   },
   {
     "name": "X-Ai",
@@ -63,6 +67,7 @@ final List<Map<String, dynamic>> chatModels = [
     ],
     "function": (String message, String suffix) => chatService.xaiChat(message, suffix),
     "picture": "assets/models/xai.jpg",
+    "category": "Text-To-Image",
   },
 ];
 
