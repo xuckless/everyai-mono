@@ -70,7 +70,7 @@ class ChatService {
 
     if (response.statusCode == 200) {
       // Check if it’s actually an image
-      if (response.headers['content-type']?.contains('image/png') ?? false) {
+      if (response.headers['content-type']?.contains('image/webp') ?? false) {
         // Return the binary
         return response.bodyBytes;
       } else {

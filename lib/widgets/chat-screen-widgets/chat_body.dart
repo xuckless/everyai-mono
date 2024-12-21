@@ -4,32 +4,42 @@ import 'chat_text_form_field.dart';
 
 /// A widget that represents the main body of the chat interface.
 ///
-/// The `ChatBody` widget handles the display of chat messages, both text and images,
-/// in a scrollable list. It also provides a text input field for the user to send
-/// messages. This widget leverages custom widgets like [ChatBox] for text messages
-/// and [ChatTextFormField] for the input area.
+/// The `ChatBody` widget is responsible for displaying a list of chat messages,
+/// handling text input, and rendering user-generated and AI-generated content, including images.
+/// This widget manages the layout of chat bubbles and input fields, ensuring smooth interaction.
 class ChatBody extends StatelessWidget {
-  /// A list of messages to display in the chat. Each message is a `Map` that can contain:
-  /// - `text`: The message text to display.
-  /// - `image`: The byte data of an image (if the message contains an image).
-  /// - `isSentByUser`: A boolean flag indicating if the message was sent by the user.
+  /// A list of chat messages represented as maps.
+  ///
+  /// Each map contains keys such as:
+  /// - `'text'`: The textual content of the message.
+  /// - `'image'`: The binary data for an image message (optional).
+  /// - `'isSentByUser'`: A boolean indicating if the message was sent by the user.
   final List<Map<String, dynamic>> messages;
 
-  /// A controller to handle the input text for the message field.
+  /// Controller for managing text input in the message field.
+  ///
+  /// This controller allows the app to clear, modify, or read the content
+  /// of the text input field.
   final TextEditingController messageController;
 
-  /// A [FocusNode] to manage the focus state of the input field.
+  /// A focus node to manage focus on the text input field.
+  ///
+  /// This focus node can be used to shift focus to or away from the input field,
+  /// controlling keyboard visibility and focus behavior.
   final FocusNode focusNode;
 
   /// A callback function triggered when the user sends a message.
+  ///
+  /// This function handles the event of sending a message, allowing
+  /// communication between the input field and the chat message list.
   final VoidCallback onSendMessage;
 
-  /// Creates an instance of [ChatBody].
+  /// Constructs the `ChatBody` widget.
   ///
-  /// - [messages]: The list of chat messages to display.
-  /// - [messageController]: Controller for handling message input.
-  /// - [focusNode]: Focus node to manage input field focus.
-  /// - [onSendMessage]: Callback function to handle sending messages.
+  /// - [messages]: A list of chat messages to display.
+  /// - [messageController]: Controller for text input.
+  /// - [focusNode]: Focus node for the input field.
+  /// - [onSendMessage]: Callback triggered upon sending a message.
   const ChatBody({
     required this.messages,
     required this.messageController,
@@ -42,71 +52,67 @@ class ChatBody extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // Expanded widget allows the message list to take up remaining space
+        // Expanded widget to ensure the message list takes available space
         Expanded(
           child: SingleChildScrollView(
-            reverse: true,  // Ensures new messages are visible at the bottom
+            reverse: true,  // Scrolls to the bottom when new messages arrive
             child: Container(
-              color: Colors.transparent,  // Background remains transparent
+              color: Colors.transparent,
               child: Column(
-                // Maps each message to either an image or text widget
                 children: messages.map((message) {
                   if (message.containsKey('image')) {
-                    // If the message contains an image, render it with styling
+                    // Renders image messages
                     return Align(
-                      alignment: Alignment.centerLeft,  // Align images to the left
+                      alignment: Alignment.centerLeft,  // Aligns images to the left
                       child: Padding(
                         padding: const EdgeInsets.symmetric(
-                          vertical: 8.0,
-                          horizontal: 10.0,
-                        ),  // Add vertical padding and slight horizontal spacing
+                            vertical: 8.0, horizontal: 10.0),  // Adds vertical padding
                         child: Container(
                           decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(12),  // Rounded corners
+                            borderRadius: BorderRadius.circular(12),
                             boxShadow: [
                               BoxShadow(
-                                color: Colors.black.withOpacity(0.15),  // Shadow effect
+                                color: Colors.black.withOpacity(0.15),
                                 blurRadius: 10,
                                 spreadRadius: 1,
-                                offset: Offset(0, 4),  // Shadow below the image
+                                offset: Offset(0, 4),
                               ),
                             ],
                           ),
                           child: ClipRRect(
-                            borderRadius: BorderRadius.circular(12),  // Clip image to rounded corners
+                            borderRadius: BorderRadius.circular(12),
                             child: Image.memory(
-                              message['image'],  // Display image from byte data
-                              width: MediaQuery.of(context).size.width * 0.75,  // 75% of screen width
-                              height: 250,  // Fixed height for images
-                              fit: BoxFit.cover,  // Scale and crop the image to fit
+                              message['image'],
+                              width: MediaQuery.of(context).size.width * 0.75,
+                              height: 250,
+                              fit: BoxFit.cover,  // Ensures images scale without distortion
                             ),
                           ),
                         ),
                       ),
                     );
                   } else {
-                    // Render text messages using the custom ChatBox widget
+                    // Renders text-based chat messages
                     return ChatBox(
-                      message: message['text'] ?? '',  // Display text or empty string
-                      isSentByUser: message['isSentByUser'],  // Determines message alignment (left/right)
+                      message: message['text'] ?? '',
+                      isSentByUser: message['isSentByUser'],
                     );
                   }
-                }).toList(),  // Convert mapped messages to a list of widgets
+                }).toList(),
               ),
             ),
           ),
         ),
-        // Row for message input at the bottom of the chat screen
+        // Row containing the text input field and send button
         Row(
           children: [
-            // Text input field for composing messages
             Expanded(
               child: Padding(
-                padding: const EdgeInsets.all(8.0),  // Padding around the input field
+                padding: const EdgeInsets.all(8.0),
                 child: ChatTextFormField(
-                  messageController: messageController,  // Attach controller to input field
-                  focusNode: focusNode,  // Manage input focus state
-                  onSendMessage: onSendMessage,  // Triggered when user sends a message
+                  messageController: messageController,
+                  focusNode: focusNode,
+                  onSendMessage: onSendMessage,
                 ),
               ),
             ),
