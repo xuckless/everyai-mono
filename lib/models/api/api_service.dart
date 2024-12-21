@@ -1,5 +1,3 @@
-// ./lib/models/api_service.dart
-
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -80,11 +78,13 @@ class ApiService {
   ///
   /// Returns the decoded JSON response if the request is successful.
   ///
+  /// Throws an [Exception] if the request fails or the server returns an error.
+  ///
   /// - [endpoint]: The API endpoint to send the POST request to.
   /// - [body]: The JSON body of the POST request.
-  ///
-  /// Throws an [Exception] if the request fails or the server returns an error.
-  Future<dynamic> post(String endpoint, Map<String, dynamic> body, {Map<String, String>? headers}) async {
+  /// - [headers]: Optional additional headers for the request.
+  Future<dynamic> post(String endpoint, Map<String, dynamic> body,
+      {Map<String, String>? headers}) async {
     String baseUrl = await _getAvailableBaseUrl();
     final url = Uri.parse('$baseUrl/$endpoint');
 
@@ -123,6 +123,46 @@ class ApiService {
     }
   }
 
+  /// Sends a POST request without decoding the response (for raw data such as images).
+  ///
+  /// This method returns the raw [http.Response] without attempting to decode the body.
+  ///
+  /// - [endpoint]: The API endpoint to send the POST request to.
+  /// - [body]: The JSON body of the request.
+  /// - [headers]: Optional headers to include in the request.
+  Future<http.Response> postRaw(String endpoint, Map<String, dynamic> body,
+      {Map<String, String>? headers}) async {
+    String baseUrl = await _getAvailableBaseUrl();
+    final url = Uri.parse('$baseUrl/$endpoint');
+
+    final defaultHeaders = {
+      'Content-Type': 'application/json',
+    };
+    final mergedHeaders = {...defaultHeaders, if (headers != null) ...headers};
+
+    print("POST Request to: $url");
+    print("Request Body: $body");
+
+    try {
+      final response = await http
+          .post(
+        url,
+        headers: mergedHeaders,
+        body: jsonEncode(body),
+      )
+          .timeout(const Duration(seconds: 15));
+
+      print("Response: ${response.statusCode}");
+      return response;
+    } catch (e) {
+      print("POST Raw Request Failed: $e");
+      throw Exception('Failed to make POST RAW request: $e');
+    }
+  }
+
+  /// Refreshes the user's access token using a refresh token.
+  ///
+  /// Returns a map containing the new access token or an error message if the refresh fails.
   Future<dynamic> refreshToken(String refreshToken) async {
     try {
       final response = await post(
@@ -143,50 +183,25 @@ class ApiService {
     }
   }
 
-  Future<dynamic> makeAuthenticatedRequest(String endpoint, Map<String, dynamic> body, AuthService authService) async {
+  /// Sends an authenticated request to the server, refreshing the token if necessary.
+  ///
+  /// If the request fails due to an expired token, the method attempts to refresh
+  /// the access token and retries the request.
+  Future<dynamic> makeAuthenticatedRequest(
+      String endpoint, Map<String, dynamic> body, AuthService authService) async {
     try {
-      // Ensure the access token is valid
       if (!TokenManager().isAccessTokenValid()) {
         final isRefreshed = await authService.refreshAccessToken();
         if (!isRefreshed) {
           throw Exception("Unable to refresh access token");
         }
       }
-
-      // Use the valid access token for the API request
       final accessToken = TokenManager().accessToken;
-
-      final response = await post(endpoint, body, headers: {
+      return await post(endpoint, body, headers: {
         'Authorization': 'Bearer $accessToken',
       });
-
-      return response;
     } catch (e) {
-      // Detect 401 Unauthorized errors and attempt token refresh
-      if (e.toString().contains("401") || e.toString().contains("Unauthorized")) {
-        print("Access token might be expired. Attempting refresh...");
-
-        // Attempt to refresh the access token using AuthService
-        final isRefreshed = await authService.refreshAccessToken();
-        if (isRefreshed) {
-          // Retry the request with the new access token
-          final newAccessToken = TokenManager().accessToken;
-          final retryResponse = await post(endpoint, body, headers: {
-            'Authorization': 'Bearer $newAccessToken',
-          });
-          return retryResponse;
-        } else {
-          throw Exception("Unable to refresh access token");
-        }
-      }
-
-      // Re-throw other exceptions
       throw Exception("API Request Failed: $e");
     }
   }
-
-
-
-
-
 }

@@ -2,16 +2,15 @@ import 'package:flutter/material.dart';
 import '../models/chat_models.dart'; // Importing the chat models metadata
 import '../widgets/app-bar-widgets/default_app_bar.dart';
 import '../widgets/my-library-widgets/menu_drawer.dart';
-// import '../models/api_service.dart';
 import '../widgets/chat-screen-widgets/chat_body.dart';
+import 'dart:typed_data';
 import '../widgets/app-bar-widgets/chat_pop_up_menu.dart'; // Import the ChatPopUpMenu
 
 /// The main screen of the application where users can interact with chat functionalities.
 ///
-/// The `ChatScreen` widget provides a user interface for displaying chat messages,
-/// sending new messages, and selecting different chat models. It includes features such
-/// as a custom app bar, navigation drawer, chat body, and a popup menu for selecting
-/// chat versions.
+/// The `ChatScreen` widget serves as the primary user interface for interacting with AI models.
+/// Users can send messages, view responses (text and images), switch between different models,
+/// and access additional options via a popup menu and navigation drawer.
 class ChatScreen extends StatefulWidget {
   /// The title displayed in the app bar.
   final String title;
@@ -25,128 +24,134 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
+/// State class that manages the logic and user interactions for [ChatScreen].
 class _ChatScreenState extends State<ChatScreen> {
-  /// List of available chat model versions for the selected model.
+  /// List of available chat model versions for the currently selected model.
   List<Map<String, String>> availableVersions = [];
 
   /// Controller for the message input field.
   final TextEditingController _messageController = TextEditingController();
 
-  /// List of chat messages, each containing text and a flag indicating the sender.
+  /// List of chat messages displayed in the chat interface.
+  ///
+  /// Each message is represented as a map that can contain:
+  /// - `text`: The message text.
+  /// - `image`: Byte data representing an image.
+  /// - `isSentByUser`: Boolean flag indicating if the message was sent by the user.
   final List<Map<String, dynamic>> _messages = [];
 
-  /// Focus node for managing focus on the message input field.
+  /// Focus node for managing focus state of the message input field.
   final FocusNode _focusNode = FocusNode();
 
   /// State variable to control the visibility of the popup menu.
   bool _isMenuVisible = false;
 
-  /// Name of the currently selected chat model.
+  /// The currently selected AI model.
   String selectedModel = "ChatGPT"; // Default model
 
-  /// Suffix used to identify the selected version of the current model.
+  /// The suffix that identifies the current model version.
   String selectedVersion = "GPT-4o-mini"; // Default version
 
-  // This is what the pop up menu displays on the user screen
+  /// Text displayed in the popup menu indicating the selected model version.
   String selectedVersionDisplay = "GPT 4o mini";
 
-  /// Image asset path for the currently selected model.
+  /// Path to the image asset representing the selected model.
   String selectedModelImage = "assets/models/chatgpt.webp"; // Default image
 
   @override
   void initState() {
     super.initState();
-    // Initialize the default chat model versions
+    // Initialize the available versions for the default selected model.
     _updateAvailableVersions(selectedModel);
   }
 
-  /// Updates the list of available versions for the given model.
+  /// Updates the list of available model versions for a selected model.
   ///
-  /// - [modelName]: The name of the model whose versions should be updated.
+  /// - [modelName]: The name of the model to fetch available versions.
   void _updateAvailableVersions(String modelName) {
     final modelDetails = chatModels.firstWhere((model) => model["name"] == modelName);
+
+    // Filter versions based on added status (if model is available)
     availableVersions = (modelDetails['versions'] as List<Map<String, String>>)
         .where((version) => chatModelAddedStatus[modelDetails['name']]!)
         .toList();
+
+    // Set the selected version and display
     selectedVersion = availableVersions.isNotEmpty ? availableVersions[0]["name"]! : "";
     selectedVersionDisplay = availableVersions.isNotEmpty ? availableVersions[0]["suffix"]! : "";
-    selectedModelImage = modelDetails['picture'];
+    selectedModelImage = modelDetails['picture']; // Update model image
   }
 
-  /// Updates the selected chat model and resets the available versions.
+  /// Updates the selected AI model and refreshes the list of available versions.
   ///
-  /// - [modelName]: The name of the model to select.
-  /// Updates the selected chat model and resets the available versions.
+  /// This method also clears the current chat messages when switching models.
   ///
-  /// - [modelName]: The name of the model to select.
+  /// - [modelName]: The name of the new model to switch to.
   void _updateModel(String modelName) {
     setState(() {
-      selectedModel = modelName; // Ensure image displays model name
-      _updateAvailableVersions(modelName); // Refresh available versions
-      _messages.clear(); // Clear chat messages when switching models
+      selectedModel = modelName;
+      _updateAvailableVersions(modelName);
+      _messages.clear(); // Clear messages when model changes
     });
   }
 
-  /// Updates the selected version of the current model.
+  /// Updates the selected model version when the user selects a version from the menu.
   ///
-  /// - [versionName]: The name of the version to select.
-  /// Updates the selected version of the current model.
-  ///
-  /// - [versionName]: The name of the version to select.
+  /// - [versionName]: The name of the version to switch to.
   void _updateVersion(String versionName) {
     setState(() {
-
-      // Find the corresponding suffix for the selected version
+      // Find the selected version and update suffix and display
       final versionDetails = availableVersions.firstWhere(
             (version) => version["name"] == versionName,
       );
 
-
-
-      selectedVersion = versionName; // Update the selected version
+      selectedVersion = versionName;
       selectedVersionDisplay = versionDetails["suffix"]!;
 
-      final suffix = versionDetails["suffix"]; // Get the suffix
       print("Model remains: $selectedModel");
       print("Version updated to: $selectedVersion");
-      print("Suffix updated to: $suffix");
     });
   }
 
-  /// Sends a message entered by the user.
+  /// Sends a message typed by the user to the selected AI model.
   ///
-  /// This method adds the user's message to the chat, sends it to the backend API,
-  /// and handles the response by adding the AI's reply to the chat.
+  /// This function adds the user's message to the chat, triggers the API request,
+  /// and handles the response by adding the AI's reply or image to the chat.
   void _sendMessage() async {
     if (_messageController.text.trim().isNotEmpty) {
       setState(() {
-        // Add the user's message to the chat
+        // Add user message to the chat list
         _messages.add({
           'text': _messageController.text.trim(),
           'isSentByUser': true,
         });
-        _messageController.clear(); // Clear the input field
-        _focusNode.requestFocus(); // Keep the keyboard focused
+        _messageController.clear();
+        _focusNode.requestFocus(); // Keep focus on input field
       });
 
       try {
-        // Find the selected model based on the selected model and version
+        // Find the current model's API function
         final modelDetails = chatModels.firstWhere((model) =>
         model['name'] == selectedModel &&
             model['versions'].any((version) => version['name'] == selectedVersion));
 
-        // Retrieve the function associated with the selected model
         final function = modelDetails['function'];
+
         if (function is Function) {
-          // Make the post request using the API service
+          // Call the API and await the response
           final response = await function(_messages.last['text'], selectedVersion);
-          _receiveMessage(response['message']);
+
+          // If the response is an image (Uint8List), handle it accordingly
+          if (response is Uint8List) {
+            _receiveMessage(response);
+          } else {
+            _receiveMessage("Failed to generate image.");
+          }
         } else {
           throw Exception("Function not found for the selected ChatBot");
         }
       } catch (e) {
-        // Handle errors by displaying an error message
-        _receiveMessage("Error: Could not fetch response."); // Show error message
+        _receiveMessage("Error: Could not fetch response.");
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text("Error: $e")),
         );
@@ -154,15 +159,22 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// Receives and displays a message from the AI.
+  /// Handles incoming messages from the AI, either text or image.
   ///
-  /// - [text]: The message text to display.
-  void _receiveMessage(String text) {
+  /// - [response]: The AI's response, which can be a text message or an image.
+  void _receiveMessage(dynamic response) {
     setState(() {
-      _messages.add({
-        'text': text,
-        'isSentByUser': false,
-      });
+      if (response is Uint8List) {
+        _messages.add({
+          'image': response,
+          'isSentByUser': false,
+        });
+      } else {
+        _messages.add({
+          'text': response.toString(),
+          'isSentByUser': false,
+        });
+      }
     });
   }
 
@@ -179,21 +191,12 @@ class _ChatScreenState extends State<ChatScreen> {
               selectedModelImage,
               height: 25,
               width: 25,
-              fit: BoxFit.cover, // Adjust fit as needed
+              fit: BoxFit.cover,
             ),
             popUpText: selectedVersionDisplay,
             onPopUpTap: () {
               setState(() {
-                _isMenuVisible = !_isMenuVisible; // Toggle popup menu visibility
-              });
-            },
-            actions: [], // Add any additional actions here
-          ),
-          drawer: DrawerComponent(
-            onModelSelected: (modelName) {
-              setState(() {
-                _updateModel(modelName);
-                _isMenuVisible = false; // Hide menu if visible
+                _isMenuVisible = !_isMenuVisible;
               });
             },
           ),
@@ -203,69 +206,6 @@ class _ChatScreenState extends State<ChatScreen> {
             focusNode: _focusNode,
             onSendMessage: _sendMessage,
           ),
-        ),
-        // Use AnimatedSwitcher for smooth transitions of the popup menu
-        AnimatedSwitcher(
-          duration: const Duration(milliseconds: 300),
-          transitionBuilder: (Widget child, Animation<double> animation) {
-            return FadeTransition(
-              opacity: animation,
-              child: child,
-            );
-          },
-          child: _isMenuVisible
-              ? Stack(
-            key: const ValueKey('popupStack'),
-            children: [
-              // Overlay to detect taps outside the menu
-              Positioned.fill(
-                key: const ValueKey('overlay'),
-                child: GestureDetector(
-                  onTap: () {
-                    setState(() {
-                      _isMenuVisible = false; // Hide menu when tapping outside
-                    });
-                  },
-                  behavior: HitTestBehavior.translucent,
-                  child: Container(
-                    color: Colors.black.withOpacity(0.3), // Semi-transparent overlay
-                  ),
-                ),
-              ),
-              // Popup Menu Positioned at the desired location
-              Positioned(
-                top: 75 + MediaQuery.of(context).padding.top + 8, // AppBar height + status bar + spacing
-                right: 5, // Position menu to the right
-                child: Material(
-                  color: Colors.transparent,
-                  child: Container(
-                    width: screenWidth * 0.4, // Set constrained width for the menu
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF2A3041), // Background color of the menu
-                      borderRadius: BorderRadius.circular(8),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Colors.black26,
-                          blurRadius: 4,
-                          offset: Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: ChatPopUpMenu(
-                      availableVersions: availableVersions,
-                      onVersionSelected: (versionName) {
-                        _updateVersion(versionName); // Update the version and image
-                        setState(() {
-                          _isMenuVisible = false; // Hide menu after selection
-                        });
-                      },
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          )
-              : const SizedBox.shrink(), // Empty widget when menu is not visible
         ),
       ],
     );

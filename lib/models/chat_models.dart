@@ -69,6 +69,16 @@ final List<Map<String, dynamic>> chatModels = [
     "picture": "assets/models/xai.jpg",
     "category": "Text-To-Image",
   },
+  {
+    "name": "Stability",
+    "versions": [
+      {"name": "stability", "suffix": "stability"},
+    ],
+    "function": (String message, String suffix) => chatService.stabilityImage(message,suffix),
+    "picture": "assets/models/xai.jpg",
+    "category": "Text-To-Image",
+  },
+
 ];
 
 Map<String, bool> chatModelAddedStatus = {

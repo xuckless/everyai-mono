@@ -1,6 +1,8 @@
 // ./lib/services/chat_service.dart
 
 
+import 'dart:convert';
+
 import 'api_service.dart';
 
 /// A service class responsible for handling all chat-related API interactions.
@@ -58,4 +60,32 @@ class ChatService {
       {'message': message, 'model': suffix}, // Request body
     );
   }
+
+  Future<dynamic> stabilityImage(String message, String suffix) async {
+    // Notice we call postRaw instead of post
+    final response = await _apiService.postRaw(
+      'chat/stability',
+      {'message': message, 'model': suffix},
+    );
+
+    if (response.statusCode == 200) {
+      // Check if it’s actually an image
+      if (response.headers['content-type']?.contains('image/png') ?? false) {
+        // Return the binary
+        return response.bodyBytes;
+      } else {
+        // If server returned JSON or error text
+        final Map<String, dynamic> jsonBody = jsonDecode(response.body);
+        print("Failed to generate image: ${jsonBody['error']}");
+        return jsonBody['error'];
+      }
+    } else {
+      print("Failed with status code: ${response.statusCode}");
+      return "Failed to generate image";
+    }
+  }
+
+
+
+
 }

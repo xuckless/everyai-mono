@@ -70,10 +70,14 @@ class _MarketplaceState extends State<Marketplace> {
                     .where((model) => !chatModelAddedStatus[model['name']]!)
                     .toList()[index];
                 return ListTile(
-                  leading: Image.asset(
-                    model['picture'],
-                    width: 50,
-                    height: 50,
+                  leading: ClipRRect(
+                    borderRadius: BorderRadius.circular(100),  // Add border radius
+                    child: Image.asset(
+                      model['picture'],
+                      width: 50,
+                      height: 50,
+                      fit: BoxFit.cover,  // Ensures the image covers the entire space
+                    ),
                   ),
                   title: Text(
                     model['name'],
@@ -81,7 +85,22 @@ class _MarketplaceState extends State<Marketplace> {
                   ),
                   trailing: ElevatedButton(
                     onPressed: () => _toggleModel(model['name']),
-                    child: const Icon(Icons.add),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Color(0xFF2A3041),  // Background color
+                      foregroundColor: Colors.white,       // Icon color
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),  // Rounded corners
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,  // Adjust vertical padding
+                      ),
+                      elevation: 5,  // Shadow for depth
+                    ),
+                    child: const Icon(
+                      Icons.add,
+                      size: 20,  // Icon size
+                    ),
                   ),
                 );
               },
