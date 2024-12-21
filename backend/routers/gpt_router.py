@@ -1,10 +1,15 @@
+import requests
+
 from models.chat import GPTRequestModel, ChatResponse
 from routers import PROTECTED_ROUTE
 import utils.generate_response as responses
 
-from fastapi import HTTPException, APIRouter
+from fastapi import HTTPException, APIRouter, Request
 from fastapi.responses import JSONResponse
 from httpx import TimeoutException, HTTPStatusError, RequestError
+from config import STABILITY_API_KEY
+from fastapi.responses import StreamingResponse
+import io
 
 gpt_router = APIRouter(prefix="/chat")
 
@@ -102,3 +107,31 @@ async def anthropic_claude(chat: GPTRequestModel):
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
+@gpt_router.post("/stability")
+async def gpt_stability(request: Request):
+    STABILITY_API_URL = "https://api.stability.ai/v2beta/stable-image/generate/ultra"
+    data = await request.json()
+    prompt = data["message"]
+
+    headers = {
+        "authorization": f"Bearer {STABILITY_API_KEY}",
+        "accept": "image/*"
+    }
+
+    payload = {
+        "prompt": prompt,
+        "output_format": "webp"
+    }
+
+    # Send the request to Stability AI API using multipart/form-data
+    response = requests.post(
+        STABILITY_API_URL,
+        headers=headers,
+        files={"none": ''},  # Required empty file field for multipart request
+        data=payload
+    )
+    # If the image is successfully generated (status 200), stream the image to the client
+    if response.status_code == 200:
+        return StreamingResponse(io.BytesIO(response.content), media_type="image/webp")
+    else:
+        return {"error": "Image generation failed", "status": response.status_code}

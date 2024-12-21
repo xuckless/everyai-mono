@@ -12,6 +12,7 @@ import anthropic
 import os
 
 from config import CLAUDE_API_KEY
+from config import STABILITY_API_KEY
 
 genai.configure(api_key=config.GEMINI_API_KEY)
 
@@ -152,3 +153,24 @@ def claude_response(message: str, model: str, max_tokens: int) -> str:
         print(f"Error occurred: {ex}")
         return f"An error occurred while generating: {ex}"
 
+# def stability_response():
+#     import requests
+#
+#     response = requests.post(
+#         f"https://api.stability.ai/v2beta/stable-image/generate/ultra",
+#         headers={
+#             "authorization": f"Bearer {STABILITY_API_KEY}",
+#             "accept": "image/*"
+#         },
+#         files={"none": ''},
+#         data={
+#             "prompt": "Lighthouse on a cliff overlooking the ocean",
+#             "output_format": "webp",
+#         },
+#     )
+#
+#     if response.status_code == 200:
+#         with open("./lighthouse.webp", 'wb') as file:
+#             file.write(response.content)
+#     else:
+#         raise Exception(str(response.json()))

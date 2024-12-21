@@ -46,3 +46,7 @@ if not GROK_API_KEY:
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
 if not CLAUDE_API_KEY:
     raise ValueError("No CLAUDE_API_KEY found in the environment")
+
+STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
+if not STABILITY_API_KEY:
+    raise ValueError("No STABLEDIFFUSION_API_KEY found in the environment")
