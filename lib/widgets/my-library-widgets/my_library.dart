@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:second_times_the_charm/models/global-resource/app_colors.dart';
 import '../../models/chat_models.dart'; // Ensure correct path
 
 /// A widget that displays a square library containing a list of chat models.
@@ -97,11 +98,16 @@ class _LibrarySquareState extends State<LibrarySquare> {
                               widget.onModelSelected(chat['name']); // Invokes the callback with the model name
                               Navigator.pop(context); // Closes the drawer
                             },
-                            child: Text(
-                              chat['name'], // The name of the chat model
-                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                color: Colors.white70, // Sets the text color to white with opacity
-                                fontSize: 18, // Sets the font size
+                            child: Container(
+                              decoration: BoxDecoration(
+                                border: Border(bottom: BorderSide(color: AppColors.divider))
+                              ),
+                              child: Text(
+                                chat['name'], // The name of the chat model
+                                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                  color: Colors.white70, // Sets the text color to white with opacity
+                                  fontSize: 18, // Sets the font size
+                                ),
                               ),
                             ),
                           ),

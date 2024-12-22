@@ -84,7 +84,7 @@ class DrawerComponent extends StatelessWidget {
                 Expanded(
                   child: GestureDetector(
                     onTap: () async {
-                      await navigateTo(context, Account(title: 'Settings'));
+                      await navigateTo(context, Account());
                       (context as Element).markNeedsBuild();
                     },
                     child: Container(
