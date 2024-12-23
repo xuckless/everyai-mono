@@ -133,16 +133,20 @@ class _ChatScreenState extends State<ChatScreen> {
       try {
         final modelDetails = chatModels.firstWhere((model) =>
         model['name'] == selectedModel &&
-            model['versions'].any((version) => version['name'] == selectedVersion));
+            model['versions'].any((version) => version['name'] == selectedVersion)
+        );
 
         final function = modelDetails['function'];
         if (function is Function) {
-          // Call API and expect an image (Uint8List)
           final response = await function(_messages.last['text'], selectedVersion);
-          if (response is Uint8List) {
-            _receiveMessage(response);  // Pass the image bytes directly
+
+          // Handle JSON response correctly
+          if (response is Map<String, dynamic> && response.containsKey('message')) {
+            _receiveMessage(response['message']);  // Extract message from JSON
+          } else if (response is Uint8List) {
+            _receiveMessage(response);  // Handle image response
           } else {
-            _receiveMessage("Failed to generate image.");
+            _receiveMessage("Unexpected response type.");
           }
         } else {
           throw Exception("Function not found for the selected ChatBot");
@@ -155,6 +159,7 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     }
   }
+
 
   /// Receives and displays a message from the AI.
   ///
