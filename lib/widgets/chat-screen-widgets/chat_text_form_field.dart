@@ -23,13 +23,23 @@ class ChatTextFormField extends StatefulWidget {
   /// Callback function triggered when the send button is pressed.
   final VoidCallback onSendMessage;
 
+  /// **New**: A callback that notifies the parent widget when a temporary
+  /// model is selected via '@'.
+  ///
+  /// Parameters:
+  /// - `modelName`: The model name chosen by the user
+  /// - `suffix`: The suffix corresponding to that model version
+  final void Function(String modelName, String suffix)? onTempModelSelected;
+
   /// Constructs a [ChatTextFormField] widget.
   ///
   /// Requires a [messageController], [focusNode], and [onSendMessage] callback.
+  /// The [onTempModelSelected] is optional; if not provided, no override occurs.
   const ChatTextFormField({
     required this.messageController,
     required this.focusNode,
     required this.onSendMessage,
+    this.onTempModelSelected, // new
     super.key,
   });
 
@@ -84,15 +94,12 @@ class _ChatTextFormFieldState extends State<ChatTextFormField> {
     final size = renderBox.size;
     final offset = renderBox.localToGlobal(Offset.zero);
 
-    // Filter models by Text-To-Image category
     final filteredModels = chatModels
         .where((model) => model['category'] == 'Text-To-Image')
         .toList();
 
-    // Return if no models match the criteria
     if (filteredModels.isEmpty) return;
 
-    // Create and display the overlay entry with model suggestions
     _overlayEntry = OverlayEntry(
       builder: (context) => Positioned(
         left: offset.dx + 16,
@@ -114,9 +121,33 @@ class _ChatTextFormFieldState extends State<ChatTextFormField> {
                   backgroundImage: AssetImage(model['picture']),
                   radius: 16,
                 ),
-                // Appends the model suffix to the message and closes the overlay
                 onTap: () {
-                  widget.messageController.text += model['versions'][0]['suffix'];
+                  final String modelName = model['name'];
+                  final String suffix = model['versions'][0]['suffix'];
+
+                  // Append styled model name with trailing space and red background
+                  final text = widget.messageController.text;
+                  final newText = text.replaceAll('@', '');
+                  final richText = TextSpan(
+                    text: '$modelName ',
+                    style: const TextStyle(
+                      backgroundColor: Colors.red,
+                      color: Colors.white,
+                    ),
+                  );
+                  widget.messageController.value = TextEditingValue(
+                    text: '$newText ',
+                    selection: TextSelection.collapsed(
+                        offset: ('$newText ').length),
+                  );
+
+                  widget.messageController.text += modelName + ' ';
+
+                  // Trigger parent callback if provided
+                  if (widget.onTempModelSelected != null) {
+                    widget.onTempModelSelected!(modelName, suffix);
+                  }
+
                   _removeOverlay();
                 },
               );
@@ -128,6 +159,9 @@ class _ChatTextFormFieldState extends State<ChatTextFormField> {
 
     overlay.insert(_overlayEntry!);
   }
+
+
+
 
   /// Removes the currently displayed overlay if it exists.
   void _removeOverlay() {
