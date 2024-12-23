@@ -75,7 +75,7 @@ final List<Map<String, dynamic>> chatModels = [
       {"name": "stability", "suffix": "stability"},
     ],
     "function": (String message, String suffix) => chatService.stabilityImage(message,suffix),
-    "picture": "assets/models/xai.jpg",
+    "picture": "assets/models/stabilityai.webp",
     "category": "Text-To-Image",
   },
 
