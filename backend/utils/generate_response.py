@@ -47,7 +47,6 @@ def generate_response(message: str) -> str:
             model="gpt-4o-mini",  # Replace with the appropriate model if different
             messages=conversation_history_two
         )
-
         # Extract the assistant's response
         assistant_response = completion.choices[0].message.content
 
