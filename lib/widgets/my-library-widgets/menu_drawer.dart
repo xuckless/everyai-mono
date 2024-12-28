@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:second_times_the_charm/models/utils/navigation.dart';
 import 'package:second_times_the_charm/screens/account.dart';
 import 'package:second_times_the_charm/screens/marketplace.dart';
+import 'package:second_times_the_charm/widgets/my-library-widgets/chat-history.dart';
 import 'dart:io';
 import '../../models/global-resource/app_colors.dart';
 import '../../models/utils/login_handler.dart';
@@ -9,10 +10,12 @@ import 'my_library.dart';
 
 class DrawerComponent extends StatelessWidget {
   final Function(String) onModelSelected;
+  final Function(int) onPressed;
 
   const DrawerComponent({
     super.key,
     required this.onModelSelected,
+    required this.onPressed,
   });
 
   @override
@@ -70,6 +73,10 @@ class DrawerComponent extends StatelessWidget {
                         ),
                       ),
                     ),
+                  ),
+                  const SizedBox(height: 16),
+                  ChatHistoryWidget(
+                    onPressed: onPressed,
                   ),
                 ],
               ),

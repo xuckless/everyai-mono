@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:second_times_the_charm/models/cache-management/cache_schema.dart';
 import 'package:second_times_the_charm/widgets/chat-screen-widgets/image_render_widget.dart';
 import 'chat_box.dart';
 import 'chat_text_form_field.dart';
@@ -40,9 +41,15 @@ class ChatBody extends StatelessWidget {
                       return ImageRenderer(imageData: message['image']);
                     } else {
                       // Renders text-based chat messages
+                      bool isSentByUser;
+                      if (message['isSentByUser'] == 1 || message['isSentByUser'] == true) {
+                        isSentByUser = true;
+                      } else {
+                        isSentByUser = false;
+                      }
                       return ChatBox(
                         message: message['text'] ?? '',
-                        isSentByUser: message['isSentByUser'],
+                        isSentByUser: isSentByUser,
                       );
                     }
                   }).toList(),
@@ -72,7 +79,5 @@ class ChatBody extends StatelessWidget {
 }
 
 class ChatBodyLogic with ChangeNotifier {
-  void render(){
-    notifyListeners();
-  }
+
 }

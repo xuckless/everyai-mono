@@ -43,19 +43,20 @@ class _LibrarySquareState extends State<LibrarySquare> {
     });
   }
 
+  final filteredChatModels = chatModels
+      .where((chat) => chatModelAddedStatus[chat['name']] ?? false)
+      .toList();
+
   @override
   Widget build(BuildContext context) {
     // Filters chat models to only include those marked as true in chatModelAddedStatus
-    final filteredChatModels = chatModels
-        .where((chat) => chatModelAddedStatus[chat['name']] ?? false)
-        .toList();
 
     return Container(
       width: 270, // Sets the width of the library square
       height: 317, // Sets the height of the library square
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(8), // Rounds the corners of the container
-        color: const Color(0xFF2A3041), // Sets the background color
+        color: AppColors.primary, // Sets the background color
       ),
       child: Padding(
         padding: const EdgeInsets.all(16.0), // Adds padding inside the container
