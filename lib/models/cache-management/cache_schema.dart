@@ -129,4 +129,47 @@ class CacheSchema {
     return chatId;
   }
 
+  Future<void> deleteChatById(int chatId) async {
+    final db = await database;
+
+    await db.transaction((txn) async {
+      // 1) Fetch all MessageIDs associated with this ChatID
+      final messageIdRows = await txn.query(
+        'ChatInstances',
+        columns: ['MessageID'],
+        where: 'ChatID = ?',
+        whereArgs: [chatId],
+      );
+
+      // 2) Delete rows in ChatInstances for this ChatID
+      await txn.delete(
+        'ChatInstances',
+        where: 'ChatID = ?',
+        whereArgs: [chatId],
+      );
+
+      // 3) For each MessageID we just removed, check if it’s still used in ChatInstances.
+      //    If not, delete it from Messages as well.
+      for (final row in messageIdRows) {
+        final int msgId = row['MessageID'] as int;
+
+        // Check if any other ChatInstances references this same MessageID
+        final usage = await txn.query(
+          'ChatInstances',
+          where: 'MessageID = ?',
+          whereArgs: [msgId],
+        );
+
+        // If no rows reference it, we can safely delete from Messages
+        if (usage.isEmpty) {
+          await txn.delete(
+            'Messages',
+            where: 'MessageID = ?',
+            whereArgs: [msgId],
+          );
+        }
+      }
+    });
+  }
+
 }

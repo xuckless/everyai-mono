@@ -101,47 +101,49 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _sendMessage() async {
-    if (_messageController.text.trim().isNotEmpty) {
+    final String typedText = _messageController.text.trim();
+    if (typedText.isNotEmpty) {
       if (chatId == null) {
         await getNewChatId();
       }
 
+      // 1) Insert the message text into the DB *before* clearing
+      if (chatId != null) {
+        await cache.insertChatInstance(
+          chatId!,
+          selectedVersion,
+          typedText,  // use typedText
+          true,
+        );
+      }
+
+      // 2) Then update UI (in-memory list) and clear the text field
       setState(() {
         Messages.content.add({
-          'text': _messageController.text.trim(),
+          'text': typedText,
           'isSentByUser': true,
         });
         _messageController.clear();
         _focusNode.requestFocus();
       });
 
-      if (chatId != null) {
-        await cache.insertChatInstance(chatId!, selectedVersion, _messageController.text, true);
-      }
-
       try {
-        // Decide whether to use the global or the temp model for this request
+        // The rest of your AI function call logic...
         final String modelToUse = _tempModelName ?? selectedModel;
         final String? nameToUse = _tempSuffix ?? selectedVersion;
 
-        // Once used, reset the temp values so next message uses the global model
         _tempModelName = null;
         _tempSuffix = null;
 
-        // Find the model details
         final modelDetails = chatModels.firstWhere((model) =>
         model['name'] == modelToUse &&
-            model['versions'].any((version) => version['name'] == nameToUse)
+            model['versions'].any((version) => version['name'] == nameToUse),
         );
 
         final function = modelDetails['function'];
         if (function is Function) {
-          final response = await function(
-            Messages.content.last['text'],
-            nameToUse,
-          );
+          final response = await function(typedText, nameToUse);
 
-          // Handle JSON or image response
           if (response is Map<String, dynamic> && response.containsKey('message')) {
             _receiveMessage(response['message']);
           } else if (response is Uint8List) {
@@ -161,10 +163,34 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+
   void _receiveMessage(dynamic response) async {
     if (chatId == null) {
       await getNewChatId();
     }
+
+    // Convert response to a string for insertion
+    String responseText = '';
+    bool isUser = false;
+
+    if (response is Uint8List) {
+      // If you want to store images as text, you could store a base64 or placeholder.
+      responseText = '[Binary data of length: ${response.length}]';
+    } else {
+      responseText = response.toString();
+    }
+
+    // Insert the response text from the *bot* (isSentByUser = false)
+    if (chatId != null) {
+      await cache.insertChatInstance(
+        chatId!,
+        selectedVersion,
+        responseText,
+        false,  // Mark it as not user
+      );
+    }
+
+    // Then update the in-memory list
     setState(() {
       if (response is Uint8List) {
         Messages.content.add({
@@ -173,22 +199,28 @@ class _ChatScreenState extends State<ChatScreen> {
         });
       } else {
         Messages.content.add({
-          'text': response.toString(),
+          'text': responseText,
           'isSentByUser': false,
         });
       }
     });
-    if (chatId != null) {
-      await cache.insertChatInstance(chatId!, selectedVersion, _messageController.text, true);
-    }
   }
 
   Future<void> _renderChats(int chatId) async {
     List<Map<String, dynamic>> content = await cache.fetchMessageContentByChatId(chatId);
+
+    // Debug print to ensure we see the result in console
+    print('Fetched messages for chatId=$chatId: $content');
+
+    // Convert the read-only sqflite result to a mutable List
+    final List<Map<String, dynamic>> mutableCopy = content
+        .map((map) => Map<String, dynamic>.from(map))
+        .toList();
+
     setState(() {
       Messages.content.clear();
-      Messages.content.addAll(List<Map<String, dynamic>>.from(content));
-    });// Fetch messages from the database
+      Messages.content.addAll(mutableCopy);
+    });
   }
 
 

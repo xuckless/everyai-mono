@@ -99,7 +99,9 @@ class _ChatHistoryWidgetState extends State<ChatHistoryWidget> {
                           ),
                         ),
                         IconButton(
-                          onPressed: null,
+                          onPressed: () async {
+                            await logic.deleteChat(currentID);
+                          },
                           icon: const Icon(
                             Icons.delete,
                             color: Colors.white,
@@ -133,6 +135,18 @@ class ChatHistoryWidgetLogic extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       print('Error fetching chat IDs: $e');
+    }
+  }
+
+  Future<void> deleteChat(int chatId) async {
+    try {
+      await cache.deleteChatById(chatId);
+      // Now that the chat is deleted, re-fetch the IDs
+      await fetchAndPrintChatIDs();
+      // That will call notifyListeners(),
+      // which triggers setState() in the widget
+    } catch (e) {
+      print('Error deleting chat $chatId: $e');
     }
   }
 }
