@@ -22,6 +22,8 @@ dependencies:
   google_sign_in: ^6.2.2 # Google Sign-In package
   flutter_markdown: ^0.7.4+3 # markdown parser
   flutter_tex: ^4.0.9 # flutter tex
+  sqflite: ^2.4.1 #sqite support 8===D
+  path: ^1.9.0 # idk why, the sql thing wants this
 
 dev_dependencies:
   flutter_test:

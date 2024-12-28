@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:second_times_the_charm/widgets/chat-screen-widgets/image_render_widget.dart';
 import 'chat_box.dart';
 import 'chat_text_form_field.dart';
 
@@ -22,74 +24,55 @@ class ChatBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Expanded(
-          child: SingleChildScrollView(
-            reverse: true,
-            child: Container(
-              color: Colors.transparent,
-              child: Column(
-                children: messages.map((message) {
-                  if (message.containsKey('image')) {
-                    // Renders image messages
-                    return Align(
-                      alignment: Alignment.centerLeft,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                            vertical: 8.0, horizontal: 10.0),
-                        child: Container(
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(12),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.15),
-                                blurRadius: 10,
-                                spreadRadius: 1,
-                                offset: const Offset(0, 4),
-                              ),
-                            ],
-                          ),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(12),
-                            child: Image.memory(
-                              message['image'],
-                              width: MediaQuery.of(context).size.width * 0.75,
-                              height: 250,
-                              fit: BoxFit.cover,
-                            ),
-                          ),
-                        ),
-                      ),
-                    );
-                  } else {
-                    // Renders text-based chat messages
-                    return ChatBox(
-                      message: message['text'] ?? '',
-                      isSentByUser: message['isSentByUser'],
-                    );
-                  }
-                }).toList(),
-              ),
-            ),
-          ),
-        ),
-        Row(
-          children: [
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: ChatTextFormField(
-                  messageController: messageController,
-                  focusNode: focusNode,
-                  onSendMessage: onSendMessage,
-                  onTempModelSelected: onTempModelSelected, // forward it
+    return ChangeNotifierProvider(
+      create: (_) => ChatBodyLogic(),
+      child: Column(
+        children: [
+          Expanded(
+            child: SingleChildScrollView(
+              reverse: true,
+              child: Container(
+                color: Colors.transparent,
+                child: Column(
+                  children: messages.map((message) {
+                    if (message.containsKey('image')) {
+                      // Renders image messages
+                      return ImageRenderer(imageData: message['image']);
+                    } else {
+                      // Renders text-based chat messages
+                      return ChatBox(
+                        message: message['text'] ?? '',
+                        isSentByUser: message['isSentByUser'],
+                      );
+                    }
+                  }).toList(),
                 ),
               ),
             ),
-          ],
-        ),
-      ],
+          ),
+          Row(
+            children: [
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: ChatTextFormField(
+                    messageController: messageController,
+                    focusNode: focusNode,
+                    onSendMessage: onSendMessage,
+                    onTempModelSelected: onTempModelSelected, // forward it
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
+  }
+}
+
+class ChatBodyLogic with ChangeNotifier {
+  void render(){
+    notifyListeners();
   }
 }
