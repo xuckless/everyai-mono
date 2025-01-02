@@ -67,7 +67,7 @@ final List<Map<String, dynamic>> chatModels = [
     ],
     "function": (String message, String suffix) => chatService.xaiChat(message, suffix),
     "picture": "assets/models/xai.jpg",
-    "category": "Text-To-Image",
+    "category": "Text-To-Text",
   },
   {
     "name": "Stability",

@@ -49,14 +49,14 @@ class ChatTextFormField extends StatefulWidget {
 
 /// State class for managing the behavior of the chat input field.
 class _ChatTextFormFieldState extends State<ChatTextFormField> {
-  /// Maximum number of lines allowed in the input field.
-  int _maxLines = 1;
-
   /// Focus node to listen for keyboard events and handle '@' detection.
   late FocusNode _keyboardListenerFocusNode;
 
   /// Overlay entry to display model suggestions dynamically.
   OverlayEntry? _overlayEntry;
+
+  /// Determines if the input field is currently expanded (multi-line).
+  bool _isExpanded = false;
 
   @override
   void initState() {
@@ -78,6 +78,18 @@ class _ChatTextFormFieldState extends State<ChatTextFormField> {
   /// Triggers a model suggestion popup when the user types '@' at the end of the input.
   void _onTextChanged() {
     final text = widget.messageController.text;
+
+    // Detect if the input field is expanded beyond a single line.
+    // This is a heuristic approach and might need refinement based on font size and container width.
+    final lines = '\n'.allMatches(text).length + 1;
+    final isExpanded = lines > 1;
+
+    if (isExpanded != _isExpanded) {
+      setState(() {
+        _isExpanded = isExpanded;
+      });
+    }
+
     if (text.endsWith('@')) {
       _showModelSuggestions();
     } else {
@@ -99,6 +111,9 @@ class _ChatTextFormFieldState extends State<ChatTextFormField> {
         .toList();
 
     if (filteredModels.isEmpty) return;
+
+    // Remove any existing overlay before inserting a new one
+    _removeOverlay();
 
     _overlayEntry = OverlayEntry(
       builder: (context) => Positioned(
@@ -125,23 +140,14 @@ class _ChatTextFormFieldState extends State<ChatTextFormField> {
                   final String modelName = model['name'];
                   final String suffix = model['versions'][0]['suffix'];
 
-                  // Append styled model name with trailing space and red background
+                  // Append model name with trailing space
                   final text = widget.messageController.text;
                   final newText = text.replaceAll('@', '');
-                  final richText = TextSpan(
-                    text: '$modelName ',
-                    style: const TextStyle(
-                      backgroundColor: Colors.red,
-                      color: Colors.white,
-                    ),
-                  );
                   widget.messageController.value = TextEditingValue(
-                    text: '$newText ',
+                    text: '$newText$modelName ',
                     selection: TextSelection.collapsed(
-                        offset: ('$newText ').length),
+                        offset: ('$newText$modelName ').length),
                   );
-
-                  widget.messageController.text += modelName + ' ';
 
                   // Trigger parent callback if provided
                   if (widget.onTempModelSelected != null) {
@@ -160,9 +166,6 @@ class _ChatTextFormFieldState extends State<ChatTextFormField> {
     overlay.insert(_overlayEntry!);
   }
 
-
-
-
   /// Removes the currently displayed overlay if it exists.
   void _removeOverlay() {
     _overlayEntry?.remove();
@@ -171,59 +174,79 @@ class _ChatTextFormFieldState extends State<ChatTextFormField> {
 
   @override
   Widget build(BuildContext context) {
-    // Adjust bottom margin for iOS devices to prevent overlapping the keyboard
     final bool isIOS = Platform.isIOS;
 
     return Focus(
       focusNode: _keyboardListenerFocusNode,
-      child: Container(
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
         margin: EdgeInsets.fromLTRB(
           8.0,
           8.0,
           8.0,
           isIOS ? 18.3 : 8.0,
         ),
+        padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
         decoration: BoxDecoration(
           color: const Color(0xFF2A3041),
-          borderRadius: BorderRadius.circular(9999.0),
+          borderRadius: _isExpanded
+              ? const BorderRadius.only(
+            topLeft: Radius.circular(16.0),
+            topRight: Radius.circular(16.0),
+            bottomLeft: Radius.circular(0.0),
+            bottomRight: Radius.circular(0.0),
+          )
+              : BorderRadius.circular(16.0),
         ),
-        child: Row(
+        child: Stack(
           children: [
-            Expanded(
-              child: TextFormField(
-                controller: widget.messageController,
-                focusNode: widget.focusNode,
-                maxLines: _maxLines,
-                minLines: 1,
-                keyboardType: TextInputType.multiline,
-                textInputAction: TextInputAction.newline,
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(
-                  contentPadding: EdgeInsets.symmetric(
-                    vertical: 12.0,
-                    horizontal: 16.0,
+            // Input Field with right padding to accommodate send button
+            Padding(
+              padding: const EdgeInsets.only(right: 35.0), // Adjust as needed
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(
+                  maxHeight: 250, // Limit the max expansion height
+                ),
+                child: TextFormField(
+                  controller: widget.messageController,
+                  focusNode: widget.focusNode,
+                  minLines: 1,
+                  maxLines: 7, // Allow up to 5 lines
+                  keyboardType: TextInputType.multiline,
+                  textInputAction: TextInputAction.newline,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    contentPadding: EdgeInsets.symmetric(
+                      vertical: 12.0,
+                      horizontal: 6.0,
+                    ),
+                    border: InputBorder.none,
+                    hintText: "Type a message",
+                    hintStyle: TextStyle(color: Colors.white54),
                   ),
-                  border: InputBorder.none,
-                  hintText: "Type a message",
-                  hintStyle: TextStyle(color: Colors.white54),
                 ),
               ),
             ),
-            // Send button positioned to the right of the text input field
-            Container(
-              margin: const EdgeInsets.only(right: 8.0),
-              child: InkWell(
-                onTap: widget.onSendMessage,
-                borderRadius: BorderRadius.circular(1500.0),
-                child: Container(
-                  padding: const EdgeInsets.all(6.0),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF181C26),
-                    borderRadius: BorderRadius.circular(1500.0),
-                  ),
-                  child: const Icon(
-                    Icons.arrow_upward,
-                    color: Colors.white,
+            // Positioned Send Button
+            Positioned(
+              right: 0,
+              bottom: 3,
+              child: Container(
+                height: 40, // Fixed height for the send button container
+                width: 40, // Fixed width for the send button container
+                child: InkWell(
+                  onTap: widget.onSendMessage,
+                  borderRadius: BorderRadius.circular(1500.0),
+                  child: Container(
+                    padding: const EdgeInsets.all(6.0),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF181C26),
+                      borderRadius: BorderRadius.circular(1500.0),
+                    ),
+                    child: const Icon(
+                      Icons.arrow_upward,
+                      color: Colors.white,
+                    ),
                   ),
                 ),
               ),
