@@ -1,10 +1,48 @@
-# Byte-compiled / optimized / DLL files
+# Byte-compiled / cache
 __pycache__/
 *.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
 
-# Virtual environment
+# Virtual environments
 .venv/
-.env
-env
+venv/
+env/
+ENV/
 
-Dustbin
+# Packaging / build
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Test / coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Secrets / local config
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local databases / uploads / logs
+*.sqlite
+*.sqlite3
+*.db
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.iml
+.ipynb_checkpoints/
