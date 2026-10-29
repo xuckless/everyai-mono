@@ -33,94 +33,93 @@ class LibrarySquare extends StatefulWidget {
 }
 
 class _LibrarySquareState extends State<LibrarySquare> {
-  /// Toggles the model status between "My Library" and "Marketplace".
-  ///
-  /// - [modelName]: The name of the model to toggle.
-  /// Updates the `chatModelAddedStatus` map and triggers a rebuild.
   void _removeModel(String modelName) {
     setState(() {
-      toggleModelStatus(modelName); // Updates the model's status
+      toggleModelStatus(modelName); // Updates the model's status in chatModelAddedStatus
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    // Filters chat models to only include those marked as true in chatModelAddedStatus
+    // Filter chat models to only include those marked as true in chatModelAddedStatus
     final filteredChatModels = chatModels
         .where((chat) => chatModelAddedStatus[chat['name']] ?? false)
         .toList();
 
     return Container(
-      width: 270, // Sets the width of the library square
-      height: 317, // Sets the height of the library square
+      width: 270,
+      height: 317,
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(8), // Rounds the corners of the container
-        color: const Color(0xFF2A3041), // Sets the background color
+        borderRadius: BorderRadius.circular(8),
+        color: AppColors.primary,
       ),
       child: Padding(
-        padding: const EdgeInsets.all(16.0), // Adds padding inside the container
+        padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Text(
               widget.title,
               style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                color: Colors.white, // Sets the text color to white
-                fontSize: 16, // Sets the font size
+                color: Colors.white,
+                fontSize: 16,
               ),
             ),
             Expanded(
               child: ListView.builder(
-                padding: EdgeInsets.zero, // Removes default padding
-                itemCount: filteredChatModels.length, // Number of items in the list
+                padding: EdgeInsets.zero,
+                itemCount: filteredChatModels.length,
                 itemBuilder: (context, index) {
-                  final chat = filteredChatModels[index]; // Retrieves the current chat model
+                  final chat = filteredChatModels[index];
                   return Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4.0), // Adds spacing between rows
+                    padding: const EdgeInsets.symmetric(vertical: 4.0),
                     child: Row(
                       children: [
-                        // Displays the model's image
+                        // Model image
                         ClipRRect(
-                          borderRadius: BorderRadius.circular(20), // Rounds the image corners
+                          borderRadius: BorderRadius.circular(20),
                           child: Image.asset(
-                            chat['picture'], // Path to the model's image asset
-                            width: 32, // Sets the image width
-                            height: 32, // Sets the image height
-                            fit: BoxFit.cover, // Ensures the image scales to cover the space
+                            chat['picture'],
+                            width: 32,
+                            height: 32,
+                            fit: BoxFit.cover,
                           ),
                         ),
-                        const SizedBox(width: 8), // Adds spacing between image and text
+                        const SizedBox(width: 8),
 
-                        // Displays the model's name as a selectable button
+                        // Model name (tap to select)
                         Expanded(
                           child: GestureDetector(
                             onTap: () {
-                              widget.onModelSelected(chat['name']); // Invokes the callback with the model name
-                              Navigator.pop(context); // Closes the drawer
+                              widget.onModelSelected(chat['name']);
+                              Navigator.pop(context);
                             },
                             child: Container(
                               decoration: BoxDecoration(
-                                border: Border(bottom: BorderSide(color: AppColors.divider))
+                                border: Border(
+                                  bottom: BorderSide(color: AppColors.divider),
+                                ),
                               ),
                               child: Text(
-                                chat['name'], // The name of the chat model
-                                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                  color: Colors.white70, // Sets the text color to white with opacity
-                                  fontSize: 18, // Sets the font size
+                                chat['name'],
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodyMedium
+                                    ?.copyWith(
+                                  color: Colors.white70,
+                                  fontSize: 18,
                                 ),
                               ),
                             ),
                           ),
                         ),
 
-                        // Adds a `(-)` button to remove the model from "My Library"
+                        // Remove button
                         IconButton(
-                          onPressed: () {
-                            _removeModel(chat['name']); // Calls the method to remove the model
-                          },
+                          onPressed: () => _removeModel(chat['name']),
                           icon: const Icon(
-                            Icons.remove, // The `(-)` icon
-                            color: Colors.white, // Sets the icon color to white
+                            Icons.remove,
+                            color: Colors.white,
                           ),
                         ),
                       ],

@@ -62,5 +62,4 @@ class AccountLogic with ChangeNotifier {
   void renderOptions(){
      notifyListeners();
   }
-
 }

@@ -16,7 +16,7 @@ import 'TokenManager.dart';
 /// access tokens and interacts with an [ApiService] to communicate with the backend.
 class LoginHandler {
   /// An instance of [FlutterSecureStorage] for securely storing sensitive data.
-  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+  // final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
 
   /// Handles the login process by validating form inputs, communicating with
   /// the authentication API, storing the access token upon successful login,
