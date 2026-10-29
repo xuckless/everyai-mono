@@ -1,137 +1,64 @@
-Chat API Project
+# EveryAI backend
 
-Overview
+FastAPI service that authenticates EveryAI users and proxies chat requests to model providers (OpenAI, Anthropic, Google Gemini, xAI, Stability).
 
-This is a simple Chat API built with FastAPI that responds to user messages. The API has a single endpoint /chat that accepts a message and returns an appropriate response based on the input.
+## Layout
 
-Project Structure
+```
+backend/
+├── main.py            FastAPI app, CORS, router registration
+├── config.py          Settings loaded from the repo-root .env
+├── routers/           auth_router (/signup, /login, /google_login, /refresh_token, /delete-account)
+│                      chat_router (/chat, /ping), gpt_router (/chat/{gpt,gemini,llama,xai,claude,stability})
+│                      protected_router (/p)
+├── models/            Pydantic request/response models
+├── db/                SQLAlchemy engine and ORM models
+├── utils/             security (JWT, bcrypt, Google token verification), helpers
+└── alembic/           Database migrations
+```
 
-.
-├── main.py
-├── models
-│   ├── __init__.py
-│   └── chat.py
-├── routers
-│   ├── __init__.py
-│   └── chat.py
-└── utils
-    ├── __init__.py
-    └── generate_response.py
+## Setup
 
-	•	main.py: The entry point of the application. Initializes the FastAPI app and includes the router.
-	•	models/: Contains Pydantic models for request and response data.
-	•	chat.py: Defines ChatRequest and ChatResponse models.
-	•	routers/: Contains API route definitions.
-	•	chat.py: Defines the /chat endpoint.
-	•	utils/: Contains utility functions.
-	•	generate_response.py: Implements the logic to generate responses.
+Requires [uv](https://docs.astral.sh/uv/). uv installs the pinned Python (`.python-version`) and the locked dependencies (`uv.lock`).
 
-Setup Instructions
+```sh
+cp ../.env.example ../.env   # once; fill in the values
+uv sync
+```
 
-Prerequisites
+The environment file lives at the **repo root**. `config.py` finds it by searching upward from `backend/`.
 
-	•	Python 3.6+ installed on your system.
-	•	Git installed if cloning from a repository.
+## Run
 
-Clone the Repository
+```sh
+uv run uvicorn main:app --reload            # http://127.0.0.1:8000 (Android emulator: http://10.0.2.2:8000)
+uv run uvicorn main:app --reload --host 0.0.0.0   # reachable from devices on the LAN
+```
 
-If you haven’t already, clone the repository:
+API docs: http://127.0.0.1:8000/docs (Swagger) and http://127.0.0.1:8000/redoc.
 
-git clone [repository_url]
-cd [repository_name]
+## Database migrations
 
-Replace [repository_url] with the actual URL and [repository_name] with the repository name.
+```sh
+uv run alembic revision --autogenerate -m "Describe your change"
+uv run alembic upgrade head
+```
 
-Create and Activate a Virtual Environment
+`alembic/env.py` takes the database URL from `DATABASE_URL`; the URL in `alembic.ini` is only a placeholder.
 
-It’s recommended to use a virtual environment to manage dependencies.
+## Dependencies
 
-Create the Virtual Environment
+```sh
+uv add <package>          # runtime dependency
+uv add --dev <package>    # dev-only (tests, tooling)
+uv lock --upgrade         # refresh the lockfile
+```
 
-python3 -m venv .venv
+## Tests
 
-Activate the Virtual Environment
+`test.py` contains integration tests that call a running server on `127.0.0.1:8000`:
 
-	•	On macOS and Linux:
-
-source .venv/bin/activate
-
-
-	•	On Windows (Command Prompt):
-
-.venv\Scripts\activate.bat
-
-
-	•	On Windows (PowerShell):
-
-.venv\Scripts\Activate.ps1
-
-
-
-Install Dependencies
-
-Install the required Python packages:
-
-pip install fastapi uvicorn
-
-Run the Application
-
-Start the FastAPI application using Uvicorn:
-
-uvicorn main:app --reload
-
-	•	The app will be accessible at http://127.0.0.1:8000/. or http://10.0.2.2:8000
-	•	The --reload flag restarts the server when code changes are detected (useful during development).
-
-Test the API Endpoint
-
-You can test the /chat endpoint using curl, HTTPie, or any API client.
-
-Example with curl:
-
-curl -X POST "http://127.0.0.1:8000/chat" -H "Content-Type: application/json" -d '{"message": "Hello"}'
-
-Expected Response:
-
-{
-  "message": "Hi there! How can I assist you today?"
-}
-
-API Documentation
-
-Interactive API docs are available:
-	•	Swagger UI: http://127.0.0.1:8000/docs
-	•	ReDoc: http://127.0.0.1:8000/redoc
-
-Deactivate the Virtual Environment
-
-When you’re done, deactivate the virtual environment:
-
-deactivate
-
-Notes
-
-	•	Ensure that the __pycache__/ directory and the virtual environment directory (e.g., .venv/) are excluded from version control. Add them to your .gitignore file:
-
-__pycache__/
-.venv/
-
-
-	•	If additional dependencies are added, include them in the pip install command or create a requirements.txt file.
-
-How to migrate the database
-first, you need to install alembic
-pip install alembic
-
-then run this command : alembic revision --autogenerate -m "Describe your changes"
-then run this command : alembic upgrade head
-
-Contact
-
-If you have any questions or need assistance, feel free to reach out.
-
-how to migrate the database:
-run this command : alembic revision --autogenerate -m "Describe your changes"
-then run this command : alembic upgrade head
-
-Happy coding!
+```sh
+uv run uvicorn main:app &   # in another terminal
+uv run pytest test.py
+```

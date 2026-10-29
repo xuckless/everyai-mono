@@ -1,8 +1,18 @@
+# Single ignore file for the whole monorepo (frontend/ Flutter, backend/ Python).
+# Don't add nested .gitignore files; scope rules here with a path prefix instead.
+
+# ---- Agent / local notes (kept out of git on purpose) ----
+AGENTS.md
+CLAUDE.md
+TODO.md
+.claude/settings.local.json
+
 # ---- OS ----
 .DS_Store
 Thumbs.db
 Desktop.ini
 ._*
+Icon[\r]
 
 # ---- Editors / IDEs ----
 .idea/
@@ -21,6 +31,7 @@ Desktop.ini
 .atom/
 .buildlog/
 .svn/
+.tags*
 migrate_working_dir/
 
 # ---- Secrets / local config ----
@@ -37,11 +48,18 @@ google-services.json
 GoogleService-Info.plist
 firebase_options.dart
 secrets.*
+# Flutter --dart-define-from-file configs; only the example is tracked
+frontend/config/*.json
+!frontend/config/example.json
 
-# ---- Logs / temp ----
+# ---- Logs / temp / local data ----
 *.log
 *.tmp
 *.bak
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
 coverage/
 
 # ---- Flutter / Dart ----
@@ -51,19 +69,20 @@ coverage/
 .pub-cache/
 .flutter-plugins
 .flutter-plugins-dependencies
-/build/
+build/
 **/doc/api/
-**/ios/Flutter/.last_build_id
 app.*.symbols
 app.*.map.json
+pubspec_overrides.yaml
 # Generated plugin glue
+**/flutter/ephemeral/
+**/Flutter/ephemeral/
 **/flutter/generated_plugin_registrant.*
 **/flutter/generated_plugins.cmake
 **/Flutter/GeneratedPluginRegistrant.*
-**/flutter/ephemeral/
-**/Flutter/ephemeral/
 **/Flutter/flutter_export_environment.sh
 **/Flutter/Generated.xcconfig
+**/Flutter/.last_build_id
 
 # ---- Android ----
 *.class
@@ -71,37 +90,80 @@ app.*.map.json
 *.aab
 *.dex
 .gradle/
-**/android/app/build/
-**/android/build/
-**/android/app/debug
-**/android/app/profile
-**/android/app/release
-**/android/captures/
-**/android/local.properties
-**/android/**/GeneratedPluginRegistrant.java
-**/android/.cxx/
+.kotlin/
+frontend/android/captures/
+frontend/android/local.properties
+frontend/android/gradlew
+frontend/android/gradlew.bat
+frontend/android/gradle/wrapper/gradle-wrapper.jar
+frontend/android/app/debug
+frontend/android/app/profile
+frontend/android/app/release
+frontend/android/.cxx/
+GeneratedPluginRegistrant.java
 
 # ---- iOS / macOS ----
-**/ios/build/
-**/macos/build/
 Pods/
-*.xcworkspace/xcuserdata/
 xcuserdata/
 *.xcuserstate
 DerivedData/
 *.ipa
 *.dSYM.zip
 *.dSYM
-**/ios/**/dgph
-**/ios/**/*.mode1v3
-**/ios/**/*.mode2v3
-**/ios/**/*.moved-aside
-**/ios/**/*.pbxuser
-**/ios/**/*.perspectivev3
+**/dgph
+*.mode1v3
+*.mode2v3
+*.moved-aside
+*.pbxuser
+*.perspectivev3
+!default.mode1v3
+!default.mode2v3
+!default.pbxuser
+!default.perspectivev3
+**/.symlinks/
+**/.generated/
+frontend/ios/Flutter/App.framework
+frontend/ios/Flutter/Flutter.framework
+frontend/ios/Flutter/Flutter.podspec
+frontend/ios/Flutter/app.flx
+frontend/ios/Flutter/app.zip
+frontend/ios/Flutter/flutter_assets/
+frontend/ios/ServiceDefinitions.json
+frontend/ios/Runner/GeneratedPluginRegistrant.*
+
+# ---- Windows (Visual Studio) ----
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+frontend/windows/x64/
+frontend/windows/x86/
+*.[Cc]ache
+!*.[Cc]ache/
+
+# ---- Rust (packages/everyai_typst native crate) ----
+target/
 
 # ---- Web / Node tooling ----
 node_modules/
 
-# ---- Python (backend/ has its own .gitignore) ----
+# ---- Python (backend/) ----
 __pycache__/
 *.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+.venv/
+venv/
+dist/
+*.egg-info/
+.eggs/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.ipynb_checkpoints/
