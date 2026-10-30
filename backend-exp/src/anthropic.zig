@@ -15,7 +15,7 @@ const std = @import("std");
 const anole = @import("anole");
 const openrouter = @import("openrouter.zig");
 const models = @import("models.zig");
-const sse = @import("net/sse_client.zig");
+const sse = anole.sse;
 const util = @import("util.zig");
 
 const Value = std.json.Value;
@@ -447,7 +447,7 @@ const Translator = struct {
             .reader = .{ .vtable = &.{ .stream = stream }, .buffer = &.{}, .seek = 0, .end = 0 },
             .buffer = undefined,
             .up = up,
-            .parser = sse.Parser.init(arena, up.reader),
+            .parser = sse.Parser.init(arena, up.reader, .{}),
             .arena = arena,
             .scratch = .init(arena),
             .out = .init(arena),

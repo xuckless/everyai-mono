@@ -85,8 +85,8 @@ Cached and cache-write tokens are recorded per call in `usage_events`.
 - With `DEV_AUTH=true`, credential-less requests act as a seeded `dev-user`
   (pro plan, $20 wallet).
 
-## Anole additions
+## Anole pieces
 
-`src/net/sse_client.zig` (an incremental Server-Sent Events parser for outbound
-streams) and `src/db/migrate.zig` (a numbered SQL migration runner) fill gaps in
-Anole and are meant to move upstream.
+Outbound SSE parsing uses `anole.sse.Parser` and migrations use
+`anole.db.migrate` (Anole 0.4.1). The migration list lives in
+`src/migrations.zig`; the SQL files are in `src/migrations/`.

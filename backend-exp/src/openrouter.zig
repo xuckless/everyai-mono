@@ -3,7 +3,7 @@
 //! `Upstream` is the seam tests replace with canned SSE.
 const std = @import("std");
 const anole = @import("anole");
-const sse = @import("net/sse_client.zig");
+const sse = anole.sse;
 
 // anole.http does not export the core response types; take them from `fetch`.
 const CoreResponse = @typeInfo(@typeInfo(@TypeOf(anole.http.Client.fetch)).@"fn".return_type.?).error_union.payload;
@@ -198,7 +198,7 @@ pub fn parseStream(arena: std.mem.Allocator, reader: *std.Io.Reader, sink: anyty
     var scratch: std.heap.ArenaAllocator = .init(arena);
     defer scratch.deinit();
 
-    var parser = sse.Parser.init(arena, reader);
+    var parser = sse.Parser.init(arena, reader, .{});
     defer parser.deinit();
     while (try parser.next()) |ev| {
         if (std.mem.eql(u8, ev.data, "[DONE]")) break;

@@ -9,7 +9,7 @@
 const std = @import("std");
 const anole = @import("anole");
 pub const config = @import("config.zig");
-pub const migrate = @import("db/migrate.zig");
+pub const migrations = @import("migrations.zig");
 pub const auth = @import("auth.zig");
 pub const billing = @import("billing.zig");
 pub const models = @import("models.zig");
@@ -24,7 +24,6 @@ pub const routing = @import("routing.zig");
 pub const polish = @import("polish.zig");
 pub const anthropic = @import("anthropic.zig");
 pub const devtools = @import("devtools.zig");
-pub const sse_client = @import("net/sse_client.zig");
 pub const safe_fetch = @import("net/safe_fetch.zig");
 pub const tool_wait = @import("tool_wait.zig");
 pub const remote = @import("remote.zig");
@@ -95,7 +94,7 @@ pub fn routes(app: *anole.Server(App), state: *App) !void {
 
 /// Schema and seed data; run before serving.
 pub fn prepare(state: *App, ctx: anytype) !void {
-    _ = try migrate.run(state.db, ctx, &migrate.all);
+    _ = try anole.db.migrate(state.db, ctx, &migrations.all);
     const saved = try state.db.optional([]const u8, ctx, "SELECT value FROM settings WHERE key = 'upstream.anthropic'", .{});
     state.native_anthropic.store(std.mem.eql(u8, saved orelse state.cfg.anthropic_upstream, "anthropic"), .monotonic);
     if (state.cfg.dev_auth) try auth.seedDevUser(state, ctx);
@@ -172,7 +171,6 @@ test {
     _ = tools;
     _ = chat;
     _ = gateway;
-    _ = sse_client;
     _ = safe_fetch;
     _ = models;
     _ = anthropic;

@@ -80,8 +80,8 @@ test "migrations run once" {
     var arena: std.heap.ArenaAllocator = .init(alloc);
     defer arena.deinit();
     var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = arena.allocator() };
-    const migrate = @import("app").migrate;
-    try std.testing.expectEqual(@as(usize, 0), try migrate.run(env.state.db, &c, &migrate.all));
+    const migrations = @import("app").migrations;
+    try std.testing.expectEqual(@as(usize, 0), try anole.db.migrate(env.state.db, &c, &migrations.all));
 }
 
 test "auth: signup, login, refresh rotation, me, 401 without dev auth" {

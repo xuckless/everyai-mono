@@ -10,7 +10,7 @@ const auth = @import("auth.zig");
 const billing = @import("billing.zig");
 const chat = @import("chat.zig");
 const openrouter = @import("openrouter.zig");
-const sse = @import("net/sse_client.zig");
+const sse = anole.sse;
 const truncation = @import("truncation.zig");
 
 fn completions(app: *App, req: *anole.Request, res: *anole.Response) !void {
@@ -235,7 +235,7 @@ const Held = struct {
     fn read(self: *Held, arena: std.mem.Allocator, io: std.Io, reader: *std.Io.Reader, out: *std.Io.Writer, forward_text: bool, beat_every: std.Io.Duration) !void {
         const Ts = std.Io.Clock.Timestamp;
         var last_sent = Ts.now(io, .awake);
-        var parser = sse.Parser.init(arena, reader);
+        var parser = sse.Parser.init(arena, reader, .{});
         defer parser.deinit();
         var scratch: std.heap.ArenaAllocator = .init(arena);
         defer scratch.deinit();
