@@ -89,9 +89,10 @@ pub fn rejectReason(arena: std.mem.Allocator, original: []const u8, revised: ?[]
     const lower = try std.ascii.allocLowerString(arena, svg);
     if (std.mem.indexOf(u8, lower, "<script") != null or std.mem.indexOf(u8, lower, "<foreignobject") != null)
         return "the revision used scripts or foreignObject";
-    var args: std.json.ObjectMap = .empty;
-    try args.put(arena, "svg", .{ .string = svg });
-    if (try tool_check.check(arena, "render_svg", .{ .object = args })) |_| return "the revision failed the SVG checks";
+    if (std.mem.indexOf(u8, svg, "<svg") == null or !tool_check.hasViewBox(svg)) return "the revision failed the SVG checks";
+    // render_svg's stable-ids rule is for model-written figures; imported
+    // ones (Recraft vectors) have none, so only ids the original had must stay.
+    if (tool_check.hasId(original) and !tool_check.hasId(svg)) return "the revision dropped the figure's ids";
     return null;
 }
 
@@ -263,6 +264,10 @@ test rejectReason {
     try std.testing.expect((try rejectReason(a, orig, null)) != null);
     try std.testing.expect((try rejectReason(a, orig, "<svg><rect/></svg>")) != null);
     try std.testing.expect((try rejectReason(a, orig, "<svg viewBox=\"0 0 9 9\"><script>x</script></svg>")) != null);
+    // An imported vector with many paths and no ids may stay without ids.
+    const paths = "<svg viewBox=\"0 0 9 9\"><path/><path/><path/><path/><path/><path/><path/></svg>";
+    try std.testing.expect((try rejectReason(a, paths, paths)) == null);
+    try std.testing.expect((try rejectReason(a, "<svg viewBox=\"0 0 9 9\"><g id=\"a\"/></svg>", paths)) != null);
     const huge = try a.alloc(u8, 4000);
     @memset(huge, ' ');
     try std.testing.expect((try rejectReason(a, orig, try std.mem.concat(a, u8, &.{ "<svg viewBox=\"0 0 9 9\">", huge, "</svg>" }))) != null);

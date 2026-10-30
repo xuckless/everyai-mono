@@ -263,7 +263,7 @@ fn indexOf(v: Value) ?i64 {
     };
 }
 
-fn hasViewBox(svg: []const u8) bool {
+pub fn hasViewBox(svg: []const u8) bool {
     const needle = "viewbox=";
     if (svg.len < needle.len) return false;
     for (0..svg.len - needle.len + 1) |i| if (std.ascii.eqlIgnoreCase(svg[i..][0..needle.len], needle)) return true;
@@ -305,7 +305,7 @@ fn shapeCount(svg: []const u8) usize {
     return n;
 }
 
-fn hasId(svg: []const u8) bool {
+pub fn hasId(svg: []const u8) bool {
     return std.mem.indexOf(u8, svg, " id=\"") != null or std.mem.indexOf(u8, svg, " id='") != null;
 }
 
