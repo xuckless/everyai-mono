@@ -23,7 +23,13 @@ Future<String> dataDir() async => (await getApplicationSupportDirectory()).path;
 Future<String?> repoRoot(String dir) async {
   try {
     final res = await _git(dir, ['rev-parse', '--show-toplevel'], check: false);
-    return res.exitCode == 0 ? '${res.stdout}'.trim() : null;
+    if (res.exitCode != 0) return null;
+    final root = '${res.stdout}'.trim();
+    // A dotfiles repo at the home folder or above isn't the project's: snapshots
+    // and worktrees of it would copy the whole home folder.
+    final home = Platform.environment['HOME'];
+    if (home != null && home.isNotEmpty && (home == root || home.startsWith('$root/'))) return null;
+    return root;
   } on ProcessException {
     return null;
   }
