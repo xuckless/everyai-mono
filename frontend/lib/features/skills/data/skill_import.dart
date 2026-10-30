@@ -8,7 +8,7 @@ import '../domain/skill_format.dart';
 /// A file offered for import, from a folder or a zip.
 @immutable
 final class SkillFile {
-  const SkillFile(this.path, {required this.size, this.kind = SkillEntryKind.file, this.read});
+  const SkillFile(this.path, {required this.size, this.kind = SkillEntryKind.file, this.read, this.readHead});
 
   /// `/`-separated, relative to where the import started.
   final String path;
@@ -17,6 +17,20 @@ final class SkillFile {
 
   /// The bytes (files only).
   final Future<Uint8List> Function()? read;
+
+  /// The first few bytes without reading the rest, when the source can do
+  /// that (a zip entry stops inflating early); else [read] is used.
+  final Future<List<int>> Function()? readHead;
+
+  /// The first 4 bytes, for the compiled-program check.
+  Future<List<int>> head() async {
+    if (readHead case final h?) {
+      final bytes = await h();
+      return bytes.length > 4 ? bytes.sublist(0, 4) : bytes;
+    }
+    final bytes = await read!();
+    return bytes.length > 4 ? bytes.sublist(0, 4) : bytes;
+  }
 }
 
 /// One skill found in an import: its folder name, the strict check, and its
@@ -60,6 +74,7 @@ Future<List<ImportCandidate>> findImportCandidates(List<SkillFile> files, {requi
             size: f.size,
             kind: f.kind,
             read: f.read,
+            readHead: f.readHead,
           ),
     ];
     final md = own.where((f) => f.path == 'SKILL.md').first;
@@ -78,12 +93,25 @@ Future<List<ImportCandidate>> findImportCandidates(List<SkillFile> files, {requi
         // The check below reports it.
       }
     }
+    // The declared count and size are checked before any file is opened:
+    // past either limit the skill is refused anyway, so nothing is read.
+    var count = 0;
+    var total = 0;
+    for (final f in own) {
+      if (f.kind != SkillEntryKind.file) continue;
+      count++;
+      total += f.size;
+    }
+    final withinLimits = count <= SkillRules.maxFiles && total <= SkillRules.maxTotalBytes;
     final entries = <SkillEntry>[];
     for (final f in own) {
       var head = const <int>[];
-      if (f.kind == SkillEntryKind.file && f.read != null && f.size >= 2 && f.size <= SkillRules.maxFileBytes) {
-        final bytes = await f.read!();
-        head = bytes.length > 4 ? bytes.sublist(0, 4) : bytes;
+      if (withinLimits &&
+          f.kind == SkillEntryKind.file &&
+          f.read != null &&
+          f.size >= 2 &&
+          f.size <= SkillRules.maxFileBytes) {
+        head = await f.head();
       }
       entries.add(SkillEntry(f.path, size: f.size, kind: f.kind, head: head));
     }
@@ -113,7 +141,66 @@ List<SkillFile> zipFiles(Uint8List bytes) {
               : f.isFile
               ? SkillEntryKind.file
               : SkillEntryKind.directory,
-          read: f.isFile ? () async => f.readBytes() ?? Uint8List(0) : null,
+          read: f.isFile ? () async => _inflate(f) : null,
+          readHead: f.isFile ? () async => _inflateHead(f) : null,
         ),
   ];
+}
+
+/// [f]'s bytes. Inflated into a fresh buffer each time, so the archive keeps
+/// no decompressed copy around.
+Uint8List _inflate(ArchiveFile f) {
+  final out = OutputMemoryStream();
+  f.decompress(out);
+  return out.getBytes();
+}
+
+/// [f]'s first bytes; inflating stops once they are out.
+List<int> _inflateHead(ArchiveFile f) {
+  final out = _HeadSink();
+  try {
+    f.decompress(out);
+  } on _HeadFull {
+    // Enough.
+  }
+  final bytes = out.getBytes();
+  return bytes.length > 4 ? bytes.sublist(0, 4) : bytes;
+}
+
+final class _HeadFull implements Exception {
+  const _HeadFull();
+}
+
+/// A buffer that stops the inflater once it holds 4 bytes.
+final class _HeadSink extends OutputMemoryStream {
+  _HeadSink() : super(size: 64);
+
+  void _check() {
+    if (length >= 4) throw const _HeadFull();
+  }
+
+  @override
+  void writeByte(int value) {
+    super.writeByte(value);
+    _check();
+  }
+
+  @override
+  void writeBytes(List<int> bytes, {int? length}) {
+    final n = length ?? bytes.length;
+    super.writeBytes(bytes, length: n > 64 ? 64 : n);
+    _check();
+  }
+
+  @override
+  void writeStream(InputStream stream) {
+    super.writeBytes(stream.readBytes(stream.length > 64 ? 64 : stream.length).toUint8List());
+    _check();
+  }
+
+  @override
+  void writeBackReference(int distance, int count) {
+    super.writeBackReference(distance, count);
+    _check();
+  }
 }

@@ -98,7 +98,9 @@ final class SkillSettings {
 
   /// Library and shared skills are the user's own; a project skill needs
   /// trust for exactly the content on disk now.
-  bool trustedNow(InstalledSkill s) => s.source != SkillSource.project || trusted[s.key] == s.digest;
+  /// An empty digest (a folder that couldn't be read whole) is never trusted.
+  bool trustedNow(InstalledSkill s) =>
+      s.source != SkillSource.project || (s.digest.isNotEmpty && trusted[s.key] == s.digest);
 
   /// The user trusted an earlier version of this project skill.
   bool changedSinceTrusted(InstalledSkill s) =>
@@ -119,18 +121,20 @@ String? skillStatus(InstalledSkill s, SkillSettings settings, {InstalledSkill? s
 
 /// The skills a session in [projectId] gets: active ones, sorted by name so
 /// the prompt stays the same between sessions (a cache-stable prefix). A
-/// project skill wins over a library or shared one of the same name, and a
-/// library skill over a shared one.
+/// trusted project skill wins over a library or shared one of the same name,
+/// and a library skill over a shared one. An untrusted project skill can't
+/// hide the user's own skill.
 List<InstalledSkill> sessionSkills(List<InstalledSkill> all, SkillSettings settings, String? projectId) {
   final byName = <String, InstalledSkill>{};
-  for (final s in winnersFor(all, projectId).values) {
+  for (final s in winnersFor(all, projectId, settings: settings).values) {
     if (settings.active(s)) byName[s.name] = s;
   }
   return [...byName.values]..sort((a, b) => a.name.compareTo(b.name));
 }
 
 /// For each name, the skill that counts in [projectId] (active or not).
-Map<String, InstalledSkill> winnersFor(List<InstalledSkill> all, String? projectId) {
+/// With [settings], project skills not trusted now are left out of the race.
+Map<String, InstalledSkill> winnersFor(List<InstalledSkill> all, String? projectId, {SkillSettings? settings}) {
   int rank(InstalledSkill s) => switch (s.source) {
     SkillSource.project => 0,
     SkillSource.library => 1,
@@ -140,6 +144,7 @@ Map<String, InstalledSkill> winnersFor(List<InstalledSkill> all, String? project
   for (final s in all) {
     if (!s.usable) continue;
     if (s.source == SkillSource.project && s.projectId != projectId) continue;
+    if (settings != null && !settings.trustedNow(s)) continue;
     final had = out[s.name];
     if (had == null || rank(s) < rank(had)) out[s.name] = s;
   }

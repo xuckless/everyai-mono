@@ -10,8 +10,11 @@ import 'package:every_ai/features/code/harness/harness.dart';
 import 'package:every_ai/features/code/harness/openhands_harness.dart';
 import 'package:every_ai/features/skills/data/skill_import.dart';
 import 'package:every_ai/features/skills/data/skill_store_io.dart' as store;
-import 'package:every_ai/features/skills/domain/skill_catalog.dart';
 import 'package:every_ai/features/skills/domain/skill_format.dart';
+import 'package:every_ai/features/skills/skills_providers.dart';
+import 'package:every_ai/features/slash/skills/skill_draft.dart';
+import 'package:every_ai/features/slash/skills/skill_md.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -232,8 +235,13 @@ void main() {
       final all = [lib, shared, proj, other, a];
       expect([for (final s in sessionSkills(all, settings, 'p1')) s.key], ['shared:a-skill', proj.key]);
       expect([for (final s in sessionSkills(all, settings, null)) s.key], ['shared:a-skill', 'library:b-skill']);
-      // An untrusted project skill still wins its name: a same-named skill never silently takes its place.
-      expect([for (final s in sessionSkills(all, const SkillSettings(), 'p1')) s.key], ['shared:a-skill']);
+      // An untrusted project skill can't hide the user's own skill of that name.
+      expect(
+        [for (final s in sessionSkills(all, const SkillSettings(), 'p1')) s.key],
+        ['shared:a-skill', 'library:b-skill'],
+      );
+      // In Settings the untrusted project skill is listed as itself, not hidden.
+      expect(winnersFor(all, 'p1')['b-skill']!.key, proj.key);
     });
 
     test('the OpenHands skill escapes inline commands and lists the file', () {
@@ -332,6 +340,54 @@ void main() {
       expect(c.every((x) => x.ok), isTrue);
     });
 
+    test('zip heads stop inflating early; full reads keep no cached copy', () async {
+      final big = Uint8List(2 * 1024 * 1024)..setAll(0, [0x7f, 0x45, 0x4c, 0x46]);
+      final a = Archive()
+        ..addFile(ArchiveFile.bytes('SKILL.md', utf8.encode(_valid)))
+        ..addFile(ArchiveFile.bytes('tool', big));
+      final files = zipFiles(Uint8List.fromList(ZipEncoder().encode(a)));
+      final tool = files.firstWhere((f) => f.path == 'tool');
+      expect(await tool.readHead!(), [0x7f, 0x45, 0x4c, 0x46]);
+      expect((await tool.read!()).length, big.length);
+      final c = await findImportCandidates(files, fallbackName: 'z');
+      expect(c.single.check.report.errors.join(), contains('compiled programs'));
+    });
+
+    test('past the file or size limits no file but SKILL.md is read', () async {
+      Never boom() => throw StateError('read');
+      final md = utf8.encode(_valid);
+      final many = [
+        SkillFile('SKILL.md', size: md.length, read: () async => Uint8List.fromList(md)),
+        for (var i = 0; i < SkillRules.maxFiles + 1; i++)
+          SkillFile('f$i.txt', size: 10, read: () async => boom(), readHead: () async => boom()),
+      ];
+      final c = await findImportCandidates(many, fallbackName: 'make-deck');
+      expect(c.single.check.report.errors, contains('More than ${SkillRules.maxFiles} files.'));
+      final huge = [
+        many.first,
+        for (var i = 0; i < 4; i++) SkillFile('f$i.bin', size: SkillRules.maxFileBytes, read: () async => boom()),
+      ];
+      final h = await findImportCandidates(huge, fallbackName: 'make-deck');
+      expect(h.single.ok, isFalse);
+    });
+
+    test('a skill learned in chat goes through the strict check into the library', () async {
+      final recorder = _RecordingSkills();
+      final c = ProviderContainer(overrides: [installedSkillsProvider.overrideWith(() => recorder)]);
+      addTearDown(c.dispose);
+      final save = c.read(skillSaverProvider);
+      final saved = await save(
+        const SkillMd(name: 'make-deck', description: 'Plan a deck. Use it for slides.', body: 'Do it.'),
+      );
+      expect(saved.name, 'make-deck');
+      expect(recorder.imported.single.dirName, 'make-deck');
+      await expectLater(
+        save(const SkillMd(name: 'bad', description: 'Has <b>tags</b> in it.', body: 'x')),
+        throwsStateError,
+      );
+      expect(recorder.imported, hasLength(1));
+    });
+
     test('a mismatched folder name is refused on import', () async {
       final c = await findImportCandidates(zip({'wrong/SKILL.md': _valid}), fallbackName: 'z');
       expect(c.single.ok, isFalse);
@@ -373,6 +429,20 @@ void main() {
       expect(Directory(dir).existsSync(), isFalse);
     });
 
+    test('a project skill with too many entries is refused whole and has no digest to trust', () async {
+      final skill = Directory('${tmp.path}/proj/.agents/skills/make-deck')..createSync(recursive: true);
+      File('${skill.path}/SKILL.md').writeAsStringSync(_valid);
+      for (var i = 0; i < SkillRules.maxFiles * 2; i++) {
+        Directory('${skill.path}/d$i').createSync();
+      }
+      final found = await store.scan((library: null, shared: null, projects: [(id: 'p', path: '${tmp.path}/proj')]));
+      final s = found.single;
+      expect(s.usable, isFalse);
+      expect(s.report.errors.join(), contains('files and folders'));
+      expect(s.digest, isEmpty);
+      expect(const SkillSettings().withTrust(s.key, s.digest).trustedNow(s), isFalse);
+    });
+
     test('a project skill folder that is a link is skipped', () async {
       final real = Directory('${tmp.path}/real/x')..createSync(recursive: true);
       File('${real.path}/SKILL.md').writeAsStringSync(_valid.replaceAll('make-deck', 'x'));
@@ -390,4 +460,14 @@ void main() {
       expect(Directory(real.path).existsSync(), isTrue);
     });
   });
+}
+
+final class _RecordingSkills extends NoInstalledSkills {
+  final imported = <ImportCandidate>[];
+
+  @override
+  Future<InstalledSkill?> import(ImportCandidate c, {String? projectId, String? projectPath}) async {
+    imported.add(c);
+    return null;
+  }
 }

@@ -92,7 +92,7 @@ final class InstalledSkills extends AsyncNotifier<List<InstalledSkill>> {
 
 /// An empty skill library, for tests (no scan of the real folders) and
 /// hosts without skills.
-final class NoInstalledSkills extends InstalledSkills {
+base class NoInstalledSkills extends InstalledSkills {
   @override
   Future<List<InstalledSkill>> build() async => const [];
 }

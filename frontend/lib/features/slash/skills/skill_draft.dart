@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/net/api_client.dart';
 import '../../../core/providers.dart';
 import '../../chat/domain/message.dart';
+import '../../skills/skills_providers.dart';
+import 'learn.dart';
 import 'skill_files.dart';
 import 'skill_md.dart';
 
@@ -62,6 +64,14 @@ final skillDrafterProvider = Provider<SkillDrafter>(
   (ref) => SkillDrafter(ref.watch(apiClientProvider), authenticated: !ref.watch(appConfigProvider).devSkipAuth),
 );
 
-/// Where a finished skill goes. The skills settings step swaps this for the
-/// skill store; until then it writes the user's skills folder.
-final skillSaverProvider = Provider<Future<SkillSaved> Function(SkillMd skill)>((ref) => saveUserSkill);
+/// Where a finished skill goes: through the strict import check into the
+/// skills library, which is rescanned, so Chat and new Code sessions see it
+/// at once (the same path as Code's `/learn`).
+final skillSaverProvider = Provider<Future<SkillSaved> Function(SkillMd skill)>(
+  (ref) => (skill) async {
+    final candidate = await skillCandidate(skill);
+    if (!candidate.ok) throw StateError(candidate.check.report.errors.join(' '));
+    final added = await ref.read(installedSkillsProvider.notifier).import(candidate);
+    return (name: added?.name ?? candidate.dirName, path: added?.dir ?? '');
+  },
+);

@@ -66,9 +66,16 @@ Future<InstalledSkill> _load(String dir, String dirName, SkillSource source, Str
   final entries = <SkillEntry>[];
   final files = <(String, File)>[];
   var total = 0;
+  var overflow = false;
+  var unreadable = false;
   try {
     await for (final e in Directory(dir).list(recursive: true, followLinks: false)) {
-      if (entries.length > SkillRules.maxFiles * 2) break;
+      // Past this many entries the folder is refused whole: a digest over
+      // part of it would let the rest change without anyone noticing.
+      if (entries.length >= SkillRules.maxFiles * 2) {
+        overflow = true;
+        break;
+      }
       final rel = e.path.substring(dir.length + 1).replaceAll('\\', '/');
       if (SkillRules.ignored(rel)) continue;
       final stat = await e.stat();
@@ -87,8 +94,11 @@ Future<InstalledSkill> _load(String dir, String dirName, SkillSource source, Str
       entries.add(SkillEntry(rel, size: e is File ? stat.size : 0, kind: kind, head: head));
     }
   } on FileSystemException {
-    // Whatever was listed is checked.
+    // Not fully listed: checked, but a project copy can't be trusted (no digest).
+    unreadable = true;
   }
+  // SKILL.md is always hashed, wherever the listing put it.
+  if (!files.any((f) => f.$1 == 'SKILL.md')) files.add(('SKILL.md', File('$dir/SKILL.md')));
   String? text;
   final md = File('$dir/SKILL.md');
   try {
@@ -99,14 +109,21 @@ Future<InstalledSkill> _load(String dir, String dirName, SkillSource source, Str
     text = null;
   }
   final check = checkSkill(dirName: dirName, skillMd: text, entries: entries, strict: false);
+  final report = overflow
+      ? SkillReport(
+          errors: [...check.report.errors, 'More than ${SkillRules.maxFiles * 2} files and folders.'],
+          warnings: check.report.warnings,
+          hasScripts: check.report.hasScripts,
+        )
+      : check.report;
   return InstalledSkill(
     dirName: dirName,
     dir: dir,
     source: source,
     projectId: projectId,
     manifest: check.manifest,
-    report: check.report,
-    digest: total > SkillRules.maxTotalBytes ? '' : await _digest(files),
+    report: report,
+    digest: overflow || unreadable || total > SkillRules.maxTotalBytes ? '' : await _digest(files),
     files: [
       for (final (rel, _) in files)
         if (rel != 'SKILL.md') rel,
@@ -235,7 +252,21 @@ Future<List<int>?> readFile(String dir, String rel, int maxBytes) async {
   }
 }
 
+/// The digest of the files under [dir], computed like [BuiltinSkill.digest].
+Future<String> _folderDigest(String dir) async {
+  final files = <(String, File)>[];
+  await for (final e in Directory(dir).list(recursive: true, followLinks: false)) {
+    if (e is! File) continue;
+    final rel = e.path.substring(dir.length + 1).replaceAll('\\', '/');
+    if (SkillRules.ignored(rel)) continue;
+    files.add((rel, e));
+  }
+  return _digest(files);
+}
+
 /// Which version of each bundled skill was installed: `<library>/.builtin.json`.
+/// A bundled skill is installed once; an app update replaces it only while
+/// the user hasn't edited it, and one the user removed stays removed.
 Future<void> seedBuiltins(String libraryDir, List<BuiltinSkill> skills) async {
   try {
     await Directory(libraryDir).create(recursive: true);
@@ -251,11 +282,16 @@ Future<void> seedBuiltins(String libraryDir, List<BuiltinSkill> skills) async {
     }
     var changed = false;
     for (final s in skills) {
-      if (seeded[s.name] == s.digest) continue;
+      final recorded = seeded[s.name];
+      if (recorded == s.digest) continue;
       final target = Directory('$libraryDir/${s.name}');
       final exists = target.existsSync() || Link(target.path).existsSync();
+      // Installed before and gone now: the user removed it, so it stays removed.
+      if (recorded != null && !exists) continue;
       // A folder we never installed is the user's own.
-      if (exists && !seeded.containsKey(s.name)) continue;
+      if (exists && recorded == null) continue;
+      // Ours, but edited since: the user's edits win over the update.
+      if (exists && (Link(target.path).existsSync() || await _folderDigest(target.path) != recorded)) continue;
       final staging = Directory('$libraryDir/.seeding-${s.name}');
       if (staging.existsSync()) await staging.delete(recursive: true);
       for (final e in s.files.entries) {

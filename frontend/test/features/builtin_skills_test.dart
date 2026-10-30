@@ -57,6 +57,19 @@ void main() {
     await store.seedBuiltins(dir, [changed]);
     expect(File('$dir/vector-art/SKILL.md').readAsStringSync(), contains('New.'));
 
+    // Removed, then updated by the app: still removed.
+    BuiltinSkill bumped(String name, String text) => BuiltinSkill(name, {
+      ...skills.firstWhere((s) => s.name == name).files,
+      'SKILL.md': utf8.encode('---\nname: $name\ndescription: $text\n---\nBody.\n'),
+    });
+    await store.seedBuiltins(dir, [bumped('make-deck', 'Newer.')]);
+    expect(Directory('$dir/make-deck').existsSync(), isFalse);
+
+    // Edited by the user, then updated by the app: the edit stays.
+    File('$dir/draw-diagram/SKILL.md').writeAsStringSync('my edit');
+    await store.seedBuiltins(dir, [bumped('draw-diagram', 'Newer.')]);
+    expect(File('$dir/draw-diagram/SKILL.md').readAsStringSync(), 'my edit');
+
     // A folder the user made with a bundled name is never overwritten.
     final other = await Directory.systemTemp.createTemp('own-skills');
     addTearDown(() => other.delete(recursive: true));
