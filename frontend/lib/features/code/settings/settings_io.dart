@@ -7,9 +7,11 @@ import 'agent_settings.dart';
 import 'settings.dart' show localSettingsPath, projectSettingsPath;
 
 Future<AgentSettings> loadAgentSettings(String projectDir) async {
+  final user = await _userSettings();
   return AgentSettings.layered([
-    for (final path in [?await _userSettings(), '$projectDir/$projectSettingsPath', '$projectDir/$localSettingsPath'])
-      ?await _read(path),
+    if (user != null) ?await _read(user),
+    for (final path in ['$projectDir/$projectSettingsPath', '$projectDir/$localSettingsPath'])
+      if (await _read(path) case final raw?) AgentSettings.untrusted(raw),
   ]);
 }
 

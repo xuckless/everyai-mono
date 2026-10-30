@@ -223,6 +223,9 @@ String contextNote(ContextFile f, {int max = nestedFileBudget}) {
 // ---------------------------------------------------------------------------
 // Finding the files.
 
+/// Characters a path written into a prompt tag must not contain.
+final _unsafePath = RegExp(r'[<>"&\x00-\x1f\x7f]');
+
 String _norm(String p) {
   var s = p.replaceAll(r'\', '/');
   while (s.length > 1 && s.endsWith('/')) {
@@ -289,9 +292,10 @@ final class ProjectContext {
   var _nestedChars = 0;
 
   /// For a session on [projectDir] working in [workingDir] (its worktree, or
-  /// the project itself).
+  /// the project itself). Files are read only where they really are inside
+  /// the tree (or, for [outer] folders, next to the link), so a symlinked
+  /// AGENTS.md can't pull in a key from elsewhere.
   static Future<ProjectContext> forSession({required String workingDir, required String projectDir}) async {
-    final fs = impl.diskFs();
     final repo = await GitService.repoRoot(projectDir);
     if (repo == null) {
       final home = impl.homeDir();
@@ -303,13 +307,19 @@ final class ProjectContext {
           if (abs != dir) outer.add(abs);
         }
       }
-      return ProjectContext(fs: fs, roots: [workingDir], outer: outer, cwd: workingDir);
+      return ProjectContext(
+        fs: impl.diskFs(roots: [workingDir], outer: outer),
+        roots: [workingDir],
+        outer: outer,
+        cwd: workingDir,
+      );
     }
     // The worktree's own root (the working directory may be a folder inside it).
     final tree = await GitService.repoRoot(workingDir) ?? repo;
+    final roots = [tree, if (_norm(repo) != _norm(tree)) repo];
     return ProjectContext(
-      fs: fs,
-      roots: [tree, if (_norm(repo) != _norm(tree)) repo],
+      fs: impl.diskFs(roots: roots),
+      roots: roots,
       startDir: relativeTo(repo, projectDir) ?? '',
       cwd: workingDir,
     );
@@ -317,6 +327,8 @@ final class ProjectContext {
 
   /// The first instruction file in [rel] across the roots, by name precedence.
   Future<ContextFile?> _find(String rel, {String? absolute}) async {
+    // Paths go into the prompt inside tags; a folder name could close them.
+    if (_unsafePath.hasMatch(absolute ?? rel)) return null;
     for (final name in contextFileNames) {
       final dirs = absolute != null ? [absolute] : [for (final r in roots) rel.isEmpty ? r : '$r/$rel'];
       for (final d in dirs) {

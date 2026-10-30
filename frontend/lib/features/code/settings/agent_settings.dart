@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 
+import 'context_files.dart' show scanContextText;
+
 /// How agents write commit messages.
 enum CommitStyle {
   /// Follow the repository's recent history (see [detectCommitStyle]).
@@ -31,7 +33,8 @@ final class AgentType {
 /// How Code agents should behave, from `settings.json` files. Layers merge
 /// in order (user, then project `.everyai/settings.json`, then the
 /// uncommitted `.everyai/settings.local.json`): later scalars win, rule lists
-/// add up, agent types merge by name.
+/// add up, agent types merge by name. The project layers pass through
+/// [untrusted] first.
 ///
 /// ```json
 /// {
@@ -63,7 +66,8 @@ final class AgentSettings {
   final bool attribution;
   final Map<String, AgentType> agents;
 
-  /// Command prefixes for the permission system (stored; not enforced yet).
+  /// Permission rules (see `PermissionRules`). Only the user's own settings
+  /// can allow; project layers can only add `deny` rules (see [untrusted]).
   final List<String> allow;
   final List<String> deny;
 
@@ -89,7 +93,7 @@ final class AgentSettings {
       attribution: git['attribution'] == true,
       agents: {
         for (final e in agents.entries)
-          if (e.value case final Map<String, Object?> a)
+          if (e.value case final Map<String, Object?> a when _agentName.hasMatch(e.key))
             e.key: AgentType(
               name: e.key,
               description: a['description'] as String? ?? '',
@@ -115,6 +119,35 @@ final class AgentSettings {
     );
   }
 
+  /// [raw] from a file that comes with the project, which anyone who can
+  /// commit (or the agent itself) may have written: its `allow` rules are
+  /// dropped, since they would approve commands and edits on the user's
+  /// behalf, and its instructions and agent texts go through the same
+  /// injection scan as AGENTS.md. `deny` rules only tighten, so they stay.
+  static Map<String, Object?> untrusted(Map<String, Object?> raw) {
+    Object? scan(Object? v) => switch (v) {
+      final String s => scanContextText(s).text,
+      final List<Object?> l => [for (final x in l) x is String ? scanContextText(x).text : x],
+      _ => v,
+    };
+    return {
+      ...raw,
+      if (raw['permissions'] case final Map<String, Object?> p) 'permissions': {...p}..remove('allow'),
+      if (raw.containsKey('instructions')) 'instructions': scan(raw['instructions']),
+      if (raw['agents'] case final Map<String, Object?> agents)
+        'agents': {
+          for (final e in agents.entries)
+            e.key: e.value is Map<String, Object?>
+                ? {
+                    ...e.value! as Map<String, Object?>,
+                    'description': scan((e.value! as Map<String, Object?>)['description']),
+                    'prompt': scan((e.value! as Map<String, Object?>)['prompt']),
+                  }
+                : e.value,
+        },
+    };
+  }
+
   /// Merges the layers in order, skipping missing or unreadable ones.
   static AgentSettings layered(Iterable<Map<String, Object?>> layers) {
     var s = defaults;
@@ -124,6 +157,9 @@ final class AgentSettings {
     return s;
   }
 }
+
+/// Agent type names go into the system prompt as they are.
+final _agentName = RegExp(r'^[A-Za-z0-9_.-]{1,64}$');
 
 final _conventional = RegExp(r'^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]*\))?!?: \S');
 

@@ -1,6 +1,6 @@
 import 'context_files.dart';
 
-ContextFs diskFs() => const _NoFs();
+ContextFs diskFs({List<String> roots = const [], List<String> outer = const []}) => const _NoFs();
 
 String? homeDir() => null;
 
