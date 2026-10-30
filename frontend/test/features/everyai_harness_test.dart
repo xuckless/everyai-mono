@@ -14,6 +14,7 @@ import 'package:every_ai/features/code/harness/everyai/shell_io.dart';
 import 'package:every_ai/features/code/harness/everyai/tools_io.dart';
 import 'package:every_ai/features/code/harness/harness.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
 
 /// A stand-in for the gateway: answers each chat completion with the next
 /// scripted reply (as an SSE stream) and keeps the requests.
@@ -119,8 +120,9 @@ void main() {
     await tmp.delete(recursive: true);
   });
 
-  SessionSpec spec(String first, {AgentMode mode = AgentMode.fullAuto}) => SessionSpec(
+  SessionSpec spec(String first, {AgentMode mode = AgentMode.fullAuto, bool vision = false}) => SessionSpec(
     workingDir: work,
+    vision: vision,
     model: 'anthropic/claude-sonnet-5.5',
     mode: mode,
     llmBaseUrl: gateway.baseUrl,
@@ -389,6 +391,48 @@ void main() {
     }) as ActionCall;
     expect(policy.decide(edit('/work/a.txt'), AgentMode.fullAuto).verdict, Verdict.allow);
     expect(policy.decide(edit('/etc/hosts'), AgentMode.fullAuto).verdict, Verdict.ask);
+  });
+
+  test('reading an image shows the picture to a vision model, after the tool results', () async {
+    final pic = img.Image(width: 2400, height: 1200);
+    img.fill(pic, color: img.ColorRgb8(200, 30, 30));
+    File('$work/shot.png').writeAsBytesSync(img.encodePng(pic));
+    gateway
+      ..reply(
+        calls: [
+          ('read', {'file_path': 'shot.png'}),
+        ],
+      )
+      ..reply(text: 'It is red.');
+    final session = await harness.start(spec('look at shot.png', vision: true));
+    await drive(session);
+    final second = gateway.requests[1]['messages']! as List<Object?>;
+    final tool = second.lastWhere((m) => (m! as Map)['role'] == 'tool')! as Map;
+    expect(tool['content'], contains('attached below'));
+    final last = second.last! as Map;
+    expect(last['role'], 'user');
+    final parts = last['content']! as List<Object?>;
+    final url = ((parts[1]! as Map)['image_url']! as Map)['url']! as String;
+    // 2400 px wide is shrunk to 1568 and re-encoded.
+    expect(url, startsWith('data:image/jpeg;base64,'));
+    final back = img.decodeJpg(base64Decode(url.substring(url.indexOf(',') + 1)))!;
+    expect(back.width, 1568);
+    await session.close();
+  });
+
+  test("reading an image without vision says the model can't see it", () async {
+    File('$work/shot.png').writeAsBytesSync(img.encodePng(img.Image(width: 4, height: 4)));
+    gateway
+      ..reply(
+        calls: [
+          ('read', {'file_path': 'shot.png'}),
+        ],
+      )
+      ..reply(text: 'ok');
+    final session = await harness.start(spec('look'));
+    final events = await drive(session);
+    expect(events.whereType<ToolResult>().single.text, contains("can't view images"));
+    await session.close();
   });
 
   group('applyEdit', () {

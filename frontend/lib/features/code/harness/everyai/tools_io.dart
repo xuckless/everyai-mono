@@ -2,7 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'dart:typed_data';
+
 import 'package:http/http.dart' as http;
+import 'package:image/image.dart' as img;
 
 import 'llm.dart';
 import 'shell_io.dart';
@@ -130,7 +133,9 @@ final _specs = [
   _fn(
     ToolNames.read,
     'Read a file. Returns numbered lines (cat -n style), at most 2000 from `offset` (1-based). Read a file '
-    'before editing it. Read several files in one turn when you need them.',
+    'before editing it. Read several files in one turn when you need them. Images (png, jpg, gif, webp) come back '
+    'as the picture itself, so you can look at screenshots of what you built (for example from headless Chrome '
+    '`--screenshot`, or `screencapture -x` on macOS) and check it visually.',
     {
       'file_path': {'type': 'string', 'description': 'Absolute path, or relative to the working directory'},
       'offset': {'type': 'integer', 'description': 'First line to read (1-based)'},
@@ -235,10 +240,54 @@ final _specs = [
 /// What a tool did: the action as the transcript shows it, the text the
 /// model reads, and observation fields for the UI.
 final class ToolOutput {
-  const ToolOutput(this.text, {this.isError = false, this.observation = const {}});
+  const ToolOutput(this.text, {this.isError = false, this.observation = const {}, this.images = const []});
   final String text;
   final bool isError;
   final Map<String, Object?> observation;
+
+  /// Pictures for the model to look at (a screenshot read, an MCP result).
+  final List<ToolImage> images;
+}
+
+/// An image a tool returns: [label] says what it is, [dataUrl] is the picture.
+typedef ToolImage = ({String label, String dataUrl});
+
+/// The extensions read shows as pictures.
+const imageExtensions = {'png', 'jpg', 'jpeg', 'gif', 'webp'};
+
+/// The largest side sent to the model, and the size above which a picture is
+/// re-encoded: bigger costs tokens without helping the model see.
+const _maxImageSide = 1568;
+const _maxImageBytes = 1500000;
+
+/// [bytes] as a data URL a vision model accepts, shrunk when it is large;
+/// null when it can't be decoded.
+String? imageDataUrl(List<int> bytes, String ext) {
+  final mime = switch (ext) {
+    'jpg' || 'jpeg' => 'image/jpeg',
+    'gif' => 'image/gif',
+    'webp' => 'image/webp',
+    _ => 'image/png',
+  };
+  final big = bytes.length > _maxImageBytes;
+  img.Image? decoded;
+  try {
+    decoded = img.decodeImage(Uint8List.fromList(bytes));
+  } on Object {
+    decoded = null;
+  }
+  if (decoded == null) return big ? null : 'data:$mime;base64,${base64Encode(bytes)}';
+  final side = decoded.width > decoded.height ? decoded.width : decoded.height;
+  if (!big && side <= _maxImageSide) return 'data:$mime;base64,${base64Encode(bytes)}';
+  final scaled = side > _maxImageSide
+      ? img.copyResize(
+          decoded,
+          width: decoded.width >= decoded.height ? _maxImageSide : null,
+          height: decoded.height > decoded.width ? _maxImageSide : null,
+          interpolation: img.Interpolation.average,
+        )
+      : decoded;
+  return 'data:image/jpeg;base64,${base64Encode(img.encodeJpg(scaled, quality: 85))}';
 }
 
 /// The action map for an event (`kind` plus the arguments, with the keys the
@@ -307,9 +356,18 @@ const maxToolText = 30000;
 
 /// Runs the built-in tools for one session.
 final class ToolRunner {
-  ToolRunner({required this.root, required this.shell, required this.gateway, required this.sessionTag});
+  ToolRunner({
+    required this.root,
+    required this.shell,
+    required this.gateway,
+    required this.sessionTag,
+    this.vision = false,
+  });
 
   final String root;
+
+  /// Whether the model can look at images (read returns pictures).
+  final bool vision;
   final SessionShell shell;
   final GatewayClient gateway;
   final String sessionTag;
@@ -457,6 +515,22 @@ final class ToolRunner {
       return ToolOutput('Error: $path does not exist.', isError: true);
     }
     final bytes = file.readAsBytesSync();
+    final ext = path.contains('.') ? path.substring(path.lastIndexOf('.') + 1).toLowerCase() : '';
+    if (imageExtensions.contains(ext)) {
+      if (!vision) {
+        return ToolOutput(
+          "$path is an image (${bytes.length} bytes), and this session's model can't view images.",
+          isError: true,
+        );
+      }
+      final url = imageDataUrl(bytes, ext);
+      if (url == null) return ToolOutput("Error: $path couldn't be read as an image.", isError: true);
+      return ToolOutput(
+        'Image $path (${bytes.length} bytes) is attached below.',
+        observation: {'path': path},
+        images: [(label: path, dataUrl: url)],
+      );
+    }
     if (bytes.take(8000).contains(0)) return ToolOutput('$path is a binary file (${bytes.length} bytes).');
     final lines = const LineSplitter().convert(utf8.decode(bytes, allowMalformed: true));
     final offset = ((args['offset'] as num?)?.toInt() ?? 1).clamp(1, lines.length + 1);

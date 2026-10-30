@@ -94,7 +94,13 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
   EveryAISession._(this.id, this._spec, this._dir, http.Client? client)
     : _gateway = GatewayClient(baseUrl: _spec.llmBaseUrl, apiKey: _spec.llmApiKey, client: client),
       _shell = SessionShell(root: _spec.workingDir, sessionTag: _spec.sessionTag, scratchDir: '${_dir.path}/shell') {
-    _tools = ToolRunner(root: _spec.workingDir, shell: _shell, gateway: _gateway, sessionTag: _spec.sessionTag);
+    _tools = ToolRunner(
+      root: _spec.workingDir,
+      shell: _shell,
+      gateway: _gateway,
+      sessionTag: _spec.sessionTag,
+      vision: _spec.vision,
+    );
   }
 
   @override
@@ -425,7 +431,13 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
       vision: spec.vision,
     );
     _gateway = GatewayClient(baseUrl: _spec.llmBaseUrl, apiKey: _spec.llmApiKey);
-    _tools = ToolRunner(root: _spec.workingDir, shell: _shell, gateway: _gateway, sessionTag: _spec.sessionTag);
+    _tools = ToolRunner(
+      root: _spec.workingDir,
+      shell: _shell,
+      gateway: _gateway,
+      sessionTag: _spec.sessionTag,
+      vision: _spec.vision,
+    );
     _writeSpec();
   }
 
@@ -523,10 +535,35 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
 
   // ------------------------------------------------------------------ loop
 
-  List<Map<String, Object?>> _outgoing() => [
-    for (final m in _messages)
-      if (m.containsKey('_eid')) (Map.of(m)..remove('_eid')) else m,
-  ];
+  /// The messages as the model gets them. Only the newest [keptImages]
+  /// tool pictures go out whole; older ones become a note, so a long visual
+  /// check doesn't fill the context with screenshots.
+  List<Map<String, Object?>> _outgoing() {
+    var images = 0;
+    final out = <Map<String, Object?>>[];
+    for (final m in _messages.reversed) {
+      var msg = m.containsKey('_eid') ? (Map.of(m)..remove('_eid')) : m;
+      if (msg['content'] case final List<Object?> parts when parts.any(_isImage)) {
+        final kept = <Object?>[];
+        for (final p in parts) {
+          if (!_isImage(p)) {
+            kept.add(p);
+          } else if (++images <= keptImages) {
+            kept.add(p);
+          } else {
+            kept.add({'type': 'text', 'text': '(an older picture, no longer attached)'});
+          }
+        }
+        msg = {...msg, 'content': kept};
+      }
+      out.add(msg);
+    }
+    return out.reversed.toList();
+  }
+
+  static const keptImages = 8;
+
+  static bool _isImage(Object? part) => part is Map && part['type'] == 'image_url';
 
   Future<void> _run() async {
     if (_looping) return;
@@ -733,6 +770,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
         for (final w in waiting.skip(i)) {
           _result(w.call, w.actionId, const ToolOutput('Not run: the user stopped the agent.', isError: true));
         }
+        _flushImages();
         _setStatus(ExecutionStatus.paused);
         return true;
       }
@@ -748,6 +786,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
       }
       i += batch.length;
     }
+    _flushImages();
     return false;
   }
 
@@ -783,6 +822,30 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
       },
     });
     _append({'role': 'tool', 'tool_call_id': call.id, 'content': out.text, '_eid': actionId});
+    _pendingImages.addAll(out.images);
+  }
+
+  /// Pictures from this turn's tool results, sent once every result is in.
+  final _pendingImages = <ToolImage>[];
+
+  /// The pictures as one user message after the tool results: tool results
+  /// can't carry images on every provider, a user message can.
+  void _flushImages() {
+    if (_pendingImages.isEmpty) return;
+    _append({
+      'role': 'user',
+      'content': [
+        for (final i in _pendingImages) ...[
+          {'type': 'text', 'text': '<tool-image>${i.label}</tool-image>'},
+          {
+            'type': 'image_url',
+            'image_url': {'url': i.dataUrl},
+          },
+        ],
+      ],
+      '_eid': _newId(),
+    });
+    _pendingImages.clear();
   }
 }
 
