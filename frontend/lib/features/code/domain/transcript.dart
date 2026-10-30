@@ -77,7 +77,8 @@ final class PlanTask {
   final String notes;
 }
 
-/// An `ask_user_question` card. [answers] is null until answered.
+/// An `ask_user_question` card. [answers] is null until answered; empty when
+/// the user replied in their own words instead.
 final class QuestionItem extends TranscriptItem {
   QuestionItem(this.call, this.questions, [this.answers]) : super(call.id);
   final ActionCall call;
@@ -115,10 +116,15 @@ final class Transcript {
   /// Actions waiting for approval.
   final List<ActionCall> pending;
 
-  QuestionItem? get openQuestion => switch (items.lastOrNull) {
-    final QuestionItem q when q.answers == null => q,
-    _ => null,
-  };
+  /// The card waiting for answers: the latest unanswered one since the user
+  /// last spoke. The agent's own text after it ("I've asked…") doesn't close it.
+  QuestionItem? get openQuestion {
+    for (final item in items.reversed) {
+      if (item is UserTurn) return null;
+      if (item is QuestionItem && item.answers == null) return item;
+    }
+    return null;
+  }
 
   bool get running => status == ExecutionStatus.running;
 }
@@ -165,6 +171,7 @@ final class TranscriptBuilder {
       case ChatMessage(fromUser: true, :final text):
         if (_answer(text)) return;
         _items.add(UserTurn(e.id, text));
+        _closeOpenQuestion();
       case ChatMessage(:final text, :final reasoning):
         if (text.trim().isEmpty && reasoning.trim().isEmpty) return;
         _items.add(AgentText(e.id, text, reasoning: reasoning));
@@ -241,6 +248,18 @@ final class TranscriptBuilder {
         QuestionItem(call, questions, answers ?? const []),
       final other => other,
     };
+  }
+
+  /// A reply in the user's own words settles any card still open.
+  void _closeOpenQuestion() {
+    for (var i = _items.length - 2; i >= 0; i--) {
+      final item = _items[i];
+      if (item is UserTurn) return;
+      if (item is QuestionItem && item.answers == null) {
+        _items[i] = QuestionItem(item.call, item.questions, const []);
+        return;
+      }
+    }
   }
 
   /// Attaches an answers message to the open question card.

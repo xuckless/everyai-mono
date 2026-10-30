@@ -24,6 +24,9 @@ class QuestionCard extends StatefulWidget {
 class _QuestionCardState extends State<QuestionCard> {
   late List<QuestionAnswer> _answers = [for (final _ in widget.item.questions) const QuestionAnswer()];
   late final List<TextEditingController> _other = [for (final _ in widget.item.questions) TextEditingController()];
+  late final List<FocusNode> _otherFocus = [for (final _ in widget.item.questions) FocusNode()];
+  final _focus = FocusNode(debugLabel: 'question card');
+  int _page = 0;
   bool _sent = false;
 
   @override
@@ -31,13 +34,21 @@ class _QuestionCardState extends State<QuestionCard> {
     for (final c in _other) {
       c.dispose();
     }
+    for (final f in _otherFocus) {
+      f.dispose();
+    }
+    _focus.dispose();
     super.dispose();
   }
 
+  List<Question> get _questions => widget.item.questions;
+  bool get _paged => _questions.length > 1;
   bool get _complete => _answers.every((a) => !a.isEmpty);
+  bool get _typing => _otherFocus.any((f) => f.hasFocus);
+  bool get _enabled => widget.enabled && !_sent;
 
   void _pick(int q, int option) {
-    final question = widget.item.questions[q];
+    final question = _questions[q];
     final a = _answers[q];
     final selected = question.multiSelect
         ? (a.selected.contains(option) ? ({...a.selected}..remove(option)) : {...a.selected, option})
@@ -45,116 +56,334 @@ class _QuestionCardState extends State<QuestionCard> {
     // A single-choice pick replaces a typed "Other".
     if (!question.multiSelect) _other[q].clear();
     setState(() => _answers = [..._answers]..[q] = QuestionAnswer(selected: selected, other: _other[q].text));
+    _focus.requestFocus();
+    // Single choice moves on to the next unanswered question.
+    if (!question.multiSelect && q == _page && _page < _questions.length - 1) {
+      Future.delayed(const Duration(milliseconds: 180), () {
+        if (mounted && _page == q) setState(() => _page++);
+      });
+    }
   }
 
   void _typeOther(int q, String text) {
-    final question = widget.item.questions[q];
+    final question = _questions[q];
     final selected = question.multiSelect || text.trim().isEmpty ? _answers[q].selected : <int>{};
     setState(() => _answers = [..._answers]..[q] = QuestionAnswer(selected: selected, other: text));
   }
 
+  void _go(int page) {
+    if (page < 0 || page >= _questions.length) return;
+    setState(() => _page = page);
+  }
+
+  /// ↩: next question, or submit on the last one.
+  void _advance() {
+    if (_page < _questions.length - 1) {
+      _go(_page + 1);
+    } else {
+      _submit();
+    }
+  }
+
   void _submit() {
-    if (!_complete || _sent) return;
+    if (!_complete || !_enabled) {
+      // Jump to the first question still missing an answer.
+      final missing = _answers.indexWhere((a) => a.isEmpty);
+      if (missing >= 0) _go(missing);
+      return;
+    }
     setState(() => _sent = true);
     widget.onSubmit(_answers);
   }
+
+  Map<ShortcutActivator, VoidCallback> get _shortcuts => {
+    const SingleActivator(LogicalKeyboardKey.enter, meta: true): _submit,
+    const SingleActivator(LogicalKeyboardKey.enter, control: true): _submit,
+    const SingleActivator(LogicalKeyboardKey.enter): () {
+      if (!_typing) _advance();
+    },
+    if (_paged) ...{
+      const SingleActivator(LogicalKeyboardKey.arrowRight): () {
+        if (!_typing) _go(_page + 1);
+      },
+      const SingleActivator(LogicalKeyboardKey.arrowLeft): () {
+        if (!_typing) _go(_page - 1);
+      },
+    },
+    for (final (i, key) in _digits.indexed)
+      SingleActivator(key): () {
+        if (!_typing && _enabled && i < _questions[_page].options.length) _pick(_page, i);
+      },
+  };
+
+  static const _digits = [
+    LogicalKeyboardKey.digit1,
+    LogicalKeyboardKey.digit2,
+    LogicalKeyboardKey.digit3,
+    LogicalKeyboardKey.digit4,
+    LogicalKeyboardKey.digit5,
+    LogicalKeyboardKey.digit6,
+  ];
 
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final item = widget.item;
     final answered = item.answers;
-    final questions = item.questions;
+    final questions = _questions;
 
     if (questions.isEmpty) {
       return Text('The agent asked an empty question.', style: TextStyle(color: theme.textMuted, fontSize: 13));
     }
     if (answered != null) return _Answered(questions: questions, answers: answered);
 
-    final enabled = widget.enabled && !_sent;
+    final enabled = _enabled;
+    final page = _page.clamp(0, questions.length - 1);
+    final missing = [
+      for (final (i, a) in _answers.indexed)
+        if (a.isEmpty) questions[i].header.isNotEmpty ? questions[i].header : 'question ${i + 1}',
+    ];
+    final last = page == questions.length - 1;
+
     return Container(
       decoration: BoxDecoration(
         color: theme.surfaceRaised,
-        border: Border.all(color: theme.accent.withValues(alpha: 0.5)),
+        border: Border.all(color: theme.accent.withValues(alpha: enabled ? 0.5 : 0.2)),
         borderRadius: BorderRadius.circular(EveryTheme.cardRadius),
       ),
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
       child: CallbackShortcuts(
-        bindings: {const SingleActivator(LogicalKeyboardKey.enter, meta: true): _submit},
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                AdaptiveIcon(EveryIcon.quiz, size: 15, color: theme.accent),
-                const SizedBox(width: 8),
-                Text(
-                  questions.length == 1 ? 'A question for you' : '${questions.length} questions for you',
-                  style: TextStyle(color: theme.text, fontSize: 13, fontWeight: FontWeight.w600),
-                ),
-              ],
-            ),
-            for (final (qi, q) in questions.indexed) ...[
-              SizedBox(height: qi == 0 ? 12 : 18),
+        bindings: _shortcuts,
+        child: Focus(
+          focusNode: _focus,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
               Row(
                 children: [
-                  if (q.header.isNotEmpty) ...[
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: theme.accent.withValues(alpha: 0.14),
-                        borderRadius: BorderRadius.circular(5),
-                      ),
-                      child: Text(
-                        q.header,
-                        style: TextStyle(color: theme.accent, fontSize: 11, fontWeight: FontWeight.w700),
-                      ),
+                  AdaptiveIcon(EveryIcon.quiz, size: 15, color: theme.accent),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      questions.length == 1 ? 'A question for you' : '${questions.length} questions for you',
+                      style: TextStyle(color: theme.text, fontSize: 13, fontWeight: FontWeight.w600),
                     ),
-                    const SizedBox(width: 8),
-                  ],
-                  if (q.multiSelect)
-                    Text('Select all that apply', style: TextStyle(color: theme.textMuted, fontSize: 11.5)),
+                  ),
+                  if (_paged)
+                    Text('${page + 1} of ${questions.length}', style: TextStyle(color: theme.textMuted, fontSize: 12)),
                 ],
               ),
-              const SizedBox(height: 6),
-              Text(
-                q.question,
-                style: TextStyle(color: theme.text, fontSize: 14.5, fontWeight: FontWeight.w600, height: 1.35),
-              ),
-              const SizedBox(height: 8),
-              for (final (oi, option) in q.options.indexed)
-                _OptionRow(
-                  label: option.label,
-                  description: option.description,
-                  multiple: q.multiSelect,
-                  selected: _answers[qi].selected.contains(oi),
-                  onTap: enabled ? () => _pick(qi, oi) : null,
+              if (_paged) ...[
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final (i, q) in questions.indexed)
+                      _QuestionTab(
+                        label: q.header.isNotEmpty ? q.header : 'Q${i + 1}',
+                        current: i == page,
+                        done: !_answers[i].isEmpty,
+                        onTap: () => _go(i),
+                      ),
+                  ],
                 ),
-              _OtherRow(
-                controller: _other[qi],
-                multiple: q.multiSelect,
-                active: _answers[qi].other.trim().isNotEmpty,
-                enabled: enabled,
-                onChanged: (t) => _typeOther(qi, t),
-              ),
-            ],
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    _complete ? '⌘↩ to submit' : 'Answer every question to continue',
-                    style: TextStyle(color: theme.textMuted, fontSize: 12),
+              ],
+              const SizedBox(height: 12),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 440),
+                child: SingleChildScrollView(
+                  child: _QuestionPage(
+                    key: ValueKey(page),
+                    question: questions[page],
+                    showHeader: !_paged,
+                    answer: _answers[page],
+                    other: _other[page],
+                    otherFocus: _otherFocus[page],
+                    enabled: enabled,
+                    onPick: (oi) => _pick(page, oi),
+                    onOther: (t) => _typeOther(page, t),
+                    onOtherSubmitted: _advance,
                   ),
                 ),
-                AdaptiveButton(
-                  label: questions.length == 1 ? 'Submit answer' : 'Submit answers',
-                  busy: _sent,
-                  onPressed: _complete && enabled ? _submit : null,
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      !enabled && !_sent
+                          ? 'Answered in chat'
+                          : missing.isEmpty
+                          ? '⌘↩ to submit'
+                          : _paged
+                          ? 'Still to answer: ${missing.join(', ')}'
+                          : 'Pick an answer to continue',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: theme.textMuted, fontSize: 12),
+                    ),
+                  ),
+                  if (_paged && page > 0) ...[
+                    AdaptiveButton(label: 'Back', emphasis: ButtonEmphasis.secondary, onPressed: () => _go(page - 1)),
+                    const SizedBox(width: 8),
+                  ],
+                  if (_paged && !last)
+                    AdaptiveButton(
+                      label: 'Next',
+                      emphasis: _complete ? ButtonEmphasis.secondary : ButtonEmphasis.primary,
+                      onPressed: () => _go(page + 1),
+                    ),
+                  if (!_paged || last || _complete) ...[
+                    if (_paged && !last) const SizedBox(width: 8),
+                    AdaptiveButton(
+                      label: questions.length == 1 ? 'Submit answer' : 'Submit answers',
+                      busy: _sent,
+                      onPressed: _complete && enabled ? _submit : null,
+                    ),
+                  ],
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// One question: its header, text, options and the "Other" field.
+class _QuestionPage extends StatelessWidget {
+  const _QuestionPage({
+    super.key,
+    required this.question,
+    required this.showHeader,
+    required this.answer,
+    required this.other,
+    required this.otherFocus,
+    required this.enabled,
+    required this.onPick,
+    required this.onOther,
+    required this.onOtherSubmitted,
+  });
+
+  final Question question;
+  final bool showHeader;
+  final QuestionAnswer answer;
+  final TextEditingController other;
+  final FocusNode otherFocus;
+  final bool enabled;
+  final ValueChanged<int> onPick;
+  final ValueChanged<String> onOther;
+  final VoidCallback onOtherSubmitted;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final q = question;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if ((showHeader && q.header.isNotEmpty) || q.multiSelect) ...[
+          Row(
+            children: [
+              if (showHeader && q.header.isNotEmpty) ...[_HeaderChip(q.header), const SizedBox(width: 8)],
+              if (q.multiSelect)
+                Text('Select all that apply', style: TextStyle(color: theme.textMuted, fontSize: 11.5)),
+            ],
+          ),
+          const SizedBox(height: 6),
+        ],
+        Text(
+          q.question,
+          style: TextStyle(color: theme.text, fontSize: 14.5, fontWeight: FontWeight.w600, height: 1.35),
+        ),
+        const SizedBox(height: 8),
+        for (final (oi, option) in q.options.indexed)
+          _OptionRow(
+            label: option.label,
+            description: option.description,
+            multiple: q.multiSelect,
+            selected: answer.selected.contains(oi),
+            shortcut: oi < 6 ? '${oi + 1}' : null,
+            onTap: enabled ? () => onPick(oi) : null,
+          ),
+        _OtherRow(
+          controller: other,
+          focusNode: otherFocus,
+          multiple: q.multiSelect,
+          active: answer.other.trim().isNotEmpty,
+          enabled: enabled,
+          onChanged: onOther,
+          onSubmitted: onOtherSubmitted,
+        ),
+      ],
+    );
+  }
+}
+
+class _HeaderChip extends StatelessWidget {
+  const _HeaderChip(this.label);
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(color: theme.accent.withValues(alpha: 0.14), borderRadius: BorderRadius.circular(5)),
+      child: Text(
+        label,
+        style: TextStyle(color: theme.accent, fontSize: 11, fontWeight: FontWeight.w700),
+      ),
+    );
+  }
+}
+
+/// A question's tab in a multi-question card: its header, a tick once answered.
+class _QuestionTab extends StatelessWidget {
+  const _QuestionTab({required this.label, required this.current, required this.done, required this.onTap});
+
+  final String label;
+  final bool current;
+  final bool done;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return Semantics(
+      button: true,
+      selected: current,
+      label: '$label${done ? ', answered' : ''}',
+      excludeSemantics: true,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          onTap: onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+            decoration: BoxDecoration(
+              color: current ? theme.accent.withValues(alpha: 0.16) : null,
+              border: Border.all(color: current ? theme.accent : theme.border),
+              borderRadius: BorderRadius.circular(7),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (done) ...[AdaptiveIcon(EveryIcon.check, size: 11, color: theme.accent), const SizedBox(width: 4)],
+                Text(
+                  label,
+                  style: TextStyle(
+                    color: current ? theme.accent : theme.text,
+                    fontSize: 12,
+                    fontWeight: current ? FontWeight.w700 : FontWeight.w500,
+                  ),
                 ),
               ],
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -169,6 +398,7 @@ class _OptionRow extends StatefulWidget {
     required this.multiple,
     required this.selected,
     required this.onTap,
+    this.shortcut,
   });
 
   final String label;
@@ -176,6 +406,9 @@ class _OptionRow extends StatefulWidget {
   final bool multiple;
   final bool selected;
   final VoidCallback? onTap;
+
+  /// The number key that picks it.
+  final String? shortcut;
 
   @override
   State<_OptionRow> createState() => _OptionRowState();
@@ -252,13 +485,17 @@ class _OptionRowState extends State<_OptionRow> {
 class _OtherRow extends StatelessWidget {
   const _OtherRow({
     required this.controller,
+    required this.focusNode,
     required this.multiple,
     required this.active,
     required this.enabled,
     required this.onChanged,
+    required this.onSubmitted,
   });
 
   final TextEditingController controller;
+  final FocusNode focusNode;
+  final VoidCallback onSubmitted;
   final bool multiple;
   final bool active;
   final bool enabled;
@@ -283,9 +520,11 @@ class _OtherRow extends StatelessWidget {
               ignoring: !enabled,
               child: AdaptiveTextField(
                 controller: controller,
+                focusNode: focusNode,
                 placeholder: 'Other: type your own answer',
                 borderless: true,
                 onChanged: onChanged,
+                onSubmitted: (_) => onSubmitted(),
               ),
             ),
           ),
@@ -337,6 +576,20 @@ class _Answered extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
+    if (answers.isEmpty) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+        decoration: BoxDecoration(
+          border: Border.all(color: theme.border),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Text(
+          questions.length == 1 ? 'Question answered in chat' : '${questions.length} questions, answered in chat',
+          style: TextStyle(color: theme.textMuted, fontSize: 12.5),
+        ),
+      );
+    }
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),

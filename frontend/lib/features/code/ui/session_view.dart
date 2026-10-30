@@ -116,6 +116,9 @@ class CodeSessionScreen extends ConsumerWidget {
                         onStop: controller.stop,
                         queued: [for (final q in state.queued) q.text],
                         onUnqueue: controller.unqueue,
+                        placeholder: t.openQuestion != null
+                            ? 'Answer the questions above, or reply in your own words'
+                            : 'Ask for a change, or reply to the agent',
                         trailing: Text(
                           info.model.split('/').last,
                           overflow: TextOverflow.ellipsis,

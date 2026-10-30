@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/questions.dart';
@@ -208,6 +209,104 @@ void main() {
       expect(t.pending, isEmpty);
       await feed.cancel();
       await s.close();
+    });
+  });
+
+  group('question cards', () {
+    HarnessEvent msg(String id, String source, String text) => HarnessEvent.decode({
+      'kind': 'MessageEvent',
+      'id': id,
+      'source': source,
+      'llm_message': {
+        'role': source == 'user' ? 'user' : 'assistant',
+        'content': [
+          {'type': 'text', 'text': text},
+        ],
+      },
+    });
+    HarnessEvent state(String id, String status) => HarnessEvent.decode({
+      'kind': 'ConversationStateUpdateEvent',
+      'id': id,
+      'key': 'execution_status',
+      'value': status,
+    });
+    final questions = [
+      for (final h in ['Platform', 'Review', 'Validation', 'Address'])
+        {
+          'question': 'Which $h?',
+          'header': h,
+          'options': [
+            {'label': '$h A', 'description': 'first'},
+            {'label': '$h B', 'description': 'second'},
+          ],
+        },
+    ];
+    HarnessEvent ask() => HarnessEvent.decode({
+      'kind': 'ActionEvent',
+      'id': 'q1',
+      'tool_name': askUserQuestionTool,
+      'tool_call_id': 'tc1',
+      'action': {'kind': 'ClientToolAction'},
+      'tool_call': {
+        'name': askUserQuestionTool,
+        'arguments': jsonEncode({'questions': questions}),
+      },
+    });
+    HarnessEvent ack() => HarnessEvent.decode({
+      'kind': 'ObservationEvent',
+      'id': 'o1',
+      'action_id': 'q1',
+      'tool_call_id': 'tc1',
+      'tool_name': askUserQuestionTool,
+      'observation': {
+        'kind': 'ClientToolObservation',
+        'content': [
+          {'type': 'text', 'text': 'Tool call dispatched to client.'},
+        ],
+      },
+    });
+
+    // The shape of the user's sessions: the card, the SDK's ack, the agent's
+    // "I've asked four questions above", then finished.
+    TranscriptBuilder asked() => TranscriptBuilder()
+      ..add(msg('u1', 'user', 'Plan a signup form and ask me questions'))
+      ..add(state('s1', 'running'))
+      ..add(ask())
+      ..add(ack())
+      ..add(msg('m1', 'agent', "I've asked four questions above. I'll wait for your answers."))
+      ..add(state('s2', 'finished'));
+
+    test('a card stays open after the agent keeps talking and the turn ends', () {
+      final t = asked().snapshot;
+      expect(t.items.last, isA<AgentText>());
+      expect(t.openQuestion?.questions, hasLength(4));
+      expect(t.openQuestion!.questions.map((q) => q.header), ['Platform', 'Review', 'Validation', 'Address']);
+    });
+
+    test('answers from the card attach to it', () {
+      final b = asked();
+      final card = b.snapshot.openQuestion!;
+      b.add(
+        msg(
+          'u2',
+          'user',
+          answersMessage(card.questions, [
+            for (final _ in card.questions) const QuestionAnswer(selected: {1}),
+          ]),
+        ),
+      );
+      final t = b.snapshot;
+      expect(t.openQuestion, isNull);
+      expect(t.items.whereType<UserTurn>(), hasLength(1));
+      expect(t.items.whereType<QuestionItem>().single.answers!.map((a) => a.selected), everyElement({1}));
+    });
+
+    test('a reply in the user\'s own words settles the card', () {
+      final b = asked()..add(msg('u2', 'user', 'Web page, show a summary, all required'));
+      final t = b.snapshot;
+      expect(t.openQuestion, isNull);
+      expect(t.items.whereType<QuestionItem>().single.answers, isEmpty);
+      expect(t.items.last, isA<UserTurn>());
     });
   });
 }
