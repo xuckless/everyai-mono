@@ -96,7 +96,7 @@ class _CodeComposerState extends State<CodeComposer> {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    final radius = theme.design == DesignLanguage.macos ? 14.0 : 18.0;
+    final radius = theme.design == DesignLanguage.fluent ? 8.0 : EveryTheme.cardRadius;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -138,7 +138,11 @@ class _CodeComposerState extends State<CodeComposer> {
               Row(
                 children: [
                   ModeMenu(mode: widget.mode, onChanged: widget.onModeChanged),
-                  if (widget.leading != null) ...[const SizedBox(width: 4), Flexible(child: widget.leading!)],
+                  // Capped rather than flexible, so the free space all goes to the model label.
+                  if (widget.leading != null) ...[
+                    const SizedBox(width: 4),
+                    ConstrainedBox(constraints: const BoxConstraints(maxWidth: 240), child: widget.leading),
+                  ],
                   // The model sits at the right, next to send.
                   Expanded(
                     child: Align(alignment: Alignment.centerRight, child: widget.trailing ?? const SizedBox()),

@@ -1,3 +1,5 @@
+import '../../../core/ui/brand.dart';
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -152,7 +154,7 @@ class _Home extends StatelessWidget {
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  AdaptiveIcon(EveryIcon.spark, size: 28, color: theme.accent),
+                  const BrandMark(size: 30),
                   const SizedBox(width: 12),
                   Flexible(
                     child: Text(

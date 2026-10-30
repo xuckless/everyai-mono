@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import '../../../app/router.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
+import '../../../core/ui/brand.dart';
 import '../../../core/ui/adaptive_page.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../chat/chat_providers.dart';
@@ -85,21 +86,34 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                 ),
               ),
               Expanded(
-                child: ListView(
-                  padding: const EdgeInsets.only(bottom: 24),
-                  children: [
-                    for (final (bucket, items) in groups) ...[
-                      AdaptiveSectionHeader(bucket.label),
-                      for (final c in items)
-                        ConversationTile(
-                          conversation: c,
-                          selected: false,
-                          subtitle: _subtitle(c),
-                          onOpen: () => context.go(Routes.chat(c.id)),
-                        ),
-                    ],
-                  ],
-                ),
+                child: visible.isEmpty
+                    ? (_matches == null
+                          ? BrandEmptyState(
+                              kind: 'empty-chats',
+                              title: 'No chats yet',
+                              message: 'Start a conversation with any model. Your chats stay on this device.',
+                              action: AdaptiveButton(label: 'New chat', onPressed: () => context.go(Routes.newChat)),
+                            )
+                          : const BrandEmptyState(
+                              kind: 'no-results',
+                              title: 'No chats match',
+                              message: 'Try other words, or search inside messages.',
+                            ))
+                    : ListView(
+                        padding: const EdgeInsets.only(bottom: 24),
+                        children: [
+                          for (final (bucket, items) in groups) ...[
+                            AdaptiveSectionHeader(bucket.label),
+                            for (final c in items)
+                              ConversationTile(
+                                conversation: c,
+                                selected: false,
+                                subtitle: _subtitle(c),
+                                onOpen: () => context.go(Routes.chat(c.id)),
+                              ),
+                          ],
+                        ],
+                      ),
               ),
             ],
           ),

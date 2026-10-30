@@ -1,7 +1,9 @@
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+import '../platform/platform_kind.dart';
 import '../theme/every_theme.dart';
+import 'adaptive.dart';
 
 /// A panel anchored to its trigger: the model picker, the composer's + menu,
 /// macOS menus. Opens toward the side of the window with room (right-aligned in
@@ -22,6 +24,9 @@ class AnchoredPopover extends StatefulWidget {
 }
 
 class _AnchoredPopoverState extends State<AnchoredPopover> {
+  /// Popovers follow the brand's control radius, but stay native-tight on Fluent.
+  static double _radius(EveryTheme theme) => theme.design == DesignLanguage.fluent ? 8 : 14;
+
   final _portal = OverlayPortalController();
   final _link = LayerLink();
 
@@ -75,13 +80,12 @@ class _AnchoredPopoverState extends State<AnchoredPopover> {
                   ),
                   child: DecoratedBox(
                     decoration: BoxDecoration(
-                      color: theme.isDark ? const Color(0xFF262A35) : const Color(0xFFFFFFFF),
-                      borderRadius: BorderRadius.circular(theme.radius + 2),
-                      border: Border.all(color: theme.border),
-                      boxShadow: const [BoxShadow(color: Color(0x40000000), blurRadius: 28, offset: Offset(0, 10))],
+                      borderRadius: BorderRadius.circular(_radius(theme)),
+                      boxShadow: const [BoxShadow(color: Color(0x80000000), blurRadius: 48, offset: Offset(0, 24))],
                     ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(theme.radius + 2),
+                    child: GlassSurface(
+                      level: GlassLevel.thick,
+                      radius: _radius(theme),
                       child: widget.builder(overlayContext, _portal.hide),
                     ),
                   ),

@@ -106,7 +106,7 @@ class _FlashcardsViewState extends State<FlashcardsView> {
                       alignment: Alignment.center,
                       decoration: BoxDecoration(
                         color: showBack ? theme.accent.withValues(alpha: 0.10) : theme.surfaceRaised,
-                        borderRadius: BorderRadius.circular(theme.radius + 6),
+                        borderRadius: BorderRadius.circular(EveryTheme.cardRadius),
                         border: Border.all(color: showBack ? theme.accent.withValues(alpha: 0.5) : theme.border),
                       ),
                       child: SingleChildScrollView(

@@ -248,7 +248,7 @@ class _FilterChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    final fg = selected ? theme.onAccent : theme.text;
+    final fg = selected ? theme.onPrimary : theme.text;
     return Semantics(
       button: true,
       selected: selected,
@@ -260,7 +260,7 @@ class _FilterChip extends StatelessWidget {
             duration: const Duration(milliseconds: 150),
             padding: EdgeInsets.symmetric(horizontal: subtle ? 10 : 14, vertical: subtle ? 6 : 7),
             decoration: BoxDecoration(
-              color: selected ? theme.accent : theme.surfaceRaised,
+              color: selected ? theme.primary : theme.surfaceRaised,
               borderRadius: BorderRadius.circular(999),
             ),
             child: Row(

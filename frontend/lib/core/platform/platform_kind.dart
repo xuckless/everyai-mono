@@ -48,6 +48,10 @@ enum DesignLanguage {
 /// Facts about the real host, independent of the chosen [DesignLanguage].
 abstract final class Host {
   static bool get isWeb => kIsWeb;
+
+  /// macOS windows keep their traffic lights over the sidebar whatever the
+  /// design language.
+  static bool get hasTrafficLights => !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
   static bool get isApple =>
       !kIsWeb && (defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.macOS);
   static bool get isDesktop =>

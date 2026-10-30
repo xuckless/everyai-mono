@@ -1,3 +1,5 @@
+import '../../../core/ui/brand.dart';
+
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -80,7 +82,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    AdaptiveIcon(EveryIcon.code, size: 26, color: theme.accent),
+                    const BrandGlyph('code', active: true, size: 30),
                     const SizedBox(width: 12),
                     Text(
                       project == null ? 'Code with an agent' : 'What should we build?',

@@ -221,7 +221,7 @@ class _Card extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: theme.surfaceRaised,
-        borderRadius: BorderRadius.circular(theme.radius + 4),
+        borderRadius: BorderRadius.circular(EveryTheme.cardRadius),
         border: Border.all(color: theme.border),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: children),

@@ -1,21 +1,13 @@
 import 'package:flutter/widgets.dart';
 
 import '../platform/platform_kind.dart';
+import 'everyai_brand.dart';
 
-/// Brand palette. The original EveryAI navy and purple, with the accent lifted so
-/// it reaches WCAG AA contrast on both light and dark surfaces.
-abstract final class Brand {
-  static const navy = Color(0xFF181C26);
-  static const slate = Color(0xFF2A3041);
-  static const plum = Color(0xFF2F1555);
-
-  /// Interactive accent derived from [plum].
-  static const violet = Color(0xFF6E4BD8);
-  static const violetLight = Color(0xFFB9A4FF);
-}
+export 'everyai_brand.dart';
 
 /// Design-language-neutral tokens for app content: chat bubbles, code, markdown,
-/// empty states. Native chrome (bars, buttons, menus) comes from each design system.
+/// empty states. Native chrome (bars, buttons, menus) comes from each design
+/// system. Colors are the brand kit's roles (`everyai_brand.dart`).
 @immutable
 final class EveryTheme {
   const EveryTheme({
@@ -28,9 +20,13 @@ final class EveryTheme {
     required this.text,
     required this.textMuted,
     required this.accent,
-    required this.onAccent,
+    required this.primary,
+    required this.onPrimary,
+    required this.link,
     required this.userBubble,
     required this.onUserBubble,
+    required this.success,
+    required this.warning,
     required this.danger,
     required this.codeBackground,
     required this.radius,
@@ -46,24 +42,51 @@ final class EveryTheme {
       DesignLanguage.fluent => 6.0,
       DesignLanguage.adwaita => 12.0,
     };
-    return EveryTheme(
-      design: design,
-      brightness: brightness,
-      background: dark ? Brand.navy : const Color(0xFFF7F6FB),
-      surface: dark ? const Color(0xFF1F2430) : const Color(0xFFFFFFFF),
-      surfaceRaised: dark ? Brand.slate : const Color(0xFFEFEDF6),
-      border: dark ? const Color(0x22FFFFFF) : const Color(0x1A1B1530),
-      text: dark ? const Color(0xFFECEAF4) : const Color(0xFF1B1530),
-      textMuted: dark ? const Color(0xFF9C99AD) : const Color(0xFF66617A),
-      accent: dark ? Brand.violetLight : Brand.violet,
-      onAccent: dark ? Brand.plum : const Color(0xFFFFFFFF),
-      userBubble: dark ? const Color(0xFF3A2A6E) : const Color(0xFFE6DEFF),
-      onUserBubble: dark ? const Color(0xFFF1ECFF) : const Color(0xFF21114A),
-      danger: dark ? const Color(0xFFFF8A80) : const Color(0xFFC62828),
-      codeBackground: dark ? const Color(0xFF12151C) : const Color(0xFFF2F1F7),
-      radius: radius,
-      bubbleRadius: design == DesignLanguage.cupertino || design == DesignLanguage.material ? 20 : radius + 6,
-    );
+    return dark
+        ? EveryTheme(
+            design: design,
+            brightness: brightness,
+            background: EveryRolesDark.background,
+            surface: EveryRolesDark.surface,
+            surfaceRaised: EveryRolesDark.surfaceRaised,
+            border: EveryRolesDark.border,
+            text: EveryRolesDark.text,
+            textMuted: EveryRolesDark.textMuted,
+            accent: EveryRolesDark.accent,
+            primary: EveryRolesDark.primary,
+            onPrimary: EveryRolesDark.onPrimary,
+            link: EveryRolesDark.link,
+            userBubble: EveryRolesDark.userBubble,
+            onUserBubble: EveryRolesDark.onUserBubble,
+            success: EveryRolesDark.success,
+            warning: EveryRolesDark.warning,
+            danger: EveryRolesDark.danger,
+            codeBackground: EveryRolesDark.codeBackground,
+            radius: radius,
+            bubbleRadius: 18,
+          )
+        : EveryTheme(
+            design: design,
+            brightness: brightness,
+            background: EveryRolesLight.background,
+            surface: EveryRolesLight.surface,
+            surfaceRaised: EveryRolesLight.surfaceRaised,
+            border: EveryRolesLight.border,
+            text: EveryRolesLight.text,
+            textMuted: EveryRolesLight.textMuted,
+            accent: EveryRolesLight.accent,
+            primary: EveryRolesLight.primary,
+            onPrimary: EveryRolesLight.onPrimary,
+            link: EveryRolesLight.link,
+            userBubble: EveryRolesLight.userBubble,
+            onUserBubble: EveryRolesLight.onUserBubble,
+            success: EveryRolesLight.success,
+            warning: EveryRolesLight.warning,
+            danger: EveryRolesLight.danger,
+            codeBackground: EveryRolesLight.codeBackground,
+            radius: radius,
+            bubbleRadius: 18,
+          );
   }
 
   final DesignLanguage design;
@@ -74,14 +97,43 @@ final class EveryTheme {
   final Color border;
   final Color text;
   final Color textMuted;
+
+  /// Violet for text, icons, outlines and selection on either surface.
   final Color accent;
-  final Color onAccent;
+
+  /// Violet 500 for filled controls (send, checkboxes, primary buttons), with
+  /// [onPrimary] on top. Same in both themes.
+  final Color primary;
+  final Color onPrimary;
+  final Color link;
   final Color userBubble;
   final Color onUserBubble;
+  final Color success;
+  final Color warning;
   final Color danger;
   final Color codeBackground;
+
+  /// Native control radius for the design language.
   final double radius;
   final double bubbleRadius;
+
+  /// Brand shapes: cards r20, panels r24, the bubble's tail corner r6.
+  static const cardRadius = 20.0;
+  static const panelRadius = 24.0;
+  static const bubbleTail = 6.0;
+
+  /// A user bubble: [bubbleRadius] all round except the tail corner
+  /// (bottom-right, toward the sender).
+  BorderRadius get userBubbleShape => BorderRadius.only(
+    topLeft: Radius.circular(bubbleRadius),
+    topRight: Radius.circular(bubbleRadius),
+    bottomLeft: Radius.circular(bubbleRadius),
+    bottomRight: const Radius.circular(bubbleTail),
+  );
+
+  /// The brand's live-state color: cyan on dark, violet on light (glyph dots,
+  /// the mark's dot).
+  Color get signal => isDark ? EveryPalette.cyan400 : EveryPalette.violet600;
 
   bool get isDark => brightness == Brightness.dark;
 

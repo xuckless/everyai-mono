@@ -9,7 +9,6 @@ import '../../domain/transcript.dart';
 import '../../harness/events.dart';
 
 const _mono = TextStyle(fontFamily: 'SourceCodePro', fontSize: 12.5, height: 1.45);
-const _good = Color(0xFF2E9E5B);
 
 /// The user's message, right-aligned like chat.
 class UserTurnView extends StatelessWidget {
@@ -25,7 +24,7 @@ class UserTurnView extends StatelessWidget {
         builder: (context, constraints) => ConstrainedBox(
           constraints: BoxConstraints(maxWidth: constraints.maxWidth * 0.85),
           child: DecoratedBox(
-            decoration: BoxDecoration(color: theme.userBubble, borderRadius: BorderRadius.circular(theme.bubbleRadius)),
+            decoration: BoxDecoration(color: theme.userBubble, borderRadius: theme.userBubbleShape),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
               child: IntrinsicWidth(child: ChatMarkdown(text, textColor: theme.onUserBubble)),
@@ -171,7 +170,7 @@ class _EditView extends StatelessWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (stats.added > 0) Text('+${stats.added}', style: const TextStyle(color: _good, fontSize: 12)),
+          if (stats.added > 0) Text('+${stats.added}', style: TextStyle(color: theme.success, fontSize: 12)),
           const SizedBox(width: 4),
           if (stats.removed > 0) Text('−${stats.removed}', style: TextStyle(color: theme.danger, fontSize: 12)),
           const SizedBox(width: 6),
@@ -216,7 +215,7 @@ class DiffBlock extends StatelessWidget {
       for (final l in shown)
         Container(
           color: switch (l.kind) {
-            DiffKind.added => _good.withValues(alpha: 0.14),
+            DiffKind.added => theme.success.withValues(alpha: 0.14),
             DiffKind.removed => theme.danger.withValues(alpha: 0.13),
             _ => null,
           },
@@ -242,7 +241,7 @@ class DiffBlock extends StatelessWidget {
                         DiffKind.added => ' +',
                         DiffKind.removed => ' −',
                         _ => '',
-                      }, style: _mono.copyWith(color: l.kind == DiffKind.added ? _good : theme.danger)),
+                      }, style: _mono.copyWith(color: l.kind == DiffKind.added ? theme.success : theme.danger)),
                     ),
                     Text(l.text, style: _mono.copyWith(color: theme.text)),
                   ],
@@ -274,7 +273,7 @@ class SubagentView extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         border: Border.all(color: theme.border),
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(16),
       ),
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
       child: Column(
@@ -324,7 +323,7 @@ class PlanView extends StatelessWidget {
       decoration: BoxDecoration(
         color: theme.surfaceRaised,
         border: Border.all(color: theme.border),
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(16),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -374,7 +373,7 @@ class _TaskMark extends StatelessWidget {
       'done' => Container(
         width: 14,
         height: 14,
-        decoration: const BoxDecoration(color: _good, shape: BoxShape.circle),
+        decoration: BoxDecoration(color: theme.success, shape: BoxShape.circle),
         child: Center(child: AdaptiveIcon(EveryIcon.check, size: 10, color: const Color(0xFFFFFFFF))),
       ),
       'in_progress' => Container(
@@ -431,7 +430,7 @@ class _StatusDot extends StatelessWidget {
     if (!step.done) return const SizedBox.square(dimension: 12, child: AdaptiveProgress());
     if (step.rejected) return AdaptiveIcon(EveryIcon.close, size: 13, color: theme.textMuted);
     if (step.failed) return AdaptiveIcon(EveryIcon.close, size: 13, color: theme.danger);
-    return AdaptiveIcon(EveryIcon.check, size: 13, color: _good);
+    return AdaptiveIcon(EveryIcon.check, size: 13, color: theme.success);
   }
 }
 

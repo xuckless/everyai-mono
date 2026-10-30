@@ -12,14 +12,15 @@ class ChartView extends StatelessWidget {
   final Visual visual;
   final double height;
 
+  /// Brand violet and cyan lead; the rest stay distinct from each other.
   static const palette = [
-    Color(0xFF7C6CF2),
-    Color(0xFF2FA866),
+    EveryPalette.violet400,
+    EveryPalette.cyan500,
     Color(0xFFE8833A),
-    Color(0xFF3B8FE5),
+    Color(0xFF2FA866),
     Color(0xFFD9488B),
     Color(0xFFC9A227),
-    Color(0xFF16A3A3),
+    Color(0xFF3B8FE5),
     Color(0xFF8C6D5A),
   ];
 

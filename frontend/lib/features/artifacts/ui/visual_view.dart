@@ -137,7 +137,7 @@ class InlineVisual extends ConsumerWidget {
       constraints: const BoxConstraints(maxWidth: 680),
       decoration: BoxDecoration(
         color: theme.surfaceRaised,
-        borderRadius: BorderRadius.circular(theme.radius + 4),
+        borderRadius: BorderRadius.circular(EveryTheme.cardRadius),
         border: Border.all(color: theme.border),
       ),
       child: Column(

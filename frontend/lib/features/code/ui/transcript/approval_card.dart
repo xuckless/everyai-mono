@@ -57,8 +57,8 @@ class _ApprovalCardState extends State<ApprovalCard> {
           padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
           decoration: BoxDecoration(
             color: theme.surfaceRaised,
-            border: Border.all(color: const Color(0xFFE0A030).withValues(alpha: 0.7)),
-            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: theme.warning.withValues(alpha: 0.7)),
+            borderRadius: BorderRadius.circular(EveryTheme.cardRadius),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,

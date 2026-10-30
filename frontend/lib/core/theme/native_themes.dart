@@ -14,7 +14,7 @@ m.ThemeData materialTheme(Brightness brightness, {required bool adwaita}) {
   final tokens = EveryTheme.resolve(adwaita ? DesignLanguage.adwaita : DesignLanguage.material, brightness);
   final scheme =
       m.ColorScheme.fromSeed(
-        seedColor: Brand.violet,
+        seedColor: EveryPalette.primary,
         brightness: brightness,
         dynamicSchemeVariant: adwaita ? m.DynamicSchemeVariant.neutral : m.DynamicSchemeVariant.expressive,
       ).copyWith(
@@ -24,7 +24,8 @@ m.ThemeData materialTheme(Brightness brightness, {required bool adwaita}) {
         surfaceContainer: tokens.surface,
         surfaceContainerHigh: tokens.surfaceRaised,
         primary: tokens.accent,
-        onPrimary: tokens.onAccent,
+        onPrimary: tokens.isDark ? EveryPalette.violet950 : tokens.onPrimary,
+        secondary: EveryPalette.secondary,
         error: tokens.danger,
       );
 
@@ -55,7 +56,14 @@ m.ThemeData materialTheme(Brightness brightness, {required bool adwaita}) {
         fontWeight: adwaita ? FontWeight.w700 : FontWeight.w500,
       ),
     ),
-    filledButtonTheme: m.FilledButtonThemeData(style: m.FilledButton.styleFrom(shape: buttonShape)),
+    // Filled buttons are violet 500 with white text in both themes.
+    filledButtonTheme: m.FilledButtonThemeData(
+      style: m.FilledButton.styleFrom(
+        shape: buttonShape,
+        backgroundColor: tokens.primary,
+        foregroundColor: tokens.onPrimary,
+      ),
+    ),
     textButtonTheme: m.TextButtonThemeData(style: m.TextButton.styleFrom(shape: buttonShape)),
     outlinedButtonTheme: m.OutlinedButtonThemeData(style: m.OutlinedButton.styleFrom(shape: buttonShape)),
     iconButtonTheme: m.IconButtonThemeData(
@@ -103,19 +111,25 @@ c.CupertinoThemeData cupertinoTheme(Brightness brightness) {
   );
 }
 
-mac.MacosThemeData macosTheme(Brightness brightness) => brightness == Brightness.dark
-    ? mac.MacosThemeData.dark(accentColor: mac.AccentColor.purple)
-    : mac.MacosThemeData.light(accentColor: mac.AccentColor.purple);
+/// macos_ui only takes system accent colors; brand violet reaches its push
+/// buttons through AdaptiveButton.
+mac.MacosThemeData macosTheme(Brightness brightness) {
+  final tokens = EveryTheme.resolve(DesignLanguage.macos, brightness);
+  final base = brightness == Brightness.dark
+      ? mac.MacosThemeData.dark(accentColor: mac.AccentColor.purple)
+      : mac.MacosThemeData.light(accentColor: mac.AccentColor.purple);
+  return base.copyWith(canvasColor: tokens.background, dividerColor: tokens.border);
+}
 
 f.FluentThemeData fluentTheme(Brightness brightness) {
   final accent = f.AccentColor.swatch(const {
-    'darkest': Color(0xFF2F1555),
-    'darker': Color(0xFF41207A),
-    'dark': Color(0xFF55309F),
-    'normal': Brand.violet,
-    'light': Color(0xFF8D72E3),
-    'lighter': Color(0xFFA48FEA),
-    'lightest': Brand.violetLight,
+    'darkest': EveryPalette.violet900,
+    'darker': EveryPalette.violet800,
+    'dark': EveryPalette.violet700,
+    'normal': EveryPalette.violet500,
+    'light': EveryPalette.violet400,
+    'lighter': EveryPalette.violet300,
+    'lightest': EveryPalette.violet200,
   });
   return f.FluentThemeData(
     brightness: brightness,

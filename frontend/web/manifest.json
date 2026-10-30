@@ -3,9 +3,9 @@
     "short_name": "EveryAI",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#181C26",
-    "theme_color": "#181C26",
-    "description": "EveryAI: every AI model in one app",
+    "background_color": "#07070A",
+    "theme_color": "#07070A",
+    "description": "Every model. One app.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

@@ -3,11 +3,13 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../../app/router.dart';
 import '../../../core/platform/platform_kind.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
+import '../../../core/ui/brand.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../auth/auth_providers.dart';
 import '../../auth/domain/auth_state.dart';
@@ -18,7 +20,7 @@ import '../../code/code_providers.dart';
 import '../../code/ui/code_home.dart';
 
 /// Width of the collapsed rail. macOS needs room for the traffic lights above it.
-double sidebarRailWidth(DesignLanguage design) => design == DesignLanguage.macos ? 92 : 60;
+double sidebarRailWidth(DesignLanguage design) => Host.hasTrafficLights ? 92 : 60;
 
 /// The app sidebar, Claude-desktop style. Expanded: destinations, then recent
 /// chats, then the account. Collapsed: an icon rail with the same destinations.
@@ -97,6 +99,8 @@ class _SidebarState extends ConsumerState<Sidebar> {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final macos = theme.design == DesignLanguage.macos;
+    // The title-bar row is shared with the traffic lights on any macOS window.
+    final lights = Host.hasTrafficLights;
     final collapsed = widget.collapsed;
     final loc = widget.location;
 
@@ -104,8 +108,8 @@ class _SidebarState extends ConsumerState<Sidebar> {
     final destinations = codeMode
         ? <_Destination>[
             _Destination(EveryIcon.add, 'New session', loc == Routes.code, Routes.code, accent: true),
-            if (collapsed) _Destination(EveryIcon.chat, 'Chat', false, Routes.newChat),
-            _Destination(EveryIcon.models, 'Models', loc == Routes.models, Routes.models),
+            if (collapsed) _Destination(EveryIcon.chat, 'Chat', false, Routes.newChat, glyph: 'chat'),
+            _Destination(EveryIcon.models, 'Models', loc == Routes.models, Routes.models, glyph: 'models'),
           ]
         : <_Destination>[
             _Destination(
@@ -115,32 +119,52 @@ class _SidebarState extends ConsumerState<Sidebar> {
               Routes.newChat,
               accent: true,
             ),
-            _Destination(EveryIcon.search, 'Search', _searching, null, onTap: _searching ? _closeSearch : _openSearch),
-            _Destination(EveryIcon.chat, 'Chats', loc == Routes.chats, Routes.chats),
-            _Destination(EveryIcon.projects, 'Projects', loc == Routes.projects, Routes.projects),
-            _Destination(EveryIcon.artifacts, 'Artifacts', loc == Routes.artifacts, Routes.artifacts),
-            if (collapsed) _Destination(EveryIcon.code, 'Code', false, Routes.code),
-            _Destination(EveryIcon.models, 'Models', loc == Routes.models, Routes.models),
+            _Destination(
+              EveryIcon.search,
+              'Search',
+              _searching,
+              null,
+              onTap: _searching ? _closeSearch : _openSearch,
+              glyph: 'search',
+            ),
+            _Destination(EveryIcon.chat, 'Chats', loc == Routes.chats, Routes.chats, glyph: 'chat'),
+            _Destination(EveryIcon.projects, 'Projects', loc == Routes.projects, Routes.projects, glyph: 'projects'),
+            _Destination(
+              EveryIcon.artifacts,
+              'Artifacts',
+              loc == Routes.artifacts,
+              Routes.artifacts,
+              glyph: 'artifacts',
+            ),
+            if (collapsed) _Destination(EveryIcon.code, 'Code', false, Routes.code, glyph: 'code'),
+            _Destination(EveryIcon.models, 'Models', loc == Routes.models, Routes.models, glyph: 'models'),
           ];
 
     final header = SizedBox(
       // macOS: the title-bar row, clear of the traffic lights.
-      height: macos ? 52 : 56,
+      height: lights ? 52 : 56,
       child: collapsed
-          ? (macos ? null : Center(child: _toggleButton()))
+          ? (lights ? null : Center(child: _toggleButton()))
           : Padding(
-              padding: EdgeInsets.only(left: macos ? 92 : 16, right: 8),
+              padding: EdgeInsets.only(left: lights ? 92 : 16, right: 8),
               child: Row(
                 children: [
+                  // The lockup: mark plus the outlined wordmark (never typeset live).
                   Expanded(
-                    child: Text(
-                      'EveryAI',
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: theme.text,
-                        fontSize: macos ? 14 : 17,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: -0.2,
+                    child: Semantics(
+                      label: 'EveryAI',
+                      child: Row(
+                        children: [
+                          BrandMark(size: macos ? 18 : 22),
+                          const SizedBox(width: 8),
+                          SvgPicture.asset(
+                            theme.isDark
+                                ? 'assets/brand/logo/wordmark-white.svg'
+                                : 'assets/brand/logo/wordmark-ink.svg',
+                            height: macos ? 13 : 16,
+                            excludeFromSemantics: true,
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -154,7 +178,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         header,
-        if (collapsed && macos) Center(child: _toggleButton()),
+        if (collapsed && lights) Center(child: _toggleButton()),
         if (!collapsed)
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
@@ -174,6 +198,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
                   label: d.label,
                   selected: d.selected,
                   accent: d.accent,
+                  glyph: d.glyph,
                   collapsed: collapsed,
                   onTap: d.onTap ?? () => widget.onNavigate(d.route!),
                 ),
@@ -236,7 +261,7 @@ class _SpaceSwitch extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    Widget segment(String label, EveryIcon icon, bool selected, bool value) => Expanded(
+    Widget segment(String label, String glyph, bool selected, bool value) => Expanded(
       child: Semantics(
         button: true,
         selected: selected,
@@ -260,7 +285,7 @@ class _SpaceSwitch extends StatelessWidget {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  AdaptiveIcon(icon, size: 14, color: selected ? theme.text : theme.textMuted),
+                  BrandGlyph(glyph, active: selected, size: 16),
                   const SizedBox(width: 6),
                   Text(
                     label,
@@ -280,9 +305,7 @@ class _SpaceSwitch extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(2),
       decoration: BoxDecoration(color: theme.text.withValues(alpha: 0.06), borderRadius: BorderRadius.circular(9)),
-      child: Row(
-        children: [segment('Chat', EveryIcon.chat, !code, false), segment('Code', EveryIcon.code, code, true)],
-      ),
+      child: Row(children: [segment('Chat', 'chat', !code, false), segment('Code', 'code', code, true)]),
     );
   }
 }
@@ -340,7 +363,7 @@ class _CodeRecents extends ConsumerWidget {
 }
 
 final class _Destination {
-  const _Destination(this.icon, this.label, this.selected, this.route, {this.onTap, this.accent = false});
+  const _Destination(this.icon, this.label, this.selected, this.route, {this.onTap, this.accent = false, this.glyph});
 
   final EveryIcon icon;
   final String label;
@@ -348,6 +371,9 @@ final class _Destination {
   final String? route;
   final VoidCallback? onTap;
   final bool accent;
+
+  /// A brand feature glyph, drawn instead of [icon].
+  final String? glyph;
 }
 
 class _NavItem extends StatefulWidget {
@@ -358,9 +384,11 @@ class _NavItem extends StatefulWidget {
     required this.collapsed,
     required this.onTap,
     this.accent = false,
+    this.glyph,
   });
 
   final EveryIcon icon;
+  final String? glyph;
   final String label;
   final bool selected;
   final bool collapsed;
@@ -386,12 +414,16 @@ class _NavItemState extends State<_NavItem> {
         ? Container(
             width: 24,
             height: 24,
-            decoration: BoxDecoration(color: theme.accent, shape: BoxShape.circle),
-            child: Center(child: AdaptiveIcon(EveryIcon.add, size: 15, color: theme.onAccent)),
+            decoration: BoxDecoration(color: theme.primary, shape: BoxShape.circle),
+            child: Center(child: AdaptiveIcon(EveryIcon.add, size: 15, color: theme.onPrimary)),
           )
         : SizedBox(
             width: 24,
-            child: Center(child: AdaptiveIcon(widget.icon, size: 18, color: theme.text.withValues(alpha: 0.85))),
+            child: Center(
+              child: widget.glyph != null
+                  ? BrandGlyph(widget.glyph!, active: widget.selected, size: 20)
+                  : AdaptiveIcon(widget.icon, size: 18, color: theme.text.withValues(alpha: 0.85)),
+            ),
           );
     final content = widget.collapsed
         ? SizedBox(width: 40, height: 36, child: Center(child: icon))

@@ -1,3 +1,5 @@
+import '../../../core/ui/brand.dart';
+
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -111,7 +113,7 @@ class _UserMessageState extends ConsumerState<_UserMessage> {
         padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
         decoration: BoxDecoration(
           color: theme.surfaceRaised,
-          borderRadius: BorderRadius.circular(theme.bubbleRadius),
+          borderRadius: theme.userBubbleShape,
           border: Border.all(color: theme.accent.withValues(alpha: 0.6)),
         ),
         child: Column(
@@ -144,10 +146,7 @@ class _UserMessageState extends ConsumerState<_UserMessage> {
               builder: (context, constraints) => ConstrainedBox(
                 constraints: BoxConstraints(maxWidth: constraints.maxWidth * 0.8),
                 child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: theme.userBubble,
-                    borderRadius: BorderRadius.circular(theme.bubbleRadius),
-                  ),
+                  decoration: BoxDecoration(color: theme.userBubble, borderRadius: theme.userBubbleShape),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                     // Hug short messages instead of stretching to the max width.
@@ -264,7 +263,7 @@ class _LiveBody extends ConsumerWidget {
             padding: const EdgeInsets.only(top: 6),
             child: Row(
               children: [
-                const SizedBox.square(dimension: 12, child: AdaptiveProgress()),
+                const EveryMarkActivity(activity: MarkActivity.tool, size: 14),
                 const SizedBox(width: 8),
                 Text(status, style: TextStyle(color: theme.textMuted, fontSize: 13)),
               ],
@@ -542,57 +541,15 @@ class _FollowUps extends ConsumerWidget {
   }
 }
 
-class _TypingIndicator extends StatefulWidget {
+/// Waiting for the first token: the mark's arms fade in turn.
+class _TypingIndicator extends StatelessWidget {
   const _TypingIndicator();
 
   @override
-  State<_TypingIndicator> createState() => _TypingIndicatorState();
-}
-
-class _TypingIndicatorState extends State<_TypingIndicator> with SingleTickerProviderStateMixin {
-  late final _controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 1100))..repeat();
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    if (MediaQuery.disableAnimationsOf(context)) {
-      return Text('Thinking…', style: TextStyle(color: theme.textMuted));
-    }
-    return Semantics(
-      label: 'Waiting for response',
-      child: SizedBox(
-        height: 20,
-        child: AnimatedBuilder(
-          animation: _controller,
-          builder: (context, _) => Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (var i = 0; i < 3; i++)
-                Padding(
-                  padding: const EdgeInsets.only(right: 5),
-                  child: Opacity(
-                    opacity: 0.3 + 0.7 * _pulse((_controller.value - i * 0.18) % 1.0),
-                    child: Container(
-                      width: 7,
-                      height: 7,
-                      decoration: BoxDecoration(color: theme.textMuted, shape: BoxShape.circle),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  static double _pulse(double t) => t < 0.5 ? t * 2 : (1 - t) * 2;
+  Widget build(BuildContext context) => const SizedBox(
+    height: 22,
+    child: Align(alignment: Alignment.centerLeft, child: EveryMarkActivity(size: 18)),
+  );
 }
 
 /// One finished part of an assistant message.

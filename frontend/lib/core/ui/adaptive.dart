@@ -101,13 +101,18 @@ class AdaptiveButton extends StatelessWidget {
     this.icon,
     this.expand = false,
     this.busy = false,
-  });
+    bool? large,
+  }) : large = large ?? expand;
 
   final String label;
   final VoidCallback? onPressed;
   final ButtonEmphasis emphasis;
   final Widget? icon;
   final bool expand;
+
+  /// The native large size, for forms and full-width actions. Buttons inside
+  /// content (cards, rows) are compact. Defaults to [expand].
+  final bool large;
 
   /// Shows a spinner in place of the label and disables the button.
   final bool busy;
@@ -117,21 +122,48 @@ class AdaptiveButton extends StatelessWidget {
     final theme = EveryTheme.of(context);
     final onPressed = busy ? null : this.onPressed;
     final content = busy
-        ? const SizedBox.square(dimension: 18, child: AdaptiveProgress())
+        ? SizedBox.square(dimension: large ? 18 : 14, child: const AdaptiveProgress())
         : Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               if (icon != null) ...[icon!, const SizedBox(width: 8)],
-              Flexible(child: Text(label, overflow: TextOverflow.ellipsis)),
+              Flexible(
+                child: Text(
+                  label,
+                  overflow: TextOverflow.ellipsis,
+                  // Compact buttons share one label size across design languages.
+                  style: large ? null : const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                ),
+              ),
             ],
           );
     final destructive = emphasis == ButtonEmphasis.destructive;
+    final cupertinoSize = large ? c.CupertinoButtonSize.large : c.CupertinoButtonSize.small;
+    final materialSize = large
+        ? null
+        : const m.ButtonStyle(
+            visualDensity: m.VisualDensity.compact,
+            minimumSize: m.WidgetStatePropertyAll(Size(0, 34)),
+            padding: m.WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 14)),
+            textStyle: m.WidgetStatePropertyAll(TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
+          );
 
     final Widget button = switch (theme.design) {
       DesignLanguage.cupertino => switch (emphasis) {
-        ButtonEmphasis.primary => c.CupertinoButton.filled(onPressed: onPressed, child: content),
-        ButtonEmphasis.secondary => c.CupertinoButton.tinted(onPressed: onPressed, child: content),
+        // Filled buttons are brand violet 500 with white text.
+        ButtonEmphasis.primary => c.CupertinoButton.filled(
+          sizeStyle: cupertinoSize,
+          color: theme.primary,
+          onPressed: onPressed,
+          child: content,
+        ),
+        ButtonEmphasis.secondary => c.CupertinoButton.tinted(
+          sizeStyle: cupertinoSize,
+          onPressed: onPressed,
+          child: content,
+        ),
         _ => c.CupertinoButton(
+          sizeStyle: cupertinoSize,
           onPressed: onPressed,
           child: DefaultTextStyle.merge(
             style: TextStyle(color: destructive ? theme.danger : null),
@@ -140,9 +172,13 @@ class AdaptiveButton extends StatelessWidget {
         ),
       },
       DesignLanguage.macos => mac.PushButton(
-        controlSize: mac.ControlSize.large,
+        controlSize: large ? mac.ControlSize.large : mac.ControlSize.regular,
         secondary: emphasis != ButtonEmphasis.primary,
-        color: destructive ? theme.danger : null,
+        color: destructive
+            ? theme.danger
+            : emphasis == ButtonEmphasis.primary
+            ? theme.primary
+            : null,
         onPressed: onPressed,
         child: content,
       ),
@@ -158,11 +194,11 @@ class AdaptiveButton extends StatelessWidget {
         ),
       },
       DesignLanguage.material || DesignLanguage.adwaita => switch (emphasis) {
-        ButtonEmphasis.primary => m.FilledButton(onPressed: onPressed, child: content),
-        ButtonEmphasis.secondary => m.FilledButton.tonal(onPressed: onPressed, child: content),
-        ButtonEmphasis.plain => m.TextButton(onPressed: onPressed, child: content),
+        ButtonEmphasis.primary => m.FilledButton(style: materialSize, onPressed: onPressed, child: content),
+        ButtonEmphasis.secondary => m.FilledButton.tonal(style: materialSize, onPressed: onPressed, child: content),
+        ButtonEmphasis.plain => m.TextButton(style: materialSize, onPressed: onPressed, child: content),
         ButtonEmphasis.destructive => m.TextButton(
-          style: m.TextButton.styleFrom(foregroundColor: theme.danger),
+          style: m.TextButton.styleFrom(foregroundColor: theme.danger).merge(materialSize),
           onPressed: onPressed,
           child: content,
         ),
@@ -820,6 +856,7 @@ void showAdaptiveToast(BuildContext context, String message) {
       child: IgnorePointer(
         child: Center(
           child: GlassSurface(
+            level: GlassLevel.thick,
             radius: 999,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             child: Text(message, style: TextStyle(color: theme.text, fontSize: 14)),
@@ -832,58 +869,101 @@ void showAdaptiveToast(BuildContext context, String message) {
   Future<void>.delayed(const Duration(seconds: 2), entry.remove);
 }
 
-/// Translucent material behind floating chrome (the composer, toasts, iOS bars).
-///
-/// A frosted-glass approximation of Apple's Liquid Glass: backdrop blur, a
-/// tinted fill and a specular rim. It works on every renderer, web included.
-/// Shader-based refraction (liquid_glass_renderer) needs Impeller + Flutter GPU
-/// and is a later upgrade.
+/// The brand kit's glass levels.
+enum GlassLevel {
+  /// Composer, chips, toolbars.
+  thin(blur: 20, saturate: 1.4),
+
+  /// Sidebar and rail.
+  regular(blur: 30, saturate: 1.6),
+
+  /// Popovers, menus, sheets.
+  thick(blur: 44, saturate: 1.8);
+
+  const GlassLevel({required this.blur, required this.saturate});
+  final double blur;
+  final double saturate;
+
+  /// Tint over the blurred backdrop (the kit specifies dark; light mirrors it).
+  Color tint(EveryTheme theme) => switch (this) {
+    thin => theme.isDark ? const Color(0x0FFFFFFF) : const Color(0xB3FFFFFF),
+    regular => theme.isDark ? EveryPalette.ink900.withValues(alpha: 0.55) : const Color(0xB3FAFAFE),
+    thick => theme.isDark ? EveryPalette.ink850.withValues(alpha: 0.78) : const Color(0xE6FFFFFF),
+  };
+
+  Color border(EveryTheme theme) => theme.isDark
+      ? switch (this) {
+          thin => const Color(0x29FFFFFF),
+          regular => const Color(0x1AFFFFFF),
+          thick => const Color(0x1FFFFFFF),
+        }
+      : theme.border;
+
+  /// The 1px specular line along the top edge.
+  Color highlight(EveryTheme theme) => theme.isDark
+      ? switch (this) {
+          thin => const Color(0x47FFFFFF),
+          regular => const Color(0x24FFFFFF),
+          thick => const Color(0x2EFFFFFF),
+        }
+      : const Color(0xCCFFFFFF);
+}
+
+/// Translucent material behind floating chrome (composer, popovers, toasts),
+/// following the brand kit's glass recipes: backdrop blur and saturation, a
+/// tint, a hairline border and a top highlight. Works on every renderer.
 class GlassSurface extends StatelessWidget {
-  const GlassSurface({super.key, required this.child, this.radius, this.padding, this.blur = 24});
+  const GlassSurface({super.key, required this.child, this.radius, this.padding, this.level = GlassLevel.thin});
 
   final Widget child;
   final double? radius;
   final EdgeInsetsGeometry? padding;
-  final double blur;
+  final GlassLevel level;
 
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final r = BorderRadius.circular(radius ?? theme.radius);
-    final glass = theme.design == DesignLanguage.cupertino || theme.design == DesignLanguage.macos;
     return ClipRRect(
       borderRadius: r,
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: glass ? blur : 0, sigmaY: glass ? blur : 0),
+        filter: ImageFilter.compose(
+          outer: ColorFilter.matrix(_saturation(level.saturate)),
+          inner: ImageFilter.blur(sigmaX: level.blur / 2, sigmaY: level.blur / 2),
+        ),
         child: DecoratedBox(
           decoration: BoxDecoration(
             borderRadius: r,
-            color: glass ? theme.surface.withValues(alpha: theme.isDark ? 0.55 : 0.62) : theme.surfaceRaised,
-            border: Border.all(
-              color: glass ? const Color(0xFFFFFFFF).withValues(alpha: theme.isDark ? 0.14 : 0.55) : theme.border,
-              width: glass ? 0.8 : 1,
-            ),
+            // Solid surfaces under the tint keep text legible over busy backdrops.
+            color: Color.alphaBlend(level.tint(theme), theme.surface.withValues(alpha: theme.isDark ? 0.5 : 0.0)),
+            border: Border.all(color: level.border(theme), width: 0.8),
           ),
           position: DecorationPosition.background,
           child: DecoratedBox(
-            // Specular sheen across the top-left of the glass.
             decoration: BoxDecoration(
               borderRadius: r,
-              gradient: glass
-                  ? LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        const Color(0xFFFFFFFF).withValues(alpha: theme.isDark ? 0.07 : 0.35),
-                        const Color(0x00FFFFFF),
-                      ],
-                    )
-                  : null,
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                stops: const [0, 0.04, 0.04],
+                colors: [level.highlight(theme), level.highlight(theme).withValues(alpha: 0), const Color(0x00FFFFFF)],
+              ),
             ),
             child: Padding(padding: padding ?? EdgeInsets.zero, child: child),
           ),
         ),
       ),
     );
+  }
+
+  static List<double> _saturation(double s) {
+    const r = 0.2126, g = 0.7152, b = 0.0722;
+    final i = 1 - s;
+    return [
+      i * r + s, i * g, i * b, 0, 0, //
+      i * r, i * g + s, i * b, 0, 0,
+      i * r, i * g, i * b + s, 0, 0,
+      0, 0, 0, 1, 0,
+    ];
   }
 }

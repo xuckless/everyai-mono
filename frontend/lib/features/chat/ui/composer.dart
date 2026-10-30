@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/platform/platform_kind.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
+import '../../../core/ui/brand.dart';
 import '../../../core/ui/anchored_popover.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../models/domain/model_catalog.dart';
@@ -141,11 +142,8 @@ class ComposerState extends ConsumerState<Composer> {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final suggestions = _suggestions();
-    final radius = switch (theme.design) {
-      DesignLanguage.fluent => 8.0,
-      DesignLanguage.macos => 14.0,
-      _ => 22.0,
-    };
+    // Brand card radius; Fluent stays native-tight.
+    final radius = theme.design == DesignLanguage.fluent ? 8.0 : EveryTheme.cardRadius;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -155,6 +153,7 @@ class ComposerState extends ConsumerState<Composer> {
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
             child: GlassSurface(
+              level: GlassLevel.thick,
               padding: const EdgeInsets.symmetric(vertical: 6),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -261,7 +260,7 @@ class _ToolsButton extends StatelessWidget {
           children: [
             PopoverRow(leading: icon(EveryIcon.attach), title: 'Add files or photos', subtitle: 'Coming soon'),
             PopoverRow(
-              leading: icon(EveryIcon.search),
+              leading: const BrandGlyph('search', size: 18),
               title: 'Web search',
               subtitle: 'Answer with cited sources',
               trailing: mode == ChatMode.search ? AdaptiveIcon(EveryIcon.check, size: 14, color: theme.accent) : null,
@@ -271,7 +270,7 @@ class _ToolsButton extends StatelessWidget {
               },
             ),
             PopoverRow(
-              leading: icon(EveryIcon.artifacts),
+              leading: const BrandGlyph('artifacts', size: 18),
               title: 'Rich answers',
               subtitle: 'Documents, diagrams, charts, quizzes, slides',
               trailing: toolsEnabled ? AdaptiveIcon(EveryIcon.check, size: 14, color: theme.accent) : null,
@@ -282,9 +281,17 @@ class _ToolsButton extends StatelessWidget {
                       onToolsChanged!(!toolsEnabled);
                     },
             ),
-            PopoverRow(leading: icon(EveryIcon.spark), title: 'Extended thinking', subtitle: 'Coming soon'),
+            PopoverRow(
+              leading: const BrandGlyph('extended-thinking', size: 18),
+              title: 'Extended thinking',
+              subtitle: 'Coming soon',
+            ),
             Container(height: 1, margin: const EdgeInsets.symmetric(vertical: 6), color: theme.border),
-            PopoverRow(leading: icon(EveryIcon.models), title: 'Connectors (MCP)', subtitle: 'Coming soon'),
+            PopoverRow(
+              leading: const BrandGlyph('connectors', size: 18),
+              title: 'Connectors (MCP)',
+              subtitle: 'Coming soon',
+            ),
           ],
         ),
       ),
@@ -462,9 +469,9 @@ class _SendButton extends StatelessWidget {
             height: 34,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(10),
-              color: active ? theme.accent : theme.text.withValues(alpha: 0.10),
+              color: active ? theme.primary : theme.text.withValues(alpha: 0.10),
             ),
-            child: Icon(glyph, size: 19, color: active ? theme.onAccent : theme.textMuted),
+            child: Icon(glyph, size: 19, color: active ? theme.onPrimary : theme.textMuted),
           ),
         ),
       ),

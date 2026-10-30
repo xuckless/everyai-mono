@@ -290,11 +290,11 @@ class _SidebarSurface extends StatelessWidget {
       ),
       DesignLanguage.fluent => f.Mica(child: content),
       DesignLanguage.cupertino => ColoredBox(
-        color: theme.isDark ? const Color(0xFF14171F) : const Color(0xFFF2F2F7),
+        color: theme.isDark ? EveryPalette.ink900 : const Color(0xFFF2F2F7),
         child: content,
       ),
       DesignLanguage.adwaita => ColoredBox(
-        color: theme.isDark ? const Color(0xFF1C2029) : const Color(0xFFEBEBED),
+        color: theme.isDark ? EveryPalette.ink900 : const Color(0xFFEBEBED),
         child: content,
       ),
       _ => m.Material(color: theme.surface, child: content),

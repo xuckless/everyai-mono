@@ -1,11 +1,13 @@
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../app/router.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
+import '../../../core/ui/brand.dart';
 import '../auth_providers.dart';
 import '../domain/auth_state.dart';
 
@@ -63,8 +65,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
     final busy = state is Authenticating;
     final error = _localError ?? (state is SignedOut ? state.error : null);
 
-    return ColoredBox(
-      color: theme.background,
+    return BrandField(
       child: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -75,19 +76,16 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Text(
-                      'EveryAI',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: theme.text,
-                        fontSize: 32,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: -0.5,
-                      ),
+                    SvgPicture.asset(
+                      theme.isDark
+                          ? 'assets/brand/logo/lockup-stacked-on-dark.svg'
+                          : 'assets/brand/logo/lockup-stacked-on-light.svg',
+                      height: 96,
+                      semanticsLabel: 'EveryAI',
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      _signUp ? 'Create your account' : 'Every AI model in one app',
+                      _signUp ? 'Create your account' : 'Every model. One app.',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: theme.textMuted, fontSize: 15),
                     ),

@@ -1,3 +1,5 @@
+import '../../../core/ui/brand.dart';
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -189,7 +191,7 @@ class _Working extends StatelessWidget {
     final theme = EveryTheme.of(context);
     return Row(
       children: [
-        const SizedBox.square(dimension: 12, child: AdaptiveProgress()),
+        const EveryMarkActivity(size: 16),
         const SizedBox(width: 10),
         Text('Working…', style: TextStyle(color: theme.textMuted, fontSize: 13)),
       ],
@@ -209,7 +211,7 @@ class _StartBuilding extends StatelessWidget {
       decoration: BoxDecoration(
         color: theme.accent.withValues(alpha: 0.08),
         border: Border.all(color: theme.accent.withValues(alpha: 0.4)),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(EveryTheme.cardRadius),
       ),
       child: Row(
         children: [
@@ -234,9 +236,9 @@ class StatusPill extends StatelessWidget {
 
   static Color colorOf(SessionStatus s, EveryTheme theme) => switch (s) {
     SessionStatus.running || SessionStatus.starting => theme.accent,
-    SessionStatus.needsInput => const Color(0xFFE0A030),
+    SessionStatus.needsInput => theme.warning,
     SessionStatus.failed => theme.danger,
-    SessionStatus.done => const Color(0xFF2E9E5B),
+    SessionStatus.done => theme.success,
     SessionStatus.idle => theme.textMuted,
   };
 

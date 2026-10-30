@@ -9,8 +9,6 @@ import '../../../chat/ui/chat_markdown.dart';
 import '../../artifact_providers.dart';
 import '../../domain/artifact.dart';
 
-const _good = Color(0xFF2FA866);
-
 @immutable
 final class _Question {
   const _Question(this.text, this.options, this.correct, this.explanation);
@@ -124,7 +122,7 @@ class _QuizViewState extends ConsumerState<QuizView> {
               margin: const EdgeInsets.only(top: 6),
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
               decoration: BoxDecoration(
-                color: (isRight(qi) ? _good : theme.danger).withValues(alpha: 0.08),
+                color: (isRight(qi) ? theme.success : theme.danger).withValues(alpha: 0.08),
                 borderRadius: BorderRadius.circular(theme.radius),
               ),
               child: Column(
@@ -133,7 +131,7 @@ class _QuizViewState extends ConsumerState<QuizView> {
                   Text(
                     isRight(qi) ? 'Correct' : 'Not quite',
                     style: TextStyle(
-                      color: isRight(qi) ? _good : theme.danger,
+                      color: isRight(qi) ? theme.success : theme.danger,
                       fontWeight: FontWeight.w700,
                       fontSize: 13,
                     ),
@@ -233,14 +231,14 @@ class _OptionStateWidget extends State<_Option> {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final (border, fill) = switch (widget.state) {
-      _OptionState.right => (_good, _good.withValues(alpha: 0.12)),
-      _OptionState.missed => (_good, null),
+      _OptionState.right => (theme.success, theme.success.withValues(alpha: 0.12)),
+      _OptionState.missed => (theme.success, null),
       _OptionState.wrong => (theme.danger, theme.danger.withValues(alpha: 0.12)),
       _OptionState.selected => (theme.accent, theme.accent.withValues(alpha: 0.12)),
       _ => (theme.border, _hover && widget.onTap != null ? theme.text.withValues(alpha: 0.05) : null),
     };
     final mark = switch (widget.state) {
-      _OptionState.right || _OptionState.missed => AdaptiveIcon(EveryIcon.check, size: 14, color: _good),
+      _OptionState.right || _OptionState.missed => AdaptiveIcon(EveryIcon.check, size: 14, color: theme.success),
       _OptionState.wrong => AdaptiveIcon(EveryIcon.close, size: 14, color: theme.danger),
       _ => null,
     };
@@ -249,12 +247,12 @@ class _OptionStateWidget extends State<_Option> {
       height: 22,
       alignment: Alignment.center,
       decoration: BoxDecoration(
-        color: widget.state == _OptionState.selected ? theme.accent : null,
+        color: widget.state == _OptionState.selected ? theme.primary : null,
         border: Border.all(color: widget.state == _OptionState.selected ? theme.accent : theme.border, width: 1.5),
         borderRadius: BorderRadius.circular(widget.multiple ? 5 : 11),
       ),
       child: widget.state == _OptionState.selected
-          ? AdaptiveIcon(EveryIcon.check, size: 13, color: theme.onAccent)
+          ? AdaptiveIcon(EveryIcon.check, size: 13, color: theme.onPrimary)
           : Text(
               widget.letter,
               style: TextStyle(color: theme.textMuted, fontSize: 11, fontWeight: FontWeight.w700),

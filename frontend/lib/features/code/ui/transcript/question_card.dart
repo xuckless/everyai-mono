@@ -76,7 +76,7 @@ class _QuestionCardState extends State<QuestionCard> {
       decoration: BoxDecoration(
         color: theme.surfaceRaised,
         border: Border.all(color: theme.accent.withValues(alpha: 0.5)),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(EveryTheme.cardRadius),
       ),
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
       child: CallbackShortcuts(
@@ -311,14 +311,14 @@ class ChoiceMark extends StatelessWidget {
       height: 18,
       alignment: Alignment.center,
       decoration: BoxDecoration(
-        color: selected && multiple ? theme.accent : null,
+        color: selected && multiple ? theme.primary : null,
         border: Border.all(color: selected ? theme.accent : theme.textMuted.withValues(alpha: 0.6), width: 1.5),
         borderRadius: BorderRadius.circular(multiple ? 4.5 : 9),
       ),
       child: !selected
           ? null
           : multiple
-          ? AdaptiveIcon(EveryIcon.check, size: 12, color: theme.onAccent)
+          ? AdaptiveIcon(EveryIcon.check, size: 12, color: theme.onPrimary)
           : Container(
               width: 8,
               height: 8,
@@ -342,7 +342,7 @@ class _Answered extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
       decoration: BoxDecoration(
         border: Border.all(color: theme.border),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(16),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

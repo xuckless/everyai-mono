@@ -58,12 +58,17 @@ dev_dependencies:
   flutter_lints: ^6.0.0
   build_runner: ^2.17.1
   drift_dev: ^2.35.2
+  flutter_native_splash: ^2.4.8
 
 flutter:
   uses-material-design: true
   assets:
     - assets/
     - assets/models/
+    - assets/brand/logo/
+    - assets/brand/empty/
+    - assets/brand/fields/
+    - assets/brand/textures/
   fonts:
     - family: SourceCodePro
       fonts:
@@ -72,3 +77,18 @@ flutter:
           weight: 700
         - asset: assets/fonts/SourceCodePro/SourceCodePro-Italic.ttf
           style: italic
+
+# Native launch screens (iOS, Android), from the brand kit. Regenerate with
+# `dart run flutter_native_splash:create`. These images aren't Flutter assets.
+flutter_native_splash:
+  color: "#FAFAFE"
+  image: assets/brand/splash/splash-mark-light-864.png
+  color_dark: "#000000"
+  background_image_dark: assets/brand/splash/splash-bg-dark.png
+  image_dark: assets/brand/splash/splash-mark-dark-864.png
+  android_12:
+    image: assets/brand/splash/android12-splash-icon-1152.png
+    color: "#000000"
+    image_dark: assets/brand/splash/android12-splash-icon-1152.png
+    color_dark: "#000000"
+  web: false
