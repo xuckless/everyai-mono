@@ -13,6 +13,7 @@ import '../../auth/auth_providers.dart';
 import '../../auth/domain/auth_state.dart';
 import '../../models/models_providers.dart';
 import '../appearance.dart';
+import '../dev_upstream.dart';
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -103,6 +104,29 @@ class SettingsScreen extends ConsumerWidget {
             ),
             _ => const SizedBox.shrink(),
           },
+          if (config.devSkipAuth) ...[
+            const AdaptiveSectionHeader('Developer'),
+            switch (ref.watch(devUpstreamProvider)) {
+              AsyncData(:final value) => AdaptiveListTile(
+                title: const Text('Claude models bill to'),
+                subtitle: Text(
+                  value.hasAnthropicKey
+                      ? 'Search and Research always use OpenRouter.'
+                      : 'Set ANTHROPIC_API_KEY on the server to use your Anthropic key.',
+                ),
+                trailing: value.hasAnthropicKey
+                    ? picker(value.claude.label, [
+                        for (final u in ClaudeUpstream.values) (u.label, u),
+                      ], ref.read(devUpstreamProvider.notifier).set)
+                    : Text(value.claude.label, style: TextStyle(color: theme.textMuted)),
+              ),
+              AsyncError() => const AdaptiveListTile(
+                title: Text('Claude models bill to'),
+                subtitle: Text("Couldn't reach the server's dev settings."),
+              ),
+              _ => const AdaptiveListTile(title: Text('Claude models bill to')),
+            },
+          ],
           const AdaptiveSectionHeader('About'),
           AdaptiveListTile(title: const Text('Server'), subtitle: Text(config.apiBaseUrl.toString())),
           const AdaptiveListTile(title: Text('Version'), subtitle: Text('0.1.0')),

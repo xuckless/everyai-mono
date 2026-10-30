@@ -19,9 +19,14 @@ pub const util = @import("util.zig");
 pub const openrouter = @import("openrouter.zig");
 pub const tools = @import("tools.zig");
 pub const images = @import("images.zig");
+pub const anthropic = @import("anthropic.zig");
+pub const devtools = @import("devtools.zig");
 pub const sse_client = @import("net/sse_client.zig");
 
 pub const std_options = anole.std_options;
+
+/// The largest request body (chat attachments are inline base64).
+pub const body_max = 32 << 20;
 pub const panic = anole.panic;
 
 /// The state every handler gets first.
@@ -32,9 +37,25 @@ pub const App = struct {
     jwt_keys: [1]anole.auth.Key,
     google_keys: ?*anole.auth.Keyring = null,
     stripe_secrets: [1][]const u8 = .{""},
-    /// The upstream all model calls go through; tests swap in a fake.
+    /// OpenRouter: every model call goes here unless `route` says otherwise.
+    /// Tests swap in a fake.
     upstream: openrouter.Upstream,
+    /// Anthropic's own API (null without ANTHROPIC_API_KEY), for `anthropic/*`
+    /// models while the dev switch `native_anthropic` is on.
+    anthropic: ?openrouter.Upstream = null,
+    native_anthropic: std.atomic.Value(bool) = .init(false),
     catalog: models.Catalog,
+
+    pub const Route = struct { up: openrouter.Upstream, provider: []const u8 };
+
+    /// Where a call to `model` goes. `native_ok` is false for calls that need
+    /// OpenRouter features (the web plugin in Search mode).
+    pub fn route(self: *App, model: []const u8, native_ok: bool) Route {
+        if (native_ok and std.mem.startsWith(u8, model, "anthropic/") and self.native_anthropic.load(.monotonic)) {
+            if (self.anthropic) |a| return .{ .up = a, .provider = "anthropic" };
+        }
+        return .{ .up = self.upstream, .provider = "openrouter" };
+    }
 };
 
 fn ping(_: *App, _: *anole.Request) struct { ok: bool, service: []const u8 } {
@@ -52,11 +73,14 @@ pub fn routes(app: *anole.Server(App), state: *App) !void {
     chat.routes(app, state);
     gateway.routes(app, state);
     images.routes(app, state);
+    devtools.routes(app, state);
 }
 
 /// Schema and seed data; run before serving.
 pub fn prepare(state: *App, ctx: anytype) !void {
     _ = try migrate.run(state.db, ctx, &migrate.all);
+    const saved = try state.db.optional([]const u8, ctx, "SELECT value FROM settings WHERE key = 'upstream.anthropic'", .{});
+    state.native_anthropic.store(std.mem.eql(u8, saved orelse state.cfg.anthropic_upstream, "anthropic"), .monotonic);
     if (state.cfg.dev_auth) try auth.seedDevUser(state, ctx);
 }
 
@@ -78,12 +102,17 @@ pub fn main(init: std.process.Init) !void {
         // Argon2 runs on the blocking pool, not an executor.
         .blocking = .{},
         .client = .{ .timeout = null },
+        // Chat attachments (images, PDFs) arrive inline as base64.
+        .limits = .{ .body_max = body_max },
     }, &state);
     defer app.deinit();
     const io = app.io();
 
     var or_client: openrouter.Client = .{ .base_url = cfg.openrouter_base_url, .api_key = cfg.openrouter_api_key.expose(), .referer = cfg.public_url };
     state.upstream = or_client.upstream();
+    var an_client: openrouter.Client = .{ .base_url = cfg.anthropic_base_url, .api_key = if (cfg.anthropic_api_key) |k| k.expose() else "", .auth = .anthropic };
+    var an_adapter: anthropic.Adapter = .{ .inner = an_client.upstream(), .catalog = &state.catalog };
+    if (cfg.anthropic_api_key != null) state.anthropic = an_adapter.upstream();
 
     if (cfg.google_client_ids.len > 0) {
         const keyring = try init.arena.allocator().create(anole.auth.Keyring);
@@ -104,8 +133,8 @@ pub fn main(init: std.process.Init) !void {
     try prepare(&state, &setup);
 
     try routes(&app, &state);
-    std.log.info("EveryAI backend-exp on :{d} (dev_auth={}, markup={d:.2}, stripe={s})", .{
-        cfg.port, cfg.dev_auth, cfg.markup, if (cfg.stripe_secret_key == null) "mock" else "test",
+    std.log.info("EveryAI backend-exp on :{d} (dev_auth={}, markup={d:.2}, stripe={s}, claude via {s})", .{
+        cfg.port, cfg.dev_auth, cfg.markup, if (cfg.stripe_secret_key == null) "mock" else "test", state.route("anthropic/", true).provider,
     });
     try app.run();
 }
@@ -117,4 +146,5 @@ test {
     _ = gateway;
     _ = sse_client;
     _ = models;
+    _ = anthropic;
 }

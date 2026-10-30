@@ -14,6 +14,7 @@ pub const Migration = struct {
 /// one that has shipped.
 pub const all = [_]Migration{
     .{ .version = 1, .name = "init", .sql = @embedFile("../migrations/001_init.sql") },
+    .{ .version = 2, .name = "upstreams", .sql = @embedFile("../migrations/002_upstreams.sql") },
 };
 
 /// Applies every migration newer than the database's latest. Returns how many ran.

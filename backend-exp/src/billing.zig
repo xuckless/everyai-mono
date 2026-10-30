@@ -89,6 +89,8 @@ pub const Usage = struct {
     cost_usd: f64 = 0,
     session: ?[]const u8 = null,
     api_key_id: ?[]const u8 = null,
+    /// Who served the call: "openrouter" or "anthropic".
+    provider: []const u8 = "openrouter",
 };
 
 pub const Charge = struct { cost_micros: i64, charged_micros: i64, from_quota: i64, from_wallet: i64 };
@@ -110,9 +112,9 @@ pub fn charge(app: *App, ctx: anytype, user_id: []const u8, u: Usage) !Charge {
     }
     _ = try app.db.exec(ctx,
         \\INSERT INTO usage_events (user_id, api_key_id, session, kind, model, prompt_tokens, completion_tokens,
-        \\  cached_tokens, cache_write_tokens, cost_micros, charged_micros, from_quota_micros, from_wallet_micros, created_at)
-        \\VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    , .{ user_id, u.api_key_id, u.session, u.kind, u.model, u.prompt_tokens, u.completion_tokens, u.cached_tokens, u.cache_write_tokens, cost, charged, from_quota, from_wallet, util.now(ctx.io) });
+        \\  cached_tokens, cache_write_tokens, cost_micros, charged_micros, from_quota_micros, from_wallet_micros, created_at, provider)
+        \\VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    , .{ user_id, u.api_key_id, u.session, u.kind, u.model, u.prompt_tokens, u.completion_tokens, u.cached_tokens, u.cache_write_tokens, cost, charged, from_quota, from_wallet, util.now(ctx.io), u.provider });
     return .{ .cost_micros = cost, .charged_micros = charged, .from_quota = from_quota, .from_wallet = from_wallet };
 }
 
@@ -125,9 +127,13 @@ const UsageRow = struct {
     prompt_tokens: i64,
     completion_tokens: i64,
     cached_tokens: i64,
+    cache_write_tokens: i64,
     charged_micros: i64,
     session: ?[]const u8,
+    provider: []const u8,
 };
+
+const usage_columns = "created_at, kind, model, prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens, charged_micros, session, provider";
 
 fn summary(app: *App, req: *anole.Request) !struct {
     plan: Plan,
@@ -157,13 +163,43 @@ fn summary(app: *App, req: *anole.Request) !struct {
         .markup = app.cfg.markup,
         .month_tokens = tokens.t,
         .month_cached_tokens = tokens.c,
-        .recent = try app.db.all(UsageRow, req, "SELECT created_at, kind, model, prompt_tokens, completion_tokens, cached_tokens, charged_micros, session FROM usage_events WHERE user_id = ? ORDER BY id DESC LIMIT 50", .{who.user_id}),
+        .recent = try app.db.all(UsageRow, req, "SELECT " ++ usage_columns ++ " FROM usage_events WHERE user_id = ? ORDER BY id DESC LIMIT 50", .{who.user_id}),
     };
 }
 
 fn usage(app: *App, req: *anole.Request, in: anole.In(.{ .query = struct { from: i64 = 0, to: i64 = std.math.maxInt(i64), limit: u32 = 500 } })) ![]const UsageRow {
     const who = try auth.identity(req);
-    return app.db.all(UsageRow, req, "SELECT created_at, kind, model, prompt_tokens, completion_tokens, cached_tokens, charged_micros, session FROM usage_events WHERE user_id = ? AND created_at BETWEEN ? AND ? ORDER BY id DESC LIMIT ?", .{ who.user_id, in.query.from, in.query.to, in.query.limit });
+    return app.db.all(UsageRow, req, "SELECT " ++ usage_columns ++ " FROM usage_events WHERE user_id = ? AND created_at BETWEEN ? AND ? ORDER BY id DESC LIMIT ?", .{ who.user_id, in.query.from, in.query.to, in.query.limit });
+}
+
+const SessionTotals = struct {
+    calls: i64,
+    prompt_tokens: i64,
+    completion_tokens: i64,
+    cached_tokens: i64,
+    cache_write_tokens: i64,
+    charged_micros: i64,
+    /// The latest model call (not follow-ups or images): how full the
+    /// context window is now.
+    last_prompt_tokens: i64 = 0,
+    last_completion_tokens: i64 = 0,
+};
+
+/// Totals for one chat conversation or Code session (the `session` the app
+/// or the gateway's `X-EveryAI-Session` named), for the composer meter.
+fn sessionUsage(app: *App, req: *anole.Request, in: anole.In(.{ .path = struct { id: []const u8 } })) !SessionTotals {
+    const who = try auth.identity(req);
+    var t = try app.db.one(SessionTotals, req,
+        \\SELECT COUNT(*) AS calls, COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens, COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+        \\  COALESCE(SUM(cached_tokens), 0) AS cached_tokens, COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+        \\  COALESCE(SUM(charged_micros), 0) AS charged_micros, 0 AS last_prompt_tokens, 0 AS last_completion_tokens
+        \\FROM usage_events WHERE user_id = ? AND session = ?
+    , .{ who.user_id, in.path.id });
+    if (try app.db.optional(struct { p: i64, c: i64 }, req, "SELECT prompt_tokens AS p, completion_tokens AS c FROM usage_events WHERE user_id = ? AND session = ? AND kind IN ('chat', 'gateway') ORDER BY id DESC LIMIT 1", .{ who.user_id, in.path.id })) |last| {
+        t.last_prompt_tokens = last.p;
+        t.last_completion_tokens = last.c;
+    }
+    return t;
 }
 
 const Checkout = struct {
@@ -262,6 +298,7 @@ pub fn routes(app: *anole.Server(App), state: *App) void {
     const user = app.group("/v1", .{auth.Authenticate{ .app = state }});
     user.get("/billing", summary);
     user.get("/usage", usage);
+    user.get("/usage/session/:id", sessionUsage);
     user.post("/billing/checkout", checkout);
     if (state.cfg.stripe_webhook_secret) |secret| {
         // The middleware keeps the slice: it must outlive this function.

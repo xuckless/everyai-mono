@@ -42,14 +42,15 @@ fn completions(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const body = try std.json.Stringify.valueAlloc(req.arena, root, .{});
     const session = req.headers.get("X-EveryAI-Session");
 
-    const up = try app.upstream.post(req, "/chat/completions", body, &.{});
+    const route = app.route(model, true);
+    const up = try route.up.post(req, "/chat/completions", body, &.{});
     defer up.close();
 
     if (!streaming or up.status >= 300) {
         const reply = try up.reader.allocRemaining(req.arena, .limited(64 * 1024 * 1024));
         if (up.status < 300) {
             if (std.json.parseFromSliceLeaky(std.json.Value, req.arena, reply, .{})) |v| {
-                if (v == .object) if (v.object.get("usage")) |u| if (u == .object) try meter(app, req, who, session, model, openrouter.parseUsage(u.object));
+                if (v == .object) if (v.object.get("usage")) |u| if (u == .object) try meter(app, req, who, session, model, route.provider, openrouter.parseUsage(u.object));
             } else |_| {}
         }
         res.status = @enumFromInt(up.status);
@@ -82,10 +83,10 @@ fn completions(app: *App, req: *anole.Request, res: *anole.Response) !void {
         };
     }
     try out.end();
-    if (usage) |u| try meter(app, req, who, session, model, u);
+    if (usage) |u| try meter(app, req, who, session, model, route.provider, u);
 }
 
-fn meter(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, model: []const u8, u: openrouter.Usage) !void {
+fn meter(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, model: []const u8, provider: []const u8, u: openrouter.Usage) !void {
     _ = try billing.charge(app, req, who.user_id, .{
         .kind = "gateway",
         .model = model,
@@ -96,6 +97,7 @@ fn meter(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u
         .cost_usd = u.cost_usd,
         .session = session,
         .api_key_id = who.key_id,
+        .provider = provider,
     });
 }
 

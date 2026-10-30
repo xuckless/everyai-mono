@@ -67,6 +67,17 @@ final class ApiClient {
     return _decodeObject(await _readBody(res, cancel: cancel));
   }
 
+  /// PUT a JSON body and decode a JSON object response.
+  Future<Map<String, Object?>> putJson(
+    String path,
+    Map<String, Object?> body, {
+    bool authenticated = false,
+    Duration timeout = jsonTimeout,
+  }) async {
+    final res = await _send('PUT', path, json: body, authenticated: authenticated, timeout: timeout);
+    return _decodeObject(await _readBody(res));
+  }
+
   static Map<String, Object?> _decodeObject(Uint8List bytes) {
     try {
       final decoded = jsonDecode(utf8.decode(bytes));

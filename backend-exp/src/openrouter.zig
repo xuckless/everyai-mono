@@ -43,11 +43,14 @@ pub const Upstream = struct {
     }
 };
 
-/// The real OpenRouter client, through the server's pooled HTTP client.
+/// The real OpenRouter client, through the server's pooled HTTP client. With
+/// `.auth = .anthropic` it is the raw transport for Anthropic's API instead
+/// (`x-api-key` + `anthropic-version`; see anthropic.zig).
 pub const Client = struct {
     base_url: []const u8,
     api_key: []const u8,
-    referer: []const u8,
+    referer: []const u8 = "",
+    auth: enum { bearer, anthropic } = .bearer,
 
     const Live = struct {
         response: CoreResponse,
@@ -61,10 +64,18 @@ pub const Client = struct {
 
     fn headers(self: *Client, arena: std.mem.Allocator, extra: []const [2][]const u8) !anole.http.Headers {
         var h = try anole.http.Headers.init(arena, 6 + extra.len);
-        try h.put("Authorization", try std.fmt.allocPrint(arena, "Bearer {s}", .{self.api_key}));
         try h.put("Content-Type", "application/json");
-        try h.put("HTTP-Referer", self.referer);
-        try h.put("X-Title", "EveryAI");
+        switch (self.auth) {
+            .bearer => {
+                try h.put("Authorization", try std.fmt.allocPrint(arena, "Bearer {s}", .{self.api_key}));
+                try h.put("HTTP-Referer", self.referer);
+                try h.put("X-Title", "EveryAI");
+            },
+            .anthropic => {
+                try h.put("x-api-key", self.api_key);
+                try h.put("anthropic-version", "2026-10-21");
+            },
+        }
         for (extra) |e| try h.put(e[0], e[1]);
         return h;
     }
@@ -98,7 +109,10 @@ pub const Client = struct {
     fn get(ptr: *anyopaque, io: std.Io, arena: std.mem.Allocator, path: []const u8) anyerror![]const u8 {
         const self: *Client = @ptrCast(@alignCast(ptr));
         const url = try std.fmt.allocPrint(arena, "{s}{s}", .{ self.base_url, path });
-        var r = try anole.client(io).fetch(url, .{ .headers = &.{.{ "Authorization", try std.fmt.allocPrint(arena, "Bearer {s}", .{self.api_key}) }} });
+        var r = switch (self.auth) {
+            .bearer => try anole.client(io).fetch(url, .{ .headers = &.{.{ "Authorization", try std.fmt.allocPrint(arena, "Bearer {s}", .{self.api_key}) }} }),
+            .anthropic => try anole.client(io).fetch(url, .{ .headers = &.{ .{ "x-api-key", self.api_key }, .{ "anthropic-version", "2026-10-21" } } }),
+        };
         defer r.deinit();
         if (@backingInt(r.status()) >= 300) return error.BadGateway;
         return arena.dupe(u8, try r.body());
@@ -163,7 +177,11 @@ pub fn complete(up: Upstream, req: *anole.Request, arena: std.mem.Allocator, bod
         err_out.* = .{ .status = stream.status, .message = errorMessage(arena, raw) };
         return error.Upstream;
     }
+    return parseStream(arena, stream.reader, sink, err_out);
+}
 
+/// Reads an OpenAI-style chunk stream to the end (see `complete`).
+pub fn parseStream(arena: std.mem.Allocator, reader: *std.Io.Reader, sink: anytype, err_out: *UpstreamError) !Result {
     var text: std.Io.Writer.Allocating = .init(arena);
     var reasoning: std.Io.Writer.Allocating = .init(arena);
     var calls: std.ArrayList(PartialCall) = .empty;
@@ -175,7 +193,7 @@ pub fn complete(up: Upstream, req: *anole.Request, arena: std.mem.Allocator, bod
     var scratch: std.heap.ArenaAllocator = .init(arena);
     defer scratch.deinit();
 
-    var parser = sse.Parser.init(arena, stream.reader);
+    var parser = sse.Parser.init(arena, reader);
     defer parser.deinit();
     while (try parser.next()) |ev| {
         if (std.mem.eql(u8, ev.data, "[DONE]")) break;

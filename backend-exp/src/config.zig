@@ -19,6 +19,13 @@ pub const Config = struct {
     /// Shown to OpenRouter for attribution (HTTP-Referer / X-Title).
     public_url: []const u8 = "http://localhost:8080",
 
+    /// Anthropic's own API, for `anthropic/*` models when the dev switch
+    /// (`PUT /v1/dev/upstream`) sends them there instead of OpenRouter.
+    anthropic_api_key: ?anole.Secret = null,
+    anthropic_base_url: []const u8 = "https://api.anthropic.com/v1",
+    /// Where `anthropic/*` models go until the switch is used: "openrouter" or "anthropic".
+    anthropic_upstream: []const u8 = "openrouter",
+
     /// Price multiplier on upstream cost for every paid request.
     markup: f64 = 1.15,
     /// Model used when a request names none.

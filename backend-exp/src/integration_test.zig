@@ -12,6 +12,9 @@ const Server = anole.Server(app_main.App);
 const Env = struct {
     state: app_main.App,
     fake: openrouter.Fake,
+    /// Anthropic's API (raw Messages replies), behind the real adapter.
+    anth: openrouter.Fake,
+    adapter: app_main.anthropic.Adapter,
     server: Server,
     t: anole.testing.Client(Server),
 
@@ -20,11 +23,13 @@ const Env = struct {
         self.server.deinit();
         self.state.catalog.deinit();
         self.fake.deinit();
+        self.anth.deinit();
     }
 };
 
 fn start(env: *Env, responses: []const []const u8, dev_auth: bool) !void {
     env.fake = .{ .responses = responses, .gpa = alloc, .models_json = models_json };
+    env.anth = .{ .responses = &.{""}, .gpa = alloc };
     var cfg: config.Config = .{
         .jwt_secret = .init("test-secret-0123456789abcdef0123456789"),
         .openrouter_api_key = .init("sk-or-test"),
@@ -39,7 +44,9 @@ fn start(env: *Env, responses: []const []const u8, dev_auth: bool) !void {
         .upstream = env.fake.upstream(),
         .catalog = .init(alloc),
     };
-    env.server = try Server.init(alloc, .{ .executors = .exact(2) }, &env.state);
+    env.adapter = .{ .inner = env.anth.upstream(), .catalog = &env.state.catalog };
+    env.state.anthropic = env.adapter.upstream();
+    env.server = try Server.init(alloc, .{ .executors = .exact(2), .limits = .{ .body_max = app_main.body_max } }, &env.state);
     env.state.db = try env.server.sqlite(":memory:");
     var arena: std.heap.ArenaAllocator = .init(alloc);
     defer arena.deinit();
@@ -279,4 +286,117 @@ test "gateway: API key auth, LiteLLM prefix stripped, breakpoints injected, mete
     const row = try env.state.db.one(struct { session: []const u8, charged_micros: i64, api_key_id: []const u8 }, &c, "SELECT session, charged_micros, api_key_id FROM usage_events", .{});
     try std.testing.expectEqualStrings("code-7", row.session);
     try std.testing.expectEqual(@as(i64, 1150), row.charged_micros);
+}
+
+const anthropic_turn =
+    \\event: message_start
+    \\data: {"type":"message_start","message":{"id":"msg_1","model":"claude-haiku-5-5","usage":{"input_tokens":1000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":1}}}
+    \\
+    \\event: content_block_start
+    \\data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+    \\
+    \\event: content_block_delta
+    \\data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"A cat."}}
+    \\
+    \\event: content_block_start
+    \\data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+    \\
+    \\event: content_block_delta
+    \\data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"That's a cat."}}
+    \\
+    \\event: message_delta
+    \\data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":100}}
+    \\
+    \\event: message_stop
+    \\data: {"type":"message_stop"}
+    \\
+    \\
+;
+
+test "dev switch: Claude on Anthropic's API, attachments, provider billed, session totals" {
+    var env: Env = undefined;
+    try start(&env, &.{followups_reply}, true);
+    defer env.deinit();
+    env.anth.responses = &.{anthropic_turn};
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var before = try env.t.get("/v1/dev/upstream", .{});
+    defer before.deinit();
+    try before.expectJson(.{ .anthropic = "openrouter", .keys = .{ .openrouter = true, .anthropic = true } });
+    var bad = try env.t.put("/v1/dev/upstream", .{ .json = .{ .anthropic = "bedrock" } });
+    defer bad.deinit();
+    try std.testing.expect(@intFromEnum(bad.status) >= 400);
+    var sw = try env.t.put("/v1/dev/upstream", .{ .json = .{ .anthropic = "anthropic" } });
+    defer sw.deinit();
+    try sw.expectStatus(.ok);
+    // Search keeps OpenRouter's web plugin.
+    try std.testing.expectEqualStrings("openrouter", env.state.route("anthropic/claude-haiku-5.5", false).provider);
+
+    var res = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = .{
+            .{ .type = "image_url", .image_url = .{ .url = "data:image/png;base64,iVBORw0KGgo=" } },
+            .{ .type = "text", .text = "What is this?" },
+        } }},
+        .tools_enabled = false,
+        .session = "conv-a",
+    } });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    for ([_][]const u8{ "event: reasoning", "That's a cat.", "event: usage", "\"prompt_tokens\":1000", "event: followups", "event: done" }) |needle| {
+        if (std.mem.indexOf(u8, res.body, needle) == null) {
+            std.debug.print("missing {s} in:\n{s}\n", .{ needle, res.body });
+            return error.TestUnexpectedResult;
+        }
+    }
+    const sent = env.anth.bodies.items[0];
+    try std.testing.expect(std.mem.indexOf(u8, sent, "\"model\":\"claude-haiku-5-5\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sent, "\"type\":\"image\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sent, "\"usage\"") == null);
+    // Follow-ups (Gemini) still went to OpenRouter.
+    try std.testing.expectEqual(@as(usize, 1), env.fake.bodies.items.len);
+
+    var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = a };
+    const row = try env.state.db.one(struct { provider: []const u8, charged_micros: i64 }, &c, "SELECT provider, charged_micros FROM usage_events WHERE kind = 'chat'", .{});
+    try std.testing.expectEqualStrings("anthropic", row.provider);
+    // 1000 × $0.1/M + 100 × $0.5/M = $0.00015, × 1.15
+    try std.testing.expect(row.charged_micros >= 172 and row.charged_micros <= 175);
+
+    var totals = try env.t.get("/v1/usage/session/conv-a", .{});
+    defer totals.deinit();
+    try totals.expectStatus(.ok);
+    const t = try totals.json(struct { calls: i64, prompt_tokens: i64, last_prompt_tokens: i64, last_completion_tokens: i64, charged_micros: i64 });
+    try std.testing.expectEqual(@as(i64, 2), t.calls);
+    try std.testing.expectEqual(@as(i64, 1100), t.prompt_tokens);
+    try std.testing.expectEqual(@as(i64, 1000), t.last_prompt_tokens);
+    try std.testing.expectEqual(@as(i64, 100), t.last_completion_tokens);
+
+    // The gateway (OpenHands) on the same route, non-streamed.
+    env.anth.responses = &.{
+        \\{"id":"msg_2","model":"claude-haiku-5-5","content":[{"type":"text","text":"Reading it."},{"type":"tool_use","id":"toolu_2","name":"terminal","input":{"command":"ls"}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"cache_read_input_tokens":90,"cache_creation_input_tokens":0,"output_tokens":5}}
+    };
+    env.anth.next_index = 0;
+    var made = try env.t.post("/v1/keys", .{ .json = .{ .name = "openhands" } });
+    defer made.deinit();
+    const key = (try made.json(struct { key: []const u8 })).key;
+    var gw = try env.t.post("/v1/chat/completions", .{
+        .headers = &.{ .{ "Authorization", try bearer(a, key) }, .{ "X-EveryAI-Session", "code-9" } },
+        .json = .{ .model = "openai/anthropic/claude-haiku-5.5", .temperature = 0, .messages = .{.{ .role = "user", .content = "list files" }} },
+    });
+    defer gw.deinit();
+    try gw.expectStatus(.ok);
+    const reply = try gw.json(struct {
+        choices: []const struct { message: struct { content: ?[]const u8, tool_calls: []const struct { id: []const u8, function: struct { name: []const u8, arguments: []const u8 } } }, finish_reason: []const u8 },
+        usage: struct { prompt_tokens: i64, prompt_tokens_details: struct { cached_tokens: i64 } },
+    });
+    try std.testing.expectEqualStrings("tool_calls", reply.choices[0].finish_reason);
+    try std.testing.expectEqualStrings("{\"command\":\"ls\"}", reply.choices[0].message.tool_calls[0].function.arguments);
+    try std.testing.expectEqual(@as(i64, 100), reply.usage.prompt_tokens);
+    try std.testing.expectEqual(@as(i64, 90), reply.usage.prompt_tokens_details.cached_tokens);
+    try std.testing.expect(std.mem.indexOf(u8, env.anth.bodies.items[1], "temperature") == null);
+    const gw_row = try env.state.db.one(struct { provider: []const u8, session: []const u8 }, &c, "SELECT provider, session FROM usage_events WHERE kind = 'gateway'", .{});
+    try std.testing.expectEqualStrings("anthropic", gw_row.provider);
+    try std.testing.expectEqualStrings("code-9", gw_row.session);
 }

@@ -40,6 +40,45 @@ pub const Model = struct {
     created: i64,
 };
 
+/// Raw upstream prices in USD per token (no markup), for providers that
+/// report tokens but not cost (Anthropic's API).
+pub const Rates = struct {
+    prompt: f64 = 0,
+    completion: f64 = 0,
+    cache_read: f64 = 0,
+    /// 5-minute cache writes.
+    cache_write: f64 = 0,
+    cache_write_1h: f64 = 0,
+};
+
+pub const Prices = struct {
+    base: Rates,
+    /// Long-context tier: applies from `over_min` prompt tokens.
+    over: ?Rates = null,
+    over_min: i64 = 0,
+
+    pub const Tokens = struct {
+        /// Uncached input.
+        input: i64,
+        cache_read: i64,
+        cache_write_5m: i64,
+        cache_write_1h: i64,
+        output: i64,
+    };
+
+    pub fn cost(self: Prices, t: Tokens) f64 {
+        const total_prompt = t.input + t.cache_read + t.cache_write_5m + t.cache_write_1h;
+        const r = if (self.over) |o| (if (total_prompt >= self.over_min) o else self.base) else self.base;
+        const f = struct {
+            fn n(x: i64) f64 {
+                return @floatFromInt(x);
+            }
+        }.n;
+        return f(t.input) * r.prompt + f(t.cache_read) * r.cache_read + f(t.cache_write_5m) * r.cache_write +
+            f(t.cache_write_1h) * r.cache_write_1h + f(t.output) * r.completion;
+    }
+};
+
 const ttl_seconds = 3600;
 
 pub const Catalog = struct {
@@ -47,6 +86,8 @@ pub const Catalog = struct {
     mutex: std.Io.Mutex = .init,
     arena: ?*std.heap.ArenaAllocator = null,
     models: []const Model = &.{},
+    /// Parallel to `models`.
+    prices: []const Prices = &.{},
     /// The serialized `/v1/models` body.
     json: []const u8 = "{\"object\":\"list\",\"data\":[]}",
     fetched_at: i64 = 0,
@@ -77,13 +118,14 @@ pub const Catalog = struct {
         }
         const a = arena.allocator();
         const raw = try up.get(io, a, "/models");
-        const models = try parse(a, raw, markup);
-        const json = try std.json.Stringify.valueAlloc(a, .{ .object = "list", .data = models }, .{});
+        const parsed = try parse(a, raw, markup);
+        const json = try std.json.Stringify.valueAlloc(a, .{ .object = "list", .data = parsed.models }, .{});
 
         self.mutex.lockUncancelable(io);
         const old = self.arena;
         self.arena = arena;
-        self.models = models;
+        self.models = parsed.models;
+        self.prices = parsed.prices;
         self.json = json;
         self.fetched_at = util.now(io);
         self.mutex.unlock(io);
@@ -109,12 +151,45 @@ pub const Catalog = struct {
         // Unknown (catalog not loaded): treat as paid, assume tools.
         return .{ .known = false, .free = std.mem.endsWith(u8, id, ":free"), .tools = true, .web_search = true };
     }
+
+    /// Raw prices for `id`, or null when the catalog doesn't list it.
+    pub fn pricesOf(self: *Catalog, io: std.Io, id: []const u8) ?Prices {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        for (self.models, self.prices) |m, p| if (std.mem.eql(u8, m.id, id)) return p;
+        return null;
+    }
 };
 
-fn parse(a: std.mem.Allocator, raw: []const u8, markup: f64) ![]const Model {
+const Parsed = struct { models: []const Model, prices: []const Prices };
+
+fn ratesOf(o: std.json.ObjectMap) Rates {
+    const prompt = priceOf(o.get("prompt"));
+    return .{
+        .prompt = prompt,
+        .completion = priceOf(o.get("completion")),
+        // Anthropic's multipliers when OpenRouter lists no cache prices.
+        .cache_read = if (o.get("input_cache_read")) |v| priceOf(v) else prompt * 0.1,
+        .cache_write = if (o.get("input_cache_write")) |v| priceOf(v) else prompt * 1.25,
+        .cache_write_1h = if (o.get("input_cache_write_1h")) |v| priceOf(v) else prompt * 2,
+    };
+}
+
+fn pricesFrom(pricing: std.json.ObjectMap) Prices {
+    var p: Prices = .{ .base = ratesOf(pricing) };
+    if (pricing.get("overrides")) |ov| if (ov == .array and ov.array.items.len > 0 and ov.array.items[0] == .object) {
+        const o = ov.array.items[0].object;
+        p.over = ratesOf(o);
+        p.over_min = openrouter.jsonInt(o.get("min_prompt_tokens"));
+    };
+    return p;
+}
+
+fn parse(a: std.mem.Allocator, raw: []const u8, markup: f64) !Parsed {
     const root = try std.json.parseFromSliceLeaky(std.json.Value, a, raw, .{});
     const data = (root.object.get("data") orelse return error.BadCatalog).array.items;
     var out: std.ArrayList(Model) = .empty;
+    var prices: std.ArrayList(Prices) = .empty;
     for (data) |item| {
         const o = item.object;
         const id = openrouter.jsonStr(o.get("id")) orelse continue;
@@ -149,8 +224,9 @@ fn parse(a: std.mem.Allocator, raw: []const u8, markup: f64) ![]const Model {
             .default = isDefault(id),
             .created = openrouter.jsonInt(o.get("created")),
         });
+        try prices.append(a, pricesFrom(pricing));
     }
-    return out.items;
+    return .{ .models = out.items, .prices = prices.items };
 }
 
 fn priceOf(v: ?std.json.Value) f64 {

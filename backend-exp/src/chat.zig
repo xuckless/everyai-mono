@@ -24,7 +24,9 @@ pub const Mode = enum { chat, search, research };
 
 pub const InMessage = struct {
     role: []const u8,
-    content: []const u8,
+    /// A string, or OpenAI content parts (`text`, `image_url`, `file`,
+    /// `input_audio`) for attachments, passed through to the model.
+    content: std.json.Value,
 };
 
 pub const ChatRequest = struct {
@@ -41,6 +43,8 @@ pub const ChatRequest = struct {
 const Msg = struct {
     role: []const u8,
     content: []const u8 = "",
+    /// Content parts instead of `content` (a message with attachments).
+    parts: ?[]const std.json.Value = null,
     tool_call_id: ?[]const u8 = null,
     raw_tool_calls: ?[]const u8 = null,
 };
@@ -66,8 +70,31 @@ fn writeCacheControl(s: *std.json.Stringify, ttl: []const u8) !void {
 }
 
 /// Text content, as a plain string or (with a breakpoint) a one-part array.
-fn writeContent(s: *std.json.Stringify, text: []const u8, breakpoint: bool, ttl: []const u8) !void {
+/// Parts go through as they are, the breakpoint on the last text part.
+fn writeContent(s: *std.json.Stringify, text: []const u8, parts: ?[]const std.json.Value, breakpoint: bool, ttl: []const u8) !void {
     try s.objectField("content");
+    if (parts) |list| {
+        var mark: ?usize = null;
+        if (breakpoint) for (list, 0..) |p, i| {
+            if (p == .object and std.mem.eql(u8, openrouter.jsonStr(p.object.get("type")) orelse "", "text")) mark = i;
+        };
+        try s.beginArray();
+        for (list, 0..) |p, i| {
+            if (p != .object or mark != i) {
+                try s.write(p);
+                continue;
+            }
+            try s.beginObject();
+            var it = p.object.iterator();
+            while (it.next()) |e| {
+                try s.objectField(e.key_ptr.*);
+                try s.write(e.value_ptr.*);
+            }
+            try writeCacheControl(s, ttl);
+            try s.endObject();
+        }
+        return s.endArray();
+    }
     if (!breakpoint) return s.write(text);
     try s.beginArray();
     try s.beginObject();
@@ -108,13 +135,13 @@ fn buildBody(arena: std.mem.Allocator, model: []const u8, mode: Mode, with_tools
     try s.beginObject();
     try s.objectField("role");
     try s.write("system");
-    try writeContent(&s, tools.system_prompt, bp, ttl);
+    try writeContent(&s, tools.system_prompt, null, bp, ttl);
     try s.endObject();
     for (messages, 0..) |m, i| {
         try s.beginObject();
         try s.objectField("role");
         try s.write(m.role);
-        try writeContent(&s, m.content, bp and i == messages.len - 1 and m.content.len > 0, ttl);
+        try writeContent(&s, m.content, m.parts, bp and i == messages.len - 1 and (m.content.len > 0 or m.parts != null), ttl);
         if (m.tool_call_id) |id| {
             try s.objectField("tool_call_id");
             try s.write(id);
@@ -153,8 +180,13 @@ const Sink = struct {
 
 fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const who = try auth.identity(req);
-    const body = try req.bind(ChatRequest);
+    // std.json directly: content may be a string or an array of parts.
+    const raw = (try req.body()) orelse return res.fail(.bad_request, "missing body");
+    const body = std.json.parseFromSliceLeaky(ChatRequest, req.arena, raw, .{ .ignore_unknown_fields = true }) catch
+        return res.fail(.unprocessable_entity, "body must be {model?, mode, messages: [{role, content}], tools_enabled, session?}");
     if (body.messages.len == 0) return res.fail(.unprocessable_entity, "messages must not be empty");
+    for (body.messages) |m| if (m.content != .string and m.content != .array)
+        return res.fail(.unprocessable_entity, "content must be a string or an array of parts");
 
     const model = switch (body.mode) {
         .research => app.cfg.research_model,
@@ -187,16 +219,21 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
     var messages: std.ArrayList(Msg) = .empty;
     for (body.messages) |m| {
         const role = if (std.mem.eql(u8, m.role, "assistant")) "assistant" else "user";
-        try messages.append(arena, .{ .role = role, .content = m.content });
+        switch (m.content) {
+            .array => |a| try messages.append(arena, .{ .role = role, .parts = a.items }),
+            else => try messages.append(arena, .{ .role = role, .content = textOf(m.content) }),
+        }
     }
     const with_tools = body.tools_enabled and model_has_tools and body.mode != .research;
     var final_text: std.Io.Writer.Allocating = .init(arena);
+    // Search needs OpenRouter's web plugin.
+    const route = app.route(model, body.mode == .chat);
 
     var step: u8 = 0;
     while (step < app.cfg.max_tool_steps) : (step += 1) {
         const request_body = try buildBody(arena, model, body.mode, with_tools, messages.items, app.cfg.cache_ttl, app.cfg.search_engine);
         var up_err: openrouter.UpstreamError = .{ .status = 0, .message = "" };
-        const result = openrouter.complete(app.upstream, req, arena, request_body, &.{}, sink, &up_err) catch |err| switch (err) {
+        const result = openrouter.complete(route.up, req, arena, request_body, &.{}, sink, &up_err) catch |err| switch (err) {
             error.Upstream => {
                 try sink.send("error", .{ .message = up_err.message, .retryable = up_err.status == 429 or up_err.status >= 500, .status = up_err.status });
                 return err;
@@ -214,6 +251,7 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
             .cache_write_tokens = result.usage.cache_write_tokens,
             .cost_usd = result.usage.cost_usd,
             .session = body.session,
+            .provider = route.provider,
         });
         try sink.send("usage", .{
             .model = model,
@@ -240,6 +278,25 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
         followUps(app, req, who, body, final_text.written(), sink) catch |err| std.log.warn("follow-ups failed: {t}", .{err});
     }
     try sink.send("done", .{});
+}
+
+/// The text of a message's content: the string, or its text parts joined.
+fn textOf(content: std.json.Value) []const u8 {
+    return switch (content) {
+        .string => |t| t,
+        .array => |a| blk: {
+            // The app puts the typed text last, after attachments.
+            var i = a.items.len;
+            while (i > 0) {
+                i -= 1;
+                const p = a.items[i];
+                if (p == .object and std.mem.eql(u8, openrouter.jsonStr(p.object.get("type")) orelse "", "text"))
+                    break :blk openrouter.jsonStr(p.object.get("text")) orelse "";
+            }
+            break :blk "";
+        },
+        else => "",
+    };
 }
 
 fn toolCallsJson(arena: std.mem.Allocator, calls: []const openrouter.ToolCall) ![]const u8 {
@@ -356,7 +413,7 @@ fn generateImage(app: *App, req: *anole.Request, who: auth.Identity, session: ?[
 
 /// Three short follow-up questions from the utility model.
 fn followUps(app: *App, req: *anole.Request, who: auth.Identity, body: ChatRequest, answer: []const u8, sink: Sink) !void {
-    const question = body.messages[body.messages.len - 1].content;
+    const question = textOf(body.messages[body.messages.len - 1].content);
     const prompt = try std.fmt.allocPrint(req.arena,
         \\Question: {s}
         \\
