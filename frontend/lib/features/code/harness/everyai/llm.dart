@@ -3,6 +3,10 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+/// What a tool call being written has streamed so far (the gateway's
+/// progress notes, or the call's own deltas).
+typedef ToolProgress = ({int index, String name, String path, int chars, int lines});
+
 /// One model reply, assembled from the gateway's stream.
 final class LlmReply {
   LlmReply({
@@ -13,9 +17,15 @@ final class LlmReply {
     required this.finishReason,
     this.promptTokens = 0,
     this.cachedTokens = 0,
+    this.order = const [],
   });
 
   final String text;
+
+  /// The reply in the order it was written: text pieces (String) and tool
+  /// calls (their position in [toolCalls], int). Anthropic models talk
+  /// between calls in one reply; this keeps that for the transcript.
+  final List<Object> order;
   final String reasoning;
 
   /// OpenRouter's structured reasoning (signed thinking blocks), sent back on
@@ -105,6 +115,7 @@ final class GatewayClient {
     String? toolChoice,
     void Function(String delta)? onText,
     void Function(String delta)? onReasoning,
+    void Function(ToolProgress progress)? onToolProgress,
     Future<void>? cancel,
   }) async {
     final req = http.Request('POST', _url)
@@ -126,6 +137,21 @@ final class GatewayClient {
     final reasoning = StringBuffer();
     final details = <int, Map<String, Object?>>{};
     final calls = <int, ({StringBuffer id, StringBuffer name, StringBuffer args})>{};
+    // Text pieces and tool indexes, in the order they started.
+    final order = <Object>[];
+    final seenTools = <int>{};
+    void textAt(String t) {
+      if (order.isNotEmpty && order.last is String) {
+        order.last = '${order.last}$t';
+      } else {
+        order.add(t);
+      }
+    }
+
+    void toolAt(int index) {
+      if (seenTools.add(index)) order.add(index);
+    }
+
     var finish = '';
     var promptTokens = 0;
     var cachedTokens = 0;
@@ -142,6 +168,27 @@ final class GatewayClient {
     );
     sub = lines.listen(
       (line) {
+        if (line.startsWith(': progress ')) {
+          // The gateway holds tool calls until they are whole; these notes say what is being written.
+          try {
+            for (final t in jsonDecode(line.substring(11)) as List<Object?>) {
+              if (t case {'index': final num i}) {
+                final m = t as Map<String, Object?>;
+                toolAt(i.toInt());
+                onToolProgress?.call((
+                  index: i.toInt(),
+                  name: m['name'] as String? ?? '',
+                  path: m['path'] as String? ?? '',
+                  chars: (m['chars'] as num?)?.toInt() ?? 0,
+                  lines: (m['lines'] as num?)?.toInt() ?? 0,
+                ));
+              }
+            }
+          } on Object {
+            // A note that doesn't parse is only a missed update.
+          }
+          return;
+        }
         if (!line.startsWith('data:')) return;
         final data = line.substring(5).trim();
         if (data.isEmpty || data == '[DONE]') return;
@@ -166,6 +213,7 @@ final class GatewayClient {
         if (delta is! Map<String, Object?>) return;
         if (delta['content'] case final String c when c.isNotEmpty) {
           text.write(c);
+          textAt(c);
           onText?.call(c);
         }
         final r = delta['reasoning'] ?? delta['reasoning_content'];
@@ -183,6 +231,7 @@ final class GatewayClient {
           for (final item in list) {
             if (item is! Map<String, Object?>) continue;
             final index = (item['index'] as num?)?.toInt() ?? calls.length;
+            toolAt(index);
             final slot = calls.putIfAbsent(
               index,
               () => (id: StringBuffer(), name: StringBuffer(), args: StringBuffer()),
@@ -210,7 +259,15 @@ final class GatewayClient {
     await done.future;
     if (cancelled) throw const LlmCancelled();
     final keys = calls.keys.toList()..sort();
+    final position = {for (final (n, k) in keys.indexed) k: n};
     return LlmReply(
+      order: [
+        for (final o in order)
+          if (o is String) o else ?position[o],
+        // Calls no note announced go last, in order.
+        for (final k in keys)
+          if (!seenTools.contains(k)) position[k]!,
+      ],
       text: text.toString(),
       reasoning: reasoning.toString(),
       reasoningDetails: [for (final k in details.keys.toList()..sort()) details[k]!],

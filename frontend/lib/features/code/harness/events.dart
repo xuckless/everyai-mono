@@ -57,6 +57,7 @@ sealed class HarnessEvent {
         raw: json,
         content: json['content'] as String? ?? '',
         reasoning: json['reasoning_content'] as String? ?? '',
+        tool: StreamingTool.fromJson(json['tool']),
       ),
       'ConversationStateUpdateEvent' => _state(id, json),
       'ConversationErrorEvent' => ConversationFailure(
@@ -187,9 +188,38 @@ final class ToolResult extends HarnessEvent {
 
 /// Tokens of the reply being written (not persisted by the server).
 final class StreamDelta extends HarnessEvent {
-  const StreamDelta({required super.raw, required this.content, required this.reasoning}) : super(id: '');
+  const StreamDelta({required super.raw, required this.content, required this.reasoning, this.tool}) : super(id: '');
   final String content;
   final String reasoning;
+
+  /// A tool call being written (the EveryAI harness): what it is so far.
+  final StreamingTool? tool;
+}
+
+/// A tool call the model is still writing: [lines] of content so far for a
+/// file, [chars] of arguments in all.
+@immutable
+final class StreamingTool {
+  const StreamingTool({required this.index, required this.name, this.path = '', this.lines = 0, this.chars = 0});
+
+  final int index;
+  final String name;
+  final String path;
+  final int lines;
+  final int chars;
+
+  static StreamingTool? fromJson(Object? j) => switch (j) {
+    {'index': final num i, 'name': final String n} => StreamingTool(
+      index: i.toInt(),
+      name: n,
+      path: (j as Map)['path'] as String? ?? '',
+      lines: (j['lines'] as num?)?.toInt() ?? 0,
+      chars: (j['chars'] as num?)?.toInt() ?? 0,
+    ),
+    _ => null,
+  };
+
+  Map<String, Object?> toJson() => {'index': index, 'name': name, 'path': path, 'lines': lines, 'chars': chars};
 }
 
 enum ExecutionStatus {

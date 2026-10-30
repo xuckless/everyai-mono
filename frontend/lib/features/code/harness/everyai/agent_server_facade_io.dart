@@ -207,6 +207,7 @@ final class AgentServerFacade {
     'kind': 'StreamingDeltaEvent',
     'content': e.content,
     'reasoning_content': e.reasoning,
+    if (e.tool case final t?) 'tool': t.toJson(),
   };
 
   static Future<void> _reply(HttpRequest req, int status, Object body) async {

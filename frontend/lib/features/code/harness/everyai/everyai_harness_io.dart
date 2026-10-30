@@ -368,8 +368,8 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
     return e;
   }
 
-  void _delta({String content = '', String reasoning = ''}) {
-    final e = StreamDelta(raw: const {}, content: content, reasoning: reasoning);
+  void _delta({String content = '', String reasoning = '', StreamingTool? tool}) {
+    final e = StreamDelta(raw: const {}, content: content, reasoning: reasoning, tool: tool);
     for (final c in [..._listeners]) {
       c.add(e);
     }
@@ -634,6 +634,9 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
             maxTokens: _spec.maxOutputTokens,
             onText: (d) => _delta(content: d),
             onReasoning: (d) => _delta(reasoning: d),
+            onToolProgress: (p) => _delta(
+              tool: StreamingTool(index: p.index, name: p.name, path: p.path, lines: p.lines, chars: p.chars),
+            ),
             cancel: cancel.future,
           );
         } on LlmCancelled {
@@ -644,20 +647,27 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
         lastCachedTokens = reply.cachedTokens;
         final textId = _newId();
         _append({...reply.toMessage(), '_eid': textId});
+        // The text before the first call opens the turn; text the model wrote
+        // between calls is shown between them, as it wrote it.
+        final (lead, between, trailing) = _split(reply);
         // Always emitted (an empty one shows nothing): rewinds keep the
         // assistant turn by this event's id.
         _emit({
           'kind': 'MessageEvent',
           'id': textId,
           'source': 'agent',
-          'llm_message': {'role': 'assistant', 'content': reply.text, 'reasoning_content': reply.reasoning},
+          'llm_message': {
+            'role': 'assistant',
+            'content': reply.toolCalls.isEmpty || wrapUp ? reply.text : lead,
+            'reasoning_content': reply.reasoning,
+          },
         });
         if (reply.toolCalls.isEmpty || wrapUp) {
           if (_inbox.isNotEmpty) continue;
           _setStatus(ExecutionStatus.finished);
           return;
         }
-        final stopped = await _handleCalls(reply.toolCalls, cancel);
+        final stopped = await _handleCalls(reply.toolCalls, cancel, textBefore: between, trailing: trailing);
         if (stopped) return;
       }
     } on LlmError catch (e) {
@@ -718,11 +728,52 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
     return true;
   }
 
+  /// [reply]'s text split around its tool calls: before the first, before
+  /// each later one (by position), and after the last.
+  static (String, Map<int, String>, String) _split(LlmReply reply) {
+    if (reply.order.isEmpty) return (reply.text, const {}, '');
+    var lead = '';
+    final between = <int, String>{};
+    var pending = StringBuffer();
+    var seenCall = false;
+    for (final o in reply.order) {
+      if (o is String) {
+        pending.write(o);
+      } else if (o is int) {
+        if (!seenCall) {
+          lead = pending.toString();
+          seenCall = true;
+        } else {
+          between[o] = pending.toString();
+        }
+        pending = StringBuffer();
+      }
+    }
+    if (!seenCall) return (reply.text, const {}, '');
+    return (lead, between, pending.toString());
+  }
+
   /// Shows [calls], waits for approval, runs them, and records the results.
   /// True when the run should stop (refused or interrupted).
-  Future<bool> _handleCalls(List<LlmToolCall> calls, Completer<void> cancel) async {
+  Future<bool> _handleCalls(
+    List<LlmToolCall> calls,
+    Completer<void> cancel, {
+    Map<int, String> textBefore = const {},
+    String trailing = '',
+  }) async {
     final waiting = <({LlmToolCall call, String actionId})>[];
-    for (final call in calls) {
+    void say(String text) {
+      if (text.trim().isEmpty) return;
+      _emit({
+        'kind': 'MessageEvent',
+        'id': _newId(),
+        'source': 'agent',
+        'llm_message': {'role': 'assistant', 'content': text.trim()},
+      });
+    }
+
+    for (final (n, call) in calls.indexed) {
+      say(textBefore[n] ?? '');
       final actionId = _newId();
       final args = call.args;
       _emit({
@@ -766,6 +817,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
       }
       waiting.add((call: call, actionId: actionId));
     }
+    say(trailing);
     if (waiting.isEmpty) return false;
     final decision = _decision = Completer();
     _setStatus(ExecutionStatus.waitingForConfirmation);

@@ -247,12 +247,15 @@ const Held = struct {
     usage: ?openrouter.Usage = null,
     id: []const u8 = "",
     model: []const u8 = "",
+    /// What each held tool call has streamed so far, for progress notes.
+    progress: std.ArrayList(ToolProgress) = .empty,
 
     /// Reads one attempt, forwarding text when `forward_text` and holding
     /// the rest. While holding, an SSE comment goes out every `beat_every`.
     fn read(self: *Held, arena: std.mem.Allocator, io: std.Io, reader: *std.Io.Reader, out: *std.Io.Writer, forward_text: bool, beat_every: std.Io.Duration) !void {
         const Ts = std.Io.Clock.Timestamp;
         var last_sent = Ts.now(io, .awake);
+        var last_progress = last_sent;
         var parser = sse.Parser.init(arena, reader, .{});
         defer parser.deinit();
         var scratch: std.heap.ArenaAllocator = .init(arena);
@@ -295,6 +298,7 @@ const Held = struct {
                         hold = true;
                         for (tc.array.items) |c| if (c == .object) {
                             self.last_tool = @max(self.last_tool, openrouter.jsonInt(c.object.get("index")));
+                            try self.track(arena, c.object);
                         };
                     };
                 };
@@ -303,7 +307,16 @@ const Held = struct {
             if (hold) {
                 try self.chunks.append(arena, .{ .raw = try arena.dupe(u8, ev.data), .text = try arena.dupe(u8, text) });
                 const now = Ts.now(io, .awake);
-                if (now.compare(.gte, last_sent.addDuration(.{ .raw = beat_every, .clock = .awake }))) {
+                // While a tool call is held, a progress note a few times a second (an SSE
+                // comment: clients that don't know it ignore it) shows what is being written.
+                if (self.progress.items.len > 0 and now.compare(.gte, last_progress.addDuration(.{ .raw = progress_every, .clock = .awake }))) {
+                    try out.writeAll(": progress ");
+                    try out.writeAll(try self.progressJson(arena));
+                    try out.writeAll("\n\n");
+                    try out.flush();
+                    last_progress = now;
+                    last_sent = now;
+                } else if (now.compare(.gte, last_sent.addDuration(.{ .raw = beat_every, .clock = .awake }))) {
                     try out.writeAll(": keepalive\n\n");
                     try out.flush();
                     last_sent = now;
@@ -315,6 +328,29 @@ const Held = struct {
         }
     }
 
+    fn track(self: *Held, arena: std.mem.Allocator, call: std.json.ObjectMap) !void {
+        const index: usize = @intCast(@max(0, openrouter.jsonInt(call.get("index"))));
+        while (self.progress.items.len <= index) try self.progress.append(arena, .{});
+        const p = &self.progress.items[index];
+        const f = call.get("function") orelse return;
+        if (f != .object) return;
+        if (openrouter.jsonStr(f.object.get("name"))) |n| try p.name.appendSlice(arena, n);
+        const args = openrouter.jsonStr(f.object.get("arguments")) orelse return;
+        p.chars += args.len;
+        // The arguments are JSON text, so a newline in a file's content is the two characters \n.
+        p.lines += std.mem.count(u8, args, "\\n");
+        if (p.head.items.len < 2048) try p.head.appendSlice(arena, args[0..@min(args.len, 2048 - p.head.items.len)]);
+    }
+
+    fn progressJson(self: *const Held, arena: std.mem.Allocator) ![]const u8 {
+        var list: std.ArrayList(struct { index: usize, name: []const u8, chars: usize, lines: usize, path: []const u8 }) = .empty;
+        for (self.progress.items, 0..) |p, i| {
+            if (p.name.items.len == 0 and p.chars == 0) continue;
+            try list.append(arena, .{ .index = i, .name = p.name.items, .chars = p.chars, .lines = p.lines, .path = pathIn(p.head.items) });
+        }
+        return std.json.Stringify.valueAlloc(arena, list.items, .{});
+    }
+
     fn textChunk(self: *const Held, arena: std.mem.Allocator, text: []const u8) ![]const u8 {
         return chunkJson(arena, self.id, self.model, .{ .content = text });
     }
@@ -324,6 +360,29 @@ const Held = struct {
         return chunkJson(arena, self.id, self.model, .{ .tool_calls = .{.{ .index = self.last_tool, .function = .{ .arguments = truncation.cut_marker } }} });
     }
 };
+
+const progress_every: std.Io.Duration = .fromMilliseconds(400);
+
+const ToolProgress = struct {
+    name: std.ArrayList(u8) = .empty,
+    chars: usize = 0,
+    lines: usize = 0,
+    /// The start of the arguments, where the file path is.
+    head: std.ArrayList(u8) = .empty,
+};
+
+/// The file a tool call's (partial) arguments name, or "".
+fn pathIn(head: []const u8) []const u8 {
+    for ([_][]const u8{ "\"file_path\"", "\"path\"" }) |key| {
+        const at = std.mem.indexOf(u8, head, key) orelse continue;
+        var i = at + key.len;
+        while (i < head.len and (head[i] == ' ' or head[i] == ':')) i += 1;
+        if (i >= head.len or head[i] != '"') continue;
+        const end = std.mem.indexOfScalarPos(u8, head, i + 1, '"') orelse continue;
+        return head[i + 1 .. end];
+    }
+    return "";
+}
 
 fn chunkJson(arena: std.mem.Allocator, id: []const u8, model: []const u8, delta: anytype) ![]const u8 {
     return std.json.Stringify.valueAlloc(arena, .{
@@ -564,6 +623,29 @@ test "breakpoints come from the request's structure, not text that mentions cach
     const msgs = many.object.get("messages").?.array.items;
     try std.testing.expect(!hasMark(msgs[1]));
     try std.testing.expect(hasMark(msgs[0]) and hasMark(msgs[2]) and hasMark(msgs[3]));
+}
+
+test "held tool calls send progress notes with the file and its lines" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const up =
+        \\data: {"id":"r","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"t","function":{"name":"write","arguments":"{\"file_path\": \"os.js\", \"content\": \"a\\nb"}}]}}]}
+        \\
+        \\data: {"id":"r","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\nc\"}"}}]}}]}
+        \\
+        \\data: [DONE]
+        \\
+        \\
+    ;
+    var reader: std.Io.Reader = .fixed(up);
+    var out: std.Io.Writer.Allocating = .init(a);
+    var held: Held = .{};
+    try held.read(a, std.testing.io, &reader, &out.writer, true, .fromSeconds(60));
+    try std.testing.expectEqualStrings("os.js", pathIn(held.progress.items[0].head.items));
+    try std.testing.expectEqual(@as(usize, 2), held.progress.items[0].lines);
+    const json = try held.progressJson(a);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"write\"") != null);
 }
 
 test "held tool-call chunks keep the stream alive with comments, then go out whole" {

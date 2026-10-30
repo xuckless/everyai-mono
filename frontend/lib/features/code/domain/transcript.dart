@@ -203,6 +203,7 @@ final class Transcript {
     this.items = const [],
     this.streaming = '',
     this.streamingReasoning = '',
+    this.streamingParts = const [],
     this.status = ExecutionStatus.idle,
     this.plan = const [],
     this.pending = const [],
@@ -225,6 +226,10 @@ final class Transcript {
   /// The reply being written.
   final String streaming;
   final String streamingReasoning;
+
+  /// The reply being written in order: text (String) and the tool calls
+  /// being written between it ([StreamingTool]).
+  final List<Object> streamingParts;
   final ExecutionStatus status;
 
   /// The latest task list, for the sticky plan card.
@@ -274,6 +279,7 @@ final class TranscriptBuilder {
   final _open = <String, ActionCall>{};
   final _streaming = StringBuffer();
   final _reasoning = StringBuffer();
+  final _parts = <Object>[];
   var _status = ExecutionStatus.idle;
   var _plan = const <PlanTask>[];
   AgentMode? _notedMode;
@@ -282,6 +288,7 @@ final class TranscriptBuilder {
     items: List.unmodifiable(_items),
     streaming: _streaming.toString(),
     streamingReasoning: _reasoning.toString(),
+    streamingParts: List.unmodifiable(_parts),
     status: _status,
     plan: _plan,
     notedMode: _notedMode,
@@ -297,11 +304,27 @@ final class TranscriptBuilder {
     if (e is! StreamDelta && e is! StateChange && e is! ConnectionChange) {
       _streaming.clear();
       _reasoning.clear();
+      _parts.clear();
     }
     switch (e) {
-      case StreamDelta(:final content, :final reasoning):
+      case StreamDelta(:final content, :final reasoning, :final tool):
         _streaming.write(content);
         _reasoning.write(reasoning);
+        if (content.isNotEmpty) {
+          if (_parts.isNotEmpty && _parts.last is String) {
+            _parts.last = '${_parts.last}$content';
+          } else {
+            _parts.add(content);
+          }
+        }
+        if (tool != null) {
+          final at = _parts.indexWhere((p) => p is StreamingTool && p.index == tool.index);
+          if (at >= 0) {
+            _parts[at] = tool;
+          } else {
+            _parts.add(tool);
+          }
+        }
       case StateChange(:final executionStatus) when executionStatus != ExecutionStatus.unknown:
         _status = executionStatus;
       case StateChange():
