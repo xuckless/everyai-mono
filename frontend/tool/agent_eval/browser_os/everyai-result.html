@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PulseOS</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!--
+  PulseOS - a browser OS in one file (HTML + CSS + JS, no libraries, no network).
+  Open in Chrome. Apps: Neon Theft (3D GTA-style game), Lumen Drift (3D arcade flyer),
+  Messages, Notes, Terminal, Pulse (the special feature).
+
+  SPECIAL FEATURE: "Pulse" - the wallpaper is the OS's living mood.
+  The procedurally generated wallpaper is not decoration: everything you do feeds it.
+  Opening windows, typing, driving fast, collecting rings and crashing all inject energy
+  that bends the ribbons and sends ripples across the screen. Each wallpaper is fully
+  determined by a short shareable code (e.g. AURA-1K9Z): type a friend's code into Pulse
+  and you get exactly their wallpaper. Why it is special: the desktop becomes a
+  visualisation of how you are using the computer, and a seed is a tiny, portable
+  "theme" that needs no image files.
+-->
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:#000;font-family:-apple-system,"Segoe UI",Roboto,sans-serif;color:#eee;user-select:none}
+#wall{position:fixed;inset:0;width:100%;height:100%;image-rendering:auto}
+#bar{position:fixed;top:0;left:0;right:0;height:28px;background:rgba(10,10,20,.45);backdrop-filter:blur(14px);display:flex;align-items:center;padding:0 14px;font-size:13px;z-index:99999;gap:16px}
+#bar b{letter-spacing:.5px}#bar .sp{flex:1}
+#dock{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);display:flex;gap:10px;padding:10px 14px;background:rgba(20,20,35,.45);backdrop-filter:blur(18px);border:1px solid rgba(255,255,255,.15);border-radius:20px;z-index:99999}
+.ico{width:54px;height:54px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:28px;cursor:pointer;position:relative;transition:transform .15s;box-shadow:0 4px 12px rgba(0,0,0,.4)}
+.ico:hover{transform:translateY(-8px) scale(1.12)}
+.ico .tip{position:absolute;bottom:64px;background:#000c;padding:3px 8px;border-radius:6px;font-size:12px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .15s}
+.ico:hover .tip{opacity:1}
+.ico .dot{position:absolute;bottom:-7px;width:5px;height:5px;border-radius:50%;background:#fff;display:none}
+.ico.run .dot{display:block}
+.win{position:fixed;display:flex;flex-direction:column;background:#15151f;border:1px solid rgba(255,255,255,.18);border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.6);overflow:hidden;min-width:300px}
+.win.focus{box-shadow:0 24px 80px rgba(0,0,0,.8),0 0 0 1px rgba(255,255,255,.35)}
+.win.max{left:0!important;top:28px!important;width:100%!important;height:calc(100% - 28px)!important;border-radius:0}
+.tb{height:34px;display:flex;align-items:center;padding:0 10px;gap:8px;background:rgba(255,255,255,.07);cursor:grab;flex:none}
+.tb .t{flex:1;text-align:center;font-size:13px;opacity:.85}
+.tb i{width:13px;height:13px;border-radius:50%;display:block;cursor:pointer}
+.body{flex:1;position:relative;overflow:auto;min-height:0}
+canvas.game{width:100%;display:block;background:#000}
+/* messages */
+.msgs{display:flex;height:100%}
+.msgs .list{width:210px;border-right:1px solid #fff2;overflow:auto;flex:none}
+.msgs .item{padding:10px 12px;border-bottom:1px solid #fff1;cursor:pointer;font-size:13px}
+.msgs .item.sel{background:#3a5cff55}.msgs .item small{display:block;opacity:.6;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.msgs .thread{flex:1;padding:16px;overflow:auto;display:flex;flex-direction:column;gap:10px;user-select:text}
+.bub{max-width:80%;padding:9px 13px;border-radius:16px;font-size:14px;line-height:1.4;white-space:pre-wrap}
+.bub.me{align-self:flex-end;background:#2f6bff;border-bottom-right-radius:4px}
+.bub.ai{align-self:flex-start;background:#2c2c3d;border-bottom-left-radius:4px}
+.meta{font-size:11px;opacity:.5;text-align:center}
+textarea.notes{width:100%;height:100%;background:#fdf6d8;color:#222;border:0;padding:16px;font:15px/1.5 ui-monospace,Menlo,monospace;resize:none;outline:0;user-select:text}
+.term{background:#0b0f0b;color:#7dff8b;font:13px/1.45 ui-monospace,Menlo,monospace;padding:10px;height:100%;overflow:auto;user-select:text;white-space:pre-wrap}
+.term input{background:none;border:0;color:inherit;font:inherit;outline:0;width:70%}
+.pulse{padding:18px;font-size:14px;line-height:1.5;user-select:text}
+.pulse h2{margin-bottom:6px}.pulse p{opacity:.8;margin:6px 0}
+.pulse button,.pulse input{background:#2f6bff;color:#fff;border:0;border-radius:8px;padding:7px 12px;font-size:13px;cursor:pointer;margin:4px 4px 4px 0}
+.pulse input{background:#2c2c3d;cursor:text;width:130px;text-transform:uppercase}
+.code{font:700 26px ui-monospace,Menlo,monospace;letter-spacing:2px;margin:8px 0}
+</style>
+</head>
+<body>
+<canvas id="wall"></canvas>
+<div id="bar"><b>◉ PulseOS</b><span id="focname">Desktop</span><span class="sp"></span><span id="mood">mood: calm</span><span id="clock"></span></div>
+<div id="dock"></div>
+
+<script>
+"use strict";
+/* ============================ utilities ============================ */
+const $=(s,r=document)=>r.querySelector(s);
+const el=(t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e};
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const lerp=(a,b,t)=>a+(b-a)*t;
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const angDiff=(a,b)=>{let d=(b-a)%(Math.PI*2);if(d>Math.PI)d-=Math.PI*2;if(d<-Math.PI)d+=Math.PI*2;return d};
+const hsl=(h,s,l)=>{s/=100;l/=100;const k=n=>(n+h/30)%12,a=s*Math.min(l,1-l),f=n=>l-a*Math.max(-1,Math.min(k(n)-3,Math.min(9-k(n),1)));return[f(0)*255,f(8)*255,f(4)*255]};
+
+/* ============================ living wallpaper ============================ */
+const Wall=(()=>{
+  const cv=$("#wall"),cx=cv.getContext("2d");
+  let W,H,seed,rnd,ribbons,orbs,hue0,energy=0,ripples=[],hist=[],mx=.5,my=.5;
+  const resize=()=>{W=cv.width=Math.ceil(innerWidth/2);H=cv.height=Math.ceil(innerHeight/2)};
+  addEventListener("resize",resize);resize();
+  const codeOf=n=>"AURA-"+n.toString(36).toUpperCase().padStart(4,"0").slice(-6);
+  const parse=s=>{const m=/^AURA-?([0-9A-Z]+)$/i.exec(s.trim());return m?parseInt(m[1],36):null};
+  function gen(s){
+    seed=s>>>0;rnd=mulberry32(seed);hue0=rnd()*360;
+    const spread=40+rnd()*140;
+    ribbons=Array.from({length:6+Math.floor(rnd()*4)},(_,i)=>({y:.2+rnd()*.7,amp:.04+rnd()*.12,f:2+rnd()*6,s:.2+rnd()*.7,p:rnd()*6.28,hue:hue0+rnd()*spread,w:.015+rnd()*.05,fill:rnd()<.3}));
+    orbs=Array.from({length:28},()=>({x:rnd(),y:rnd(),r:.02+rnd()*.07,vx:(rnd()-.5)*.02,vy:(rnd()-.5)*.02,hue:hue0+rnd()*spread}));
+    try{localStorage.setItem("pulseos.seed",seed)}catch(e){}
+  }
+  function pulse(a,x,y){
+    energy=Math.min(3,energy+a);
+    if(a>.15||x!=null)ripples.push({x:(x??rnd()*1)*W,y:(y??rnd())*H,r:0,l:1,h:hue0+rnd()*120});
+    if(ripples.length>14)ripples.shift();
+  }
+  function draw(t){
+    energy*=.985;
+    const e=energy;
+    const g=cx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,`hsl(${hue0},60%,${8+e*3}%)`);g.addColorStop(1,`hsl(${hue0+70},70%,${18+e*5}%)`);
+    cx.globalCompositeOperation="source-over";cx.fillStyle=g;cx.fillRect(0,0,W,H);
+    cx.globalCompositeOperation="lighter";
+    for(const o of orbs){
+      o.x=(o.x+o.vx*.016*(1+e)+1)%1;o.y=(o.y+o.vy*.016*(1+e)+1)%1;
+      const r=o.r*H*(1+e*.5)*(1+.15*Math.sin(t+o.hue)),X=o.x*W+(mx-.5)*o.r*120,Y=o.y*H;
+      const rg=cx.createRadialGradient(X,Y,0,X,Y,r);
+      rg.addColorStop(0,`hsla(${o.hue},90%,60%,${.22+e*.08})`);rg.addColorStop(1,`hsla(${o.hue},90%,60%,0)`);
+      cx.fillStyle=rg;cx.fillRect(X-r,Y-r,r*2,r*2);
+    }
+    for(const r of ribbons){
+      cx.beginPath();
+      for(let x=0;x<=W+8;x+=8){
+        const u=x/W,y=H*(r.y+Math.sin(u*r.f+t*r.s+r.p)*r.amp*(1+e*1.4)+Math.sin(u*r.f*2.3-t*r.s*.7)*r.amp*.4)+(my-.5)*10*r.y;
+        x?cx.lineTo(x,y):cx.moveTo(x,y);
+      }
+      if(r.fill){cx.lineTo(W,H);cx.lineTo(0,H);cx.closePath();cx.fillStyle=`hsla(${r.hue},80%,55%,.07)`;cx.fill()}
+      else{cx.lineWidth=r.w*H*(1+e*.3);cx.lineCap="round";cx.strokeStyle=`hsla(${r.hue},90%,62%,${.14+e*.05})`;cx.stroke();cx.lineWidth=r.w*H*.25;cx.strokeStyle=`hsla(${r.hue},100%,80%,.35)`;cx.stroke()}
+    }
+    for(const r of ripples){
+      r.r+=H*.006*(1+e);r.l-=.012;
+      if(r.l>0){cx.beginPath();cx.arc(r.x,r.y,r.r,0,6.283);cx.lineWidth=3;cx.strokeStyle=`hsla(${r.h},100%,75%,${r.l*.5})`;cx.stroke()}
+    }
+    ripples=ripples.filter(r=>r.l>0);
+    if(((t*10)|0)%3===0&&hist.last!==((t*10)|0)){hist.last=(t*10)|0;hist.push(e);if(hist.length>120)hist.shift()}
+  }
+  addEventListener("pointermove",e=>{mx=e.clientX/innerWidth;my=e.clientY/innerHeight;energy=Math.min(3,energy+.002)});
+  addEventListener("pointerdown",e=>pulse(.12,e.clientX/innerWidth,e.clientY/innerHeight));
+  let s0=null;try{s0=parseInt(localStorage.getItem("pulseos.seed"))}catch(e){}
+  gen(Number.isFinite(s0)&&s0?s0:(Math.random()*1e9)|0);
+  const moodName=()=>energy<.15?"calm":energy<.5?"stirring":energy<1.2?"lively":energy<2?"electric":"supernova";
+  return{draw,pulse,gen,codeOf,parse,get seed(){return seed},get energy(){return energy},hist,moodName,canvas:cv};
+})();
+(function frame(ms){Wall.draw(ms/1000);requestAnimationFrame(frame)})(0);
+setInterval(()=>{$("#mood").textContent="mood: "+Wall.moodName();const d=new Date();$("#clock").textContent=d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})},500);
+
+/* ============================ input ============================ */
+const keys=new Set();let focused=null;
+addEventListener("keydown",e=>{
+  if(focused&&focused.app.captures&&/^(Arrow|Space|Tab)/.test(e.code))e.preventDefault();
+  if(!/INPUT|TEXTAREA/.test(e.target.tagName))keys.add(e.code);
+  if(focused&&focused.keydown&&!e.repeat&&!/INPUT|TEXTAREA/.test(e.target.tagName))focused.keydown(e.code);
+  if(e.target.tagName==="TEXTAREA")Wall.pulse(.01);
+});
+addEventListener("keyup",e=>keys.delete(e.code));
+addEventListener("blur",()=>keys.clear());
+const down=(...c)=>c.some(k=>keys.has(k));
+
+/* ============================ tiny software 3D renderer ============================ */
+/* Camera looks along +z in camera space, y up. Polygons are clipped to the near plane,
+   depth-sorted (painter's algorithm) and flat-shaded with distance fog. */
+class R3{
+  constructor(cv){this.cv=cv;this.c=cv.getContext("2d");this.W=cv.width;this.H=cv.height;this.f=this.W*.8;
+    this.cam={x:0,y:0,z:0,yaw:0,pitch:0};this.fog=[160,185,210];this.fogA=60;this.fogB=320;this.back=[];this.list=[];
+    this.L=[.4,.8,.3];const n=Math.hypot(...this.L);this.L=this.L.map(v=>v/n)}
+  begin(){this.back.length=0;this.list.length=0;const c=this.cam;this.cy=Math.cos(c.yaw);this.sy=Math.sin(c.yaw);this.cp=Math.cos(c.pitch);this.sp=Math.sin(c.pitch)}
+  tc(x,y,z){const c=this.cam,dx=x-c.x,dy=y-c.y,dz=z-c.z;const x1=dx*this.cy-dz*this.sy,z1=dx*this.sy+dz*this.cy;return[x1,dy*this.cp-z1*this.sp,dy*this.sp+z1*this.cp]}
+  proj(p){return[this.W/2+this.f*p[0]/p[2],this.H/2-this.f*p[1]/p[2]]}
+  clipPoly(pts){const N=.3,out=[];for(let i=0;i<pts.length;i++){const a=pts[i],b=pts[(i+1)%pts.length];const ia=a[2]>=N,ib=b[2]>=N;
+    if(ia)out.push(a);if(ia!==ib){const t=(N-a[2])/(b[2]-a[2]);out.push([lerp(a[0],b[0],t),lerp(a[1],b[1],t),N])}}return out}
+  fogMix(col,d){const k=clamp((d-this.fogA)/(this.fogB-this.fogA),0,1);return`rgb(${lerp(col[0],this.fog[0],k)|0},${lerp(col[1],this.fog[1],k)|0},${lerp(col[2],this.fog[2],k)|0})`}
+  /* world-space polygon; target list: 'list' (sorted) or 'back' (drawn first, in order) */
+  poly(w,col,tgt,nofog){const p=this.clipPoly(w.map(v=>this.tc(v[0],v[1],v[2])));if(p.length<3)return;
+    let d=0;for(const v of p)d+=v[2];d/=p.length;const s=p.map(v=>this.proj(v));
+    if(s.every(v=>v[0]<0)||s.every(v=>v[0]>this.W)||s.every(v=>v[1]<0)||s.every(v=>v[1]>this.H))return;
+    (tgt==="back"?this.back:this.list).push({s,d,col:nofog?`rgb(${col[0]|0},${col[1]|0},${col[2]|0})`:this.fogMix(col,d)})}
+  line(a,b,color,width){let p=this.tc(...a),q=this.tc(...b);const N=.3;if(p[2]<N&&q[2]<N)return;
+    if(p[2]<N){const t=(N-p[2])/(q[2]-p[2]);p=[lerp(p[0],q[0],t),lerp(p[1],q[1],t),N]}
+    else if(q[2]<N){const t=(N-q[2])/(p[2]-q[2]);q=[lerp(q[0],p[0],t),lerp(q[1],p[1],t),N]}
+    this.list.push({line:[this.proj(p),this.proj(q)],d:(p[2]+q[2])/2,col:color,w:width})}
+  /* box centred on (x,z), base at y, size w(x) h(y) d(z), rotated by yaw (forward = (sin,cos)) */
+  box(x,y,z,w,h,d,yaw,col,tgt,shade=1){
+    const c=Math.cos(yaw||0),s=Math.sin(yaw||0),V=[];
+    for(const sx of[-1,1])for(const sy of[0,1])for(const sz of[-1,1]){const lx=sx*w/2,lz=sz*d/2;V.push([x+lx*c+lz*s,y+sy*h,z-lx*s+lz*c])}
+    const F=[[[4,5,7,6],[1,0,0]],[[0,1,3,2],[-1,0,0]],[[1,3,7,5],[0,0,1]],[[0,2,6,4],[0,0,-1]],[[2,3,7,6],[0,1,0]]];
+    const cam=this.cam;
+    for(const[ix,n]of F){const wn=[n[0]*c+n[2]*s,n[1],-n[0]*s+n[2]*c];
+      const fc=[0,0,0];for(const i of ix){fc[0]+=V[i][0]/4;fc[1]+=V[i][1]/4;fc[2]+=V[i][2]/4}
+      if(wn[0]*(cam.x-fc[0])+wn[1]*(cam.y-fc[1])+wn[2]*(cam.z-fc[2])<=0)continue;
+      const l=(.42+.58*Math.max(0,wn[0]*this.L[0]+wn[1]*this.L[1]+wn[2]*this.L[2]))*shade;
+      this.poly(ix.map(i=>V[i]),[col[0]*l,col[1]*l,col[2]*l],tgt)}}
+  flush(){const c=this.c;for(const p of this.back)this.fillp(p);this.list.sort((a,b)=>b.d-a.d);
+    for(const p of this.list){if(p.line){c.beginPath();c.moveTo(...p.line[0]);c.lineTo(...p.line[1]);c.strokeStyle=p.col;c.lineWidth=p.w;c.stroke()}else this.fillp(p)}}
+  fillp(p){const c=this.c;c.beginPath();c.moveTo(...p.s[0]);for(let i=1;i<p.s.length;i++)c.lineTo(...p.s[i]);c.closePath();c.fillStyle=p.col;c.fill();c.strokeStyle=p.col;c.lineWidth=.6;c.stroke()}
+  horizon(){return this.H/2+this.f*Math.tan(this.cam.pitch)}
+}
+
+/* ============================ game: NEON THEFT (GTA-style) ============================ */
+function neonTheft(body,win){
+  const cv=el("canvas","game");cv.width=800;cv.height=480;body.appendChild(cv);
+  const c=cv.getContext("2d"),R=new R3(cv);R.fog=[170,190,215];R.fogA=90;R.fogB=330;
+  const P=60,RW=18,N=8,LIM=N*P-6,rnd=mulberry32(1337);
+  const rr=(a,b)=>a+rnd()*(b-a);
+  /* city */
+  const blds=[],blocks=[];
+  for(let i=-N;i<N;i++)for(let j=-N;j<N;j++){
+    const x0=i*P+RW/2,z0=j*P+RW/2,bs=P-RW,park=rnd()<.1||(i===0&&j===0);
+    blocks.push({x:x0+bs/2,z:z0+bs/2,park});
+    if(park)continue;
+    const nx=1+(rnd()*2|0),nz=1+(rnd()*2|0),lw=bs/nx,ld=bs/nz,hue=rnd()*360,tall=rnd()<.25;
+    for(let a=0;a<nx;a++)for(let b=0;b<nz;b++){
+      const h=tall?rr(35,90):rr(8,32);
+      blds.push({x:x0+lw*(a+.5),z:z0+ld*(b+.5),w:lw-3,d:ld-3,h,col:hsl(hue+rr(-20,20),rr(10,35),rr(38,62))});
+    }
+  }
+  const collide=(e,r)=>{let hit=0;
+    for(const b of blds){const dx=Math.abs(e.x-b.x)-b.w/2,dz=Math.abs(e.z-b.z)-b.d/2;if(dx>r||dz>r)continue;
+      const cx=clamp(e.x,b.x-b.w/2,b.x+b.w/2),cz=clamp(e.z,b.z-b.d/2,b.z+b.d/2);let ox=e.x-cx,oz=e.z-cz,d=Math.hypot(ox,oz);
+      if(d<r){if(d<1e-4){ox=e.x-b.x;oz=e.z-b.z;d=Math.hypot(ox,oz)||1}e.x+=ox/d*(r-d);e.z+=oz/d*(r-d);hit=1}}
+    if(Math.abs(e.x)>LIM){e.x=Math.sign(e.x)*LIM;hit=1}if(Math.abs(e.z)>LIM){e.z=Math.sign(e.z)*LIM;hit=1}return hit};
+  /* state */
+  const pl={x:0,z:-4,h:0,hp:100,cash:0,car:null,punch:0};
+  let heat=0,quiet=0,cars=[],peds=[],pick=[],fx=[],msg="",msgT=0,dead=0,camYaw=0,time=0;
+  const carCols=[[200,40,40],[40,90,200],[230,200,40],[240,240,240],[40,160,90],[150,60,190],[250,120,30]];
+  const roadPt=()=>{const k=(rnd()*2*N|0)-N,o=rr(-LIM,LIM);return rnd()<.5?{x:k*P,z:o}:{x:o,z:k*P}};
+  const mkCar=(x,z,h,kind)=>({x,z,h,v:0,hp:100,kind,col:carCols[rnd()*carCols.length|0],ai:kind==="traffic",dir:0,steer:0});
+  const say=(t)=>{msg=t;msgT=3};
+  function spawnTraffic(){
+    const dirs=[[1,0],[-1,0],[0,1],[0,-1]];const k=(rnd()*2*N|0)-N,o=rr(-LIM+20,LIM-20),d=rnd()*4|0;
+    const x=d<2?o:k*P+(d===2?-4:4),z=d<2?k*P+(d===0?4:-4):o;
+    const cr=mkCar(x,z,Math.atan2(dirs[d][0],dirs[d][1]),"traffic");cr.dir=d;cr.v=10;return cr}
+  const dirs=[[1,0],[-1,0],[0,1],[0,-1]];
+  function reset(full){
+    cars=[];peds=[];pick=[];fx=[];heat=0;
+    for(let i=0;i<16;i++)cars.push(spawnTraffic());
+    const sc=mkCar(7,-3,Math.PI/2,"parked");sc.col=[255,60,160];cars.push(sc);
+    for(let i=0;i<5;i++){const p=roadPt();cars.push(mkCar(p.x+8,p.z+8,rnd()*6,"parked"))}
+    for(let i=0;i<60;i++)peds.push(mkPed());
+    for(let i=0;i<24;i++)pick.push(mkPick());
+    pl.x=0;pl.z=-4;pl.h=0;pl.hp=100;pl.car=null;if(full)pl.cash=0;
+  }
+  const mkPed=()=>{const b=blocks[rnd()*blocks.length|0],a=rnd()*6.28;return{x:b.x+rr(-18,18),z:b.z+rr(-18,18),h:a,col:hsl(rnd()*360,60,50),t:rr(1,4),dead:0}};
+  const mkPick=()=>{const p=roadPt();return{x:p.x+rr(-5,5),z:p.z+rr(-5,5),v:100*(1+(rnd()*5|0))}};
+  reset(true);
+  win.keydown=code=>{
+    if(code==="KeyE"&&!dead){
+      if(pl.car){const k=pl.car;if(Math.abs(k.v)<9){pl.x=k.x+Math.cos(k.h)*3;pl.z=k.z-Math.sin(k.h)*3;pl.h=k.h;k.kind="parked";pl.car=null}}
+      else{let best=null,bd=6;for(const k of cars){const d=Math.hypot(k.x-pl.x,k.z-pl.z);if(d<bd&&k.kind!=="cop"){bd=d;best=k}}
+        if(best){if(best.ai){heat+=1;quiet=0;say("Carjacking!")}best.ai=false;best.kind="mine";pl.car=best;Wall.pulse(.2)}}
+    }
+    if(code==="Space"&&!pl.car&&!dead&&pl.punch<=0){pl.punch=.3;
+      for(const p of peds)if(!p.dead&&Math.hypot(p.x-pl.x-Math.sin(pl.h)*1.3,p.z-pl.z-Math.cos(pl.h)*1.3)<2){kill(p,0)}}
+    if(code==="Enter"&&dead){dead=0;pl.cash=pl.cash/2|0;reset(false)}
+  };
+  function kill(p,speed){p.dead=1;p.t=0;heat+=1;quiet=0;pl.cash+=20;Wall.pulse(.25);say("Pedestrian down!");
+    for(let i=0;i<8;i++)fx.push({x:p.x,y:1,z:p.z,vx:rr(-4,4),vy:rr(2,7),vz:rr(-4,4),l:.8,c:[200,30,30]})}
+  const wanted=()=>heat>0?Math.min(5,Math.ceil(heat/2)):0;
+  function spawnCop(){let p=null;for(let i=0;i<20;i++){const q=roadPt();if(Math.hypot(q.x-pl.x,q.z-pl.z)>110){p=q;break}}if(!p)return;
+    const k=mkCar(p.x,p.z,0,"cop");k.col=[235,235,245];k.hp=60;cars.push(k)}
+  function explode(k){for(let i=0;i<24;i++)fx.push({x:k.x,y:1,z:k.z,vx:rr(-9,9),vy:rr(2,10),vz:rr(-9,9),l:1,c:[255,rr(80,200),20]});Wall.pulse(.8)}
+  function hurtPlayer(a){pl.hp-=a;if(pl.hp<=0&&!dead){dead=1;if(pl.car){pl.car.kind="parked";pl.car=null}}}
+
+  function update(dt){
+    time+=dt;msgT-=dt;pl.punch-=dt;
+    if(dead){return}
+    const fwd=down("KeyW","ArrowUp"),back=down("KeyS","ArrowDown"),lt=down("KeyA","ArrowLeft"),rt=down("KeyD","ArrowRight");
+    if(!pl.car){
+      pl.h+=((rt?1:0)-(lt?1:0))*2.6*dt;
+      const sp=(down("ShiftLeft","ShiftRight")?9:5)*((fwd?1:0)-(back?.6:0));
+      pl.x+=Math.sin(pl.h)*sp*dt;pl.z+=Math.cos(pl.h)*sp*dt;collide(pl,.6);
+    }else{
+      const k=pl.car;
+      k.v+=((fwd?1:0)*(k.v<0?55:26)-(back?1:0)*(k.v>0?55:16))*dt;
+      if(down("Space"))k.v-=Math.sign(k.v)*Math.min(Math.abs(k.v),60*dt);
+      k.v-=Math.sign(k.v)*Math.min(Math.abs(k.v),5*dt);k.v=clamp(k.v,-14,42);
+      const st=((rt?1:0)-(lt?1:0));k.h+=st*clamp(k.v/7,-1,1)*1.9*dt;
+    }
+    /* cars */
+    for(const k of cars){
+      if(k.kind==="traffic"&&k.ai){
+        const d=dirs[k.dir];let block=false;
+        for(const o of[...cars,pl.car?null:pl]){if(!o||o===k)continue;const rx=o.x-k.x,rz=o.z-k.z,al=rx*d[0]+rz*d[1],lat=Math.abs(rx*d[1]-rz*d[0]);if(al>0&&al<10&&lat<3)block=true}
+        const tv=block?0:11;k.v+=clamp(tv-k.v,-30*dt,12*dt);
+        const px=k.x,pz=k.z;k.x+=d[0]*k.v*dt;k.z+=d[1]*k.v*dt;
+        const ax=d[0]?"x":"z",oa=d[0]?"z":"x";
+        if(Math.floor((ax==="x"?px:pz)/P)!==Math.floor(k[ax]/P)){
+          if(rnd()<.45){const nd=ax==="x"?(rnd()<.5?2:3):(rnd()<.5?0:1);const cxr=Math.round(k[ax]/P)*P,road=Math.round(k[oa]/P)*P;
+            k.dir=nd;
+            if(nd<2){k.z=road+(nd===0?4:-4);k.x=cxr}else{k.x=road+(nd===2?-4:4);k.z=cxr}
+          }}
+        k.h=Math.atan2(dirs[k.dir][0],dirs[k.dir][1]);
+        if(Math.abs(k.x)>LIM-10||Math.abs(k.z)>LIM-10){k.dir=k.dir^1;}
+      }else if(k.kind==="cop"){
+        const tx=pl.car?pl.car.x:pl.x,tz=pl.car?pl.car.z:pl.z,want=Math.atan2(tx-k.x,tz-k.z),dd=Math.hypot(tx-k.x,tz-k.z);
+        if(wanted()>0){k.h+=clamp(angDiff(k.h,want),-1,1)*2.4*dt;k.v+=clamp(24+wanted()*3-k.v,-20*dt,16*dt);if(dd<5&&k.v>3){hurtPlayer(10*dt);k.v*=.97}}
+        else{k.v*=.98;if(dd>140)k.hp=0}
+      }else if(k!==pl.car){k.v-=Math.sign(k.v)*Math.min(Math.abs(k.v),6*dt)}
+      if(!(k.kind==="traffic"&&k.ai)){k.x+=Math.sin(k.h)*k.v*dt;k.z+=Math.cos(k.h)*k.v*dt}
+      if(!(k.kind==="traffic"&&k.ai)&&collide(k,2.2)){const sp=Math.abs(k.v);if(sp>14){k.hp-=sp*.8;if(k===pl.car)Wall.pulse(.3)}k.v*=-.25}
+    }
+    /* car vs car */
+    for(let i=0;i<cars.length;i++)for(let j=i+1;j<cars.length;j++){const a=cars[i],b=cars[j];const dx=b.x-a.x,dz=b.z-a.z,d=Math.hypot(dx,dz);
+      if(d<4.2&&d>.01){const rel=Math.abs(a.v)+Math.abs(b.v),n=[dx/d,dz/d],o=(4.2-d)/2;
+        const aFree=!(a.kind==="traffic"&&a.ai),bFree=!(b.kind==="traffic"&&b.ai);
+        if(aFree&&bFree){a.x-=n[0]*o;a.z-=n[1]*o;b.x+=n[0]*o;b.z+=n[1]*o}else if(aFree){a.x-=n[0]*o*2;a.z-=n[1]*o*2}else if(bFree){b.x+=n[0]*o*2;b.z+=n[1]*o*2}
+        if(rel>10){a.hp-=rel*.7;b.hp-=rel*.7;if(a===pl.car||b===pl.car){Wall.pulse(.3);if(a.kind==="cop"||b.kind==="cop"){heat+=.5;quiet=0}}}
+        if(a.kind==="traffic"&&bFree&&!b.ai)a.ai=false;if(b.kind==="traffic"&&aFree&&!a.ai)b.ai=false;
+        if(rel>10){a.ai=false;b.ai=false}
+        a.v*=.6;b.v*=.6}}
+    /* dead cars */
+    for(let i=cars.length-1;i>=0;i--){const k=cars[i];
+      if(k.hp<=0){explode(k);if(k===pl.car){hurtPlayer(35);pl.car=null;pl.x=k.x+3;pl.z=k.z}
+        if(k.kind==="cop"&&wanted()>0){heat+=2;pl.cash+=200;say("Cop car wrecked +$200")}cars.splice(i,1);
+        if(k.kind==="traffic"||k.kind==="cop")continue}}
+    while(cars.filter(k=>k.kind==="traffic"&&k.ai).length<14&&cars.length<60){const t=spawnTraffic();if(Math.hypot(t.x-pl.x,t.z-pl.z)>100)cars.push(t);else break}
+    /* player position sync */
+    if(pl.car){pl.x=pl.car.x;pl.z=pl.car.z;pl.h=pl.car.h}
+    /* peds */
+    for(const p of peds){
+      if(p.dead){p.t+=dt;if(p.t>4){Object.assign(p,mkPed())}continue}
+      p.t-=dt;if(p.t<=0){p.h=rnd()*6.28;p.t=rr(1,4)}
+      const dpl=Math.hypot(p.x-pl.x,p.z-pl.z);if(dpl>130)continue;
+      p.x+=Math.sin(p.h)*1.8*dt;p.z+=Math.cos(p.h)*1.8*dt;if(collide(p,.5))p.h+=2;
+      for(const k of cars){if(Math.abs(k.v)>5&&Math.hypot(k.x-p.x,k.z-p.z)<2.4){if(k===pl.car||k.kind==="mine")kill(p,k.v);p.dead=1;p.t=0}}
+    }
+    /* pickups */
+    for(const p of pick)if(Math.hypot(p.x-pl.x,p.z-pl.z)<3.2){pl.cash+=p.v;say("+$"+p.v);Wall.pulse(.3);Object.assign(p,mkPick())}
+    /* wanted */
+    quiet+=dt;if(heat>0&&quiet>9)heat=Math.max(0,heat-.35*dt);
+    const cc=cars.filter(k=>k.kind==="cop").length;if(wanted()>0&&cc<wanted()*2&&Math.random()<dt*.6)spawnCop();
+    if(wanted()===0&&heat===0&&cc>0&&Math.random()<dt)for(const k of cars)if(k.kind==="cop"&&Math.hypot(k.x-pl.x,k.z-pl.z)>60)k.hp=0;
+    if(pl.car&&!dead)Wall.pulse(Math.abs(pl.car.v)*.0004);
+    for(let i=fx.length-1;i>=0;i--){const f=fx[i];f.l-=dt;f.vy-=14*dt;f.x+=f.vx*dt;f.y=Math.max(.1,f.y+f.vy*dt);f.z+=f.vz*dt;if(f.l<=0)fx.splice(i,1)}
+    /* camera */
+    const target=pl.h,dist=pl.car?12:7;camYaw+=angDiff(camYaw,target)*Math.min(1,dt*(pl.car?3:6));
+    R.cam.yaw=camYaw;R.cam.x=pl.x-Math.sin(camYaw)*dist;R.cam.z=pl.z-Math.cos(camYaw)*dist;R.cam.y=pl.car?5.2:3.6;R.cam.pitch=-.22;
+  }
+  const drawCar=(k,flash)=>{
+    R.box(k.x,.35,k.z,2.2,.9,4.4,k.h,k.col);
+    R.box(k.x-Math.sin(k.h)*.3,1.25,k.z-Math.cos(k.h)*.3,1.9,.8,2.3,k.h,k.kind==="cop"?[30,30,40]:[k.col[0]*.5,k.col[1]*.5,k.col[2]*.5]);
+    if(k.kind==="cop")R.box(k.x-Math.sin(k.h)*.3,2.05,k.z-Math.cos(k.h)*.3,1.4,.3,.5,k.h,flash?[255,40,40]:[40,80,255]);
+  };
+  function render(){
+    const cam=R.cam;c.setTransform(1,0,0,1,0,0);
+    const hy=clamp(R.horizon(),0,R.H);
+    let g=c.createLinearGradient(0,0,0,hy);g.addColorStop(0,"#2b66c0");g.addColorStop(1,"#bfd6ee");c.fillStyle=g;c.fillRect(0,0,R.W,hy);
+    g=c.createLinearGradient(0,hy,0,hy+R.H*.55);g.addColorStop(0,"rgb(170,190,215)");g.addColorStop(1,"#3a3d45");c.fillStyle=g;c.fillRect(0,hy,R.W,R.H-hy);
+    R.begin();
+    for(const b of blocks){if(Math.abs(b.x-pl.x)>340||Math.abs(b.z-pl.z)>340)continue;const h=(P-RW)/2;
+      R.poly([[b.x-h,.05,b.z-h],[b.x-h,.05,b.z+h],[b.x+h,.05,b.z+h],[b.x+h,.05,b.z-h]],b.park?[60,130,60]:[135,135,140],"back")}
+    const near=(x,z,r)=>Math.abs(x-pl.x)<r&&Math.abs(z-pl.z)<r;
+    for(let k=-N;k<=N;k++){ /* lane dashes */
+      for(let t=-LIM;t<LIM;t+=10){const ax=k*P;
+        if(near(t,ax,110))R.poly([[t,.08,ax-.2],[t,.08,ax+.2],[t+4,.08,ax+.2],[t+4,.08,ax-.2]],[220,200,80],"back");
+        if(near(ax,t,110))R.poly([[ax-.2,.08,t],[ax+.2,.08,t],[ax+.2,.08,t+4],[ax-.2,.08,t+4]],[220,200,80],"back")}}
+    for(const b of blds)if(near(b.x,b.z,280))R.box(b.x,0,b.z,b.w,b.h,b.d,0,b.col);
+    for(const wl of[[0,-N*P,2*N*P,4],[0,N*P,2*N*P,4],[-N*P,0,4,2*N*P],[N*P,0,4,2*N*P]])R.box(wl[0],0,wl[1],wl[2],14,wl[3],0,[70,60,90]);
+    const flash=((time*6)|0)%2;
+    for(const k of cars)if(near(k.x,k.z,200))drawCar(k,flash);
+    for(const p of peds){if(!near(p.x,p.z,140))continue;
+      if(p.dead){R.box(p.x,0,p.z,1.4,.35,.6,p.h,p.col);continue}
+      R.box(p.x,0,p.z,.6,1.1,.4,p.h,p.col);R.box(p.x,1.1,p.z,.4,.4,.4,p.h,[235,190,150])}
+    if(!pl.car&&!dead){R.box(pl.x,0,pl.z,.8,1.4,.5,pl.h,[255,60,160]);R.box(pl.x,1.4,pl.z,.5,.5,.5,pl.h,[240,200,160]);
+      if(pl.punch>0)R.box(pl.x+Math.sin(pl.h)*.9,.9,pl.z+Math.cos(pl.h)*.9,.3,.3,.9,pl.h,[240,200,160])}
+    for(const p of pick)if(near(p.x,p.z,200))R.box(p.x,1.2+Math.sin(time*3+p.x)*.4,p.z,1.2,.7,1.2,time*2,[60,230,100]);
+    for(const f of fx)R.box(f.x,f.y,f.z,.5,.5,.5,0,f.c);
+    R.flush();
+    hud();
+  }
+  function hud(){
+    c.fillStyle="#0007";c.fillRect(8,8,200,62);
+    c.fillStyle="#333";c.fillRect(16,18,184,12);c.fillStyle="#e33";c.fillRect(16,18,184*clamp(pl.hp/100,0,1),12);
+    c.fillStyle="#7f7";c.font="bold 18px monospace";c.fillText("$"+pl.cash,16,52);
+    const w=wanted();c.font="22px sans-serif";for(let i=0;i<5;i++){c.fillStyle=i<w?(((time*4)|0)%2&&w?"#4af":"#f44"):"#555";c.fillText("★",110+i*18,56)}
+    if(pl.car){c.fillStyle="#0007";c.fillRect(8,76,200,26);c.fillStyle="#fff";c.font="14px monospace";c.fillText(`${Math.abs(pl.car.v*3.6)|0} km/h   car ${Math.max(0,pl.car.hp)|0}%`,16,94)}
+    /* minimap */
+    const S=.45,mx=R.W-70,my=70;c.save();c.beginPath();c.arc(mx,my,60,0,6.283);c.clip();c.fillStyle="#1d2230";c.fill();
+    c.strokeStyle="#556";c.lineWidth=5;for(let k=-N;k<=N;k++){const a=k*P;c.beginPath();c.moveTo(mx+(a-pl.x)*S,0);c.lineTo(mx+(a-pl.x)*S,200);c.stroke();c.beginPath();c.moveTo(0,my-(a-pl.z)*S);c.lineTo(R.W,my-(a-pl.z)*S);c.stroke()}
+    const dot=(x,z,col,r)=>{c.fillStyle=col;c.beginPath();c.arc(mx+(x-pl.x)*S,my-(z-pl.z)*S,r,0,6.283);c.fill()};
+    for(const p of pick)dot(p.x,p.z,"#4f6",2.5);for(const k of cars)if(k.kind==="cop")dot(k.x,k.z,((time*6)|0)%2?"#f33":"#38f",3.5);
+    dot(pl.x,pl.z,"#fff",4);c.restore();c.strokeStyle="#fff8";c.lineWidth=2;c.beginPath();c.arc(mx,my,60,0,6.283);c.stroke();
+    c.fillStyle="#fffa";c.font="12px monospace";c.fillText("WASD/Arrows move · E enter/exit car · Space brake/punch · Shift sprint",10,R.H-10);
+    if(!pl.car){const nk=cars.find(k=>k.kind!=="cop"&&Math.hypot(k.x-pl.x,k.z-pl.z)<6);if(nk){c.fillStyle="#fff";c.font="bold 16px sans-serif";c.textAlign="center";c.fillText("Press E to enter car",R.W/2,R.H-50);c.textAlign="left"}}
+    if(msgT>0){c.fillStyle="#ffd84a";c.font="bold 20px sans-serif";c.textAlign="center";c.fillText(msg,R.W/2,70);c.textAlign="left"}
+    if(dead){c.fillStyle="#000a";c.fillRect(0,0,R.W,R.H);c.fillStyle="#e33";c.font="bold 64px sans-serif";c.textAlign="center";c.fillText("WASTED",R.W/2,R.H/2);c.fillStyle="#fff";c.font="18px sans-serif";c.fillText("Press Enter to respawn (lose half your cash)",R.W/2,R.H/2+40);c.textAlign="left"}
+  }
+  return{destroy:loop(win,dt=>{update(dt);render()})};
+}
+
+/* ============================ game: LUMEN DRIFT (3D arcade flyer) ============================ */
+function lumenDrift(body,win){
+  const cv=el("canvas","game");cv.width=800;cv.height=480;body.appendChild(cv);
+  const c=cv.getContext("2d"),R=new R3(cv);R.fog=[12,6,32];R.fogA=60;R.fogB=260;
+  const rnd=Math.random,AR=12;
+  let sx,sy,vx,vy,z,speed,score,combo,best=0,shield,over,objs,stars,flash,t=0,nextZ,msg="",msgT=0,passed;
+  function init(){sx=sy=vx=vy=0;z=0;speed=40;score=0;combo=0;shield=3;over=false;objs=[];flash=0;nextZ=80;passed=0;
+    stars=Array.from({length:160},()=>({x:(rnd()-.5)*300,y:(rnd()-.5)*200,z:rnd()*300}))}
+  init();
+  function spawn(){
+    const cx=(rnd()-.5)*2*(AR-3),cy=(rnd()-.5)*2*(AR-4);
+    objs.push({k:"ring",x:cx,y:cy,z:nextZ,r:4.2,done:false,h:rnd()*360});
+    const n=2+Math.min(4,passed/8|0);
+    for(let i=0;i<n;i++){const a={k:"rock",x:(rnd()-.5)*2*AR,y:(rnd()-.5)*2*AR,z:nextZ+rnd()*30-10,s:1.5+rnd()*3,rot:rnd()*6};
+      if(Math.hypot(a.x-cx,a.y-cy)<6)continue;objs.push(a)}
+    nextZ+=26+rnd()*14;
+  }
+  win.keydown=code=>{if(code==="Enter"&&over)init()};
+  const ringPts=(o,n=20)=>Array.from({length:n},(_,i)=>[o.x+Math.cos(i/n*6.283)*o.r,o.y+Math.sin(i/n*6.283)*o.r,o.z]);
+  function update(dt){
+    t+=dt;if(over)return;
+    const ax=((down("KeyD","ArrowRight")?1:0)-(down("KeyA","ArrowLeft")?1:0)),ay=((down("KeyW","ArrowUp")?1:0)-(down("KeyS","ArrowDown")?1:0));
+    vx=lerp(vx,ax*16,Math.min(1,dt*6));vy=lerp(vy,ay*16,Math.min(1,dt*6));
+    sx=clamp(sx+vx*dt,-AR,AR);sy=clamp(sy+vy*dt,-AR,AR);
+    const boost=down("Space");speed=Math.min(110,speed+dt*.9)*1;const sp=speed*(boost?1.6:1);z+=sp*dt;
+    while(nextZ<z+300)spawn();
+    for(let i=objs.length-1;i>=0;i--){const o=objs[i];
+      if(o.z<z-20){if(o.k==="ring"&&!o.done){combo=0}objs.splice(i,1);continue}
+      if(o.k==="ring"&&!o.done&&o.z<=z){o.done=true;
+        if(Math.hypot(sx-o.x,sy-o.y)<o.r-.6){combo++;passed++;score+=100*combo*(boost?2:1);msg=combo>1?`x${combo} combo!`:"Gate!";msgT=1;Wall.pulse(.15+combo*.03)}else{combo=0;msg="Missed";msgT=1}}
+      if(o.k==="rock"&&!o.hit&&Math.abs(o.z-z)<o.s/2+1&&Math.abs(o.x-sx)<o.s/2+.9&&Math.abs(o.y-sy)<o.s/2+.6){o.hit=true;shield--;flash=1;combo=0;Wall.pulse(.6);
+        objs.splice(i,1);if(shield<=0){over=true;best=Math.max(best,score|0)}}
+    }
+    score+=sp*dt*.1;flash=Math.max(0,flash-dt*3);
+  }
+  function render(){
+    c.setTransform(1,0,0,1,0,0);
+    const g=c.createLinearGradient(0,0,0,R.H);g.addColorStop(0,"#05020f");g.addColorStop(.55,"#2a0f4a");g.addColorStop(1,"#0a0420");c.fillStyle=g;c.fillRect(0,0,R.W,R.H);
+    R.cam.x=sx*.6;R.cam.y=sy*.6+1.5;R.cam.z=z-9;R.cam.yaw=-vx*.003;R.cam.pitch=.03;R.begin();
+    for(const s of stars){if(s.z<z-10){s.z+=300;s.x=(rnd()-.5)*300+sx;s.y=(rnd()-.5)*200+sy}
+      const p=R.tc(s.x,s.y,s.z);if(p[2]<1)continue;const q=R.proj(p);c.fillStyle=`rgba(255,255,255,${clamp(1-p[2]/300,.1,1)})`;c.fillRect(q[0],q[1],1.6,1.6)}
+    /* grid floor and ceiling */
+    const base=Math.floor(z/10)*10;
+    for(let i=0;i<26;i++){const zz=base+i*10;R.line([-60,-AR-4,zz],[60,-AR-4,zz],"rgba(255,60,200,.55)",1)}
+    for(let x=-60;x<=60;x+=10){R.line([x,-AR-4,z],[x,-AR-4,z+260],"rgba(255,60,200,.55)",1)}
+    for(const o of objs){
+      if(o.k==="ring"){const pts=ringPts(o),col=o.done?"rgba(120,120,160,.4)":`hsl(${o.h+t*60},100%,65%)`;
+        for(let i=0;i<pts.length;i++)R.line(pts[i],pts[(i+1)%pts.length],col,o.done?2:4)}
+      else R.box(o.x,o.y-o.s/2,o.z,o.s,o.s,o.s,o.rot+t*.5,[150,110,90])}
+    /* ship */
+    const X=sx,Y=sy,Z=z,rl=vx*.02;
+    const tri=(a,b,cc,col)=>R.poly([a,b,cc],col,"list",true);
+    const n=[X,Y,Z+2.2],l=[X-1.4,Y-rl,Z-.9],r=[X+1.4,Y+rl,Z-.9],tp=[X,Y+.6,Z-.7],bt=[X,Y-.3,Z-.7];
+    tri(n,l,tp,[90,200,255]);tri(n,tp,r,[60,150,255]);tri(n,bt,l,[40,90,200]);tri(n,r,bt,[30,70,170]);tri(l,tp,r,[200,230,255]);
+    R.line([X-.5,Y,Z-1],[X-.5,Y,Z-2.5-Math.random()],"#ffa030",3);R.line([X+.5,Y,Z-1],[X+.5,Y,Z-2.5-Math.random()],"#ffa030",3);
+    R.flush();
+    if(flash>0){c.fillStyle=`rgba(255,40,40,${flash*.5})`;c.fillRect(0,0,R.W,R.H)}
+    c.fillStyle="#fff";c.font="bold 22px monospace";c.fillText(String(score|0).padStart(7,"0"),16,32);
+    c.font="14px monospace";c.fillStyle="#8cf";c.fillText("BEST "+best,16,52);
+    for(let i=0;i<3;i++){c.fillStyle=i<shield?"#4df":"#334";c.fillRect(16+i*26,62,22,8)}
+    if(combo>1){c.fillStyle="#ffd84a";c.font="bold 18px monospace";c.fillText("combo x"+combo,16,92)}
+    if(msgT>0||(msgT=0)){}
+    c.fillStyle="#fff9";c.font="12px monospace";c.fillText("WASD/Arrows steer · Space boost (2x score) · fly through the rings, dodge rocks",10,R.H-10);
+    if(over){c.fillStyle="#000a";c.fillRect(0,0,R.W,R.H);c.fillStyle="#f6c";c.font="bold 48px sans-serif";c.textAlign="center";c.fillText("SIGNAL LOST",R.W/2,R.H/2);c.fillStyle="#fff";c.font="18px sans-serif";c.fillText("Score "+(score|0)+" · press Enter to relaunch",R.W/2,R.H/2+36);c.textAlign="left"}
+  }
+  return{destroy:loop(win,dt=>{update(dt);render()})};
+}
+
+/* ============================ app: MESSAGES ============================ */
+function messagesApp(body){
+  const data=[
+    {who:"GPT-6.1 Sol",ico:"🟢",time:"Today 09:41",me:"Explain the difference between a mutex and a semaphore like I'm building a toy OS scheduler. Keep it under 150 words.",ai:"A mutex is a lock owned by one thread: whoever locks it must unlock it. A semaphore is a counter: wait() decrements and blocks at zero, signal() increments and wakes a waiter, and any thread may signal. Use a mutex to protect a critical section; use a semaphore to count resources (e.g. 4 free frame buffers) or to signal events between tasks. In your scheduler, mutex = 'who owns this data right now', semaphore = 'how many slots are left'."},
+    {who:"Claude Opus 5.5",ico:"🟠",time:"Today 08:12",me:"Review this function for off-by-one errors:\n\nfor (i = 0; i <= n; i++) buf[i] = src[i];",ai:"Yes: with i <= n you write n+1 elements, so buf[n] overflows if buf holds n items. Use i < n, or allocate n+1 and copy the terminator deliberately. Also check that src has at least n valid elements."},
+    {who:"Gemini 3.5 Flash",ico:"🔵",time:"Yesterday 22:30",me:"Give me 5 names for a procedurally generated wallpaper feature that reacts to what the user is doing.",ai:"1. Pulse\n2. Aurora Loop\n3. Mood Canvas\n4. Heartbeat Skies\n5. Living Glass\n\n'Pulse' is short, memorable and hints at the live reaction."},
+    {who:"Llama 4 Maverick",ico:"🦙",time:"Yesterday 17:05",me:"What is the cheapest way to fake 3D in a 2D canvas without WebGL? I only need boxes and a camera.",ai:"Project points yourself: translate by the camera, rotate by yaw and pitch, then screen = centre + focal * (x/z, -y/z). Build boxes from quads, cull back faces with a normal dot product, clip against the near plane, sort polygons far to near (painter's algorithm) and flat-shade with a light vector. It is a few hundred lines and runs fine for a few thousand polygons."},
+    {who:"Mistral Large 3",ico:"🟣",time:"Mon 11:20",me:"Write a one-line haiku about debugging at 3am.",ai:"Logs blur into rain—\none missing semicolon\nglows like a lighthouse."}];
+  const w=el("div","msgs"),list=el("div","list"),th=el("div","thread");w.append(list,th);body.appendChild(w);
+  const sel=i=>{[...list.children].forEach((n,j)=>n.classList.toggle("sel",i===j));const d=data[i];
+    th.innerHTML="";th.append(el("div","meta",`${d.who} · ${d.time}`),el("div","bub me"),el("div","bub ai"));
+    th.children[1].textContent=d.me;th.children[2].textContent=d.ai;Wall.pulse(.05)};
+  data.forEach((d,i)=>{const it=el("div","item",`${d.ico} <b>${d.who}</b><small></small>`);$("small",it).textContent=d.me.split("\n")[0];it.onclick=()=>sel(i);list.appendChild(it)});
+  sel(0);
+}
+
+/* ============================ app: NOTES ============================ */
+function notesApp(body){
+  const t=el("textarea","notes");t.placeholder="Type anything. It is saved in this browser, and every keystroke nudges the wallpaper.";
+  try{t.value=localStorage.getItem("pulseos.notes")||""}catch(e){}
+  t.oninput=()=>{try{localStorage.setItem("pulseos.notes",t.value)}catch(e){}};body.appendChild(t);
+}
+
+/* ============================ app: TERMINAL ============================ */
+function terminalApp(body){
+  const t=el("div","term");body.appendChild(t);
+  const out=s=>{const d=el("div");d.textContent=s;t.insertBefore(d,line)};
+  const line=el("div","",'<span>guest@pulseos:~$ </span><input spellcheck="false" autocomplete="off">');t.appendChild(line);
+  const inp=$("input",line);t.onclick=()=>inp.focus();setTimeout(()=>inp.focus(),50);
+  out("PulseOS terminal. Type 'help'.");
+  const hist=[];let hi=0;
+  const cmds={
+    help:()=>"help  ls  date  whoami  neofetch  apps  open <app>  seed [code]  mood  echo <text>  matrix  clear",
+    ls:()=>"Desktop  Documents  wallpapers  messages.db  notes.txt",
+    date:()=>new Date().toString(),whoami:()=>"guest",
+    neofetch:()=>`   ◉ PulseOS\n   OS: PulseOS 1.0 (browser)\n   Host: ${navigator.userAgent.split(" ").slice(-2).join(" ")}\n   Screen: ${innerWidth}x${innerHeight}\n   Wallpaper: ${Wall.codeOf(Wall.seed)}\n   Mood: ${Wall.moodName()}`,
+    apps:()=>APPS.map(a=>a.id).join("  "),mood:()=>`${Wall.moodName()} (energy ${Wall.energy.toFixed(2)})`,
+    open:a=>{const app=APPS.find(x=>x.id===a);if(!app)return"no such app";openApp(app.id);return"opening "+app.name},
+    seed:a=>{if(!a)return Wall.codeOf(Wall.seed);const s=Wall.parse(a);if(s==null)return"bad code";Wall.gen(s);return"wallpaper set to "+Wall.codeOf(s)},
+    echo:a=>a||"",
+    matrix:()=>{Wall.pulse(2);return"wake up, guest... (wallpaper energy maxed)"},
+    clear:()=>{[...t.querySelectorAll("div:not(:last-child)")].forEach(n=>n.remove());return null}};
+  inp.onkeydown=e=>{
+    if(e.key==="ArrowUp"){hi=Math.max(0,hi-1);inp.value=hist[hi]||"";e.preventDefault()}
+    if(e.key!=="Enter")return;const v=inp.value.trim();inp.value="";if(!v)return;hist.push(v);hi=hist.length;
+    out("guest@pulseos:~$ "+v);const[cmd,...rest]=v.split(/\s+/),f=cmds[cmd];
+    const r=f?f(rest.join(" ")):`${cmd}: command not found`;if(r!=null)out(r);Wall.pulse(.08);t.scrollTop=t.scrollHeight};
+}
+
+/* ============================ app: PULSE (the special feature) ============================ */
+function pulseApp(body,win){
+  const d=el("div","pulse",`
+   <h2>Pulse — the living wallpaper</h2>
+   <p>Your wallpaper is generated from a tiny seed and is <b>alive</b>: opening windows, typing, driving fast, scoring and crashing all feed it energy, which bends the ribbons and sends ripples across the desktop. The OS has a mood that mirrors how you use it.</p>
+   <div class="code"></div>
+   <button id="re">Roll new wallpaper</button><button id="sh">Copy code</button><button id="png">Save postcard (PNG)</button><br>
+   <input id="in" placeholder="AURA-XXXX"><button id="ld">Load a friend's code</button>
+   <p>Energy history (last ~12 s):</p><canvas width="460" height="90" style="background:#0006;border-radius:8px;width:100%"></canvas>
+   <p><b>Why it's special:</b> a seed is a portable theme with no image files, and the desktop doubles as a live visualisation of your activity. Same code = same wallpaper on any machine.</p>`);
+  body.appendChild(d);
+  const code=$(".code",d),cv=$("canvas",d),c=cv.getContext("2d"),sync=()=>code.textContent=Wall.codeOf(Wall.seed);sync();
+  $("#re",d).onclick=()=>{Wall.gen((Math.random()*1e9)|0);Wall.pulse(1.2);sync()};
+  $("#sh",d).onclick=e=>{navigator.clipboard&&navigator.clipboard.writeText(Wall.codeOf(Wall.seed));e.target.textContent="Copied!";setTimeout(()=>e.target.textContent="Copy code",1200)};
+  $("#ld",d).onclick=()=>{const s=Wall.parse($("#in",d).value);if(s==null){$("#in",d).value="";$("#in",d).placeholder="invalid code";return}Wall.gen(s);Wall.pulse(1);sync()};
+  $("#png",d).onclick=()=>{const a=el("a");a.download=Wall.codeOf(Wall.seed)+".png";a.href=Wall.canvas.toDataURL("image/png");a.click()};
+  const iv=setInterval(()=>{if(win.min)return;c.clearRect(0,0,460,90);c.beginPath();Wall.hist.forEach((v,i)=>{const x=i/119*460,y=88-v/3*84;i?c.lineTo(x,y):c.moveTo(x,y)});c.strokeStyle="#6cf";c.lineWidth=2;c.stroke()},200);
+  return{destroy:()=>clearInterval(iv)};
+}
+
+/* ============================ window manager ============================ */
+const APPS=[
+  {id:"theft",name:"Neon Theft",icon:"🚗",bg:"linear-gradient(135deg,#ff2d95,#7b2cff)",w:820,h:515,mount:neonTheft,captures:true},
+  {id:"drift",name:"Lumen Drift",icon:"🚀",bg:"linear-gradient(135deg,#00c6ff,#6a11cb)",w:820,h:515,mount:lumenDrift,captures:true},
+  {id:"messages",name:"Messages",icon:"💬",bg:"linear-gradient(135deg,#34e89e,#0f9b5c)",w:640,h:420,mount:messagesApp},
+  {id:"notes",name:"Notes",icon:"📝",bg:"linear-gradient(135deg,#f9d423,#ff4e50)",w:460,h:380,mount:notesApp},
+  {id:"terminal",name:"Terminal",icon:"⌨️",bg:"linear-gradient(135deg,#232526,#414345)",w:560,h:360,mount:terminalApp},
+  {id:"pulse",name:"Pulse",icon:"🌌",bg:"linear-gradient(135deg,#8e2de2,#4a00e0)",w:520,h:600,mount:pulseApp}];
+const wins=[];let zTop=10,spawnN=0;
+function loop(win,fn){let last=performance.now(),raf,dead=false;
+  const f=t=>{if(dead)return;raf=requestAnimationFrame(f);if(win.min){last=t;return}fn(Math.min(.05,(t-last)/1000),t/1000);last=t};
+  raf=requestAnimationFrame(f);return()=>{dead=true;cancelAnimationFrame(raf)}}
+function setFocus(w){
+  wins.forEach(x=>{x.focused=x===w;x.node.classList.toggle("focus",x===w)});focused=w;
+  $("#focname").textContent=w?w.app.name:"Desktop";if(w){w.node.style.zIndex=++zTop}
+}
+function openApp(id){
+  const app=APPS.find(a=>a.id===id);let ex=wins.find(w=>w.app===app);
+  if(ex){ex.min=false;ex.node.style.display="flex";setFocus(ex);return}
+  const node=el("div","win"),w={app,node,min:false,focused:false};
+  const tb=el("div","tb",`<i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i><span class="t">${app.icon} ${app.name}</span>`);
+  const bd=el("div","body");node.append(tb,bd);document.body.appendChild(node);
+  node.style.width=app.w+"px";node.style.height=app.h+"px";
+  node.style.left=Math.max(10,(innerWidth-app.w)/2+(spawnN%5)*28-56)+"px";node.style.top=Math.max(34,(innerHeight-app.h)/2-30+(spawnN%5)*24)+"px";spawnN++;
+  const [bc,bm,bx]=tb.querySelectorAll("i");
+  bc.onclick=()=>closeWin(w);bm.onclick=()=>{w.min=true;node.style.display="none";setFocus(null);refreshDock()};bx.onclick=()=>node.classList.toggle("max");
+  tb.ondblclick=e=>{if(e.target===tb||e.target.className==="t")node.classList.toggle("max")};
+  node.addEventListener("pointerdown",()=>setFocus(w));
+  tb.addEventListener("pointerdown",e=>{if(e.target.tagName==="I"||node.classList.contains("max"))return;
+    const ox=e.clientX-node.offsetLeft,oy=e.clientY-node.offsetTop;tb.setPointerCapture(e.pointerId);tb.style.cursor="grabbing";
+    const mv=ev=>{node.style.left=clamp(ev.clientX-ox,-node.offsetWidth+80,innerWidth-80)+"px";node.style.top=clamp(ev.clientY-oy,28,innerHeight-40)+"px"};
+    const up=()=>{tb.removeEventListener("pointermove",mv);tb.removeEventListener("pointerup",up);tb.style.cursor=""};
+    tb.addEventListener("pointermove",mv);tb.addEventListener("pointerup",up)});
+  wins.push(w);const r=app.mount(bd,w);w.destroy=r&&r.destroy;
+  setFocus(w);Wall.pulse(.35);refreshDock();
+}
+function closeWin(w){w.destroy&&w.destroy();w.node.remove();wins.splice(wins.indexOf(w),1);if(focused===w)setFocus(null);Wall.pulse(.2);refreshDock()}
+function refreshDock(){[...$("#dock").children].forEach((n,i)=>n.classList.toggle("run",wins.some(w=>w.app===APPS[i])))}
+APPS.forEach(a=>{const i=el("div","ico",`${a.icon}<span class="tip">${a.name}</span><span class="dot"></span>`);i.style.background=a.bg;i.onclick=()=>openApp(a.id);$("#dock").appendChild(i)});
+document.addEventListener("pointerdown",e=>{if(e.target===document.body||e.target.id==="wall")setFocus(null)});
+openApp("pulse");
+</script>
+</body>
+</html>

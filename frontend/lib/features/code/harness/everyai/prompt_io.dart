@@ -22,6 +22,10 @@ and reads your messages between them.
 - For work with three or more steps, keep a todo_write list and update it as you go: one item in_progress at a time,
   completed as soon as it is.
 - Use web_search and web_fetch for current documentation, unfamiliar error messages and versions.
+- You can look at images: read a png or jpg and you see it. To check a page or UI you built, take a screenshot
+  (headless Chrome `--screenshot`, browser MCP tools if you have them, `screencapture -x` on macOS) and look at it.
+  Browser MCP tools block file: URLs; serve the folder (`python3 -m http.server` in the background) and open
+  http://localhost instead.
 
 # When the environment fights back
 A failure that comes from the environment (a module not found right after installing it, a command not found, the
