@@ -3,8 +3,11 @@ import 'dart:convert';
 import 'package:archive/archive.dart';
 import 'package:flutter/services.dart';
 
+import '../checks/math_raster.dart';
+import '../checks/webview_diagram_renderer.dart';
 import '../domain/artifact.dart';
 import '../ui/renderers/slides_view.dart';
+import 'diagram_raster.dart';
 import 'doc_model.dart';
 import 'docx_writer.dart';
 import 'pdf_writer.dart';
@@ -56,6 +59,16 @@ List<DownloadOption> downloadsOf(Visual v) {
           if (f == null) throw StateError('This illustration could not be drawn.');
           return f.png;
         }),
+      ];
+    case VisualKind.diagram when diagramChecksSupported:
+      return [
+        DownloadOption('PNG', 'png', () async {
+          final f = await (await drawnDiagram(export.text)).figure(maxWidth: double.infinity);
+          if (f == null) throw StateError('This diagram could not be drawn.');
+          return f.png;
+        }),
+        DownloadOption('SVG', 'svg', () async => utf8Of((await drawnDiagram(export.text)).svg)),
+        DownloadOption('Mermaid', 'mmd', () => utf8Of(export.text)),
       ];
     default:
       return [DownloadOption(export.extension.toUpperCase(), export.extension, () => utf8Of(export.text))];
@@ -114,18 +127,50 @@ Future<PdfFonts> _pdfFonts() async => (
   mono: await rootBundle.load('assets/fonts/SourceCodePro/SourceCodePro-Regular.ttf'),
 );
 
-/// [markdown] as a PDF, figures drawn as the app draws them.
-Future<Uint8List> pdfOf(String title, String markdown, {SvgRasterizer rasterize = rasterizeSvg}) async {
-  final blocks = parseDoc(markdown);
-  final figures = await rasterizeAll(svgFiguresIn(markdown), rasterize);
-  return buildPdf(title: title, blocks: blocks, fonts: await _pdfFonts(), figures: figures);
+/// [markdown] as a PDF, figures drawn as the app draws them; Mermaid and
+/// display math as images where they can be drawn.
+Future<Uint8List> pdfOf(
+  String title,
+  String markdown, {
+  SvgRasterizer rasterize = rasterizeSvg,
+  DiagramRasterizer drawDiagram = rasterizeDiagram,
+  MathRasterizer drawMath = rasterizeTex,
+}) async {
+  final images = await _documentImages(markdown, rasterize, drawDiagram, drawMath);
+  return buildPdf(
+    title: title,
+    blocks: parseDoc(markdown),
+    fonts: await _pdfFonts(),
+    figures: images.figures,
+    diagrams: images.diagrams,
+    equations: images.equations,
+  );
 }
 
-/// [markdown] as a Word document.
-Future<Uint8List> docxOf(String title, String markdown, {SvgRasterizer rasterize = rasterizeSvg}) async {
-  final figures = await rasterizeAll(svgFiguresIn(markdown), rasterize);
-  return buildDocx(title: title, blocks: parseDoc(markdown), figures: figures);
+/// [markdown] as a Word document, with images like [pdfOf].
+Future<Uint8List> docxOf(
+  String title,
+  String markdown, {
+  SvgRasterizer rasterize = rasterizeSvg,
+  DiagramRasterizer drawDiagram = rasterizeDiagram,
+  MathRasterizer drawMath = rasterizeTex,
+}) async {
+  final images = await _documentImages(markdown, rasterize, drawDiagram, drawMath);
+  return buildDocx(
+    title: title,
+    blocks: parseDoc(markdown),
+    figures: images.figures,
+    diagrams: images.diagrams,
+    equations: images.equations,
+  );
 }
+
+Future<({Map<String, RasterFigure> figures, Map<String, RasterFigure> diagrams, Map<String, RasterFigure> equations})>
+_documentImages(String markdown, SvgRasterizer svg, DiagramRasterizer diagram, MathRasterizer math) async => (
+  figures: await rasterizeAll(svgFiguresIn(markdown), svg),
+  diagrams: await rasterizeAll(diagramSourcesIn(markdown), diagram),
+  equations: await rasterizeAll(displayMathIn(markdown), math),
+);
 
 /// The deck in [v] as a PowerPoint file.
 Uint8List pptxOf(Visual v) {

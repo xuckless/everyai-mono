@@ -5,6 +5,7 @@ import 'package:every_ai/core/db/app_database.dart';
 import 'package:every_ai/core/net/api_error.dart';
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/core/providers.dart';
+import 'package:every_ai/features/artifacts/checks/tool_checks.dart';
 import 'package:every_ai/features/chat/chat_providers.dart';
 import 'package:every_ai/features/chat/data/chat_transport.dart';
 import 'package:every_ai/features/chat/domain/chat_session.dart';
@@ -71,6 +72,8 @@ void main() {
         chatTransportProvider.overrideWithValue(transport),
         toolResultsProvider.overrideWithValue(results),
         chatClientToolsProvider.overrideWithValue(const {'render_diagram'}),
+        // Checks math only: no webview draws Mermaid in tests.
+        appToolCheckerProvider.overrideWithValue(const AppToolChecker()),
         modelCatalogProvider.overrideWith(FixedCatalog.new),
       ],
     );
@@ -392,6 +395,34 @@ void main() {
     unawaited(transport.turns.single.close());
     await settle();
     expect(state().messages.last.parts.whereType<ToolCallPart>(), hasLength(2));
+  });
+
+  test('artifact calls the app checks are answered with what the check found', () async {
+    await settle();
+    await ctl().send('write it up');
+    transport.turns.single
+      ..add(
+        const ToolWait(
+          id: 'call_1',
+          name: 'create_artifact',
+          argumentsJson: r'{"id":"n","title":"N","kind":"markdown","content":"Broken $\\frac{1}{$ math"}',
+        ),
+      )
+      ..add(
+        const ToolWait(
+          id: 'call_2',
+          name: 'create_artifact',
+          argumentsJson: r'{"id":"m","title":"M","kind":"markdown","content":"Fine $x$"}',
+        ),
+      );
+    await settle();
+    expect(results.answers.map((a) => (a.$1, a.$3)), [('call_1', true), ('call_2', false)]);
+    expect(results.answers.first.$2, contains('edit_artifact'));
+    expect(state().pendingTools, isEmpty);
+    // The server's closing status adds no step row for a checked visual.
+    transport.turns.single.add(const ToolProgress(id: 'call_1', name: 'create_artifact', status: ToolRunStatus.failed));
+    await settle();
+    expect(state().liveTools, isEmpty);
   });
 
   test('without tools, no client tools are declared', () async {

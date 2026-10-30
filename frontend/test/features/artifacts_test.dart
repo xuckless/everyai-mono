@@ -154,7 +154,13 @@ void main() {
   });
 
   test('pdf export renders every block', () async {
-    final bytes = await pdfOf('Report', _doc, rasterize: _fakeRaster);
+    final bytes = await pdfOf(
+      'Report',
+      _doc,
+      rasterize: _fakeRaster,
+      drawDiagram: (_) async => null,
+      drawMath: (_) async => null,
+    );
     expect(String.fromCharCodes(bytes.take(5)), '%PDF-');
     if (Platform.environment['EXPORT_OUT'] case final dir?) File('$dir/report.pdf').writeAsBytesSync(bytes);
   });
