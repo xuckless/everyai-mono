@@ -17,7 +17,7 @@ pub fn kindOf(name: []const u8) ?Kind {
     return null;
 }
 
-pub const ui_tools = [_][]const u8{ "create_artifact", "update_artifact", "render_svg", "render_diagram", "render_chart", "make_quiz", "make_flashcards", "make_slides" };
+pub const ui_tools = [_][]const u8{ "create_artifact", "update_artifact", "edit_artifact", "render_svg", "render_diagram", "render_chart", "make_quiz", "make_flashcards", "make_slides" };
 pub const server_tools = [_][]const u8{ "web_fetch", "generate_image" };
 
 pub const system_prompt =
@@ -26,8 +26,10 @@ pub const system_prompt =
     \\When web sources are provided, cite them inline as [1], [2] matching their order.
     \\
     \\You have tools that render rich, interactive content in the app. Prefer them when they help:
-    \\- create_artifact: substantial standalone content the user may keep, edit or download (documents, essays, code files, HTML pages, long lists). Not for short answers.
-    \\- update_artifact: revise an artifact you created earlier (send the full new content).
+    \\- create_artifact: substantial standalone content the user may keep, edit or download (documents, essays, code files, HTML pages, long lists). Not for short answers. One artifact per deliverable: put a document's figures inside it, never as separate artifacts.
+    \\- edit_artifact: change part of an artifact you created earlier (exact find-and-replace edits). Prefer it for any revision that leaves most of the content as is; never re-create an artifact that already exists.
+    \\- update_artifact: replace an artifact's whole content, only when most of it changes.
+    \\In markdown artifacts, draw figures as ```svg fenced blocks holding one self-contained <svg> with a viewBox (no scripts or external references); the app renders them in place and keeps them in Markdown, PDF and Word downloads. Use ```mermaid blocks for flowcharts and $…$ for math.
     \\- render_svg: an inline vector illustration while explaining (shapes, labeled sketches, geometry, simple scenes). Self-contained SVG, viewBox set, no scripts or external references.
     \\- render_diagram: flowcharts, sequence, class, state, ER, timeline or mind-map diagrams as Mermaid.
     \\- render_chart: data visualizations from numbers (line, bar, pie, scatter, area).
@@ -44,6 +46,7 @@ pub const definitions =
     \\[
     \\{"type":"function","function":{"name":"create_artifact","description":"Create a standalone artifact shown in the side panel, which the user can view, edit, copy and download.","parameters":{"type":"object","properties":{"id":{"type":"string","description":"Short kebab-case id, unique in this chat"},"title":{"type":"string"},"kind":{"type":"string","enum":["markdown","code","html","svg","mermaid"]},"language":{"type":"string","description":"For kind=code: the language"},"content":{"type":"string"}},"required":["id","title","kind","content"]}}},
     \\{"type":"function","function":{"name":"update_artifact","description":"Replace an existing artifact's content with a new version.","parameters":{"type":"object","properties":{"id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"}},"required":["id","content"]}}},
+    \\{"type":"function","function":{"name":"edit_artifact","description":"Edit an existing artifact in place with exact find-and-replace edits, applied in order to its latest version. Each old_text must appear exactly once; include enough surrounding text to make it unique.","parameters":{"type":"object","properties":{"id":{"type":"string"},"edits":{"type":"array","items":{"type":"object","properties":{"old_text":{"type":"string"},"new_text":{"type":"string"}},"required":["old_text","new_text"]},"minItems":1}},"required":["id","edits"]}}},
     \\{"type":"function","function":{"name":"render_svg","description":"Show an inline SVG illustration in the conversation.","parameters":{"type":"object","properties":{"title":{"type":"string"},"svg":{"type":"string","description":"A complete <svg> element with a viewBox; no scripts, no external references"}},"required":["svg"]}}},
     \\{"type":"function","function":{"name":"render_diagram","description":"Show a Mermaid diagram in the conversation.","parameters":{"type":"object","properties":{"title":{"type":"string"},"mermaid":{"type":"string","description":"Mermaid source"}},"required":["mermaid"]}}},
     \\{"type":"function","function":{"name":"render_chart","description":"Show a data chart in the conversation.","parameters":{"type":"object","properties":{"title":{"type":"string"},"type":{"type":"string","enum":["line","bar","pie","scatter","area"]},"x_label":{"type":"string"},"y_label":{"type":"string"},"series":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"points":{"type":"array","items":{"type":"object","properties":{"x":{"type":["string","number"]},"y":{"type":"number"}},"required":["x","y"]}}},"required":["name","points"]}}},"required":["type","series"]}}},

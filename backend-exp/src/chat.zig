@@ -226,6 +226,8 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
         }
     }
     const with_tools = body.tools_enabled and model_has_tools and body.mode != .research;
+    var docs: Artifacts = .{};
+    for (messages.items) |m| if (std.mem.eql(u8, m.role, "assistant")) try docs.seed(arena, m.content);
     var final_text: std.Io.Writer.Allocating = .init(arena);
     // Search needs OpenRouter's web plugin.
     const route = app.route(model, body.mode == .chat);
@@ -269,7 +271,7 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
         // The assistant turn with its tool calls, then one result per call.
         try messages.append(arena, .{ .role = "assistant", .content = result.text, .raw_tool_calls = try toolCallsJson(arena, result.tool_calls) });
         for (result.tool_calls) |call| {
-            const output = try runTool(app, req, who, body.session, call, sink);
+            const output = try runTool(app, req, who, body.session, call, sink, &docs);
             try messages.append(arena, .{ .role = "tool", .tool_call_id = call.id, .content = output });
         }
         // A model that stopped for another reason than tools is done.
@@ -280,6 +282,85 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
         followUps(app, req, who, body, final_text.written(), sink) catch |err| std.log.warn("follow-ups failed: {t}", .{err});
     }
     try sink.send("done", .{});
+}
+
+/// The latest content of each artifact in the conversation: seeded from the
+/// `<artifact id="…">` blocks the app puts in earlier assistant turns, then
+/// kept current by this turn's create/update/edit calls.
+const Artifacts = struct {
+    map: std.StringHashMapUnmanaged([]const u8) = .empty,
+
+    const Edited = struct { applied: usize, message: []const u8 };
+
+    fn seed(self: *Artifacts, arena: std.mem.Allocator, text: []const u8) !void {
+        const open = "<artifact id=\"";
+        var rest = text;
+        while (std.mem.indexOf(u8, rest, open)) |at| {
+            rest = rest[at + open.len ..];
+            const id_end = std.mem.indexOfScalar(u8, rest, '"') orelse return;
+            const id = rest[0..id_end];
+            const body_start = (std.mem.indexOf(u8, rest, ">\n") orelse return) + 2;
+            const close = std.mem.indexOf(u8, rest[body_start..], "\n</artifact>") orelse return;
+            try self.map.put(arena, id, rest[body_start..][0..close]);
+            rest = rest[body_start + close ..];
+        }
+    }
+
+    /// Records create/update; applies an edit and describes the outcome
+    /// (null for every other tool).
+    fn track(self: *Artifacts, arena: std.mem.Allocator, tool: []const u8, args: std.json.Value) !?Edited {
+        const id = openrouter.jsonString(args, "id") orelse return null;
+        if (std.mem.eql(u8, tool, "create_artifact") or std.mem.eql(u8, tool, "update_artifact")) {
+            if (openrouter.jsonString(args, "content")) |c| try self.map.put(arena, id, c);
+            return null;
+        }
+        if (!std.mem.eql(u8, tool, "edit_artifact")) return null;
+        var content = self.map.get(id) orelse return .{
+            .applied = 0,
+            .message = try std.fmt.allocPrint(arena, "Error: there is no artifact \"{s}\" in this chat. Use create_artifact.", .{id}),
+        };
+        const edits = if (args == .object) args.object.get("edits") else null;
+        const list = if (edits) |e| (if (e == .array) e.array.items else &.{}) else &.{};
+        var applied: usize = 0;
+        var missed: std.Io.Writer.Allocating = .init(arena);
+        for (list) |e| {
+            const old = openrouter.jsonString(e, "old_text") orelse continue;
+            const new = openrouter.jsonString(e, "new_text") orelse "";
+            const at = if (old.len == 0) null else std.mem.indexOf(u8, content, old);
+            if (at) |i| {
+                content = try std.mem.concat(arena, u8, &.{ content[0..i], new, content[i + old.len ..] });
+                applied += 1;
+            } else {
+                try missed.writer.print("\n- old_text not found: {s}", .{old[0..@min(old.len, 120)]});
+            }
+        }
+        try self.map.put(arena, id, content);
+        const message = if (missed.written().len == 0)
+            try std.fmt.allocPrint(arena, "Edited \"{s}\": {d} edit(s) applied; shown to the user.", .{ id, applied })
+        else
+            try std.fmt.allocPrint(arena, "Edited \"{s}\": {d} of {d} edit(s) applied; these did not match the current content exactly (copy old_text verbatim from the latest version and retry them):{s}", .{ id, applied, list.len, missed.written() });
+        return .{ .applied = applied, .message = message };
+    }
+};
+
+test "artifacts: seed from history, edit, report misses" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var docs: Artifacts = .{};
+    try docs.seed(a, "Here it is.\n\n<artifact id=\"notes\" kind=\"markdown\" title=\"Notes\">\n# Title\nold line\n</artifact>");
+    try std.testing.expectEqualStrings("# Title\nold line", docs.map.get("notes").?);
+    const args = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"id":"notes","edits":[{"old_text":"old line","new_text":"new line"},{"old_text":"missing","new_text":"x"}]}
+    , .{});
+    const e = (try docs.track(a, "edit_artifact", args)).?;
+    try std.testing.expectEqual(@as(usize, 1), e.applied);
+    try std.testing.expect(std.mem.indexOf(u8, e.message, "1 of 2") != null);
+    try std.testing.expectEqualStrings("# Title\nnew line", docs.map.get("notes").?);
+    const unknown = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"id":"nope","edits":[]}
+    , .{});
+    try std.testing.expectEqual(@as(usize, 0), (try docs.track(a, "edit_artifact", unknown)).?.applied);
 }
 
 /// The text of a message's content: the string, or its text parts joined.
@@ -325,15 +406,18 @@ fn toolCallsJson(arena: std.mem.Allocator, calls: []const openrouter.ToolCall) !
 }
 
 /// Runs or forwards one tool call; returns the text the model sees.
-fn runTool(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, call: openrouter.ToolCall, sink: Sink) ![]const u8 {
+fn runTool(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, call: openrouter.ToolCall, sink: Sink, docs: *Artifacts) ![]const u8 {
     const args_text = if (call.arguments.len == 0) "{}" else call.arguments;
     const args = std.json.parseFromSliceLeaky(std.json.Value, req.arena, args_text, .{}) catch {
         return "Error: the tool arguments were not valid JSON. Call the tool again with valid JSON.";
     };
     switch (tools.kindOf(call.name) orelse return "Error: unknown tool.") {
         .ui => {
+            // An edit is checked here first, so the model learns about misses.
+            const edited = try docs.track(req.arena, call.name, args);
+            if (edited) |e| if (e.applied == 0) return e.message;
             try sink.send("tool", .{ .id = call.id, .name = call.name, .arguments = args });
-            return "Shown to the user.";
+            return if (edited) |e| e.message else "Shown to the user.";
         },
         .server => {
             try sink.send("tool_status", .{ .id = call.id, .name = call.name, .status = "running", .detail = openrouter.jsonString(args, "url") orelse openrouter.jsonString(args, "prompt") });

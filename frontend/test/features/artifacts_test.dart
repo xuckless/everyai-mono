@@ -6,7 +6,11 @@ import 'package:archive/archive.dart';
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/theme/every_theme.dart';
 import 'package:every_ai/features/artifacts/domain/artifact.dart';
-import 'package:every_ai/features/artifacts/ui/artifact_panel.dart';
+import 'package:every_ai/features/artifacts/export/doc_model.dart';
+import 'package:every_ai/features/artifacts/export/docx_writer.dart';
+import 'package:every_ai/features/artifacts/export/downloads.dart';
+import 'package:every_ai/features/artifacts/export/svg_raster.dart';
+import 'package:every_ai/features/chat/data/chat_transport.dart';
 import 'package:every_ai/features/artifacts/ui/renderers/quiz_view.dart';
 import 'package:every_ai/features/artifacts/ui/renderers/svg_view.dart';
 import 'package:every_ai/features/chat/domain/message.dart';
@@ -21,7 +25,140 @@ Message _assistant(String id, List<ToolCallPart> calls) =>
 ToolCallPart _call(String tool, Map<String, Object?> args, String id) =>
     ToolCallPart(toolName: tool, argumentsJson: jsonEncode(args), callId: id);
 
+const _svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>';
+final _doc =
+    '''# Report
+
+Intro with **bold**, *italic*, `code` and a [link](https://example.com).
+
+```svg
+$_svg
+```
+
+- one
+- two
+  1. nested
+
+| A | B |
+|---|---|
+| 1 | 2 |
+
+\$\$E = mc^2\$\$
+
+```mermaid
+graph TD; A-->B
+```
+
+<svg viewBox="0 0 4 4"><circle r="2"/></svg>
+''';
+
+Future<RasterFigure?> _fakeRaster(String svg) async => (
+  png: base64Decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='),
+  width: 100.0,
+  height: 50.0,
+);
+
 void main() {
+  test('edit_artifact applies find-and-replace edits to the previous version', () {
+    final artifacts = artifactsIn([
+      _assistant('m1', [
+        _call('create_artifact', {
+          'id': 'doc',
+          'title': 'Doc',
+          'kind': 'markdown',
+          'content': 'alpha\nbeta  \ngamma',
+        }, 't1'),
+      ]),
+      _assistant('m2', [
+        _call('edit_artifact', {
+          'id': 'doc',
+          'edits': [
+            {'old_text': 'alpha', 'new_text': 'ALPHA'},
+            {'old_text': 'beta\ngamma', 'new_text': 'BG'}, // trailing spaces differ
+            {'old_text': 'nowhere', 'new_text': 'x'},
+          ],
+        }, 't2'),
+        _call('edit_artifact', {'id': 'unknown', 'edits': []}, 't3'),
+      ]),
+    ]);
+    expect(artifacts, hasLength(1));
+    final latest = artifacts.single.latest;
+    expect(latest.str('content'), 'ALPHA\nBG');
+    expect(latest.kind, VisualKind.document);
+    expect(latest.args['edit_missed'], ['nowhere']);
+    expect(latest.callId, 't2');
+  });
+
+  test('history sends each artifact once, latest content in the message that last changed it', () {
+    final history = [
+      _assistant('m1', [
+        _call('create_artifact', {'id': 'doc', 'title': 'Doc', 'kind': 'markdown', 'content': 'v1'}, 't1'),
+        _call('make_quiz', {'title': 'Q', 'questions': []}, 't2'),
+      ]),
+      _assistant('m2', [
+        _call('edit_artifact', {
+          'id': 'doc',
+          'edits': [
+            {'old_text': 'v1', 'new_text': 'v2'},
+          ],
+        }, 't3'),
+      ]),
+    ];
+    final out = toolOutputsByMessage(history);
+    expect(out['m1'], contains('earlier version'));
+    expect(out['m1'], contains('[Showed the user quiz: Q]'));
+    expect(out['m1'], isNot(contains('v1')));
+    expect(out['m2'], '<artifact id="doc" kind="markdown" title="Doc">\nv2\n</artifact>');
+  });
+
+  test('doc model: blocks, figures (fenced and raw), math, diagrams, tables', () {
+    final blocks = parseDoc(_doc);
+    expect(blocks.whereType<HeadingBlock>().single.level, 1);
+    final runs = blocks.whereType<ParagraphBlock>().first.runs;
+    expect(runs.where((r) => r.bold).single.text, 'bold');
+    expect(runs.where((r) => r.code).single.text, 'code');
+    expect(runs.where((r) => r.link != null).single.link, 'https://example.com');
+    expect(blocks.whereType<FigureBlock>(), hasLength(2));
+    expect(blocks.whereType<MathBlock>().single.tex, 'E = mc^2');
+    expect(blocks.whereType<DiagramBlock>().single.source, 'graph TD; A-->B');
+    expect(blocks.whereType<TableBlock>().single.rows.single.map((c) => c.single.text), ['1', '2']);
+    expect(blocks.whereType<ListBlock>().single.items, hasLength(2));
+    expect(svgFiguresIn(_doc), hasLength(2));
+    // Raw <svg> inside a code fence stays code.
+    expect(fenceRawSvg('```html\n<svg></svg>\n```'), '```html\n<svg></svg>\n```');
+  });
+
+  test('markdown downloads: inline svg, and a zip with figure files', () {
+    final inline = markdownWithInlineSvg(_doc);
+    expect(inline, isNot(contains('```svg')));
+    expect(inline, contains(_svg));
+    final zip = ZipDecoder().decodeBytes(markdownZip(_doc, 'report'));
+    expect(
+      zip.files.map((f) => f.name),
+      containsAll(['report/report.md', 'report/figures/figure-1.svg', 'report/figures/figure-2.svg']),
+    );
+    final md = utf8.decode(zip.findFile('report/report.md')!.content);
+    expect(md, contains('![Figure 1](figures/figure-1.svg)'));
+  });
+
+  test('word export is a valid package with the figure embedded', () async {
+    final figures = await rasterizeAll(svgFiguresIn(_doc), _fakeRaster);
+    final bytes = buildDocx(title: 'Report', blocks: parseDoc(_doc), figures: figures);
+    final zip = ZipDecoder().decodeBytes(bytes);
+    expect(zip.findFile('word/media/image1.png'), isNotNull);
+    final xml = utf8.decode(zip.findFile('word/document.xml')!.content);
+    expect(xml, contains('w:pStyle w:val="Heading1"'));
+    expect(xml, contains('<w:tbl>'));
+    expect(xml, contains('r:embed="rId'));
+    if (Platform.environment['EXPORT_OUT'] case final dir?) File('$dir/report.docx').writeAsBytesSync(bytes);
+  });
+
+  test('pdf export renders every block', () async {
+    final bytes = await pdfOf('Report', _doc, rasterize: _fakeRaster);
+    expect(String.fromCharCodes(bytes.take(5)), '%PDF-');
+    if (Platform.environment['EXPORT_OUT'] case final dir?) File('$dir/report.pdf').writeAsBytesSync(bytes);
+  });
+
   test('artifacts collect their versions across messages; updates keep kind and language', () {
     final artifacts = artifactsIn([
       _assistant('m1', [

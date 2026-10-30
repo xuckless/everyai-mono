@@ -1,7 +1,3 @@
-import 'dart:convert';
-import 'dart:io';
-
-import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -12,8 +8,8 @@ import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/every_icons.dart';
 import '../artifact_providers.dart';
 import '../domain/artifact.dart';
-import '../export/pptx_writer.dart';
-import 'renderers/slides_view.dart';
+import '../export/downloads.dart';
+import 'download_button.dart';
 import 'renderers/web_view.dart';
 import 'visual_view.dart';
 
@@ -122,14 +118,7 @@ class ArtifactPanel extends ConsumerWidget {
                     if (context.mounted) showAdaptiveToast(context, 'Copied');
                   },
                 ),
-                if (!kIsWeb)
-                  AdaptiveIconButton(
-                    icon: EveryIcon.download,
-                    tooltip: v.kind == VisualKind.slides
-                        ? 'Save as PowerPoint'
-                        : 'Save as ${export.extension.toUpperCase()}',
-                    onPressed: () => v.kind == VisualKind.slides ? _savePptx(context, v) : _save(context, export),
-                  ),
+                if (!kIsWeb) DownloadButton(visual: v),
                 AdaptiveIconButton(icon: EveryIcon.close, tooltip: 'Close panel', onPressed: panel.close),
               ],
             ),
@@ -154,102 +143,4 @@ class ArtifactPanel extends ConsumerWidget {
       ),
     );
   }
-
-  static Future<void> _save(BuildContext context, ({String text, String name, String extension}) export) async {
-    final location = await getSaveLocation(suggestedName: '${export.name}.${export.extension}');
-    if (location == null) return;
-    await File(location.path).writeAsString(export.text);
-    if (context.mounted) showAdaptiveToast(context, 'Saved');
-  }
 }
-
-Future<void> _savePptx(BuildContext context, Visual v) async {
-  final name = exportOf(v).name;
-  final location = await getSaveLocation(suggestedName: '$name.pptx');
-  if (location == null) return;
-  await File(location.path).writeAsBytes(pptxOf(v));
-  if (context.mounted) showAdaptiveToast(context, 'Saved');
-}
-
-/// The deck in [v] as a PowerPoint file.
-Uint8List pptxOf(Visual v) {
-  final deck = DeckTheme.of(v.str('theme'));
-  String hex(Color c) => (c.toARGB32() & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase();
-  final slides = slidesOf(v);
-  return buildPptx(
-    title: v.title,
-    colors: (background: hex(deck.background), title: hex(deck.title), text: hex(deck.text), accent: hex(deck.accent)),
-    slides: [
-      for (final (i, s) in slides.indexed)
-        (title: s.title, bullets: s.bullets, body: s.body, notes: s.notes, isTitle: i == 0),
-    ],
-  );
-}
-
-/// What Copy and Save produce for a visual.
-({String text, String name, String extension}) exportOf(Visual v) {
-  final name = v.title.replaceAll(RegExp(r'[^\w\- ]+'), '').trim().replaceAll(' ', '-').toLowerCase();
-  final safe = name.isEmpty ? 'artifact' : name;
-  return switch (v.kind) {
-    VisualKind.document => (text: v.str('content'), name: safe, extension: 'md'),
-    VisualKind.code => (text: v.str('content'), name: safe, extension: _extensionFor(v.str('language'))),
-    VisualKind.html => (text: v.str('content'), name: safe, extension: 'html'),
-    VisualKind.svg => (text: v.args['svg'] as String? ?? v.str('content'), name: safe, extension: 'svg'),
-    VisualKind.diagram => (text: v.args['mermaid'] as String? ?? v.str('content'), name: safe, extension: 'mmd'),
-    VisualKind.chart => (text: const JsonEncoder.withIndent('  ').convert(v.args), name: safe, extension: 'json'),
-    VisualKind.quiz => (text: _quizMarkdown(v), name: safe, extension: 'md'),
-    VisualKind.flashcards => (
-      text: [
-        for (final c in (v.args['cards'] as List<Object?>?) ?? const [])
-          if (c case {'front': final String f, 'back': final String b}) '$f\t$b',
-      ].join('\n'),
-      name: safe,
-      extension: 'tsv',
-    ),
-    VisualKind.slides => (
-      text: [
-        for (final s in slidesOf(v))
-          ['# ${s.title}', for (final b in s.bullets) '- $b', if (s.body.isNotEmpty) s.body].join('\n'),
-      ].join('\n\n---\n\n'),
-      name: safe,
-      extension: 'md',
-    ),
-  };
-}
-
-String _quizMarkdown(Visual v) {
-  final b = StringBuffer('# ${v.title}\n');
-  for (final (i, q) in ((v.args['questions'] as List<Object?>?) ?? const []).indexed) {
-    if (q is! Map) continue;
-    b.write('\n${i + 1}. ${q['question']}\n');
-    for (final (oi, o) in ((q['options'] as List<Object?>?) ?? const []).indexed) {
-      b.write('   ${String.fromCharCode(65 + oi)}. $o\n');
-    }
-  }
-  return b.toString();
-}
-
-String _extensionFor(String language) => switch (language.toLowerCase()) {
-  'python' || 'py' => 'py',
-  'javascript' || 'js' => 'js',
-  'typescript' || 'ts' => 'ts',
-  'dart' => 'dart',
-  'zig' => 'zig',
-  'rust' || 'rs' => 'rs',
-  'go' => 'go',
-  'java' => 'java',
-  'kotlin' => 'kt',
-  'swift' => 'swift',
-  'c' => 'c',
-  'cpp' || 'c++' => 'cpp',
-  'csharp' || 'c#' => 'cs',
-  'ruby' => 'rb',
-  'php' => 'php',
-  'html' => 'html',
-  'css' => 'css',
-  'sql' => 'sql',
-  'shell' || 'bash' || 'sh' => 'sh',
-  'json' => 'json',
-  'yaml' || 'yml' => 'yaml',
-  _ => 'txt',
-};

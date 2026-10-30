@@ -3,6 +3,8 @@ import 'package:flutter/widgets.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/theme/every_theme.dart';
+import '../../artifacts/ui/renderers/svg_view.dart';
+import '../../artifacts/ui/renderers/web_view.dart';
 import '../domain/message.dart';
 
 /// Markdown for chat content, styled from the app tokens so it matches every
@@ -26,6 +28,7 @@ class ChatMarkdown extends StatelessWidget {
       data: data,
       streaming: streaming,
       style: _styleFor(theme, DefaultTextStyle.of(context).style, textColor),
+      codeBlockBuilder: _figures,
       onTapCitation: sources.isEmpty
           ? null
           : (index) {
@@ -40,6 +43,23 @@ class ChatMarkdown extends StatelessWidget {
         }
       },
     );
+  }
+
+  /// ```svg blocks draw as figures and ```mermaid blocks as diagrams, once
+  /// complete; anything else (or a block still streaming) is code.
+  static Widget _figures(BuildContext context, String text, String? language) {
+    switch (language?.toLowerCase()) {
+      case 'svg' when text.contains('</svg>'):
+        return SvgView(svg: text, maxHeight: 560);
+      case 'mermaid' when text.trim().isNotEmpty && inlineWebSupported:
+        final dark = EveryTheme.of(context).brightness == Brightness.dark;
+        return WebContentView(
+          html: mermaidPage(text, dark: dark),
+          fallbackSource: text,
+          height: 340,
+        );
+    }
+    return defaultCodeBlockBuilder(context, text, language);
   }
 
   static MarkdownStyle _styleFor(EveryTheme t, TextStyle ambient, Color? textColor) {

@@ -54,7 +54,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     ref.listen(provider.select((s) => s.liveParts), (previous, next) {
       if (next.length <= (previous?.length ?? 0)) return;
       if (next.last case final ToolCallPart call
-          when const {'create_artifact', 'update_artifact', 'make_slides'}.contains(call.toolName)) {
+          when artifactTools.contains(call.toolName) || call.toolName == 'make_slides') {
         final visual = Visual.fromPart(call);
         if (visual == null) return;
         final panel = ref.read(artifactPanelProvider(widget.conversationId).notifier);

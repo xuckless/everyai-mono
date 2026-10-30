@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../../core/net/api_client.dart';
 import '../../../core/net/api_error.dart';
+import '../../artifacts/domain/artifact.dart';
 import '../../attachments/attachment.dart';
 import '../../models/domain/model_catalog.dart';
 import '../domain/message.dart';
@@ -161,6 +162,7 @@ final class SseTransport implements ChatTransport {
 
   @override
   Stream<ChatEvent> send(ChatRequest request, {Future<void>? cancel}) async* {
+    final outputs = toolOutputsByMessage(request.history);
     final body = <String, Object?>{
       'model': request.model.id.value,
       'mode': request.mode.name,
@@ -168,8 +170,10 @@ final class SseTransport implements ChatTransport {
       'session': ?request.conversationId,
       'messages': [
         for (final m in request.history)
-          if (m.status == MessageStatus.complete && (m.plainText.isNotEmpty || m.attachments.isNotEmpty))
-            {'role': m.role.name, 'content': messageContent(m.plainText, m.attachments)},
+          if (m.status == MessageStatus.complete)
+            if ([m.plainText, ?outputs[m.id]].where((t) => t.isNotEmpty).join('\n\n') case final text
+                when text.isNotEmpty || m.attachments.isNotEmpty)
+              {'role': m.role.name, 'content': messageContent(text, m.attachments)},
         {'role': 'user', 'content': messageContent(request.prompt, request.attachments)},
       ],
     };
@@ -224,6 +228,39 @@ final class SseTransport implements ChatTransport {
     }
     throw const ProtocolError('The stream ended before the response finished.');
   }
+}
+
+/// What the model made with UI tools in earlier turns, as text per message id,
+/// so a later turn can see (and edit) it: each artifact's latest content sits in
+/// the message that last changed it, inside `<artifact id kind title>` tags;
+/// older versions and other visuals are one-line notes.
+Map<String, String> toolOutputsByMessage(List<Message> history) {
+  final latest = {for (final a in artifactsIn(history)) a.latest.callId: a};
+  final out = <String, String>{};
+  for (final m in history) {
+    final notes = <String>[];
+    for (final call in m.parts.whereType<ToolCallPart>()) {
+      final visual = Visual.fromPart(call);
+      if (visual == null) continue;
+      if (artifactTools.contains(call.toolName)) {
+        final id = visual.str('id').isEmpty ? visual.callId : visual.str('id');
+        if (latest[call.callId ?? visual.callId] case final artifact?) {
+          final v = artifact.latest;
+          final kind = call.toolName == 'create_artifact' ? visual.str('kind') : artifact.versions.first.str('kind');
+          notes.add(
+            '<artifact id="$id" kind="${kind.isEmpty ? 'markdown' : kind}" title="${artifact.title}">\n'
+            '${v.str('content')}\n</artifact>',
+          );
+        } else {
+          notes.add('[${call.toolName} $id: an earlier version, superseded below]');
+        }
+      } else {
+        notes.add('[Showed the user ${visual.kind.label.toLowerCase()}: ${visual.title}]');
+      }
+    }
+    if (notes.isNotEmpty) out[m.id] = notes.join('\n\n');
+  }
+  return out;
 }
 
 /// A message's `content`: the text alone, or (with attachments) OpenAI content

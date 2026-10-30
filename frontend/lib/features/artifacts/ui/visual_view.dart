@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -8,6 +9,7 @@ import '../../chat/domain/message.dart';
 import '../../chat/ui/chat_markdown.dart';
 import '../artifact_providers.dart';
 import '../domain/artifact.dart';
+import 'download_button.dart';
 import 'renderers/chart_view.dart';
 import 'renderers/flashcards_view.dart';
 import 'renderers/quiz_view.dart';
@@ -71,12 +73,29 @@ class InlineVisual extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = EveryTheme.of(context);
-    final visual = Visual.fromPart(part);
-    if (visual == null) {
+    final call = Visual.fromPart(part);
+    if (call == null) {
       return Text('Used ${part.toolName}', style: TextStyle(color: theme.textMuted, fontSize: 13));
     }
     final panel = ref.read(artifactPanelProvider(conversationId).notifier);
-    final isArtifact = part.toolName == 'create_artifact' || part.toolName == 'update_artifact';
+    final isArtifact = artifactTools.contains(part.toolName);
+    // An artifact call shows the version it made (an edit only carries its
+    // find-and-replace pairs).
+    final made = !isArtifact
+        ? null
+        : ref
+              .watch(conversationArtifactsProvider(conversationId))
+              .expand((a) => a.versions)
+              .where((v) => v.callId == call.callId)
+              .firstOrNull;
+    if (part.toolName == 'edit_artifact' && made == null) {
+      return Text(
+        'Edited an artifact that is not in this chat',
+        style: TextStyle(color: theme.textMuted, fontSize: 13),
+      );
+    }
+    final visual = made ?? call;
+    final missed = (visual.args['edit_missed'] as List?)?.length ?? 0;
     void open() {
       if (isArtifact) {
         final id = visual.str('id').isEmpty ? visual.callId : visual.str('id');
@@ -90,7 +109,12 @@ class InlineVisual extends ConsumerWidget {
     }
 
     final subtitle = [
-      if (part.toolName == 'update_artifact') 'Updated ${visual.kind.label.toLowerCase()}' else visual.kind.label,
+      switch (part.toolName) {
+        'update_artifact' => 'Updated ${visual.kind.label.toLowerCase()}',
+        'edit_artifact' => 'Edited ${visual.kind.label.toLowerCase()}',
+        _ => visual.kind.label,
+      },
+      if (missed > 0) '$missed edit${missed == 1 ? '' : 's'} did not apply',
       switch (visual.kind) {
         VisualKind.quiz => '${(visual.args['questions'] as List?)?.length ?? 0} questions',
         VisualKind.flashcards => '${(visual.args['cards'] as List?)?.length ?? 0} cards',
@@ -127,6 +151,7 @@ class InlineVisual extends ConsumerWidget {
             ],
           ),
         ),
+        if (!kIsWeb) DownloadButton(visual: visual),
         AdaptiveIconButton(icon: EveryIcon.openPanel, tooltip: 'Open in side panel', onPressed: open),
       ],
     );

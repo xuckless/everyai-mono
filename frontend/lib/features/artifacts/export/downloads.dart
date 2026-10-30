@@ -1,0 +1,203 @@
+import 'dart:convert';
+
+import 'package:archive/archive.dart';
+import 'package:flutter/services.dart';
+
+import '../domain/artifact.dart';
+import '../ui/renderers/slides_view.dart';
+import 'doc_model.dart';
+import 'docx_writer.dart';
+import 'pdf_writer.dart';
+import 'pptx_writer.dart';
+import 'svg_raster.dart';
+
+/// One way to download a visual: a label, a file extension and the bytes.
+final class DownloadOption {
+  const DownloadOption(this.label, this.extension, this.build);
+  final String label;
+  final String extension;
+  final Future<Uint8List> Function() build;
+}
+
+/// What a visual can be saved as, the most useful first. Documents (and
+/// quizzes) get Markdown, PDF and Word, plus a zip with separate figure files
+/// when they hold SVG figures.
+List<DownloadOption> downloadsOf(Visual v) {
+  final export = exportOf(v);
+  Future<Uint8List> utf8Of(String text) async => Uint8List.fromList(utf8.encode(text));
+  switch (v.kind) {
+    case VisualKind.document || VisualKind.quiz:
+      final markdown = export.text;
+      return [
+        DownloadOption('Markdown', 'md', () => utf8Of(markdownWithInlineSvg(markdown))),
+        if (svgFiguresIn(markdown).isNotEmpty)
+          DownloadOption('Markdown with figure files', 'zip', () async => markdownZip(markdown, export.name)),
+        DownloadOption('PDF', 'pdf', () => pdfOf(v.title, markdown)),
+        DownloadOption('Word', 'docx', () => docxOf(v.title, markdown)),
+      ];
+    case VisualKind.slides:
+      return [
+        DownloadOption('PowerPoint', 'pptx', () async => pptxOf(v)),
+        DownloadOption('Markdown', 'md', () => utf8Of(export.text)),
+      ];
+    case VisualKind.svg:
+      return [
+        DownloadOption('SVG', 'svg', () => utf8Of(export.text)),
+        DownloadOption('PNG', 'png', () async {
+          final f = await rasterizeSvg(export.text, maxWidth: 1600, scale: 2);
+          if (f == null) throw StateError('This illustration could not be drawn.');
+          return f.png;
+        }),
+      ];
+    default:
+      return [DownloadOption(export.extension.toUpperCase(), export.extension, () => utf8Of(export.text))];
+  }
+}
+
+/// [markdown] with each ```svg block written as inline `<svg>` HTML, which
+/// VS Code, Obsidian, Typora and most Markdown editors draw in place.
+String markdownWithInlineSvg(String markdown) =>
+    _replaceSvgFences(markdown, (svg, _) => '\n${svg.split('\n').where((l) => l.trim().isNotEmpty).join('\n')}\n');
+
+/// A zip of the Markdown with figures as `figures/figure-N.svg` files linked
+/// as images, the form GitHub and every viewer render.
+Uint8List markdownZip(String markdown, String name) {
+  final archive = Archive();
+  void add(String path, String text) {
+    final bytes = utf8.encode(text);
+    archive.addFile(ArchiveFile(path, bytes.length, bytes));
+  }
+
+  final text = _replaceSvgFences(markdown, (svg, n) {
+    add('$name/figures/figure-$n.svg', svg);
+    return '![Figure $n](figures/figure-$n.svg)';
+  });
+  add('$name/$name.md', text);
+  return Uint8List.fromList(ZipEncoder().encode(archive));
+}
+
+String _replaceSvgFences(String markdown, String Function(String svg, int n) replace) {
+  final lines = fenceRawSvg(markdown).split('\n');
+  final out = <String>[];
+  var n = 0;
+  for (var i = 0; i < lines.length; i++) {
+    final open = RegExp(r'^\s*(`{3,}|~{3,})\s*svg\s*$', caseSensitive: false).firstMatch(lines[i]);
+    if (open != null) {
+      final end = lines.indexWhere((l) => l.trim().startsWith(open[1]!), i + 1);
+      if (end > 0) {
+        final svg = lines.sublist(i + 1, end).join('\n');
+        if (svg.contains('</svg>')) {
+          out.add(replace(svg, ++n));
+          i = end;
+          continue;
+        }
+      }
+    }
+    out.add(lines[i]);
+  }
+  return out.join('\n');
+}
+
+Future<PdfFonts> _pdfFonts() async => (
+  regular: await rootBundle.load('assets/fonts/NotoSans/NotoSans-Regular.ttf'),
+  bold: await rootBundle.load('assets/fonts/NotoSans/NotoSans-Bold.ttf'),
+  italic: await rootBundle.load('assets/fonts/NotoSans/NotoSans-Italic.ttf'),
+  boldItalic: await rootBundle.load('assets/fonts/NotoSans/NotoSans-BoldItalic.ttf'),
+  mono: await rootBundle.load('assets/fonts/SourceCodePro/SourceCodePro-Regular.ttf'),
+);
+
+/// [markdown] as a PDF, figures drawn as the app draws them.
+Future<Uint8List> pdfOf(String title, String markdown, {SvgRasterizer rasterize = rasterizeSvg}) async {
+  final blocks = parseDoc(markdown);
+  final figures = await rasterizeAll(svgFiguresIn(markdown), rasterize);
+  return buildPdf(title: title, blocks: blocks, fonts: await _pdfFonts(), figures: figures);
+}
+
+/// [markdown] as a Word document.
+Future<Uint8List> docxOf(String title, String markdown, {SvgRasterizer rasterize = rasterizeSvg}) async {
+  final figures = await rasterizeAll(svgFiguresIn(markdown), rasterize);
+  return buildDocx(title: title, blocks: parseDoc(markdown), figures: figures);
+}
+
+/// The deck in [v] as a PowerPoint file.
+Uint8List pptxOf(Visual v) {
+  final deck = DeckTheme.of(v.str('theme'));
+  String hex(Color c) => (c.toARGB32() & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase();
+  final slides = slidesOf(v);
+  return buildPptx(
+    title: v.title,
+    colors: (background: hex(deck.background), title: hex(deck.title), text: hex(deck.text), accent: hex(deck.accent)),
+    slides: [
+      for (final (i, s) in slides.indexed)
+        (title: s.title, bullets: s.bullets, body: s.body, notes: s.notes, isTitle: i == 0),
+    ],
+  );
+}
+
+/// What Copy produces for a visual (and the plain download).
+({String text, String name, String extension}) exportOf(Visual v) {
+  final name = v.title.replaceAll(RegExp(r'[^\w\- ]+'), '').trim().replaceAll(' ', '-').toLowerCase();
+  final safe = name.isEmpty ? 'artifact' : name;
+  return switch (v.kind) {
+    VisualKind.document => (text: v.str('content'), name: safe, extension: 'md'),
+    VisualKind.code => (text: v.str('content'), name: safe, extension: _extensionFor(v.str('language'))),
+    VisualKind.html => (text: v.str('content'), name: safe, extension: 'html'),
+    VisualKind.svg => (text: v.args['svg'] as String? ?? v.str('content'), name: safe, extension: 'svg'),
+    VisualKind.diagram => (text: v.args['mermaid'] as String? ?? v.str('content'), name: safe, extension: 'mmd'),
+    VisualKind.chart => (text: const JsonEncoder.withIndent('  ').convert(v.args), name: safe, extension: 'json'),
+    VisualKind.quiz => (text: _quizMarkdown(v), name: safe, extension: 'md'),
+    VisualKind.flashcards => (
+      text: [
+        for (final c in (v.args['cards'] as List<Object?>?) ?? const [])
+          if (c case {'front': final String f, 'back': final String b}) '$f\t$b',
+      ].join('\n'),
+      name: safe,
+      extension: 'tsv',
+    ),
+    VisualKind.slides => (
+      text: [
+        for (final s in slidesOf(v))
+          ['# ${s.title}', for (final b in s.bullets) '- $b', if (s.body.isNotEmpty) s.body].join('\n'),
+      ].join('\n\n---\n\n'),
+      name: safe,
+      extension: 'md',
+    ),
+  };
+}
+
+String _quizMarkdown(Visual v) {
+  final b = StringBuffer('# ${v.title}\n');
+  for (final (i, q) in ((v.args['questions'] as List<Object?>?) ?? const []).indexed) {
+    if (q is! Map) continue;
+    b.write('\n${i + 1}. ${q['question']}\n');
+    for (final (oi, o) in ((q['options'] as List<Object?>?) ?? const []).indexed) {
+      b.write('   ${String.fromCharCode(65 + oi)}. $o\n');
+    }
+  }
+  return b.toString();
+}
+
+String _extensionFor(String language) => switch (language.toLowerCase()) {
+  'python' || 'py' => 'py',
+  'javascript' || 'js' => 'js',
+  'typescript' || 'ts' => 'ts',
+  'dart' => 'dart',
+  'zig' => 'zig',
+  'rust' || 'rs' => 'rs',
+  'go' => 'go',
+  'java' => 'java',
+  'kotlin' => 'kt',
+  'swift' => 'swift',
+  'c' => 'c',
+  'cpp' || 'c++' => 'cpp',
+  'csharp' || 'c#' => 'cs',
+  'ruby' => 'rb',
+  'php' => 'php',
+  'html' => 'html',
+  'css' => 'css',
+  'sql' => 'sql',
+  'shell' || 'bash' || 'sh' => 'sh',
+  'json' => 'json',
+  'yaml' || 'yml' => 'yaml',
+  _ => 'txt',
+};

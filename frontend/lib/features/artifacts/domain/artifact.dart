@@ -51,6 +51,8 @@ final class Visual {
         'mermaid' => VisualKind.diagram,
         _ => VisualKind.document,
       },
+      // The real kind comes from the artifact it edits (see [artifactsIn]).
+      'edit_artifact' => VisualKind.document,
       'render_svg' => VisualKind.svg,
       'render_diagram' => VisualKind.diagram,
       'render_chart' => VisualKind.chart,
@@ -77,7 +79,8 @@ final class Visual {
 }
 
 /// A document the model created and may revise (`create_artifact`, then
-/// `update_artifact` with the same id). Versions are oldest first.
+/// `update_artifact` or `edit_artifact` with the same id). Versions are
+/// oldest first.
 @immutable
 final class Artifact {
   const Artifact({required this.id, required this.versions});
@@ -89,18 +92,36 @@ final class Artifact {
   String get title => versions.lastWhere((v) => v.str('title').isNotEmpty, orElse: () => latest).title;
 }
 
+/// The tools that create or revise an artifact.
+const artifactTools = {'create_artifact', 'update_artifact', 'edit_artifact'};
+
 /// The artifacts in a conversation, in creation order. An update without a
 /// matching create starts its own artifact; an update without `kind` keeps the
-/// previous version's kind and language.
+/// previous version's kind and language. An edit applies its find-and-replace
+/// edits to the previous version (`edit_missed` lists the ones that did not
+/// match); an edit of an unknown artifact is ignored.
 List<Artifact> artifactsIn(Iterable<Message> messages) {
   final byId = <String, List<Visual>>{};
   for (final m in messages) {
     for (final part in m.parts.whereType<ToolCallPart>()) {
-      if (part.toolName != 'create_artifact' && part.toolName != 'update_artifact') continue;
+      if (!artifactTools.contains(part.toolName)) continue;
       var visual = Visual.fromPart(part);
       if (visual == null) continue;
       final id = visual.str('id').isEmpty ? visual.callId : visual.str('id');
       final previous = byId[id]?.last;
+      if (part.toolName == 'edit_artifact') {
+        if (previous == null) continue;
+        final edited = applyArtifactEdits(previous.str('content'), visual.args['edits']);
+        (byId[id] ??= []).add(
+          Visual(
+            callId: visual.callId,
+            kind: previous.kind,
+            title: previous.title,
+            args: {...previous.args, 'content': edited.content, 'edit_missed': edited.missed, 'edits': null},
+          ),
+        );
+        continue;
+      }
       if (previous != null && visual.args['kind'] == null) {
         visual = Visual(
           callId: visual.callId,
@@ -113,4 +134,34 @@ List<Artifact> artifactsIn(Iterable<Message> messages) {
     }
   }
   return [for (final e in byId.entries) Artifact(id: e.key, versions: List.unmodifiable(e.value))];
+}
+
+/// Applies `edit_artifact` edits (`[{old_text, new_text}]`) in order. An
+/// old_text matches exactly, or else ignoring differences in trailing
+/// whitespace and line endings; edits that match nowhere are returned in
+/// [missed] (their old_text, shortened) and skipped.
+({String content, List<String> missed}) applyArtifactEdits(String content, Object? edits) {
+  var out = content;
+  final missed = <String>[];
+  for (final e in edits is List ? edits : const []) {
+    if (e case {'old_text': final String old, 'new_text': final String replacement} when old.isNotEmpty) {
+      var at = out.indexOf(old);
+      var length = old.length;
+      if (at < 0) {
+        final loose = RegExp(
+          old.replaceAll('\r\n', '\n').split('\n').map((line) => RegExp.escape(line.trimRight())).join(r'[ \t]*\r?\n'),
+        );
+        if (loose.firstMatch(out) case final m?) {
+          at = m.start;
+          length = m.end - m.start;
+        }
+      }
+      if (at < 0) {
+        missed.add(old.length > 60 ? '${old.substring(0, 60)}…' : old);
+        continue;
+      }
+      out = out.replaceRange(at, at + length, replacement);
+    }
+  }
+  return (content: out, missed: missed);
 }
