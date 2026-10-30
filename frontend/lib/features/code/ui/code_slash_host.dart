@@ -12,6 +12,7 @@ import '../code_providers.dart';
 import '../morning_providers.dart';
 import '../domain/agent_mode.dart';
 import '../domain/goal.dart';
+import '../domain/rewind.dart';
 import '../domain/session_commands.dart';
 import '../domain/transcript.dart';
 
@@ -106,27 +107,22 @@ CodeSlashHost codeSlashHost(BuildContext context, WidgetRef ref, String sessionI
     },
     rewind: (args) async {
       final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
-      if (info?.worktree == null) return toast('This session has no checkpoints (it is not in a git worktree).');
       final turns = ref.read(provider).transcript.items.whereType<UserTurn>().length;
       final turn = rewindTarget(turns, args);
       if (turn == null) return toast(turns == 0 ? 'Nothing to rewind yet.' : 'Give a number of turns: /rewind 2');
       final back = turns - turn + 1;
       final ok = await showAdaptiveConfirm(
         context,
-        title: 'Restore files?',
-        message:
-            "Puts this session's files back to how they were before "
-            "${back == 1 ? 'your last message' : 'your last $back messages'}. The conversation stays as it is.",
-        confirmLabel: 'Restore',
+        title: 'Rewind?',
+        message: rewindPrompt(
+          back == 1 ? 'your last message' : 'your last $back messages',
+          files: info?.worktree != null,
+        ),
+        confirmLabel: 'Rewind',
         destructive: true,
       );
       if (!ok) return;
-      try {
-        await ref.read(codeGitProvider(sessionId).notifier).rewind(turn);
-        toast('Files restored');
-      } on Object catch (e) {
-        toast("Couldn't restore: $e");
-      }
+      toast((await controller().rewind(turn)).label);
     },
     cost: () => controller().showCost(),
     btw: (question) => controller().askAside(question),

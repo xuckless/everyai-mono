@@ -27,6 +27,7 @@ import 'domain/doom_loop.dart';
 import 'domain/git_commands.dart';
 import 'domain/goal.dart';
 import 'domain/review.dart';
+import 'domain/rewind.dart';
 import 'domain/spill.dart';
 import 'domain/subagents.dart';
 import 'domain/questions.dart';
@@ -601,7 +602,11 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
 
   HarnessSession? _session;
   StreamSubscription<HarnessEvent>? _sub;
-  final _builder = TranscriptBuilder();
+  var _builder = TranscriptBuilder();
+
+  /// What earlier conversations showed (before a compaction): kept on screen
+  /// when [rewind] folds the transcript again.
+  List<TranscriptItem> _carried = const [];
 
   /// The approval set we already answered (so one prompt gets one answer).
   String _answered = '';
@@ -1020,6 +1025,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
       ref.read(_liveProvider)[sessionId] = live;
       _session = live;
       _events.clear();
+      _carried = _builder.snapshot.items;
       _answered = '';
       _doom.reset();
       sessions.update(
@@ -1034,6 +1040,92 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     } finally {
       _compacting = false;
     }
+  }
+
+  /// Takes the session back to just before user turn [turn] (1-based): the
+  /// agent's conversation moves its head to before that message, so it
+  /// forgets it and everything after (the server keeps the old branch), and
+  /// the files go back to the turn's checkpoint when the session has a
+  /// worktree. A running agent is stopped first. Turns from before a
+  /// compaction live in an older conversation: only their files come back.
+  Future<RewindOutcome> rewind(int turn) async {
+    final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
+    final session = _session;
+    if (info == null || session == null) return const RewindOutcome.failed('The session is not connected.');
+    if (_compacting) return const RewindOutcome.busy();
+    final turns = state.transcript.items.whereType<UserTurn>().toList();
+    if (turn < 1 || turn > turns.length) return const RewindOutcome.nothing();
+    final t = state.transcript;
+    if (t.running || t.pending.isNotEmpty || t.held.isNotEmpty || t.openSubagents.isNotEmpty) {
+      await stop();
+      final end = DateTime.now().add(const Duration(seconds: 5));
+      while (ref.mounted && state.transcript.running && DateTime.now().isBefore(end)) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      if (!ref.mounted) return const RewindOutcome.failed('The session was closed.');
+      if (state.transcript.running) return const RewindOutcome.busy();
+    }
+    final message = turns[turn - 1].key;
+    var conversation = false;
+    var note = '';
+    if (_events.any((e) => e.id == message)) {
+      final head = rewindHead(_events, message);
+      try {
+        await session.rewindTo(head);
+      } on Object catch (e) {
+        return RewindOutcome.failed('$e');
+      }
+      if (!ref.mounted) return const RewindOutcome.failed('The session was closed.');
+      final kept = rewound(_events, head);
+      _events
+        ..clear()
+        ..addAll(kept);
+      _refold();
+      conversation = true;
+      // Instruction files sent in the forgotten turns go out again when touched.
+      await _openContext(info);
+      for (final e in kept) {
+        if (e is ChatMessage && e.fromUser) _trackContext(e);
+      }
+    } else {
+      note = 'The agent still remembers: that turn is from before the session was compacted.';
+    }
+    var files = false;
+    if (info.worktree != null) {
+      try {
+        await ref.read(codeGitProvider(sessionId).notifier).rewind(turn);
+        files = true;
+      } on Object catch (e) {
+        note = "The files weren't restored: $e";
+      }
+    } else if (conversation && !isDemoPath(info.workingDir)) {
+      note = 'The files stay as they are (the session has no checkpoints).';
+    }
+    return RewindOutcome(kind: RewindKind.done, conversation: conversation, files: files, message: note);
+  }
+
+  /// Folds the transcript again from [_events] (after a rewind), keeping
+  /// what earlier conversations showed. Cards the app raised itself go.
+  void _refold() {
+    _builder = TranscriptBuilder()..carry(_carried);
+    for (final e in _events) {
+      _builder.add(e);
+    }
+    // The server is idle now, whatever the kept branch last said.
+    if (_builder.snapshot.status case ExecutionStatus.running || ExecutionStatus.waitingForConfirmation) {
+      _builder.add(
+        HarnessEvent.decode({
+          'id': '',
+          'kind': 'ConversationStateUpdateEvent',
+          'key': 'execution_status',
+          'value': 'idle',
+        }),
+      );
+    }
+    _answered = '';
+    _doom.reset();
+    _doomOpen = false;
+    state = state.copyWith(transcript: _builder.snapshot, queued: const []);
   }
 
   void unqueue(int index) => state = state.copyWith(queued: [...state.queued]..removeAt(index));

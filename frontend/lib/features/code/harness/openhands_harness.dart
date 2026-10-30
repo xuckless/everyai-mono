@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../domain/agent_mode.dart';
+import '../domain/rewind.dart';
 import '../domain/subagents.dart' show subagentRules;
 import '../settings/agent_prompt.dart';
 import 'events.dart';
@@ -179,6 +180,10 @@ final class _OpenHandsSession implements HarnessSession {
   /// The server ("base key") the socket last connected to; another one means it restarted.
   String? _server;
 
+  /// Events on branches a rewind abandoned: the socket's replay still sends them.
+  final _offBranch = <String>{};
+  bool _branchRead = false;
+
   @override
   Stream<HarnessEvent> get events {
     late final StreamController<HarnessEvent> c;
@@ -201,6 +206,7 @@ final class _OpenHandsSession implements HarnessSession {
     String? server;
     try {
       // Asked each time: the sidecar may have restarted on another port.
+      await _readBranch();
       final (base, key) = await _h._locate();
       server = '$base $key';
       final ws = base.replace(
@@ -227,6 +233,7 @@ final class _OpenHandsSession implements HarnessSession {
         _retries = 0;
         if (frame is! String) return;
         final event = HarnessEvent.decodeFrame(frame);
+        if (event.id.isNotEmpty && _offBranch.contains(event.id)) return;
         // Reconnects resend history; skip what we already have.
         if (event.id.isNotEmpty && !_seen.add(event.id)) return;
         _emit(event);
@@ -248,6 +255,33 @@ final class _OpenHandsSession implements HarnessSession {
     }
     for (final c in [..._listeners]) {
       c.add(e);
+    }
+  }
+
+  /// Before the first replay: which stored events are off the active branch
+  /// (the conversation was rewound earlier). Best effort; without it the
+  /// abandoned turns show too.
+  Future<void> _readBranch() async {
+    if (_branchRead) return;
+    _branchRead = true;
+    try {
+      final info = await _h._request('GET', _base);
+      final leaf = info is Map<String, Object?> ? info['leaf_event_id'] as String? : null;
+      if (leaf == null) return;
+      final events = <HarnessEvent>[];
+      String? page;
+      do {
+        final query = page == null ? '' : '&page_id=${Uri.encodeQueryComponent(page)}';
+        final res = await _h._request('GET', '$_base/events/search?limit=100$query');
+        if (res is! Map<String, Object?>) break;
+        for (final item in res['items'] as List<Object?>? ?? const []) {
+          if (item is Map<String, Object?>) events.add(HarnessEvent.decode(item));
+        }
+        page = res['next_page_id'] as String?;
+      } while (page != null);
+      _offBranch.addAll(offBranch(events, leaf));
+    } on Object {
+      return;
     }
   }
 
@@ -292,6 +326,16 @@ final class _OpenHandsSession implements HarnessSession {
 
   @override
   Future<void> switchLlm(SessionSpec spec) => _h._post('$_base/switch_llm', {'llm': OpenHandsHarness.llmConfig(spec)});
+
+  @override
+  Future<void> rewindTo(String? head) async {
+    await _h._post('$_base/navigate', {'event_id': head});
+    final kept = {for (final e in rewound(_history, head)) e.id};
+    for (final e in _history) {
+      if (!kept.contains(e.id)) _offBranch.add(e.id);
+    }
+    _history.retainWhere((e) => kept.contains(e.id));
+  }
 
   @override
   Future<void> close() async {

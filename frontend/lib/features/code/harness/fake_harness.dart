@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import '../domain/agent_mode.dart';
+import '../domain/rewind.dart';
 import '../domain/subagents.dart';
 import 'events.dart';
 import 'harness.dart';
@@ -26,6 +27,9 @@ final class FakeHarness implements Harness {
 
   /// `model@effort` of each `switchLlm` on any of its sessions.
   final switched = <String>[];
+
+  /// The head of each `rewindTo` on any of its sessions.
+  final rewinds = <String?>[];
 
   @override
   Future<HarnessSession> start(SessionSpec spec) async {
@@ -54,6 +58,9 @@ final class FakeSession implements HarnessSession {
   final _history = <HarnessEvent>[];
   int _turn = 0;
   int _seq = 0;
+
+  /// The conversation's head: the parent of the next event, as on the server.
+  String? _leaf;
   Completer<bool>? _approval;
   bool _interrupted = false;
   bool _running = false;
@@ -66,10 +73,15 @@ final class FakeSession implements HarnessSession {
     yield* _events.stream;
   }
 
-  void _emit(Map<String, Object?> json) {
-    final event = HarnessEvent.decode({'id': json['kind'] == 'StreamingDeltaEvent' ? null : 'e${++_seq}', ...json});
-    if (event is! StreamDelta) _history.add(event);
+  HarnessEvent _emit(Map<String, Object?> json) {
+    final delta = json['kind'] == 'StreamingDeltaEvent';
+    final event = HarnessEvent.decode({'id': delta ? null : 'e${++_seq}', if (!delta) 'parent_id': _leaf, ...json});
+    if (event is! StreamDelta) {
+      _history.add(event);
+      if (!isBranchArtifact(event)) _leaf = event.id;
+    }
     if (!_events.isClosed) _events.add(event);
+    return event;
   }
 
   void _status(ExecutionStatus s) =>
@@ -109,10 +121,7 @@ final class FakeSession implements HarnessSession {
       if (_interrupted) break;
       await Future<void>.delayed(_h.step);
       if (raw['kind'] == 'ActionEvent') {
-        final json = {...raw, 'id': 'e${++_seq}'};
-        final call = HarnessEvent.decode(json) as ActionCall;
-        _history.add(call);
-        _events.add(call);
+        final call = _emit(raw) as ActionCall;
         if (_mode != AgentMode.fullAuto) {
           _status(ExecutionStatus.waitingForConfirmation);
           final ok = await (_approval = Completer<bool>()).future;
@@ -190,6 +199,18 @@ final class FakeSession implements HarnessSession {
   /// Recorded on the harness; the script plays the same either way.
   @override
   Future<void> switchLlm(SessionSpec spec) async => _h.switched.add('${spec.model}@${spec.effort ?? ''}');
+
+  /// Like the server's `navigate`; the script carries on after the turns that are left.
+  @override
+  Future<void> rewindTo(String? head) async {
+    final kept = rewound(_history, head);
+    _history
+      ..clear()
+      ..addAll(kept);
+    _leaf = head;
+    _turn = kept.whereType<ChatMessage>().where((m) => m.fromUser).length.clamp(0, _turns.length);
+    _h.rewinds.add(head);
+  }
 
   @override
   Future<void> close() => _events.close();

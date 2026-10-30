@@ -130,6 +130,12 @@ abstract interface class HarnessSession {
   /// Moves the conversation to [spec]'s model and effort (its LLM fields are
   /// read; the rest is ignored). The history stays; the next model call uses it.
   Future<void> switchLlm(SessionSpec spec);
+
+  /// Moves the conversation's head back to the event [head] (null: the empty
+  /// tree), so the agent forgets everything after it; the next message
+  /// starts a new branch there (see `domain/rewind.dart`). Only while the
+  /// agent is idle. History replayed to new listeners keeps to the new branch.
+  Future<void> rewindTo(String? head);
   Future<void> close();
 }
 

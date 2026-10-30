@@ -84,7 +84,7 @@ class UserTurnView extends StatelessWidget {
                 cursor: SystemMouseCursors.click,
                 child: Padding(
                   padding: const EdgeInsets.only(top: 4, right: 4),
-                  child: Text('Restore files to here', style: TextStyle(color: theme.textMuted, fontSize: 11.5)),
+                  child: Text('Rewind to here', style: TextStyle(color: theme.textMuted, fontSize: 11.5)),
                 ),
               ),
             ),

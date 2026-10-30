@@ -22,6 +22,7 @@ import '../domain/agent_mode.dart';
 import '../domain/code_session.dart';
 import '../domain/permissions.dart';
 import '../domain/questions.dart';
+import '../domain/rewind.dart';
 import '../domain/transcript.dart';
 import '../harness/events.dart' show ExecutionStatus;
 import 'agent_menu.dart';
@@ -108,7 +109,7 @@ class CodeSessionScreen extends ConsumerWidget {
           children: [
             Expanded(
               child: TranscriptList(
-                onRewind: info.worktree == null ? null : (turn) => _rewind(context, ref, turn),
+                onRewind: (turn) => _rewind(context, ref, turn),
                 transcript: t,
                 onAnswer: controller.answer,
                 mode: state.mode,
@@ -244,20 +245,17 @@ class CodeSessionScreen extends ConsumerWidget {
   }
 
   Future<void> _rewind(BuildContext context, WidgetRef ref, int turn) async {
+    final files = ref.read(codeSessionsProvider.notifier).byId(sessionId)?.worktree != null;
     final ok = await showAdaptiveConfirm(
       context,
-      title: 'Restore files?',
-      message: "Puts this session's files back to how they were before this message. The conversation stays as it is.",
-      confirmLabel: 'Restore',
+      title: 'Rewind to here?',
+      message: rewindPrompt('this message', files: files),
+      confirmLabel: 'Rewind',
       destructive: true,
     );
     if (!ok) return;
-    try {
-      await ref.read(codeGitProvider(sessionId).notifier).rewind(turn);
-      if (context.mounted) showAdaptiveToast(context, 'Files restored');
-    } on Object catch (e) {
-      if (context.mounted) showAdaptiveToast(context, "Couldn't restore: $e");
-    }
+    final outcome = await ref.read(codeSessionProvider(sessionId).notifier).rewind(turn);
+    if (context.mounted) showAdaptiveToast(context, outcome.label);
   }
 }
 

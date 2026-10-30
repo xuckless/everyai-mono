@@ -333,6 +333,14 @@ final class TranscriptBuilder {
     }
   }
 
+  /// Starts a new builder with [items] as they are: what an earlier
+  /// conversation showed (a compacted session), kept when the transcript is
+  /// folded again.
+  void carry(List<TranscriptItem> items) {
+    assert(_items.isEmpty, 'carry before adding events');
+    _items.addAll(items);
+  }
+
   /// A card raised by the app itself (not by the agent): it has no tool call
   /// to answer, so [settleLocal] closes it.
   void addLocalQuestion(ActionCall call, List<Question> questions) {

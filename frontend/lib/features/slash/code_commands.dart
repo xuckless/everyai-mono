@@ -43,7 +43,7 @@ final codeBuiltIns = <SlashCommand>[
   _code('compact', "Summarize older turns to free the agent's context", argsHint: '[what to keep]', (ctx, args) {
     _withSession(ctx, ctx.code?.compact, (f) => f(args));
   }),
-  _code('rewind', 'Restore the files from before the last turn', argsHint: '[turns]', (ctx, args) {
+  _code('rewind', 'Go back to before the last turn (conversation and files)', argsHint: '[turns]', (ctx, args) {
     _withSession(ctx, ctx.code?.rewind, (f) => f(args));
   }),
   _code('stop', 'Stop the agent', (ctx, _) {
