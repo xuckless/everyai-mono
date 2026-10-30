@@ -11,6 +11,7 @@ import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/adaptive_page.dart';
 import '../../auth/auth_providers.dart';
 import '../../auth/domain/auth_state.dart';
+import '../../code/mcp_providers.dart';
 import '../../memory/memory_providers.dart';
 import '../../models/models_providers.dart';
 import '../appearance.dart';
@@ -89,6 +90,14 @@ class SettingsScreen extends ConsumerWidget {
             subtitle: const Text('Prompts saved as Markdown files, run with / in a composer'),
             onTap: () => context.go(Routes.commands),
           ),
+          if (Host.isDesktop) ...[
+            const AdaptiveSectionHeader('Code'),
+            AdaptiveListTile(
+              title: const Text('MCP servers'),
+              subtitle: Text(_mcpSummary(ref.watch(codeMcpServersProvider))),
+              onTap: () => context.go(Routes.mcpServers),
+            ),
+          ],
           const AdaptiveSectionHeader('Account'),
           AdaptiveListTile(
             title: const Text('Plan & usage'),
@@ -149,4 +158,13 @@ class SettingsScreen extends ConsumerWidget {
       ),
     );
   }
+}
+
+/// "2 on, 1 waiting for approval" for the MCP servers row.
+String _mcpSummary(StoredMcpServers stored) {
+  final all = [...stored.global, for (final l in stored.projects.values) ...l];
+  if (all.isEmpty) return 'Tools for Code sessions: Playwright, draw.io and your own';
+  final on = all.where((s) => s.active).length;
+  final waiting = all.where((s) => s.enabled && s.needsConsent && s.problem == null).length;
+  return '$on on${waiting == 0 ? '' : ', $waiting waiting for approval'}';
 }

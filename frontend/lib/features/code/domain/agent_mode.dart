@@ -40,7 +40,8 @@ enum AgentMode {
   }
 
   /// Plan mode refuses anything that changes the workspace.
-  bool rejects(ActionCall call) => this == plan && !isReadOnly(call) && !_isClientTool(call);
+  /// MCP tools are not refused: they ask, like in Ask mode (see `PermissionPolicy`).
+  bool rejects(ActionCall call) => this == plan && !isReadOnly(call) && !_isClientTool(call) && !isMcpTool(call);
 
   static bool _isClientTool(ActionCall call) => isClientTool(call);
 
@@ -198,7 +199,15 @@ const presentPlanTool = 'present_plan';
 /// The client tools registered with every session.
 const clientTools = {askUserQuestionTool, presentPlanTool, taskTool};
 
-bool isClientTool(ActionCall call) => clientTools.contains(call.toolName);
+/// A call to one of [clientTools]. An MCP server's tool with the same name
+/// is not one: it doesn't get a client tool's free pass.
+bool isClientTool(ActionCall call) => !isMcpTool(call) && clientTools.contains(call.toolName);
+
+/// A call to a tool of a user-configured MCP server. These never count as
+/// read-only, whatever the server's `readOnlyHint` says: in Ask and Plan
+/// they wait for the user unless an `Mcp(…)` allow rule matches, and Full
+/// auto runs them.
+bool isMcpTool(ActionCall call) => call.actionKind == 'MCPToolAction';
 
 /// What the client tools say happens after the call, by answer path.
 const _askEndsTurn = 'After calling this tool, stop and end your turn: the answers arrive as the next user message.';

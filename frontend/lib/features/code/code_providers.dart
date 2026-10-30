@@ -28,6 +28,7 @@ import 'harness/harness.dart';
 import 'harness/openhands_harness.dart';
 import 'harness/session_processes.dart';
 import 'harness/summarizer.dart';
+import 'mcp_providers.dart';
 import 'permissions_providers.dart';
 import 'settings/context_files.dart';
 import 'settings/settings.dart';
@@ -270,6 +271,9 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     final agentPrompt = demo ? null : await agentPromptFor(projectDir);
     // AGENTS.md and friends from the project folder up to the repository root (OpenHands doesn't load them).
     final context = demo ? const <ContextFile>[] : await _startContext(workingDir, projectDir);
+    // MCP servers come from the app's list (global plus this project's), never from repository files.
+    final projectId = ref.read(codeProjectsProvider).where((p) => p.path == projectDir).firstOrNull?.id;
+    final mcpConfig = demo ? const <String, Object?>{} : ref.read(codeMcpServersProvider).mcpConfigFor(projectId);
     return SessionSpec(
       workingDir: workingDir,
       model: model,
@@ -287,6 +291,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       effort: effort == null || effort.isEmpty ? null : effort,
       holdClientTools: holdClientTools,
       subagent: subagent,
+      mcpConfig: mcpConfig,
     );
   }
 

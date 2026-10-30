@@ -24,6 +24,7 @@ final class SessionSpec {
     this.effort,
     this.holdClientTools = false,
     this.subagent = false,
+    this.mcpConfig = const {},
   });
 
   /// The session's worktree.
@@ -77,6 +78,10 @@ final class SessionSpec {
   /// client tools (so it can't ask the user or start subagents of its own),
   /// and `subagentRules` after the prompt suffix.
   final bool subagent;
+
+  /// The agent-server's `mcp_config`: user-configured MCP servers by name
+  /// (see `StoredMcpServers.mcpConfigFor`). Empty: no MCP tools.
+  final Map<String, Object?> mcpConfig;
 }
 
 /// A running agent conversation. Events arrive on [events] (history first,

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:everyai_markdown/everyai_markdown.dart' show languageForPath;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -193,6 +195,28 @@ class _Preview extends StatelessWidget {
         maxLines: 24,
         language: languageForPath(call.str('path')),
       ),
+      // An MCP server's tool: its name and the arguments it gets.
+      'MCPToolAction' => Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(color: theme.codeBackground, borderRadius: BorderRadius.circular(8)),
+        child: Text.rich(
+          TextSpan(
+            style: mono.copyWith(color: theme.text),
+            children: [
+              TextSpan(
+                text: 'MCP ',
+                style: TextStyle(color: theme.textMuted),
+              ),
+              TextSpan(
+                text: call.toolName,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              TextSpan(text: '\n${mcpArgumentsPreview(call)}'),
+            ],
+          ),
+        ),
+      ),
       _ => Text(stepTitle(call), style: TextStyle(color: theme.textMuted, fontSize: 13)),
     };
     return Padding(
@@ -235,4 +259,17 @@ class _Preview extends StatelessWidget {
       ),
     );
   }
+}
+
+/// An MCP call's arguments as indented JSON, cut to [max] characters.
+String mcpArgumentsPreview(ActionCall call, {int max = 1500}) {
+  final data = call.action['data'];
+  final args = data is Map<String, Object?>
+      ? data
+      : {
+          for (final e in call.action.entries)
+            if (e.key != 'kind') e.key: e.value,
+        };
+  final text = args.isEmpty ? '{}' : const JsonEncoder.withIndent('  ').convert(args);
+  return text.length <= max ? text : '${text.substring(0, max)}…';
 }

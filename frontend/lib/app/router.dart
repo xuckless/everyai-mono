@@ -10,6 +10,7 @@ import '../features/auth/ui/sign_in_screen.dart';
 import '../core/ui/every_icons.dart';
 import '../features/chat/ui/chat_screen.dart';
 import '../features/code/ui/code_home.dart';
+import '../features/code/ui/mcp_settings_screen.dart';
 import '../features/code/ui/session_view.dart';
 import '../features/history/ui/chats_screen.dart';
 import '../features/history/ui/coming_soon_screen.dart';
@@ -29,6 +30,7 @@ abstract final class Routes {
   static const billing = '/settings/billing';
   static const memory = '/settings/memory';
   static const commands = '/settings/commands';
+  static const mcpServers = '/settings/mcp';
   static const newChat = '/chat/new';
   static const chats = '/chats';
   static const projects = '/projects';
@@ -126,6 +128,10 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: Routes.billing,
             pageBuilder: (_, _) => const NoTransitionPage(child: BillingScreen()),
+          ),
+          GoRoute(
+            path: Routes.mcpServers,
+            pageBuilder: (_, _) => const NoTransitionPage(child: McpSettingsScreen()),
           ),
           GoRoute(
             path: Routes.memory,

@@ -83,6 +83,9 @@ final class OpenHandsHarness implements Harness {
           // conversations instead; a client tool can't be called `task`
           // (the server rejects names that collide with its built-ins).
         ],
+        // MCP servers the user set up and approved; the agent-server starts
+        // and talks to them, and their tools arrive as MCPToolAction.
+        if (spec.mcpConfig.isNotEmpty) 'mcp_config': spec.mcpConfig,
         'persona': ?spec.persona,
         'agent_context': {'system_message_suffix': _suffix(spec)},
       },

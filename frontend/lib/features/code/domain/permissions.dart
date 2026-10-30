@@ -49,7 +49,7 @@ final class Decision {
 /// `Edit(src/**)`, `Read(.env*)`. In globs `*` matches anything (within a
 /// path segment for paths), `**` crosses folders, `?` one character, and a
 /// trailing ` *` also matches the bare command. A path glob without a `/`
-/// matches the file name in any folder.
+/// matches the file name in any folder. `Mcp(…)` globs an MCP tool's name.
 @immutable
 final class PermissionRules {
   const PermissionRules({this.allow = const [], this.deny = const []});
@@ -106,6 +106,14 @@ final class PermissionPolicy {
     }
     if (_matching(call, rules.deny, allowing: false) case final rule?) {
       return Decision(Verdict.deny, DecisionSource.rule, rule: rule);
+    }
+    // MCP tools: never read-only; an allow rule or Full auto runs them, and
+    // every other mode (Plan included) asks.
+    if (isMcpTool(call)) {
+      if (_matching(call, [...rules.allow, ...session], allowing: true) case final rule?) {
+        return Decision(Verdict.allow, DecisionSource.allowRule, rule: rule);
+      }
+      return Decision(mode == AgentMode.fullAuto ? Verdict.allow : Verdict.ask, DecisionSource.mode);
     }
     final readOnly = AgentMode.isReadOnly(call);
     if (mode == AgentMode.plan && !readOnly) return const Decision(Verdict.deny, DecisionSource.plan);
@@ -172,6 +180,7 @@ final class PermissionPolicy {
         _RuleKind.read when !allowing && command != null => _commandReads(
           command,
         ).any((p) => _pathMatches(rule.glob, _relative(p))),
+        _RuleKind.mcp => isMcpTool(call) && globMatches(rule.glob, call.toolName),
         _RuleKind.edit when !allowing && command != null => _commandWrites(
           command,
         ).any((p) => _pathMatches(rule.glob, _relative(p))),
@@ -245,7 +254,7 @@ String? _readPath(ActionCall call) => switch (call.actionKind) {
   _ => null,
 };
 
-enum _RuleKind { command, edit, read }
+enum _RuleKind { command, edit, read, mcp }
 
 final class _Rule {
   const _Rule(this.kind, this.glob);
@@ -265,6 +274,8 @@ final class _Rule {
       'bash' || 'shell' || 'command' => _Rule(_RuleKind.command, glob),
       'edit' || 'write' => _Rule(_RuleKind.edit, glob),
       'read' => _Rule(_RuleKind.read, glob),
+      // A glob on an MCP tool's name: `Mcp(browser_take_screenshot)`, `Mcp(playwright_*)`.
+      'mcp' => _Rule(_RuleKind.mcp, glob),
       _ => null,
     };
   }
@@ -815,7 +826,8 @@ const _threeWord = {
 /// for [call], or null when it can't be remembered: compound or unparsed
 /// commands, dangerous actions, edits outside the project. Commands keep
 /// their program and subcommand (`npm run build` gives `npm run build *`);
-/// edits keep the file (`Edit(lib/main.dart)`).
+/// edits keep the file (`Edit(lib/main.dart)`); MCP tools keep the tool
+/// (`Mcp(browser_take_screenshot)`).
 String? rememberPattern(ActionCall call, {String? workingDir}) {
   if (_command(call) case final command?) {
     if (dangerReason(command) != null) return null;
@@ -843,6 +855,10 @@ String? rememberPattern(ActionCall call, {String? workingDir}) {
     if (rel.startsWith('/') && workingDir != null && workingDir.isNotEmpty) return null;
     if (rel.contains('*') || rel.contains('?') || rel.contains(')')) return null;
     return 'Edit($rel)';
+  }
+  if (isMcpTool(call) && call.toolName.isNotEmpty) {
+    if (call.toolName.contains('*') || call.toolName.contains('?') || call.toolName.contains(')')) return null;
+    return 'Mcp(${call.toolName})';
   }
   return null;
 }
