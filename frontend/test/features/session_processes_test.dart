@@ -55,10 +55,29 @@ void main() {
     final cwds = {20: '$dir/lib', 30: '/w/session-b', 41: dir};
     expect(t.needsCwd(), unorderedEquals([20, 30, 41]));
     // An orphan counts only when the session has the directory to itself.
-    expect(t.sessionProcesses(tag: 'a', workingDir: dir, ownsDir: false, cwds: cwds), [21]);
+    // Shells and orphans count only when the session has the directory to itself.
+    expect(t.sessionProcesses(tag: 'a', workingDir: dir, ownsDir: false, cwds: cwds), isEmpty);
     expect(t.sessionProcesses(tag: 'a', workingDir: dir, ownsDir: true, cwds: cwds), [21, 41]);
     // A sibling directory with the same prefix is not inside.
     expect(t.sessionProcesses(tag: 'a', workingDir: '/w/session', ownsDir: true, cwds: cwds), isEmpty);
+  });
+
+  test("the user's own tmux is never taken for the agent's", () {
+    final t = ProcessTable([
+      _row(11, 1, '/x/agent-server'),
+      // The agent's tmux server detached from the agent-server but kept its environment.
+      ProcessRow(pid: 60, ppid: 1, command: 'tmux -L oh new-session', serverEnv: true),
+      _row(61, 60, '/bin/bash', env: false),
+      _row(62, 61, '/bin/sleep 600', env: false),
+      // The user's tmux, with a pane in the same folder running an editor and a dev server.
+      _row(70, 1, 'tmux'),
+      _row(71, 70, '/bin/zsh', env: false),
+      _row(72, 71, 'nvim .'),
+      _row(73, 71, 'npm run dev'),
+    ]);
+    final cwds = {61: dir, 71: dir};
+    expect(t.sessionProcesses(tag: 'a', workingDir: dir, ownsDir: true, cwds: cwds), [62]);
+    expect(t.sessionProcesses(tag: 'a', workingDir: dir, ownsDir: false, cwds: cwds), isEmpty);
   });
 
   test('parses ps output with and without the environment', () {
