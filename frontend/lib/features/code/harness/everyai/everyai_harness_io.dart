@@ -43,6 +43,7 @@ final class EveryAIHarness implements Harness {
     final id = const Uuid().v4();
     final session = EveryAISession._(id, spec, await _dirFor(id), client);
     _sessions[id] = session;
+    await excludeScratch(spec.workingDir);
     await session._begin();
     return session;
   }
@@ -778,5 +779,29 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
       },
     });
     _append({'role': 'tool', 'tool_call_id': call.id, 'content': out.text, '_eid': actionId});
+  }
+}
+
+/// Keeps the harness's own files (`.everyai/scratch`, `.everyai/spill`) out
+/// of git status and diffs in [dir]'s repository, through the clone-local
+/// `info/exclude` so nothing the user commits changes. Not a repo: nothing.
+Future<void> excludeScratch(String dir) async {
+  try {
+    final res = await Process.run('git', ['rev-parse', '--git-path', 'info/exclude'], workingDirectory: dir);
+    if (res.exitCode != 0) return;
+    var path = (res.stdout as String).trim();
+    if (!path.startsWith('/')) path = '$dir/$path';
+    final file = File(path);
+    final current = file.existsSync() ? file.readAsStringSync() : '';
+    const lines = ['.everyai/scratch/', '.everyai/spill/'];
+    final missing = lines.where((l) => !current.split('\n').contains(l)).toList();
+    if (missing.isEmpty) return;
+    file.parent.createSync(recursive: true);
+    file.writeAsStringSync(
+      '${current.isEmpty || current.endsWith('\n') ? '' : '\n'}# EveryAI agent scratch files\n${missing.join('\n')}\n',
+      mode: FileMode.append,
+    );
+  } on Object {
+    // Not git, or git missing: the files just show up as untracked.
   }
 }

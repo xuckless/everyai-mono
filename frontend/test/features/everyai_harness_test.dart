@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/harness/events.dart';
+import 'package:every_ai/features/code/domain/permissions.dart';
 import 'package:every_ai/features/code/harness/everyai/agent_server_facade_io.dart';
 import 'package:every_ai/features/code/harness/everyai/everyai_harness_io.dart';
 import 'package:every_ai/features/code/harness/openhands_harness.dart';
@@ -362,6 +363,32 @@ void main() {
     final statuses = await client.statuses([session.id]);
     expect(statuses[session.id], ExecutionStatus.finished);
     await session.close();
+  });
+
+  test('the scratch folders are kept out of git, once', () async {
+    final repo = Directory.systemTemp.createTempSync('exclude');
+    addTearDown(() => repo.deleteSync(recursive: true));
+    await Process.run('git', ['init', '-q'], workingDirectory: repo.path);
+    await excludeScratch(repo.path);
+    await excludeScratch(repo.path);
+    final exclude = File('${repo.path}/.git/info/exclude').readAsStringSync();
+    expect('.everyai/scratch/'.allMatches(exclude).length, 1);
+    Directory('${repo.path}/.everyai/scratch').createSync(recursive: true);
+    File('${repo.path}/.everyai/scratch/x.txt').writeAsStringSync('x');
+    final status = await Process.run('git', ['status', '--porcelain'], workingDirectory: repo.path);
+    expect(status.stdout, isEmpty);
+  });
+
+  test('Full auto still asks before editing outside the project', () {
+    const policy = PermissionPolicy(workingDir: '/work');
+    ActionCall edit(String path) => HarnessEvent.decode({
+      'kind': 'ActionEvent',
+      'id': 'e',
+      'tool_name': 'write',
+      'action': {'kind': 'FileEditorAction', 'command': 'create', 'path': path, 'file_text': 'x'},
+    }) as ActionCall;
+    expect(policy.decide(edit('/work/a.txt'), AgentMode.fullAuto).verdict, Verdict.allow);
+    expect(policy.decide(edit('/etc/hosts'), AgentMode.fullAuto).verdict, Verdict.ask);
   });
 
   group('applyEdit', () {

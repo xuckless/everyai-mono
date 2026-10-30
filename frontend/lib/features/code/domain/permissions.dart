@@ -124,7 +124,8 @@ final class PermissionPolicy {
         : edit != null
         ? editDangerReason(edit, workingDir: workingDir)
         : null;
-    if (danger != null && mode != AgentMode.fullAuto) {
+    // Full auto covers the project, not the rest of the disk.
+    if (danger != null && (mode != AgentMode.fullAuto || (edit != null && danger == outsideProject))) {
       return Decision(Verdict.ask, DecisionSource.dangerous, why: danger);
     }
     if (danger == null) {
@@ -769,15 +770,18 @@ String? _gitDanger(List<String> w) {
 }
 
 /// Why writing [path] needs the user's eyes, or null.
+/// Why an edit outside the session's folder asks first, in every mode.
+const outsideProject = 'edits a file outside the project';
+
 String? editDangerReason(String path, {String? workingDir}) {
   final dir = workingDir;
   if (dir != null && dir.isNotEmpty && path.startsWith('/')) {
     final base = dir.endsWith('/') ? dir : '$dir/';
-    if (!path.startsWith(base) && path != dir) return 'edits a file outside the project';
+    if (!path.startsWith(base) && path != dir) return outsideProject;
   }
   final rel = relativeTo(path, dir);
   final parts = rel.split('/');
-  if (parts.contains('..')) return 'edits a file outside the project';
+  if (parts.contains('..')) return outsideProject;
   if (parts.contains('.git')) return "edits git's internal files";
   if (rel.startsWith('.everyai/settings') || rel.contains('/.everyai/settings')) {
     return "edits the agent's own settings and permissions";
