@@ -6,6 +6,14 @@
 //! `cost` is computed from the catalog's prices; `complete()`, the gateway and
 //! billing then work unchanged.
 //!
+//! The usage is priced as the model the reply says served it (a server-side
+//! fallback may differ), named in `usage.served_model`; `usage.by_kind`
+//! splits the cost into tokens and server-tool fees (web search) so callers
+//! bill those as their own kind. A `pause_turn` stop (a long server-tool turn)
+//! is continued by re-sending the partial reply, up to `max_continues` times.
+//! Server tool definitions pass through; their calls stay upstream and their
+//! results come out as `url_citation` annotations.
+//!
 //! Thinking comes out as `reasoning` text plus OpenRouter-style
 //! `reasoning_details` (signed `reasoning.text`, `reasoning.encrypted` for
 //! redacted blocks). Details on an assistant message go back in as thinking
@@ -55,7 +63,13 @@ pub const Adapter = struct {
 
         const prices = self.catalog.pricesOf(req.io, t.model);
         if (prices == null) std.log.warn("no catalog prices for {s}; the call is billed as free", .{t.model});
-        const meta: Meta = .{ .model = t.model, .prices = prices, .created = util.now(req.io) };
+        var meta: Meta = .{
+            .model = t.model,
+            .api_id = try anthropicId(arena, t.model),
+            .prices = prices,
+            .created = util.now(req.io),
+            .resolver = .{ .ctx = self, .io = req.io, .lookupFn = lookup },
+        };
 
         if (up.status >= 300) {
             defer up.close();
@@ -64,16 +78,120 @@ pub const Adapter = struct {
             const status: u16 = if (up.status == 529) 503 else up.status;
             return fixed(arena, status, try translateError(arena, raw, up.status));
         }
-        if (!t.stream) {
-            defer up.close();
-            const raw = try up.reader.allocRemaining(arena, .limited(64 << 20));
-            return fixed(arena, 200, try translateMessage(arena, raw, meta));
-        }
+        const cont: Cont = .{ .inner = self.inner, .req = req, .body = t.body, .headers = headers.items };
+        if (!t.stream) return fixed(arena, 200, try self.whole(arena, up, cont, &meta));
         const tr = try arena.create(Translator);
         tr.init(arena, up, meta);
+        tr.cont = cont;
         return .{ .status = 200, .reader = &tr.reader, .ctx = tr, .closeFn = Translator.close };
     }
+
+    /// A non-streamed reply; a `pause_turn` (a long server-tool turn) is
+    /// continued by sending the partial reply back, and the parts are joined.
+    fn whole(_: *Adapter, arena: std.mem.Allocator, first: openrouter.Stream, cont: Cont, meta: *Meta) ![]const u8 {
+        var up = first;
+        var body = cont.body;
+        var bill: Bill = .{};
+        var content: std.json.Array = .init(arena);
+        var id: []const u8 = "";
+        var stop: []const u8 = "end_turn";
+        var round: usize = 0;
+        while (true) : (round += 1) {
+            const raw = blk: {
+                defer up.close();
+                break :blk try up.reader.allocRemaining(arena, .limited(64 << 20));
+            };
+            const v = try std.json.parseFromSliceLeaky(Value, arena, raw, .{});
+            if (v != .object) return error.BadGateway;
+            const o = v.object;
+            if (id.len == 0) id = jsonStr(o.get("id")) orelse "";
+            try meta.serve(arena, jsonStr(o.get("model")) orelse "");
+            if (o.get("usage")) |u| if (u == .object) bill.current.merge(u.object);
+            const part = if (o.get("content")) |c| (if (c == .array) c.array.items else &.{}) else &.{};
+            try content.appendSlice(part);
+            stop = jsonStr(o.get("stop_reason")) orelse "end_turn";
+            if (!std.mem.eql(u8, stop, "pause_turn") or round >= max_continues) break;
+
+            const next_body = try continueBody(arena, body, part);
+            const next = cont.inner.post(cont.req, "/messages", next_body, cont.headers) catch |err| {
+                std.log.warn("anthropic pause_turn continuation failed: {t}", .{err});
+                break;
+            };
+            if (next.status >= 300) {
+                std.log.warn("anthropic pause_turn continuation failed: HTTP {d}", .{next.status});
+                next.close();
+                break;
+            }
+            bill.rollover(meta.prices);
+            body = next_body;
+            up = next;
+        }
+        if (std.mem.eql(u8, stop, "pause_turn")) stop = "end_turn";
+        return translateMessage(arena, id, content.items, stop, bill, meta.*);
+    }
+
+    /// The catalog entry for the model Anthropic says served the call.
+    fn lookup(ctx: *anyopaque, io: std.Io, arena: std.mem.Allocator, api_id: []const u8) ?Priced {
+        const self: *Adapter = @ptrCast(@alignCast(ctx));
+        const c = self.catalog;
+        c.mutex.lockUncancelable(io);
+        defer c.mutex.unlock(io);
+        for (c.models, c.prices) |m, p| if (std.mem.startsWith(u8, m.id, "anthropic/") and sameModel(m.id, api_id)) {
+            return .{ .model = arena.dupe(u8, m.id) catch return null, .prices = p };
+        };
+        return null;
+    }
 };
+
+/// Most `pause_turn` continuations of one reply.
+const max_continues = 5;
+
+/// What re-posting a paused turn needs.
+const Cont = struct {
+    inner: openrouter.Upstream,
+    req: *anole.Request,
+    /// The Messages request that was last sent.
+    body: []const u8,
+    headers: []const [2][]const u8,
+};
+
+/// The request again with the partial assistant reply at the end (merged into
+/// a trailing assistant message), which is how Anthropic resumes a paused turn.
+fn continueBody(arena: std.mem.Allocator, body: []const u8, blocks: []const Value) ![]const u8 {
+    var v = try std.json.parseFromSliceLeaky(Value, arena, body, .{});
+    if (v != .object) return error.BadRequest;
+    const msgs = v.object.getPtr("messages") orelse return error.BadRequest;
+    if (msgs.* != .array) return error.BadRequest;
+    const items = msgs.array.items;
+    if (items.len > 0 and items[items.len - 1] == .object and
+        std.mem.eql(u8, jsonStr(items[items.len - 1].object.get("role")) orelse "", "assistant"))
+    {
+        const last = items[items.len - 1].object.getPtr("content") orelse return error.BadRequest;
+        if (last.* == .string) {
+            var arr: std.json.Array = .init(arena);
+            try arr.append(try textBlock(arena, last.string));
+            last.* = .{ .array = arr };
+        }
+        if (last.* != .array) return error.BadRequest;
+        try last.array.appendSlice(blocks);
+    } else {
+        var arr: std.json.Array = .init(arena);
+        try arr.appendSlice(blocks);
+        try msgs.array.append(try obj(arena, &.{ .{ "role", str("assistant") }, .{ "content", .{ .array = arr } } }));
+    }
+    return std.json.Stringify.valueAlloc(arena, v, .{});
+}
+
+/// "anthropic/claude-opus-5.5" names the model "claude-opus-5-5".
+fn sameModel(or_id: []const u8, api_id: []const u8) bool {
+    var id = or_id;
+    if (std.mem.indexOfScalar(u8, id, '/')) |i| id = id[i + 1 ..];
+    // Variants (":thinking") price the same model differently; skip them.
+    if (std.mem.indexOfScalar(u8, id, ':') != null) return false;
+    if (id.len != api_id.len) return false;
+    for (id, api_id) |a, b| if (a != b and !(a == '.' and b == '-')) return false;
+    return true;
+}
 
 const Fixed = struct { reader: std.Io.Reader };
 
@@ -154,6 +272,11 @@ pub fn translateRequest(arena: std.mem.Allocator, in: ObjectMap) !Translated {
         var tools: std.json.Array = .init(arena);
         for (tv.array.items) |t| {
             if (t != .object) continue;
+            // Anthropic's own server tools (web search/fetch, code execution) go as they are.
+            if (isServerTool(t.object)) {
+                try tools.append(t);
+                continue;
+            }
             const f = (t.object.get("function") orelse continue);
             if (f != .object) continue;
             var tool: ObjectMap = .empty;
@@ -261,6 +384,14 @@ pub fn translateRequest(arena: std.mem.Allocator, in: ObjectMap) !Translated {
     };
 }
 
+/// A server tool definition (`{"type":"web_search_20250305","name":…}`).
+fn isServerTool(t: ObjectMap) bool {
+    if (t.contains("function")) return false;
+    const kind = jsonStr(t.get("type")) orelse return false;
+    for ([_][]const u8{ "web_search_", "web_fetch_", "code_execution_" }) |p| if (std.mem.startsWith(u8, kind, p)) return true;
+    return false;
+}
+
 const Msg = struct { role: []const u8, blocks: std.json.Array };
 
 /// Consecutive same-role turns merge (Anthropic wants them alternating). An
@@ -362,12 +493,52 @@ fn textBlock(arena: std.mem.Allocator, text: []const u8) !Value {
 
 // ------------------------------------------------------------------ response
 
-const Meta = struct {
-    model: []const u8,
-    prices: ?models.Prices,
-    created: i64,
+/// A catalog model and its prices.
+pub const Priced = struct { model: []const u8, prices: ?models.Prices };
+
+/// Finds the catalog entry for an Anthropic API id (the served model).
+pub const Resolver = struct {
+    ctx: *anyopaque,
+    io: std.Io,
+    lookupFn: *const fn (ctx: *anyopaque, io: std.Io, arena: std.mem.Allocator, api_id: []const u8) ?Priced,
 };
 
+const Meta = struct {
+    /// The OpenRouter id the caller asked for (echoed in chunks).
+    model: []const u8,
+    /// Its Anthropic API id.
+    api_id: []const u8 = "",
+    /// Prices of the model that served the call (the asked one until a
+    /// reply names another, as server-side fallbacks may).
+    prices: ?models.Prices,
+    created: i64,
+    /// The OpenRouter id of the model that served, when not `model`.
+    served: []const u8 = "",
+    resolver: ?Resolver = null,
+
+    /// Notes the model a reply came from; a fallback is priced as itself.
+    fn serve(self: *Meta, arena: std.mem.Allocator, api_id: []const u8) !void {
+        if (api_id.len == 0 or self.api_id.len == 0 or std.mem.eql(u8, api_id, self.api_id)) return;
+        if (self.served.len > 0 and sameModel(self.served, api_id)) return;
+        const found = if (self.resolver) |r| r.lookupFn(r.ctx, r.io, arena, api_id) else null;
+        if (found) |f| {
+            self.served = f.model;
+            if (f.prices) |p| self.prices = p;
+        } else {
+            self.served = try std.fmt.allocPrint(arena, "anthropic/{s}", .{api_id});
+            std.log.warn("{s} served {s}, which has no catalog prices; billed at {s}'s", .{ self.model, api_id, self.model });
+        }
+    }
+
+    fn servedModel(self: Meta) []const u8 {
+        return if (self.served.len > 0) self.served else self.model;
+    }
+};
+
+/// What web search costs per request (Anthropic: $10 per 1,000).
+const web_search_usd = 0.01;
+
+/// One Messages call's usage.
 const Usage = struct {
     input: i64 = 0,
     cache_read: i64 = 0,
@@ -375,6 +546,8 @@ const Usage = struct {
     cache_5m: i64 = 0,
     cache_1h: i64 = 0,
     output: i64 = 0,
+    searches: i64 = 0,
+    fetches: i64 = 0,
 
     fn merge(self: *Usage, u: ObjectMap) void {
         if (u.get("input_tokens")) |v| self.input = jsonInt(v);
@@ -385,8 +558,17 @@ const Usage = struct {
             self.cache_5m = jsonInt(c.object.get("ephemeral_5m_input_tokens"));
             self.cache_1h = jsonInt(c.object.get("ephemeral_1h_input_tokens"));
         };
+        if (u.get("server_tool_use")) |s| if (s == .object) {
+            self.searches = jsonInt(s.object.get("web_search_requests"));
+            self.fetches = jsonInt(s.object.get("web_fetch_requests"));
+        };
     }
 
+    fn add(self: *Usage, o: Usage) void {
+        inline for (@typeInfo(Usage).@"struct".field_names) |n| @field(self, n) += @field(o, n);
+    }
+
+    /// Token cost only (server-tool fees are billed by kind; see `Bill`).
     fn cost(self: Usage, prices: ?models.Prices) f64 {
         const p = prices orelse return 0;
         // No TTL breakdown: price every write as a 5-minute one.
@@ -399,17 +581,55 @@ const Usage = struct {
             .output = self.output,
         });
     }
+};
 
-    /// The OpenAI/OpenRouter usage object (`prompt_tokens` includes cached).
-    fn write(self: Usage, s: *std.json.Stringify, prices: ?models.Prices) !void {
-        const prompt = self.input + self.cache_read + self.cache_creation;
-        try s.write(.{
-            .prompt_tokens = prompt,
-            .completion_tokens = self.output,
-            .total_tokens = prompt + self.output,
-            .cost = self.cost(prices),
-            .prompt_tokens_details = .{ .cached_tokens = self.cache_read, .cache_write_tokens = self.cache_creation },
-        });
+/// A reply's usage across the calls of a paused-and-continued turn.
+const Bill = struct {
+    current: Usage = .{},
+    /// Earlier calls, summed, and their token cost (each at its own prices).
+    earlier: Usage = .{},
+    earlier_cost: f64 = 0,
+
+    /// Closes the current call before a continuation.
+    fn rollover(self: *Bill, prices: ?models.Prices) void {
+        self.earlier_cost += self.current.cost(prices);
+        self.earlier.add(self.current);
+        self.current = .{};
+    }
+
+    /// The OpenAI/OpenRouter usage object (`prompt_tokens` includes cached),
+    /// plus what this adapter adds: `served_model` (the model priced) and
+    /// `by_kind`, the cost split by kind ("tokens", "search") so callers can
+    /// record server-tool fees as their own usage events. `cost` is the total.
+    fn write(self: Bill, s: *std.json.Stringify, prices: ?models.Prices, served_model: []const u8) !void {
+        var u = self.earlier;
+        u.add(self.current);
+        const prompt = u.input + u.cache_read + u.cache_creation;
+        const tokens = self.earlier_cost + self.current.cost(prices);
+        const search: f64 = @as(f64, @floatFromInt(u.searches)) * web_search_usd;
+        try s.beginObject();
+        try s.objectField("prompt_tokens");
+        try s.write(prompt);
+        try s.objectField("completion_tokens");
+        try s.write(u.output);
+        try s.objectField("total_tokens");
+        try s.write(prompt + u.output);
+        try s.objectField("cost");
+        try s.write(tokens + search);
+        try s.objectField("prompt_tokens_details");
+        try s.write(.{ .cached_tokens = u.cache_read, .cache_write_tokens = u.cache_creation });
+        try s.objectField("served_model");
+        try s.write(served_model);
+        if (u.searches + u.fetches > 0) {
+            try s.objectField("server_tool_use");
+            try s.write(.{ .web_search_requests = u.searches, .web_fetch_requests = u.fetches });
+        }
+        try s.objectField("by_kind");
+        try s.beginArray();
+        try s.write(.{ .kind = "tokens", .cost = tokens });
+        if (u.searches > 0) try s.write(.{ .kind = "search", .requests = u.searches, .cost = search });
+        try s.endArray();
+        try s.endObject();
     }
 };
 
@@ -425,6 +645,9 @@ fn finishReason(stop: []const u8) []const u8 {
 }
 
 /// Anthropic SSE in, OpenAI `chat.completion.chunk` SSE out, as a reader.
+/// A `pause_turn` stop (a long server-tool turn) is continued in place: the
+/// partial reply goes back as the request's last assistant message and the
+/// next stream carries on, with one id, one finish chunk and summed usage.
 const Translator = struct {
     reader: std.Io.Reader,
     buffer: [16 * 1024]u8,
@@ -436,11 +659,30 @@ const Translator = struct {
     pos: usize = 0,
     meta: Meta,
     id: []const u8 = "",
+    started: bool = false,
     /// Anthropic block index -> OpenAI tool_calls index (-1: not a tool).
     tool_of: std.ArrayList(i64) = .empty,
     tools: i64 = 0,
-    usage: Usage = .{},
+    bill: Bill = .{},
     done: bool = false,
+    /// How to continue a paused turn; null leaves `pause_turn` as a stop.
+    cont: ?Cont = null,
+    continues: usize = 0,
+    paused: bool = false,
+    /// The current call's blocks, rebuilt for a continuation.
+    blocks: std.ArrayList(Block) = .empty,
+    /// Blocks of earlier calls (keeps `reasoning_details` indexes unique).
+    base: usize = 0,
+
+    /// A content block as it streams in.
+    const Block = struct {
+        /// The `content_block` of `content_block_start`, as JSON.
+        start: []const u8 = "",
+        text: std.ArrayList(u8) = .empty,
+        signature: std.ArrayList(u8) = .empty,
+        json: std.ArrayList(u8) = .empty,
+        citations: std.ArrayList([]const u8) = .empty,
+    };
 
     fn init(self: *Translator, arena: std.mem.Allocator, up: openrouter.Stream, meta: Meta) void {
         self.* = .{
@@ -480,9 +722,14 @@ const Translator = struct {
         return n;
     }
 
+    fn block(self: *Translator, index: usize) !*Block {
+        while (self.blocks.items.len <= index) try self.blocks.append(self.arena, .{});
+        return &self.blocks.items[index];
+    }
+
     /// Translates the next upstream event into zero or more output chunks.
     fn pump(self: *Translator) !void {
-        const ev = (try self.parser.next()) orelse return self.finish();
+        const ev = (try self.parser.next()) orelse return self.stop();
         _ = self.scratch.reset(.retain_capacity);
         const v = std.json.parseFromSliceLeaky(Value, self.scratch.allocator(), ev.data, .{}) catch return;
         if (v != .object) return;
@@ -491,13 +738,20 @@ const Translator = struct {
 
         if (std.mem.eql(u8, kind, "message_start")) {
             const m = (o.get("message") orelse return).object;
+            try self.meta.serve(self.arena, jsonStr(m.get("model")) orelse "");
+            if (m.get("usage")) |u| if (u == .object) self.bill.current.merge(u.object);
+            if (self.started) return;
+            self.started = true;
             self.id = try self.arena.dupe(u8, jsonStr(m.get("id")) orelse "");
-            if (m.get("usage")) |u| if (u == .object) self.usage.merge(u.object);
             try self.chunk(.{ .role = "assistant", .content = "" }, null);
         } else if (std.mem.eql(u8, kind, "content_block_start")) {
             const index: usize = @intCast(@max(0, jsonInt(o.get("index"))));
-            const block = (o.get("content_block") orelse return).object;
-            const btype = jsonStr(block.get("type")) orelse "";
+            const cb = o.get("content_block") orelse return;
+            if (cb != .object) return;
+            const b = cb.object;
+            const rec = try self.block(index);
+            rec.start = try std.json.Stringify.valueAlloc(self.arena, cb, .{});
+            const btype = jsonStr(b.get("type")) orelse "";
             while (self.tool_of.items.len <= index) try self.tool_of.append(self.arena, -1);
             if (std.mem.eql(u8, btype, "tool_use")) {
                 const ti = self.tools;
@@ -505,45 +759,70 @@ const Translator = struct {
                 self.tool_of.items[index] = ti;
                 try self.chunk(.{ .tool_calls = .{.{
                     .index = ti,
-                    .id = jsonStr(block.get("id")) orelse "",
+                    .id = jsonStr(b.get("id")) orelse "",
                     .type = "function",
-                    .function = .{ .name = jsonStr(block.get("name")) orelse "", .arguments = "" },
+                    .function = .{ .name = jsonStr(b.get("name")) orelse "", .arguments = "" },
                 }} }, null);
             } else if (std.mem.eql(u8, btype, "text")) {
-                const t = jsonStr(block.get("text")) orelse "";
+                const t = jsonStr(b.get("text")) orelse "";
+                try rec.text.appendSlice(self.arena, t);
                 if (t.len > 0) try self.chunk(.{ .content = t }, null);
+            } else if (std.mem.eql(u8, btype, "thinking")) {
+                try rec.text.appendSlice(self.arena, jsonStr(b.get("thinking")) orelse "");
             } else if (std.mem.eql(u8, btype, "redacted_thinking")) {
-                const data = jsonStr(block.get("data")) orelse "";
-                try self.chunk(.{ .reasoning_details = .{.{ .type = "reasoning.encrypted", .data = data, .format = details_format, .index = index }} }, null);
+                const data = jsonStr(b.get("data")) orelse "";
+                try self.chunk(.{ .reasoning_details = .{.{ .type = "reasoning.encrypted", .data = data, .format = details_format, .index = self.base + index }} }, null);
+            } else {
+                // Server tools run upstream: their calls stay hidden and
+                // their results surface as citations.
+                var anns: std.json.Array = .init(self.scratch.allocator());
+                try resultCitations(self.scratch.allocator(), b, &anns);
+                if (anns.items.len > 0) try self.chunk(.{ .content = "", .annotations = Value{ .array = anns } }, null);
             }
         } else if (std.mem.eql(u8, kind, "content_block_delta")) {
             const index: usize = @intCast(@max(0, jsonInt(o.get("index"))));
-            const d = (o.get("delta") orelse return).object;
+            const dv = o.get("delta") orelse return;
+            if (dv != .object) return;
+            const d = dv.object;
+            const rec = try self.block(index);
             const dtype = jsonStr(d.get("type")) orelse "";
             if (std.mem.eql(u8, dtype, "text_delta")) {
                 const t = jsonStr(d.get("text")) orelse "";
+                try rec.text.appendSlice(self.arena, t);
                 if (t.len > 0) try self.chunk(.{ .content = t }, null);
             } else if (std.mem.eql(u8, dtype, "thinking_delta")) {
                 const t = jsonStr(d.get("thinking")) orelse "";
+                try rec.text.appendSlice(self.arena, t);
                 if (t.len > 0) try self.chunk(.{
                     .reasoning = t,
                     .reasoning_content = t,
-                    .reasoning_details = .{.{ .type = "reasoning.text", .text = t, .format = details_format, .index = index }},
+                    .reasoning_details = .{.{ .type = "reasoning.text", .text = t, .format = details_format, .index = self.base + index }},
                 }, null);
             } else if (std.mem.eql(u8, dtype, "signature_delta")) {
                 const sig = jsonStr(d.get("signature")) orelse "";
-                if (sig.len > 0) try self.chunk(.{ .reasoning_details = .{.{ .type = "reasoning.text", .signature = sig, .format = details_format, .index = index }} }, null);
+                try rec.signature.appendSlice(self.arena, sig);
+                if (sig.len > 0) try self.chunk(.{ .reasoning_details = .{.{ .type = "reasoning.text", .signature = sig, .format = details_format, .index = self.base + index }} }, null);
             } else if (std.mem.eql(u8, dtype, "input_json_delta")) {
                 const part = jsonStr(d.get("partial_json")) orelse "";
+                try rec.json.appendSlice(self.arena, part);
                 if (part.len == 0 or index >= self.tool_of.items.len or self.tool_of.items[index] < 0) return;
                 try self.chunk(.{ .tool_calls = .{.{ .index = self.tool_of.items[index], .function = .{ .arguments = part } }} }, null);
+            } else if (std.mem.eql(u8, dtype, "citations_delta")) {
+                const c = d.get("citation") orelse return;
+                try rec.citations.append(self.arena, try std.json.Stringify.valueAlloc(self.arena, c, .{}));
+                var anns: std.json.Array = .init(self.scratch.allocator());
+                try citationOf(self.scratch.allocator(), c, &anns);
+                if (anns.items.len > 0) try self.chunk(.{ .content = "", .annotations = Value{ .array = anns } }, null);
             }
         } else if (std.mem.eql(u8, kind, "message_delta")) {
-            if (o.get("usage")) |u| if (u == .object) self.usage.merge(u.object);
+            if (o.get("usage")) |u| if (u == .object) self.bill.current.merge(u.object);
             const d = (o.get("delta") orelse return).object;
-            if (jsonStr(d.get("stop_reason"))) |stop| try self.chunk(struct {}{}, finishReason(stop));
+            const reason = jsonStr(d.get("stop_reason")) orelse return;
+            if (std.mem.eql(u8, reason, "pause_turn")) {
+                self.paused = true;
+            } else try self.chunk(struct {}{}, finishReason(reason));
         } else if (std.mem.eql(u8, kind, "message_stop")) {
-            try self.finish();
+            try self.stop();
         } else if (std.mem.eql(u8, kind, "error")) {
             const e = o.get("error");
             const message = if (e) |x| openrouter.jsonString(x, "message") orelse "upstream error" else "upstream error";
@@ -552,6 +831,75 @@ const Translator = struct {
             try self.out.writer.writeAll("\n\n");
             try self.finish();
         }
+    }
+
+    /// The end of one upstream message: continue a paused turn, or finish.
+    fn stop(self: *Translator) !void {
+        if (self.done) return;
+        if (self.paused) {
+            if (try self.resume_()) return;
+            // Out of continuations: end the reply where it paused.
+            try self.chunk(struct {}{}, "stop");
+        }
+        try self.finish();
+    }
+
+    /// Posts the continuation of a paused turn and switches to its stream.
+    fn resume_(self: *Translator) !bool {
+        var cont = self.cont orelse return false;
+        if (self.continues >= max_continues) return false;
+        const body = try continueBody(self.arena, cont.body, try self.assistantBlocks());
+        const next = cont.inner.post(cont.req, "/messages", body, cont.headers) catch |err| {
+            std.log.warn("anthropic pause_turn continuation failed: {t}", .{err});
+            return false;
+        };
+        if (next.status >= 300) {
+            std.log.warn("anthropic pause_turn continuation failed: HTTP {d}", .{next.status});
+            next.close();
+            return false;
+        }
+        self.parser.deinit();
+        self.up.close();
+        self.up = next;
+        self.parser = sse.Parser.init(self.arena, next.reader, .{});
+        cont.body = body;
+        self.cont = cont;
+        self.continues += 1;
+        self.paused = false;
+        self.bill.rollover(self.meta.prices);
+        self.base += self.blocks.items.len;
+        self.blocks.clearRetainingCapacity();
+        self.tool_of.clearRetainingCapacity();
+        return true;
+    }
+
+    /// The current call's content blocks, as Anthropic sent them.
+    fn assistantBlocks(self: *Translator) ![]const Value {
+        const a = self.arena;
+        var out: std.json.Array = .init(a);
+        for (self.blocks.items) |*rec| {
+            if (rec.start.len == 0) continue;
+            var v = std.json.parseFromSliceLeaky(Value, a, rec.start, .{}) catch continue;
+            if (v != .object) continue;
+            const btype = jsonStr(v.object.get("type")) orelse continue;
+            if (std.mem.eql(u8, btype, "text")) {
+                if (rec.text.items.len == 0) continue;
+                try v.object.put(a, "text", str(rec.text.items));
+                if (rec.citations.items.len > 0) {
+                    var list: std.json.Array = .init(a);
+                    for (rec.citations.items) |c| try list.append(try std.json.parseFromSliceLeaky(Value, a, c, .{}));
+                    try v.object.put(a, "citations", .{ .array = list });
+                }
+            } else if (std.mem.eql(u8, btype, "thinking")) {
+                try v.object.put(a, "thinking", str(rec.text.items));
+                try v.object.put(a, "signature", str(rec.signature.items));
+            } else if (rec.json.items.len > 0 and v.object.contains("input")) {
+                const input = std.json.parseFromSliceLeaky(Value, a, rec.json.items, .{}) catch null;
+                if (input) |x| if (x == .object) try v.object.put(a, "input", x);
+            }
+            try out.append(v);
+        }
+        return out.items;
     }
 
     fn chunk(self: *Translator, delta: anytype, finish_reason: ?[]const u8) !void {
@@ -587,26 +935,53 @@ const Translator = struct {
         try s.beginArray();
         try s.endArray();
         try s.objectField("usage");
-        try self.usage.write(&s, self.meta.prices);
+        try self.bill.write(&s, self.meta.prices, self.meta.servedModel());
         try s.endObject();
         try w.writeAll("\n\ndata: [DONE]\n\n");
     }
 };
 
-/// A whole (non-streamed) Messages reply as a `chat.completion`.
-fn translateMessage(arena: std.mem.Allocator, raw: []const u8, meta: Meta) ![]const u8 {
-    const v = try std.json.parseFromSliceLeaky(Value, arena, raw, .{});
-    if (v != .object) return error.BadGateway;
-    const o = v.object;
+/// OpenAI `url_citation` annotations for a server tool's result block
+/// (web search results; other results add none).
+fn resultCitations(arena: std.mem.Allocator, b: ObjectMap, out: *std.json.Array) !void {
+    const content = b.get("content") orelse return;
+    if (content != .array) return; // an error result
+    for (content.array.items) |r| {
+        if (r != .object) continue;
+        const url = jsonStr(r.object.get("url")) orelse continue;
+        try out.append(try annotation(arena, url, jsonStr(r.object.get("title")) orelse url, null));
+    }
+}
+
+/// A text block's citation (`web_search_result_location` and friends) as an
+/// annotation; citations without a URL (documents) add none.
+fn citationOf(arena: std.mem.Allocator, c: Value, out: *std.json.Array) !void {
+    if (c != .object) return;
+    const url = jsonStr(c.object.get("url")) orelse return;
+    try out.append(try annotation(arena, url, jsonStr(c.object.get("title")) orelse url, jsonStr(c.object.get("cited_text"))));
+}
+
+fn annotation(arena: std.mem.Allocator, url: []const u8, title: []const u8, snippet: ?[]const u8) !Value {
+    var cit: ObjectMap = .empty;
+    try cit.put(arena, "url", str(url));
+    try cit.put(arena, "title", str(title));
+    if (snippet) |s| try cit.put(arena, "content", str(s));
+    return obj(arena, &.{ .{ "type", str("url_citation") }, .{ "url_citation", .{ .object = cit } } });
+}
+
+/// A whole (non-streamed) reply, its parts joined, as a `chat.completion`.
+fn translateMessage(arena: std.mem.Allocator, id: []const u8, content: []const Value, stop: []const u8, bill: Bill, meta: Meta) ![]const u8 {
     var text: std.Io.Writer.Allocating = .init(arena);
     var reasoning: std.Io.Writer.Allocating = .init(arena);
     var calls: std.json.Array = .init(arena);
     var details: std.json.Array = .init(arena);
-    if (o.get("content")) |c| if (c == .array) for (c.array.items, 0..) |b, i| {
+    var anns: std.json.Array = .init(arena);
+    for (content, 0..) |b, i| {
         if (b != .object) continue;
         const btype = jsonStr(b.object.get("type")) orelse continue;
         if (std.mem.eql(u8, btype, "text")) {
             try text.writer.writeAll(jsonStr(b.object.get("text")) orelse "");
+            if (b.object.get("citations")) |cs| if (cs == .array) for (cs.array.items) |c| try citationOf(arena, c, &anns);
         } else if (std.mem.eql(u8, btype, "thinking")) {
             const t = jsonStr(b.object.get("thinking")) orelse "";
             try reasoning.writer.writeAll(t);
@@ -631,8 +1006,11 @@ fn translateMessage(arena: std.mem.Allocator, raw: []const u8, meta: Meta) ![]co
                 .{ "type", str("function") },
                 .{ "function", try obj(arena, &.{ .{ "name", b.object.get("name") orelse str("") }, .{ "arguments", str(args) } }) },
             }));
+        } else {
+            // Server tool calls and results: citations only.
+            try resultCitations(arena, b.object, &anns);
         }
-    };
+    }
     var message: ObjectMap = .empty;
     try message.put(arena, "role", str("assistant"));
     try message.put(arena, "content", if (text.written().len > 0) str(text.written()) else .null);
@@ -642,15 +1020,13 @@ fn translateMessage(arena: std.mem.Allocator, raw: []const u8, meta: Meta) ![]co
     }
     if (details.items.len > 0) try message.put(arena, "reasoning_details", .{ .array = details });
     if (calls.items.len > 0) try message.put(arena, "tool_calls", .{ .array = calls });
-
-    var usage: Usage = .{};
-    if (o.get("usage")) |u| if (u == .object) usage.merge(u.object);
+    if (anns.items.len > 0) try message.put(arena, "annotations", .{ .array = anns });
 
     var out: std.Io.Writer.Allocating = .init(arena);
     var s: std.json.Stringify = .{ .writer = &out.writer };
     try s.beginObject();
     try s.objectField("id");
-    try s.write(jsonStr(o.get("id")) orelse "");
+    try s.write(id);
     try s.objectField("object");
     try s.write("chat.completion");
     try s.objectField("created");
@@ -658,9 +1034,9 @@ fn translateMessage(arena: std.mem.Allocator, raw: []const u8, meta: Meta) ![]co
     try s.objectField("model");
     try s.write(meta.model);
     try s.objectField("choices");
-    try s.write(.{.{ .index = 0, .message = Value{ .object = message }, .finish_reason = finishReason(jsonStr(o.get("stop_reason")) orelse "end_turn") }});
+    try s.write(.{.{ .index = 0, .message = Value{ .object = message }, .finish_reason = finishReason(stop) }});
     try s.objectField("usage");
-    try usage.write(&s, meta.prices);
+    try bill.write(&s, meta.prices, meta.servedModel());
     try s.endObject();
     return out.written();
 }
@@ -858,3 +1234,103 @@ test "errors come back in OpenAI shape" {
     const out = try translateError(arena.allocator(), "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}", 529);
     try testing.expectEqualStrings("{\"error\":{\"message\":\"Overloaded\",\"type\":\"overloaded_error\",\"code\":529}}", out);
 }
+
+test sameModel {
+    try testing.expect(sameModel("anthropic/claude-opus-5.5", "claude-opus-5-5"));
+    try testing.expect(!sameModel("anthropic/claude-opus-5.5:thinking", "claude-opus-5-5"));
+    try testing.expect(!sameModel("anthropic/claude-opus-5", "claude-opus-5-5"));
+}
+
+test "server tools pass through; a fallback is priced as the model that served; searches billed by kind" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const in = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"model":"anthropic/claude-sonnet-5.5","stream":true,"messages":[{"role":"user","content":"news?"}],
+        \\ "tools":[{"type":"web_search_20250305","name":"web_search","max_uses":3}]}
+    , .{});
+    const t = try translateRequest(a, in.object);
+    const tools = (try std.json.parseFromSliceLeaky(Value, a, t.body, .{})).object.get("tools").?.array.items;
+    try testing.expectEqualStrings("web_search_20250305", tools[0].object.get("type").?.string);
+    try testing.expectEqual(@as(i64, 3), tools[0].object.get("max_uses").?.integer);
+
+    const upstream_sse =
+        \\data: {"type":"message_start","message":{"id":"msg_f","model":"claude-opus-5-5","usage":{"input_tokens":100,"output_tokens":1}}}
+        \\
+        \\data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}}
+        \\
+        \\data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"zig\"}"}}
+        \\
+        \\data: {"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[{"type":"web_search_result","url":"https://ziglang.org","title":"Zig","encrypted_content":"E1"}]}}
+        \\
+        \\data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}
+        \\
+        \\data: {"type":"content_block_delta","index":2,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","url":"https://ziglang.org/news","title":"News","cited_text":"0.17 is out","encrypted_index":"Eo"}}}
+        \\
+        \\data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Zig 0.17 shipped."}}
+        \\
+        \\data: {"type":"message_delta","delta":{"stop_reason":"pause_turn"},"usage":{"output_tokens":10,"server_tool_use":{"web_search_requests":2}}}
+        \\
+        \\data: {"type":"message_stop"}
+        \\
+        \\
+    ;
+    const Table = struct {
+        fn lookup(_: *anyopaque, _: std.Io, _: std.mem.Allocator, api_id: []const u8) ?Priced {
+            if (!std.mem.eql(u8, api_id, "claude-opus-5-5")) return null;
+            return .{ .model = "anthropic/claude-opus-5.5", .prices = .{ .base = .{ .prompt = 1e-5, .completion = 1e-4 } } };
+        }
+    };
+    var dummy: u8 = 0;
+    var src: std.Io.Reader = .fixed(upstream_sse);
+    const tr = try a.create(Translator);
+    tr.init(a, .{ .status = 200, .reader = &src, .ctx = undefined, .closeFn = noClose }, .{
+        .model = "anthropic/claude-sonnet-5.5",
+        .api_id = "claude-sonnet-5-5",
+        .created = 1,
+        .prices = .{ .base = .{ .prompt = 1e-6, .completion = 1e-6 } },
+        .resolver = .{ .ctx = &dummy, .io = undefined, .lookupFn = Table.lookup },
+    });
+    defer tr.parser.deinit();
+    const translated = try tr.reader.allocRemaining(a, .unlimited);
+
+    var err: openrouter.UpstreamError = .{ .status = 0, .message = "" };
+    var again: std.Io.Reader = .fixed(translated);
+    const r = try openrouter.parseStream(a, &again, NoSink{}, &err);
+    // The server tool call stays upstream; its results become sources.
+    try testing.expectEqual(@as(usize, 0), r.tool_calls.len);
+    try testing.expectEqualStrings("Zig 0.17 shipped.", r.text);
+    try testing.expectEqual(@as(usize, 2), r.sources.len);
+    try testing.expectEqualStrings("https://ziglang.org", r.sources[0].url);
+    try testing.expectEqualStrings("0.17 is out", r.sources[1].snippet.?);
+    // Without a way to continue, the pause ends the reply.
+    try testing.expectEqualStrings("stop", r.finish_reason);
+    try testing.expectEqualStrings("anthropic/claude-opus-5.5", r.usage.served_model);
+    // Opus prices: 100×1e-5 + 10×1e-4 = 0.002, plus 2 searches × $0.01.
+    try testing.expectApproxEqAbs(@as(f64, 0.022), r.usage.cost_usd, 1e-12);
+    try testing.expectApproxEqAbs(@as(f64, 0.02), r.usage.search_cost_usd, 1e-12);
+    try testing.expectApproxEqAbs(@as(f64, 0.002), r.usage.tokenCost(), 1e-12);
+    try testing.expectEqual(@as(i64, 2), r.usage.search_requests);
+
+    // What a continuation would send back: the blocks as Anthropic sent them.
+    const blocks = try tr.assistantBlocks();
+    try testing.expectEqual(@as(usize, 3), blocks.len);
+    try testing.expectEqualStrings("zig", blocks[0].object.get("input").?.object.get("query").?.string);
+    try testing.expectEqualStrings("E1", blocks[1].object.get("content").?.array.items[0].object.get("encrypted_content").?.string);
+    try testing.expectEqualStrings("Zig 0.17 shipped.", blocks[2].object.get("text").?.string);
+    try testing.expectEqualStrings("Eo", blocks[2].object.get("citations").?.array.items[0].object.get("encrypted_index").?.string);
+    const body = try continueBody(a, t.body, blocks);
+    const msgs = (try std.json.parseFromSliceLeaky(Value, a, body, .{})).object.get("messages").?.array.items;
+    try testing.expectEqual(@as(usize, 2), msgs.len);
+    try testing.expectEqualStrings("assistant", msgs[1].object.get("role").?.string);
+    // A second pause appends to the same assistant turn.
+    const body2 = try continueBody(a, body, blocks[2..]);
+    const msgs2 = (try std.json.parseFromSliceLeaky(Value, a, body2, .{})).object.get("messages").?.array.items;
+    try testing.expectEqual(@as(usize, 2), msgs2.len);
+    try testing.expectEqual(@as(usize, 4), msgs2[1].object.get("content").?.array.items.len);
+}
+
+const NoSink = struct {
+    pub fn onDelta(_: NoSink, _: openrouter.Delta) !void {}
+};

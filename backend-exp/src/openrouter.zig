@@ -139,7 +139,26 @@ pub const Usage = struct {
     completion_tokens: i64 = 0,
     cached_tokens: i64 = 0,
     cache_write_tokens: i64 = 0,
+    /// Total cost, server-tool fees included.
     cost_usd: f64 = 0,
+    /// The model that actually served and was priced, when the upstream
+    /// says (the Anthropic adapter, under server-side fallbacks); "" = the
+    /// model asked for. Points into the parsed JSON: dupe before keeping.
+    served_model: []const u8 = "",
+    /// Server-side web searches and their share of `cost_usd` (the usage
+    /// object's `by_kind` "search" entry); billed as kind "search".
+    search_requests: i64 = 0,
+    search_cost_usd: f64 = 0,
+
+    /// The model to bill: the served one when known.
+    pub fn billedModel(self: Usage, asked: []const u8) []const u8 {
+        return if (self.served_model.len > 0) self.served_model else asked;
+    }
+
+    /// The token part of the cost (without server-tool fees).
+    pub fn tokenCost(self: Usage) f64 {
+        return @max(0, self.cost_usd - self.search_cost_usd);
+    }
 };
 
 pub const Result = struct {
@@ -216,6 +235,7 @@ pub fn parseStream(arena: std.mem.Allocator, reader: *std.Io.Reader, sink: anyty
         };
         if (o.get("usage")) |u| if (u == .object) {
             usage = parseUsage(u.object);
+            usage.served_model = try arena.dupe(u8, usage.served_model);
         };
 
         const choices = o.get("choices") orelse continue;
@@ -384,6 +404,12 @@ pub fn parseUsage(u: std.json.ObjectMap) Usage {
     };
     // DeepSeek reports its context-cache hits at the top level of usage.
     if (out.cached_tokens == 0) out.cached_tokens = jsonInt(u.get("prompt_cache_hit_tokens"));
+    out.served_model = jsonStr(u.get("served_model")) orelse "";
+    if (u.get("by_kind")) |kinds| if (kinds == .array) for (kinds.array.items) |k| {
+        if (k != .object or !std.mem.eql(u8, jsonStr(k.object.get("kind")) orelse "", "search")) continue;
+        out.search_requests += jsonInt(k.object.get("requests"));
+        out.search_cost_usd += jsonFloat(k.object.get("cost"));
+    };
     return out;
 }
 

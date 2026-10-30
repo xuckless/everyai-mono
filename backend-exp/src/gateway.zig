@@ -258,7 +258,9 @@ const Held = struct {
             };
             var hold = false;
             if (v.object.get("usage")) |u| if (u == .object) {
-                self.usage = openrouter.parseUsage(u.object);
+                var usage = openrouter.parseUsage(u.object);
+                usage.served_model = try arena.dupe(u8, usage.served_model);
+                self.usage = usage;
                 hold = true;
             };
             var text: []const u8 = "";
@@ -346,15 +348,25 @@ fn markCut(arena: std.mem.Allocator, call: *std.json.Value) !void {
     try f.object.put(arena, "arguments", .{ .string = try std.mem.concat(arena, u8, &.{ args, truncation.cut_marker }) });
 }
 
+/// Records a gateway call under the model that served it; server-side web
+/// searches go in as their own "search" event.
 fn meterUsage(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, model: []const u8, provider: []const u8, u: openrouter.Usage) !void {
     _ = try billing.charge(app, req, who.user_id, .{
         .kind = "gateway",
-        .model = model,
+        .model = u.billedModel(model),
         .prompt_tokens = u.prompt_tokens,
         .completion_tokens = u.completion_tokens,
         .cached_tokens = u.cached_tokens,
         .cache_write_tokens = u.cache_write_tokens,
-        .cost_usd = u.cost_usd,
+        .cost_usd = u.tokenCost(),
+        .session = session,
+        .api_key_id = who.key_id,
+        .provider = provider,
+    });
+    if (u.search_cost_usd > 0) _ = try billing.charge(app, req, who.user_id, .{
+        .kind = "search",
+        .model = u.billedModel(model),
+        .cost_usd = u.search_cost_usd,
         .session = session,
         .api_key_id = who.key_id,
         .provider = provider,

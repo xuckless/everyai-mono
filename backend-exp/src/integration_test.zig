@@ -1200,3 +1200,110 @@ test "aux: a skill from a folder's files fences them as untrusted; a URL needs t
     try page.expectStatus(.service_unavailable);
     try std.testing.expectEqual(@as(usize, 1), env.fake.bodies.items.len);
 }
+
+const paused_turn =
+    \\data: {"type":"message_start","message":{"id":"msg_p","model":"claude-haiku-5-5","usage":{"input_tokens":1000,"output_tokens":1}}}
+    \\
+    \\data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+    \\
+    \\data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Searching. "}}
+    \\
+    \\data: {"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}}
+    \\
+    \\data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"zig\"}"}}
+    \\
+    \\data: {"type":"content_block_start","index":2,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[{"type":"web_search_result","url":"https://ziglang.org","title":"Zig"}]}}
+    \\
+    \\data: {"type":"message_delta","delta":{"stop_reason":"pause_turn"},"usage":{"output_tokens":100,"server_tool_use":{"web_search_requests":1}}}
+    \\
+    \\data: {"type":"message_stop"}
+    \\
+    \\
+;
+
+const resumed_turn =
+    \\data: {"type":"message_start","message":{"id":"msg_q","model":"claude-haiku-5-5","usage":{"input_tokens":1000,"output_tokens":1}}}
+    \\
+    \\data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+    \\
+    \\data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Zig 0.17 is out."}}
+    \\
+    \\data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":100}}
+    \\
+    \\data: {"type":"message_stop"}
+    \\
+    \\
+;
+
+test "Anthropic pause_turn: continued in place, searches billed as their own kind" {
+    var env: Env = undefined;
+    try start(&env, &.{followups_reply}, true);
+    defer env.deinit();
+    env.anth.responses = &.{ paused_turn, resumed_turn };
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var sw = try env.t.put("/v1/dev/upstream", .{ .json = .{ .anthropic = "anthropic" } });
+    defer sw.deinit();
+    try sw.expectStatus(.ok);
+
+    var res = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = "zig news?" }},
+        .tools_enabled = false,
+        .session = "conv-p",
+    } });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    for ([_][]const u8{ "Searching. ", "Zig 0.17 is out.", "https://ziglang.org", "\"kind\":\"search\"", "event: done" }) |needle| {
+        if (std.mem.indexOf(u8, res.body, needle) == null) {
+            std.debug.print("missing {s} in:\n{s}\n", .{ needle, res.body });
+            return error.TestUnexpectedResult;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, res.body, "event: done"));
+    // The continuation sent the partial reply back as the last assistant turn.
+    try std.testing.expectEqual(@as(usize, 2), env.anth.bodies.items.len);
+    const again = env.anth.bodies.items[1];
+    try std.testing.expect(std.mem.indexOf(u8, again, "\"role\":\"assistant\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, again, "\"srvtoolu_1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, again, "{\"query\":\"zig\"}") != null);
+
+    var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = a };
+    const chat = try env.state.db.one(struct { prompt_tokens: i64, completion_tokens: i64, charged_micros: i64 }, &c, "SELECT prompt_tokens, completion_tokens, charged_micros FROM usage_events WHERE kind = 'chat'", .{});
+    // Both calls summed: 2000 × $0.1/M + 200 × $0.5/M = $0.0003, × 1.15.
+    try std.testing.expectEqual(@as(i64, 2000), chat.prompt_tokens);
+    try std.testing.expectEqual(@as(i64, 200), chat.completion_tokens);
+    try std.testing.expect(chat.charged_micros >= 344 and chat.charged_micros <= 346);
+    const search = try env.state.db.one(struct { model: []const u8, charged_micros: i64 }, &c, "SELECT model, charged_micros FROM usage_events WHERE kind = 'search'", .{});
+    try std.testing.expectEqualStrings("anthropic/claude-haiku-5.5", search.model);
+    try std.testing.expectEqual(@as(i64, 11500), search.charged_micros);
+
+    // Non-streamed (the gateway): the parts are joined into one reply.
+    env.anth.responses = &.{
+        \\{"id":"msg_r","model":"claude-haiku-5-5","content":[{"type":"text","text":"Searching. "},{"type":"server_tool_use","id":"srvtoolu_2","name":"web_search","input":{"query":"zig"}},{"type":"web_search_tool_result","tool_use_id":"srvtoolu_2","content":[{"type":"web_search_result","url":"https://ziglang.org","title":"Zig"}]}],"stop_reason":"pause_turn","usage":{"input_tokens":10,"output_tokens":5,"server_tool_use":{"web_search_requests":1}}}
+        ,
+        \\{"id":"msg_s","model":"claude-haiku-5-5","content":[{"type":"text","text":"Found it."}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}
+    };
+    env.anth.next_index = 0;
+    var made = try env.t.post("/v1/keys", .{ .json = .{ .name = "openhands" } });
+    defer made.deinit();
+    const key = (try made.json(struct { key: []const u8 })).key;
+    var gw = try env.t.post("/v1/chat/completions", .{
+        .headers = &.{ .{ "Authorization", try bearer(a, key) }, .{ "X-EveryAI-Session", "code-p" } },
+        .json = .{ .model = "openai/anthropic/claude-haiku-5.5", .messages = .{.{ .role = "user", .content = "zig news?" }} },
+    });
+    defer gw.deinit();
+    try gw.expectStatus(.ok);
+    const reply = try gw.json(struct {
+        choices: []const struct { message: struct { content: ?[]const u8 }, finish_reason: []const u8 },
+        usage: struct { prompt_tokens: i64, served_model: []const u8 },
+    });
+    try std.testing.expectEqualStrings("Searching. Found it.", reply.choices[0].message.content.?);
+    try std.testing.expectEqualStrings("stop", reply.choices[0].finish_reason);
+    try std.testing.expectEqual(@as(i64, 20), reply.usage.prompt_tokens);
+    try std.testing.expectEqualStrings("anthropic/claude-haiku-5.5", reply.usage.served_model);
+    try std.testing.expectEqual(@as(usize, 4), env.anth.bodies.items.len);
+    const gw_search = try env.state.db.one(struct { n: i64 }, &c, "SELECT COUNT(*) AS n FROM usage_events WHERE kind = 'search' AND session = 'code-p'", .{});
+    try std.testing.expectEqual(@as(i64, 1), gw_search.n);
+}

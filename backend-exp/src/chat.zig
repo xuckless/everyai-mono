@@ -509,26 +509,33 @@ const Turn = struct {
             },
             else => return err,
         };
+        // Billed as the model that served (a fallback may differ); server-side
+        // web searches are their own "search" event.
+        const billed = result.usage.billedModel(self.model);
         const c = try billing.charge(app, self.req, self.who.user_id, .{
             .kind = "chat",
-            .model = self.model,
+            .model = billed,
             .prompt_tokens = result.usage.prompt_tokens,
             .completion_tokens = result.usage.completion_tokens,
             .cached_tokens = result.usage.cached_tokens,
             .cache_write_tokens = result.usage.cache_write_tokens,
-            .cost_usd = result.usage.cost_usd,
+            .cost_usd = result.usage.tokenCost(),
             .session = self.body.session,
             .provider = self.route.provider,
         });
         try sink.send("usage", .{
             .kind = "chat",
-            .model = self.model,
+            .model = billed,
             .prompt_tokens = result.usage.prompt_tokens,
             .completion_tokens = result.usage.completion_tokens,
             .cached_tokens = result.usage.cached_tokens,
             .cache_write_tokens = result.usage.cache_write_tokens,
             .charged_micros = c.charged_micros,
         });
+        if (result.usage.search_cost_usd > 0) {
+            const sc = try billing.charge(app, self.req, self.who.user_id, .{ .kind = "search", .model = billed, .cost_usd = result.usage.search_cost_usd, .session = self.body.session, .provider = self.route.provider });
+            try sink.send("usage", .{ .kind = "search", .model = billed, .prompt_tokens = 0, .completion_tokens = 0, .cached_tokens = 0, .cache_write_tokens = 0, .charged_micros = sc.charged_micros });
+        }
         return result;
     }
 };
