@@ -170,3 +170,6 @@ coverage.xml
 
 # Local dev runs (scripts/dev.sh)
 /.dev/
+
+# brand logos and such
+/brand/
