@@ -97,9 +97,9 @@ const workingRules = '''
   in the background with its output in a log file (`cmd > /tmp/name.log 2>&1 &`), then check on it with short
   commands such as `tail` of the log or `curl --max-time 5`. Stop the background processes you started once you no
   longer need them, unless the user wants them left running.
-- Output you expect to be long (full test logs, big searches, dumps) is better kept out of the conversation:
-  redirect it to a file under .everyai/spill/ and read it in parts with `head`, `tail`, `sed -n 'A,Bp'` or `grep`.
-  Results of more than 2,000 lines or 50 KB are cut to a preview the same way, with the full text saved there.
+- Keep output you expect to be long (full test logs, big searches, dumps) out of the conversation: whatever a
+  command prints comes back to you in full. Filter it with `head`, `tail`, `grep` or `wc`, or, outside Plan mode,
+  redirect it to a file under .everyai/spill/ and read that in parts with `sed -n 'A,Bp'` or `grep`.
 - Before saying you are done, verify the change: run the tests, the build or the program, and report what you ran.
 </EVERYAI>''';
 
