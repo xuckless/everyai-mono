@@ -106,6 +106,10 @@ Future<InstalledSkill> _load(String dir, String dirName, SkillSource source, Str
     manifest: check.manifest,
     report: check.report,
     digest: total > SkillRules.maxTotalBytes ? '' : await _digest(files),
+    files: [
+      for (final (rel, _) in files)
+        if (rel != 'SKILL.md') rel,
+    ]..sort(),
   );
 }
 
@@ -209,5 +213,23 @@ Future<void> delete(String dir) async {
     await link.delete();
   } else if (Directory(dir).existsSync()) {
     await Directory(dir).delete(recursive: true);
+  }
+}
+
+/// [rel]'s bytes inside skill folder [dir], or null when it is missing, a
+/// link, larger than [maxBytes], or resolves outside the folder.
+Future<List<int>?> readFile(String dir, String rel, int maxBytes) async {
+  try {
+    final root = await Directory(dir).resolveSymbolicLinks();
+    final path = '$dir/$rel';
+    if (FileSystemEntity.isLinkSync(path)) return null;
+    final file = File(path);
+    if (!file.existsSync()) return null;
+    final real = await file.resolveSymbolicLinks();
+    if (!real.startsWith('$root${Platform.pathSeparator}')) return null;
+    if (await file.length() > maxBytes) return null;
+    return await file.readAsBytes();
+  } on FileSystemException {
+    return null;
   }
 }

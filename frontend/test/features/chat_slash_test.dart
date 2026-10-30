@@ -19,6 +19,7 @@ import 'package:every_ai/features/slash/slash_command.dart';
 import 'package:every_ai/features/slash/slash_registry.dart';
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/theme/every_theme.dart';
+import 'package:every_ai/features/skills/skills_providers.dart';
 import 'package:flutter/widgets.dart';
 import 'package:material_ui/material_ui.dart' as m;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -271,6 +272,7 @@ void main() {
         overrides: [
           databaseProvider.overrideWithValue(db),
           preferencesProvider.overrideWithValue(prefs),
+          installedSkillsProvider.overrideWith(NoInstalledSkills.new),
           chatTransportProvider.overrideWithValue(transport),
           appToolCheckerProvider.overrideWithValue(const AppToolChecker()),
           modelCatalogProvider.overrideWith(_Catalog.new),

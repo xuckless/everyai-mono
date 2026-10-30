@@ -13,7 +13,8 @@ import '../data/skill_import.dart';
 import '../data/skill_store.dart';
 import '../skills_providers.dart';
 
-/// Settings → Skills: the Agent Skills Code sessions can use. Skills in the
+/// Settings → Skills: the Agent Skills Code sessions (and, without project
+/// skills or script skills, Chat) can use. Skills in the
 /// EveryAI library and `~/.agents/skills` are on unless turned off; skills
 /// that came with a project stay off until the user reviews and trusts them.
 class SkillsSettingsScreen extends ConsumerWidget {
@@ -56,7 +57,8 @@ class SkillsSettingsScreen extends ConsumerWidget {
         children: [
           Text(
             'A skill is a folder with a SKILL.md: instructions, and sometimes scripts and reference files, that the '
-            'Code agent loads when a task calls for it. Only the name and description sit in the prompt until then.',
+            'Code agent loads when a task calls for it. Chat can use the EveryAI and ~/.agents/skills ones too, '
+            'except skills that run programs. Only the name and description sit in the prompt until a skill is used.',
             style: TextStyle(color: theme.textMuted, fontSize: 12),
           ),
           Padding(
@@ -203,7 +205,12 @@ class _SkillTile extends ConsumerWidget {
     final status = skillStatus(s, settings, shadowedBy: shadowedBy);
     final needsTrust = s.usable && !settings.trustedNow(s);
     final notes = [
-      if (s.report.hasScripts) 'Has scripts',
+      if (s.usable && skillNeedsCode(s))
+        s.source == SkillSource.project
+            ? 'Runs programs'
+            : 'Needs Code: runs programs, so Chat lists it but cannot use it'
+      else if (s.report.hasScripts)
+        'Has scripts',
       ...s.report.warnings,
       if (status != null && status != 'Off') status,
     ];

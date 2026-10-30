@@ -11,6 +11,7 @@ import '../attachments/attachment.dart';
 import '../memory/memory_providers.dart';
 import '../models/domain/model_catalog.dart';
 import '../models/models_providers.dart';
+import '../skills/skills_providers.dart';
 import '../usage/usage_totals.dart';
 import 'data/chat_cleanup.dart';
 import 'data/chat_repository.dart';
@@ -45,7 +46,13 @@ final toolResultsProvider = Provider<ToolResults>((ref) {
 final chatClientToolsProvider = Provider<Set<String>>(
   // …and the artifact and diagram checks (Mermaid errors, bad TeX).
   // …and, with memory on, the local memory and chat-search tools.
-  (ref) => {askUserTool, ...ref.watch(appToolCheckerProvider).tools, ...ref.watch(enabledLocalChatToolsProvider)},
+  // …and, when the user has skills for Chat, load_skill and read_skill_file.
+  (ref) => {
+    askUserTool,
+    ...ref.watch(appToolCheckerProvider).tools,
+    ...ref.watch(enabledLocalChatToolsProvider),
+    if (ref.watch(chatSkillsProvider).isNotEmpty) ...skillChatTools,
+  },
 );
 
 final conversationsProvider = StreamProvider<List<Conversation>>(
@@ -262,7 +269,16 @@ final class ChatController extends Notifier<ChatSessionState> {
   Future<void> _answerLocal(ToolWait wait) async {
     final result = await ref
         .read(localChatToolsProvider)
-        .run(wait.name, wait.argumentsJson, chatId: conversationId, readWeb: state.liveSources.isNotEmpty);
+        .run(
+          wait.name,
+          wait.argumentsJson,
+          chatId: conversationId,
+          readWeb: state.liveSources.isNotEmpty,
+          loadedSkills: loadedSkillsIn([
+            for (final m in state.messages) ...m.parts.whereType<ToolCallPart>(),
+            ...state.liveParts.whereType<ToolCallPart>(),
+          ]),
+        );
     if (!ref.mounted) return;
     _recordResult?.call(wait.id, localToolResultJson(result));
     try {
@@ -301,6 +317,10 @@ final class ChatController extends Notifier<ChatSessionState> {
       if (!ref.mounted) return;
       state = state.copyWith(title: c.title);
     }
+
+    // The user's skills: a catalog after the memory block, loaded on demand.
+    final skills = state.toolsEnabled ? await chatSkillsNow(ref) : const <ChatSkill>[];
+    if (!ref.mounted) return;
 
     var history = state.messages;
     if (userText == null) {
@@ -397,6 +417,7 @@ final class ChatController extends Notifier<ChatSessionState> {
             attachments: attachments,
             clientTools: state.toolsEnabled ? ref.read(chatClientToolsProvider) : const {},
             memory: ref.read(memoryProvider.notifier).snapshotFor(conversationId),
+            skills: skillCatalogBlock(skills),
             effort: state.effort.wireFor(model),
             forceTool: state.toolsEnabled ? forceTool : null,
           ),
@@ -445,7 +466,7 @@ final class ChatController extends Notifier<ChatSessionState> {
           case ToolProgress(:final id, :final name)
               when state.pendingTools.any((t) => t.id == id) ||
                   name == askUserTool ||
-                  localChatTools.contains(name) ||
+                  allLocalChatTools.contains(name) ||
                   ref.read(appToolCheckerProvider).handles(name):
             _settleTool(id);
           case ToolProgress(:final id, :final name, :final status, :final detail):

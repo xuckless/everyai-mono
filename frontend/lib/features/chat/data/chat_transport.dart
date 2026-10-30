@@ -9,6 +9,7 @@ import '../../artifacts/domain/artifact.dart';
 import '../../artifacts/domain/drawing.dart';
 import '../../attachments/attachment.dart';
 import '../../models/domain/model_catalog.dart';
+import '../../skills/domain/chat_skills.dart';
 import '../domain/ask_user.dart';
 import '../domain/image_refs.dart';
 import '../domain/message.dart';
@@ -26,6 +27,7 @@ final class ChatRequest {
     this.attachments = const [],
     this.clientTools = const {},
     this.memory,
+    this.skills,
     this.effort,
     this.forceTool,
   });
@@ -52,6 +54,9 @@ final class ChatRequest {
 
   /// The chat's frozen memory block (the same text every turn), or null.
   final String? memory;
+
+  /// The user's skills as a `<skills>` catalog (sorted, stable), or null.
+  final String? skills;
 
   /// Thinking effort (`low|medium|high|max`); null leaves the model's default.
   final String? effort;
@@ -219,6 +224,7 @@ final class SseTransport implements ChatTransport {
       'tools_enabled': request.toolsEnabled,
       'session': ?request.conversationId,
       'memory': ?request.memory,
+      'skills': ?request.skills,
       'effort': ?request.effort,
       'force_tool': ?request.forceTool,
       if (request.clientTools.isNotEmpty) 'client_tools': request.clientTools.toList(growable: false),
@@ -349,6 +355,10 @@ Map<String, String> toolOutputsByMessage(List<Message> history) {
       }
       if (call.toolName == 'memory') {
         if (memoryCallNote(call) case final note?) notes.add(note);
+        continue;
+      }
+      if (skillChatTools.contains(call.toolName)) {
+        if (skillCallNote(call) case final note?) notes.add(note);
         continue;
       }
       final visual = Visual.fromPart(call);

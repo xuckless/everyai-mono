@@ -17,6 +17,7 @@ import 'package:every_ai/features/memory/memory_providers.dart';
 import 'package:every_ai/features/memory/ui/local_tool_chip.dart';
 import 'package:every_ai/features/models/domain/model_catalog.dart';
 import 'package:every_ai/features/models/models_providers.dart';
+import 'package:every_ai/features/skills/skills_providers.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -291,6 +292,7 @@ void main() {
         overrides: [
           databaseProvider.overrideWithValue(db),
           preferencesProvider.overrideWithValue(prefs),
+          installedSkillsProvider.overrideWith(NoInstalledSkills.new),
           chatTransportProvider.overrideWithValue(transport),
           toolResultsProvider.overrideWithValue(results),
           modelCatalogProvider.overrideWith(_Catalog.new),

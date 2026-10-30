@@ -29,6 +29,7 @@ final class InstalledSkill {
     required this.digest,
     this.manifest,
     this.projectId,
+    this.files = const [],
   });
 
   /// The folder's name (the skill's name when it is valid).
@@ -45,6 +46,10 @@ final class InstalledSkill {
 
   /// SHA-256 over the folder's files; a project skill's trust is bound to it.
   final String digest;
+
+  /// The skill's files, relative to [dir] (`/`-separated, sorted), without
+  /// `SKILL.md` itself: what `read_skill_file` may open in Chat.
+  final List<String> files;
 
   String get name => manifest?.name ?? dirName;
   String get skillMdPath => '$dir/SKILL.md';

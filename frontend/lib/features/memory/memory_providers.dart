@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/preferences.dart';
 import '../../core/providers.dart';
 import '../chat/data/chat_repository.dart';
+import '../skills/skills_providers.dart';
 import 'data/chat_recall.dart';
 import 'domain/memory.dart';
 
@@ -12,6 +13,9 @@ import 'domain/memory.dart';
 const memoryTool = 'memory';
 const searchChatsTool = 'search_chats';
 const localChatTools = {memoryTool, searchChatsTool};
+
+/// Every tool [LocalChatTools] runs: memory, chat search and the skill tools.
+const allLocalChatTools = {...localChatTools, ...skillChatTools};
 
 final memoryProvider = NotifierProvider<MemoryController, Memory>(MemoryController.new);
 
@@ -155,14 +159,17 @@ final class MemorySnapshots {
 /// What a local tool call returns to the model.
 typedef LocalToolResult = ({String text, bool isError});
 
-/// Runs `memory` and `search_chats` calls on this device.
+/// Runs `memory`, `search_chats` and the skill tools on this device.
 final class LocalChatTools {
-  const LocalChatTools({required this.editMemory, required this.recall});
+  const LocalChatTools({required this.editMemory, required this.recall, this.skills});
 
   final MemoryEdit Function(Map<String, Object?> args) editMemory;
   final ChatRecall recall;
 
-  bool handles(String name) => localChatTools.contains(name);
+  /// `load_skill` and `read_skill_file`.
+  final SkillChatTools? skills;
+
+  bool handles(String name) => localChatTools.contains(name) || (skills?.handles(name) ?? false);
 
   /// Never throws: a failure is an error result the model can read.
   ///
@@ -170,7 +177,15 @@ final class LocalChatTools {
   /// page), which may carry injected instructions. Memory lands in every
   /// later chat, so such a turn may not change it; the model asks the user
   /// and saves it in the next turn, once they confirm.
-  Future<LocalToolResult> run(String name, String argumentsJson, {required String chatId, bool readWeb = false}) async {
+  ///
+  /// [loadedSkills]: skills the chat already loaded (not sent again).
+  Future<LocalToolResult> run(
+    String name,
+    String argumentsJson, {
+    required String chatId,
+    bool readWeb = false,
+    Set<String> loadedSkills = const {},
+  }) async {
     final Map<String, Object?> args;
     try {
       args = switch (jsonDecode(argumentsJson)) {
@@ -180,6 +195,7 @@ final class LocalChatTools {
     } on FormatException {
       return (text: 'Error: the arguments were not valid JSON.', isError: true);
     }
+    if (skills case final s? when s.handles(name)) return s.run(name, args, loaded: loadedSkills);
     try {
       switch (name) {
         case memoryTool:
@@ -216,6 +232,7 @@ final localChatToolsProvider = Provider<LocalChatTools>(
   (ref) => LocalChatTools(
     editMemory: (args) => ref.read(memoryProvider.notifier).apply(args),
     recall: ChatRecall(ref.watch(databaseProvider), ChatRepository(ref.watch(databaseProvider))),
+    skills: ref.watch(skillChatToolsProvider),
   ),
 );
 

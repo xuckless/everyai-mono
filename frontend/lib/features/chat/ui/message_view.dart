@@ -608,7 +608,7 @@ class _PartView extends StatelessWidget {
         part: call,
         conversationId: conversationId,
       ),
-      final ToolCallPart call when localChatTools.contains(call.toolName) => LocalToolChip(part: call),
+      final ToolCallPart call when allLocalChatTools.contains(call.toolName) => LocalToolChip(part: call),
       final ToolCallPart call => InlineVisual(part: call, conversationId: conversationId),
       ArtifactPart(:final title) => Text(title, style: TextStyle(color: theme.accent)),
       UsagePart() || AttachmentPart() => const SizedBox.shrink(),

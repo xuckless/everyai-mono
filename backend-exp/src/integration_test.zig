@@ -942,6 +942,59 @@ test "chat: memory rides after the system prompt; undeclared memory calls get an
     try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[1], "Error: memory is turned off in the user's app") != null);
 }
 
+// ------------------------------------------------------------------ skills
+
+const load_skill_turn =
+    \\data: {"model":"anthropic/claude-haiku-5.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"toolu_k1","type":"function","function":{"name":"load_skill","arguments":"{\"name\": \"make-deck\"}"}}]}}]}
+    \\
+    \\data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":0.00001}}
+    \\
+    \\data: [DONE]
+    \\
+    \\
+;
+
+test "chat: the skill catalog rides after memory; undeclared load_skill gets an error" {
+    var env: Env = undefined;
+    try start(&env, &.{ load_skill_turn, final_turn, followups_reply }, true);
+    defer env.deinit();
+
+    var res = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = "Make me a deck" }},
+        .memory = "<memory>Name: Sam</memory>",
+        .skills = "<skills>\n- make-deck: Plan a deck.\n</skills>",
+    } });
+    defer res.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "event: done") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "event: tool_wait") == null);
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "event: tool\n") == null);
+
+    const first = env.fake.bodies.items[0];
+    const sys = std.mem.indexOf(u8, first, "You are EveryAI").?;
+    const mem = std.mem.indexOf(u8, first, "<memory>Name: Sam</memory>").?;
+    const cat = std.mem.indexOf(u8, first, "<skills>\\n- make-deck").?;
+    const user = std.mem.indexOf(u8, first, "Make me a deck").?;
+    try std.testing.expect(sys < mem and mem < cat and cat < user);
+    try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[1], "Error: load_skill is turned off in the user's app") != null);
+}
+
+test "chat: an oversized skill catalog is refused" {
+    var env: Env = undefined;
+    try start(&env, &.{}, true);
+    defer env.deinit();
+    const big = try std.testing.allocator.alloc(u8, 32 * 1024 + 1);
+    defer std.testing.allocator.free(big);
+    @memset(big, 'x');
+    var res = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = "hi" }},
+        .skills = big,
+    } });
+    defer res.deinit();
+    try res.expectStatus(.unprocessable_entity);
+}
+
 // ------------------------------------------------------------------ reasoning
 
 const thinking_tool_turn =

@@ -12,3 +12,5 @@ Future<List<SkillFile>> folderFiles(String path) async => const [];
 Future<String> install(ImportCandidate candidate, String destDir) => throw StateError('Skills need a file system.');
 
 Future<void> delete(String dir) async {}
+
+Future<List<int>?> readFile(String dir, String rel, int maxBytes) async => null;

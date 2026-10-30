@@ -10,6 +10,7 @@ import 'package:every_ai/features/chat/data/chat_transport.dart';
 import 'package:every_ai/features/chat/domain/reasoning_effort.dart';
 import 'package:every_ai/features/models/domain/model_catalog.dart';
 import 'package:every_ai/features/models/models_providers.dart';
+import 'package:every_ai/features/skills/skills_providers.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -67,6 +68,7 @@ void main() {
         overrides: [
           databaseProvider.overrideWithValue(db),
           preferencesProvider.overrideWithValue(prefs),
+          installedSkillsProvider.overrideWith(NoInstalledSkills.new),
           chatTransportProvider.overrideWithValue(transport),
           chatClientToolsProvider.overrideWithValue(const {}),
           appToolCheckerProvider.overrideWithValue(const AppToolChecker()),

@@ -8,9 +8,10 @@ import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../chat/domain/message.dart';
+import '../../skills/domain/chat_skills.dart';
 import '../memory_providers.dart';
 
-/// What a `memory` or `search_chats` call did, for the one-line chip:
+/// What a `memory`, `search_chats` or skill call did, for the one-line chip:
 /// (label, detail, failed).
 ({String label, String detail, bool failed}) describeLocalCall(ToolCallPart part) {
   final args = switch (_decode(part.argumentsJson)) {
@@ -24,6 +25,10 @@ import '../memory_providers.dart';
   final failed = result?['error'] == true;
   final pending = result == null;
   String str(String k) => (args[k] as String? ?? '').trim();
+  if (skillChatTools.contains(part.toolName)) {
+    final d = describeSkillCall(part, pending: pending, failed: failed);
+    return (label: d.label, detail: d.detail, failed: failed);
+  }
   if (part.toolName == searchChatsTool) {
     final chat = str('chat_id');
     if (chat.isNotEmpty) {
@@ -54,8 +59,8 @@ Object? _decode(String? json) {
   }
 }
 
-/// A memory edit or chat search in the transcript: one muted line that opens
-/// Settings → Memory.
+/// A memory edit, chat search or skill use in the transcript: one muted line;
+/// memory opens Settings → Memory, skills Settings → Skills.
 class LocalToolChip extends StatelessWidget {
   const LocalToolChip({super.key, required this.part});
 
@@ -70,7 +75,15 @@ class LocalToolChip extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
-          AdaptiveIcon(part.toolName == searchChatsTool ? EveryIcon.search : EveryIcon.spark, size: 14, color: color),
+          AdaptiveIcon(
+            switch (part.toolName) {
+              searchChatsTool => EveryIcon.search,
+              loadSkillTool || readSkillFileTool => EveryIcon.document,
+              _ => EveryIcon.spark,
+            },
+            size: 14,
+            color: color,
+          ),
           const SizedBox(width: 6),
           Flexible(
             child: Text.rich(
@@ -91,10 +104,15 @@ class LocalToolChip extends StatelessWidget {
         ],
       ),
     );
-    if (part.toolName != memoryTool) return row;
+    final route = switch (part.toolName) {
+      memoryTool => Routes.memory,
+      loadSkillTool || readSkillFileTool => Routes.skills,
+      _ => null,
+    };
+    if (route == null) return row;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTap: () => context.go(Routes.memory),
+      onTap: () => context.go(route),
       child: MouseRegion(cursor: SystemMouseCursors.click, child: row),
     );
   }

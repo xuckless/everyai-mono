@@ -58,6 +58,12 @@ pub const ChatRequest = struct {
     /// chat began: the same bytes every turn, sent right after the constant
     /// system prompt so the cached prefix holds.
     memory: ?[]const u8 = null,
+    /// The user's skills for this chat (`<skills>`: sorted names and
+    /// descriptions, built by the app from its local skill library), loaded
+    /// on demand through the client-executed `load_skill`. Sent after the
+    /// memory block, so the constant prefix stays cached and the catalog
+    /// itself caches while the user's skills don't change.
+    skills: ?[]const u8 = null,
     /// How hard a reasoning model thinks; ignored for models without
     /// reasoning, and null leaves the provider's default.
     effort: ?Effort = null,
@@ -83,6 +89,9 @@ pub const Effort = enum {
 
 /// The most memory text a request may carry (the app caps its notes far lower).
 pub const memory_max = 16 * 1024;
+
+/// The most skill-catalog text a request may carry.
+pub const skills_max = 32 * 1024;
 
 pub const ImageRef = struct {
     id: []const u8,
@@ -308,6 +317,7 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
         return res.fail(.unprocessable_entity, "body must be {model?, mode, messages: [{role, content}], tools_enabled, session?}");
     if (body.messages.len == 0) return res.fail(.unprocessable_entity, "messages must not be empty");
     if (body.memory) |m| if (m.len > memory_max) return res.fail(.unprocessable_entity, "memory is too long");
+    if (body.skills) |k| if (k.len > skills_max) return res.fail(.unprocessable_entity, "skills is too long");
     if (body.force_tool) |t| if (!knownTool(t)) return res.fail(.unprocessable_entity, "force_tool is not a known tool");
     for (body.messages) |m| if (m.content != .string and m.content != .array)
         return res.fail(.unprocessable_entity, "content must be a string or an array of parts");
@@ -346,6 +356,8 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
     // as user-role content: the model may have written it (possibly from
     // something it read on the web), so it must not carry system authority.
     if (body.memory) |m| if (std.mem.trim(u8, m, " \t\r\n").len > 0) try messages.append(arena, .{ .role = "user", .content = m });
+    // The skill catalog: user content too (a skill may come from anywhere).
+    if (body.skills) |k| if (std.mem.trim(u8, k, " \t\r\n").len > 0) try messages.append(arena, .{ .role = "user", .content = k });
     for (body.messages) |m| {
         const role = if (std.mem.eql(u8, m.role, "assistant")) "assistant" else "user";
         switch (m.content) {

@@ -29,3 +29,8 @@ Future<String> installSkill(ImportCandidate candidate, String destDir) => impl.i
 
 /// Deletes the skill's folder.
 Future<void> deleteSkill(InstalledSkill skill) => impl.delete(skill.dir);
+
+/// The bytes of file [rel] (relative, `/`-separated) inside skill folder
+/// [dir]; null when it is missing, a link, over [maxBytes] or outside [dir].
+Future<List<int>?> readSkillFileBytes(String dir, String rel, {int maxBytes = 512 * 1024}) =>
+    impl.readFile(dir, rel, maxBytes);

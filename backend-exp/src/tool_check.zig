@@ -199,6 +199,10 @@ fn semantic(issues: *Issues, name: []const u8, args: Value) !void {
         &.{"url"}
     else if (eql(name, "generate_image"))
         &.{"prompt"}
+    else if (eql(name, "load_skill"))
+        &.{"name"}
+    else if (eql(name, "read_skill_file"))
+        &.{ "skill", "path" }
     else
         &.{};
     for (nonempty) |k| if (str(args, k)) |s| if (blank(s)) try issues.add("{s} is empty", .{k});
@@ -428,6 +432,25 @@ test "memory and search_chats need the fields their action uses" {
     try std.testing.expect((try check(a, "search_chats", try parse(a, "{}"))) != null);
     try std.testing.expect((try check(a, "search_chats", try parse(a,
         \\{"query":"tax return"}
+    ))) == null);
+}
+
+test "skill tools need a name, and a skill and path" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expect((try check(a, "load_skill", try parse(a, "{}"))) != null);
+    try std.testing.expect((try check(a, "load_skill", try parse(a,
+        \\{"name":" "}
+    ))) != null);
+    try std.testing.expect((try check(a, "load_skill", try parse(a,
+        \\{"name":"make-deck"}
+    ))) == null);
+    try std.testing.expect((try check(a, "read_skill_file", try parse(a,
+        \\{"skill":"make-deck"}
+    ))) != null);
+    try std.testing.expect((try check(a, "read_skill_file", try parse(a,
+        \\{"skill":"make-deck","path":"references/style.md"}
     ))) == null);
 }
 

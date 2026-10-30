@@ -6,8 +6,10 @@ import '../../core/preferences.dart';
 import '../code/code_providers.dart' show codeProjectsProvider;
 import 'data/skill_import.dart';
 import 'data/skill_store.dart';
+import 'domain/chat_skills.dart';
 import 'domain/skill_catalog.dart';
 
+export 'domain/chat_skills.dart';
 export 'domain/skill_catalog.dart';
 
 /// The user's skill choices (Preferences `code.skills`, see [SkillSettings]).
@@ -77,6 +79,13 @@ final class InstalledSkills extends AsyncNotifier<List<InstalledSkill>> {
   }
 }
 
+/// An empty skill library, for tests (no scan of the real folders) and
+/// hosts without skills.
+final class NoInstalledSkills extends InstalledSkills {
+  @override
+  Future<List<InstalledSkill>> build() async => const [];
+}
+
 /// The `agent_context.skills` for a new session in [projectId], read from
 /// disk now so a project skill changed since it was trusted stays out.
 Future<List<Map<String, Object?>>> codeSkillsFor(Ref ref, String? projectId) async {
@@ -87,3 +96,25 @@ Future<List<Map<String, Object?>>> codeSkillsFor(Ref ref, String? projectId) asy
   final all = await scanSkills(await skillRoots(projects));
   return [for (final s in sessionSkills(all, ref.read(skillSettingsProvider), projectId)) openHandsSkill(s)];
 }
+
+/// The skills Chat offers (library and shared, active, sorted), from the
+/// last scan; empty until it finished. See [chatSkillsNow].
+final chatSkillsProvider = Provider<List<ChatSkill>>(
+  (ref) => chatSkills(ref.watch(installedSkillsProvider).value ?? const [], ref.watch(skillSettingsProvider)),
+);
+
+/// The chat skills for a turn about to start: waits briefly for the first
+/// scan, so the first message after launch still gets the catalog.
+Future<List<ChatSkill>> chatSkillsNow(Ref ref) async {
+  try {
+    await ref.read(installedSkillsProvider.future).timeout(const Duration(seconds: 2));
+  } on Object {
+    // No file system, or a slow disk: go on with what there is.
+  }
+  return ref.read(chatSkillsProvider);
+}
+
+/// Runs the skill tools for Chat against [chatSkillsProvider].
+final skillChatToolsProvider = Provider<SkillChatTools>(
+  (ref) => SkillChatTools(ref.watch(chatSkillsProvider), readFile: readSkillFileBytes),
+);
