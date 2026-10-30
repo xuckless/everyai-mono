@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:uuid/uuid.dart';
 
+import '../features/artifacts/ui/artifacts_screen.dart';
 import '../features/auth/auth_providers.dart';
 import '../features/auth/domain/auth_state.dart';
 import '../features/auth/ui/sign_in_screen.dart';
@@ -99,13 +100,7 @@ final routerProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: Routes.artifacts,
-            pageBuilder: (_, _) => const NoTransitionPage(
-              child: ComingSoonScreen(
-                title: 'Artifacts',
-                icon: EveryIcon.artifacts,
-                message: 'Documents, code and apps created in your chats will collect here.',
-              ),
-            ),
+            pageBuilder: (_, _) => const NoTransitionPage(child: ArtifactsScreen()),
           ),
           GoRoute(
             path: Routes.code,

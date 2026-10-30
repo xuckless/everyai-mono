@@ -11,6 +11,7 @@ import '../../chat/chat_providers.dart';
 import '../domain/artifact.dart';
 import '../domain/drawing.dart';
 import '../export/downloads.dart';
+import 'artifact_editor.dart';
 import 'download_button.dart';
 import 'renderers/web_view.dart';
 import 'visual_view.dart';
@@ -49,7 +50,11 @@ class ArtifactPanel extends ConsumerWidget {
     final export = exportOf(v);
     final interactive = v.kind == VisualKind.html && ref.watch(webInteractiveProvider(webArtifactKey(v)));
     final draft = v.kind == VisualKind.drawing ? ref.watch(drawingDraftProvider(v.callId)) : null;
-    final fills = v.kind == VisualKind.html || v.kind == VisualKind.diagram || v.kind == VisualKind.drawing;
+    final edit = ref.watch(artifactEditProvider(conversationId));
+    final editing = edit != null && artifact != null && edit.artifactId == artifact.id ? edit : null;
+    final canEdit = artifact != null && editableAsText(v);
+    final fills =
+        editing != null || v.kind == VisualKind.html || v.kind == VisualKind.diagram || v.kind == VisualKind.drawing;
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -85,15 +90,29 @@ class ArtifactPanel extends ConsumerWidget {
                           v.kind == VisualKind.code && v.str('language').isNotEmpty ? v.str('language') : v.kind.label,
                           if (v.kind == VisualKind.html) interactive ? 'Interactive' : 'Static',
                           if (v.kind == VisualKind.drawing && (draft != null || artifact == null)) 'Not saved',
-                          if (artifact != null && artifact.versions.length > 1)
-                            'Version ${version + 1} of ${artifact.versions.length}',
+                          if (editing != null)
+                            editing.changed ? 'Editing · Not saved' : 'Editing'
+                          else ...[
+                            if (artifact != null && artifact.versions.length > 1)
+                              'Version ${version + 1} of ${artifact.versions.length}',
+                            if (v.editedByUser) 'Edited by you',
+                          ],
                         ].join(' · '),
                         style: TextStyle(color: theme.textMuted, fontSize: 12),
                       ),
                     ],
                   ),
                 ),
-                if (artifact != null && artifact.versions.length > 1) ...[
+                if (editing != null) ...[
+                  AdaptiveButton(
+                    label: 'Cancel',
+                    emphasis: ButtonEmphasis.plain,
+                    onPressed: ref.read(artifactEditProvider(conversationId).notifier).cancel,
+                  ),
+                  const SizedBox(width: 6),
+                  AdaptiveButton(label: 'Save', onPressed: editing.changed ? () => _saveEdit(context, ref) : null),
+                  const SizedBox(width: 6),
+                ] else if (artifact != null && artifact.versions.length > 1) ...[
                   AdaptiveIconButton(
                     icon: EveryIcon.chevronLeft,
                     tooltip: 'Previous version',
@@ -107,7 +126,13 @@ class ArtifactPanel extends ConsumerWidget {
                         : () => panel.openArtifact(artifact!.id, version: version + 1),
                   ),
                 ],
-                if (v.kind == VisualKind.html)
+                if (canEdit && editing == null)
+                  AdaptiveIconButton(
+                    icon: EveryIcon.edit,
+                    tooltip: 'Edit',
+                    onPressed: () => ref.read(artifactEditProvider(conversationId).notifier).start(artifact!.id, v),
+                  ),
+                if (v.kind == VisualKind.html && editing == null)
                   AdaptiveIconButton(
                     icon: interactive ? EveryIcon.pause : EveryIcon.play,
                     tooltip: interactive ? 'Show without scripts' : 'Run scripts',
@@ -119,13 +144,13 @@ class ArtifactPanel extends ConsumerWidget {
                     tooltip: 'Save as a new version',
                     onPressed: draft == null ? null : () => _saveDrawing(context, ref, v, artifact, draft),
                   ),
-                if (v.kind == VisualKind.diagram && inlineWebSupported)
+                if (v.kind == VisualKind.diagram && inlineWebSupported && editing == null)
                   AdaptiveIconButton(
                     icon: EveryIcon.drawing,
                     tooltip: 'Make editable',
                     onPressed: () => _makeEditable(ref, v, artifact),
                   ),
-                if (v.kind == VisualKind.html || v.kind == VisualKind.diagram)
+                if ((v.kind == VisualKind.html || v.kind == VisualKind.diagram) && editing == null)
                   AdaptiveIconButton(
                     icon: EveryIcon.external,
                     tooltip: 'Open in browser',
@@ -145,12 +170,27 @@ class ArtifactPanel extends ConsumerWidget {
                   },
                 ),
                 if (!kIsWeb) DownloadButton(visual: v),
-                AdaptiveIconButton(icon: EveryIcon.close, tooltip: 'Close panel', onPressed: panel.close),
+                AdaptiveIconButton(
+                  icon: EveryIcon.close,
+                  tooltip: 'Close panel',
+                  onPressed: () {
+                    ref.read(artifactEditProvider(conversationId).notifier).cancel();
+                    panel.close();
+                  },
+                ),
               ],
             ),
           ),
           Expanded(
-            child: fills
+            child: editing != null
+                ? ArtifactTextEditor(
+                    key: ValueKey('edit:${editing.base.callId}'),
+                    initialText: editing.text,
+                    onChanged: ref.read(artifactEditProvider(conversationId).notifier).update,
+                    onSave: () => _saveEdit(context, ref),
+                    onCancel: ref.read(artifactEditProvider(conversationId).notifier).cancel,
+                  )
+                : fills
                 ? Padding(
                     padding: EdgeInsets.all(v.kind == VisualKind.drawing ? 0 : 12),
                     child: VisualBody(visual: v, conversationId: conversationId, expanded: true),
@@ -168,6 +208,21 @@ class ArtifactPanel extends ConsumerWidget {
         ],
       ),
     );
+  }
+
+  /// Saves the hand-edit as the artifact's newest version and shows it.
+  Future<void> _saveEdit(BuildContext context, WidgetRef ref) async {
+    final editor = ref.read(artifactEditProvider(conversationId).notifier);
+    final id = ref.read(artifactEditProvider(conversationId))?.artifactId;
+    if (id == null) return;
+    final saved = await editor.save();
+    if (!context.mounted) return;
+    if (!saved) {
+      showAdaptiveToast(context, 'Wait for the answer to finish, then save');
+      return;
+    }
+    ref.read(artifactPanelProvider(conversationId).notifier).openArtifact(id);
+    showAdaptiveToast(context, 'Saved as a new version');
   }
 
   /// Opens the Mermaid diagram [v] as an Excalidraw drawing: the one made

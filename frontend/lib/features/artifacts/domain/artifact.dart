@@ -87,6 +87,9 @@ final class Visual {
   final Map<String, Object?> args;
 
   String str(String key) => args[key] as String? ?? '';
+
+  /// Saved by the user in the panel (`edited_by: user`), not made by the model.
+  bool get editedByUser => args['edited_by'] == 'user';
 }
 
 /// A document the model created and may revise (`create_artifact`, then
@@ -137,7 +140,13 @@ List<Artifact> artifactsIn(Iterable<Message> messages) {
             callId: visual.callId,
             kind: previous.kind,
             title: previous.title,
-            args: {...previous.args, 'content': edited.content, 'edit_missed': edited.missed, 'edits': null},
+            args: {
+              ...previous.args,
+              'content': edited.content,
+              'edit_missed': edited.missed,
+              'edits': null,
+              'edited_by': visual.args['edited_by'],
+            },
           ),
         );
         continue;
@@ -147,7 +156,8 @@ List<Artifact> artifactsIn(Iterable<Message> messages) {
           callId: visual.callId,
           kind: previous.kind,
           title: visual.str('title').isEmpty ? previous.title : visual.title,
-          args: {...previous.args, ...visual.args},
+          // Who made this version is never inherited.
+          args: {...previous.args, 'edited_by': null, ...visual.args},
         );
       }
       (byId[id] ??= []).add(visual);
@@ -206,3 +216,14 @@ Visual imageVisual(ImagePart image) {
   }
   return (content: out, missed: missed);
 }
+
+/// Whether the panel can edit [v] as text: model-made documents, code, web
+/// pages, SVG and Mermaid sources (drawings have their own editor).
+bool editableAsText(Visual v) => switch (v.kind) {
+  VisualKind.document ||
+  VisualKind.code ||
+  VisualKind.html ||
+  VisualKind.svg ||
+  VisualKind.diagram => v.args['bytes'] == null && v.args['image_id'] == null,
+  _ => false,
+};

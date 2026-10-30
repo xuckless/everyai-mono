@@ -78,7 +78,7 @@ void main() {
         ]),
       ];
       final note = toolOutputsByMessage(history)['m']!;
-      expect(note, contains('<artifact id="d" kind="drawing" title="Flow">\n{"elements":[]}\n</artifact>'));
+      expect(note, contains('<artifact id="d" kind="drawing" title="Flow" edited_by="user">\n{"elements":[]}\n</artifact>'));
       expect(note, contains('an earlier version, superseded'));
     });
 

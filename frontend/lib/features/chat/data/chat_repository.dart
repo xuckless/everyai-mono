@@ -133,6 +133,22 @@ final class ChatRepository {
   Future<void> delete(String conversationId) =>
       (_db.delete(_db.conversations)..where((c) => c.id.equals(conversationId))).go();
 
+  /// Conversations that hold artifacts (create/update/edit_artifact calls or
+  /// generated images), most recently updated first. Emits again when
+  /// messages change.
+  Stream<List<String>> watchArtifactConversations({int limit = 200}) => _db
+      .customSelect(
+        'SELECT c.id AS cid FROM conversations c WHERE c.archived = 0 AND EXISTS ('
+        'SELECT 1 FROM messages m JOIN message_parts p ON p.message_id = m.id WHERE m.conversation_id = c.id AND '
+        "((p.kind = 'tool_call' AND (p.body LIKE '%\"tool\":\"create_artifact\"%' "
+        "OR p.body LIKE '%\"tool\":\"update_artifact\"%')) OR (p.kind = 'image' AND p.body IS NOT NULL))) "
+        'ORDER BY c.updated_at DESC LIMIT ?',
+        variables: [Variable.withInt(limit)],
+        readsFrom: {_db.conversations, _db.messages, _db.messageParts},
+      )
+      .watch()
+      .map((rows) => [for (final r in rows) r.read<String>('cid')]);
+
   /// Conversation ids whose messages match [query], best match first.
   Future<List<String>> search(String query) async {
     final q = query.trim();

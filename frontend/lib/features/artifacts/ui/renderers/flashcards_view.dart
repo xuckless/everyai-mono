@@ -2,31 +2,33 @@ import 'dart:math' as math;
 
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/every_icons.dart';
 import '../../../chat/ui/chat_markdown.dart';
+import '../../artifact_providers.dart';
 import '../../domain/artifact.dart';
 
 /// A deck of flip cards: tap (or space) to flip, arrows to move, and mark each
-/// card "Got it" or "Still learning".
-class FlashcardsView extends StatefulWidget {
+/// card "Got it" or "Still learning". Progress is kept per deck
+/// ([flashcardProgressProvider]), so it survives a restart.
+class FlashcardsView extends ConsumerStatefulWidget {
   const FlashcardsView({super.key, required this.visual, this.height = 220});
 
   final Visual visual;
   final double height;
 
   @override
-  State<FlashcardsView> createState() => _FlashcardsViewState();
+  ConsumerState<FlashcardsView> createState() => _FlashcardsViewState();
 }
 
-class _FlashcardsViewState extends State<FlashcardsView> {
-  int _index = 0;
+class _FlashcardsViewState extends ConsumerState<FlashcardsView> {
   bool _flipped = false;
-  final _known = <int>{};
-  final _learning = <int>{};
   final _focus = FocusNode();
+
+  FlashcardDeck get _deck => ref.read(flashcardProgressProvider(widget.visual.callId).notifier);
 
   List<(String, String)> get _cards => [
     for (final c in (widget.visual.args['cards'] as List<Object?>?) ?? const [])
@@ -40,21 +42,13 @@ class _FlashcardsViewState extends State<FlashcardsView> {
   }
 
   void _go(int delta) {
-    final n = _cards.length;
-    if (n == 0) return;
-    setState(() {
-      _index = (_index + delta) % n;
-      if (_index < 0) _index += n;
-      _flipped = false;
-    });
+    setState(() => _flipped = false);
+    _deck.go(delta, _cards.length);
   }
 
   void _mark(bool known) {
-    setState(() {
-      (known ? _known : _learning).add(_index);
-      (known ? _learning : _known).remove(_index);
-    });
-    _go(1);
+    setState(() => _flipped = false);
+    _deck.mark(known: known, count: _cards.length);
   }
 
   @override
@@ -62,7 +56,9 @@ class _FlashcardsViewState extends State<FlashcardsView> {
     final theme = EveryTheme.of(context);
     final cards = _cards;
     if (cards.isEmpty) return Text('No cards.', style: TextStyle(color: theme.textMuted));
-    final (front, back) = cards[_index];
+    final progress = ref.watch(flashcardProgressProvider(widget.visual.callId));
+    final index = progress.index.clamp(0, cards.length - 1);
+    final (front, back) = cards[index];
 
     return Focus(
       focusNode: _focus,
@@ -145,13 +141,13 @@ class _FlashcardsViewState extends State<FlashcardsView> {
             children: [
               AdaptiveIconButton(icon: EveryIcon.chevronLeft, tooltip: 'Previous card', onPressed: () => _go(-1)),
               Text(
-                '${_index + 1} / ${cards.length}',
+                '${index + 1} / ${cards.length}',
                 style: TextStyle(color: theme.textMuted, fontFeatures: const [FontFeature.tabularFigures()]),
               ),
               AdaptiveIconButton(icon: EveryIcon.chevronRight, tooltip: 'Next card', onPressed: () => _go(1)),
               const Spacer(),
               Text(
-                '${_known.length} known · ${_learning.length} learning',
+                '${progress.known.length} known · ${progress.learning.length} learning',
                 style: TextStyle(color: theme.textMuted, fontSize: 12),
               ),
               const SizedBox(width: 10),

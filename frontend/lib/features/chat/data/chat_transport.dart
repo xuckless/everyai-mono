@@ -317,7 +317,8 @@ final class HttpToolResults implements ToolResults {
 
 /// What the model made with UI tools in earlier turns, as text per message id,
 /// so a later turn can see (and edit) it: each artifact's latest content sits in
-/// the message that last changed it, inside `<artifact id kind title>` tags;
+/// the message that last changed it, inside `<artifact id kind title>` tags
+/// (`edited_by="user"` when the user saved that version by hand in the panel);
 /// older versions and other visuals are one-line notes.
 Map<String, String> toolOutputsByMessage(List<Message> history) {
   final latest = {for (final a in artifactsIn(history)) a.latest.callId: a};
@@ -337,7 +338,8 @@ Map<String, String> toolOutputsByMessage(List<Message> history) {
           final v = artifact.latest;
           final kind = call.toolName == 'create_artifact' ? visual.str('kind') : artifact.versions.first.str('kind');
           notes.add(
-            '<artifact id="$id" kind="${kind.isEmpty ? 'markdown' : kind}" title="${artifact.title}">\n'
+            '<artifact id="$id" kind="${kind.isEmpty ? 'markdown' : kind}" title="${artifact.title}"'
+            '${v.editedByUser ? ' edited_by="user"' : ''}>\n'
             '${v.str('content')}\n</artifact>',
           );
         } else {

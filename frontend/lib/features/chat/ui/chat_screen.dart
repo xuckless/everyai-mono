@@ -14,6 +14,7 @@ import '../../../core/ui/selection.dart';
 import '../../artifacts/artifact_providers.dart';
 import '../../artifacts/domain/artifact.dart';
 import '../../artifacts/ui/artifact_panel.dart';
+import '../../artifacts/ui/panel_split.dart';
 import '../../usage/ui/usage_meter.dart';
 import '../chat_providers.dart';
 import '../domain/ask_user.dart';
@@ -356,13 +357,7 @@ class _WithPanel extends ConsumerWidget {
             ],
           );
         }
-        final width = (constraints.maxWidth * 0.52).clamp(360.0, 780.0);
-        return Row(
-          children: [
-            Expanded(child: child),
-            SizedBox(width: width, child: panel),
-          ],
-        );
+        return PanelSplit(maxWidth: constraints.maxWidth, panel: panel, child: child);
       },
     );
   }

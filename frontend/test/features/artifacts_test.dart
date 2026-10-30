@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:archive/archive.dart';
 
 import 'package:every_ai/core/platform/platform_kind.dart';
+import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/core/theme/every_theme.dart';
 import 'package:every_ai/features/artifacts/domain/artifact.dart';
 import 'package:every_ai/features/artifacts/export/doc_model.dart';
@@ -261,6 +262,7 @@ void main() {
 
   group('QuizView', () {
     Widget host(Visual visual) => ProviderScope(
+      overrides: [preferencesProvider.overrideWithValue(Preferences.inMemory())],
       child: m.MaterialApp(
         home: m.Material(
           child: EveryThemeScope(

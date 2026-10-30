@@ -11,15 +11,20 @@ typedef PptxColors = ({String background, String title, String text, String acce
 
 /// Writes a minimal, valid PowerPoint (OOXML) deck: one master, one blank
 /// layout, a theme, and per slide a title box, a body box, an accent bar and
-/// a solid background. Speaker notes are not written yet.
+/// a solid background. Slides with notes get a notes page (under a notes
+/// master with its own theme), which PowerPoint shows as speaker notes.
 Uint8List buildPptx({required String title, required List<PptxSlide> slides, required PptxColors colors}) {
+  final noted = [
+    for (final (i, s) in slides.indexed)
+      if (s.notes.trim().isNotEmpty) i + 1,
+  ];
   final files = <String, String>{
-    '[Content_Types].xml': _contentTypes(slides.length),
+    '[Content_Types].xml': _contentTypes(slides.length, noted),
     '_rels/.rels': _rootRels,
     'docProps/core.xml': _core(title),
     'docProps/app.xml': _app(slides.length),
-    'ppt/presentation.xml': _presentation(slides.length),
-    'ppt/_rels/presentation.xml.rels': _presentationRels(slides.length),
+    'ppt/presentation.xml': _presentation(slides.length, notes: noted.isNotEmpty),
+    'ppt/_rels/presentation.xml.rels': _presentationRels(slides.length, notes: noted.isNotEmpty),
     'ppt/slideMasters/slideMaster1.xml': _master,
     'ppt/slideMasters/_rels/slideMaster1.xml.rels': _rels([
       ('rId1', _relLayout, '../slideLayouts/slideLayout1.xml'),
@@ -28,9 +33,24 @@ Uint8List buildPptx({required String title, required List<PptxSlide> slides, req
     'ppt/slideLayouts/slideLayout1.xml': _layout,
     'ppt/slideLayouts/_rels/slideLayout1.xml.rels': _rels([('rId1', _relMaster, '../slideMasters/slideMaster1.xml')]),
     'ppt/theme/theme1.xml': _theme,
+    if (noted.isNotEmpty) ...{
+      'ppt/notesMasters/notesMaster1.xml': _notesMaster,
+      'ppt/notesMasters/_rels/notesMaster1.xml.rels': _rels([('rId1', _relTheme, '../theme/theme2.xml')]),
+      'ppt/theme/theme2.xml': _theme,
+    },
     for (final (i, s) in slides.indexed) ...{
       'ppt/slides/slide${i + 1}.xml': _slide(s, colors),
-      'ppt/slides/_rels/slide${i + 1}.xml.rels': _rels([('rId1', _relLayout, '../slideLayouts/slideLayout1.xml')]),
+      'ppt/slides/_rels/slide${i + 1}.xml.rels': _rels([
+        ('rId1', _relLayout, '../slideLayouts/slideLayout1.xml'),
+        if (noted.contains(i + 1)) ('rId2', _relNotesSlide, '../notesSlides/notesSlide${i + 1}.xml'),
+      ]),
+      if (noted.contains(i + 1)) ...{
+        'ppt/notesSlides/notesSlide${i + 1}.xml': _notesSlide(s.notes),
+        'ppt/notesSlides/_rels/notesSlide${i + 1}.xml.rels': _rels([
+          ('rId1', _relNotesMaster, '../notesMasters/notesMaster1.xml'),
+          ('rId2', _relSlide, '../slides/slide${i + 1}.xml'),
+        ]),
+      },
     },
   };
   final archive = Archive();
@@ -55,6 +75,9 @@ const _relLayout = '$_relBase/slideLayout';
 const _relMaster = '$_relBase/slideMaster';
 const _relTheme = '$_relBase/theme';
 const _relSlide = '$_relBase/slide';
+const _relNotesMaster = '$_relBase/notesMaster';
+const _relNotesSlide = '$_relBase/notesSlide';
+const _ctBase = 'application/vnd.openxmlformats-officedocument';
 
 String _x(String s) => const HtmlEscape(HtmlEscapeMode.element).convert(s).replaceAll('"', '&quot;');
 
@@ -63,7 +86,7 @@ String _rels(List<(String, String, String)> rels) =>
     '${rels.map((r) => '<Relationship Id="${r.$1}" Type="${r.$2}" Target="${r.$3}"/>').join()}'
     '</Relationships>';
 
-String _contentTypes(int n) =>
+String _contentTypes(int n, List<int> noted) =>
     '$_decl<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
     '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
     '<Default Extension="xml" ContentType="application/xml"/>'
@@ -73,7 +96,10 @@ String _contentTypes(int n) =>
     '<Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>'
     '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
     '<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>'
-    '${[for (var i = 1; i <= n; i++) '<Override PartName="/ppt/slides/slide$i.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>'].join()}'
+    '${[for (var i = 1; i <= n; i++) '<Override PartName="/ppt/slides/slide$i.xml" ContentType="$_ctBase.presentationml.slide+xml"/>'].join()}'
+    '${noted.isEmpty ? '' : '<Override PartName="/ppt/notesMasters/notesMaster1.xml" ContentType="$_ctBase.presentationml.notesMaster+xml"/>'
+              '<Override PartName="/ppt/theme/theme2.xml" ContentType="$_ctBase.theme+xml"/>'}'
+    '${[for (final i in noted) '<Override PartName="/ppt/notesSlides/notesSlide$i.xml" ContentType="$_ctBase.presentationml.notesSlide+xml"/>'].join()}'
     '</Types>';
 
 const _rootRels =
@@ -93,18 +119,59 @@ String _app(int n) =>
     '$_decl<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties">'
     '<Application>EveryAI</Application><Slides>$n</Slides></Properties>';
 
-String _presentation(int n) =>
+String _presentation(int n, {required bool notes}) =>
     '$_decl<p:presentation $_ns>'
     '<p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst>'
+    '${notes ? '<p:notesMasterIdLst><p:notesMasterId r:id="rId${n + 3}"/></p:notesMasterIdLst>' : ''}'
     '<p:sldIdLst>${[for (var i = 0; i < n; i++) '<p:sldId id="${256 + i}" r:id="rId${i + 3}"/>'].join()}</p:sldIdLst>'
     '<p:sldSz cx="$_w" cy="$_h"/><p:notesSz cx="6858000" cy="9144000"/>'
     '</p:presentation>';
 
-String _presentationRels(int n) => _rels([
+String _presentationRels(int n, {required bool notes}) => _rels([
   ('rId1', _relMaster, 'slideMasters/slideMaster1.xml'),
   ('rId2', _relTheme, 'theme/theme1.xml'),
   for (var i = 0; i < n; i++) ('rId${i + 3}', _relSlide, 'slides/slide${i + 1}.xml'),
+  if (notes) ('rId${n + 3}', _relNotesMaster, 'notesMasters/notesMaster1.xml'),
 ]);
+
+// Notes pages are portrait 7.5in × 10in: the slide picture on top, the notes below.
+const _notesSlideImage = '<a:xfrm><a:off x="381000" y="685800"/><a:ext cx="6096000" cy="3429000"/></a:xfrm>';
+const _notesBody = '<a:xfrm><a:off x="685800" y="4343400"/><a:ext cx="5486400" cy="4114800"/></a:xfrm>';
+
+String _placeholder(int id, String name, String ph, String spPr, {String locks = '<a:spLocks noGrp="1"/>'}) =>
+    '<p:sp><p:nvSpPr><p:cNvPr id="$id" name="$name"/><p:cNvSpPr>$locks</p:cNvSpPr><p:nvPr>$ph</p:nvPr></p:nvSpPr>'
+    '<p:spPr>$spPr</p:spPr>';
+
+const _groupProps =
+    '<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>'
+    '<p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>';
+
+final _notesMaster =
+    '$_decl<p:notesMaster $_ns><p:cSld><p:spTree>$_groupProps'
+    '${_placeholder(2, 'Slide Image Placeholder 1', '<p:ph type="sldImg" idx="2"/>', '$_notesSlideImage<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/>', locks: '<a:spLocks noGrp="1" noRot="1" noChangeAspect="1"/>')}</p:sp>'
+    '${_placeholder(3, 'Notes Placeholder 2', '<p:ph type="body" sz="quarter" idx="3"/>', '$_notesBody<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>')}'
+    '<p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:endParaRPr lang="en-US"/></a:p></p:txBody></p:sp>'
+    '</p:spTree></p:cSld>'
+    '<p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" '
+    'accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/>'
+    '<p:notesStyle><a:lvl1pPr marL="0" algn="l" defTabSz="914400" rtl="0" eaLnBrk="1" latinLnBrk="0" hangingPunct="1">'
+    '<a:defRPr sz="1200" kern="1200"><a:solidFill><a:schemeClr val="tx1"/></a:solidFill>'
+    '<a:latin typeface="+mn-lt"/><a:ea typeface="+mn-ea"/><a:cs typeface="+mn-cs"/></a:defRPr></a:lvl1pPr></p:notesStyle>'
+    '</p:notesMaster>';
+
+/// A notes page: the slide picture and [notes], one paragraph per line.
+String _notesSlide(String notes) =>
+    '$_decl<p:notes $_ns><p:cSld><p:spTree>$_groupProps'
+    '${_placeholder(2, 'Slide Image Placeholder 1', '<p:ph type="sldImg"/>', '', locks: '<a:spLocks noGrp="1" noRot="1" noChangeAspect="1"/>')}</p:sp>'
+    '${_placeholder(3, 'Notes Placeholder 2', '<p:ph type="body" idx="1"/>', '')}'
+    '<p:txBody><a:bodyPr/><a:lstStyle/>'
+    '${notes.trim().split('\n').map(_notesParagraph).join()}'
+    '</p:txBody></p:sp>'
+    '</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:notes>';
+
+String _notesParagraph(String line) => line.trim().isEmpty
+    ? '<a:p><a:endParaRPr lang="en-US"/></a:p>'
+    : '<a:p><a:r><a:rPr lang="en-US" dirty="0"/><a:t>${_x(line.trimRight())}</a:t></a:r></a:p>';
 
 const _emptyTree =
     '<p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>'
