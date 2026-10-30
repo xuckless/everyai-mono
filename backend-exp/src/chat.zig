@@ -27,6 +27,7 @@ const images = @import("images.zig");
 const tool_check = @import("tool_check.zig");
 const tool_wait = @import("tool_wait.zig");
 const truncation = @import("truncation.zig");
+const safe_fetch = @import("net/safe_fetch.zig");
 
 const Events = @typeInfo(@typeInfo(@TypeOf(anole.Response.startEventStream)).@"fn".return_type.?).error_union.payload;
 
@@ -533,7 +534,7 @@ fn runTool(app: *App, req: *anole.Request, who: auth.Identity, body: ChatRequest
         .server => {
             try sink.send("tool_status", .{ .id = call.id, .name = call.name, .status = "running", .detail = openrouter.jsonString(args, "url") orelse openrouter.jsonString(args, "prompt") });
             const output = (if (std.mem.eql(u8, call.name, "web_fetch"))
-                webFetch(req, openrouter.jsonString(args, "url") orelse "")
+                webFetch(app, req, openrouter.jsonString(args, "url") orelse "")
             else
                 generateImage(app, req, who, session, call.id, args, sink)) catch |err| blk: {
                 break :blk try std.fmt.allocPrint(req.arena, "Error: {t}", .{err});
@@ -606,14 +607,27 @@ fn toolResult(app: *App, req: *anole.Request, res: *anole.Response) !void {
     return res.json(.{ .ok = true });
 }
 
-/// The page's readable text: tags, scripts and styles removed, whitespace
-/// collapsed, at most 20k characters.
-fn webFetch(req: *anole.Request, url: []const u8) ![]const u8 {
-    if (!std.mem.startsWith(u8, url, "https://") and !std.mem.startsWith(u8, url, "http://")) return error.InvalidUrl;
-    var r = try anole.client(req).fetch(url, .{ .headers = &.{ .{ "User-Agent", "EveryAI/0.1 (+https://everyai.app)" }, .{ "Accept", "text/html,text/plain,*/*" } } });
-    defer r.deinit();
-    if (@backingInt(r.status()) >= 400) return std.fmt.allocPrint(req.arena, "Error: HTTP {d}", .{@backingInt(r.status())});
-    return readableText(req.arena, try r.body(), 20_000);
+/// The page's readable text (tags, scripts and styles removed, whitespace
+/// collapsed, at most 20k characters), fenced as untrusted. The fetch goes
+/// through `safe_fetch`: no local or private addresses, every redirect hop
+/// checked again, the body capped.
+fn webFetch(app: *App, req: *anole.Request, url: []const u8) ![]const u8 {
+    const fetcher = app.web orelse return "Error: web_fetch is not available here.";
+    const page = fetcher.get(req.io, req.arena, std.mem.trim(u8, url, " \t\r\n"), "text/html,text/plain,application/xhtml+xml,*/*;q=0.5") catch |err|
+        return std.fmt.allocPrint(req.arena, "Error: {s}.", .{safe_fetch.describe(err)});
+    if (page.status >= 400) return std.fmt.allocPrint(req.arena, "Error: HTTP {d}", .{page.status});
+    if (!textual(page.content_type)) return std.fmt.allocPrint(req.arena, "Error: the URL is not a web page ({s}); web_fetch reads text only.", .{page.content_type});
+    return safe_fetch.wrapUntrusted(req.arena, page.url, try readableText(req.arena, page.body, 20_000));
+}
+
+/// Content types `readableText` makes sense of; an absent one is tried.
+fn textual(content_type: []const u8) bool {
+    const ct = std.mem.trim(u8, content_type, " ");
+    if (ct.len == 0) return true;
+    inline for (.{ "text/", "application/xhtml", "application/xml", "application/json", "application/ld+json", "application/rss", "application/atom" }) |p| {
+        if (ct.len >= p.len and std.ascii.eqlIgnoreCase(ct[0..p.len], p)) return true;
+    }
+    return false;
 }
 
 pub fn readableText(arena: std.mem.Allocator, html: []const u8, limit: usize) ![]const u8 {

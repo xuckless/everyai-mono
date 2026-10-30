@@ -23,6 +23,7 @@ pub const images = @import("images.zig");
 pub const anthropic = @import("anthropic.zig");
 pub const devtools = @import("devtools.zig");
 pub const sse_client = @import("net/sse_client.zig");
+pub const safe_fetch = @import("net/safe_fetch.zig");
 pub const tool_wait = @import("tool_wait.zig");
 
 pub const std_options = anole.std_options;
@@ -49,6 +50,9 @@ pub const App = struct {
     catalog: models.Catalog,
     /// Chat turns parked on a tool the app runs (`POST /v1/chat/tool_result`).
     waits: tool_wait.Waits = .{},
+    /// Fetches URLs from model tool calls (`web_fetch`), refusing local and
+    /// private addresses; null (tests) fails every such fetch.
+    web: ?*const safe_fetch.Fetcher = null,
 
     pub const Route = struct { up: openrouter.Upstream, provider: []const u8 };
 
@@ -122,6 +126,12 @@ pub fn main(init: std.process.Init) !void {
     var an_adapter: anthropic.Adapter = .{ .inner = an_client.upstream(), .catalog = &state.catalog };
     if (cfg.anthropic_api_key != null) state.anthropic = an_adapter.upstream();
 
+    // Its own client: the shared one may reach local upstreams in development.
+    var web_client = anole.http.Client.init(init.gpa, io, safe_fetch.clientOptions(.{}));
+    defer web_client.deinit();
+    const web: safe_fetch.Fetcher = .{ .http = &web_client };
+    state.web = &web;
+
     if (cfg.google_client_ids.len > 0) {
         const keyring = try init.arena.allocator().create(anole.auth.Keyring);
         keyring.* = anole.auth.Keyring.init(init.gpa, io, app.client(), anole.auth.oidc.Provider.google.jwks_uri);
@@ -153,6 +163,7 @@ test {
     _ = chat;
     _ = gateway;
     _ = sse_client;
+    _ = safe_fetch;
     _ = models;
     _ = anthropic;
     _ = agents;
