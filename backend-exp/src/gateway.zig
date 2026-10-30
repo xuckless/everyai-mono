@@ -13,6 +13,8 @@ const models = @import("models.zig");
 const openrouter = @import("openrouter.zig");
 const sse = anole.sse;
 const truncation = @import("truncation.zig");
+const safe_fetch = @import("net/safe_fetch.zig");
+const web = @import("web.zig");
 
 fn completions(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const who = try auth.identity(req);
@@ -573,7 +575,55 @@ fn markLastPart(arena: std.mem.Allocator, msg: *std.json.Value, ttl: []const u8)
 }
 
 pub fn routes(app: *anole.Server(App), state: *App) void {
-    app.group("/v1", .{auth.Authenticate{ .app = state, .keys = true }}).post("/chat/completions", completions);
+    const v1 = app.group("/v1", .{auth.Authenticate{ .app = state, .keys = true }});
+    v1.post("/chat/completions", completions);
+    v1.post("/fetch", fetch);
+}
+
+/// `POST /v1/fetch` for agent harnesses: a page through `safe_fetch` (no
+/// local or private addresses, every redirect hop checked again, the body
+/// capped), optionally only from the hosts in `allow` (research jobs), as
+/// one window of readable text fenced as untrusted.
+/// Body: `{"url", "allow"?: [host], "offset"?, "max_chars"?}`.
+fn fetch(app: *App, req: *anole.Request, res: *anole.Response) !void {
+    _ = try auth.identity(req);
+    const fetcher = app.web orelse return res.fail(.service_unavailable, "fetching is not available here");
+    const raw = (try req.body()) orelse return res.fail(.bad_request, "missing body");
+    const body = std.json.parseFromSliceLeaky(std.json.Value, req.arena, raw, .{}) catch return res.fail(.bad_request, "body must be JSON");
+    if (body != .object) return res.fail(.bad_request, "body must be a JSON object");
+    const url = std.mem.trim(u8, openrouter.jsonStr(body.object.get("url")) orelse "", " \t\r\n");
+    var allow: ?[]const []const u8 = null;
+    if (body.object.get("allow")) |a| if (a == .array) {
+        var hosts: std.ArrayList([]const u8) = .empty;
+        for (a.array.items) |h| if (h == .string) try hosts.append(req.arena, h.string);
+        allow = hosts.items;
+    };
+    const offset: usize = @intCast(@max(0, openrouter.jsonInt(body.object.get("offset"))));
+    const asked = openrouter.jsonInt(body.object.get("max_chars"));
+    const limit: usize = @intCast(std.math.clamp(if (asked > 0) asked else web.default_chars, web.min_chars, web.max_chars));
+    const page = fetcher.getAllowed(req.io, req.arena, url, "text/html,text/plain,application/xhtml+xml,application/json,*/*;q=0.5", allow) catch |err| {
+        res.status = .unprocessable_entity;
+        return res.json(.{ .@"error" = safe_fetch.describe(err) });
+    };
+    if (page.status >= 400) {
+        res.status = .unprocessable_entity;
+        return res.json(.{ .@"error" = try std.fmt.allocPrint(req.arena, "HTTP {d}", .{page.status}) });
+    }
+    const html = std.mem.indexOf(u8, page.content_type, "html") != null;
+    if (!html and !chat.textual(page.content_type)) {
+        res.status = .unprocessable_entity;
+        return res.json(.{ .@"error" = try std.fmt.allocPrint(req.arena, "not a text page ({s})", .{page.content_type}) });
+    }
+    // Source files and plain text keep their angle brackets.
+    const text = if (html) try chat.readableText(req.arena, page.body, page.body.len) else page.body;
+    const w = web.window(text, offset, limit);
+    return res.json(.{
+        .url = page.url,
+        .status = page.status,
+        .text = try safe_fetch.wrapUntrusted(req.arena, page.url, w.text),
+        .total_chars = w.total,
+        .next_offset = if (w.end < w.total) @as(?usize, w.end) else null,
+    });
 }
 
 test addBreakpoints {

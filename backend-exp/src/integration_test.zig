@@ -1357,3 +1357,37 @@ test "modality guard: chat and gateway refuse attachments the model's catalog en
     defer gw_later.deinit();
     try std.testing.expect(@backingInt(gw_later.status) != 400);
 }
+
+test "gateway fetch: local and metadata addresses are refused, and the allowlist holds" {
+    var env: Env = undefined;
+    try start(&env, &.{""}, true);
+    defer env.deinit();
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var web_client = anole.http.Client.init(alloc, env.server.io(), app_main.safe_fetch.clientOptions(.{}));
+    defer web_client.deinit();
+    const fetcher: app_main.safe_fetch.Fetcher = .{ .http = &web_client };
+    env.state.web = &fetcher;
+    const key = try gatewayKey(&env);
+    defer alloc.free(key);
+
+    var anon = try env.t.post("/v1/fetch", .{ .headers = &.{.{ "Authorization", "Bearer sk-eai-nope" }}, .json = .{ .url = "https://github.com" } });
+    defer anon.deinit();
+    try anon.expectStatus(.unauthorized);
+
+    for ([_][]const u8{ "http://127.0.0.1:8080/", "http://169.254.169.254/latest/meta-data/", "http://localhost/", "http://[::1]/" }) |url| {
+        var res = try env.t.post("/v1/fetch", .{ .headers = &.{.{ "Authorization", try bearer(a, key) }}, .json = .{ .url = url } });
+        defer res.deinit();
+        try res.expectStatus(.unprocessable_entity);
+        try std.testing.expect(std.mem.indexOf(u8, res.body, "local or private") != null);
+    }
+    // Off the list: refused before any lookup.
+    var off = try env.t.post("/v1/fetch", .{
+        .headers = &.{.{ "Authorization", try bearer(a, key) }},
+        .json = .{ .url = "https://example.com/", .allow = .{ "github.com", "*.stackexchange.com" } },
+    });
+    defer off.deinit();
+    try off.expectStatus(.unprocessable_entity);
+    try std.testing.expect(std.mem.indexOf(u8, off.body, "research allowlist") != null);
+}

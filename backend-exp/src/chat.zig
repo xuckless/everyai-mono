@@ -855,7 +855,7 @@ fn webSearch(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]con
 }
 
 /// Content types `readableText` makes sense of; an absent one is tried.
-fn textual(content_type: []const u8) bool {
+pub fn textual(content_type: []const u8) bool {
     const ct = std.mem.trim(u8, content_type, " ");
     if (ct.len == 0) return true;
     inline for (.{ "text/", "application/xhtml", "application/xml", "application/json", "application/ld+json", "application/rss", "application/atom" }) |p| {

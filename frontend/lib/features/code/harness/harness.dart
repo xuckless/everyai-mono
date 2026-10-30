@@ -31,7 +31,12 @@ final class SessionSpec {
     this.clientTools,
     this.autoCompactAt = 0.6,
     this.pathMap = const {},
+    this.researchSites,
   });
+
+  /// A research job's sandbox: no shell, MCP or writes outside its scratch
+  /// folder, no secret files, and the web only on these sites. Null: not one.
+  final List<String>? researchSites;
 
   /// Folders the conversation mentions and where they are for this session:
   /// a fork in its own worktree inherits the parent's paths, which its tools

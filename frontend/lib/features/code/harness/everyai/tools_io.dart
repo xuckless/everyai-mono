@@ -4,11 +4,11 @@ import 'dart:io';
 
 import 'dart:typed_data';
 
-import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
 
 import 'llm.dart';
 import 'shell_io.dart';
+import 'scrub.dart';
 
 // The tool set and its behaviour follow opencode's (MIT; see
 // THIRD_PARTY_NOTICES.md) and the conventions of other coding harnesses;
@@ -366,9 +366,40 @@ final class ToolRunner {
     required this.sessionTag,
     this.vision = false,
     this.pathMap = const {},
-  });
+    this.researchSites,
+    Scrubber? scrubber,
+  }) : scrubber = scrubber ?? Scrubber.forProject(root, extra: [gateway.apiKey]);
 
   final String root;
+
+  /// Set for a research job: its sandbox (see [SessionSpec.researchSites]).
+  final List<String>? researchSites;
+  bool get research => researchSites != null;
+
+  /// Stops secrets leaving in fetched URLs and search queries.
+  final Scrubber scrubber;
+
+  /// Where a research job may write: its notes.
+  String get researchDir => '$root/.everyai/scratch/research';
+
+  /// Why [tool] is refused in a research job, or null.
+  String? _researchRefusal(String tool, Map<String, Object?> args) {
+    if (!research) return null;
+    switch (tool) {
+      case ToolNames.bash || ToolNames.bashOutput || ToolNames.killShell || ToolNames.monitor:
+        return 'Error: research jobs have no shell, so nothing downloaded can run. Read sources with web_fetch '
+            '(raw.githubusercontent.com for files) and write your notes with write.';
+      case ToolNames.read || ToolNames.grep || ToolNames.glob:
+        final path = resolvePath(root, (args['file_path'] ?? args['path'] ?? '') as String);
+        if (secretPath(path)) return 'Error: research jobs may not read secrets or credentials ($path).';
+      case ToolNames.write || ToolNames.edit:
+        final path = resolvePath(root, args['file_path'] as String? ?? '');
+        if (!path.startsWith('$researchDir/')) {
+          return 'Error: research jobs write only their notes, under $researchDir/.';
+        }
+    }
+    return null;
+  }
 
   /// Parent folders and this session's copies of them (a fork's worktree).
   final Map<String, String> pathMap;
@@ -405,6 +436,7 @@ final class ToolRunner {
 
   Future<ToolOutput> run(String tool, Map<String, Object?> raw, {Future<void>? cancel}) async {
     final args = _mapped(raw);
+    if (_researchRefusal(tool, args) case final refusal?) return ToolOutput(refusal, isError: true);
     try {
       return switch (tool) {
         ToolNames.bash => await _bash(args, cancel),
@@ -717,24 +749,46 @@ final class ToolRunner {
   }
 
   Future<ToolOutput> _webFetch(Map<String, Object?> args) async {
-    final url = Uri.tryParse(args['url'] as String? ?? '');
+    final raw = (args['url'] as String? ?? '').trim();
+    final url = Uri.tryParse(raw);
     if (url == null || !(url.isScheme('http') || url.isScheme('https'))) {
       return const ToolOutput('Error: give an http(s) URL.', isError: true);
     }
-    final res = await http.get(url, headers: {'User-Agent': 'EveryAI-Code/0.1'}).timeout(const Duration(seconds: 30));
-    if (res.statusCode >= 400) return ToolOutput('Error: ${res.statusCode} from $url', isError: true);
-    final type = res.headers['content-type'] ?? '';
-    final text = type.contains('html') ? readableText(res.body) : res.body;
-    final offset = ((args['offset'] as num?)?.toInt() ?? 0).clamp(0, text.length);
-    final limit = ((args['limit'] as num?)?.toInt() ?? 20000).clamp(1000, 50000);
-    final end = (offset + limit).clamp(0, text.length);
-    final more = end < text.length ? '\n[${text.length - end} more characters; fetch again with offset $end.]' : '';
-    return ToolOutput('<web_page url="$url">\n${text.substring(offset, end)}\n</web_page>$more');
+    if (scrubber.leak(raw) case final what?) {
+      return ToolOutput('Error: refused: the URL contains $what. Never put secrets in URLs.', isError: true);
+    }
+    final sites = researchSites;
+    if (sites != null && !hostAllowed(url.host, sites)) {
+      return ToolOutput(
+        'Error: ${url.host} is not on the research sites (${sites.join(', ')}). Find the same on one of them.',
+        isError: true,
+      );
+    }
+    final offset = (args['offset'] as num?)?.toInt() ?? 0;
+    final limit = ((args['limit'] as num?)?.toInt() ?? 20000).clamp(1000, 40000);
+    try {
+      // Through the backend's safe fetcher: no local or private addresses, every redirect checked.
+      final page = await gateway.fetchPage(
+        url.toString(),
+        sessionTag: sessionTag,
+        allow: sites,
+        offset: offset,
+        maxChars: limit,
+      );
+      final more = page.nextOffset == null ? '' : '\n[More follows; fetch again with offset ${page.nextOffset}.]';
+      return ToolOutput('${page.text}$more');
+    } on LlmError catch (e) {
+      return ToolOutput('Error: $e ($url)', isError: true);
+    }
   }
 
   Future<ToolOutput> _webSearch(Map<String, Object?> args) async {
     final query = (args['query'] as String? ?? '').trim();
     if (query.isEmpty) return const ToolOutput('Error: query is empty.', isError: true);
+    if (scrubber.leak(query) case final what?) {
+      return ToolOutput('Error: refused: the query contains $what. Never put secrets in searches.', isError: true);
+    }
+    final sites = researchSites;
     final reply = await gateway.raw({
       'model': webSearchModel,
       'max_tokens': 32,
@@ -756,6 +810,8 @@ final class ToolRunner {
       if (a case {'url_citation': final Map<String, Object?> c}) {
         final url = c['url'] as String? ?? '';
         if (url.isEmpty || !seen.add(url)) continue;
+        // A research job sees only results it may open.
+        if (sites != null && !hostAllowed(Uri.tryParse(url)?.host ?? '', sites)) continue;
         n++;
         final snippet = (c['content'] as String? ?? '').replaceAll(RegExp(r'\s+'), ' ');
         out.writeln(
@@ -763,7 +819,13 @@ final class ToolRunner {
         );
       }
     }
-    if (n == 0) return const ToolOutput('No results.');
+    if (n == 0) {
+      return ToolOutput(
+        sites == null
+            ? 'No results.'
+            : 'No results on the research sites. Try naming GitHub, Hugging Face or Stack Overflow in the query.',
+      );
+    }
     out.write('</search_results>');
     return ToolOutput(out.toString());
   }

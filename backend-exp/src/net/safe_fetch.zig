@@ -71,6 +71,8 @@ pub const Error = error{
     BadRedirect,
     /// The body is bigger than `max_body`.
     ResponseTooLarge,
+    /// The host (or a redirect's host) is not on the caller's allowlist.
+    HostNotAllowed,
 };
 
 /// One fetched page: the URL that finally answered, its status and body.
@@ -89,10 +91,17 @@ pub const Fetcher = struct {
     /// GETs `url`, following redirects itself; every hop is checked.
     /// Everything returned lives in `arena`.
     pub fn get(self: *const Fetcher, io: std.Io, arena: std.mem.Allocator, url: []const u8, accept: []const u8) !Page {
+        return self.getAllowed(io, arena, url, accept, null);
+    }
+
+    /// `get`, with every hop's host also checked against `allow` when given
+    /// (see `hostAllowed`): a redirect can't leave the list.
+    pub fn getAllowed(self: *const Fetcher, io: std.Io, arena: std.mem.Allocator, url: []const u8, accept: []const u8, allow: ?[]const []const u8) !Page {
         var current = url;
         var hops: u8 = 0;
         while (true) {
             const host = try checkUrl(current, self.options);
+            if (allow) |list| if (!hostAllowed(host, list)) return error.HostNotAllowed;
             try checkResolved(io, host, self.options);
 
             var keys: [2][]const u8 = undefined;
@@ -139,6 +148,7 @@ pub fn describe(err: anyerror) []const u8 {
         error.TooManyRedirects => "the page redirected too many times",
         error.BadRedirect => "the page sent a redirect without a valid Location",
         error.ResponseTooLarge => "the page is too large to read",
+        error.HostNotAllowed => "the site is not on the research allowlist",
         error.UnknownHostName => "the host name does not exist",
         error.Timeout => "the site did not answer in time",
         else => @errorName(err),
@@ -179,6 +189,32 @@ pub fn checkUrl(url: []const u8, o: Options) Error![]const u8 {
     if (o.testing_allow_loopback and std.ascii.eqlIgnoreCase(host, "localhost")) return host;
     if (localName(host)) return error.AddressNotAllowed;
     return host;
+}
+
+/// Whether `host` is on `allow`: an entry matches itself and its `www.`
+/// form; `*.example.com` matches example.com and every subdomain of it.
+pub fn hostAllowed(host: []const u8, allow: []const []const u8) bool {
+    const bare = if (host.len > 4 and std.ascii.eqlIgnoreCase(host[0..4], "www.")) host[4..] else host;
+    for (allow) |entry| {
+        if (std.mem.startsWith(u8, entry, "*.")) {
+            const base = entry[2..];
+            if (std.ascii.eqlIgnoreCase(bare, base)) return true;
+            if (bare.len > base.len and bare[bare.len - base.len - 1] == '.' and endsWithIgnoreCase(bare, base)) return true;
+        } else if (std.ascii.eqlIgnoreCase(bare, entry) or std.ascii.eqlIgnoreCase(host, entry)) return true;
+    }
+    return false;
+}
+
+test hostAllowed {
+    const list = [_][]const u8{ "github.com", "*.stackexchange.com", "huggingface.co" };
+    try std.testing.expect(hostAllowed("github.com", &list));
+    try std.testing.expect(hostAllowed("www.github.com", &list));
+    try std.testing.expect(hostAllowed("unix.stackexchange.com", &list));
+    try std.testing.expect(hostAllowed("stackexchange.com", &list));
+    try std.testing.expect(!hostAllowed("gist.github.com", &list));
+    try std.testing.expect(!hostAllowed("evilgithub.com", &list));
+    try std.testing.expect(!hostAllowed("github.com.evil.io", &list));
+    try std.testing.expect(!hostAllowed("notstackexchange.com", &list));
 }
 
 /// Names that only resolve inside a network, and digit-only "names" that

@@ -102,6 +102,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
       sessionTag: _spec.sessionTag,
       vision: _spec.vision,
       pathMap: _spec.pathMap,
+      researchSites: _spec.researchSites,
     );
   }
 
@@ -255,6 +256,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
     'auto_compact_at': s.autoCompactAt,
     'mcp_config': s.mcpConfig,
     'path_map': s.pathMap,
+    'research_sites': ?s.researchSites,
   };
 
   void _writeForkTools() {
@@ -278,6 +280,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
     autoCompactAt: (j['auto_compact_at'] as num?)?.toDouble() ?? 0.6,
     mcpConfig: (j['mcp_config'] as Map<String, Object?>?) ?? const {},
     pathMap: {for (final e in (j['path_map'] as Map<String, Object?>? ?? const {}).entries) e.key: '${e.value}'},
+    researchSites: (j['research_sites'] as List<Object?>?)?.cast<String>(),
   );
 
   Future<String> _systemPrompt() async {
@@ -465,6 +468,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
       sessionTag: _spec.sessionTag,
       vision: _spec.vision,
       pathMap: _spec.pathMap,
+      researchSites: _spec.researchSites,
     );
     _writeSpec();
   }
@@ -497,6 +501,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
       autoCompactAt: s.autoCompactAt,
       mcpConfig: s.mcpConfig,
       pathMap: s.pathMap,
+      researchSites: s.researchSites,
     );
   }
 
@@ -908,6 +913,9 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
       );
     }
     if (actionKinds.containsKey(call.name)) return _tools.run(call.name, call.args!, cancel: cancel);
+    if (_spec.researchSites != null && (_mcp.has(call.name) || call.name.startsWith('mcp'))) {
+      return const ToolOutput('Error: research jobs have no MCP tools. Use web_fetch and web_search.', isError: true);
+    }
     if (_mcp.has(call.name)) {
       final out = await _mcp.call(call.name, call.args!);
       if (out.images.isNotEmpty && !_spec.vision) {

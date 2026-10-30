@@ -43,6 +43,8 @@ final class CodeSettings extends Notifier<StoredCodeSettings> {
 
   void setTier(HarnessTier tier) => _set(state.withTier(tier));
 
+  void setResearchSites(List<String> sites) => _set(state.withResearchSites(sites));
+
   void setForksIsolated(bool on) => _set(state.withForksIsolated(on));
 
   /// Caps session [sessionId]'s spending at [usd] dollars (null: no cap).

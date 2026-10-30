@@ -6,6 +6,7 @@ import '../../skills/domain/skill_catalog.dart' show SkillSettings;
 import '../domain/agent_mode.dart';
 import '../domain/mcp_servers.dart';
 import '../domain/permissions.dart';
+import '../harness/everyai/research_sites.dart' show defaultResearchSites;
 import 'agent_prompt.dart' show HarnessTier;
 
 export 'agent_prompt.dart' show HarnessMode, HarnessTier;
@@ -43,7 +44,11 @@ final class StoredCodeSettings {
     this.autoCompactPercent = defaultAutoCompactPercent,
     this.tier = HarnessTier.efficient,
     this.forksIsolated = true,
+    this.researchSites = defaultResearchSites,
   });
+
+  /// The only sites research jobs (Max and Ultra) may fetch from.
+  final List<String> researchSites;
 
   /// Efficiency ↔ Quality, for sessions started from now on.
   /// The tier new sessions start on.
@@ -82,6 +87,17 @@ final class StoredCodeSettings {
 
   StoredCodeSettings withForksIsolated(bool on) => _copy(forksIsolated: on);
 
+  /// [sites] cleaned up (no schemes or paths, lower case); empty restores the defaults.
+  StoredCodeSettings withResearchSites(List<String> sites) {
+    final clean = [
+      for (final s in sites)
+        if (s.trim().toLowerCase().replaceFirst(RegExp(r'^[a-z]+://'), '').split('/').first case final h
+            when h.isNotEmpty)
+          h,
+    ];
+    return _copy(researchSites: clean.isEmpty ? defaultResearchSites : clean.toSet().toList());
+  }
+
   StoredCodeSettings _copy({
     String? globalPrompt,
     Map<String, String>? projectPrompts,
@@ -89,7 +105,9 @@ final class StoredCodeSettings {
     int? autoCompactPercent,
     HarnessTier? tier,
     bool? forksIsolated,
+    List<String>? researchSites,
   }) => StoredCodeSettings(
+    researchSites: researchSites ?? this.researchSites,
     tier: tier ?? this.tier,
     forksIsolated: forksIsolated ?? this.forksIsolated,
     globalPrompt: globalPrompt ?? this.globalPrompt,
@@ -118,6 +136,10 @@ final class StoredCodeSettings {
         _ => HarnessTier.efficient,
       },
       forksIsolated: !(global is Map<String, Object?> && global['forksIsolated'] == false),
+      researchSites: switch (global) {
+        {'researchSites': final List<Object?> sites} when sites.isNotEmpty => [...sites.whereType<String>()],
+        _ => defaultResearchSites,
+      },
       autoCompactPercent: global is Map<String, Object?> && global['autoCompactPercent'] is num
           ? (global['autoCompactPercent']! as num).toInt()
           : defaultAutoCompactPercent,
@@ -141,6 +163,7 @@ final class StoredCodeSettings {
       if (autoCompactPercent != defaultAutoCompactPercent) 'autoCompactPercent': autoCompactPercent,
       if (tier != HarnessTier.efficient) 'harnessTier': tier.name,
       if (!forksIsolated) 'forksIsolated': false,
+      if (!listEquals(researchSites, defaultResearchSites)) 'researchSites': researchSites,
     },
     'projects': {
       for (final e in projectPrompts.entries) e.key: {'systemPrompt': e.value},

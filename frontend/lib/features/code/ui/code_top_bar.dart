@@ -217,6 +217,21 @@ class _SettingsChip extends ConsumerWidget {
                 onTap: () => ref.read(codeSettingsProvider.notifier).setForksIsolated(!prompts.forksIsolated),
               ),
               PopoverRow(
+                key: const ValueKey('top-bar.settings.research'),
+                title: 'Research sites',
+                subtitle: '${plural(prompts.researchSites.length, 'site')} · what Max and Ultra research may read',
+                onTap: () async {
+                  close();
+                  final next = await showAdaptivePrompt(
+                    context,
+                    title: 'Research sites (comma separated; *.example.com for subdomains; empty for the defaults)',
+                    confirmLabel: 'Save',
+                    initialValue: prompts.researchSites.join(', '),
+                  );
+                  if (next != null) ref.read(codeSettingsProvider.notifier).setResearchSites(next.split(','));
+                },
+              ),
+              PopoverRow(
                 key: const ValueKey('top-bar.settings.json'),
                 title: 'settings.json…',
                 subtitle: 'Global, project and session layers as JSON',

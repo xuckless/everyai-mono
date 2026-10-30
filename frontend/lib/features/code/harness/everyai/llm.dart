@@ -285,6 +285,37 @@ final class GatewayClient {
     );
   }
 
+  /// A page through the gateway's safe fetcher (`POST {base}/fetch`): no local
+  /// or private addresses, redirects checked, and only [allow]'s hosts when
+  /// given. Returns the page's text, fenced as untrusted, or throws.
+  Future<({String url, String text, int? nextOffset})> fetchPage(
+    String url, {
+    required String sessionTag,
+    List<String>? allow,
+    int offset = 0,
+    int? maxChars,
+  }) async {
+    final res = await _http
+        .post(
+          Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}/fetch'),
+          headers: _headers(sessionTag, null),
+          body: jsonEncode({'url': url, 'allow': ?allow, 'offset': offset, 'max_chars': ?maxChars}),
+        )
+        .timeout(const Duration(seconds: 60));
+    final Object? v;
+    try {
+      v = jsonDecode(res.body);
+    } on FormatException {
+      throw LlmError('The fetch failed (${res.statusCode}).', status: res.statusCode);
+    }
+    if (v case {'error': final String e}) throw LlmError(e, status: res.statusCode);
+    if (v case {'error': {'message': final String e}}) throw LlmError(e, status: res.statusCode);
+    if (v case {'url': final String u, 'text': final String t}) {
+      return (url: u, text: t, nextOffset: ((v as Map)['next_offset'] as num?)?.toInt());
+    }
+    throw LlmError('The fetch failed (${res.statusCode}).', status: res.statusCode);
+  }
+
   /// A plain (not streamed) call, for search and the goal judge.
   Future<Map<String, Object?>> raw(Map<String, Object?> body, {required String sessionTag}) async {
     final res = await _http.post(_url, headers: _headers(sessionTag, null), body: jsonEncode(body));

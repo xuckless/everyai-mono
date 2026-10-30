@@ -11,6 +11,7 @@ import 'package:every_ai/features/code/harness/openhands_harness.dart';
 import 'package:every_ai/features/code/harness/everyai/llm.dart';
 import 'package:every_ai/features/code/harness/everyai/prompt_io.dart';
 import 'package:every_ai/features/code/harness/everyai/shell_io.dart';
+import 'package:every_ai/features/code/harness/everyai/scrub.dart';
 import 'package:every_ai/features/code/harness/everyai/tools_io.dart';
 import 'package:every_ai/features/code/harness/harness.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -548,5 +549,50 @@ for line in sys.stdin:
     expect(isWaitCommand('sleep 1.5'), isTrue);
     expect(isWaitCommand('npm test; sleep 5'), isFalse);
     expect(isWaitCommand('sleepy --fast'), isFalse);
+  });
+
+  test('a research job has no shell, writes only its notes, reads no secrets, and stays on its sites', () async {
+    File('$work/.env').writeAsStringSync('API_TOKEN=supersecretvalue123\n');
+    final shell = SessionShell(root: work, sessionTag: 't', scratchDir: '${tmp.path}/sh-r');
+    final runner = ToolRunner(
+      root: work,
+      shell: shell,
+      gateway: GatewayClient(baseUrl: 'http://127.0.0.1:9/v1', apiKey: 'sk-eai-test-key-000000'),
+      sessionTag: 't',
+      researchSites: const ['github.com'],
+    );
+    expect((await runner.run('bash', {'command': 'echo hi'})).text, contains('no shell'));
+    expect(
+      (await runner.run('write', {'file_path': '$work/main.c', 'content': 'x'})).text,
+      contains('only their notes'),
+    );
+    final notes = await runner.run('write', {
+      'file_path': '$work/.everyai/scratch/research/http.md',
+      'content': '# notes',
+    });
+    expect(notes.isError, isFalse);
+    expect((await runner.run('read', {'file_path': '$work/.env'})).text, contains('secrets'));
+    expect(
+      (await runner.run('web_fetch', {'url': 'https://example.com/x'})).text,
+      contains('not on the research sites'),
+    );
+    // The .env value can't leave in a URL, even on an allowed site.
+    final leak = await runner.run('web_fetch', {'url': 'https://github.com/search?q=supersecretvalue123'});
+    expect(leak.text, contains('secret'));
+    await shell.killAll();
+  });
+
+  test('the scrubber catches key shapes and secret-named env values, and lets ordinary URLs through', () {
+    final s = Scrubber(env: {'OPENAI_API_KEY': 'abcd1234efgh', 'USER': 'xuckless', 'HOME': '/Users/x'});
+    expect(s.leak('https://github.com/xuckless/repo/commit/${'a' * 40}'), isNull);
+    expect(s.leak('https://x.io/?k=abcd1234efgh'), isNotNull);
+    expect(s.leak('https://x.io/?k=abcd1234%65fgh'), isNotNull);
+    expect(s.leak('q=ghp_${'A' * 30}'), 'a GitHub token');
+    expect(s.leak('q=sk-${'a' * 30}'), 'an API key');
+    expect(s.leak('AKIAABCDEFGHIJKLMNOP'), 'an AWS key');
+    expect(hostAllowed('unix.stackexchange.com', ['*.stackexchange.com']), isTrue);
+    expect(hostAllowed('evilgithub.com', ['github.com']), isFalse);
+    expect(secretPath('/Users/x/.ssh/id_ed25519'), isTrue);
+    expect(secretPath('/p/.env.example'), isFalse);
   });
 }
