@@ -15,6 +15,8 @@ import '../models/models_providers.dart';
 import '../usage/usage_totals.dart';
 import 'domain/agent_mode.dart';
 import 'domain/code_session.dart';
+import 'domain/doom_loop.dart';
+import 'domain/spill.dart';
 import 'domain/questions.dart';
 import 'domain/transcript.dart';
 import 'git/git_service.dart';
@@ -27,6 +29,7 @@ import 'permissions_providers.dart';
 import 'settings/context_files.dart';
 import 'settings/settings.dart';
 import 'sidecar/sidecar.dart';
+import 'spill/spill.dart';
 import 'uploads/uploads.dart';
 
 /// Projects under this scheme run on the scripted [FakeHarness].
@@ -359,6 +362,14 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
   /// The project's instruction files; nested ones go out with the next message.
   ProjectContext? _context;
 
+  final _doom = DoomLoopDetector();
+
+  /// A loop card is waiting for the user: the run is paused and nothing is auto-approved.
+  bool _doomOpen = false;
+
+  /// Events before this are history being replayed, which never raise a loop card.
+  bool _live = false;
+
   @override
   CodeSessionState build() {
     final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
@@ -379,6 +390,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
       live[sessionId] = session;
       await _openContext(info);
       _sub = session.events.listen(_onEvent);
+      Timer(const Duration(milliseconds: 1500), () => _live = true);
       state = state.copyWith(connected: true);
       await _loadSettingsRules(info);
     } on Object catch (e) {
@@ -432,6 +444,12 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
       state = state.copyWith(connected: event.connected);
       return;
     }
+    if (event is ChatMessage && event.fromUser) {
+      _doom.reset();
+      _doomOpen = false;
+    }
+    final looped = event is ActionCall && _doom.add(event) && _live;
+    event = _spilled(event);
     // OpenHands reports `stats` after every model call; the cost lives in our ledger.
     if (event is StateChange) ref.read(codeUsageProvider(sessionId).notifier).refreshSoon();
     final wasRunning = state.transcript.running;
@@ -448,12 +466,75 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
         ..refreshSoon(delay: const Duration(milliseconds: 300))
         ..refreshSoon(delay: const Duration(seconds: 4), force: true);
     }
+    if (looped) _raiseDoomLoop(_doom.looped!);
     _autoRespond(transcript);
     if (!transcript.running && transcript.pending.isEmpty && state.queued.isNotEmpty) {
       final [next, ...rest] = state.queued;
       state = state.copyWith(queued: rest);
       unawaited(_checkpoint().then((_) => _sendNow(next)));
     }
+  }
+
+  /// [event] with a result over the output limits cut to a preview; the whole
+  /// text goes to `.everyai/spill/` in the project.
+  HarnessEvent _spilled(HarnessEvent event) {
+    if (event is! ToolResult) return event;
+    final spill = spillOf(event);
+    final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
+    if (spill == null || info == null || isDemoPath(info.workingDir)) return event;
+    final id = event.toolCallId.isNotEmpty ? event.toolCallId : event.id;
+    final path = saveSpill(info.workingDir, Spill.fileName(id), spill.text);
+    return path == null ? event : withPreview(event, spillPreview(spill, path));
+  }
+
+  /// Pauses the run and asks the user what to do about [call] repeating.
+  void _raiseDoomLoop(ActionCall call) {
+    _doomOpen = true;
+    final what = loopedStep(call);
+    final card = ActionCall(
+      id: 'doom-${call.id}',
+      raw: const {},
+      toolName: askUserQuestionTool,
+      toolCallId: 'doom-${call.id}',
+      action: const {},
+    );
+    _builder.addLocalQuestion(card, [
+      Question(
+        header: 'Repeating',
+        question: 'The agent has run the same step $doomLoopRepeats times in a row ($what). It is paused. What now?',
+        options: const [
+          QuestionOption('Let it continue', 'It may be waiting on something slow; keep going as before.'),
+          QuestionOption('Stop and change approach', 'Tell it to stop repeating this and try something different.'),
+        ],
+      ),
+    ]);
+    state = state.copyWith(transcript: _builder.snapshot);
+    unawaited(_session?.pause());
+  }
+
+  Future<void> _answerDoomLoop(QuestionItem item, List<QuestionAnswer> answers) async {
+    final session = _session;
+    if (session == null) return;
+    final a = answers.firstOrNull ?? const QuestionAnswer();
+    _builder.settleLocal(item.call.id, answers);
+    state = state.copyWith(transcript: _builder.snapshot);
+    _doom.reset();
+    _doomOpen = false;
+    if (a.other.trim().isEmpty && !a.selected.contains(1)) {
+      await session.resume();
+      _autoRespond(state.transcript);
+      return;
+    }
+    final said = a.other.trim().isEmpty ? '' : ' The user says: ${a.other.trim()}';
+    final text =
+        'You called the same tool with the same input $doomLoopRepeats times in a row without making progress. '
+        'Do not repeat it. Take a different approach, or explain what is blocking you.$said';
+    final pending = state.transcript.pending;
+    if (pending.isNotEmpty) {
+      _answered = pending.map((c) => c.id).join(',');
+      await session.respond(accept: false, reason: text);
+    }
+    await session.send(_noted(text));
   }
 
   void _trackContext(HarnessEvent event) {
@@ -487,6 +568,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
 
   /// Approves or refuses pending actions the mode decides on its own.
   void _autoRespond(Transcript t) {
+    if (_doomOpen) return;
     // A held card or plan waits for the user (one answer covers every
     // pending action, so the rest wait with it); sessions that don't hold
     // them approve them at once, as the agent ends its turn after the call.
@@ -591,6 +673,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
   }
 
   Future<void> stop() async {
+    _doomOpen = false;
     state = state.copyWith(queued: const []);
     final pending = state.transcript.pending;
     if (pending.isNotEmpty) {
@@ -650,6 +733,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
   Future<void> answer(QuestionItem item, List<QuestionAnswer> answers) async {
     final session = _session;
     if (session == null) return;
+    if (item.call.id.startsWith('doom-')) return _answerDoomLoop(item, answers);
     if (_isHeld(item.call)) {
       await _replyInCall(session, answersReason(item.questions, answers));
     } else {

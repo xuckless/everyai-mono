@@ -274,6 +274,18 @@ final class TranscriptBuilder {
     }
   }
 
+  /// A card raised by the app itself (not by the agent): it has no tool call
+  /// to answer, so [settleLocal] closes it.
+  void addLocalQuestion(ActionCall call, List<Question> questions) {
+    _push(call.id, QuestionItem(call, questions));
+  }
+
+  void settleLocal(String id, List<QuestionAnswer> answers) {
+    final i = _byAction[id];
+    if (i == null) return;
+    if (_items[i] case QuestionItem(:final call, :final questions)) _items[i] = QuestionItem(call, questions, answers);
+  }
+
   void _action(ActionCall call) {
     _byToolCall[call.toolCallId] = call.id;
     _open[call.id] = call;
