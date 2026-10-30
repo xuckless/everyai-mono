@@ -42,7 +42,7 @@ condition, so run them together.
 Estimated by the dry run from per-call constants in `run.dart`
 (about 9k micro-dollars per generation, 3.5k per judged image, 12k per polish,
 40k per vector image). Full grid on one Haiku-class model with 3 samples:
-20 prompts x 5 conditions x 3 = 300 cells, roughly $9. A smoke pass
+20 prompts x 5 conditions x 3 = 300 cells, roughly $6. A smoke pass
 (`--samples 1 --prompts 1,8,11 --conditions baseline,brief`) is about
 $0.10. Three generator models for conditions 1-4 triples the LLM part. The
 judge call is the second-largest term, so judge once per cell, not per sample
