@@ -101,6 +101,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
       gateway: _gateway,
       sessionTag: _spec.sessionTag,
       vision: _spec.vision,
+      pathMap: _spec.pathMap,
     );
   }
 
@@ -250,6 +251,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
     'client_tools': s.clientTools,
     'auto_compact_at': s.autoCompactAt,
     'mcp_config': s.mcpConfig,
+    'path_map': s.pathMap,
   };
 
   void _writeForkTools() {
@@ -272,6 +274,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
     clientTools: (j['client_tools'] as List<Object?>?)?.cast<Map<String, Object?>>(),
     autoCompactAt: (j['auto_compact_at'] as num?)?.toDouble() ?? 0.6,
     mcpConfig: (j['mcp_config'] as Map<String, Object?>?) ?? const {},
+    pathMap: {for (final e in (j['path_map'] as Map<String, Object?>? ?? const {}).entries) e.key: '${e.value}'},
   );
 
   Future<String> _systemPrompt() async {
@@ -457,6 +460,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
       gateway: _gateway,
       sessionTag: _spec.sessionTag,
       vision: _spec.vision,
+      pathMap: _spec.pathMap,
     );
     _writeSpec();
   }
@@ -487,6 +491,8 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
       tools: s.tools,
       clientTools: s.clientTools,
       autoCompactAt: s.autoCompactAt,
+      mcpConfig: s.mcpConfig,
+      pathMap: s.pathMap,
     );
   }
 

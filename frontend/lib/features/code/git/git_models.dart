@@ -248,3 +248,47 @@ String stripBranding(String message) {
   }
   return '${kept.join('\n')}\n';
 }
+
+/// A fork's own copy of its parent's folder: a detached worktree at [root],
+/// made from a snapshot ([base]) of the parent's working tree, uncommitted
+/// and untracked files included. [path] is the parent's folder inside it.
+@immutable
+final class ForkCopy {
+  const ForkCopy({
+    required this.repoRoot,
+    required this.root,
+    required this.path,
+    required this.base,
+    this.links = const [],
+  });
+
+  /// The parent's repository (where the changes are merged back).
+  final String repoRoot;
+  final String root;
+  final String path;
+  final String base;
+
+  /// Dependency folders linked in from the parent (node_modules, .venv):
+  /// never committed or merged.
+  final List<String> links;
+
+  Map<String, Object?> toJson() => {'repo_root': repoRoot, 'root': root, 'path': path, 'base': base, 'links': links};
+
+  static ForkCopy? fromJson(Object? j) => switch (j) {
+    {'repo_root': final String r, 'root': final String root, 'path': final String p, 'base': final String b} =>
+      ForkCopy(
+        repoRoot: r,
+        root: root,
+        path: p,
+        base: b,
+        links: [for (final l in j['links'] as List<Object?>? ?? const []) '$l'],
+      ),
+    _ => null,
+  };
+}
+
+/// What merging a fork back did: files brought over cleanly, files where
+/// both sides changed the same lines (left with conflict markers, or the
+/// parent's version kept when they can't be merged as text), and the ref
+/// that keeps the fork's work either way.
+typedef ForkMerge = ({List<String> merged, List<String> conflicts, String ref});

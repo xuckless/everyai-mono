@@ -200,4 +200,39 @@ void main() {
     expect(stripBranding('fix: x\n\nCo-authored-by: Sam <sam@example.com>\n'), contains('Sam'));
     expect(stripBranding('Add y\n\nSigned-off-by: Dev <dev@example.com>\n'), contains('Signed-off-by: Dev'));
   });
+
+  test('a fork works on a copy of the uncommitted folder and merges back file by file', () async {
+    // Uncommitted work in the parent, and a dependency folder.
+    File('$repo/lib/a.txt').writeAsStringSync('ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n');
+    File('$repo/lib/draft.txt').writeAsStringSync('draft\n');
+    Directory('$repo/node_modules/x').createSync(recursive: true);
+    File('$repo/.gitignore').writeAsStringSync('node_modules/\n');
+    final copy = (await GitService.forkCopy('$repo/lib', worktreesDir: '${tmp.path}/forks', slug: 'f1'))!;
+    expect(copy.path, endsWith('/f1/lib'));
+    expect(File('${copy.path}/a.txt').readAsStringSync(), startsWith('ONE'));
+    expect(File('${copy.path}/draft.txt').existsSync(), isTrue);
+    expect(copy.links, ['node_modules']);
+    expect(Link('${copy.root}/node_modules').existsSync(), isTrue);
+
+    // The fork changes the end of a.txt and adds a file; meanwhile the parent changes the start again.
+    File('${copy.path}/a.txt').writeAsStringSync('ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nTEN\n');
+    File('${copy.path}/new.txt').writeAsStringSync('from the fork\n');
+    File('$repo/lib/a.txt').writeAsStringSync('ONE!\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n');
+    // And both change draft.txt: a conflict.
+    File('${copy.path}/draft.txt').writeAsStringSync('fork draft\n');
+    File('$repo/lib/draft.txt').writeAsStringSync('parent draft\n');
+
+    final result = await GitService.mergeFork(copy, slug: 'f1');
+    expect(result.merged, unorderedEquals(['lib/a.txt', 'lib/new.txt']));
+    expect(result.conflicts, ['lib/draft.txt']);
+    expect(File('$repo/lib/a.txt').readAsStringSync(), startsWith('ONE!\n'));
+    expect(File('$repo/lib/a.txt').readAsStringSync(), endsWith('TEN\n'));
+    expect(File('$repo/lib/new.txt').readAsStringSync(), 'from the fork\n');
+    expect(File('$repo/lib/draft.txt').readAsStringSync(), contains('<<<<<<< yours'));
+    // The worktree is gone, the work kept under a ref, the user's branch and index untouched.
+    expect(Directory(copy.root).existsSync(), isFalse);
+    expect(await _git(repo, ['rev-parse', '--verify', '-q', result.ref]), isNotEmpty);
+    expect(await _git(repo, ['log', '--format=%s', '-1']), 'Initial commit');
+    expect(await _git(repo, ['diff', '--cached', '--name-only']), isEmpty);
+  });
 }

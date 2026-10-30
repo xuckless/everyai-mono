@@ -402,6 +402,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     bool isolated = false,
     bool everyai = false,
     String? mainAgentPrompt,
+    Map<String, String> pathMap = const {},
   }) async {
     final demo = isDemoPath(projectDir);
     // The demo and remote hosts have no local folder: the server's default prompt, no project files.
@@ -459,6 +460,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       rolePrompt: rolePrompt,
       clientTools: clientTools,
       autoCompactAt: ref.read(codeSettingsProvider).autoCompactPercent / 100,
+      pathMap: pathMap,
     );
   }
 
@@ -515,11 +517,31 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     // On the EveryAI harness a subagent without a named agent is a fork: it
     // starts from the parent's whole conversation (and its cached prefix).
     final fork = agent == null && role == null && parent.harness == CodeHarnessKind.everyai.name;
+    // A fork gets its own worktree unless the user's setting or the call says to share the folder.
+    final isolate =
+        fork &&
+        call.str('isolation') != 'shared' &&
+        (call.str('isolation') == 'worktree' || ref.read(codeSettingsProvider).forksIsolated);
+    ForkCopy? copy;
+    if (isolate) {
+      try {
+        copy = await GitService.forkCopy(
+          parent.workingDir,
+          worktreesDir: '${await GitService.dataDir()}/forks',
+          slug: sessionSlug(task.title, const Uuid().v7()),
+        );
+      } on Object {
+        copy = null; // Shares the folder instead.
+      }
+    }
     return startChild(
       parent: parent,
       title: task.title,
-      brief: fork ? forkBrief(task) : subagentBrief(task, role: role),
+      brief: fork
+          ? forkBrief(task, copyAt: copy?.path, parentDir: copy == null ? null : parent.workingDir)
+          : subagentBrief(task, role: role),
       fork: fork,
+      forkCopy: copy,
       mode: setup.mode,
       callId: call.id,
       projectDir: projectDir,
@@ -553,13 +575,14 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     bool ownTag = false,
     List<Map<String, Object?>>? clientTools,
     bool fork = false,
+    ForkCopy? forkCopy,
   }) async {
     model ??= parent.model;
     effort ??= parent.effort;
     final id = const Uuid().v7();
     projectDir ??=
         ref.read(codeProjectsProvider).where((p) => p.id == parent.projectId).firstOrNull?.path ?? parent.workingDir;
-    workingDir ??= parent.workingDir;
+    workingDir ??= forkCopy?.path ?? parent.workingDir;
     final everyai = parent.harness == CodeHarnessKind.everyai.name;
     final harness = await harnessFor(ref, parent.workingDir, harness: parent.harness);
     Future<HarnessSession> begin(SessionSpec spec) =>
@@ -581,6 +604,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         tools: tools,
         rolePrompt: rolePrompt,
         clientTools: clientTools,
+        pathMap: forkCopy == null ? const {} : {parent.workingDir: forkCopy.path, forkCopy.repoRoot: forkCopy.root},
       ),
     );
     ref.read(_liveProvider)[id] = live;
@@ -599,6 +623,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       parentId: parent.id,
       parentCallId: callId,
       ownTag: ownTag,
+      forkCopy: forkCopy,
     );
     state = [...state, info];
     _save();
@@ -1675,11 +1700,55 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
   void _onSubagent(String callId, CodeSessionState child) {
     if (!_childOf.containsKey(callId)) return;
     final outcome = subagentOutcome(child.transcript, error: child.error);
-    if (outcome != null) return _ready(callId, outcome);
+    if (outcome != null) return _finishChild(callId, outcome);
     final waiting = child.status == SessionStatus.needsInput;
     if (waiting ? _childWaiting.add(callId) : _childWaiting.remove(callId)) {
       state = state.copyWith(subagentNeedsInput: _childWaiting.isNotEmpty);
     }
+  }
+
+  /// Calls whose fork is being merged back, so its report waits.
+  final _merging = <String>{};
+
+  /// A subagent ended with [report]. A fork in its own worktree is merged
+  /// into this session's folder first (when it completed) and the report says
+  /// what came over; a stopped or failed one is kept under a ref unmerged.
+  void _finishChild(String callId, SubagentReport report) {
+    final childId = _childOf[callId];
+    final sessions = ref.read(codeSessionsProvider.notifier);
+    final info = childId == null ? null : sessions.byId(childId);
+    final copy = info?.forkCopy;
+    if (info == null || copy == null) return _ready(callId, report);
+    if (!_merging.add(callId)) return;
+    unawaited(() async {
+      var out = report;
+      final merge = report.status == SubagentStatus.completed;
+      try {
+        final m = await _mergeOneAtATime(
+          () => GitService.mergeFork(copy, slug: copy.root.split('/').last, merge: merge),
+        );
+        out = merge
+            ? withMergeNote(report, m)
+            : SubagentReport(
+                report.status,
+                '${report.text}\n\n[Not merged into your folder; its work is kept at ${m.ref}]',
+              );
+        if (ref.mounted) sessions.update(info.copyWith(merged: true));
+      } on Object catch (e) {
+        out = SubagentReport(report.status, "${report.text}\n\n[Its changes couldn't be merged back: $e]");
+      } finally {
+        _merging.remove(callId);
+      }
+      if (ref.mounted) _ready(callId, out);
+    }());
+  }
+
+  /// Forks finishing together merge one after another into the same folder.
+  static Future<void> _mergeChain = Future.value();
+  static Future<T> _mergeOneAtATime<T>(Future<T> Function() run) {
+    final result = _mergeChain.then((_) => run());
+    _mergeChain = result.then((_) {}, onError: (Object _) {});
+    return result;
   }
 
   void _ready(String callId, SubagentReport report) {
@@ -1705,7 +1774,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
   void subagentStopped(String childId, SubagentReport report) {
     if (_reviewOf.containsKey(childId)) return _reviewDone(childId, report);
     final callId = _childOf.entries.where((e) => e.value == childId).firstOrNull?.key;
-    if (callId != null) _ready(callId, report);
+    if (callId != null) _finishChild(callId, report);
   }
 
   /// Gives the agent its subagents' reports once every subagent it waits on

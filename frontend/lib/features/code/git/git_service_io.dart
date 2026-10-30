@@ -281,3 +281,126 @@ Future<void> removeWorktree(SessionWorktree w, {required String hooksDir, bool d
   final hooks = Directory('$hooksDir/${w.slug}');
   if (hooks.existsSync()) await hooks.delete(recursive: true);
 }
+
+// ------------------------------------------------------------------ forks
+
+/// Dependency folders a fork borrows from its parent instead of reinstalling.
+const _borrowed = ['node_modules', '.venv', 'venv'];
+
+Future<ForkCopy?> forkCopy(String dir, {required String worktreesDir, required String slug}) async {
+  final root = await repoRoot(dir);
+  if (root == null || !await hasCommits(root)) return null;
+  final head = (await _out(root, ['rev-parse', 'HEAD'])).trim();
+  final view = SessionWorktree(repoRoot: root, path: dir, branch: '', baseBranch: '', baseCommit: head);
+  final tree = await _withSnapshot(view, (env) async => (await _out(dir, ['write-tree'], env: env)).trim());
+  final base = (await _out(root, [
+    '-c', 'user.name=EveryAI', '-c', 'user.email=agent@everyai.invalid', //
+    'commit-tree', tree, '-p', head, '-m', 'EveryAI fork base',
+  ])).trim();
+  final wt = '$worktreesDir/$slug';
+  await Directory(worktreesDir).create(recursive: true);
+  await _git(root, ['worktree', 'add', '-q', '--detach', wt, base]);
+  // Asked of git: [dir] may reach the repository through a symlink.
+  var rel = (await _out(dir, ['rev-parse', '--show-prefix'])).trim();
+  if (rel.endsWith('/')) rel = rel.substring(0, rel.length - 1);
+  final path = rel.isEmpty ? wt : '$wt/$rel';
+  final links = <String>[];
+  for (final (from, to, prefix) in [(dir, path, rel), if (rel.isNotEmpty) (root, wt, '')]) {
+    for (final name in _borrowed) {
+      if (Directory('$from/$name').existsSync() &&
+          !FileSystemEntity.isLinkSync('$from/$name') &&
+          !Directory('$to/$name').existsSync()) {
+        await Link('$to/$name').create('$from/$name');
+        links.add(prefix.isEmpty ? name : '$prefix/$name');
+      }
+    }
+  }
+  return ForkCopy(repoRoot: root, root: wt, path: path, base: base, links: links);
+}
+
+Future<List<int>?> _blob(String root, String rev, String path) async {
+  final res = await Process.run('git', ['-C', root, 'show', '$rev:$path'], stdoutEncoding: null);
+  return res.exitCode == 0 ? res.stdout as List<int> : null;
+}
+
+bool _sameBytes(List<int>? a, List<int>? b) {
+  if (a == null || b == null) return a == b;
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+bool _binary(List<int>? b) => b != null && b.take(8000).contains(0);
+
+Future<ForkMerge> mergeFork(ForkCopy copy, {required String slug, bool merge = true}) async {
+  final ref = 'refs/everyai/forks/$slug';
+  final wt = copy.root;
+  // Everything the fork left, minus the borrowed dependency links.
+  await _git(wt, ['add', '-A', '--', '.', for (final l in copy.links) ':(exclude)$l']);
+  await _git(wt, [
+    '-c', 'user.name=EveryAI', '-c', 'user.email=agent@everyai.invalid', //
+    'commit', '-q', '--no-verify', '-m', 'EveryAI fork',
+  ], check: false);
+  final tip = (await _out(wt, ['rev-parse', 'HEAD'])).trim();
+  await _git(copy.repoRoot, ['update-ref', ref, tip]);
+  final merged = <String>[];
+  final conflicts = <String>[];
+  if (merge && tip != copy.base) {
+    final changed = await _out(copy.repoRoot, ['diff', '--name-status', '--no-renames', copy.base, tip]);
+    final tmp = await Directory.systemTemp.createTemp('everyai-merge');
+    try {
+      for (final line in const LineSplitter().convert(changed)) {
+        final parts = line.split('\t');
+        if (parts.length < 2) continue;
+        final path = parts.last;
+        final target = File('${copy.repoRoot}/$path');
+        final ours = target.existsSync() ? await target.readAsBytes() : null;
+        final base = await _blob(copy.repoRoot, copy.base, path);
+        final theirs = await _blob(copy.repoRoot, tip, path);
+        if (_sameBytes(ours, theirs)) {
+          merged.add(path);
+        } else if (_sameBytes(ours, base)) {
+          // Only the fork changed it.
+          if (theirs == null) {
+            if (target.existsSync()) await target.delete();
+          } else {
+            await target.parent.create(recursive: true);
+            await target.writeAsBytes(theirs);
+          }
+          merged.add(path);
+        } else if (ours == null || theirs == null || _binary(ours) || _binary(theirs) || _binary(base)) {
+          // Both changed it and it can't be merged line by line: the parent's version stays.
+          conflicts.add(path);
+        } else {
+          final b = File('${tmp.path}/base')..writeAsBytesSync(base ?? const []);
+          final t = File('${tmp.path}/theirs')..writeAsBytesSync(theirs);
+          final res = await Process.run('git', [
+            'merge-file',
+            '-p',
+            '-L',
+            'yours',
+            '-L',
+            'fork base',
+            '-L',
+            'fork',
+            target.path,
+            b.path,
+            t.path,
+          ], stdoutEncoding: null);
+          if (res.exitCode < 0) {
+            conflicts.add(path);
+            continue;
+          }
+          await target.writeAsBytes(res.stdout as List<int>);
+          (res.exitCode == 0 ? merged : conflicts).add(path);
+        }
+      }
+    } finally {
+      await tmp.delete(recursive: true);
+    }
+  }
+  await _git(copy.repoRoot, ['worktree', 'remove', '--force', wt], check: false);
+  return (merged: merged, conflicts: conflicts, ref: ref);
+}

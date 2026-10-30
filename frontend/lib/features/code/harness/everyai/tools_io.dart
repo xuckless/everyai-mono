@@ -362,9 +362,31 @@ final class ToolRunner {
     required this.gateway,
     required this.sessionTag,
     this.vision = false,
+    this.pathMap = const {},
   });
 
   final String root;
+
+  /// Parent folders and this session's copies of them (a fork's worktree).
+  final Map<String, String> pathMap;
+
+  /// [args] with the parent's folders swapped for this session's copies,
+  /// longest first, so a fork's inherited paths land in its own worktree.
+  Map<String, Object?> _mapped(Map<String, Object?> args) {
+    if (pathMap.isEmpty) return args;
+    final froms = pathMap.keys.toList()..sort((a, b) => b.length - a.length);
+    String map(String s) {
+      for (final from in froms) {
+        if (s.contains(from)) {
+          // Exact prefixes only: /app must not rewrite /app2.
+          s = s.replaceAllMapped(RegExp('${RegExp.escape(from)}(?=[/\\s"\'`:;)]|\$)'), (_) => pathMap[from]!);
+        }
+      }
+      return s;
+    }
+
+    return {for (final e in args.entries) e.key: e.value is String ? map(e.value! as String) : e.value};
+  }
 
   /// Whether the model can look at images (read returns pictures).
   final bool vision;
@@ -378,7 +400,8 @@ final class ToolRunner {
 
   String get spillDir => '$root/.everyai/spill';
 
-  Future<ToolOutput> run(String tool, Map<String, Object?> args, {Future<void>? cancel}) async {
+  Future<ToolOutput> run(String tool, Map<String, Object?> raw, {Future<void>? cancel}) async {
+    final args = _mapped(raw);
     try {
       return switch (tool) {
         ToolNames.bash => await _bash(args, cancel),

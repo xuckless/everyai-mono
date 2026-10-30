@@ -30,7 +30,13 @@ final class SessionSpec {
     this.rolePrompt,
     this.clientTools,
     this.autoCompactAt = 0.6,
+    this.pathMap = const {},
   });
+
+  /// Folders the conversation mentions and where they are for this session:
+  /// a fork in its own worktree inherits the parent's paths, which its tools
+  /// read as the copy's (`{parent folder: copy}`).
+  final Map<String, String> pathMap;
 
   /// The session's worktree.
   final String workingDir;

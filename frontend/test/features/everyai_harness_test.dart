@@ -327,6 +327,26 @@ void main() {
     await shell.killAll();
   });
 
+  test("a fork's tools read the parent's paths as its own copy's", () async {
+    final copy = Directory('${tmp.path}/copy')..createSync();
+    final shell = SessionShell(root: copy.path, sessionTag: 't', scratchDir: '${tmp.path}/sh2');
+    final runner = ToolRunner(
+      root: copy.path,
+      shell: shell,
+      gateway: GatewayClient(baseUrl: 'http://127.0.0.1:9/v1', apiKey: ''),
+      sessionTag: 't',
+      pathMap: {work: copy.path},
+    );
+    await runner.run('write', {'file_path': '$work/game.js', 'content': 'x'});
+    expect(File('${copy.path}/game.js').existsSync(), isTrue);
+    expect(File('$work/game.js').existsSync(), isFalse);
+    final out = await runner.run('bash', {'command': 'ls $work; echo ${work}2'});
+    expect(out.text, contains('game.js'));
+    // Only whole folder names are mapped.
+    expect(out.text, contains('${work}2'));
+    await shell.killAll();
+  });
+
   test('cd carries over between commands and a timeout kills the command', () async {
     Directory('$work/sub').createSync();
     final shell = SessionShell(root: work, sessionTag: 't', scratchDir: '${tmp.path}/sh');

@@ -24,6 +24,17 @@ abstract final class GitService {
   /// fresh `git init` has none).
   static Future<bool> hasCommits(String repoRoot) => impl.hasCommits(repoRoot);
 
+  /// A fork's own worktree, from a snapshot of [dir]'s working tree; null
+  /// outside git or with no commit yet (the fork then shares [dir]).
+  static Future<ForkCopy?> forkCopy(String dir, {required String worktreesDir, required String slug}) =>
+      impl.forkCopy(dir, worktreesDir: worktreesDir, slug: slug);
+
+  /// Commits what the fork did, merges it into the parent's folder file by
+  /// file (three-way, against the snapshot) unless [merge] is false, keeps it
+  /// under `refs/everyai/forks/<slug>` and removes the worktree.
+  static Future<ForkMerge> mergeFork(ForkCopy copy, {required String slug, bool merge = true}) =>
+      impl.mergeFork(copy, slug: slug, merge: merge);
+
   /// Snapshots [dir]'s working tree for an in-place session; null outside git
   /// or in a repository with no commit yet.
   static Future<GitBaseline?> baseline(String dir) => impl.baseline(dir);

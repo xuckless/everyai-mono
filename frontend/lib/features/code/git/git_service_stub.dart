@@ -28,3 +28,5 @@ Future<String> squashMerge(SessionWorktree w, String message) async => _unsuppor
 Future<void> push(SessionWorktree w) async => _unsupported();
 Future<String> createPr(SessionWorktree w, {required String title, required String body}) async => _unsupported();
 Future<void> removeWorktree(SessionWorktree w, {required String hooksDir, bool deleteBranch = true}) async {}
+Future<ForkCopy?> forkCopy(String dir, {required String worktreesDir, required String slug}) async => null;
+Future<ForkMerge> mergeFork(ForkCopy copy, {required String slug, bool merge = true}) async => _unsupported();

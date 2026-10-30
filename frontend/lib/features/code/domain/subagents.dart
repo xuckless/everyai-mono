@@ -108,6 +108,15 @@ Map<String, Object?> forkingTaskSpec() => {
     ...taskSpec['parameters']! as Map<String, Object?>,
     'properties': {
       ...(taskSpec['parameters']! as Map<String, Object?>)['properties']! as Map<String, Object?>,
+      'isolation': {
+        'type': 'string',
+        'enum': ['worktree', 'shared'],
+        'description':
+            'For a fork. worktree: it works on its own copy of this folder (your uncommitted changes included) and '
+            'its changes are merged back into your folder when it finishes, so parallel forks never step on each '
+            'other or on you. shared: it works in this folder directly; use that only for read-only investigation. '
+            'Default: the user\'s setting (usually worktree).',
+      },
       'run_in_background': {
         'type': 'boolean',
         'description':
@@ -131,7 +140,18 @@ Map<String, Object?> forkingTaskSpec() => {
 };
 
 /// The directive a fork starts with: the task, and what being a fork means.
-String forkBrief(SubagentTask task) =>
+String forkBrief(SubagentTask task, {String? copyAt, String? parentDir}) =>
+    _forkBrief(task) +
+    (copyAt == null
+        ? ''
+        : '\n\n<fork-workspace>\nYou work on your own copy of the folder, at $copyAt (your shell starts there). '
+              'Paths under $parentDir in the conversation above are read and written in your copy automatically. Make '
+              'your changes there and check them (build, run, look at screenshots); when you finish, everything you '
+              'changed is merged back into the other agent\'s folder, so leave no stray files outside .everyai/scratch. '
+              'Dependencies such as node_modules are shared with the original: don\'t reinstall or change them.\n'
+              '</fork-workspace>');
+
+String _forkBrief(SubagentTask task) =>
     '<fork>\nYou are now a fork of the agent above, started to do one task. The conversation so far is your context; '
     'the user is not reading along and you cannot ask them or the other agent anything, start subagents, or present a '
     'plan. Do only this task, then end with one final message that is your report: what you found or changed (paths '
@@ -280,6 +300,20 @@ Map<String, SubagentReport> parseSubagentReports(String text) {
 }
 
 /// What a background subagent's call returns straight away.
+/// [report] with what merging the fork's changes back did.
+SubagentReport withMergeNote(SubagentReport report, ({List<String> merged, List<String> conflicts, String ref}) m) {
+  if (m.merged.isEmpty && m.conflicts.isEmpty) return report;
+  final note = StringBuffer('\n\n[Merged into your folder]');
+  if (m.merged.isNotEmpty) note.write('\nApplied: ${m.merged.join(', ')}');
+  if (m.conflicts.isNotEmpty) {
+    note.write(
+      '\nConflicts (you changed these too): ${m.conflicts.join(', ')}. Text files have <<<<<<< yours / >>>>>>> fork '
+      'markers to resolve; a file that could not be merged kept your version. The fork\'s full work is at ${m.ref}.',
+    );
+  }
+  return SubagentReport(report.status, '${report.text}$note');
+}
+
 SubagentReport backgroundStarted(String childId) => SubagentReport(
   SubagentStatus.background,
   'Started in the background as task $childId. Carry on with other work; its report arrives as a '

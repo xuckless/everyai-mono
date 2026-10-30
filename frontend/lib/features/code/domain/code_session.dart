@@ -53,6 +53,7 @@ final class CodeSessionInfo {
     this.parentId,
     this.parentCallId = '',
     this.ownTag = false,
+    this.forkCopy,
   });
 
   final String id;
@@ -108,6 +109,10 @@ final class CodeSessionInfo {
   /// step or orchestrator), so its cost can be read alone.
   final bool ownTag;
 
+  /// A fork's own worktree, merged back into the parent's folder when it
+  /// finishes; null for a fork sharing the parent's folder.
+  final ForkCopy? forkCopy;
+
   bool get isSubagent => parentId != null;
 
   /// The id its model calls are billed under (`X-EveryAI-Session`), and
@@ -122,6 +127,7 @@ final class CodeSessionInfo {
     List<String>? compactedFrom,
     String? model,
     String? effort,
+    bool merged = false,
   }) => CodeSessionInfo(
     id: id,
     projectId: projectId,
@@ -142,6 +148,8 @@ final class CodeSessionInfo {
     parentId: parentId,
     parentCallId: parentCallId,
     ownTag: ownTag,
+    // Once merged back, the copy is gone.
+    forkCopy: merged ? null : forkCopy,
   );
 
   factory CodeSessionInfo.fromJson(Map<String, Object?> json) => CodeSessionInfo(
@@ -172,6 +180,7 @@ final class CodeSessionInfo {
     parentCallId: json['parent_call_id'] as String? ?? '',
     // Ultra children saved before the flag was kept billed under their own id too.
     ownTag: json['own_tag'] == true || (json['parent_call_id'] as String? ?? '').startsWith('ultra-'),
+    forkCopy: ForkCopy.fromJson(json['fork_copy']),
   );
 
   Map<String, Object?> toJson() => {
@@ -194,5 +203,6 @@ final class CodeSessionInfo {
     'parent_id': ?parentId,
     if (parentCallId.isNotEmpty) 'parent_call_id': parentCallId,
     if (ownTag) 'own_tag': true,
+    if (forkCopy case final f?) 'fork_copy': f.toJson(),
   };
 }
