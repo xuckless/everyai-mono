@@ -34,7 +34,7 @@ enum AgentMode {
     final readOnly = isReadOnly(call);
     return switch (this) {
       fullAuto => true,
-      autoEdit => readOnly || call.actionKind == 'FileEditorAction' || _isClientTool(call),
+      autoEdit => readOnly || isFileEdit(call) || _isClientTool(call),
       plan => readOnly || _isClientTool(call),
       ask => readOnly || _isClientTool(call),
     };
@@ -46,11 +46,21 @@ enum AgentMode {
 
   static bool _isClientTool(ActionCall call) => isClientTool(call);
 
+  /// Writes and edits of files (either harness's file tools).
+  static bool isFileEdit(ActionCall call) => const {
+    'FileEditorAction',
+    'EditAction',
+    'WriteFileAction',
+  }.contains(call.actionKind);
+
   /// Actions that only look: viewing files, listing, searching, planning.
   static bool isReadOnly(ActionCall call) => switch (call.actionKind) {
     'FileEditorAction' => call.str('command') == 'view',
     'ReadFileAction' || 'GlobAction' || 'GrepAction' || 'ListDirectoryAction' => true,
     'TaskTrackerAction' || 'ThinkAction' || 'FinishAction' => true,
+    // The EveryAI harness: reading a background shell, waiting on it, stopping
+    // one the session started, and reading the web.
+    'BashOutputAction' || 'MonitorAction' || 'KillShellAction' || 'WebFetchAction' || 'WebSearchAction' => true,
     // Returns a skill's instructions; the app escapes the inline commands it would run.
     'InvokeSkillAction' => true,
     // is_input sends keys to a running process.

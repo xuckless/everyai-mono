@@ -37,6 +37,8 @@ import 'domain/session_commands.dart';
 import 'domain/transcript.dart';
 import 'gateway_key.dart';
 import 'git/git_service.dart';
+import 'domain/agent_menu.dart' show CodeHarnessKind;
+import 'harness/everyai/everyai.dart';
 import 'harness/events.dart';
 import 'harness/fake_harness.dart';
 import 'harness/harness.dart';
@@ -89,11 +91,37 @@ final sidecarProvider = Provider<Sidecar>((ref) {
 
 /// The harness a session in [workingDir] runs on: the scripted one for demo
 /// projects, else the sidecar (started, or restarted after a crash, on demand).
-Future<Harness> harnessFor(Ref ref, String workingDir) async {
+Future<Harness> harnessFor(Ref ref, String workingDir, {String harness = 'openHands'}) async {
   if (isDemoPath(workingDir)) return ref.read(harnessProvider);
   // A paired host's agent-server, through the encrypted relay.
   if (parseRemotePath(workingDir) case (:final hostId, path: _)) return ref.read(remoteLinksProvider).harness(hostId);
+  if (harness == CodeHarnessKind.everyai.name) return ref.read(everyaiHarnessProvider);
   return ref.read(_sidecarHarnessProvider);
+}
+
+/// The EveryAI harness: the agent loop in the app, sessions kept under App
+/// Support.
+final everyaiHarnessProvider = Provider<Harness>(
+  (ref) => everyAIHarness(dataDir: GitService.dataDir, gatewayKey: () => gatewayKey(ref)),
+);
+
+/// The harness new Code sessions start on (the agent menu's Harness page).
+final codeHarnessProvider = NotifierProvider<CodeHarnessChoice, CodeHarnessKind>(CodeHarnessChoice.new);
+
+final class CodeHarnessChoice extends Notifier<CodeHarnessKind> {
+  static const _key = 'code.harness';
+
+  @override
+  CodeHarnessKind build() {
+    const forced = String.fromEnvironment('CODE_HARNESS');
+    return CodeHarnessKind.parse(forced.isNotEmpty ? forced : ref.read(preferencesProvider)[_key]);
+  }
+
+  void choose(CodeHarnessKind kind) {
+    if (!kind.available || kind == CodeHarnessKind.demo) return;
+    ref.read(preferencesProvider)[_key] = kind.name;
+    state = kind;
+  }
 }
 
 /// One harness for the sidecar; it asks the sidecar where it is on every
@@ -221,6 +249,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     String? effort,
     List<Attachment> files = const [],
     bool isolated = false,
+    CodeHarnessKind? harnessKind,
   }) async {
     final id = const Uuid().v7();
     final demo = isDemoPath(project.path);
@@ -233,7 +262,8 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     final baseline = local && worktree == null ? await _baselineFor(project.path) : null;
     final workingDir = worktree?.path ?? project.path;
     final first = await prepareMessage(ref, text: prompt, workingDir: workingDir, model: model, files: files);
-    final harness = await harnessFor(ref, project.path);
+    final CodeHarnessKind kind = harnessKind ?? ref.read(codeHarnessProvider);
+    final harness = await harnessFor(ref, project.path, harness: kind.name);
     // The scripted demo approves client tools like the old path does.
     final hold = heldAnswers && !demo;
     final live = await harness.start(
@@ -244,9 +274,11 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         model: model,
         mode: mode,
         effort: effort,
-        holdClientTools: hold,
+        holdClientTools: hold || kind == CodeHarnessKind.everyai,
         initialMessage: modeNote(mode, first.text),
         initialImages: first.images,
+        isolated: worktree != null,
+        everyai: kind == CodeHarnessKind.everyai,
       ),
     );
     ref.read(_liveProvider)[id] = live;
@@ -262,8 +294,9 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       branch: worktree?.branch ?? baseline?.branch ?? '',
       worktree: worktree,
       baseline: baseline,
+      harness: kind.name,
       effort: effort ?? '',
-      holdClientTools: hold,
+      holdClientTools: hold || kind == CodeHarnessKind.everyai,
     );
     state = [info, ...state];
     _save();
@@ -289,6 +322,8 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     List<String>? tools,
     String? rolePrompt,
     List<Map<String, Object?>>? clientTools,
+    bool isolated = false,
+    bool everyai = false,
   }) async {
     final demo = isDemoPath(projectDir);
     // The demo and remote hosts have no local folder: the server's default prompt, no project files.
@@ -299,7 +334,12 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     // Settings and commit style come from the main checkout (local settings aren't in worktrees).
     final agentPrompt = !local
         ? null
-        : await agentPromptFor(projectDir, agents: [for (final a in agents) (name: a.name, description: a.oneLine)]);
+        : await agentPromptFor(
+            projectDir,
+            agents: [for (final a in agents) (name: a.name, description: a.oneLine)],
+            isolated: isolated,
+            everyai: everyai,
+          );
     // AGENTS.md and friends from the project folder up to the repository root (OpenHands doesn't load them).
     final context = !local ? const <ContextFile>[] : await _startContext(workingDir, projectDir);
     // MCP servers come from the app's list (global plus this project's), never from repository files.
@@ -430,8 +470,11 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     projectDir ??=
         ref.read(codeProjectsProvider).where((p) => p.id == parent.projectId).firstOrNull?.path ?? parent.workingDir;
     workingDir ??= parent.workingDir;
-    final live = await (await harnessFor(ref, parent.workingDir)).start(
+    final everyai = parent.harness == CodeHarnessKind.everyai.name;
+    final live = await (await harnessFor(ref, parent.workingDir, harness: parent.harness)).start(
       await specFor(
+        isolated: workingDir != parent.workingDir || parent.worktree != null,
+        everyai: everyai,
         sessionId: id,
         sessionTag: ownTag ? id : parent.id,
         projectDir: projectDir,
@@ -458,6 +501,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       workingDir: workingDir,
       createdAt: DateTime.now(),
       branch: parent.branch,
+      harness: parent.harness,
       effort: effort,
       parentId: parent.id,
       parentCallId: callId,
@@ -775,7 +819,8 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     try {
       final live = ref.read(_liveProvider);
       final session = _session =
-          live[sessionId] ?? await (await harnessFor(ref, info.workingDir)).attach(info.conversationId);
+          live[sessionId] ??
+          await (await harnessFor(ref, info.workingDir, harness: info.harness)).attach(info.conversationId);
       live[sessionId] = session;
       await _openContext(info);
       _sub = session.events.listen(_onEvent);
@@ -1127,8 +1172,10 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
         sessionTag: info.billingTag,
         initialMessage: modeNote(state.mode, message),
         runInitial: resume,
+        isolated: info.worktree != null,
+        everyai: info.harness == CodeHarnessKind.everyai.name,
       );
-      final live = await (await harnessFor(ref, info.workingDir)).start(spec);
+      final live = await (await harnessFor(ref, info.workingDir, harness: info.harness)).start(spec);
       if (!ref.mounted) {
         unawaited(live.close());
         return const CompactOutcome.failed('The session was closed.');
@@ -1662,9 +1709,17 @@ final class CodeStatuses extends Notifier<Map<String, SessionStatus>> {
     ];
     if (sessions.isEmpty) return;
     try {
-      final byConversation = await ref.read(_sidecarHarnessProvider).statuses([
-        for (final s in sessions) s.conversationId,
-      ]);
+      final everyai = CodeHarnessKind.everyai.name;
+      final byConversation = {
+        ...await ref.read(everyaiHarnessProvider).statuses([
+          for (final s in sessions)
+            if (s.harness == everyai) s.conversationId,
+        ]),
+        ...await ref.read(_sidecarHarnessProvider).statuses([
+          for (final s in sessions)
+            if (s.harness != everyai) s.conversationId,
+        ]),
+      };
       if (!ref.mounted) return;
       final before = state;
       state = {

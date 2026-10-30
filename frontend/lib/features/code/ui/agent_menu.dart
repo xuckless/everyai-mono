@@ -21,6 +21,7 @@ class AgentMenu extends ConsumerWidget {
     required this.effort,
     required this.onChanged,
     this.harness = CodeHarnessKind.openHands,
+    this.onHarness,
     this.bordered = false,
   });
 
@@ -28,6 +29,9 @@ class AgentMenu extends ConsumerWidget {
   final String effort;
   final void Function(String model, String effort) onChanged;
   final CodeHarnessKind harness;
+
+  /// Picks the harness (before a session starts); null: fixed for the session.
+  final ValueChanged<CodeHarnessKind>? onHarness;
 
   /// A pill outline, for the page header.
   final bool bordered;
@@ -47,6 +51,7 @@ class AgentMenu extends ConsumerWidget {
         model: model,
         effort: effort,
         harness: harness,
+        onHarness: onHarness,
         reasons: specs[ModelId(model)]?.reasoning ?? true,
         onChanged: onChanged,
         close: close,
@@ -96,6 +101,7 @@ class AgentMenuPanel extends StatefulWidget {
     required this.harness,
     required this.onChanged,
     required this.close,
+    this.onHarness,
     this.reasons = true,
   });
 
@@ -103,6 +109,7 @@ class AgentMenuPanel extends StatefulWidget {
   final String model;
   final String effort;
   final CodeHarnessKind harness;
+  final ValueChanged<CodeHarnessKind>? onHarness;
 
   /// Whether the current model takes an effort at all.
   final bool reasons;
@@ -182,8 +189,18 @@ class _AgentMenuPanelState extends State<AgentMenuPanel> {
             subtitle: h.blurb,
             selected: h == widget.harness,
             trailing: check(h == widget.harness),
-            // One harness per session for now: the others are placeholders.
-            onTap: h.available && h == widget.harness ? () => setState(() => _page = _Page.root) : null,
+            // A session keeps the harness it started on; before one starts
+            // any available harness can be picked.
+            onTap: !h.available
+                ? null
+                : h == widget.harness
+                ? () => setState(() => _page = _Page.root)
+                : widget.onHarness == null
+                ? null
+                : () {
+                    widget.onHarness!(h);
+                    setState(() => _page = _Page.root);
+                  },
           ),
       ],
       _Page.model => [

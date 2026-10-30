@@ -45,6 +45,7 @@ final class CodeSessionInfo {
     this.branch = '',
     this.worktree,
     this.baseline,
+    this.harness = 'openHands',
     this.effort = '',
     this.holdClientTools = false,
     this.compactedFrom = const [],
@@ -74,6 +75,10 @@ final class CodeSessionInfo {
   /// For a session working in place in a git repository: where it started,
   /// so Changes can show what it did.
   final GitBaseline? baseline;
+
+  /// The harness it runs on (`CodeHarnessKind` name); sessions from before
+  /// there was a choice ran on OpenHands.
+  final String harness;
 
   /// The snapshot Changes diffs against: the worktree, or the in-place
   /// baseline's read-only view.
@@ -125,6 +130,7 @@ final class CodeSessionInfo {
     branch: branch ?? this.branch,
     worktree: worktree,
     baseline: baseline,
+    harness: harness,
     effort: effort ?? this.effort,
     holdClientTools: holdClientTools,
     compactedFrom: compactedFrom ?? this.compactedFrom,
@@ -151,6 +157,7 @@ final class CodeSessionInfo {
     worktree: json['worktree'] is Map<String, Object?>
         ? SessionWorktree.fromJson(json['worktree']! as Map<String, Object?>)
         : null,
+    harness: json['harness'] as String? ?? 'openHands',
     baseline: json['baseline'] is Map<String, Object?>
         ? GitBaseline.fromJson(json['baseline']! as Map<String, Object?>)
         : null,
@@ -172,6 +179,7 @@ final class CodeSessionInfo {
     'branch': branch,
     'worktree': ?worktree?.toJson(),
     'baseline': ?baseline?.toJson(),
+    'harness': harness,
     'effort': effort,
     if (holdClientTools) 'hold_client_tools': true,
     if (compactedFrom.isNotEmpty) 'compacted_from': compactedFrom,

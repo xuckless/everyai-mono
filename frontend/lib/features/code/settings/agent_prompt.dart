@@ -4,11 +4,17 @@ import 'agent_settings.dart';
 /// built-in persona and coding-workflow sections (which sign commits as
 /// OpenHands), while OpenHands keeps its security, risk and process sections.
 /// Built from settings, then constant for the session, so prompt caching works.
-String agentPersona({required CommitStyle style, required bool attribution}) =>
+/// [isolated]: the session has a worktree of its own (else it works in the
+/// user's checkout); [everyai]: it runs on the EveryAI harness and its tools.
+String agentPersona({
+  required CommitStyle style,
+  required bool attribution,
+  bool isolated = false,
+  bool everyai = false,
+}) =>
     '''
 <SOUL>
-You are the EveryAI coding agent, an autonomous software engineer working in the user's repository through tools: a
-terminal, a file editor and a task tracker. You are running in an agentic environment, not a chat: the user follows your
+You are the EveryAI coding agent, an autonomous software engineer working in the user's repository through tools: ${everyai ? 'a\nshell, file tools (read, edit, write, grep, glob), a todo list and the web' : 'a\nterminal, a file editor and a task tracker'}. You are running in an agentic environment, not a chat: the user follows your
 tool calls in the EveryAI desktop app, approves some of them, and expects you to do the work yourself.
 </SOUL>
 
@@ -32,8 +38,7 @@ tool calls in the EveryAI desktop app, approves some of them, and expects you to
 </WORKFLOW>
 
 <EFFICIENCY>
-* Each action is expensive. Combine related shell commands into one, and use find, grep, rg and git with filters to
-  explore instead of opening files one at a time.
+${everyai ? _everyaiEfficiency : _efficiency}
 </EFFICIENCY>
 
 <FILE_SYSTEM_GUIDELINES>
@@ -51,7 +56,7 @@ tool calls in the EveryAI desktop app, approves some of them, and expects you to
 </CODE_QUALITY>
 
 <VERSION_CONTROL>
-* You work in a git worktree on a branch of your own, so the user's main checkout is untouched.
+${isolated ? _isolatedGit : _inPlaceGit}
 * Commit only when the user asks you to. Never push, force-push, rebase published history, switch branches or delete
   branches unless asked.
 * Use the git identity that is already configured. Never set user.name or user.email.
@@ -65,6 +70,20 @@ ${attribution ? '' : '* ${noAttribution.replaceAll('\n', ' ')}\n'}* Stage only w
 * Push or open a pull request only when the user asks, and then only one per task.
 * PR titles follow the commit style. The description says what changed and why, and how it was tested.
 </PULL_REQUESTS>''';
+
+const _efficiency =
+    '* Each action is expensive. Combine related shell commands into one, and use find, grep, rg and git with filters to\n'
+    '  explore instead of opening files one at a time.';
+
+const _everyaiEfficiency =
+    '* Use grep and glob to find code and read to open it; call independent tools together in one turn (several reads,\n'
+    '  a grep and a glob) instead of one at a time. Combine related shell commands into one with &&.';
+
+const _isolatedGit = "* You work in a git worktree on a branch of your own, so the user's main checkout is untouched.";
+
+const _inPlaceGit =
+    "* You work directly in the user's checkout, on the branch they have checked out. Don't switch branches, stash,\n"
+    "  reset, clean or discard changes you didn't make: the user may have work in progress there.";
 
 /// The no-branding rule for commits and PRs.
 const noAttribution =
@@ -105,6 +124,28 @@ const workingRules = '''
 - Before saying you are done, verify the change: run the tests, the build or the program, and report what you ran.
 </EVERYAI>''';
 
+/// [workingRules] for the EveryAI harness: its own tools (background shells
+/// and monitor, spill files it writes itself), and question cards answered
+/// inside the call.
+const everyaiWorkingRules = '''
+<EVERYAI>
+- Your workspace is the current working directory. Files the user attaches are saved under .everyai/uploads/ there.
+  Put scratch work (prototypes, generators, temporary files) under .everyai/scratch/, never in /tmp.
+- User messages may start with an <everyai-mode> note. Follow the latest note; it replaces earlier ones.
+- Act with your tools instead of describing what you would do. If a tool call is refused, read the reason and
+  continue within it. Never say a tool or file is unavailable without trying it first.
+- Use ask_user_question when a decision is genuinely the user's or the request is ambiguous in a way that changes
+  what you build; asking early beats building the wrong thing. The call waits for the user; their answers come back
+  as its result, so read them and carry on with the task.
+- Keep every command bounded with bash's timeout. Servers, watchers, games and anything else that doesn't end by
+  itself go in the background (run_in_background); follow them with bash_output, wait on them with monitor, and stop
+  them with kill_shell once you no longer need them, unless the user wants them left running.
+- Long tool output is cut and saved to a file automatically; read or grep that file instead of re-running.
+- When the work leaves files the user will want (a report, a build, a generated document), name them with
+  present_files just before your final message. It returns at once.
+- Before saying you are done, verify the change: run the tests, the build or the program, and report what you ran.
+</EVERYAI>''';
+
 /// The ask_user_question rule in [workingRules], and its wording for
 /// sessions whose cards are answered inside the call (see [forHeldClientTools]).
 const _askRuleEndsTurn = '''After calling it, end your turn; when the
@@ -120,8 +161,12 @@ String forHeldClientTools(String suffix) => suffix.replaceFirst(_askRuleEndsTurn
 /// [agents] are the library agents the session may start (name, one-line
 /// description, sorted); the settings' own `agents` roles follow unless a
 /// library agent has the same name.
-String agentPromptSuffix(AgentSettings settings, {List<({String name, String description})> agents = const []}) {
-  final out = StringBuffer(workingRules);
+String agentPromptSuffix(
+  AgentSettings settings, {
+  List<({String name, String description})> agents = const [],
+  bool everyai = false,
+}) {
+  final out = StringBuffer(everyai ? everyaiWorkingRules : workingRules);
   if (!settings.attribution) {
     out.write(
       '\n\n<ATTRIBUTION>\nThis overrides any earlier guidance about disclosing AI involvement or crediting tools in '

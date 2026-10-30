@@ -184,7 +184,14 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                     trailing: AgentMenu(
                       model: ref.watch(codeAgentProvider).model,
                       effort: ref.watch(codeAgentProvider).effort,
-                      harness: isDemoPath(project.path) ? CodeHarnessKind.demo : CodeHarnessKind.openHands,
+                      harness: isDemoPath(project.path)
+                          ? CodeHarnessKind.demo
+                          : isRemotePath(project.path)
+                          ? CodeHarnessKind.openHands
+                          : ref.watch(codeHarnessProvider),
+                      onHarness: isDemoPath(project.path) || isRemotePath(project.path)
+                          ? null
+                          : ref.read(codeHarnessProvider.notifier).choose,
                       onChanged: ref.read(codeAgentProvider.notifier).chooseModel,
                     ),
                     leading: _ProjectPicker(
