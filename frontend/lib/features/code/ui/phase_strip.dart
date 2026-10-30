@@ -17,10 +17,11 @@ class PhaseStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    final steps = Phase.values.where((p) => p != Phase.done).toList();
+    final steps = flowSteps(flow);
+    final name = flowLabel(flow);
     final color = stuck ? theme.warning : theme.accent;
     return Semantics(
-      label: '${flow == 'ultra' ? 'Ultra' : 'Max'} flow: ${phase.label}${stuck ? ', stuck' : ''}',
+      label: '$name flow: ${phase.label}${stuck ? ', stuck' : ''}',
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
         decoration: BoxDecoration(
@@ -36,13 +37,13 @@ class PhaseStrip extends StatelessWidget {
               spacing: 6,
               runSpacing: 4,
               children: [
-                Text(flow == 'ultra' ? 'Ultra' : 'Max', style: theme.type.caption.semibold.tint(color)),
+                Text(name, style: theme.type.caption.semibold.tint(color)),
                 for (final (i, p) in steps.indexed) ...[
                   if (i > 0) AdaptiveIcon(EveryIcon.chevronRight, size: 9, color: theme.textMuted),
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      if (p.index < phase.index) ...[
+                      if (steps.indexOf(p) < steps.indexOf(phase) || phase == Phase.done) ...[
                         AdaptiveIcon(EveryIcon.check, size: 11, color: theme.textMuted),
                         const SizedBox(width: 3),
                       ],
@@ -51,7 +52,9 @@ class PhaseStrip extends StatelessWidget {
                         style: theme.type.caption.tint(
                           p == phase
                               ? color
-                              : (p.index < phase.index ? theme.textMuted : theme.textMuted.withValues(alpha: 0.5)),
+                              : (steps.indexOf(p) < steps.indexOf(phase) || phase == Phase.done
+                                    ? theme.textMuted
+                                    : theme.textMuted.withValues(alpha: 0.5)),
                         ),
                       ),
                     ],

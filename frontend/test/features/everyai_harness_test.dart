@@ -672,4 +672,82 @@ for line in sys.stdin:
     final first = gateway.requests.first['messages']! as List<Object?>;
     expect((first.last! as Map)['content'], contains('phase="research"'));
   });
+
+  test('Bug fix: the harness runs the repro itself, refuses a fake fix, and verifies the real one', () async {
+    File('$work/calc.sh').writeAsStringSync('echo \$((2 + 2 + 1))\n');
+    const repro = 'test "\$(sh calc.sh)" = 4';
+    gateway
+      ..reply(
+        calls: [
+          ('bug_check', {'action': 'reproduced', 'command': 'true'}),
+        ],
+      )
+      ..reply(
+        calls: [
+          ('bug_check', {'action': 'reproduced', 'command': repro}),
+        ],
+      )
+      ..reply(
+        calls: [
+          ('bug_check', {'action': 'triage', 'kind': 'simple', 'why': 'An off-by-one in calc.sh.'}),
+        ],
+      )
+      ..reply(
+        calls: [
+          ('write', {'file_path': '.everyai/scratch/plan.md', 'content': '# Remove the + 1'}),
+        ],
+      )
+      ..reply(
+        calls: [
+          ('present_plan', {'plan': '# Remove the + 1'}),
+        ],
+      )
+      ..reply(
+        calls: [
+          ('bug_check', {'action': 'verify'}),
+        ],
+      )
+      ..reply(
+        calls: [
+          ('read', {'file_path': 'calc.sh'}),
+        ],
+      )
+      ..reply(
+        calls: [
+          ('write', {'file_path': 'calc.sh', 'content': 'echo \$((2 + 2))\n'}),
+        ],
+      )
+      ..reply(
+        calls: [
+          ('bug_check', {'action': 'verify'}),
+        ],
+      )
+      ..reply(text: 'Fixed: calc.sh added one too many; the repro passes.');
+    final session = await harness.start(
+      SessionSpec(
+        workingDir: work,
+        model: 'anthropic/claude-sonnet-5.5',
+        mode: AgentMode.fullAuto,
+        llmBaseUrl: gateway.baseUrl,
+        llmApiKey: 'sk-test',
+        sessionTag: 'tag-bug',
+        initialMessage: 'calc.sh prints 5 for 2 + 2',
+        holdClientTools: true,
+        phaseFlow: 'bugfix',
+      ),
+    );
+    final events = await drive(session, answer: (c) => c.toolName == 'present_plan' ? planApprovedReason : null);
+    final results = events.whereType<ToolResult>().map((r) => r.text).toList();
+    expect(results[0], startsWith('Not reproduced'));
+    expect(results[1], startsWith('Reproduced'));
+    expect(results.where((r) => r.startsWith('Still failing')), hasLength(1), reason: 'verifying before the fix fails');
+    expect(results.last, startsWith('Verified'));
+    final notes = [
+      for (final m in events.whereType<ChatMessage>())
+        if (m.fromUser) ?parsePhaseNote(m.text)?.phase,
+    ];
+    expect(notes, [Phase.reproduce, Phase.triage, Phase.plan, Phase.fix, Phase.verify]);
+    final tools = (gateway.requests.first['tools']! as List).map((t) => ((t as Map)['function'] as Map)['name']);
+    expect(tools, contains('bug_check'));
+  });
 }

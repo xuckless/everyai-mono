@@ -354,7 +354,7 @@ final class TranscriptBuilder {
         }
         if (parsePhaseNote(text) case final p?) {
           _phase = (flow: p.flow, phase: p.phase, stuck: p.stuck);
-          final flow = p.flow == 'ultra' ? 'Ultra' : 'Max';
+          final flow = flowLabel(p.flow);
           _items.add(
             NoticeItem(
               e.id,

@@ -300,8 +300,10 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     bool isolated = false,
     CodeHarnessKind? harnessKind,
     HarnessTier? tier,
+    HarnessMode? harnessMode,
   }) async {
     final id = const Uuid().v7();
+    harnessMode ??= ref.read(codeSettingsProvider).harnessMode;
     final demo = isDemoPath(project.path);
     final title = titleFor(prompt.isEmpty ? files.first.name : prompt);
     // Sessions work in the project folder itself, in a real shell, unless asked
@@ -330,6 +332,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         isolated: worktree != null,
         everyai: kind == CodeHarnessKind.everyai,
         tier: tier ?? ref.read(codeSettingsProvider).tier,
+        harnessMode: harnessMode,
       ),
     );
     ref.read(_liveProvider)[id] = live;
@@ -349,6 +352,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       effort: effort ?? '',
       holdClientTools: hold || kind == CodeHarnessKind.everyai,
       tier: tier ?? ref.read(codeSettingsProvider).tier,
+      harnessMode: harnessMode,
     );
     state = [info, ...state];
     _save();
@@ -378,11 +382,14 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     bool everyai = false,
     Map<String, String> pathMap = const {},
     HarnessTier? tier,
+    HarnessMode? harnessMode,
     List<String>? researchSites,
   }) async {
     final demo = isDemoPath(projectDir);
-    // A session's own tier; a new one's comes from the caller, else the default.
+    // A session's own tier and mode; a new one's come from the caller, else the defaults.
     tier ??= byId(sessionId)?.tier ?? ref.read(codeSettingsProvider).tier;
+    harnessMode ??= byId(sessionId)?.harnessMode ?? HarnessMode.build;
+    final bugFix = everyai && harnessMode == HarnessMode.bugFix;
     // The demo and remote hosts have no local folder: the server's default prompt, no project files.
     final local = !noLocalFolder(projectDir);
     final projectId = ref.read(codeProjectsProvider).where((p) => p.path == projectDir).firstOrNull?.id;
@@ -400,6 +407,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
             // Only a main EveryAI session forks (forks are one level deep).
             forks: everyai && !subagent,
             models: everyai && !subagent ? _childModels(model) : const {},
+            harnessMode: everyai ? harnessMode : HarnessMode.build,
           );
     // AGENTS.md and friends from the project folder up to the repository root (OpenHands doesn't load them).
     final context = !local ? const <ContextFile>[] : await _startContext(workingDir, projectDir);
@@ -436,7 +444,13 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       rolePrompt: rolePrompt,
       researchSites: researchSites,
       // Only a main EveryAI session runs the Max or Ultra flow.
-      phaseFlow: everyai && !subagent && tier.phased ? tier.name : null,
+      phaseFlow: subagent || !everyai
+          ? null
+          : bugFix
+          ? (tier == HarnessTier.ultra ? 'bugfix-ultra' : 'bugfix')
+          : tier.phased
+          ? tier.name
+          : null,
       clientTools: clientTools,
       autoCompactAt: ref.read(codeSettingsProvider).autoCompactPercent / 100,
       pathMap: pathMap,
@@ -1273,8 +1287,31 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     if (info == null || info.tier == tier) return;
     sessions.update(info.copyWith(tier: tier));
     _tierNote = tierChangeNote(tier, forks: info.harness == CodeHarnessKind.everyai.name && !info.isSubagent);
-    // Max and Ultra start their flow at research; the other tiers stop it.
-    if (_session case final PhasedSession phased) unawaited(phased.setPhaseFlow(tier.phased ? tier.name : null));
+    _syncFlow();
+  }
+
+  /// The flow the session's tier and mode call for, on the harness.
+  void _syncFlow() {
+    final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
+    if (info == null || info.isSubagent) return;
+    final flow = info.harnessMode == HarnessMode.bugFix
+        ? (info.tier == HarnessTier.ultra ? 'bugfix-ultra' : 'bugfix')
+        : info.tier.phased
+        ? info.tier.name
+        : null;
+    if (_session case final PhasedSession phased) unawaited(phased.setPhaseFlow(flow));
+  }
+
+  /// Moves the session between Build and Bug fix; the flow starts over.
+  void setHarnessMode(HarnessMode mode) {
+    final sessions = ref.read(codeSessionsProvider.notifier);
+    final info = sessions.byId(sessionId);
+    if (info == null || info.harnessMode == mode) return;
+    sessions.update(info.copyWith(harnessMode: mode));
+    _tierNote = mode == HarnessMode.bugFix
+        ? 'The user moved this session to Bug fix mode. From now on these rules apply:\n$bugFixRules'
+        : 'The user moved this session back to Build mode: the Bug fix rules no longer apply.';
+    _syncFlow();
   }
 
   String _tierNote = '';
@@ -1802,7 +1839,8 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
   /// their reports together when the last one is in.
   void _ultraResearch(Transcript t) {
     final p = t.phase;
-    if (p == null || p.flow != 'ultra' || p.phase != Phase.research || _researchStarting || _researchSent) return;
+    final workflow = p != null && (p.flow == 'ultra' || p.flow == 'bugfix-ultra');
+    if (!workflow || p.phase != Phase.research || _researchStarting || _researchSent) return;
     final sessions = ref.read(codeSessionsProvider.notifier);
     final info = sessions.byId(sessionId);
     if (info == null || info.isSubagent) return;
@@ -1823,7 +1861,10 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
           for (final m in (ref.read(libraryProvider).value ?? const <ModelSpec>[]).where((m) => m.tools).take(8))
             if (m.id.value != info.model) m.id.value: m.name,
         };
-        final reply = await (session as AsksAside).askAside(researchAnglesQuestion(models: models), maxTokens: 3000);
+        final reply = await (session as AsksAside).askAside(
+          researchAnglesQuestion(models: models, bug: p.flow == 'bugfix-ultra'),
+          maxTokens: 3000,
+        );
         final angles = parseResearchAngles(reply);
         for (final (i, a) in angles.indexed) {
           if (!ref.mounted) return;

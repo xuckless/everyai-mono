@@ -113,6 +113,15 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
     return tier.everyaiOnly && !everyai ? HarnessTier.thorough : tier;
   }
 
+  /// Bug fix needs the EveryAI harness on this computer.
+  HarnessMode _harnessModeFor(CodeProject project) {
+    final everyai =
+        !isDemoPath(project.path) &&
+        !isRemotePath(project.path) &&
+        ref.read(codeHarnessProvider) == CodeHarnessKind.everyai;
+    return everyai ? ref.read(codeSettingsProvider).harnessMode : HarnessMode.build;
+  }
+
   Future<void> _start(CodeProject project, String prompt, List<Attachment> files) async {
     final mode = _modeFor(project.id);
     ref.read(preferencesProvider)[lastModeKey(project.id)] = mode.name;
@@ -129,6 +138,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
             files: files,
             isolated: _isolated,
             tier: _tierFor(project),
+            harnessMode: _harnessModeFor(project),
           );
       if (_budget case final usd?) ref.read(codeSettingsProvider.notifier).setBudget(info.id, usd);
       if (mounted) context.go(Routes.codeSession(info.id));
@@ -216,6 +226,8 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                       onChanged: ref.read(codeAgentProvider.notifier).chooseModel,
                       tier: ref.watch(codeSettingsProvider.select((s) => s.tier)),
                       onTier: ref.read(codeSettingsProvider.notifier).setTier,
+                      harnessMode: ref.watch(codeSettingsProvider.select((s) => s.harnessMode)),
+                      onHarnessMode: ref.read(codeSettingsProvider.notifier).setHarnessMode,
                       budget: _budget,
                       onBudget: (v) => setState(() => _budget = v),
                     ),

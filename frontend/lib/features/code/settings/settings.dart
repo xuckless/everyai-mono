@@ -3,7 +3,7 @@ import 'agent_settings.dart';
 import 'settings_stub.dart' if (dart.library.io) 'settings_io.dart' as impl;
 
 export 'agent_settings.dart';
-export 'agent_prompt.dart' show HarnessMode, HarnessTier, tierChangeNote;
+export 'agent_prompt.dart' show HarnessMode, HarnessTier, bugFixRules, tierChangeNote;
 
 /// Project settings committed with the repo.
 const projectSettingsPath = '.everyai/settings.json';
@@ -34,11 +34,20 @@ Future<({String persona, String suffix})> agentPromptFor(
   HarnessTier tier = HarnessTier.efficient,
   bool forks = false,
   Map<String, String> models = const {},
+  HarnessMode harnessMode = HarnessMode.build,
 }) async {
   final settings = await loadAgentSettings(projectDir);
   final style = await resolveCommitStyle(projectDir, settings.commitStyle);
   return (
     persona: agentPersona(style: style, attribution: settings.attribution, isolated: isolated, everyai: everyai),
-    suffix: agentPromptSuffix(settings, agents: agents, everyai: everyai, tier: tier, forks: forks, models: models),
+    suffix: agentPromptSuffix(
+      settings,
+      agents: agents,
+      everyai: everyai,
+      tier: tier,
+      forks: forks,
+      models: models,
+      harnessMode: harnessMode,
+    ),
   );
 }

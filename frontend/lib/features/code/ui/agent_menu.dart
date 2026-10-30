@@ -31,9 +31,13 @@ class AgentMenu extends ConsumerWidget {
     this.tier = HarnessTier.efficient,
     this.onTier,
     this.harnessMode = HarnessMode.build,
+    this.onHarnessMode,
     this.budget,
     this.onBudget,
   });
+
+  /// Picks Build or Bug fix; null shows the mode without a choice.
+  final ValueChanged<HarnessMode>? onHarnessMode;
 
   final String model;
   final String effort;
@@ -68,6 +72,7 @@ class AgentMenu extends ConsumerWidget {
     final label = [
       agentMenuLabel(current?.name ?? model.split('/').last, effort),
       if (onTier != null) tier.label,
+      if (harnessMode == HarnessMode.bugFix) 'Bug fix',
     ].join(' · ');
     return AnchoredPopover(
       width: 320,
@@ -83,6 +88,7 @@ class AgentMenu extends ConsumerWidget {
         tier: tier,
         onTier: onTier,
         harnessMode: harnessMode,
+        onHarnessMode: onHarnessMode,
         ultraAllowed: ultraAllowed,
         budget: budget,
         onBudget: onBudget,
@@ -137,6 +143,7 @@ class AgentMenuPanel extends StatefulWidget {
     this.tier = HarnessTier.efficient,
     this.onTier,
     this.harnessMode = HarnessMode.build,
+    this.onHarnessMode,
     this.ultraAllowed = false,
     this.budget,
     this.onBudget,
@@ -145,6 +152,7 @@ class AgentMenuPanel extends StatefulWidget {
   final HarnessTier tier;
   final ValueChanged<HarnessTier>? onTier;
   final HarnessMode harnessMode;
+  final ValueChanged<HarnessMode>? onHarnessMode;
 
   /// The plan allows Ultra (the Max plan).
   final bool ultraAllowed;
@@ -174,6 +182,7 @@ class _AgentMenuPanelState extends State<AgentMenuPanel> {
   late String _effort = widget.effort;
   late HarnessTier _tier = widget.tier;
   late double? _budget = widget.budget;
+  late HarnessMode _mode = widget.harnessMode;
 
   @override
   void didUpdateWidget(AgentMenuPanel old) {
@@ -182,6 +191,7 @@ class _AgentMenuPanelState extends State<AgentMenuPanel> {
     if (old.effort != widget.effort) _effort = widget.effort;
     if (old.tier != widget.tier) _tier = widget.tier;
     if (old.budget != widget.budget) _budget = widget.budget;
+    if (old.harnessMode != widget.harnessMode) _mode = widget.harnessMode;
   }
 
   /// Why [t] can't be picked, or null.
@@ -223,8 +233,21 @@ class _AgentMenuPanelState extends State<AgentMenuPanel> {
         PopoverRow(
           key: const ValueKey('agent-menu.harness-mode'),
           title: 'Harness mode',
-          subtitle: '${widget.harnessMode.label} · Bug fix is coming',
-          trailing: _ModeSwitch(mode: widget.harnessMode),
+          subtitle: _mode == HarnessMode.bugFix
+              ? 'Reproduce, triage, research, plan, fix, verify'
+              : widget.harness == CodeHarnessKind.everyai
+              ? 'Build things, or switch to fix a bug, issue or PR'
+              : 'Bug fix needs the EveryAI harness',
+          trailing: _ModeSwitch(
+            mode: _mode,
+            onPick: widget.onHarnessMode == null
+                ? null
+                : (m) {
+                    if (m == HarnessMode.bugFix && widget.harness != CodeHarnessKind.everyai) return;
+                    setState(() => _mode = m);
+                    widget.onHarnessMode!(m);
+                  },
+          ),
         ),
         if (widget.onTier != null)
           _TierBar(
@@ -365,32 +388,29 @@ class _Back extends StatelessWidget {
   }
 }
 
-/// Build, with Bug fix shown but not yet pickable.
+/// Build or Bug fix, as a two-way switch.
 class _ModeSwitch extends StatelessWidget {
-  const _ModeSwitch({required this.mode});
+  const _ModeSwitch({required this.mode, this.onPick});
 
   final HarnessMode mode;
+  final ValueChanged<HarnessMode>? onPick;
 
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     Widget segment(HarnessMode m) {
       final on = m == mode;
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-        decoration: BoxDecoration(
-          color: on ? theme.accent.withValues(alpha: 0.18) : null,
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: Text(
-          m.label,
-          style: theme.type.caption.tint(
-            on
-                ? theme.accent
-                : m == HarnessMode.bugFix
-                ? theme.textMuted.withValues(alpha: 0.5)
-                : theme.textMuted,
+      return GestureDetector(
+        key: ValueKey('agent-menu.harness-mode.${m.name}'),
+        behavior: HitTestBehavior.opaque,
+        onTap: onPick == null || on ? null : () => onPick!(m),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: on ? theme.accent.withValues(alpha: 0.18) : null,
+            borderRadius: BorderRadius.circular(6),
           ),
+          child: Text(m.label, style: theme.type.caption.tint(on ? theme.accent : theme.textMuted)),
         ),
       );
     }

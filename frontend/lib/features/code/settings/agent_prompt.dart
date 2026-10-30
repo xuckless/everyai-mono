@@ -228,6 +228,29 @@ const _phasedRules =
     'how each part is checked), then present_plan.\n'
     '- build and verify: build the plan';
 
+/// The rules of Bug fix mode: blind bugs, issues and pull requests alike.
+const bugFixRules = '''<HARNESS_MODE name="bugFix">
+This session fixes a bug: one the user describes, a GitHub (or similar) issue, or a pull request to review and fix.
+The harness runs it in phases (reproduce → triage → research when hard → plan → fix → verify) and checks each step
+itself with bug_check.
+- Research, don't guess. Every claim about the cause needs evidence: a reproduction, a log line, a stack, the code
+  path you traced, or a source. Never fix by trial and error: if a fix doesn't hold, the understanding was wrong, so
+  go back to the evidence instead of trying variations.
+- Reproduce first. Find the smallest command that shows the bug and prove it with bug_check. If the description
+  isn't enough, ask the user how to reproduce it with ask_user_question: multiple choice with the likely steps,
+  inputs and environments.
+- Issues: read the issue and its comments (gh issue view N --comments), then treat it as the bug report. Pull
+  requests: read it (gh pr view, gh pr diff, gh pr checks; CI logs with gh run view --log-failed), check it out
+  locally, and ask the user with ask_user_question what they want (review only, fix and commit locally, push, post
+  review comments) before doing any of it; then do exactly that.
+- Hard bugs (low level, rare, not understood: an io_uring race, a kernel or toolchain quirk) get researched: how
+  established projects hit this exact bug, in their issues, commits and fixes, and what the real root cause was.
+- Fix the cause, not the symptom, with the simplest change that does it. Nothing extra: no refactors, rewrites,
+  new abstractions or speculative hardening the bug doesn't need. Reuse what the code base already has. Add one
+  regression test that failed before and passes now.
+- Report: the root cause with its evidence, the fix, how the harness verified it, and anything left unchecked.
+</HARNESS_MODE>''';
+
 /// Sent with the next message when the user moves a running session to [tier].
 String tierChangeNote(HarnessTier tier, {bool forks = false}) =>
     'The user moved this session to the ${tier.label} tier. From now on this replaces the HARNESS_TIER block in '
@@ -280,10 +303,12 @@ String agentPromptSuffix(
   HarnessTier tier = HarnessTier.efficient,
   bool forks = false,
   Map<String, String> models = const {},
+  HarnessMode harnessMode = HarnessMode.build,
 }) {
   final out = StringBuffer(everyai ? everyaiWorkingRules : workingRules)
     ..write('\n\n')
     ..write(tierBlock(tier, forks: forks));
+  if (harnessMode == HarnessMode.bugFix) out.write('\n\n$bugFixRules');
   if (!settings.attribution) {
     out.write(
       '\n\n<ATTRIBUTION>\nThis overrides any earlier guidance about disclosing AI involvement or crediting tools in '

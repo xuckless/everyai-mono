@@ -81,6 +81,7 @@ class CodeSessionScreen extends ConsumerWidget {
       effort: info.effort,
       tier: info.tier,
       harnessMode: info.harnessMode,
+      onHarnessMode: controller.setHarnessMode,
       onTier: controller.setTier,
       harness: isDemoPath(info.workingDir) ? CodeHarnessKind.demo : CodeHarnessKind.parse(info.harness),
       onChanged: (model, effort) => switchCodeAgent(

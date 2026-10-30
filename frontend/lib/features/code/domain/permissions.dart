@@ -115,6 +115,8 @@ final class PermissionPolicy {
       }
       return Decision(mode == AgentMode.fullAuto ? Verdict.allow : Verdict.ask, DecisionSource.mode);
     }
+    // A bug_check without a command records a step, or re-runs the repro already approved.
+    if (call.toolName == 'bug_check' && command == null) return const Decision(Verdict.allow, DecisionSource.readOnly);
     final readOnly = AgentMode.isReadOnly(call);
     if (mode == AgentMode.plan && !readOnly) return const Decision(Verdict.deny, DecisionSource.plan);
     if (readOnly) return const Decision(Verdict.allow, DecisionSource.readOnly);
@@ -203,8 +205,12 @@ String relativeTo(String path, String? dir) {
 }
 
 /// The shell command of a terminal action (not keystrokes to a running process).
-String? _command(ActionCall call) =>
-    call.actionKind == 'TerminalAction' && call.action['is_input'] != true ? call.str('command') : null;
+String? _command(ActionCall call) => call.actionKind == 'TerminalAction' && call.action['is_input'] != true
+    ? call.str('command')
+    // Bug fix mode's repro runs a command too, checked the same way.
+    : call.toolName == 'bug_check' && call.str('command').isNotEmpty
+    ? call.str('command')
+    : null;
 
 /// Keys sent to a running process (`is_input`), which may be a shell.
 String? _typed(ActionCall call) =>

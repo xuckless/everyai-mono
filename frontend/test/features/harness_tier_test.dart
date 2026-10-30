@@ -2,6 +2,7 @@ import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
 import 'package:every_ai/features/code/settings/agent_prompt.dart';
 import 'package:every_ai/features/code/settings/code_settings.dart';
+import 'package:every_ai/features/code/settings/settings.dart' show AgentSettings;
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -62,5 +63,16 @@ void main() {
 
   test('moving a running session to another tier sends the new rules', () {
     expect(tierChangeNote(HarnessTier.thorough), allOf(contains('Thorough tier'), contains('showcase')));
+  });
+
+  test('Bug fix mode adds its rules, and the mode is stored as the default for new sessions', () {
+    final suffix = agentPromptSuffix(AgentSettings.defaults, everyai: true, harnessMode: HarnessMode.bugFix);
+    expect(
+      suffix,
+      allOf(contains('<HARNESS_MODE name="bugFix">'), contains("don't guess"), contains('ask_user_question')),
+    );
+    expect(agentPromptSuffix(AgentSettings.defaults, everyai: true), isNot(contains('HARNESS_MODE')));
+    final back = StoredCodeSettings.fromJson(const StoredCodeSettings().withHarnessMode(HarnessMode.bugFix).toJson());
+    expect(back.harnessMode, HarnessMode.bugFix);
   });
 }

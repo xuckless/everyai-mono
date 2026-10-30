@@ -6,15 +6,18 @@ import 'shell_readonly.dart';
 import 'subagents.dart' show SubagentReport, parseTaskNotification, taskTool;
 import 'transcript.dart' show planApprovedReason;
 
-/// The steps a Max or Ultra session goes through, in order. The harness
-/// enforces them: a call the phase doesn't allow comes back as an error
-/// that names the next required step, and ending a turn early earns a
-/// nudge, then a pause.
+/// The steps of a Max, Ultra or Bug fix session. The harness enforces
+/// them: a call the phase doesn't allow comes back as an error that names
+/// the next required step, and ending a turn early earns a nudge, then a
+/// pause.
 enum Phase {
+  reproduce('Reproduce'),
+  triage('Triage'),
   research('Research'),
   questions('Questions'),
   plan('Plan'),
   build('Build'),
+  fix('Fix'),
   verify('Verify'),
   done('Done');
 
@@ -23,9 +26,50 @@ enum Phase {
 
   static Phase parse(Object? s) => values.where((p) => p.name == s).firstOrNull ?? research;
 
-  /// Before the plan is approved: only reading, research and notes.
+  /// Before the plan is approved: nothing in the project changes yet.
   bool get preparing => index <= plan.index;
 }
+
+/// The tool a Bug fix session proves its progress with; the harness runs
+/// the repro itself.
+const bugCheckTool = 'bug_check';
+
+/// [bugCheckTool]'s spec.
+const bugCheckSpec = <String, Object?>{
+  'name': bugCheckTool,
+  'description':
+      'Bug fix mode: prove each step to the harness, which checks it itself. Actions:\n'
+      '- reproduced: give the command that shows the bug (a failing test, a script under .everyai/scratch/, a '
+      'build). The harness runs it: it must fail (non-zero exit), or print `expect` when you give it. Then you '
+      'move on to triage.\n'
+      '- confirmed_by_user: for a bug no command can show (visual, hardware), right after the user confirmed '
+      'through ask_user_question that what you describe is the bug.\n'
+      '- triage: kind "simple" (the cause is clear and local: plan and fix) or "hard" (low level, rare, or not '
+      'understood: research how established projects hit and fixed this exact bug first), with why.\n'
+      '- verify: after the fix, the harness runs the repro command again; it must now pass (exit 0, and no '
+      '`expect` in the output). A bug confirmed by the user is verified by asking them again first.',
+  'parameters': {
+    'type': 'object',
+    'properties': {
+      'action': {
+        'type': 'string',
+        'enum': ['reproduced', 'confirmed_by_user', 'triage', 'verify'],
+      },
+      'command': {'type': 'string', 'description': 'reproduced: the command that shows the bug'},
+      'expect': {
+        'type': 'string',
+        'description': 'reproduced: optional text in the output that shows the bug (else a non-zero exit does)',
+      },
+      'kind': {
+        'type': 'string',
+        'enum': ['simple', 'hard'],
+        'description': 'triage',
+      },
+      'why': {'type': 'string', 'description': 'triage and confirmed_by_user: one or two sentences'},
+    },
+    'required': ['action'],
+  },
+};
 
 /// What the harness does when the agent ends a turn.
 sealed class TurnEnd {
@@ -53,15 +97,34 @@ final class Stuck extends TurnEnd {
 final class PhaseFlow {
   PhaseFlow({
     this.ultra = false,
-    this.phase = Phase.research,
+    this.bugfix = false,
+    Phase? phase,
     this.nudges = 0,
     Set<String>? researchers,
     this.researchReports = 0,
     this.researchPending = 0,
-  }) : researchers = researchers ?? {};
+    this.reproCommand = '',
+    this.reproExpect = '',
+    this.reproByUser = false,
+    this.failedFixes = 0,
+    this.askedUser = false,
+  }) : phase = phase ?? (bugfix ? Phase.reproduce : Phase.research),
+       researchers = researchers ?? {};
 
-  /// Ultra runs research and build as workflows the harness starts.
+  /// From a flow name: max, ultra, bugfix, bugfix-ultra; null for another.
+  static PhaseFlow? named(String? flow) => switch (flow) {
+    'max' => PhaseFlow(),
+    'ultra' => PhaseFlow(ultra: true),
+    'bugfix' => PhaseFlow(bugfix: true),
+    'bugfix-ultra' => PhaseFlow(bugfix: true, ultra: true),
+    _ => null,
+  };
+
+  /// Research runs as a workflow the harness starts (the Ultra tier).
   final bool ultra;
+
+  /// Bug fix mode: reproduce → triage → (research) → plan → fix → verify.
+  final bool bugfix;
   Phase phase;
 
   /// Nudges since the phase last moved; two, then the flow pauses.
@@ -74,48 +137,89 @@ final class PhaseFlow {
   /// Researchers started in the background whose reports haven't come.
   int researchPending;
 
+  /// The command that showed the bug, and the output that marks it ('' for any failure).
+  String reproCommand;
+  String reproExpect;
+
+  /// The bug was confirmed by the user, not by a command.
+  bool reproByUser;
+
+  /// Fixes the repro still failed after; every second one goes back to research.
+  int failedFixes;
+
+  /// The user answered a question since the last bug_check (for confirmed_by_user).
+  bool askedUser;
+
   static const maxNudges = 2;
+
+  /// Failed fixes before the flow goes back to research.
+  static const missesBeforeResearch = 2;
 
   /// Where the plan is written before it is presented.
   static const planFile = '.everyai/scratch/plan.md';
 
-  String get flowName => ultra ? 'Ultra' : 'Max';
+  String get name => [if (bugfix) 'bugfix', if (ultra) 'ultra', if (!bugfix && !ultra) 'max'].join('-');
 
-  factory PhaseFlow.fromJson(Map<String, Object?> j) => PhaseFlow(
-    ultra: j['ultra'] == true,
-    phase: Phase.parse(j['phase']),
-    nudges: (j['nudges'] as num?)?.toInt() ?? 0,
-    researchers: {...?(j['researchers'] as List<Object?>?)?.whereType<String>()},
-    researchReports: (j['research_reports'] as num?)?.toInt() ?? 0,
-    researchPending: (j['research_pending'] as num?)?.toInt() ?? 0,
-  );
+  String get flowName => bugfix ? 'Bug fix' : (ultra ? 'Ultra' : 'Max');
+
+  /// The phases this flow goes through, in order.
+  List<Phase> get steps => bugfix
+      ? const [Phase.reproduce, Phase.triage, Phase.research, Phase.plan, Phase.fix, Phase.verify]
+      : const [Phase.research, Phase.questions, Phase.plan, Phase.build, Phase.verify];
+
+  factory PhaseFlow.fromJson(Map<String, Object?> j) {
+    final bugfix = j['bugfix'] == true;
+    return PhaseFlow(
+      ultra: j['ultra'] == true,
+      bugfix: bugfix,
+      phase: j['phase'] == null ? null : Phase.parse(j['phase']),
+      nudges: (j['nudges'] as num?)?.toInt() ?? 0,
+      researchers: {...?(j['researchers'] as List<Object?>?)?.whereType<String>()},
+      researchReports: (j['research_reports'] as num?)?.toInt() ?? 0,
+      researchPending: (j['research_pending'] as num?)?.toInt() ?? 0,
+      reproCommand: j['repro_command'] as String? ?? '',
+      reproExpect: j['repro_expect'] as String? ?? '',
+      reproByUser: j['repro_by_user'] == true,
+      failedFixes: (j['failed_fixes'] as num?)?.toInt() ?? 0,
+      askedUser: j['asked_user'] == true,
+    );
+  }
 
   Map<String, Object?> toJson() => {
     'ultra': ultra,
+    if (bugfix) 'bugfix': true,
     'phase': phase.name,
     'nudges': nudges,
     'researchers': [...researchers],
     'research_reports': researchReports,
     'research_pending': researchPending,
+    if (reproCommand.isNotEmpty) 'repro_command': reproCommand,
+    if (reproExpect.isNotEmpty) 'repro_expect': reproExpect,
+    if (reproByUser) 'repro_by_user': true,
+    if (failedFixes > 0) 'failed_fixes': failedFixes,
+    if (askedUser) 'asked_user': true,
   };
 
   /// Why [tool] with [args] may not run now, or null. [inScratch] says
   /// whether a path argument is under `.everyai/scratch/`.
   String? gate(String tool, Map<String, Object?> args, {required bool Function(String path) inScratch}) {
-    if (!phase.preparing) return null;
     final where = '$flowName flow, ${phase.label.toLowerCase()} phase';
+    if (tool == bugCheckTool) return _bugCheckGate(args['action'] as String? ?? '', where);
+    if (!phase.preparing) return null;
     switch (tool) {
       case 'write' || 'edit':
         final path = args['file_path'] as String? ?? '';
         if (inScratch(path)) return null;
-        return 'Error ($where): nothing in the project changes before the plan is approved. Write notes under '
-            '.everyai/scratch/ for now. Next: ${next()}';
+        return 'Error ($where): nothing in the project changes before the plan is approved. Write notes, scripts '
+            'and repro cases under .everyai/scratch/ for now. Next: ${next()}';
       case 'bash':
+        // Reproducing a bug means building and running things.
+        if (bugfix) return null;
         final command = args['command'] as String? ?? '';
         if (args['run_in_background'] != true && isReadOnlyShell(command)) return null;
         return 'Error ($where): only read-only commands run before the plan is approved. Next: ${next()}';
       case askUserQuestionTool:
-        if (phase == Phase.research) {
+        if (phase == Phase.research && !bugfix) {
           return 'Error ($where): ask once research has reported, so the questions are about what it found. '
               'Next: ${next()}';
         }
@@ -125,14 +229,37 @@ final class PhaseFlow {
     return null;
   }
 
+  String? _bugCheckGate(String action, String where) {
+    if (!bugfix) return 'Error: bug_check is for Bug fix mode.';
+    final ok = switch (action) {
+      'reproduced' || 'confirmed_by_user' => phase == Phase.reproduce,
+      'triage' => phase == Phase.triage,
+      'verify' => phase == Phase.fix || phase == Phase.verify,
+      _ => false,
+    };
+    return ok ? null : 'Error ($where): bug_check $action does not fit here. Next: ${next()}';
+  }
+
   /// The next required step, said to the agent.
   String next() => switch (phase) {
+    Phase.reproduce =>
+      'reproduce the bug before anything else. Find or write the smallest command that shows it (a failing test, '
+          'a script under .everyai/scratch/) and call bug_check reproduced with it. If the description is not '
+          'enough to reproduce it, ask the user how with ask_user_question (multiple choice: the likely steps, '
+          'environments, inputs). Do not guess at a fix.',
+    Phase.triage =>
+      'call bug_check triage: "simple" when the cause is clear and local, "hard" when it is low level, rare or not '
+          'yet understood (it then gets researched first), with why.',
     Phase.research =>
       researchPending > 0
           ? 'wait for the researcher reports (end your turn; they wake you).'
           : ultra
           ? 'the research workflow (researchers in parallel) is running; end your turn, and its reports '
                 'arrive together in one message.'
+          : bugfix
+          ? 'start one or more forks with role "researcher" (run_subagent, run_in_background true) to find this exact '
+                'bug in established projects: their issues, commits and fixes, and the root cause they found. Then '
+                'end your turn until they report.'
           : 'start one or more forks with role "researcher" (run_subagent, run_in_background true), one per question '
                 'worth answering: how this is best built, which libraries or reference code to borrow from, what '
                 'goes wrong. Then end your turn until they report.',
@@ -140,19 +267,29 @@ final class PhaseFlow {
       'ask the user about the directions research found with ask_user_question: the choices that change what gets '
           'built, your recommendation first.',
     Phase.plan =>
-      'write the plan to $planFile (the parts, which research each uses, how each is checked), then present_plan.',
+      bugfix
+          ? 'write the fix plan to $planFile: the root cause with evidence, the smallest change that removes it, and '
+                'the regression test; then present_plan.'
+          : 'write the plan to $planFile (the parts, which research each uses, how each is checked), then '
+                'present_plan.',
     Phase.build =>
       'build the plan: give each independent part to a fork (isolation "worktree") and build the rest yourself, to '
           'the Thorough standard.',
+    Phase.fix =>
+      'make the planned change, the smallest that removes the cause, add the regression test, then call bug_check '
+          'verify. If it still fails, do not try variations: rethink the cause.',
     Phase.verify =>
-      'verify the whole as the user will use it (run it, click through it, screenshots), fix what is wrong, then '
-          'give your final report.',
+      bugfix
+          ? 'the repro passes. Run the tests around the change, then give your final report: the cause, the fix, '
+                'the evidence.'
+          : 'verify the whole as the user will use it (run it, click through it, screenshots), fix what is wrong, '
+                'then give your final report.',
     Phase.done => 'nothing: the flow is done.',
   };
 
   /// The note that opens [phase], kept in the conversation.
   String note({bool stuck = false}) =>
-      '<everyai-phase flow="${ultra ? 'ultra' : 'max'}" phase="${phase.name}"${stuck ? ' stuck="true"' : ''}>\n'
+      '<everyai-phase flow="$name" phase="${phase.name}"${stuck ? ' stuck="true"' : ''}>\n'
       '${stuck ? 'The $flowName flow is stuck at the ${phase.label.toLowerCase()} phase.' : 'Phase: ${phase.label}.'} '
       'Next: ${next()}\n</everyai-phase>';
 
@@ -174,6 +311,7 @@ final class PhaseFlow {
         researchReports++;
         return _advanceFrom(Phase.research);
       case askUserQuestionTool when reason.trim().isNotEmpty && !_cancelled(reason):
+        askedUser = true;
         return _advanceFrom(Phase.questions);
       case presentPlanTool when reason.startsWith(planApprovedReason.substring(0, 40)):
         return _advanceFrom(Phase.plan);
@@ -181,7 +319,7 @@ final class PhaseFlow {
     return false;
   }
 
-  /// A user message arrived: a researcher's background report, or Ultra's
+  /// A user message arrived: a researcher's background report, or the
   /// research workflow's reports, move research on.
   bool onMessage(String text) {
     if (ultra && text.trimLeft().startsWith('<$researchWorkflowTag')) {
@@ -195,9 +333,50 @@ final class PhaseFlow {
     return _advanceFrom(Phase.research);
   }
 
+  /// The harness ran the repro: [shown] says whether the bug showed.
+  bool reproduced(String command, String expect, {required bool shown}) {
+    if (!shown) return false;
+    reproCommand = command;
+    reproExpect = expect;
+    return _advanceFrom(Phase.reproduce);
+  }
+
+  /// The user confirmed the bug (no command can show it).
+  bool confirmedByUser() {
+    if (!askedUser) return false;
+    reproByUser = true;
+    askedUser = false;
+    return _advanceFrom(Phase.reproduce);
+  }
+
+  /// Triage: a hard bug is researched first, a simple one goes to the plan.
+  void triage({required bool hard}) {
+    if (phase != Phase.triage) return;
+    phase = hard ? Phase.research : Phase.plan;
+    nudges = 0;
+  }
+
+  /// The repro after a fix: gone moves to verify; every second miss sends
+  /// the flow back to research. Returns whether the phase moved.
+  bool verified({required bool gone}) {
+    if (gone) {
+      if (phase == Phase.verify) return false;
+      phase = Phase.verify;
+      nudges = 0;
+      return true;
+    }
+    failedFixes++;
+    if (failedFixes % missesBeforeResearch != 0) return false;
+    phase = Phase.research;
+    nudges = 0;
+    return true;
+  }
+
   /// The user moved it on by hand (`/skip-phase`).
   void skip() {
-    if (phase != Phase.done) phase = Phase.values[phase.index + 1];
+    if (phase == Phase.done) return;
+    final i = steps.indexOf(phase);
+    phase = i < 0 || i == steps.length - 1 ? Phase.done : steps[i + 1];
     nudges = 0;
   }
 
@@ -207,7 +386,7 @@ final class PhaseFlow {
       case Phase.done:
         return const EndTurn();
       case Phase.research when researchPending > 0 || ultra:
-        // Waiting for background researchers (or Ultra's workflow) is right.
+        // Waiting for background researchers (or the workflow) is right.
         return const EndTurn();
       case Phase.build:
         phase = Phase.verify;
@@ -216,7 +395,7 @@ final class PhaseFlow {
       case Phase.verify:
         phase = Phase.done;
         return const EndTurn();
-      case Phase.research || Phase.questions || Phase.plan:
+      case Phase.reproduce || Phase.triage || Phase.research || Phase.questions || Phase.plan || Phase.fix:
         if (nudges >= maxNudges) return Stuck(note(stuck: true));
         nudges++;
         return Nudge(note());
@@ -225,7 +404,9 @@ final class PhaseFlow {
 
   bool _advanceFrom(Phase from) {
     if (phase != from) return false;
-    phase = Phase.values[from.index + 1];
+    final i = steps.indexOf(from);
+    if (i < 0) return false;
+    phase = i == steps.length - 1 ? Phase.done : steps[i + 1];
     nudges = 0;
     return true;
   }
@@ -235,11 +416,17 @@ final class PhaseFlow {
 
 /// The phase note at the start of [text], or null: (flow, phase, stuck, body).
 ({String flow, Phase phase, bool stuck, String body})? parsePhaseNote(String text) {
-  final m = RegExp(r'^<everyai-phase flow="(\w+)" phase="(\w+)"( stuck="true")?>\n([\s\S]*?)\n</everyai-phase>')
+  final m = RegExp(r'^<everyai-phase flow="([\w-]+)" phase="(\w+)"( stuck="true")?>\n([\s\S]*?)\n</everyai-phase>')
       .firstMatch(text.trimLeft());
   if (m == null) return null;
   return (flow: m[1]!, phase: Phase.parse(m[2]), stuck: m[3] != null, body: m[4]!);
 }
+
+/// What a flow is called in the app, from its name.
+String flowLabel(String flow) => flow.startsWith('bugfix') ? 'Bug fix' : (flow == 'ultra' ? 'Ultra' : 'Max');
+
+/// The phases a flow named [flow] shows.
+List<Phase> flowSteps(String flow) => PhaseFlow.named(flow)?.steps ?? PhaseFlow().steps;
 
 /// The message that carries an Ultra research workflow's reports.
 const researchWorkflowTag = 'research-workflow';
@@ -253,16 +440,24 @@ const maxResearchers = 16;
 /// What the session's own model (the orchestrator) is asked for an Ultra
 /// research workflow: how many researchers, on what, and on which of
 /// [models] (id → what it is good for; "same" is its own model).
-String researchAnglesQuestion({Map<String, String> models = const {}}) {
+String researchAnglesQuestion({Map<String, String> models = const {}, bool bug = false}) {
   final options = StringBuffer('- "same": your own model; the researcher forks you and shares your cache\n');
   for (final MapEntry(:key, :value) in models.entries) {
     options.write('- "$key"${value.isEmpty ? '' : ': $value'}\n');
   }
-  return 'Plan the research for the task above as a workflow of researchers working in parallel. You decide how '
-      'many (at most $maxResearchers; fewer for a small task, more for a broad one) and what each finds out: one '
-      'angle each that changes what gets built, such as reference implementations to borrow from, libraries and '
-      'their trade-offs, architecture, pitfalls and security issues, performance, testing, specs and APIs, prior '
-      'art on GitHub and Hugging Face. Pick each researcher\'s model from these, weighing cost against depth:\n'
+  final what = bug
+      ? 'Plan the research for the bug above as a workflow of researchers working in parallel. You decide how many '
+            '(at most $maxResearchers; fewer for a narrow bug) and what each finds out: where established projects '
+            'hit this exact bug (their issues, commits and fixes), the root causes they found, how the API or '
+            'subsystem involved really behaves (docs, specs, kernel or library source), and the smallest fixes '
+            'that held. '
+      : 'Plan the research for the task above as a workflow of researchers working in parallel. You decide how '
+            'many (at most $maxResearchers; fewer for a small task, more for a broad one) and what each finds out: '
+            'one angle each that changes what gets built, such as reference implementations to borrow from, '
+            'libraries and their trade-offs, architecture, pitfalls and security issues, performance, testing, specs '
+            'and APIs, prior art on GitHub and Hugging Face. ';
+  return '$what'
+      'Pick each researcher\'s model from these, weighing cost against depth:\n'
       '$options'
       'Reply with only a JSON array of {"title": "3-6 words", "question": "what to find out and report", '
       '"model": "one of the options"} objects.';

@@ -88,4 +88,54 @@ void main() {
     final q = researchAnglesQuestion(models: {'google/gemini-argon': 'Gemini Argon'});
     expect(q, allOf(contains('"same"'), contains('google/gemini-argon'), contains('You decide how many')));
   });
+
+  group('Bug fix', () {
+    test('reproduce → triage → plan (simple) → fix → verify, with only scratch edits before the plan', () {
+      final f = PhaseFlow.named('bugfix')!;
+      expect(f.phase, Phase.reproduce);
+      expect(f.gate('edit', {'file_path': 'src/io.c'}, inScratch: scratch), contains('nothing in the project changes'));
+      expect(f.gate('bash', {'command': 'make test'}, inScratch: scratch), isNull, reason: 'reproducing needs builds');
+      expect(f.gate(bugCheckTool, {'action': 'verify'}, inScratch: scratch), contains('does not fit'));
+      expect(f.reproduced('make test', '', shown: false), isFalse);
+      expect(f.reproduced('make test', '', shown: true), isTrue);
+      expect(f.phase, Phase.triage);
+      f.triage(hard: false);
+      expect(f.phase, Phase.plan);
+      expect(f.onAnswer('present_plan', {}, planApprovedReason), isTrue);
+      expect(f.phase, Phase.fix);
+      expect(f.gate('edit', {'file_path': 'src/io.c'}, inScratch: scratch), isNull);
+      expect(f.onTurnEnd(), isA<Nudge>(), reason: 'ending the fix without bug_check verify is nudged');
+      expect(f.verified(gone: true), isTrue);
+      expect(f.phase, Phase.verify);
+      expect(f.onTurnEnd(), isA<EndTurn>());
+      expect(f.phase, Phase.done);
+    });
+
+    test('a hard bug is researched first; two failed fixes send it back to research', () {
+      final f = PhaseFlow(bugfix: true, phase: Phase.triage);
+      f.triage(hard: true);
+      expect(f.phase, Phase.research);
+      f.onCall(taskTool, {'role': 'researcher', 'description': 'io_uring cqe race'});
+      expect(f.onAnswer(taskTool, {'role': 'researcher'}, 'liburing #123 fixed it with a barrier.'), isTrue);
+      expect(f.phase, Phase.plan, reason: 'Bug fix has no questions phase');
+      f.onAnswer('present_plan', {}, planApprovedReason);
+      expect(f.verified(gone: false), isFalse);
+      expect(f.phase, Phase.fix);
+      expect(f.verified(gone: false), isTrue);
+      expect(f.phase, Phase.research);
+    });
+
+    test('a bug no command shows needs the user to confirm it first', () {
+      final f = PhaseFlow(bugfix: true);
+      expect(f.confirmedByUser(), isFalse);
+      f.onAnswer('ask_user_question', {}, 'Yes, the button flickers.');
+      expect(f.confirmedByUser(), isTrue);
+      expect(f.reproByUser, isTrue);
+      final back = PhaseFlow.fromJson(f.toJson());
+      expect(back.bugfix && back.reproByUser, isTrue);
+      expect(back.name, 'bugfix');
+      expect(PhaseFlow.named('bugfix-ultra')!.name, 'bugfix-ultra');
+      expect(flowLabel('bugfix-ultra'), 'Bug fix');
+    });
+  });
 }

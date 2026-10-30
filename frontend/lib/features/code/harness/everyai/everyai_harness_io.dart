@@ -166,11 +166,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
         // A broken file starts the flow over.
       }
     }
-    return switch (_spec.phaseFlow) {
-      'max' => PhaseFlow(),
-      'ultra' => PhaseFlow(ultra: true),
-      _ => null,
-    };
+    return PhaseFlow.named(_spec.phaseFlow);
   }
 
   void _saveFlow() {
@@ -210,11 +206,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
   @override
   Future<void> setPhaseFlow(String? flow) async {
     final had = _flow;
-    _flow = switch (flow) {
-      'max' => had != null && !had.ultra ? had : PhaseFlow(),
-      'ultra' => had != null && had.ultra ? had : PhaseFlow(ultra: true),
-      _ => null,
-    };
+    _flow = had != null && had.name == flow ? had : PhaseFlow.named(flow);
     _spec = _withSpec(phaseFlow: flow ?? '');
     _writeSpec();
     if (_flow != null && _flow != had) {
@@ -399,6 +391,15 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
       [
         ...builtInToolSpecs(only: _spec.tools),
         ..._mcp.specs,
+        if (!_spec.subagent && (_spec.phaseFlow?.startsWith('bugfix') ?? false))
+          {
+            'type': 'function',
+            'function': {
+              'name': bugCheckSpec['name'],
+              'description': bugCheckSpec['description'],
+              'parameters': bugCheckSpec['parameters'],
+            },
+          },
         for (final Map<String, Object?> t
             in _spec.clientTools ??
                 (_spec.subagent
@@ -997,6 +998,10 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
       i += batch.length;
     }
     _flushImages();
+    if (_notePhaseAfter) {
+      _notePhaseAfter = false;
+      _notePhase();
+    }
     return false;
   }
 
@@ -1029,6 +1034,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
         'and their notifications wake you.]',
       );
     }
+    if (call.name == bugCheckTool) return _bugCheck(call.args!, cancel);
     if (actionKinds.containsKey(call.name)) return _tools.run(call.name, call.args!, cancel: cancel);
     if (_spec.researchSites != null && (_mcp.has(call.name) || call.name.startsWith('mcp'))) {
       return const ToolOutput('Error: research jobs have no MCP tools. Use web_fetch and web_search.', isError: true);
@@ -1043,6 +1049,93 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
     // A client tool the app approved without answering it (present_files).
     return const ToolOutput('Shown to the user.');
   }
+
+  /// Bug fix mode's proofs: the harness runs the repro itself, so a fix the
+  /// model only claims doesn't count.
+  Future<ToolOutput> _bugCheck(Map<String, Object?> args, Future<void> cancel) async {
+    final f = _flow;
+    if (f == null || !f.bugfix) return const ToolOutput('Error: bug_check is for Bug fix mode.', isError: true);
+    Future<({int exit, String out})> run(String command) async {
+      final r = await _tools.run(ToolNames.bash, {'command': command, 'timeout': 300000}, cancel: cancel);
+      return (exit: (r.observation['exit_code'] as num?)?.toInt() ?? (r.isError ? 1 : 0), out: r.text);
+    }
+
+    String tail(String out) => out.length > 3000 ? '…${out.substring(out.length - 3000)}' : out;
+    final action = args['action'] as String? ?? '';
+    final ToolOutput result;
+    switch (action) {
+      case 'reproduced':
+        final command = (args['command'] as String? ?? '').trim();
+        final expect = (args['expect'] as String? ?? '').trim();
+        if (command.isEmpty) return const ToolOutput('Error: give the command that shows the bug.', isError: true);
+        final r = await run(command);
+        final shown = expect.isNotEmpty ? r.out.contains(expect) : r.exit != 0;
+        if (f.reproduced(command, expect, shown: shown)) {
+          result = ToolOutput('Reproduced: the harness ran it and saw the bug.\n${tail(r.out)}');
+          _notePhaseAfter = true;
+        } else {
+          result = ToolOutput(
+            'Not reproduced: the harness ran it and ${expect.isNotEmpty ? 'the output lacks "$expect"' : 'it '
+                      'exited 0'}. Find a command that really shows the bug, or ask the user how to reproduce it.\n'
+            '${tail(r.out)}',
+            isError: true,
+          );
+        }
+      case 'confirmed_by_user':
+        if (f.confirmedByUser()) {
+          result = const ToolOutput('Recorded: the user confirmed the bug.');
+          _notePhaseAfter = true;
+        } else {
+          result = const ToolOutput(
+            'Error: ask the user first (ask_user_question) whether what you describe is the bug.',
+            isError: true,
+          );
+        }
+      case 'triage':
+        final hard = args['kind'] == 'hard';
+        f.triage(hard: hard);
+        result = ToolOutput('Triaged as ${hard ? 'hard: research it first' : 'simple: plan the fix'}.');
+        _notePhaseAfter = true;
+      case 'verify':
+        if (f.reproByUser) {
+          if (!f.askedUser) {
+            return const ToolOutput(
+              'Error: this bug was confirmed by the user, so ask them (ask_user_question) whether it is gone first.',
+              isError: true,
+            );
+          }
+          f.askedUser = false;
+          f.verified(gone: true);
+          result = const ToolOutput('Verified by the user.');
+          _notePhaseAfter = true;
+          break;
+        }
+        final r = await run(f.reproCommand);
+        final gone = r.exit == 0 && (f.reproExpect.isEmpty || !r.out.contains(f.reproExpect));
+        final moved = f.verified(gone: gone);
+        if (gone) {
+          result = ToolOutput('Verified: the harness ran the repro again and the bug is gone.\n${tail(r.out)}');
+        } else {
+          result = ToolOutput(
+            moved
+                ? 'Still failing, after ${f.failedFixes} fixes. Stop trying variations: the cause is not '
+                      'understood yet. The flow goes back to research: find how others fixed this, then plan again.'
+                      '\n${tail(r.out)}'
+                : 'Still failing: the harness ran the repro and the bug is still there. Do not try another variation; '
+                      'rethink the cause from the evidence.\n${tail(r.out)}',
+            isError: true,
+          );
+        }
+        if (moved) _notePhaseAfter = true;
+      default:
+        return ToolOutput('Error: unknown bug_check action "$action".', isError: true);
+    }
+    _saveFlow();
+    return result;
+  }
+
+  /// A bug_check moved the flow: its note follows this turn's results.
+  bool _notePhaseAfter = false;
 
   void _result(LlmToolCall call, String actionId, ToolOutput out) {
     _emit({

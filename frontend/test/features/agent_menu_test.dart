@@ -8,7 +8,7 @@ import 'package:every_ai/features/code/ui/agent_menu.dart';
 import 'package:every_ai/features/models/domain/model_catalog.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
-import 'package:every_ai/features/code/settings/agent_prompt.dart' show HarnessTier;
+import 'package:every_ai/features/code/settings/agent_prompt.dart' show HarnessMode, HarnessTier;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart' as m;
 
@@ -237,5 +237,35 @@ void main() {
     await show(CodeHarnessKind.everyai, ultraAllowed: true);
     await tester.tap(find.byKey(const ValueKey('agent-menu.tier.ultra')));
     expect(picks.last, HarnessTier.ultra);
+  });
+
+  testWidgets('the harness mode switch picks Bug fix only on the EveryAI harness', (tester) async {
+    final picks = <HarnessMode>[];
+    Future<void> show(CodeHarnessKind harness) => tester.pumpWidget(
+      _host(
+        SizedBox(
+          width: 320,
+          height: 700,
+          child: AgentMenuPanel(
+            key: ValueKey(harness),
+            groups: agentMenuGroups(_catalog),
+            model: 'anthropic/claude-opus-5.5',
+            effort: 'medium',
+            harness: harness,
+            onChanged: (_, _) {},
+            close: () {},
+            onHarnessMode: picks.add,
+          ),
+        ),
+      ),
+    );
+    await show(CodeHarnessKind.openHands);
+    await tester.tap(find.byKey(const ValueKey('agent-menu.harness-mode.bugFix')));
+    await tester.pump();
+    expect(picks, isEmpty);
+    await show(CodeHarnessKind.everyai);
+    await tester.tap(find.byKey(const ValueKey('agent-menu.harness-mode.bugFix')));
+    await tester.pump();
+    expect(picks, [HarnessMode.bugFix]);
   });
 }

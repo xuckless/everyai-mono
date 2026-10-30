@@ -7,7 +7,7 @@ import '../domain/agent_mode.dart';
 import '../domain/mcp_servers.dart';
 import '../domain/permissions.dart';
 import '../harness/everyai/research_sites.dart' show defaultResearchSites;
-import 'agent_prompt.dart' show HarnessTier;
+import 'agent_prompt.dart' show HarnessMode, HarnessTier;
 
 export 'agent_prompt.dart' show HarnessMode, HarnessTier;
 import '../permissions_providers.dart' show StoredPermissions;
@@ -45,7 +45,11 @@ final class StoredCodeSettings {
     this.tier = HarnessTier.efficient,
     this.forksIsolated = true,
     this.researchSites = defaultResearchSites,
+    this.harnessMode = HarnessMode.build,
   });
+
+  /// Build or Bug fix, for sessions started from now on.
+  final HarnessMode harnessMode;
 
   /// The only sites research jobs (Max and Ultra) may fetch from.
   final List<String> researchSites;
@@ -85,6 +89,8 @@ final class StoredCodeSettings {
 
   StoredCodeSettings withTier(HarnessTier tier) => _copy(tier: tier);
 
+  StoredCodeSettings withHarnessMode(HarnessMode mode) => _copy(harnessMode: mode);
+
   StoredCodeSettings withForksIsolated(bool on) => _copy(forksIsolated: on);
 
   /// [sites] cleaned up (no schemes or paths, lower case); empty restores the defaults.
@@ -106,7 +112,9 @@ final class StoredCodeSettings {
     HarnessTier? tier,
     bool? forksIsolated,
     List<String>? researchSites,
+    HarnessMode? harnessMode,
   }) => StoredCodeSettings(
+    harnessMode: harnessMode ?? this.harnessMode,
     researchSites: researchSites ?? this.researchSites,
     tier: tier ?? this.tier,
     forksIsolated: forksIsolated ?? this.forksIsolated,
@@ -136,6 +144,7 @@ final class StoredCodeSettings {
         _ => HarnessTier.efficient,
       },
       forksIsolated: !(global is Map<String, Object?> && global['forksIsolated'] == false),
+      harnessMode: HarnessMode.parse(global is Map<String, Object?> ? global['harnessMode'] : null),
       researchSites: switch (global) {
         {'researchSites': final List<Object?> sites} when sites.isNotEmpty => [...sites.whereType<String>()],
         _ => defaultResearchSites,
@@ -163,6 +172,7 @@ final class StoredCodeSettings {
       if (autoCompactPercent != defaultAutoCompactPercent) 'autoCompactPercent': autoCompactPercent,
       if (tier != HarnessTier.efficient) 'harnessTier': tier.name,
       if (!forksIsolated) 'forksIsolated': false,
+      if (harnessMode != HarnessMode.build) 'harnessMode': harnessMode.name,
       if (!listEquals(researchSites, defaultResearchSites)) 'researchSites': researchSites,
     },
     'projects': {

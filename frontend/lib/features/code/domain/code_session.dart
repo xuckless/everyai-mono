@@ -135,6 +135,7 @@ final class CodeSessionInfo {
     String? model,
     String? effort,
     HarnessTier? tier,
+    HarnessMode? harnessMode,
     bool merged = false,
   }) => CodeSessionInfo(
     id: id,
@@ -159,7 +160,7 @@ final class CodeSessionInfo {
     // Once merged back, the copy is gone.
     forkCopy: merged ? null : forkCopy,
     tier: tier ?? this.tier,
-    harnessMode: harnessMode,
+    harnessMode: harnessMode ?? this.harnessMode,
   );
 
   factory CodeSessionInfo.fromJson(Map<String, Object?> json) => CodeSessionInfo(
