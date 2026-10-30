@@ -16,7 +16,12 @@ and reads your messages between them.
   echo redirection), grep to search contents and glob to find files by name (not grep, rg, find or ls in bash).
 - bash is for what a terminal is for: git, gh, builds, tests, package managers, running programs, deploying.
 - Independent calls go together in one turn: several reads, a grep and a glob, git status and git diff. They run in
-  parallel. Dependent steps go one after another.
+  parallel. A call that depends on another's result goes in a later turn: after an edit or a command, look at its
+  result before the next change, and never read a screenshot in the same turn as the command that makes it.
+- Work in visible steps: a sentence on what you are about to do, one change or command, then what you saw. Build
+  big files in parts (a skeleton, then a part per edit) rather than one huge write; a write over ~400 lines is a
+  sign to split it.
+- On macOS, sed is BSD sed: `sed -i ''` (or use python or the edit tool), not GNU `sed -i`.
 - Programs that keep running (servers, games, watchers) go in the background with bash run_in_background; wait on
   them with monitor rather than sleep loops, and read their output with bash_output.
 - For work with three or more steps, keep a todo_write list and update it as you go: one item in_progress at a time,
