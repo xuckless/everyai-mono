@@ -40,6 +40,10 @@ pub const Config = struct {
     aux_compaction_model: []const u8 = "",
     aux_critique_model: []const u8 = "",
     aux_judge_model: []const u8 = "",
+    /// The vision model behind the figure Polish button (`POST /v1/figures/polish`).
+    aux_polish_model: []const u8 = "anthropic/claude-haiku-5.5",
+    /// The most one Polish round may charge, in micro-USD after markup.
+    polish_max_micros: i64 = 50_000,
     /// Model for image generation (`generate_image` tool and /v1/images).
     image_model: []const u8 = "google/gemini-3.1-flash-image",
     /// Vector (SVG) model for `generate_image` with `engine: "vector"`.

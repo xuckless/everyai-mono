@@ -11,6 +11,7 @@ import '../../chat/chat_providers.dart';
 import '../domain/artifact.dart';
 import '../domain/drawing.dart';
 import '../export/downloads.dart';
+import '../polish/figure_polish.dart';
 import 'artifact_editor.dart';
 import 'download_button.dart';
 import 'renderers/web_view.dart';
@@ -53,6 +54,7 @@ class ArtifactPanel extends ConsumerWidget {
     final edit = ref.watch(artifactEditProvider(conversationId));
     final editing = edit != null && artifact != null && edit.artifactId == artifact.id ? edit : null;
     final canEdit = artifact != null && editableAsText(v);
+    final polishing = v.kind == VisualKind.svg && ref.watch(figurePolishProvider(conversationId));
     final fills =
         editing != null || v.kind == VisualKind.html || v.kind == VisualKind.diagram || v.kind == VisualKind.drawing;
 
@@ -132,6 +134,12 @@ class ArtifactPanel extends ConsumerWidget {
                     tooltip: 'Edit',
                     onPressed: () => ref.read(artifactEditProvider(conversationId).notifier).start(artifact!.id, v),
                   ),
+                if (v.kind == VisualKind.svg && editing == null)
+                  AdaptiveIconButton(
+                    icon: EveryIcon.spark,
+                    tooltip: polishing ? 'Polishing…' : 'Polish: look at the render and fix what\'s off',
+                    onPressed: polishing ? null : () => _polish(context, ref, v, artifact),
+                  ),
                 if (v.kind == VisualKind.html && editing == null)
                   AdaptiveIconButton(
                     icon: interactive ? EveryIcon.pause : EveryIcon.play,
@@ -208,6 +216,12 @@ class ArtifactPanel extends ConsumerWidget {
         ],
       ),
     );
+  }
+
+  /// One Polish round on the figure [v]; the result is saved as a new version.
+  Future<void> _polish(BuildContext context, WidgetRef ref, Visual v, Artifact? artifact) async {
+    final message = await ref.read(figurePolishProvider(conversationId).notifier).polish(v, artifact);
+    if (context.mounted) showAdaptiveToast(context, message);
   }
 
   /// Saves the hand-edit as the artifact's newest version and shows it.

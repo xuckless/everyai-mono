@@ -976,3 +976,57 @@ test "aux: follow-ups pin the user's language and use the routed model; titles" 
     try std.testing.expect(std.mem.indexOf(u8, t.body, "\"title\":\"Zigについて学ぶ\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[2], "Write in Japanese") != null);
 }
+
+// ------------------------------------------------------------------ polish
+
+test "polish: one look at the render returns defects and a checked revision; 402 and bad revisions" {
+    var env: Env = undefined;
+    try start(&env, &.{
+        \\{"choices":[{"message":{"role":"assistant","content":"DEFECTS:\n- #sun is hidden behind #hill\nSVG:\n<svg viewBox=\"0 0 9 9\"><g id=\"hill\"/><circle id=\"sun\"/></svg>"}}],"usage":{"prompt_tokens":1500,"completion_tokens":200,"cost":0.0004}}
+        ,
+        \\{"choices":[{"message":{"role":"assistant","content":"DEFECTS:\n- too dark\nSVG:\n<svg><rect/></svg>"}}],"usage":{"prompt_tokens":1500,"completion_tokens":20,"cost":0.0001}}
+    }, true);
+    defer env.deinit();
+    var models_res = try env.t.get("/v1/models", .{});
+    models_res.deinit();
+    const svg = "<svg viewBox=\"0 0 9 9\"><circle id=\"sun\"/><g id=\"hill\"/></svg>";
+
+    var res = try env.t.post("/v1/figures/polish", .{ .json = .{ .svg = svg, .png_base64 = "data:image/png;base64,iVBORw0K", .brief = "a sunrise", .session = "conv-1" } });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    const Out = struct { svg: []const u8, defects: []const []const u8, changed: bool, kept_original: ?[]const u8, charged_micros: i64 };
+    const out = try res.json(Out);
+    try std.testing.expect(out.changed);
+    try std.testing.expect(out.kept_original == null);
+    try std.testing.expectEqualStrings("#sun is hidden behind #hill", out.defects[0]);
+    try std.testing.expect(std.mem.indexOf(u8, out.svg, "<g id=\"hill\"/><circle id=\"sun\"/>") != null);
+    try std.testing.expectEqual(@as(i64, 460), out.charged_micros);
+    const up = env.fake.bodies.items[0];
+    try std.testing.expect(std.mem.indexOf(u8, up, "\"model\":\"anthropic/claude-haiku-5.5\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, up, "data:image/png;base64,iVBORw0K") != null);
+    try std.testing.expect(std.mem.indexOf(u8, up, "Brief: a sunrise") != null);
+    try std.testing.expect(std.mem.indexOf(u8, up, "\"max_tokens\":") != null);
+
+    // A revision without a viewBox is dropped; the original comes back.
+    var bad = try env.t.post("/v1/figures/polish", .{ .json = .{ .svg = svg, .png_base64 = "iVBORw0K" } });
+    defer bad.deinit();
+    try bad.expectStatus(.ok);
+    const kept = try bad.json(Out);
+    try std.testing.expect(!kept.changed);
+    try std.testing.expectEqualStrings(svg, kept.svg);
+    try std.testing.expect(kept.kept_original != null);
+
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = arena.allocator() };
+    _ = try env.state.db.exec(&c, "UPDATE quota_periods SET used_micros = included_micros", .{});
+    _ = try env.state.db.exec(&c, "DELETE FROM wallet_ledger", .{});
+    var broke = try env.t.post("/v1/figures/polish", .{ .json = .{ .svg = svg, .png_base64 = "iVBORw0K" } });
+    defer broke.deinit();
+    try broke.expectStatus(.payment_required);
+    try std.testing.expectEqual(@as(usize, 2), env.fake.bodies.items.len);
+
+    var no_png = try env.t.post("/v1/figures/polish", .{ .json = .{ .svg = svg, .png_base64 = "" } });
+    defer no_png.deinit();
+    try no_png.expectStatus(.unprocessable_entity);
+}

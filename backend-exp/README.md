@@ -24,6 +24,7 @@ Anole is a path dependency (`../../../PersonalProjects/anole` in
 | Chat | `POST /v1/chat/stream` (SSE), `POST /v1/chat/tool_result` | `chat.zig`, `tools.zig`, `tool_wait.zig` |
 | Gateway | `POST /v1/chat/completions` (OpenAI-compatible, streaming) | `gateway.zig` |
 | Images | `POST /v1/images` `{prompt, model?, engine?: raster\|vector, n?, quality?, output_format?, input_references?}` returns `{mime, data, images}` (OpenRouter `/images`) | `images.zig` |
+| Figure polish | `POST /v1/figures/polish` `{svg, png_base64, brief?, session?}`: a vision model (`AUX_POLISH_MODEL`, Haiku 5.5) looks at the render, lists defects and revises the SVG once; the revision must pass the `render_svg` checks. Returns `{svg, defects, changed, kept_original, model, charged_micros}`; 402 preflight, capped by `POLISH_MAX_MICROS` (50000) | `polish.zig` |
 | Billing | `GET /v1/plans`, `GET /v1/billing`, `GET /v1/usage`, `POST /v1/billing/checkout`, `POST /v1/billing/webhook` | `billing.zig` |
 
 ## Chat stream

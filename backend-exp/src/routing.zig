@@ -10,7 +10,7 @@ const auth = @import("auth.zig");
 const billing = @import("billing.zig");
 const openrouter = @import("openrouter.zig");
 
-pub const Job = enum { title, followups, compaction, critique, judge };
+pub const Job = enum { title, followups, compaction, critique, judge, polish };
 
 /// The model for a side job: its override, else the utility model.
 pub fn modelFor(cfg: config.Config, job: Job) []const u8 {
@@ -20,6 +20,7 @@ pub fn modelFor(cfg: config.Config, job: Job) []const u8 {
         .compaction => cfg.aux_compaction_model,
         .critique => cfg.aux_critique_model,
         .judge => cfg.aux_judge_model,
+        .polish => cfg.aux_polish_model,
     };
     return if (override.len > 0) override else cfg.utility_model;
 }
