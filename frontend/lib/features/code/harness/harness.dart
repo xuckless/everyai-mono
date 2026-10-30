@@ -111,6 +111,10 @@ abstract interface class HarnessSession {
 
   /// Changes the confirmation policy; [holdClientTools] as in [SessionSpec].
   Future<void> setMode(AgentMode mode, {bool holdClientTools = false});
+
+  /// Moves the conversation to [spec]'s model and effort (its LLM fields are
+  /// read; the rest is ignored). The history stays; the next model call uses it.
+  Future<void> switchLlm(SessionSpec spec);
   Future<void> close();
 }
 

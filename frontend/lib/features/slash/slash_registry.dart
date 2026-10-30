@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'chat_commands.dart';
+import 'code_commands.dart';
 import 'custom/custom_command.dart';
 import 'custom/custom_commands_provider.dart';
 import 'slash_command.dart';
@@ -29,23 +30,5 @@ final skillSlashCommandsProvider = Provider<List<SlashCommand>>((ref) => const [
 /// MCP prompts as commands; empty until connectors exist.
 final connectorSlashCommandsProvider = Provider<List<SlashCommand>>((ref) => const []);
 
-/// The built-ins: the chat set (`chat_commands.dart`) and the first Code ones.
-final builtInSlashCommands = <SlashCommand>[
-  ...chatBuiltIns,
-  SlashCommand(
-    name: 'plan',
-    description: 'Switch to Plan mode: read and propose before editing',
-    argsHint: '[what to plan]',
-    scope: SlashScope.code,
-    run: (ctx, args) {
-      ctx.code?.setMode('plan');
-      if (args.isNotEmpty) ctx.send(args);
-    },
-  ),
-  SlashCommand(
-    name: 'stop',
-    description: 'Stop the agent',
-    scope: SlashScope.code,
-    run: (ctx, _) => ctx.code?.stop?.call(),
-  ),
-];
+/// The built-ins: the chat set (`chat_commands.dart`) and the Code set (`code_commands.dart`).
+final builtInSlashCommands = <SlashCommand>[...chatBuiltIns, ...codeBuiltIns];

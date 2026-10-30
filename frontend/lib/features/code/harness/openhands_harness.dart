@@ -46,25 +46,7 @@ final class OpenHandsHarness implements Harness {
     final info = await _post('api/conversations', {
       'agent': {
         'kind': 'Agent',
-        'llm': {
-          // LiteLLM routes "openai/…" to an OpenAI-compatible base_url; the
-          // gateway strips the prefix.
-          'model': 'openai/${spec.model}',
-          'base_url': spec.llmBaseUrl,
-          'api_key': spec.llmApiKey,
-          'usage_id': spec.sessionTag,
-          // LiteLLM drops reasoning_effort for models it doesn't know; the
-          // gateway applies the header instead.
-          'extra_headers': {'X-EveryAI-Session': spec.sessionTag, 'X-EveryAI-Effort': ?spec.effort},
-          'reasoning_effort': ?spec.effort,
-          'max_input_tokens': ?spec.maxInputTokens,
-          // OpenHands caps models it doesn't know at 16,384 output tokens;
-          // thinking plus one whole-file edit runs past that and the tool
-          // call gets cut off.
-          'max_output_tokens': spec.maxOutputTokens,
-          // LiteLLM doesn't know our gateway's models; without this images are dropped.
-          if (spec.vision) 'capability_overrides': {'supports_vision': true},
-        },
+        'llm': llmConfig(spec),
         'tools': [
           {
             'name': 'terminal',
@@ -129,6 +111,27 @@ final class OpenHandsHarness implements Harness {
         if (c case {'id': final String id, 'execution_status': final String status}) id: ExecutionStatus.parse(status),
     };
   }
+
+  /// The agent's `llm` for [spec]: at conversation start and on `switch_llm`.
+  static Map<String, Object?> llmConfig(SessionSpec spec) => {
+    // LiteLLM routes "openai/…" to an OpenAI-compatible base_url; the
+    // gateway strips the prefix.
+    'model': 'openai/${spec.model}',
+    'base_url': spec.llmBaseUrl,
+    'api_key': spec.llmApiKey,
+    'usage_id': spec.sessionTag,
+    // LiteLLM drops reasoning_effort for models it doesn't know; the
+    // gateway applies the header instead.
+    'extra_headers': {'X-EveryAI-Session': spec.sessionTag, 'X-EveryAI-Effort': ?spec.effort},
+    'reasoning_effort': ?spec.effort,
+    'max_input_tokens': ?spec.maxInputTokens,
+    // OpenHands caps models it doesn't know at 16,384 output tokens;
+    // thinking plus one whole-file edit runs past that and the tool
+    // call gets cut off.
+    'max_output_tokens': spec.maxOutputTokens,
+    // LiteLLM doesn't know our gateway's models; without this images are dropped.
+    if (spec.vision) 'capability_overrides': {'supports_vision': true},
+  };
 
   static String _suffix(SessionSpec spec) {
     final suffix = spec.promptSuffix ?? workingRules;
@@ -261,6 +264,9 @@ final class _OpenHandsSession implements HarnessSession {
   @override
   Future<void> setMode(AgentMode mode, {bool holdClientTools = false}) =>
       _h._post('$_base/confirmation_policy', {'policy': mode.confirmationPolicy(holdClientTools: holdClientTools)});
+
+  @override
+  Future<void> switchLlm(SessionSpec spec) => _h._post('$_base/switch_llm', {'llm': OpenHandsHarness.llmConfig(spec)});
 
   @override
   Future<void> close() async {

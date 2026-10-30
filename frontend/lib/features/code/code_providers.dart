@@ -21,6 +21,7 @@ import 'domain/doom_loop.dart';
 import 'domain/spill.dart';
 import 'domain/subagents.dart';
 import 'domain/questions.dart';
+import 'domain/session_commands.dart';
 import 'domain/transcript.dart';
 import 'git/git_service.dart';
 import 'harness/events.dart';
@@ -417,9 +418,13 @@ final class CodeSessionState {
     this.connected = false,
     this.error,
     this.subagentNeedsInput = false,
+    this.asides = const [],
   });
 
   final Transcript transcript;
+
+  /// `/btw` answers and `/cost` cards beside the session (never sent to the agent).
+  final List<Aside> asides;
 
   /// A subagent this session is waiting on needs the user (an approval).
   final bool subagentNeedsInput;
@@ -450,6 +455,7 @@ final class CodeSessionState {
     bool? connected,
     String? error,
     bool? subagentNeedsInput,
+    List<Aside>? asides,
   }) => CodeSessionState(
     transcript: transcript ?? this.transcript,
     mode: mode ?? this.mode,
@@ -457,6 +463,7 @@ final class CodeSessionState {
     connected: connected ?? this.connected,
     error: error ?? this.error,
     subagentNeedsInput: subagentNeedsInput ?? this.subagentNeedsInput,
+    asides: asides ?? this.asides,
   );
 }
 
@@ -915,6 +922,87 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
   }
 
   void unqueue(int index) => state = state.copyWith(queued: [...state.queued]..removeAt(index));
+
+  int _asideIds = 0;
+
+  /// Shows [aside]: in place when it is already shown (an answer arriving), else at the end.
+  void _putAside(Aside aside) {
+    final i = state.asides.indexWhere((a) => a.id == aside.id);
+    state = state.copyWith(asides: i < 0 ? [...state.asides, aside] : ([...state.asides]..[i] = aside));
+  }
+
+  void dismissAside(int id) => state = state.copyWith(
+    asides: [
+      for (final a in state.asides)
+        if (a.id != id) a,
+    ],
+  );
+
+  /// Answers [question] off to the side with a cheap model that reads the
+  /// session so far (`/btw`). The agent is neither interrupted nor told: the
+  /// call is separate, and the answer shows as an aside card. Billed to the
+  /// session. [summarizer] replaces the gateway call (tests).
+  Future<void> askAside(String question, {Summarizer? summarizer}) async {
+    final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
+    final aside = Aside(id: ++_asideIds, kind: AsideKind.btw, question: question.trim(), busy: true);
+    _putAside(aside);
+    if (info == null || (summarizer == null && isDemoPath(info.workingDir))) {
+      _putAside(aside.failed('Side questions need a real session (the demo has no model).'));
+      return;
+    }
+    try {
+      final ask =
+          summarizer ??
+          gatewaySummarizer(
+            baseUrl: gatewayBaseUrl(ref),
+            apiKey: await gatewayKey(ref),
+            sessionTag: info.id,
+            model: asideModel,
+          );
+      final answer = await ask(btwRequest(record: renderSessionRecord(_events), question: question));
+      if (!ref.mounted) return;
+      if (state.asides.any((a) => a.id == aside.id)) _putAside(aside.done(answer.trim()));
+    } on Object catch (e) {
+      if (ref.mounted && state.asides.any((a) => a.id == aside.id)) _putAside(aside.failed('$e'));
+    }
+  }
+
+  /// Shows the session's tokens and spend as an aside card (`/cost`).
+  void showCost() {
+    if (state.asides.any((a) => a.kind == AsideKind.cost)) return;
+    if (ref.exists(codeUsageProvider(sessionId))) {
+      ref.read(codeUsageProvider(sessionId).notifier).refreshSoon(delay: Duration.zero, force: true);
+    }
+    _putAside(Aside(id: ++_asideIds, kind: AsideKind.cost));
+  }
+
+  /// Moves the session to [model] and/or [effort] ('' is the model's default)
+  /// through the agent-server's `switch_llm`; the history stays. Applies
+  /// from the agent's next model call. Returns a message for the user.
+  Future<String> switchModel({String? model, String? effort}) async {
+    final sessions = ref.read(codeSessionsProvider.notifier);
+    final info = sessions.byId(sessionId);
+    if (info == null) return 'The session is gone.';
+    final next = info.copyWith(model: model, effort: effort);
+    if (next.model == info.model && next.effort == info.effort) return 'Already using that.';
+    final session = _session;
+    if (session == null) return 'The session is not connected yet.';
+    final project = ref.read(codeProjectsProvider).where((p) => p.id == info.projectId).firstOrNull;
+    final spec = await sessions.specFor(
+      sessionId: info.id,
+      projectDir: project?.path ?? info.workingDir,
+      workingDir: info.workingDir,
+      model: next.model,
+      mode: state.mode,
+      effort: next.effort,
+      holdClientTools: info.holdClientTools,
+    );
+    await session.switchLlm(spec);
+    if (!ref.mounted) return '';
+    sessions.update(next);
+    final name = ref.read(modelCatalogProvider)[ModelId(next.model)]?.name ?? next.model.split('/').last;
+    return next.effort.isEmpty ? 'Now using $name.' : 'Now using $name · ${next.effort}.';
+  }
 
   /// Runs the agent again after a failed turn (a dropped connection, an
   /// upstream error); the conversation keeps everything so far. A stuck

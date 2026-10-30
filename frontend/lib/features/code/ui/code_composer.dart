@@ -39,6 +39,7 @@ class CodeComposer extends ConsumerStatefulWidget {
     this.minLines = 1,
     this.autofocus = true,
     this.model,
+    this.slashHost,
   });
 
   final bool busy;
@@ -62,6 +63,9 @@ class CodeComposer extends ConsumerStatefulWidget {
 
   /// The session's model: whether attached images reach it.
   final ModelSpec? model;
+
+  /// What `/` commands can drive in an open session; null: only the mode and Stop.
+  final CodeSlashHost? slashHost;
 
   @override
   ConsumerState<CodeComposer> createState() => _CodeComposerState();
@@ -98,10 +102,12 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
       selection: TextSelection.collapsed(offset: text.length),
     ),
     send: (text) => widget.onSend(text, const []),
-    code: CodeSlashHost(
-      setMode: (name) => widget.onModeChanged(AgentMode.values.byName(name)),
-      stop: widget.busy ? widget.onStop : null,
-    ),
+    code:
+        widget.slashHost ??
+        CodeSlashHost(
+          setMode: (name) => widget.onModeChanged(AgentMode.values.byName(name)),
+          stop: widget.busy ? widget.onStop : null,
+        ),
   );
 
   void _pickSlash(SlashCommand command) {

@@ -33,7 +33,7 @@ class UsageMeter extends StatelessWidget {
           '${contextWindow > 0 ? ', context ${(_fill * 100).round()}% full' : ''}',
       child: AnchoredPopover(
         width: 260,
-        builder: (context, close) => _Breakdown(totals: totals, contextWindow: contextWindow, modelName: modelName),
+        builder: (context, close) => UsageBreakdown(totals: totals, contextWindow: contextWindow, modelName: modelName),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
           child: Row(
@@ -119,8 +119,9 @@ class _RingPainter extends CustomPainter {
   bool shouldRepaint(_RingPainter old) => old.fill != fill || old.color != color || old.track != track;
 }
 
-class _Breakdown extends StatelessWidget {
-  const _Breakdown({required this.totals, required this.contextWindow, this.modelName});
+/// Context fill, tokens, cache share and cost, as rows.
+class UsageBreakdown extends StatelessWidget {
+  const UsageBreakdown({super.key, required this.totals, required this.contextWindow, this.modelName});
 
   final UsageTotals totals;
   final int contextWindow;

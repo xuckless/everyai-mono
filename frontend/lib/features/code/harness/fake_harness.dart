@@ -24,6 +24,9 @@ final class FakeHarness implements Harness {
   final Duration step;
   int _ids = 0;
 
+  /// `model@effort` of each `switchLlm` on any of its sessions.
+  final switched = <String>[];
+
   @override
   Future<HarnessSession> start(SessionSpec spec) async {
     final s = FakeSession(this, 'fake-${++_ids}', spec.mode, spec.subagent ? subagentTurns : turns);
@@ -183,6 +186,10 @@ final class FakeSession implements HarnessSession {
 
   @override
   Future<void> setMode(AgentMode mode, {bool holdClientTools = false}) async => _mode = mode;
+
+  /// Recorded on the harness; the script plays the same either way.
+  @override
+  Future<void> switchLlm(SessionSpec spec) async => _h.switched.add('${spec.model}@${spec.effort ?? ''}');
 
   @override
   Future<void> close() => _events.close();

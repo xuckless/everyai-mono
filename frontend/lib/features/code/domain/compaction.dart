@@ -185,6 +185,18 @@ String renderTail(CompactionPlan plan, {CompactionBudget budget = const Compacti
         .where((p) => p.isNotEmpty)
         .join('\n\n');
 
+/// The conversation so far as text for a side call (`/btw`): tool output cut
+/// short, and only the newest [maxChars] characters when it runs long.
+String renderSessionRecord(List<HarnessEvent> events, {int maxChars = 60000}) {
+  final text = [
+    for (final e in events)
+      if (_counts(e)) _render(e, outputCap: 800, argsCap: 600),
+  ].where((p) => p.isNotEmpty).join('\n\n');
+  if (text.length <= maxChars) return text;
+  final cut = text.indexOf('\n\n', text.length - maxChars);
+  return '[earlier steps omitted]\n\n${text.substring(cut < 0 ? text.length - maxChars : cut + 2)}';
+}
+
 /// One event as a line of the transcript the summarizer (or the next agent)
 /// reads. An [outputCap] of 0 clears tool output.
 String _render(HarnessEvent e, {required int outputCap, required int argsCap}) => switch (e) {

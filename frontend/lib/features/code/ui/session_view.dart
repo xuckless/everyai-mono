@@ -23,8 +23,10 @@ import '../domain/questions.dart';
 import '../domain/transcript.dart';
 import '../harness/events.dart' show ExecutionStatus;
 import 'code_composer.dart';
+import 'code_slash_host.dart';
 import 'panes/diff_pane.dart';
 import 'transcript/approval_card.dart';
+import 'transcript/aside_card.dart';
 import 'transcript/plan_card.dart';
 import 'transcript/subagent_card.dart';
 import 'transcript/transcript_items.dart';
@@ -138,7 +140,20 @@ class CodeSessionScreen extends ConsumerWidget {
                             padding: const EdgeInsets.only(bottom: 8),
                             child: _StartBuilding(onStart: controller.startBuilding),
                           ),
+                        for (final aside in state.asides)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: AsideCard(
+                              key: ValueKey(aside.id),
+                              aside: aside,
+                              onDismiss: () => controller.dismissAside(aside.id),
+                              usage: ref.watch(codeUsageProvider(sessionId)).value ?? UsageTotals.zero,
+                              contextWindow: ref.watch(modelCatalogProvider)[ModelId(info.model)]?.contextLength ?? 0,
+                              modelName: ref.watch(modelCatalogProvider)[ModelId(info.model)]?.name,
+                            ),
+                          ),
                         CodeComposer(
+                          slashHost: codeSlashHost(context, ref, sessionId, busy: busy),
                           busy: busy,
                           mode: state.mode,
                           onModeChanged: controller.setMode,

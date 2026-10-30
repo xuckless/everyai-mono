@@ -96,13 +96,48 @@ class ChatSlashHost {
   final ValueChanged<String>? saveAsSkill;
 }
 
-/// Code composer controls a command may drive.
+/// Code composer controls a command may drive. Only [setMode] is always
+/// there (the new-session composer has nothing else); an open session fills
+/// in the rest.
 class CodeSlashHost {
-  const CodeSlashHost({required this.setMode, this.stop});
+  const CodeSlashHost({
+    required this.setMode,
+    this.stop,
+    this.build,
+    this.setModel,
+    this.setEffort,
+    this.clear,
+    this.compact,
+    this.rewind,
+    this.cost,
+    this.btw,
+  });
 
   /// Takes an `AgentMode` name: ask, autoEdit, plan or fullAuto.
   final ValueChanged<String> setMode;
+
+  /// Null when the agent isn't working.
   final VoidCallback? stop;
+
+  /// Leaves Plan mode and starts on the plan, or on the text given.
+  final ValueChanged<String>? build;
+
+  /// Switch the session's model or effort by name; the result is told to the user.
+  final ValueChanged<String>? setModel;
+  final ValueChanged<String>? setEffort;
+
+  /// A fresh session in the same project; the text (if any) is its first message.
+  final ValueChanged<String>? clear;
+
+  /// Shortens the agent's context, keeping what the text asks for.
+  final ValueChanged<String>? compact;
+
+  /// Restores the files from before the latest turn(s); the text is a count.
+  final ValueChanged<String>? rewind;
+  final VoidCallback? cost;
+
+  /// Asks a side question without disturbing the agent.
+  final ValueChanged<String>? btw;
 }
 
 /// One entry of the `/` menu.
