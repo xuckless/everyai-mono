@@ -1,30 +1,47 @@
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
-import '../../../../core/theme/every_theme.dart';
-import '../../../../core/ui/adaptive.dart';
-import '../../../../core/ui/every_icons.dart';
-import '../../domain/questions.dart';
-import '../../domain/transcript.dart';
+import '../../../core/theme/every_theme.dart';
+import '../../../core/ui/adaptive.dart';
+import '../../../core/ui/every_icons.dart';
+import '../domain/questions.dart';
 
-/// The agent's `ask_user_question` card: 1–4 questions, each single-choice
-/// (radio) or multiple-answer (checkboxes), every one with an "Other" field.
-/// Answered cards collapse to a summary.
+/// A question card, shared by Code's `ask_user_question` and Chat's
+/// `ask_user`: 1–4 questions, each single-choice (radio) or multiple-answer
+/// (checkboxes), every one with an "Other" field. Answered cards collapse to a
+/// summary.
 class QuestionCard extends StatefulWidget {
-  const QuestionCard({super.key, required this.item, required this.onSubmit, this.enabled = true});
+  const QuestionCard({
+    super.key,
+    required this.questions,
+    required this.onSubmit,
+    this.answers,
+    this.enabled = true,
+    this.closedLabel = 'Answered in chat',
+    this.reply,
+  });
 
-  final QuestionItem item;
+  final List<Question> questions;
+
+  /// Null while unanswered; empty when the user replied in chat instead.
+  final List<QuestionAnswer>? answers;
   final ValueChanged<List<QuestionAnswer>> onSubmit;
   final bool enabled;
+
+  /// The footer of a disabled card nobody answered from it.
+  final String closedLabel;
+
+  /// What the user wrote instead of picking options, for the answered summary.
+  final String? reply;
 
   @override
   State<QuestionCard> createState() => _QuestionCardState();
 }
 
 class _QuestionCardState extends State<QuestionCard> {
-  late List<QuestionAnswer> _answers = [for (final _ in widget.item.questions) const QuestionAnswer()];
-  late final List<TextEditingController> _other = [for (final _ in widget.item.questions) TextEditingController()];
-  late final List<FocusNode> _otherFocus = [for (final _ in widget.item.questions) FocusNode()];
+  late List<QuestionAnswer> _answers = [for (final _ in widget.questions) const QuestionAnswer()];
+  late final List<TextEditingController> _other = [for (final _ in widget.questions) TextEditingController()];
+  late final List<FocusNode> _otherFocus = [for (final _ in widget.questions) FocusNode()];
   final _focus = FocusNode(debugLabel: 'question card');
   int _page = 0;
   bool _sent = false;
@@ -41,7 +58,7 @@ class _QuestionCardState extends State<QuestionCard> {
     super.dispose();
   }
 
-  List<Question> get _questions => widget.item.questions;
+  List<Question> get _questions => widget.questions;
   bool get _paged => _questions.length > 1;
   bool get _complete => _answers.every((a) => !a.isEmpty);
   bool get _typing => _otherFocus.any((f) => f.hasFocus);
@@ -128,14 +145,13 @@ class _QuestionCardState extends State<QuestionCard> {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    final item = widget.item;
-    final answered = item.answers;
+    final answered = widget.answers;
     final questions = _questions;
 
     if (questions.isEmpty) {
       return Text('The agent asked an empty question.', style: TextStyle(color: theme.textMuted, fontSize: 13));
     }
-    if (answered != null) return _Answered(questions: questions, answers: answered);
+    if (answered != null) return _Answered(questions: questions, answers: answered, reply: widget.reply);
 
     final enabled = _enabled;
     final page = _page.clamp(0, questions.length - 1);
@@ -213,7 +229,7 @@ class _QuestionCardState extends State<QuestionCard> {
                   Expanded(
                     child: Text(
                       !enabled && !_sent
-                          ? 'Answered in chat'
+                          ? widget.closedLabel
                           : missing.isEmpty
                           ? '⌘↩ to submit'
                           : _paged
@@ -568,10 +584,11 @@ class ChoiceMark extends StatelessWidget {
 }
 
 class _Answered extends StatelessWidget {
-  const _Answered({required this.questions, required this.answers});
+  const _Answered({required this.questions, required this.answers, this.reply});
 
   final List<Question> questions;
   final List<QuestionAnswer> answers;
+  final String? reply;
 
   @override
   Widget build(BuildContext context) {
@@ -584,9 +601,18 @@ class _Answered extends StatelessWidget {
           border: Border.all(color: theme.border),
           borderRadius: BorderRadius.circular(16),
         ),
-        child: Text(
-          questions.length == 1 ? 'Question answered in chat' : '${questions.length} questions, answered in chat',
-          style: TextStyle(color: theme.textMuted, fontSize: 12.5),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              questions.length == 1 ? 'Question answered in chat' : '${questions.length} questions, answered in chat',
+              style: TextStyle(color: theme.textMuted, fontSize: 12.5),
+            ),
+            if (reply case final r? when r.trim().isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(r.trim(), style: TextStyle(color: theme.text, fontSize: 13)),
+            ],
+          ],
         ),
       );
     }

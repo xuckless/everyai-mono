@@ -38,9 +38,14 @@ class Composer extends ConsumerStatefulWidget {
     this.placeholder = 'How can I help you today?',
     this.minLines = 1,
     this.meter,
+    this.replying = false,
   });
 
   final bool busy;
+
+  /// The turn in flight waits on the user's answer (a question card): typed
+  /// text can be sent as the reply even though [busy].
+  final bool replying;
   final ModelSpec model;
   final ChatMode mode;
   final void Function(String text, List<Attachment> attachments) onSend;
@@ -97,8 +102,12 @@ class ComposerState extends ConsumerState<Composer> {
       if (a.unsupportedBy(widget.model) != null) a,
   ];
 
-  bool get _canSend =>
-      !widget.busy && (_controller.text.trim().isNotEmpty || _attachments.isNotEmpty) && _blocked.isEmpty;
+  bool get _canSend => widget.busy
+      ? widget.replying && _controller.text.trim().isNotEmpty && _attachments.isEmpty
+      : (_controller.text.trim().isNotEmpty || _attachments.isNotEmpty) && _blocked.isEmpty;
+
+  /// The send button stops the turn unless a reply is ready to go.
+  bool get _showsStop => widget.busy && !_canSend;
 
   void _send() {
     if (!_canSend) return;
@@ -269,7 +278,7 @@ class ComposerState extends ConsumerState<Composer> {
                       ),
                       ?widget.meter,
                       const SizedBox(width: 6),
-                      _SendButton(busy: widget.busy, enabled: _canSend, onSend: _send, onStop: widget.onStop),
+                      _SendButton(busy: _showsStop, enabled: _canSend, onSend: _send, onStop: widget.onStop),
                     ],
                   ),
                 ),

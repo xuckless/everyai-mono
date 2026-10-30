@@ -12,6 +12,7 @@ import '../../../core/ui/every_icons.dart';
 import '../../../core/ui/selection.dart';
 import '../../models/domain/model_catalog.dart';
 import '../../models/models_providers.dart';
+import '../../questions/ui/question_card.dart';
 import '../../usage/ui/usage_meter.dart';
 import '../../usage/usage_totals.dart';
 import '../code_providers.dart';
@@ -25,7 +26,6 @@ import 'code_composer.dart';
 import 'panes/diff_pane.dart';
 import 'transcript/approval_card.dart';
 import 'transcript/plan_card.dart';
-import 'transcript/question_card.dart';
 import 'transcript/subagent_card.dart';
 import 'transcript/transcript_items.dart';
 
@@ -376,7 +376,8 @@ class TranscriptList extends StatelessWidget {
     PlanItem(:final tasks) => PlanView(tasks: tasks),
     QuestionItem() => QuestionCard(
       key: ValueKey(item.key),
-      item: item,
+      questions: item.questions,
+      answers: item.answers,
       enabled: item == transcript.openQuestion,
       onSubmit: (answers) => onAnswer(item, answers),
     ),

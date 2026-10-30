@@ -319,6 +319,9 @@ pub fn shown(arena: std.mem.Allocator, name: []const u8, args: Value) ![]const u
         return std.fmt.allocPrint(arena, "Shown to the user: flashcard deck{s} with {d} card(s).", .{ titled, arr(args, "cards").len });
     if (eql(name, "make_slides"))
         return std.fmt.allocPrint(arena, "Shown to the user: slide deck{s} with {d} slide(s).", .{ titled, arr(args, "slides").len });
+    // Only when the app did not take the call itself (no `client_tools`).
+    if (eql(name, "ask_user"))
+        return std.fmt.allocPrint(arena, "Shown to the user: {d} question(s). The app cannot wait for the answers here, so end your turn now; the user answers in their next message.", .{arr(args, "questions").len});
     return "Shown to the user.";
 }
 
@@ -360,6 +363,26 @@ test "valid calls pass and get a named confirmation" {
     );
     try std.testing.expect((try check(a, "create_artifact", art)) == null);
     try std.testing.expectEqualStrings("Shown to the user: markdown artifact \"Notes\" (id \"notes\") in the side panel.", try shown(a, "create_artifact", art));
+}
+
+test "ask_user needs 1-4 questions with 2-4 labeled options" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const ok = try parse(a,
+        \\{"questions":[{"question":"Which tone?","header":"Tone","options":[{"label":"Formal","description":"d"},{"label":"Casual"}]}]}
+    );
+    try std.testing.expect((try check(a, "ask_user", ok)) == null);
+    try std.testing.expect(std.mem.startsWith(u8, try shown(a, "ask_user", ok), "Shown to the user: 1 question(s)."));
+
+    const one_option = try parse(a,
+        \\{"questions":[{"question":"Which tone?","options":[{"label":"Formal"}]}]}
+    );
+    try std.testing.expect((try check(a, "ask_user", one_option)) != null);
+    const unlabeled = try parse(a,
+        \\{"questions":[{"question":"Which tone?","options":[{"label":"Formal"},{"description":"no label"}]}]}
+    );
+    try std.testing.expect((try check(a, "ask_user", unlabeled)) != null);
 }
 
 test "svg style rules and stable ids" {

@@ -4,12 +4,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/net/api_error.dart';
 import '../../core/providers.dart';
+import '../artifacts/checks/tool_checks.dart';
 import '../attachments/attachment.dart';
 import '../models/domain/model_catalog.dart';
 import '../models/models_providers.dart';
 import '../usage/usage_totals.dart';
 import 'data/chat_repository.dart';
 import 'data/chat_transport.dart';
+import 'domain/ask_user.dart';
 import 'domain/chat_session.dart';
 import 'domain/message.dart';
 
@@ -31,9 +33,11 @@ final toolResultsProvider = Provider<ToolResults>((ref) {
 });
 
 /// UI tools the app runs itself and answers with [ChatController.resolveTool]
-/// (sent as `client_tools`). Empty until a feature (the chat question card,
-/// diagram checks) handles one.
-final chatClientToolsProvider = Provider<Set<String>>((ref) => const {});
+/// (sent as `client_tools`): the question card (`ask_user`).
+final chatClientToolsProvider = Provider<Set<String>>(
+  // …and the artifact and diagram checks (Mermaid errors, bad TeX).
+  (ref) => {askUserTool, ...ref.watch(appToolCheckerProvider).tools},
+);
 
 final conversationsProvider = StreamProvider<List<Conversation>>(
   (ref) => ref.watch(chatRepositoryProvider).watchConversations(),
@@ -53,6 +57,9 @@ final class ChatController extends Notifier<ChatSessionState> {
   StreamSubscription<ChatEvent>? _turn;
   final _buffer = StringBuffer();
   final _reasoning = StringBuffer();
+
+  /// Stores a tool result on the turn in flight's call part (set per turn).
+  void Function(String callId, String resultJson)? _recordResult;
 
   ChatRepository get _repo => ref.read(chatRepositoryProvider);
   ModelCatalog get _catalog => ref.read(modelCatalogProvider);
@@ -86,8 +93,16 @@ final class ChatController extends Notifier<ChatSessionState> {
   }
 
   /// Idle/Failed → Awaiting. Ignored while a turn is in flight.
+  /// While the turn waits on a question card, the text is the user's reply to it.
   Future<void> send(String input, {List<Attachment> attachments = const []}) async {
-    if (state.phase.busy || state.phase is Loading) return;
+    if (state.phase.busy) {
+      final asked = state.pendingTools.where((t) => t.name == askUserTool).firstOrNull;
+      if (asked != null && input.trim().isNotEmpty) {
+        await answerQuestions(asked.id, AskUserOutcome.replied(input.trim()));
+      }
+      return;
+    }
+    if (state.phase is Loading) return;
     final (:model, :prompt) = parseMention(input, _catalog);
     if (prompt.isEmpty && attachments.isEmpty) return;
     await _startTurn(
@@ -148,6 +163,30 @@ final class ChatController extends Notifier<ChatSessionState> {
     if (!state.pendingTools.any((t) => t.id == callId)) return false;
     _settleTool(callId);
     return ref.read(toolResultsProvider).resolve(callId, result, isError: isError);
+  }
+
+  /// Answers a pending `ask_user` card: the outcome is kept on its part (so
+  /// the card shows it and later turns see it) and goes back to the model.
+  Future<bool> answerQuestions(String callId, AskUserOutcome outcome) async {
+    final wait = state.pendingTools.where((t) => t.id == callId && t.name == askUserTool).firstOrNull;
+    if (wait == null) return false;
+    final questions = askUserQuestions(
+      ToolCallPart(toolName: wait.name, argumentsJson: wait.argumentsJson, callId: wait.id),
+    );
+    _recordResult?.call(callId, outcome.toJson());
+    return resolveTool(callId, outcome.resultFor(questions));
+  }
+
+  /// Answers a call the app checks itself (a diagram, an artifact's math)
+  /// with what the check found.
+  Future<void> _answerCheck(ToolWait wait) async {
+    final check = await ref.read(appToolCheckerProvider).check(wait.name, wait.argumentsJson, history: state.messages);
+    if (!ref.mounted) return;
+    try {
+      await resolveTool(wait.id, check.text, isError: check.isError);
+    } on Object {
+      // The turn ended or the server stopped waiting; it times out on its own.
+    }
   }
 
   void _settleTool(String callId) {
@@ -236,6 +275,19 @@ final class ChatController extends Notifier<ChatSessionState> {
       _buffer.clear();
     }
 
+    _recordResult = (callId, resultJson) {
+      final at = parts.indexWhere((p) => p is ToolCallPart && p.callId == callId);
+      if (at < 0 || !ref.mounted) return;
+      final call = parts[at] as ToolCallPart;
+      parts[at] = ToolCallPart(
+        toolName: call.toolName,
+        argumentsJson: call.argumentsJson,
+        callId: call.callId,
+        resultJson: resultJson,
+      );
+      state = state.copyWith(liveParts: List.unmodifiable(parts));
+    };
+
     List<MessagePart> collect() {
       flushText();
       return [
@@ -297,8 +349,14 @@ final class ChatController extends Notifier<ChatSessionState> {
               streamingText: '',
               pendingTools: List.unmodifiable([...state.pendingTools, wait]),
             );
-          // The server stopped waiting (answered elsewhere, or timed out).
-          case ToolProgress(:final id) when state.pendingTools.any((t) => t.id == id):
+            if (ref.read(appToolCheckerProvider).handles(wait.name)) unawaited(_answerCheck(wait));
+          // The server stopped waiting (answered elsewhere, or timed out). A
+          // question card shows its own state, and a checked visual its own
+          // card, so neither gets a step row.
+          case ToolProgress(:final id, :final name)
+              when state.pendingTools.any((t) => t.id == id) ||
+                  name == askUserTool ||
+                  ref.read(appToolCheckerProvider).handles(name):
             _settleTool(id);
           case ToolProgress(:final id, :final name, :final status, :final detail):
             final step = LiveToolStep(id: id, name: name, status: status, detail: detail);

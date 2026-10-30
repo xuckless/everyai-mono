@@ -8,6 +8,7 @@ import '../../../core/net/api_error.dart';
 import '../../artifacts/domain/artifact.dart';
 import '../../attachments/attachment.dart';
 import '../../models/domain/model_catalog.dart';
+import '../domain/ask_user.dart';
 import '../domain/image_refs.dart';
 import '../domain/message.dart';
 
@@ -324,6 +325,10 @@ Map<String, String> toolOutputsByMessage(List<Message> history) {
   for (final m in history) {
     final notes = <String>[];
     for (final call in m.parts.whereType<ToolCallPart>()) {
+      if (call.toolName == askUserTool) {
+        notes.add(askUserNote(call));
+        continue;
+      }
       final visual = Visual.fromPart(call);
       if (visual == null) continue;
       if (artifactTools.contains(call.toolName)) {

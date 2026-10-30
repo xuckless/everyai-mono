@@ -5,7 +5,7 @@ import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/harness/events.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/ui/session_view.dart';
-import 'package:every_ai/features/code/ui/transcript/question_card.dart';
+import 'package:every_ai/features/questions/ui/question_card.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -39,7 +39,7 @@ void main() {
       child: EveryThemeScope(
         theme: EveryTheme.resolve(DesignLanguage.material, Brightness.light),
         child: SingleChildScrollView(
-          child: QuestionCard(item: item, onSubmit: onSubmit),
+          child: QuestionCard(questions: item.questions, onSubmit: onSubmit),
         ),
       ),
     ),

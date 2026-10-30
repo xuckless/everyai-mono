@@ -17,7 +17,9 @@ import '../../attachments/ui/attachment_tray.dart';
 import '../../models/models_providers.dart';
 import '../../models/ui/model_avatar.dart';
 import '../chat_providers.dart';
+import '../domain/ask_user.dart';
 import '../domain/message.dart';
+import 'ask_user_card.dart';
 import 'chat_markdown.dart';
 import 'tool_steps.dart';
 
@@ -600,6 +602,10 @@ class _PartView extends StatelessWidget {
       final ImagePart image => GeneratedImageView(image: image, conversationId: conversationId),
       FollowUpsPart(:final questions) =>
         isLatest ? _FollowUps(questions: questions, conversationId: conversationId) : const SizedBox.shrink(),
+      final ToolCallPart call when call.toolName == askUserTool => AskUserCard(
+        part: call,
+        conversationId: conversationId,
+      ),
       final ToolCallPart call => InlineVisual(part: call, conversationId: conversationId),
       ArtifactPart(:final title) => Text(title, style: TextStyle(color: theme.accent)),
       UsagePart() || AttachmentPart() => const SizedBox.shrink(),

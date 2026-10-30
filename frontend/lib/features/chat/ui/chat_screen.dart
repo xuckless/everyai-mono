@@ -16,6 +16,7 @@ import '../../artifacts/domain/artifact.dart';
 import '../../artifacts/ui/artifact_panel.dart';
 import '../../usage/ui/usage_meter.dart';
 import '../chat_providers.dart';
+import '../domain/ask_user.dart';
 import '../domain/message.dart';
 import '../domain/chat_session.dart';
 import 'composer.dart';
@@ -48,6 +49,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final title = ref.watch(provider.select((s) => s.title));
     final isEmpty = ref.watch(provider.select((s) => s.isEmpty));
     final usage = ref.watch(provider.select((s) => s.usage));
+    final asking = ref.watch(provider.select((s) => s.pendingTools.any((t) => t.name == askUserTool)));
     final home = isEmpty && phase is! Loading;
 
     // Like Claude: a new or revised artifact (or a deck) opens the side panel.
@@ -69,10 +71,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final composer = Composer(
       key: _composer,
       busy: phase.busy,
+      replying: asking,
       model: model,
       mode: mode,
       minLines: home ? 2 : 1,
-      placeholder: home ? 'How can I help you today?' : 'Reply to ${model.name}…',
+      placeholder: home
+          ? 'How can I help you today?'
+          : asking
+          ? 'Answer the questions above, or type your own reply…'
+          : 'Reply to ${model.name}…',
       onSend: (text, attachments) => controller.send(text, attachments: attachments),
       onStop: controller.cancel,
       onModelChanged: controller.selectModel,
