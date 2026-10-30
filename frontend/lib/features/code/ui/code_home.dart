@@ -12,14 +12,16 @@ import '../../../core/ui/adaptive_page.dart';
 import '../../../core/ui/anchored_popover.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../models/models_providers.dart';
+import '../../../core/platform/platform_kind.dart';
 import '../code_providers.dart';
+import '../sidecar/sidecar.dart';
 import '../domain/agent_mode.dart';
 import '../domain/code_session.dart';
 import 'code_composer.dart';
 import 'session_view.dart';
 
 /// Where demo sessions "run" (the mock harness ignores the folder).
-const demoProjectPath = 'demo://counter-app';
+const demoProjectPath = '${demoScheme}counter-app';
 
 /// Code landing: pick a project, describe the task, start a session.
 class CodeHome extends ConsumerStatefulWidget {
@@ -40,6 +42,23 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
     final project = ref.read(codeProjectsProvider.notifier).add(path);
     setState(() => _projectId = project.id);
     return project;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // Warm the agent server up while the user types; errors surface on start.
+    if (Host.isDesktop) ref.read(sidecarProvider).endpoint().ignore();
+  }
+
+  Future<void> _addSample() async {
+    try {
+      final path = await createSampleProject();
+      final project = ref.read(codeProjectsProvider.notifier).add(path, name: 'counter-app (sample)');
+      setState(() => _projectId = project.id);
+    } on Object catch (e) {
+      if (mounted) showAdaptiveToast(context, 'Couldn\'t create the sample project: $e');
+    }
   }
 
   void _addDemo() {
@@ -82,14 +101,14 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const BrandGlyph('code', active: true, size: 30),
+                    const BrandGlyph('code', active: true, size: 26),
                     const SizedBox(width: 12),
                     Text(
                       project == null ? 'Code with an agent' : 'What should we build?',
                       style: TextStyle(
                         color: theme.text,
-                        fontSize: 30,
-                        fontWeight: FontWeight.w500,
+                        fontSize: 26,
+                        fontWeight: FontWeight.w400,
                         letterSpacing: -0.5,
                       ),
                     ),
@@ -97,7 +116,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                 ),
                 const SizedBox(height: 24),
                 if (project == null)
-                  _NoProjects(onOpen: _openFolder, onDemo: _addDemo)
+                  _NoProjects(onOpen: _openFolder, onSample: _addSample, onDemo: _addDemo)
                 else ...[
                   CodeComposer(
                     busy: _starting,
@@ -111,6 +130,8 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                       projects: projects,
                       onPick: (p) => setState(() => _projectId = p.id),
                       onOpen: _openFolder,
+                      onSample: _addSample,
+                      onDemo: _addDemo,
                     ),
                     trailing: Text(
                       ref.watch(defaultModelProvider).name,
@@ -120,8 +141,10 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'The agent works in ${project.path.startsWith('demo://') ? 'a demo project with a scripted agent' : project.path}. '
-                    '${_mode.description}.',
+                    _starting && !isDemoPath(project.path)
+                        ? 'Starting the agent…'
+                        : 'The agent works in ${isDemoPath(project.path) ? 'a demo project with a scripted agent' : project.path}. '
+                              '${_mode.description}.',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: theme.textMuted, fontSize: 12.5),
                   ),
@@ -145,8 +168,9 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
 }
 
 class _NoProjects extends StatelessWidget {
-  const _NoProjects({required this.onOpen, required this.onDemo});
+  const _NoProjects({required this.onOpen, required this.onSample, required this.onDemo});
   final VoidCallback onOpen;
+  final VoidCallback onSample;
   final VoidCallback onDemo;
 
   @override
@@ -167,7 +191,8 @@ class _NoProjects extends StatelessWidget {
           alignment: WrapAlignment.center,
           children: [
             AdaptiveButton(label: 'Open folder…', onPressed: onOpen),
-            AdaptiveButton(label: 'Try the demo', emphasis: ButtonEmphasis.secondary, onPressed: onDemo),
+            AdaptiveButton(label: 'Sample project', emphasis: ButtonEmphasis.secondary, onPressed: onSample),
+            AdaptiveButton(label: 'Scripted demo', emphasis: ButtonEmphasis.plain, onPressed: onDemo),
           ],
         ),
       ],
@@ -176,12 +201,21 @@ class _NoProjects extends StatelessWidget {
 }
 
 class _ProjectPicker extends StatelessWidget {
-  const _ProjectPicker({required this.project, required this.projects, required this.onPick, required this.onOpen});
+  const _ProjectPicker({
+    required this.project,
+    required this.projects,
+    required this.onPick,
+    required this.onOpen,
+    required this.onSample,
+    required this.onDemo,
+  });
 
   final CodeProject project;
   final List<CodeProject> projects;
   final ValueChanged<CodeProject> onPick;
   final VoidCallback onOpen;
+  final VoidCallback onSample;
+  final VoidCallback onDemo;
 
   @override
   Widget build(BuildContext context) {
@@ -198,7 +232,7 @@ class _ProjectPicker extends StatelessWidget {
             for (final p in projects)
               PopoverRow(
                 title: p.name,
-                subtitle: p.path.startsWith('demo://') ? 'Scripted demo' : p.path,
+                subtitle: isDemoPath(p.path) ? 'Scripted demo' : p.path,
                 selected: p.id == project.id,
                 onTap: () {
                   close();
@@ -213,6 +247,24 @@ class _ProjectPicker extends StatelessWidget {
                 onOpen();
               },
             ),
+            PopoverRow(
+              leading: AdaptiveIcon(EveryIcon.add, size: 15, color: theme.textMuted),
+              title: 'New sample project',
+              subtitle: 'A small Dart repo for the real agent',
+              onTap: () {
+                close();
+                onSample();
+              },
+            ),
+            if (!projects.any((p) => isDemoPath(p.path)))
+              PopoverRow(
+                leading: AdaptiveIcon(EveryIcon.add, size: 15, color: theme.textMuted),
+                title: 'Scripted demo',
+                onTap: () {
+                  close();
+                  onDemo();
+                },
+              ),
           ],
         ),
       ),
@@ -294,7 +346,7 @@ class _SessionTileState extends ConsumerState<SessionTile> {
                     widget.info.title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: theme.text, fontSize: 13.5),
+                    style: TextStyle(color: theme.text, fontSize: 13),
                   ),
                 ),
                 if (!widget.dense)

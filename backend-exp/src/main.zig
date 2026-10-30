@@ -74,7 +74,7 @@ pub fn main(init: std.process.Init) !void {
     defer state.catalog.deinit();
 
     var app = try anole.Server(App).init(init.gpa, .{
-        .http = .{ .port = cfg.port, .h2c = true },
+        .http = .{ .address = cfg.host, .port = cfg.port, .h2c = true },
         // Argon2 runs on the blocking pool, not an executor.
         .blocking = .{},
         .client = .{ .timeout = null },

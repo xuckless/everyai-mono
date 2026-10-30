@@ -167,3 +167,6 @@ dist/
 htmlcov/
 coverage.xml
 .ipynb_checkpoints/
+
+# Local dev runs (scripts/dev.sh)
+/.dev/

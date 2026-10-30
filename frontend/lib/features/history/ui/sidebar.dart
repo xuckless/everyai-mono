@@ -179,7 +179,8 @@ class _SidebarState extends ConsumerState<Sidebar> {
       children: [
         header,
         if (collapsed && lights) Center(child: _toggleButton()),
-        if (!collapsed)
+        // The coding agent runs on desktop hosts only (remote hosts: TODO.md).
+        if (!collapsed && Host.isDesktop)
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
             child: _SpaceSwitch(
@@ -439,8 +440,8 @@ class _NavItemState extends State<_NavItem> {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       color: widget.accent ? theme.accent : theme.text,
-                      fontSize: 14,
-                      fontWeight: widget.accent || widget.selected ? FontWeight.w600 : FontWeight.w400,
+                      fontSize: 13.5,
+                      fontWeight: widget.accent || widget.selected ? FontWeight.w500 : FontWeight.w400,
                     ),
                   ),
                 ),
@@ -588,7 +589,7 @@ class _ConversationTileState extends ConsumerState<ConversationTile> {
                         c.title,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: theme.text, fontSize: 13.5),
+                        style: TextStyle(color: theme.text, fontSize: 13),
                       ),
                       if (widget.subtitle != null)
                         Text(widget.subtitle!, style: TextStyle(color: theme.textMuted, fontSize: 12)),

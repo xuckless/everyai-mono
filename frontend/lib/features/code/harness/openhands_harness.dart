@@ -45,7 +45,8 @@ final class OpenHandsHarness implements Harness {
           {'name': 'terminal'},
           {'name': 'file_editor'},
           {'name': 'task_tracker'},
-          {'name': 'task'},
+          // `task` (subagents) fails to start in agent-server 1.59.0:
+          // TaskTool.create() got an unexpected keyword argument 'conv_state'.
         ],
       },
       'workspace': {'kind': 'LocalWorkspace', 'working_dir': spec.workingDir},

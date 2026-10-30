@@ -263,11 +263,11 @@ class AdaptiveTextField extends StatelessWidget {
         autofocus: autofocus,
         prefix: prefix == null ? null : Padding(padding: const EdgeInsets.only(left: 8), child: prefix),
         padding: borderless ? EdgeInsets.zero : const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
-        placeholderStyle: TextStyle(color: theme.textMuted),
+        placeholderStyle: TextStyle(color: theme.textMuted, fontSize: Host.isDesktop ? 14.5 : null),
         decoration: borderless
             ? null
             : BoxDecoration(color: theme.surfaceRaised, borderRadius: BorderRadius.circular(theme.radius)),
-        style: TextStyle(color: theme.text),
+        style: TextStyle(color: theme.text, fontSize: Host.isDesktop ? 14.5 : null),
       ),
       DesignLanguage.macos => mac.MacosTextField(
         controller: controller,

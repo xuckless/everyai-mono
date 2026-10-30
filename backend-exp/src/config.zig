@@ -5,6 +5,9 @@ const anole = @import("anole");
 
 pub const Config = struct {
     port: u16 = 8080,
+    /// Interface to bind. "0.0.0.0" lets phones on the LAN reach a dev server;
+    /// with DEV_AUTH on, anyone there can use the dev account.
+    host: []const u8 = "127.0.0.1",
     /// Signs access tokens (HS256), 32+ characters.
     jwt_secret: anole.Secret,
     /// Where the SQLite file lives (relative to the working directory).

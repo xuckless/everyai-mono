@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
+import 'dart:ui' show AppExitResponse;
+
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../core/preferences.dart';
+import '../../core/providers.dart';
 import 'domain/agent_mode.dart';
 import 'domain/code_session.dart';
 import 'domain/questions.dart';
@@ -13,10 +16,59 @@ import 'domain/transcript.dart';
 import 'harness/events.dart';
 import 'harness/fake_harness.dart';
 import 'harness/harness.dart';
+import 'harness/openhands_harness.dart';
+import 'sidecar/sidecar.dart';
 
-/// The agent server sessions run on. Mock mode (the default until the
-/// sidecar ships) replays scripted sessions.
+/// Projects under this scheme run on the scripted [FakeHarness].
+const demoScheme = 'demo://';
+
+bool isDemoPath(String path) => path.startsWith(demoScheme);
+
+/// The scripted harness for demo projects.
 final harnessProvider = Provider<Harness>((ref) => FakeHarness());
+
+/// The local OpenHands agent-server, started on first use and stopped with
+/// the app.
+final sidecarProvider = Provider<Sidecar>((ref) {
+  final sidecar = createSidecar();
+  // Provider disposal doesn't run on quit; stop the server when the app exits.
+  final lifecycle = AppLifecycleListener(
+    onExitRequested: () async {
+      await sidecar.stop();
+      return AppExitResponse.exit;
+    },
+    onDetach: sidecar.stop,
+  );
+  ref.onDispose(() {
+    lifecycle.dispose();
+    unawaited(sidecar.stop());
+  });
+  return sidecar;
+});
+
+/// The harness a session in [workingDir] runs on: the scripted one for demo
+/// projects, else the sidecar (started, or restarted after a crash, on demand).
+Future<Harness> harnessFor(Ref ref, String workingDir) async {
+  if (isDemoPath(workingDir)) return ref.read(harnessProvider);
+  final endpoint = await ref.read(sidecarProvider).endpoint();
+  return OpenHandsHarness(baseUrl: endpoint.baseUrl, sessionApiKey: endpoint.sessionApiKey);
+}
+
+/// The user's `sk-eai-` key for the backend's OpenAI-compatible gateway; the
+/// agent-server sends its LLM calls there. Minted once, then kept.
+Future<String> gatewayKey(Ref ref) async {
+  const prefKey = 'code.gateway_key';
+  final prefs = ref.read(preferencesProvider);
+  if (prefs[prefKey] case final key? when key.isNotEmpty) return key;
+  // Dev builds skip sign-in; the backend's DEV_AUTH treats them as its dev user.
+  final authenticated = !ref.read(appConfigProvider).devSkipAuth;
+  final res = await ref.read(apiClientProvider).postJson('v1/keys', {
+    'name': 'EveryAI Code',
+  }, authenticated: authenticated);
+  final key = res['key']! as String;
+  prefs[prefKey] = key;
+  return key;
+}
 
 /// Sessions started in this run of the app, by session id.
 final _liveProvider = Provider<Map<String, HarnessSession>>((ref) => {});
@@ -84,19 +136,19 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     required AgentMode mode,
   }) async {
     final id = const Uuid().v7();
-    final live = await ref
-        .read(harnessProvider)
-        .start(
-          SessionSpec(
-            workingDir: project.path,
-            model: model,
-            mode: mode,
-            llmBaseUrl: '',
-            llmApiKey: '',
-            sessionTag: id,
-            initialMessage: prompt,
-          ),
-        );
+    final demo = isDemoPath(project.path);
+    final harness = await harnessFor(ref, project.path);
+    final live = await harness.start(
+      SessionSpec(
+        workingDir: project.path,
+        model: model,
+        mode: mode,
+        llmBaseUrl: demo ? '' : ref.read(appConfigProvider).apiBaseUrl.resolve('v1').toString(),
+        llmApiKey: demo ? '' : await gatewayKey(ref),
+        sessionTag: id,
+        initialMessage: prompt,
+      ),
+    );
     ref.read(_liveProvider)[id] = live;
     final info = CodeSessionInfo(
       id: id,
@@ -205,7 +257,8 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
   Future<void> _connect(CodeSessionInfo info) async {
     try {
       final live = ref.read(_liveProvider);
-      final session = _session = live[sessionId] ?? await ref.read(harnessProvider).attach(info.conversationId);
+      final session = _session =
+          live[sessionId] ?? await (await harnessFor(ref, info.workingDir)).attach(info.conversationId);
       live[sessionId] = session;
       _sub = session.events.listen(_onEvent);
       state = state.copyWith(connected: true);

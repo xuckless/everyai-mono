@@ -154,15 +154,15 @@ class _Home extends StatelessWidget {
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const BrandMark(size: 30),
+                  const BrandMark(size: 26),
                   const SizedBox(width: 12),
                   Flexible(
                     child: Text(
                       _greeting(DateTime.now()),
                       style: TextStyle(
                         color: theme.text,
-                        fontSize: 34,
-                        fontWeight: FontWeight.w500,
+                        fontSize: 28,
+                        fontWeight: FontWeight.w400,
                         letterSpacing: -0.6,
                       ),
                     ),

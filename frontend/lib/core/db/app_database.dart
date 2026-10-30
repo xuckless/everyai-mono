@@ -1,6 +1,8 @@
 import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
 
+import 'db_location.dart';
+
 part 'app_database.g.dart';
 
 @DataClassName('ConversationRow')
@@ -91,6 +93,7 @@ class AppDatabase extends _$AppDatabase {
 
   static QueryExecutor _open() => driftDatabase(
     name: 'everyai',
+    native: const DriftNativeOptions(databaseDirectory: databaseDirectory),
     web: DriftWebOptions(sqlite3Wasm: Uri.parse('sqlite3.wasm'), driftWorker: Uri.parse('drift_worker.js')),
   );
 

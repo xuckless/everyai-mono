@@ -108,8 +108,28 @@ c.CupertinoThemeData cupertinoTheme(Brightness brightness) {
     primaryColor: tokens.accent,
     scaffoldBackgroundColor: tokens.background,
     barBackgroundColor: tokens.surface.withValues(alpha: 0.6),
+    // Cupertino's defaults are phone sizes (17pt body). On a desktop window
+    // they read heavy, so use desktop sizes there.
+    textTheme: Host.isDesktop ? _desktopCupertinoText : null,
   );
 }
+
+final _desktopCupertinoText = () {
+  const base = c.CupertinoTextThemeData();
+  TextStyle size(TextStyle s, double px, [FontWeight? w]) =>
+      s.copyWith(fontSize: px, letterSpacing: -0.1, fontWeight: w ?? s.fontWeight);
+  return c.CupertinoTextThemeData(
+    textStyle: size(base.textStyle, 14),
+    actionTextStyle: size(base.actionTextStyle, 14),
+    actionSmallTextStyle: size(base.actionSmallTextStyle, 13),
+    tabLabelTextStyle: size(base.tabLabelTextStyle, 11),
+    navTitleTextStyle: size(base.navTitleTextStyle, 14, FontWeight.w600),
+    navLargeTitleTextStyle: size(base.navLargeTitleTextStyle, 26, FontWeight.w600),
+    navActionTextStyle: size(base.navActionTextStyle, 14),
+    pickerTextStyle: size(base.pickerTextStyle, 15),
+    dateTimePickerTextStyle: size(base.dateTimePickerTextStyle, 15),
+  );
+}();
 
 /// macos_ui only takes system accent colors; brand violet reaches its push
 /// buttons through AdaptiveButton.
