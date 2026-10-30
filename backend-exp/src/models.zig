@@ -144,12 +144,12 @@ pub const Catalog = struct {
         return arena.dupe(u8, self.json);
     }
 
-    pub const Facts = struct { known: bool, free: bool, tools: bool, web_search: bool, max_output: i64 = 0 };
+    pub const Facts = struct { known: bool, free: bool, tools: bool, web_search: bool, max_output: i64 = 0, reasoning: bool = false };
 
     pub fn facts(self: *Catalog, io: std.Io, id: []const u8) Facts {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
-        for (self.models) |m| if (std.mem.eql(u8, m.id, id)) return .{ .known = true, .free = m.free, .tools = m.tools, .web_search = m.web_search, .max_output = m.max_output_tokens };
+        for (self.models) |m| if (std.mem.eql(u8, m.id, id)) return .{ .known = true, .free = m.free, .tools = m.tools, .web_search = m.web_search, .max_output = m.max_output_tokens, .reasoning = m.reasoning };
         // Unknown (catalog not loaded): treat as paid, assume tools.
         return .{ .known = false, .free = std.mem.endsWith(u8, id, ":free"), .tools = true, .web_search = true };
     }

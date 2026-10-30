@@ -859,3 +859,87 @@ test "images: the vector engine asks a Recraft vector model for SVG" {
     try std.testing.expect(std.mem.indexOf(u8, up, "\"model\":\"recraft/recraft-v4.1-vector\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, up, "\"output_format\":\"svg\"") != null);
 }
+
+// ------------------------------------------------------------------ memory
+
+const memory_turn =
+    \\data: {"model":"anthropic/claude-haiku-5.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"toolu_m1","type":"function","function":{"name":"memory","arguments":"{\"action\": \"add\", \"target\": \"user\", \"text\": \"Prefers metric units.\"}"}}]}}]}
+    \\
+    \\data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":0.00001}}
+    \\
+    \\data: [DONE]
+    \\
+    \\
+;
+
+test "chat: memory rides after the system prompt; undeclared memory calls get an error" {
+    var env: Env = undefined;
+    try start(&env, &.{ memory_turn, final_turn, followups_reply }, true);
+    defer env.deinit();
+
+    var res = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = "Remember I use metric" }},
+        .memory = "<memory>Name: Sam</memory>",
+    } });
+    defer res.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "event: done") != null);
+    // The app never declared memory, so nothing was shown or awaited.
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "event: tool_wait") == null);
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "event: tool\n") == null);
+
+    const first = env.fake.bodies.items[0];
+    const sys = std.mem.indexOf(u8, first, "You are EveryAI").?;
+    const mem = std.mem.indexOf(u8, first, "<memory>Name: Sam</memory>").?;
+    const user = std.mem.indexOf(u8, first, "Remember I use metric").?;
+    try std.testing.expect(sys < mem and mem < user);
+    try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[1], "Error: memory is turned off in the user's app") != null);
+}
+
+// ------------------------------------------------------------------ reasoning
+
+const thinking_tool_turn =
+    \\data: {"model":"anthropic/claude-haiku-5.5","choices":[{"index":0,"delta":{"reasoning":"Need a diagram.","reasoning_details":[{"type":"reasoning.text","text":"Need a diagram.","format":"anthropic-claude-v1","index":0}]}}]}
+    \\
+    \\data: {"choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.text","signature":"SIG1","index":0}],"tool_calls":[{"index":0,"id":"toolu_r1","type":"function","function":{"name":"render_diagram","arguments":"{\"title\": \"Flow\", \"mermaid\": \"graph TD; A-->B\"}"}}]}}]}
+    \\
+    \\data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":0.00001}}
+    \\
+    \\data: [DONE]
+    \\
+    \\
+;
+
+test "chat: reasoning goes back within the tool loop; effort only for reasoning models" {
+    var env: Env = undefined;
+    try start(&env, &.{ thinking_tool_turn, final_turn, followups_reply, final_turn, followups_reply }, true);
+    defer env.deinit();
+
+    var res = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = "Draw the flow" }},
+        .effort = "max",
+    } });
+    defer res.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "event: done") != null);
+    const first = env.fake.bodies.items[0];
+    try std.testing.expect(std.mem.indexOf(u8, first, "\"reasoning\":{\"effort\":\"xhigh\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first, "reasoning_details") == null);
+    const second = env.fake.bodies.items[1];
+    try std.testing.expect(std.mem.indexOf(u8, second, "\"reasoning\":{\"effort\":\"xhigh\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, second,
+        \\"reasoning_details":[{"type":"reasoning.text","format":"anthropic-claude-v1","signature":"SIG1","text":"Need a diagram.","index":0}]
+    ) != null);
+    // The follow-ups call is not the user's model: no effort.
+    try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[2], "effort") == null);
+
+    // A model without reasoning in the catalog ignores the effort.
+    var free = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "dots-studio/dots-3-note-preview:free",
+        .messages = .{.{ .role = "user", .content = "hi" }},
+        .effort = "high",
+    } });
+    defer free.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, free.body, "event: done") != null);
+    try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[3], "effort") == null);
+}

@@ -145,6 +145,10 @@ pub const Usage = struct {
 pub const Result = struct {
     text: []const u8,
     reasoning: []const u8,
+    /// OpenRouter's structured reasoning (a JSON array, signatures and
+    /// encrypted blocks included), merged per block; "" when none came.
+    /// Sent back verbatim on the assistant message within a tool loop.
+    reasoning_details: []const u8 = "",
     tool_calls: []const ToolCall,
     sources: []const Source,
     usage: Usage,
@@ -185,6 +189,7 @@ pub fn parseStream(arena: std.mem.Allocator, reader: *std.Io.Reader, sink: anyty
     var text: std.Io.Writer.Allocating = .init(arena);
     var reasoning: std.Io.Writer.Allocating = .init(arena);
     var calls: std.ArrayList(PartialCall) = .empty;
+    var details: Details = .{};
     var sources: std.ArrayList(Source) = .empty;
     var usage: Usage = .{};
     var finish: []const u8 = "";
@@ -225,9 +230,13 @@ pub fn parseStream(arena: std.mem.Allocator, reader: *std.Io.Reader, sink: anyty
             try text.writer.writeAll(c);
             try sink.onDelta(.{ .text = c });
         };
-        if (jsonStr(d.get("reasoning"))) |r| if (r.len > 0) {
+        // `reasoning_content` is DeepSeek's own name for it.
+        if (jsonStr(d.get("reasoning")) orelse jsonStr(d.get("reasoning_content"))) |r| if (r.len > 0) {
             try reasoning.writer.writeAll(r);
             try sink.onDelta(.{ .reasoning = r });
+        };
+        if (d.get("reasoning_details")) |rd| if (rd == .array) for (rd.array.items) |item| {
+            if (item == .object) try details.merge(arena, item.object);
         };
         if (d.get("tool_calls")) |tc| if (tc == .array) for (tc.array.items) |item| {
             try mergeToolCall(arena, &calls, item.object);
@@ -253,6 +262,7 @@ pub fn parseStream(arena: std.mem.Allocator, reader: *std.Io.Reader, sink: anyty
     return .{
         .text = text.written(),
         .reasoning = reasoning.written(),
+        .reasoning_details = try details.json(arena),
         .tool_calls = tool_calls,
         .sources = sources.items,
         .usage = usage,
@@ -260,6 +270,81 @@ pub fn parseStream(arena: std.mem.Allocator, reader: *std.Io.Reader, sink: anyty
         .model = model,
     };
 }
+
+/// `reasoning_details` deltas merged into whole blocks: entries with the same
+/// `index` are one block, whose `text`, `summary` and `data` arrive in pieces;
+/// other fields (type, signature, format, id) keep their latest value.
+const Details = struct {
+    blocks: std.ArrayList(Block) = .empty,
+
+    const Block = struct {
+        index: ?i64,
+        fields: std.json.ObjectMap = .empty,
+        text: ?std.Io.Writer.Allocating = null,
+        summary: ?std.Io.Writer.Allocating = null,
+        data: ?std.Io.Writer.Allocating = null,
+    };
+
+    fn merge(self: *Details, arena: std.mem.Allocator, o: std.json.ObjectMap) !void {
+        const index: ?i64 = if (o.get("index")) |i| (if (i == .integer) i.integer else null) else null;
+        const block = for (self.blocks.items) |*b| {
+            if (index != null and b.index == index) break b;
+        } else blk: {
+            try self.blocks.append(arena, .{ .index = index });
+            break :blk &self.blocks.items[self.blocks.items.len - 1];
+        };
+        var it = o.iterator();
+        while (it.next()) |e| {
+            const key = e.key_ptr.*;
+            const v = e.value_ptr.*;
+            if (std.mem.eql(u8, key, "index")) continue;
+            const piece: ?*?std.Io.Writer.Allocating = if (std.mem.eql(u8, key, "text"))
+                &block.text
+            else if (std.mem.eql(u8, key, "summary"))
+                &block.summary
+            else if (std.mem.eql(u8, key, "data"))
+                &block.data
+            else
+                null;
+            if (piece) |w| if (v == .string) {
+                if (w.* == null) w.* = .init(arena);
+                try w.*.?.writer.writeAll(v.string);
+                continue;
+            };
+            if (v == .null or (v == .string and v.string.len == 0)) continue;
+            // Values live in the per-chunk scratch arena: copy them out.
+            const copy = try std.json.parseFromSliceLeaky(std.json.Value, arena, try std.json.Stringify.valueAlloc(arena, v, .{}), .{});
+            try block.fields.put(arena, try arena.dupe(u8, key), copy);
+        }
+    }
+
+    /// The merged blocks as a JSON array, or "" when there were none.
+    fn json(self: *Details, arena: std.mem.Allocator) ![]const u8 {
+        if (self.blocks.items.len == 0) return "";
+        var out: std.Io.Writer.Allocating = .init(arena);
+        var s: std.json.Stringify = .{ .writer = &out.writer };
+        try s.beginArray();
+        for (self.blocks.items) |*b| {
+            try s.beginObject();
+            var it = b.fields.iterator();
+            while (it.next()) |e| {
+                try s.objectField(e.key_ptr.*);
+                try s.write(e.value_ptr.*);
+            }
+            inline for (.{ "text", "summary", "data" }) |key| if (@field(b, key)) |*w| {
+                try s.objectField(key);
+                try s.write(w.written());
+            };
+            if (b.index) |i| {
+                try s.objectField("index");
+                try s.write(i);
+            }
+            try s.endObject();
+        }
+        try s.endArray();
+        return out.written();
+    }
+};
 
 const PartialCall = struct { index: i64, id: []const u8, name: []const u8, args: std.Io.Writer.Allocating };
 
@@ -376,6 +461,37 @@ pub const Fake = struct {
         return arena.dupe(u8, self.models_json);
     }
 };
+
+const NoSink = struct {
+    fn onDelta(_: NoSink, _: Delta) !void {}
+};
+
+test "parseStream merges reasoning_details per block and reads reasoning_content" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var reader: std.Io.Reader = .fixed(
+        \\data: {"choices":[{"index":0,"delta":{"reasoning_content":"Let me ","reasoning_details":[{"type":"reasoning.text","text":"Let me ","format":"anthropic-claude-v1","index":0}]}}]}
+        \\
+        \\data: {"choices":[{"index":0,"delta":{"reasoning_content":"think.","reasoning_details":[{"type":"reasoning.text","text":"think.","index":0}]}}]}
+        \\
+        \\data: {"choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.text","signature":"sig==","index":0},{"type":"reasoning.encrypted","data":"AAA","index":1}]}}]}
+        \\
+        \\data: [DONE]
+        \\
+        \\
+    );
+    var err: UpstreamError = .{ .status = 0, .message = "" };
+    const r = try parseStream(arena, &reader, NoSink{}, &err);
+    try std.testing.expectEqualStrings("Let me think.", r.reasoning);
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, arena, r.reasoning_details, .{});
+    try std.testing.expectEqual(@as(usize, 2), v.array.items.len);
+    const first = v.array.items[0].object;
+    try std.testing.expectEqualStrings("Let me think.", first.get("text").?.string);
+    try std.testing.expectEqualStrings("sig==", first.get("signature").?.string);
+    try std.testing.expectEqualStrings("anthropic-claude-v1", first.get("format").?.string);
+    try std.testing.expectEqualStrings("AAA", v.array.items[1].object.get("data").?.string);
+}
 
 test "parseUsage reads DeepSeek prompt_cache_hit_tokens" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);

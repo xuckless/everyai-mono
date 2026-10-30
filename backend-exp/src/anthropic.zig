@@ -6,8 +6,11 @@
 //! `cost` is computed from the catalog's prices; `complete()`, the gateway and
 //! billing then work unchanged.
 //!
-//! Thinking blocks are not sent back in later turns: the 5.5 models accept
-//! tool loops without them (checked against the live API).
+//! Thinking comes out as `reasoning` text plus OpenRouter-style
+//! `reasoning_details` (signed `reasoning.text`, `reasoning.encrypted` for
+//! redacted blocks). Details on an assistant message go back in as thinking
+//! blocks, so a tool loop keeps its reasoning; messages without them (earlier
+//! turns, other callers) still work, as the 5.5 models accept that.
 const std = @import("std");
 const anole = @import("anole");
 const openrouter = @import("openrouter.zig");
@@ -19,6 +22,9 @@ const Value = std.json.Value;
 const ObjectMap = std.json.ObjectMap;
 const jsonStr = openrouter.jsonStr;
 const jsonInt = openrouter.jsonInt;
+
+/// The `format` of reasoning details this adapter makes and takes back.
+const details_format = "anthropic-claude-v1";
 
 pub const Adapter = struct {
     /// Posts raw Messages API requests (`openrouter.Client` with `.auth = .anthropic`).
@@ -181,6 +187,7 @@ pub fn translateRequest(arena: std.mem.Allocator, in: ObjectMap) !Translated {
             try blocksOf(arena, content, &system);
         } else if (std.mem.eql(u8, role, "assistant")) {
             var blocks: std.json.Array = .init(arena);
+            try thinkingOf(arena, m.object.get("reasoning_details"), &blocks);
             try blocksOf(arena, content, &blocks);
             if (m.object.get("tool_calls")) |tc| if (tc == .array) for (tc.array.items) |call| {
                 if (call != .object) continue;
@@ -265,6 +272,27 @@ fn appendMsg(arena: std.mem.Allocator, msgs: *std.ArrayList(Msg), role: []const 
         if (std.mem.eql(u8, last.role, role)) return last.blocks.appendSlice(blocks.items);
     }
     try msgs.append(arena, .{ .role = role, .blocks = blocks });
+}
+
+/// Signed reasoning details as thinking blocks (they lead the assistant
+/// message). Unsigned text and other providers' formats are dropped: Anthropic
+/// rejects thinking it can't verify.
+fn thinkingOf(arena: std.mem.Allocator, details: ?Value, out: *std.json.Array) !void {
+    const list = details orelse return;
+    if (list != .array) return;
+    for (list.array.items) |d| {
+        if (d != .object) continue;
+        if (jsonStr(d.object.get("format"))) |f| if (!std.mem.startsWith(u8, f, "anthropic")) continue;
+        const kind = jsonStr(d.object.get("type")) orelse continue;
+        if (std.mem.eql(u8, kind, "reasoning.text")) {
+            const sig = jsonStr(d.object.get("signature")) orelse continue;
+            if (sig.len == 0) continue;
+            try out.append(try obj(arena, &.{ .{ "type", str("thinking") }, .{ "thinking", str(jsonStr(d.object.get("text")) orelse "") }, .{ "signature", str(sig) } }));
+        } else if (std.mem.eql(u8, kind, "reasoning.encrypted")) {
+            const data = jsonStr(d.object.get("data")) orelse continue;
+            try out.append(try obj(arena, &.{ .{ "type", str("redacted_thinking") }, .{ "data", str(data) } }));
+        }
+    }
 }
 
 /// OpenAI content (a string or parts) as Anthropic blocks. Empty text is
@@ -484,6 +512,9 @@ const Translator = struct {
             } else if (std.mem.eql(u8, btype, "text")) {
                 const t = jsonStr(block.get("text")) orelse "";
                 if (t.len > 0) try self.chunk(.{ .content = t }, null);
+            } else if (std.mem.eql(u8, btype, "redacted_thinking")) {
+                const data = jsonStr(block.get("data")) orelse "";
+                try self.chunk(.{ .reasoning_details = .{.{ .type = "reasoning.encrypted", .data = data, .format = details_format, .index = index }} }, null);
             }
         } else if (std.mem.eql(u8, kind, "content_block_delta")) {
             const index: usize = @intCast(@max(0, jsonInt(o.get("index"))));
@@ -494,7 +525,14 @@ const Translator = struct {
                 if (t.len > 0) try self.chunk(.{ .content = t }, null);
             } else if (std.mem.eql(u8, dtype, "thinking_delta")) {
                 const t = jsonStr(d.get("thinking")) orelse "";
-                if (t.len > 0) try self.chunk(.{ .reasoning = t, .reasoning_content = t }, null);
+                if (t.len > 0) try self.chunk(.{
+                    .reasoning = t,
+                    .reasoning_content = t,
+                    .reasoning_details = .{.{ .type = "reasoning.text", .text = t, .format = details_format, .index = index }},
+                }, null);
+            } else if (std.mem.eql(u8, dtype, "signature_delta")) {
+                const sig = jsonStr(d.get("signature")) orelse "";
+                if (sig.len > 0) try self.chunk(.{ .reasoning_details = .{.{ .type = "reasoning.text", .signature = sig, .format = details_format, .index = index }} }, null);
             } else if (std.mem.eql(u8, dtype, "input_json_delta")) {
                 const part = jsonStr(d.get("partial_json")) orelse "";
                 if (part.len == 0 or index >= self.tool_of.items.len or self.tool_of.items[index] < 0) return;
@@ -563,13 +601,29 @@ fn translateMessage(arena: std.mem.Allocator, raw: []const u8, meta: Meta) ![]co
     var text: std.Io.Writer.Allocating = .init(arena);
     var reasoning: std.Io.Writer.Allocating = .init(arena);
     var calls: std.json.Array = .init(arena);
-    if (o.get("content")) |c| if (c == .array) for (c.array.items) |b| {
+    var details: std.json.Array = .init(arena);
+    if (o.get("content")) |c| if (c == .array) for (c.array.items, 0..) |b, i| {
         if (b != .object) continue;
         const btype = jsonStr(b.object.get("type")) orelse continue;
         if (std.mem.eql(u8, btype, "text")) {
             try text.writer.writeAll(jsonStr(b.object.get("text")) orelse "");
         } else if (std.mem.eql(u8, btype, "thinking")) {
-            try reasoning.writer.writeAll(jsonStr(b.object.get("thinking")) orelse "");
+            const t = jsonStr(b.object.get("thinking")) orelse "";
+            try reasoning.writer.writeAll(t);
+            try details.append(try obj(arena, &.{
+                .{ "type", str("reasoning.text") },
+                .{ "text", str(t) },
+                .{ "signature", b.object.get("signature") orelse str("") },
+                .{ "format", str(details_format) },
+                .{ "index", .{ .integer = @intCast(i) } },
+            }));
+        } else if (std.mem.eql(u8, btype, "redacted_thinking")) {
+            try details.append(try obj(arena, &.{
+                .{ "type", str("reasoning.encrypted") },
+                .{ "data", b.object.get("data") orelse str("") },
+                .{ "format", str(details_format) },
+                .{ "index", .{ .integer = @intCast(i) } },
+            }));
         } else if (std.mem.eql(u8, btype, "tool_use")) {
             const args = try std.json.Stringify.valueAlloc(arena, b.object.get("input") orelse try obj(arena, &.{}), .{});
             try calls.append(try obj(arena, &.{
@@ -586,6 +640,7 @@ fn translateMessage(arena: std.mem.Allocator, raw: []const u8, meta: Meta) ![]co
         try message.put(arena, "reasoning", str(reasoning.written()));
         try message.put(arena, "reasoning_content", str(reasoning.written()));
     }
+    if (details.items.len > 0) try message.put(arena, "reasoning_details", .{ .array = details });
     if (calls.items.len > 0) try message.put(arena, "tool_calls", .{ .array = calls });
 
     var usage: Usage = .{};
@@ -694,6 +749,9 @@ test "stream translation: text, thinking, tool call, usage with computed cost" {
         \\event: content_block_delta
         \\data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Hmm."}}
         \\
+        \\event: content_block_delta
+        \\data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EqQB"}}
+        \\
         \\event: content_block_start
         \\data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
         \\
@@ -750,6 +808,10 @@ test "stream translation: text, thinking, tool call, usage with computed cost" {
     const result = try openrouter.parseStream(a, &again, &sink, &err);
     try testing.expectEqualStrings("Hmm.Here you go.", sink.text.items);
     try testing.expectEqualStrings("Here you go.", result.text);
+    try testing.expectEqualStrings("Hmm.", result.reasoning);
+    try testing.expectEqualStrings(
+        \\[{"type":"reasoning.text","format":"anthropic-claude-v1","signature":"EqQB","text":"Hmm.","index":0}]
+    , result.reasoning_details);
     try testing.expectEqualStrings("tool_calls", result.finish_reason);
     try testing.expectEqual(@as(usize, 1), result.tool_calls.len);
     try testing.expectEqualStrings("toolu_9", result.tool_calls[0].id);
@@ -760,6 +822,34 @@ test "stream translation: text, thinking, tool call, usage with computed cost" {
     try testing.expectEqual(@as(i64, 40), result.usage.completion_tokens);
     // 100×1e-6 + 1000×1e-7 + 200×2e-6 + 40×5e-6 = 0.0008
     try testing.expectApproxEqAbs(@as(f64, 0.0008), result.usage.cost_usd, 1e-12);
+}
+
+test "signed reasoning details go back as thinking blocks ahead of the tool call" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const in = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"model":"anthropic/claude-haiku-5.5","reasoning":{"effort":"max"},"messages":[
+        \\  {"role":"user","content":"go"},
+        \\  {"role":"assistant","content":"","reasoning":"Hmm.","reasoning_details":[
+        \\    {"type":"reasoning.text","text":"Hmm.","signature":"EqQB","format":"anthropic-claude-v1","index":0},
+        \\    {"type":"reasoning.encrypted","data":"RED","format":"anthropic-claude-v1","index":1},
+        \\    {"type":"reasoning.text","text":"unsigned","index":2},
+        \\    {"type":"reasoning.text","text":"other","signature":"x","format":"openai-responses-v1","index":3}],
+        \\   "tool_calls":[{"id":"toolu_1","type":"function","function":{"name":"web_fetch","arguments":"{}"}}]},
+        \\  {"role":"tool","tool_call_id":"toolu_1","content":"page"}
+        \\]}
+    , .{});
+    const t = try translateRequest(a, in.object);
+    const out = (try std.json.parseFromSliceLeaky(Value, a, t.body, .{})).object;
+    try testing.expectEqualStrings("max", out.get("output_config").?.object.get("effort").?.string);
+    const blocks = out.get("messages").?.array.items[1].object.get("content").?.array.items;
+    try testing.expectEqual(@as(usize, 3), blocks.len);
+    try testing.expectEqualStrings("thinking", blocks[0].object.get("type").?.string);
+    try testing.expectEqualStrings("Hmm.", blocks[0].object.get("thinking").?.string);
+    try testing.expectEqualStrings("EqQB", blocks[0].object.get("signature").?.string);
+    try testing.expectEqualStrings("redacted_thinking", blocks[1].object.get("type").?.string);
+    try testing.expectEqualStrings("tool_use", blocks[2].object.get("type").?.string);
 }
 
 test "errors come back in OpenAI shape" {

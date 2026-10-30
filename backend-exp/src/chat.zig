@@ -53,7 +53,31 @@ pub const ChatRequest = struct {
     /// The conversation's images by id (`img_<n>` generated, `upload_<n>`
     /// attached), for `generate_image` edits and references.
     images: []const ImageRef = &.{},
+    /// The user's saved notes (local memory), as the app froze them when the
+    /// chat began: the same bytes every turn, sent right after the constant
+    /// system prompt so the cached prefix holds.
+    memory: ?[]const u8 = null,
+    /// How hard a reasoning model thinks; ignored for models without
+    /// reasoning, and null leaves the provider's default.
+    effort: ?Effort = null,
 };
+
+pub const Effort = enum {
+    low,
+    medium,
+    high,
+    max,
+
+    /// The `reasoning.effort` value for `provider`. Anthropic's own API
+    /// (through the adapter) has a "max" level; OpenRouter's top is "xhigh".
+    pub fn wire(self: Effort, provider: []const u8) []const u8 {
+        if (self == .max and !std.mem.eql(u8, provider, "anthropic")) return "xhigh";
+        return @tagName(self);
+    }
+};
+
+/// The most memory text a request may carry (the app caps its notes far lower).
+pub const memory_max = 16 * 1024;
 
 pub const ImageRef = struct {
     id: []const u8,
@@ -70,6 +94,12 @@ const Msg = struct {
     parts: ?[]const std.json.Value = null,
     tool_call_id: ?[]const u8 = null,
     raw_tool_calls: ?[]const u8 = null,
+    /// An assistant step's reasoning, sent back for the rest of the turn's
+    /// tool loop (DeepSeek rejects tool loops without it; Anthropic needs its
+    /// signed thinking blocks). `reasoning_details` is the structured JSON
+    /// array; plain `reasoning` is used when there is none.
+    reasoning: []const u8 = "",
+    reasoning_details: []const u8 = "",
 };
 
 // ------------------------------------------------------------------ prompt caching
@@ -137,6 +167,8 @@ const CallOpts = struct {
     /// The tools stay defined (the cache prefix and tool history need them)
     /// but the model may not call one.
     no_tool_calls: bool = false,
+    /// `reasoning.effort`, already mapped for the route (`Effort.wire`).
+    effort: ?[]const u8 = null,
 };
 
 /// The upstream request body. Prefix order (tools, system, history) never
@@ -157,6 +189,10 @@ fn buildBody(arena: std.mem.Allocator, model: []const u8, mode: Mode, with_tools
     if (opts.max_tokens) |n| {
         try s.objectField("max_tokens");
         try s.write(n);
+    }
+    if (opts.effort) |e| {
+        try s.objectField("reasoning");
+        try s.print("{{\"effort\":\"{s}\"}}", .{e});
     }
     if (with_tools) {
         try s.objectField("tools");
@@ -189,6 +225,13 @@ fn buildBody(arena: std.mem.Allocator, model: []const u8, mode: Mode, with_tools
         if (m.raw_tool_calls) |raw| {
             try s.objectField("tool_calls");
             try s.print("{s}", .{raw});
+        }
+        if (m.reasoning_details.len > 0) {
+            try s.objectField("reasoning_details");
+            try s.print("{s}", .{m.reasoning_details});
+        } else if (m.reasoning.len > 0) {
+            try s.objectField("reasoning");
+            try s.write(m.reasoning);
         }
         try s.endObject();
     }
@@ -243,6 +286,7 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const body = std.json.parseFromSliceLeaky(ChatRequest, req.arena, raw, .{ .ignore_unknown_fields = true }) catch
         return res.fail(.unprocessable_entity, "body must be {model?, mode, messages: [{role, content}], tools_enabled, session?}");
     if (body.messages.len == 0) return res.fail(.unprocessable_entity, "messages must not be empty");
+    if (body.memory) |m| if (m.len > memory_max) return res.fail(.unprocessable_entity, "memory is too long");
     for (body.messages) |m| if (m.content != .string and m.content != .array)
         return res.fail(.unprocessable_entity, "content must be a string or an array of parts");
 
@@ -276,6 +320,8 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
 fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, body: ChatRequest, facts: @import("models.zig").Catalog.Facts, sink: Sink) !void {
     const arena = req.arena;
     var messages: std.ArrayList(Msg) = .empty;
+    // Memory goes after the constant system prompt and before the history.
+    if (body.memory) |m| if (std.mem.trim(u8, m, " \t\r\n").len > 0) try messages.append(arena, .{ .role = "system", .content = m });
     for (body.messages) |m| {
         const role = if (std.mem.eql(u8, m.role, "assistant")) "assistant" else "user";
         switch (m.content) {
@@ -291,7 +337,8 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
     var final_text: std.Io.Writer.Allocating = .init(arena);
     // Search needs OpenRouter's web plugin.
     const route = app.route(model, body.mode == .chat);
-    const turn: Turn = .{ .app = app, .req = req, .who = who, .model = model, .body = body, .route = route, .with_tools = with_tools };
+    const effort: ?[]const u8 = if (body.effort) |e| (if (facts.reasoning) e.wire(route.provider) else null) else null;
+    const turn: Turn = .{ .app = app, .req = req, .who = who, .model = model, .body = body, .route = route, .with_tools = with_tools, .effort = effort };
 
     var steps: u8 = 0;
     var continuations: u8 = 0;
@@ -316,7 +363,7 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
             // Cut-off text: let the model carry on where it stopped.
             if (cut_off and result.text.len > 0 and continuations < truncation.max_continuations) {
                 continuations += 1;
-                try messages.append(arena, .{ .role = "assistant", .content = result.text });
+                try messages.append(arena, .{ .role = "assistant", .content = result.text, .reasoning = result.reasoning, .reasoning_details = result.reasoning_details });
                 try messages.append(arena, .{ .role = "user", .content = truncation.continue_nudge });
                 continue;
             }
@@ -334,7 +381,13 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
             copy[i].arguments = "{}";
             kept = copy;
         }
-        try messages.append(arena, .{ .role = "assistant", .content = result.text, .raw_tool_calls = try toolCallsJson(arena, kept) });
+        try messages.append(arena, .{
+            .role = "assistant",
+            .content = result.text,
+            .raw_tool_calls = try toolCallsJson(arena, kept),
+            .reasoning = result.reasoning,
+            .reasoning_details = result.reasoning_details,
+        });
         for (calls, 0..) |call, i| {
             const output = if (cut_call == i)
                 try truncation.notRun(arena, call.name)
@@ -374,6 +427,8 @@ const Turn = struct {
     body: ChatRequest,
     route: App.Route,
     with_tools: bool,
+    /// `reasoning.effort` for every call of the turn, or null.
+    effort: ?[]const u8 = null,
 
     /// One metered completion; deltas go to `deltas`, the rest of the
     /// events to `sink`.
@@ -383,7 +438,9 @@ const Turn = struct {
             Sink => deltas,
             else => deltas.inner,
         };
-        const request_body = try buildBody(self.req.arena, self.model, self.body.mode, self.with_tools, messages, app.cfg.cache_ttl, app.cfg.search_engine, opts);
+        var o = opts;
+        o.effort = self.effort;
+        const request_body = try buildBody(self.req.arena, self.model, self.body.mode, self.with_tools, messages, app.cfg.cache_ttl, app.cfg.search_engine, o);
         var up_err: openrouter.UpstreamError = .{ .status = 0, .message = "" };
         const result = openrouter.complete(self.route.up, self.req, self.req.arena, request_body, &.{}, deltas, &up_err) catch |err| switch (err) {
             error.Upstream => {
@@ -554,6 +611,8 @@ fn runTool(app: *App, req: *anole.Request, who: auth.Identity, body: ChatRequest
             const edited = try docs.track(req.arena, call.name, args);
             if (edited) |e| if (e.applied == 0) return e.message;
             if (declared(body.client_tools, call.name)) return waitForApp(app, req, who, call, args, sink);
+            if (tools.clientOnly(call.name))
+                return std.fmt.allocPrint(req.arena, "Error: {s} is turned off in the user's app. Carry on without it.", .{call.name});
             try sink.send("tool", .{ .id = call.id, .name = call.name, .arguments = args });
             return if (edited) |e| e.message else try tool_check.shown(req.arena, call.name, args);
         },
@@ -929,6 +988,28 @@ test buildBody {
     const turn2 = try buildBody(a, "openai/gpt-6.1-sol", .chat, true, msgs[0..1], "5m", "exa", .{});
     const cut = std.mem.indexOf(u8, openai, "\"role\":\"user\"").?;
     try std.testing.expectEqualStrings(openai[0..cut], turn2[0..cut]);
+}
+
+test "buildBody: effort and reasoning passback on assistant steps" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const msgs = [_]Msg{
+        .{ .role = "user", .content = "hi" },
+        .{ .role = "assistant", .raw_tool_calls = "[]", .reasoning = "plain", .reasoning_details = "[{\"type\":\"reasoning.text\",\"text\":\"r\",\"signature\":\"s\"}]" },
+        .{ .role = "assistant", .content = "ok", .reasoning = "only text" },
+    };
+    const body = try buildBody(a, "deepseek/deepseek-v4-pro", .chat, true, &msgs, "5m", "exa", .{ .effort = Effort.max.wire("openrouter") });
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"reasoning\":{\"effort\":\"xhigh\"}") != null);
+    // Structured details win over the plain text; plain text is the fallback.
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"r\",\"signature\":\"s\"}]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"reasoning\":\"plain\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"reasoning\":\"only text\"") != null);
+    try std.testing.expectEqualStrings("max", Effort.max.wire("anthropic"));
+    try std.testing.expectEqualStrings("low", Effort.low.wire("openrouter"));
+    // No effort: no reasoning object.
+    const plain = try buildBody(a, "deepseek/deepseek-v4-pro", .chat, true, msgs[0..1], "5m", "exa", .{});
+    try std.testing.expect(std.mem.indexOf(u8, plain, "effort") == null);
 }
 
 test readableText {
