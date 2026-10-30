@@ -9,6 +9,7 @@ mixin _SessionBuiltins on Notifier<CodeSessionState> {
   // From the controller.
   String get sessionId;
   List<HarnessEvent> get _events;
+  HarnessSession? get _harnessSession;
   int get _asideIds;
   set _asideIds(int value);
   void _putAside(Aside aside);
@@ -175,9 +176,15 @@ mixin _SessionBuiltins on Notifier<CodeSessionState> {
     _judging = true;
     state = state.copyWith(goal: start.copyWith(status: GoalStatus.checking));
     try {
-      final model = await _sideModel(info);
-      if (model == null) return _pauseGoal('Goals need a real session: the demo has no model to check with.');
-      final reply = await model(goalJudgeRequest(record: renderSessionRecord(_events), objective: start.objective));
+      final String reply;
+      if (_harnessSession case final AsksAside self) {
+        // The session's own model judges from its cached history.
+        reply = await self.askAside(goalSelfCheck(start.objective));
+      } else {
+        final model = await _sideModel(info);
+        if (model == null) return _pauseGoal('Goals need a real session: the demo has no model to check with.');
+        reply = await model(goalJudgeRequest(record: renderSessionRecord(_events), objective: start.objective));
+      }
       if (!ref.mounted) return;
       final goal = state.goal;
       // Cleared or replaced while the judge was reading.

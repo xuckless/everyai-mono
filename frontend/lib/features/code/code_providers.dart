@@ -685,6 +685,10 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
   final String sessionId;
 
   HarnessSession? _session;
+
+  /// The open harness session, for the built-ins mixed in.
+  @override
+  HarnessSession? get _harnessSession => _session;
   StreamSubscription<HarnessEvent>? _sub;
   var _builder = TranscriptBuilder();
 

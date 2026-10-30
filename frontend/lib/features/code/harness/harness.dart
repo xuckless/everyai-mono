@@ -144,6 +144,13 @@ abstract interface class HarnessSession {
   Future<void> close();
 }
 
+/// A session that can answer a question from its own model and history
+/// without it becoming part of the conversation (the EveryAI harness): the
+/// goal check reads the session with the cached prefix instead of a summary.
+abstract interface class AsksAside {
+  Future<String> askAside(String question, {int maxTokens = 800});
+}
+
 /// Starts and reopens sessions on some agent server.
 abstract interface class Harness {
   Future<HarnessSession> start(SessionSpec spec);

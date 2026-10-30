@@ -138,6 +138,20 @@ List<Map<String, Object?>> goalJudgeRequest({required String record, required St
   },
 ];
 
+/// The goal check put to the session's own model (see `AsksAside`): it has
+/// the whole conversation, so it judges from what actually happened.
+String goalSelfCheck(String objective) =>
+    '<goal-check>\nStop working for a moment and check this goal against what this conversation shows was actually '
+    'done and verified:\n<goal>\n${objective.trim()}\n</goal>\n\n$_judgeRules\n</goal-check>';
+
+const _judgeRules = '''
+- The goal is met only when the conversation shows it: the change is made and, where the goal implies it, checked (tests or a build ran and passed, the output was looked at). Saying it is done is not enough on its own; a claim without evidence does not count.
+- If part of the goal is missing, unverified or failing, it is not met.
+- When it isn't met, say in one or two sentences what to do next, concretely (which test fails, which part is missing).
+
+Reply with only a JSON object, no prose around it and no tool calls:
+{"met": true or false, "reason": "one sentence on why", "next": "what to do next, or an empty string when met"}''';
+
 /// Written for this app: a strict, evidence-based check that answers in JSON.
 const _judgeSystem = '''
 You check whether a coding agent has reached a goal a developer set for it. You get the record of the agent's session (the developer's messages, the agent's replies, its tool calls and shortened results) and the goal.

@@ -89,7 +89,7 @@ const maxStepsPerRun = 400;
 
 /// One conversation: its history (OpenAI-style messages), its events, and the
 /// loop that calls the model and runs tools.
-final class EveryAISession implements HarnessSession {
+final class EveryAISession implements HarnessSession, AsksAside {
   EveryAISession._(this.id, this._spec, this._dir, http.Client? client)
     : _gateway = GatewayClient(baseUrl: _spec.llmBaseUrl, apiKey: _spec.llmApiKey, client: client),
       _shell = SessionShell(root: _spec.workingDir, sessionTag: _spec.sessionTag, scratchDir: '${_dir.path}/shell') {
@@ -477,6 +477,24 @@ final class EveryAISession implements HarnessSession {
       await c.close();
     }
     _listeners.clear();
+  }
+
+  @override
+  Future<String> askAside(String question, {int maxTokens = 800}) async {
+    final reply = await _gateway.complete(
+      model: _spec.model,
+      messages: [
+        ..._outgoing(),
+        {'role': 'user', 'content': question},
+      ],
+      // The same tools as the conversation keep the cached prefix; none may run.
+      tools: _toolSpecs,
+      toolChoice: 'none',
+      sessionTag: _spec.sessionTag,
+      effort: _spec.effort,
+      maxTokens: maxTokens,
+    );
+    return reply.text;
   }
 
   /// Kills what the session's shell is still running.
