@@ -23,6 +23,7 @@ import 'harness/fake_harness.dart';
 import 'harness/harness.dart';
 import 'harness/openhands_harness.dart';
 import 'permissions_providers.dart';
+import 'settings/context_files.dart';
 import 'settings/settings.dart';
 import 'sidecar/sidecar.dart';
 import 'uploads/uploads.dart';
@@ -204,6 +205,8 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     final harness = await harnessFor(ref, project.path);
     // Settings and commit style come from the main checkout (local settings aren't in worktrees).
     final agentPrompt = demo ? null : await agentPromptFor(project.path);
+    // AGENTS.md and friends from the project folder up to the repository root (OpenHands doesn't load them).
+    final context = demo ? const <ContextFile>[] : await _startContext(workingDir, project.path);
     // The scripted demo approves client tools like the old path does.
     final hold = heldAnswers && !demo;
     final live = await harness.start(
@@ -219,7 +222,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         vision: _sees(ref, model),
         maxInputTokens: ref.read(modelCatalogProvider)[ModelId(model)]?.contextLength,
         persona: agentPrompt?.persona,
-        promptSuffix: agentPrompt?.suffix,
+        promptSuffix: agentPrompt == null ? null : withProjectContext(agentPrompt.suffix, context),
         effort: effort,
         holdClientTools: hold,
       ),
@@ -242,6 +245,14 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     state = [info, ...state];
     _save();
     return info;
+  }
+
+  static Future<List<ContextFile>> _startContext(String workingDir, String projectDir) async {
+    try {
+      return await (await ProjectContext.forSession(workingDir: workingDir, projectDir: projectDir)).atStart();
+    } on Object {
+      return const [];
+    }
   }
 
   /// A worktree for the session when [project] is a git repository.
@@ -344,6 +355,9 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
   /// Permission rules from the project's `settings.json` files.
   PermissionRules _settingsRules = PermissionRules.none;
 
+  /// The project's instruction files; nested ones go out with the next message.
+  ProjectContext? _context;
+
   @override
   CodeSessionState build() {
     final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
@@ -362,11 +376,28 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
       final session = _session =
           live[sessionId] ?? await (await harnessFor(ref, info.workingDir)).attach(info.conversationId);
       live[sessionId] = session;
+      await _openContext(info);
       _sub = session.events.listen(_onEvent);
       state = state.copyWith(connected: true);
       await _loadSettingsRules(info);
     } on Object catch (e) {
       state = state.copyWith(error: '$e');
+    }
+  }
+
+  /// Before the history replays, so files it shows delivered aren't sent again.
+  Future<void> _openContext(CodeSessionInfo info) async {
+    if (isDemoPath(info.workingDir)) return;
+    final project = ref.read(codeProjectsProvider).where((p) => p.id == info.projectId).firstOrNull;
+    try {
+      final c = await ProjectContext.forSession(
+        workingDir: info.workingDir,
+        projectDir: project?.path ?? info.workingDir,
+      );
+      await c.atStart();
+      _context = c;
+    } on Object {
+      // Without it, nested instruction files just aren't delivered.
     }
   }
 
@@ -403,6 +434,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     // OpenHands reports `stats` after every model call; the cost lives in our ledger.
     if (event is StateChange) ref.read(codeUsageProvider(sessionId).notifier).refreshSoon();
     final wasRunning = state.transcript.running;
+    _trackContext(event);
     _builder.add(event);
     final transcript = _builder.snapshot;
     state = state.copyWith(transcript: transcript);
@@ -420,6 +452,20 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
       final [next, ...rest] = state.queued;
       state = state.copyWith(queued: rest);
       unawaited(_checkpoint().then((_) => _sendNow(next)));
+    }
+  }
+
+  void _trackContext(HarnessEvent event) {
+    final c = _context;
+    if (c == null) return;
+    switch (event) {
+      case ActionCall():
+        unawaited(c.touch(event).catchError((Object _) {}));
+      case ChatMessage(fromUser: true, :final text):
+        final (paths, _) = splitContextNotes(splitModeNote(text).$2);
+        if (paths.isNotEmpty) c.delivered(paths);
+      default:
+        break;
     }
   }
 
@@ -476,9 +522,12 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
   }
 
   /// [text] with a mode note: the full one after a mode change, else a short reminder.
+  /// Nested instruction files found since the last message go first, after the mode note.
   String _noted(String text) {
     final told = state.transcript.notedMode;
-    return modeNote(state.mode, text, full: told != state.mode, from: told);
+    final context = _context?.takeNote() ?? '';
+    final body = context.isEmpty ? text : (text.isEmpty ? context : '$context\n\n$text');
+    return modeNote(state.mode, body, full: told != state.mode, from: told);
   }
 
   Future<Outgoing?> _outgoing(String text, List<Attachment> files) async {

@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../harness/events.dart';
+import '../settings/context_files.dart' show splitContextNotes;
 import 'agent_mode.dart';
 import 'questions.dart';
 
@@ -252,7 +253,8 @@ final class TranscriptBuilder {
       case StateChange():
         break;
       case ChatMessage(fromUser: true, text: final raw):
-        final (mode, text) = splitModeNote(raw);
+        final (mode, noted) = splitModeNote(raw);
+        final (_, text) = splitContextNotes(noted);
         final changed = mode != null && mode != _notedMode;
         if (mode != null) _notedMode = mode;
         if (_answer(text)) return;
