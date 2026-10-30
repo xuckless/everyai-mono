@@ -26,6 +26,7 @@ final class ChatRequest {
     this.attachments = const [],
     this.clientTools = const {},
     this.memory,
+    this.effort,
   });
 
   final ModelSpec model;
@@ -50,6 +51,9 @@ final class ChatRequest {
 
   /// The chat's frozen memory block (the same text every turn), or null.
   final String? memory;
+
+  /// Thinking effort (`low|medium|high|max`); null leaves the model's default.
+  final String? effort;
 }
 
 /// Incremental output of one assistant turn.
@@ -211,6 +215,7 @@ final class SseTransport implements ChatTransport {
       'tools_enabled': request.toolsEnabled,
       'session': ?request.conversationId,
       'memory': ?request.memory,
+      'effort': ?request.effort,
       if (request.clientTools.isNotEmpty) 'client_tools': request.clientTools.toList(growable: false),
       if (request.toolsEnabled && images.isNotEmpty)
         'images': imageRefsJson(images, inMessages: uploadsInMessages(request.history, pending: request.attachments)),

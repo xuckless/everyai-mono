@@ -87,6 +87,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       onModeChanged: controller.setMode,
       toolsEnabled: ref.watch(provider.select((s) => s.toolsEnabled)),
       onToolsChanged: controller.setToolsEnabled,
+      effort: ref.watch(provider.select((s) => s.effort)),
+      onEffortChanged: controller.setEffort,
       meter: UsageMeter(totals: usage, contextWindow: model.contextLength, modelName: model.name),
     );
 

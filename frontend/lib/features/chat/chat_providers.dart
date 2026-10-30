@@ -18,6 +18,7 @@ import 'data/chat_transport.dart';
 import 'domain/ask_user.dart';
 import 'domain/chat_session.dart';
 import 'domain/message.dart';
+import 'domain/reasoning_effort.dart';
 
 final chatRepositoryProvider = Provider<ChatRepository>((ref) {
   final db = ref.watch(databaseProvider);
@@ -79,7 +80,11 @@ final class ChatController extends Notifier<ChatSessionState> {
       _turn?.cancel();
     });
     unawaited(_load());
-    return ChatSessionState(conversationId: conversationId, model: ref.read(defaultModelProvider));
+    return ChatSessionState(
+      conversationId: conversationId,
+      model: ref.read(defaultModelProvider),
+      effort: ReasoningEffort.parse(ref.read(preferencesProvider)[ReasoningEffort.prefKey(conversationId)]),
+    );
   }
 
   Future<void> _load() async {
@@ -124,6 +129,12 @@ final class ChatController extends Notifier<ChatSessionState> {
   void setMode(ChatMode mode) => state = state.copyWith(mode: mode);
 
   void setToolsEnabled(bool enabled) => state = state.copyWith(toolsEnabled: enabled);
+
+  /// Sets the conversation's thinking effort, kept across restarts.
+  void setEffort(ReasoningEffort effort) {
+    state = state.copyWith(effort: effort);
+    ref.read(preferencesProvider)[ReasoningEffort.prefKey(conversationId)] = effort.wire;
+  }
 
   /// Idle/Failed → Awaiting: drops the last answer and asks again, optionally
   /// with a different model ("Retry with…").
@@ -368,6 +379,7 @@ final class ChatController extends Notifier<ChatSessionState> {
             attachments: attachments,
             clientTools: state.toolsEnabled ? ref.read(chatClientToolsProvider) : const {},
             memory: ref.read(memoryProvider.notifier).snapshotFor(conversationId),
+            effort: state.effort.wireFor(model),
           ),
           cancel: cancel.future,
         );

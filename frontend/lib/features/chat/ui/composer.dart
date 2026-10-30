@@ -16,6 +16,7 @@ import '../../models/domain/model_catalog.dart';
 import '../../models/models_providers.dart';
 import '../../models/ui/model_avatar.dart';
 import '../domain/message.dart';
+import '../domain/reasoning_effort.dart';
 import 'model_picker.dart';
 
 /// The message box: text on top, a tool bar underneath with
@@ -39,6 +40,8 @@ class Composer extends ConsumerStatefulWidget {
     this.minLines = 1,
     this.meter,
     this.replying = false,
+    this.effort = ReasoningEffort.auto,
+    this.onEffortChanged,
   });
 
   final bool busy;
@@ -63,6 +66,11 @@ class Composer extends ConsumerStatefulWidget {
 
   /// Tokens, cost and context ring, beside the model picker.
   final Widget? meter;
+
+  /// Thinking effort; the menu shows for reasoning models when
+  /// [onEffortChanged] is set.
+  final ReasoningEffort effort;
+  final ValueChanged<ReasoningEffort>? onEffortChanged;
 
   @override
   ConsumerState<Composer> createState() => ComposerState();
@@ -276,6 +284,8 @@ class ComposerState extends ConsumerState<Composer> {
                           ),
                         ),
                       ),
+                      if (widget.model.reasoning && widget.onEffortChanged != null)
+                        EffortMenu(effort: widget.effort, onChanged: widget.onEffortChanged!),
                       ?widget.meter,
                       const SizedBox(width: 6),
                       _SendButton(busy: _showsStop, enabled: _canSend, onSend: _send, onStop: widget.onStop),
@@ -365,11 +375,6 @@ class _ToolsButton extends StatelessWidget {
                       onToolsChanged!(!toolsEnabled);
                     },
             ),
-            PopoverRow(
-              leading: const BrandGlyph('extended-thinking', size: 18),
-              title: 'Extended thinking',
-              subtitle: 'Coming soon',
-            ),
             Container(height: 1, margin: const EdgeInsets.symmetric(vertical: 6), color: theme.border),
             PopoverRow(
               leading: const BrandGlyph('connectors', size: 18),
@@ -380,6 +385,70 @@ class _ToolsButton extends StatelessWidget {
         ),
       ),
       child: _RoundIcon(icon: EveryIcon.add, tooltip: 'Add files and tools'),
+    );
+  }
+}
+
+/// Thinking effort for reasoning models: a small pill beside the model chip
+/// that opens a popover of levels.
+class EffortMenu extends StatelessWidget {
+  const EffortMenu({super.key, required this.effort, required this.onChanged});
+
+  final ReasoningEffort effort;
+  final ValueChanged<ReasoningEffort> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return AnchoredPopover(
+      width: 260,
+      builder: (context, close) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 4, 14, 6),
+              child: Text(
+                'Thinking effort',
+                style: TextStyle(color: theme.textMuted, fontSize: 12, fontWeight: FontWeight.w600),
+              ),
+            ),
+            for (final e in ReasoningEffort.values)
+              PopoverRow(
+                title: e.label,
+                subtitle: e.description,
+                selected: e == effort,
+                trailing: e == effort ? AdaptiveIcon(EveryIcon.check, size: 14, color: theme.accent) : null,
+                onTap: () {
+                  close();
+                  onChanged(e);
+                },
+              ),
+          ],
+        ),
+      ),
+      child: Semantics(
+        button: true,
+        label: 'Thinking effort: ${effort.label}',
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              BrandGlyph('extended-thinking', size: 16, active: effort != ReasoningEffort.auto),
+              if (effort != ReasoningEffort.auto) ...[
+                const SizedBox(width: 4),
+                Text(
+                  effort.label,
+                  style: TextStyle(color: theme.textMuted, fontSize: 12.5, fontWeight: FontWeight.w500),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

@@ -5,6 +5,7 @@ import '../../models/domain/model_catalog.dart';
 import '../../usage/usage_totals.dart';
 import '../data/chat_transport.dart' show ToolRunStatus, ToolWait;
 import 'message.dart';
+import 'reasoning_effort.dart';
 
 /// Where a chat session is in its lifecycle. Transitions:
 ///
@@ -72,6 +73,7 @@ final class ChatSessionState {
     this.pendingTools = const [],
     this.toolsEnabled = true,
     this.liveUsage = UsageTotals.zero,
+    this.effort = ReasoningEffort.auto,
   });
 
   final String conversationId;
@@ -119,6 +121,9 @@ final class ChatSessionState {
   /// Usage of the turn in flight (finished turns keep theirs in a [UsagePart]).
   final UsageTotals liveUsage;
 
+  /// Thinking effort for reasoning models (the composer's thinking menu).
+  final ReasoningEffort effort;
+
   /// The whole conversation so far, for the composer's meter.
   UsageTotals get usage => messages.fold(UsageTotals.zero, (sum, m) => sum + m.usage) + liveUsage;
 
@@ -139,6 +144,7 @@ final class ChatSessionState {
     List<ToolWait>? pendingTools,
     bool? toolsEnabled,
     UsageTotals? liveUsage,
+    ReasoningEffort? effort,
   }) => ChatSessionState(
     conversationId: conversationId,
     title: title ?? this.title,
@@ -155,6 +161,7 @@ final class ChatSessionState {
     pendingTools: pendingTools ?? this.pendingTools,
     toolsEnabled: toolsEnabled ?? this.toolsEnabled,
     liveUsage: liveUsage ?? this.liveUsage,
+    effort: effort ?? this.effort,
   );
 }
 
