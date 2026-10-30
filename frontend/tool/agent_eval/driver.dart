@@ -209,6 +209,8 @@ final class EvalRun {
           for (final (i, s) in steps.indexed) {
             out.writeln('   ${i + 1}. ${cut(s.title, 140)}${s.files.isEmpty ? '' : '  (${s.files.join(', ')})'}');
           }
+        case FilesDelivered(:final files):
+          out.writeln('FILES: ${files.map((f) => f.path).join(', ')}');
         case NoticeItem(:final message):
           out.writeln('NOTICE: ${cut(message)}');
       }
