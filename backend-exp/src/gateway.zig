@@ -190,7 +190,7 @@ const Call = struct {
             var held: Held = .{};
             const current = up;
             defer current.close();
-            try held.read(arena, up.reader, out, forward_text);
+            try held.read(arena, self.req.io, up.reader, out, forward_text, keepalive_every);
             if (held.usage) |u| try self.meter(u);
 
             const step = try self.next(held.finish, held.tools, held.text.items, if (held.usage) |u| u.completion_tokens else 0);
@@ -213,6 +213,11 @@ const Call = struct {
     }
 };
 
+/// How long a stream may go without sending anything while chunks are held
+/// back (a long tool call): idle clients and proxies time out well before
+/// a big file is generated.
+const keepalive_every: std.Io.Duration = .fromSeconds(15);
+
 /// One streamed attempt's held-back chunks.
 const Held = struct {
     chunks: std.ArrayList(struct { raw: []const u8, text: []const u8 }) = .empty,
@@ -225,7 +230,11 @@ const Held = struct {
     id: []const u8 = "",
     model: []const u8 = "",
 
-    fn read(self: *Held, arena: std.mem.Allocator, reader: *std.Io.Reader, out: *std.Io.Writer, forward_text: bool) !void {
+    /// Reads one attempt, forwarding text when `forward_text` and holding
+    /// the rest. While holding, an SSE comment goes out every `beat_every`.
+    fn read(self: *Held, arena: std.mem.Allocator, io: std.Io, reader: *std.Io.Reader, out: *std.Io.Writer, forward_text: bool, beat_every: std.Io.Duration) !void {
+        const Ts = std.Io.Clock.Timestamp;
+        var last_sent = Ts.now(io, .awake);
         var parser = sse.Parser.init(arena, reader);
         defer parser.deinit();
         var scratch: std.heap.ArenaAllocator = .init(arena);
@@ -273,8 +282,15 @@ const Held = struct {
             try self.text.appendSlice(arena, text);
             if (hold) {
                 try self.chunks.append(arena, .{ .raw = try arena.dupe(u8, ev.data), .text = try arena.dupe(u8, text) });
+                const now = Ts.now(io, .awake);
+                if (now.compare(.gte, last_sent.addDuration(.{ .raw = beat_every, .clock = .awake }))) {
+                    try out.writeAll(": keepalive\n\n");
+                    try out.flush();
+                    last_sent = now;
+                }
             } else if (forward_text) {
                 try writeData(out, ev.data);
+                last_sent = Ts.now(io, .awake);
             }
         }
     }
@@ -432,6 +448,41 @@ test addBreakpoints {
     const out = try std.json.Stringify.valueAlloc(a, v, .{});
     try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, out, "cache_control"));
     try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, out, "\"ttl\":\"1h\""));
+}
+
+test "held tool-call chunks keep the stream alive with comments, then go out whole" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const up =
+        \\data: {"id":"r","model":"m","choices":[{"index":0,"delta":{"content":"hi"}}]}
+        \\
+        \\data: {"id":"r","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"a"}}]}}]}
+        \\
+        \\data: {"id":"r","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\":1}"}}]}}]}
+        \\
+        \\data: [DONE]
+        \\
+        \\
+    ;
+    var reader: std.Io.Reader = .fixed(up);
+    var out: std.Io.Writer.Allocating = .init(a);
+    var held: Held = .{};
+    try held.read(a, std.testing.io, &reader, &out.writer, true, .fromMilliseconds(0));
+    const sent = out.written();
+    // The text went through; the tool call is held, with a keepalive per held chunk.
+    try std.testing.expect(std.mem.indexOf(u8, sent, "\"content\":\"hi\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sent, "tool_calls") == null);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, sent, ": keepalive\n\n"));
+    try std.testing.expectEqual(@as(usize, 2), held.chunks.items.len);
+    try std.testing.expect(held.tools);
+
+    // With a long interval nothing extra is sent.
+    var reader2: std.Io.Reader = .fixed(up);
+    var out2: std.Io.Writer.Allocating = .init(a);
+    var held2: Held = .{};
+    try held2.read(a, std.testing.io, &reader2, &out2.writer, true, .fromSeconds(60));
+    try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, out2.written(), "keepalive"));
 }
 
 test "the effort header fills in reasoning.effort when the body has none" {
