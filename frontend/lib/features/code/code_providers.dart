@@ -106,6 +106,52 @@ final everyaiHarnessProvider = Provider<Harness>(
   (ref) => everyAIHarness(dataDir: GitService.dataDir, gatewayKey: () => gatewayKey(ref)),
 );
 
+/// The EveryAI harness served to paired devices (see `serveAsAgentServer`):
+/// a session a device starts gets this host's full setup for the project
+/// (persona, rules, context files, skills), which the device can't know.
+final everyaiAgentServerProvider = FutureProvider<({Uri baseUrl, String key})>((ref) {
+  return serveAsAgentServer(
+    ref.read(everyaiHarnessProvider),
+    enrich: (device) async {
+      final full = await ref
+          .read(codeSessionsProvider.notifier)
+          .specFor(
+            sessionId: device.sessionTag,
+            sessionTag: device.sessionTag,
+            projectDir: device.workingDir,
+            workingDir: device.workingDir,
+            model: device.model,
+            mode: device.mode,
+            effort: device.effort,
+            holdClientTools: true,
+            everyai: true,
+            clientTools: device.clientTools,
+          );
+      return SessionSpec(
+        workingDir: device.workingDir,
+        model: device.model,
+        mode: device.mode,
+        llmBaseUrl: device.llmBaseUrl,
+        llmApiKey: device.llmApiKey,
+        sessionTag: device.sessionTag,
+        initialMessage: device.initialMessage,
+        initialImages: device.initialImages,
+        runInitial: device.runInitial,
+        maxInputTokens: device.maxInputTokens ?? full.maxInputTokens,
+        maxOutputTokens: device.maxOutputTokens,
+        vision: device.vision,
+        persona: full.persona,
+        promptSuffix: full.promptSuffix,
+        effort: device.effort,
+        holdClientTools: true,
+        skills: full.skills,
+        clientTools: device.clientTools,
+        autoCompactAt: full.autoCompactAt,
+      );
+    },
+  );
+});
+
 /// The harness new Code sessions start on (the agent menu's Harness page).
 final codeHarnessProvider = NotifierProvider<CodeHarnessChoice, CodeHarnessKind>(CodeHarnessChoice.new);
 

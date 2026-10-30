@@ -5,7 +5,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/platform/platform_kind.dart';
 import '../../core/providers.dart';
-import '../code/code_providers.dart' show codeProjectsProvider, codeSessionsProvider, isDemoPath, sidecarProvider;
+import '../code/code_providers.dart'
+    show
+        codeHarnessProvider,
+        codeProjectsProvider,
+        codeSessionsProvider,
+        everyaiAgentServerProvider,
+        isDemoPath,
+        sidecarProvider;
+import '../code/domain/agent_menu.dart' show CodeHarnessKind;
 import '../auth/data/token_store.dart' show tokenStoreProvider;
 import '../code/gateway_key.dart' show secretStoreProvider;
 import 'data/host_bridge.dart';
@@ -177,7 +185,12 @@ final class RemoteHosting extends Notifier<RemoteHostingState> {
         identity: identity,
         hostId: host.id,
         send: send,
+        // Devices get the harness this host starts sessions on.
         locate: () async {
+          if (ref.read(codeHarnessProvider) == CodeHarnessKind.everyai) {
+            final served = await ref.read(everyaiAgentServerProvider.future);
+            return (served.baseUrl, served.key);
+          }
           final e = await ref.read(sidecarProvider).endpoint();
           return (e.baseUrl, e.sessionApiKey);
         },
