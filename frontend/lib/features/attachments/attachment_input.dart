@@ -1,6 +1,7 @@
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:pasteboard/pasteboard.dart';
 import 'package:uuid/uuid.dart';
@@ -68,10 +69,13 @@ Future<List<Attachment>> readAttachments(
 }
 
 /// Files or an image on the system clipboard, as files ready for [readAttachments]. Empty when the clipboard
-/// holds only text (or nothing). The readers are injectable for tests.
+/// holds text (or nothing): copied cells or rich text often carry a picture of themselves too, and the text is what
+/// was meant. Copied files still win, though Finder puts their names on the clipboard as text. The readers are
+/// injectable for tests.
 Future<List<XFile>> clipboardFiles({
   Future<List<String>> Function()? readFiles,
   Future<Uint8List?> Function()? readImage,
+  Future<String?> Function()? readText,
 }) async {
   try {
     final paths = await (readFiles ?? (kIsWeb ? () async => <String>[] : Pasteboard.files))();
@@ -81,6 +85,8 @@ Future<List<XFile>> clipboardFiles({
         if (!p.contains('://')) p,
     ];
     if (real.isNotEmpty) return [for (final p in real) XFile(p)];
+    final text = await (readText ?? _clipboardText)();
+    if (text != null && text.trim().isNotEmpty) return const [];
     final image = await (readImage ?? (() => Pasteboard.image))();
     if (image == null || image.isEmpty) return const [];
     final png = image.length > 4 && image[0] == 0x89 && image[1] == 0x50;
@@ -93,6 +99,8 @@ Future<List<XFile>> clipboardFiles({
     return const [];
   }
 }
+
+Future<String?> _clipboardText() async => (await Clipboard.getData(Clipboard.kTextPlain))?.text;
 
 /// Takes over paste (Cmd/Ctrl+V and the Edit menu) in the text field below it: files and images on the clipboard
 /// become attachments, anything else pastes as text as before.

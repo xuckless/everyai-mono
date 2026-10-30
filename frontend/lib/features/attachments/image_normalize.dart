@@ -21,20 +21,27 @@ Future<({Uint8List bytes, String extension})?> normalizeImage(Uint8List bytes, S
   final (bytes, _) = args;
   final decoded = img.decodeImage(bytes);
   if (decoded == null) return null;
-  var image = decoded;
-  final longest = image.width > image.height ? image.width : image.height;
-  if (longest > maxImageEdge) {
-    image = img.copyResize(
-      image,
-      width: image.width >= image.height ? maxImageEdge : null,
-      height: image.height > image.width ? maxImageEdge : null,
-      interpolation: img.Interpolation.average,
-    );
-  }
+  final image = uprightWithin(decoded, maxImageEdge);
   final alpha = image.hasAlpha && _usesAlpha(image);
   final out = alpha ? img.encodePng(image) : img.encodeJpg(image, quality: 85);
   if (out.length >= bytes.length) return null;
   return (bytes: Uint8List.fromList(out), extension: alpha ? 'png' : 'jpg');
+}
+
+/// [image] turned upright (EXIF orientation) and scaled down to at most [edge] on its long side. Upright first, so
+/// the long side is measured as shown: the JPEG decoder already does this, TIFF and others keep the tag, and resizing
+/// would bake the turn in after picking the wrong axis.
+@visibleForTesting
+img.Image uprightWithin(img.Image image, int edge) {
+  if (image.exif.imageIfd.hasOrientation && image.exif.imageIfd.orientation != 1) image = img.bakeOrientation(image);
+  final longest = image.width > image.height ? image.width : image.height;
+  if (longest <= edge) return image;
+  return img.copyResize(
+    image,
+    width: image.width >= image.height ? edge : null,
+    height: image.height > image.width ? edge : null,
+    interpolation: img.Interpolation.average,
+  );
 }
 
 bool _usesAlpha(img.Image image) {

@@ -23,6 +23,7 @@ void main() {
       final files = await clipboardFiles(
         readFiles: () async => ['/tmp/a.pdf', 'content://x/1'],
         readImage: () async => Uint8List.fromList([0x89, 0x50, 1, 2, 3, 4]),
+        readText: () async => 'a.pdf',
       );
       expect(files.map((f) => f.path), ['/tmp/a.pdf']);
     });
@@ -31,19 +32,41 @@ void main() {
       final png = await clipboardFiles(
         readFiles: () async => [],
         readImage: () async => Uint8List.fromList([0x89, 0x50, 0x4e, 0x47, 0, 0]),
+        readText: () async => null,
       );
       expect((png.single.name, png.single.mimeType), ('Pasted image.png', 'image/png'));
       final jpg = await clipboardFiles(
         readFiles: () async => [],
         readImage: () async => Uint8List.fromList([0xFF, 0xD8, 0xFF, 0xE0, 0]),
+        readText: () async => '',
       );
       expect(jpg.single.name, 'Pasted image.jpg');
     });
 
     test('text-only or failing clipboards give nothing', () async {
-      expect(await clipboardFiles(readFiles: () async => [], readImage: () async => null), isEmpty);
-      expect(await clipboardFiles(readFiles: () async => [], readImage: () async => Uint8List(0)), isEmpty);
-      expect(await clipboardFiles(readFiles: () async => throw StateError('no'), readImage: () async => null), isEmpty);
+      Future<String?> none() async => null;
+      expect(await clipboardFiles(readFiles: () async => [], readImage: () async => null, readText: none), isEmpty);
+      expect(
+        await clipboardFiles(readFiles: () async => [], readImage: () async => Uint8List(0), readText: none),
+        isEmpty,
+      );
+      expect(
+        await clipboardFiles(
+          readFiles: () async => throw StateError('no'),
+          readImage: () async => null,
+          readText: none,
+        ),
+        isEmpty,
+      );
+    });
+
+    test('text with a picture of itself (copied cells, rich text) pastes as text', () async {
+      final files = await clipboardFiles(
+        readFiles: () async => [],
+        readImage: () async => Uint8List.fromList([0x89, 0x50, 0x4e, 0x47, 0, 0]),
+        readText: () async => 'A1\tB1\nA2\tB2',
+      );
+      expect(files, isEmpty);
     });
   });
 
@@ -98,6 +121,17 @@ void main() {
 
       expect(await normalizeImage(Uint8List(100), 'png'), isNull);
       expect(await normalizeImage(big, 'gif'), isNull);
+    });
+
+    test('a rotated portrait photo is capped on its long side as shown', () {
+      // Stored landscape (3000x2000) with EXIF orientation 6: shown as a 2000x3000 portrait.
+      final stored = img.Image(width: 3000, height: 2000);
+      stored.exif.imageIfd.orientation = 6;
+      final out = uprightWithin(stored, maxImageEdge);
+      expect((out.width, out.height), (1365, maxImageEdge));
+      // Already upright and small: left alone.
+      final small = img.Image(width: 800, height: 600);
+      expect(identical(uprightWithin(small, maxImageEdge), small), isTrue);
     });
   });
 
