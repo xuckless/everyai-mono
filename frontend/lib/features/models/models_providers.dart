@@ -1,12 +1,73 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:drift/drift.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/db/app_database.dart';
+import '../../core/net/api_client.dart';
 import '../../core/preferences.dart';
 import '../../core/providers.dart';
 import 'domain/model_catalog.dart';
 
-final modelCatalogProvider = Provider<ModelCatalog>((ref) => builtInCatalog);
+/// The model shop: the backend's catalog (`GET /v1/models`). Starts from the
+/// last cached copy (or the built-in featured models on first launch) so it is
+/// always available synchronously, then refreshes when older than an hour.
+final modelCatalogProvider = NotifierProvider<CatalogController, ModelCatalog>(CatalogController.new);
+
+class CatalogController extends Notifier<ModelCatalog> {
+  static const _cacheKey = 'catalog.json';
+  static const _fetchedKey = 'catalog.fetched_at';
+  static const _maxAge = Duration(hours: 1);
+
+  Preferences get _prefs => ref.read(preferencesProvider);
+  ApiClient get _api => ref.read(apiClientProvider);
+
+  /// Whether the last refresh failed (the shop shows a retry banner).
+  bool lastRefreshFailed = false;
+
+  @override
+  ModelCatalog build() {
+    final cached = _prefs[_cacheKey];
+    final catalog = (cached == null ? null : _parse(cached)) ?? builtInCatalog;
+    final fetched = DateTime.tryParse(_prefs[_fetchedKey] ?? '');
+    if (fetched == null || DateTime.now().difference(fetched) > _maxAge || cached == null) {
+      Future.microtask(refresh);
+    }
+    return catalog;
+  }
+
+  Future<void> refresh() async {
+    try {
+      final json = await _api.getJson('v1/models');
+      final catalog = _fromJson(json);
+      if (catalog == null || !ref.mounted) return;
+      lastRefreshFailed = false;
+      state = catalog;
+      _prefs[_cacheKey] = jsonEncode(json);
+      _prefs[_fetchedKey] = DateTime.now().toIso8601String();
+    } on Object {
+      lastRefreshFailed = true; // keep what we have
+    }
+  }
+
+  static ModelCatalog? _parse(String raw) {
+    try {
+      return _fromJson(jsonDecode(raw));
+    } on FormatException {
+      return null;
+    }
+  }
+
+  static ModelCatalog? _fromJson(Object? json) {
+    if (json case {'data': final List<Object?> data}) {
+      final specs = data.map(ModelSpec.fromJson).nonNulls.toList();
+      if (specs.isEmpty) return null;
+      return ModelCatalog(specs, defaultModel: defaultModelId);
+    }
+    return null;
+  }
+}
 
 /// Model new chats start with. Persisted.
 final defaultModelProvider = NotifierProvider<DefaultModel, ModelSpec>(DefaultModel.new);
@@ -27,7 +88,8 @@ final class DefaultModel extends Notifier<ModelSpec> {
   }
 }
 
-/// The user's library: models pinned to the sidebar, in order. Persisted.
+/// "My models": the user's list, shown in the composer's picker, in order.
+/// Persisted locally; first run starts with the featured models.
 final libraryProvider = AsyncNotifierProvider<Library, List<ModelSpec>>(Library.new);
 
 final class Library extends AsyncNotifier<List<ModelSpec>> {
@@ -37,14 +99,12 @@ final class Library extends AsyncNotifier<List<ModelSpec>> {
   Future<List<ModelSpec>> build() async {
     final catalog = ref.watch(modelCatalogProvider);
     final rows = await (_db.select(_db.libraryModels)..orderBy([(r) => OrderingTerm.asc(r.position)])).get();
-    if (rows.isEmpty) {
-      // First run: one flagship per provider that works today.
-      return [
-        for (final p in ModelProvider.values)
-          if (catalog.flagship(p) case final s? when s.available) s,
-      ];
-    }
-    return rows.map((r) => catalog[ModelId(r.modelId)]).nonNulls.toList(growable: false);
+    if (rows.isEmpty) return catalog.all.where((s) => s.featured).toList(growable: false);
+    final seen = <ModelId>{};
+    return [
+      for (final r in rows)
+        if (catalog.resolve(ModelId(r.modelId)) case final s when seen.add(s.id)) s,
+    ];
   }
 
   bool contains(ModelId id) => state.value?.any((s) => s.id == id) ?? false;
@@ -57,10 +117,22 @@ final class Library extends AsyncNotifier<List<ModelSpec>> {
     } else {
       current.removeAt(index);
     }
-    state = AsyncData(List.unmodifiable(current));
+    await _save(current);
+  }
+
+  Future<void> reorder(int from, int to) async {
+    final current = [...?state.value];
+    if (from < 0 || from >= current.length) return;
+    final item = current.removeAt(from);
+    current.insert(to.clamp(0, current.length), item);
+    await _save(current);
+  }
+
+  Future<void> _save(List<ModelSpec> models) async {
+    state = AsyncData(List.unmodifiable(models));
     await _db.transaction(() async {
       await _db.delete(_db.libraryModels).go();
-      for (final (i, s) in current.indexed) {
+      for (final (i, s) in models.indexed) {
         await _db.into(_db.libraryModels).insert(LibraryModelsCompanion.insert(modelId: s.id.value, position: i));
       }
     });

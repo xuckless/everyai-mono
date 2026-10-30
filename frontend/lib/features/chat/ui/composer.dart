@@ -28,6 +28,8 @@ class Composer extends ConsumerStatefulWidget {
     required this.onStop,
     required this.onModelChanged,
     required this.onModeChanged,
+    this.toolsEnabled = true,
+    this.onToolsChanged,
     this.placeholder = 'How can I help you today?',
     this.minLines = 1,
   });
@@ -39,6 +41,10 @@ class Composer extends ConsumerStatefulWidget {
   final VoidCallback onStop;
   final ValueChanged<ModelSpec> onModelChanged;
   final ValueChanged<ChatMode> onModeChanged;
+
+  /// Rich answers: artifacts, diagrams, charts, quizzes, slides, images.
+  final bool toolsEnabled;
+  final ValueChanged<bool>? onToolsChanged;
   final String placeholder;
 
   /// The home screen's composer starts taller.
@@ -189,7 +195,12 @@ class ComposerState extends ConsumerState<Composer> {
               const SizedBox(height: 10),
               Row(
                 children: [
-                  _ToolsButton(mode: widget.mode, onModeChanged: widget.onModeChanged),
+                  _ToolsButton(
+                    mode: widget.mode,
+                    onModeChanged: widget.onModeChanged,
+                    toolsEnabled: widget.toolsEnabled,
+                    onToolsChanged: widget.onToolsChanged,
+                  ),
                   const SizedBox(width: 4),
                   _ModeSelector(mode: widget.mode, onChanged: widget.onModeChanged),
                   const Spacer(),
@@ -209,10 +220,17 @@ class ComposerState extends ConsumerState<Composer> {
 /// `+`: attachments and tools. Attachments and connectors arrive with the agentic
 /// roadmap; entries are visible so the surface is in place.
 class _ToolsButton extends StatelessWidget {
-  const _ToolsButton({required this.mode, required this.onModeChanged});
+  const _ToolsButton({
+    required this.mode,
+    required this.onModeChanged,
+    required this.toolsEnabled,
+    required this.onToolsChanged,
+  });
 
   final ChatMode mode;
   final ValueChanged<ChatMode> onModeChanged;
+  final bool toolsEnabled;
+  final ValueChanged<bool>? onToolsChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -236,6 +254,18 @@ class _ToolsButton extends StatelessWidget {
                 close();
                 onModeChanged(mode == ChatMode.search ? ChatMode.chat : ChatMode.search);
               },
+            ),
+            PopoverRow(
+              leading: icon(EveryIcon.artifacts),
+              title: 'Rich answers',
+              subtitle: 'Documents, diagrams, charts, quizzes, slides',
+              trailing: toolsEnabled ? AdaptiveIcon(EveryIcon.check, size: 14, color: theme.accent) : null,
+              onTap: onToolsChanged == null
+                  ? null
+                  : () {
+                      close();
+                      onToolsChanged!(!toolsEnabled);
+                    },
             ),
             PopoverRow(leading: icon(EveryIcon.spark), title: 'Extended thinking', subtitle: 'Coming soon'),
             Container(height: 1, margin: const EdgeInsets.symmetric(vertical: 6), color: theme.border),

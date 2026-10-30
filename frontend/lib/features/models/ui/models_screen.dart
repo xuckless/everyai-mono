@@ -9,7 +9,32 @@ import '../domain/model_catalog.dart';
 import '../models_providers.dart';
 import 'model_avatar.dart';
 
-/// Every model, grouped by provider, with library membership and default selection.
+enum _Filter {
+  all('All'),
+  mine('My models'),
+  free('Free'),
+  image('Image'),
+  vision('Vision'),
+  tools('Tools'),
+  reasoning('Reasoning');
+
+  const _Filter(this.label);
+  final String label;
+
+  bool test(ModelSpec s, Set<ModelId> mine) => switch (this) {
+    all => true,
+    _Filter.mine => mine.contains(s.id),
+    free => s.free,
+    image => s.output == Modality.image,
+    vision => s.imageInput,
+    tools => s.tools,
+    reasoning => s.reasoning,
+  };
+}
+
+/// The model shop: every model the backend offers, searchable and filterable,
+/// with prices (per million input / output tokens). "Add" puts a model in My
+/// models, the composer's picker list.
 class ModelsScreen extends ConsumerStatefulWidget {
   const ModelsScreen({super.key});
 
@@ -18,88 +43,212 @@ class ModelsScreen extends ConsumerStatefulWidget {
 }
 
 class _ModelsScreenState extends ConsumerState<ModelsScreen> {
-  Modality? _filter;
+  _Filter _filter = _Filter.all;
+  ModelProvider? _provider;
+  String _query = '';
 
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final catalog = ref.watch(modelCatalogProvider);
-    final library = ref.watch(libraryProvider);
+    final library = ref.watch(libraryProvider).value ?? const <ModelSpec>[];
     final defaultModel = ref.watch(defaultModelProvider);
-    final inLibrary = {...?library.value?.map((s) => s.id)};
+    final mine = {for (final s in library) s.id};
+    final q = _query.trim().toLowerCase();
+
+    // Providers with the most models first.
+    final providers = catalog.providers.toList()
+      ..sort((a, b) => catalog.byProvider(b).length.compareTo(catalog.byProvider(a).length));
+
+    final source = _filter == _Filter.mine ? library : catalog.all;
+    final models = source
+        .where(
+          (s) =>
+              _filter.test(s, mine) &&
+              (_provider == null || s.provider == _provider) &&
+              (q.isEmpty ||
+                  s.name.toLowerCase().contains(q) ||
+                  s.id.value.toLowerCase().contains(q) ||
+                  s.provider.company.toLowerCase().contains(q) ||
+                  s.blurb.toLowerCase().contains(q)),
+        )
+        .toList(growable: false);
+
+    final header = <Widget>[
+      AdaptiveTextField(
+        placeholder: 'Search ${catalog.length} models',
+        prefix: AdaptiveIcon(EveryIcon.search, size: 16, color: theme.textMuted),
+        onChanged: (v) => setState(() => _query = v),
+      ),
+      const SizedBox(height: 12),
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          for (final f in _Filter.values)
+            _FilterChip(
+              label: f == _Filter.mine ? '${f.label} (${library.length})' : f.label,
+              selected: _filter == f,
+              onTap: () => setState(() => _filter = f),
+            ),
+        ],
+      ),
+      const SizedBox(height: 8),
+      SizedBox(
+        height: 34,
+        child: ListView(
+          scrollDirection: Axis.horizontal,
+          children: [
+            for (final p in [null, ...providers.take(24)])
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: _FilterChip(
+                  label: p == null ? 'Any provider' : p.company,
+                  leading: p == null ? null : ModelAvatar(p, size: 16),
+                  selected: _provider == p,
+                  subtle: true,
+                  onTap: () => setState(() => _provider = p),
+                ),
+              ),
+          ],
+        ),
+      ),
+      Padding(
+        padding: const EdgeInsets.only(top: 10, bottom: 4),
+        child: Text(
+          '${models.length} models · prices per million input / output tokens',
+          style: TextStyle(color: theme.textMuted, fontSize: 12),
+        ),
+      ),
+    ];
 
     return AdaptivePage(
-      title: 'Models',
-      body: ListView(
+      title: 'Model shop',
+      body: ListView.builder(
         padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
+        itemCount: header.length + models.length,
+        itemBuilder: (context, i) {
+          if (i < header.length) return header[i];
+          final spec = models[i - header.length];
+          return _ModelTile(
+            spec: spec,
+            added: mine.contains(spec.id),
+            isDefault: spec == defaultModel,
+            onToggle: () => ref.read(libraryProvider.notifier).toggle(spec),
+            onMakeDefault: () => ref.read(defaultModelProvider.notifier).set(spec),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _ModelTile extends StatelessWidget {
+  const _ModelTile({
+    required this.spec,
+    required this.added,
+    required this.isDefault,
+    required this.onToggle,
+    required this.onMakeDefault,
+  });
+
+  final ModelSpec spec;
+  final bool added;
+  final bool isDefault;
+  final VoidCallback onToggle;
+  final VoidCallback onMakeDefault;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final meta = [
+      spec.provider.company,
+      if (spec.contextLength > 0) '${spec.contextLabel} context',
+      if (spec.output == Modality.image) 'Image output',
+      if (isDefault) 'Default for new chats',
+    ].join(' · ');
+    return AdaptiveListTile(
+      leading: ModelAvatar(spec.provider, size: 32),
+      title: Row(
         children: [
-          Wrap(
-            spacing: 8,
-            children: [
-              for (final (label, value) in [('All', null), ...Modality.values.map((m) => (m.label, m))])
-                _FilterChip(label: label, selected: _filter == value, onTap: () => setState(() => _filter = value)),
+          Flexible(child: Text(spec.name, overflow: TextOverflow.ellipsis)),
+          if (spec.priceLabel case final price?) ...[const SizedBox(width: 8), _Badge(price, highlight: spec.free)],
+        ],
+      ),
+      subtitle: Text(spec.blurb.isEmpty ? meta : '${spec.blurb}\n$meta', maxLines: 3, overflow: TextOverflow.ellipsis),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AdaptiveMenuButton(
+            tooltip: 'Model options',
+            actions: [
+              MenuAction(label: 'Use for new chats', checked: isDefault, onSelected: onMakeDefault),
+              MenuAction(label: added ? 'Remove from My models' : 'Add to My models', onSelected: onToggle),
             ],
+            child: Padding(
+              padding: const EdgeInsets.all(6),
+              child: AdaptiveIcon(EveryIcon.more, size: 16, color: theme.textMuted),
+            ),
           ),
-          for (final provider in ModelProvider.values)
-            if (catalog.byProvider(provider).where((s) => _filter == null || s.output == _filter).toList()
-                case final specs when specs.isNotEmpty) ...[
-              AdaptiveSectionHeader('${provider.label} · ${provider.company}'),
-              for (final spec in specs)
-                AdaptiveListTile(
-                  leading: Opacity(opacity: spec.available ? 1 : 0.5, child: ModelAvatar(provider, size: 32)),
-                  title: Text(spec.name),
-                  subtitle: Text(
-                    [
-                      if (spec.blurb.isNotEmpty) spec.blurb,
-                      if (spec == defaultModel) 'Default for new chats',
-                      if (!spec.available) 'Not available yet',
-                    ].join(' · '),
-                  ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      AdaptiveMenuButton(
-                        tooltip: 'Model options',
-                        actions: [
-                          MenuAction(
-                            label: 'Use for new chats',
-                            checked: spec == defaultModel,
-                            onSelected: () => ref.read(defaultModelProvider.notifier).set(spec),
-                          ),
-                        ],
-                        child: Padding(
-                          padding: const EdgeInsets.all(6),
-                          child: AdaptiveIcon(EveryIcon.more, size: 16, color: theme.textMuted),
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      Semantics(
-                        label: 'In library',
-                        child: AdaptiveSwitch(
-                          value: inLibrary.contains(spec.id),
-                          onChanged: spec.available ? (_) => ref.read(libraryProvider.notifier).toggle(spec) : null,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-            ],
+          const SizedBox(width: 4),
+          AdaptiveButton(
+            label: added ? 'Added' : 'Add',
+            emphasis: added ? ButtonEmphasis.secondary : ButtonEmphasis.primary,
+            onPressed: onToggle,
+          ),
         ],
       ),
     );
   }
 }
 
-class _FilterChip extends StatelessWidget {
-  const _FilterChip({required this.label, required this.selected, required this.onTap});
+class _Badge extends StatelessWidget {
+  const _Badge(this.text, {this.highlight = false});
 
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
+  final String text;
+  final bool highlight;
 
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: highlight ? theme.accent.withValues(alpha: 0.15) : theme.surfaceRaised,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: highlight ? theme.accent : theme.textMuted,
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          fontFeatures: const [FontFeature.tabularFigures()],
+        ),
+      ),
+    );
+  }
+}
+
+class _FilterChip extends StatelessWidget {
+  const _FilterChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.leading,
+    this.subtle = false,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  final Widget? leading;
+  final bool subtle;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final fg = selected ? theme.onAccent : theme.text;
     return Semantics(
       button: true,
       selected: selected,
@@ -109,18 +258,20 @@ class _FilterChip extends StatelessWidget {
           cursor: SystemMouseCursors.click,
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 150),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+            padding: EdgeInsets.symmetric(horizontal: subtle ? 10 : 14, vertical: subtle ? 6 : 7),
             decoration: BoxDecoration(
               color: selected ? theme.accent : theme.surfaceRaised,
               borderRadius: BorderRadius.circular(999),
             ),
-            child: Text(
-              label,
-              style: TextStyle(
-                color: selected ? theme.onAccent : theme.text,
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-              ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (leading != null) ...[leading!, const SizedBox(width: 6)],
+                Text(
+                  label,
+                  style: TextStyle(color: fg, fontSize: subtle ? 12 : 13, fontWeight: FontWeight.w600),
+                ),
+              ],
             ),
           ),
         ),

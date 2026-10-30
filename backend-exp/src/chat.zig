@@ -349,7 +349,7 @@ fn indexOfIgnoreCase(haystack: []const u8, needle: []const u8) ?usize {
 /// Calls the image model; streams the image to the app as an `image` event.
 fn generateImage(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, id: []const u8, args: std.json.Value, sink: Sink) ![]const u8 {
     const prompt = openrouter.jsonString(args, "prompt") orelse return error.MissingPrompt;
-    const img = try images.generate(app, req, who, session, prompt, openrouter.jsonString(args, "aspect_ratio") orelse "1:1");
+    const img = try images.generate(app, req, who, session, app.cfg.image_model, prompt, openrouter.jsonString(args, "aspect_ratio") orelse "1:1");
     try sink.send("image", .{ .id = id, .mime = img.mime, .data = img.data });
     return "The image was generated and shown to the user.";
 }

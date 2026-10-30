@@ -14,10 +14,11 @@ pub const Image = struct {
     data: []const u8,
 };
 
-pub fn generate(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, prompt: []const u8, aspect_ratio: []const u8) !Image {
-    try billing.preflight(app, req, who.user_id, false);
+pub fn generate(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, model: []const u8, prompt: []const u8, aspect_ratio: []const u8) !Image {
+    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
+    try billing.preflight(app, req, who.user_id, app.catalog.facts(req.io, model).free);
     const body = try std.json.Stringify.valueAlloc(req.arena, .{
-        .model = app.cfg.image_model,
+        .model = model,
         .modalities = .{ "image", "text" },
         .usage = .{ .include = true },
         .image_config = .{ .aspect_ratio = aspect_ratio },
@@ -30,7 +31,7 @@ pub fn generate(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]
     const v = try std.json.parseFromSliceLeaky(std.json.Value, req.arena, raw, .{});
     if (v.object.get("usage")) |u| if (u == .object) {
         const usage = openrouter.parseUsage(u.object);
-        _ = try billing.charge(app, req, who.user_id, .{ .kind = "image", .model = app.cfg.image_model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cost_usd = usage.cost_usd, .session = session });
+        _ = try billing.charge(app, req, who.user_id, .{ .kind = "image", .model = model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cost_usd = usage.cost_usd, .session = session });
     };
     const choices = (v.object.get("choices") orelse return error.NoImage).array.items;
     if (choices.len == 0) return error.NoImage;
@@ -45,6 +46,8 @@ pub fn generate(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]
 }
 
 const ImageRequest = struct {
+    /// An image-output model; the configured IMAGE_MODEL when absent.
+    model: ?[]const u8 = null,
     prompt: []const u8,
     aspect_ratio: []const u8 = "1:1",
 };
@@ -53,7 +56,7 @@ fn create(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const who = try auth.identity(req);
     const body = try req.bind(ImageRequest);
     if (std.mem.trim(u8, body.prompt, " \n\t").len == 0) return res.fail(.unprocessable_entity, "prompt must not be blank");
-    const img = generate(app, req, who, null, body.prompt, body.aspect_ratio) catch |err| switch (err) {
+    const img = generate(app, req, who, null, body.model orelse app.cfg.image_model, body.prompt, body.aspect_ratio) catch |err| switch (err) {
         error.PaymentRequired => {
             res.status = .payment_required;
             return res.json(.{ .message = "You're out of credits.", .code = "out_of_credits" });

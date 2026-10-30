@@ -3,14 +3,8 @@ import 'package:every_ai/features/history/domain/date_buckets.dart';
 import 'package:every_ai/features/models/domain/model_catalog.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-Conversation conv(String id, DateTime updated, {bool pinned = false}) => Conversation(
-      id: id,
-      title: id,
-      model: const ModelId('m'),
-      createdAt: updated,
-      updatedAt: updated,
-      pinned: pinned,
-    );
+Conversation conv(String id, DateTime updated, {bool pinned = false}) =>
+    Conversation(id: id, title: id, model: const ModelId('m'), createdAt: updated, updatedAt: updated, pinned: pinned);
 
 void main() {
   final now = DateTime(2026, 10, 29, 9);

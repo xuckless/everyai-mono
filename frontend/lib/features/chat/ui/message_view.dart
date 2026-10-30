@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -185,28 +187,7 @@ class _AssistantMessage extends ConsumerWidget {
         _LiveBody(conversationId: conversationId)
       else ...[
         for (final part in message.parts)
-          switch (part) {
-            SourcesPart(:final sources) => _SourcesRow(sources),
-            TextPart(:final text) => ChatMarkdown(text, sources: message.sources),
-            ImagePart(:final bytes?) => Padding(
-              padding: const EdgeInsets.symmetric(vertical: 6),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(theme.radius),
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 512, maxHeight: 512),
-                  child: Image.memory(bytes, fit: BoxFit.contain, semanticLabel: 'Generated image'),
-                ),
-              ),
-            ),
-            ImagePart() => Text('[Image unavailable]', style: TextStyle(color: theme.textMuted)),
-            FollowUpsPart(:final questions) =>
-              isLatest ? _FollowUps(questions: questions, conversationId: conversationId) : const SizedBox.shrink(),
-            ToolCallPart(:final toolName) => Text(
-              'Used $toolName',
-              style: TextStyle(color: theme.textMuted, fontSize: 13),
-            ),
-            ArtifactPart(:final title) => Text(title, style: TextStyle(color: theme.accent)),
-          },
+          _PartView(part: part, sources: message.sources, conversationId: conversationId, isLatest: isLatest),
         if (message.status == MessageStatus.cancelled)
           Padding(
             padding: const EdgeInsets.only(top: 4),
@@ -259,11 +240,32 @@ class _LiveBody extends ConsumerWidget {
     final provider = chatSessionProvider(conversationId);
     final text = ref.watch(provider.select((s) => s.streamingText));
     final sources = ref.watch(provider.select((s) => s.liveSources));
+    final parts = ref.watch(provider.select((s) => s.liveParts));
+    final reasoning = ref.watch(provider.select((s) => s.streamingReasoning));
+    final status = ref.watch(provider.select((s) => s.toolStatus));
+    final theme = EveryTheme.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (reasoning.isNotEmpty) _Reasoning(reasoning, live: text.isEmpty && parts.isEmpty),
         if (sources.isNotEmpty) _SourcesRow(sources),
-        if (text.isEmpty) const _TypingIndicator() else ChatMarkdown(text, streaming: true, sources: sources),
+        for (final part in parts)
+          _PartView(part: part, sources: sources, conversationId: conversationId, isLatest: false),
+        if (text.isNotEmpty)
+          ChatMarkdown(text, streaming: true, sources: sources)
+        else if (status.isEmpty && reasoning.isEmpty)
+          const _TypingIndicator(),
+        if (status.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Row(
+              children: [
+                const SizedBox.square(dimension: 12, child: AdaptiveProgress()),
+                const SizedBox(width: 8),
+                Text(status, style: TextStyle(color: theme.textMuted, fontSize: 13)),
+              ],
+            ),
+          ),
       ],
     );
   }
@@ -299,7 +301,7 @@ class _AssistantActions extends ConsumerWidget {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       const PopoverHeader('Retry with'),
-                      for (final spec in library.where((s) => s.available))
+                      for (final spec in library)
                         PopoverRow(
                           leading: ModelAvatar(spec.provider, size: 18),
                           title: spec.name,
@@ -587,4 +589,174 @@ class _TypingIndicatorState extends State<_TypingIndicator> with SingleTickerPro
   }
 
   static double _pulse(double t) => t < 0.5 ? t * 2 : (1 - t) * 2;
+}
+
+/// One finished part of an assistant message.
+class _PartView extends StatelessWidget {
+  const _PartView({required this.part, required this.sources, required this.conversationId, required this.isLatest});
+
+  final MessagePart part;
+  final List<Source> sources;
+  final String conversationId;
+  final bool isLatest;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return switch (part) {
+      SourcesPart(:final sources) => _SourcesRow(sources),
+      TextPart(:final text) => ChatMarkdown(text, sources: sources),
+      ReasoningPart(:final text) => _Reasoning(text),
+      ImagePart(:final bytes?) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(theme.radius),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 512, maxHeight: 512),
+            child: Image.memory(bytes, fit: BoxFit.contain, semanticLabel: 'Generated image'),
+          ),
+        ),
+      ),
+      ImagePart() => Text('[Image unavailable]', style: TextStyle(color: theme.textMuted)),
+      FollowUpsPart(:final questions) =>
+        isLatest ? _FollowUps(questions: questions, conversationId: conversationId) : const SizedBox.shrink(),
+      final ToolCallPart call => _ToolCard(call),
+      ArtifactPart(:final title) => Text(title, style: TextStyle(color: theme.accent)),
+    };
+  }
+}
+
+/// The model's thinking: one line while it streams, expandable afterwards.
+class _Reasoning extends StatefulWidget {
+  const _Reasoning(this.text, {this.live = false});
+
+  final String text;
+  final bool live;
+
+  @override
+  State<_Reasoning> createState() => _ReasoningState();
+}
+
+class _ReasoningState extends State<_Reasoning> {
+  bool _open = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final muted = TextStyle(color: theme.textMuted, fontSize: 13);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          GestureDetector(
+            onTap: () => setState(() => _open = !_open),
+            child: MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    widget.live ? 'Thinking…' : 'Thought process',
+                    style: muted.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(width: 4),
+                  AnimatedRotation(
+                    turns: _open ? 0.5 : 0,
+                    duration: const Duration(milliseconds: 150),
+                    child: AdaptiveIcon(EveryIcon.chevronDown, size: 12, color: theme.textMuted),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (_open)
+            Container(
+              margin: const EdgeInsets.only(top: 6),
+              padding: const EdgeInsets.only(left: 10),
+              decoration: BoxDecoration(
+                border: Border(left: BorderSide(color: theme.border, width: 2)),
+              ),
+              child: Text(widget.text, style: muted),
+            )
+          else if (widget.live)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                widget.text.split('\n').lastWhere((l) => l.trim().isNotEmpty, orElse: () => ''),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: muted,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A UI tool call (quiz, chart, slides, …). Interactive renderers arrive with
+/// the chat tools pass; until then this shows what was made.
+class _ToolCard extends StatelessWidget {
+  const _ToolCard(this.call);
+
+  final ToolCallPart call;
+
+  static const _kinds = {
+    'create_artifact': 'Artifact',
+    'update_artifact': 'Artifact update',
+    'render_svg': 'Illustration',
+    'render_diagram': 'Diagram',
+    'render_chart': 'Chart',
+    'make_quiz': 'Quiz',
+    'make_flashcards': 'Flashcards',
+    'make_slides': 'Slides',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final args = switch (jsonDecode(call.argumentsJson)) {
+      final Map<String, Object?> m => m,
+      _ => const <String, Object?>{},
+    };
+    final title = args['title'] as String? ?? args['id'] as String? ?? '';
+    final count = switch (call.toolName) {
+      'make_quiz' => '${(args['questions'] as List?)?.length ?? 0} questions',
+      'make_flashcards' => '${(args['cards'] as List?)?.length ?? 0} cards',
+      'make_slides' => '${(args['slides'] as List?)?.length ?? 0} slides',
+      _ => null,
+    };
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      constraints: const BoxConstraints(maxWidth: 520),
+      decoration: BoxDecoration(
+        color: theme.surfaceRaised,
+        borderRadius: BorderRadius.circular(theme.radius),
+        border: Border.all(color: theme.border),
+      ),
+      child: Row(
+        children: [
+          AdaptiveIcon(EveryIcon.artifacts, size: 18, color: theme.accent),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title.isEmpty ? (_kinds[call.toolName] ?? call.toolName) : title,
+                  style: TextStyle(color: theme.text, fontWeight: FontWeight.w600, fontSize: 14),
+                ),
+                Text(
+                  [_kinds[call.toolName] ?? call.toolName, ?count].join(' · '),
+                  style: TextStyle(color: theme.textMuted, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }

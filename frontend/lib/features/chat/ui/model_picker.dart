@@ -11,9 +11,9 @@ import '../../models/domain/model_catalog.dart';
 import '../../models/models_providers.dart';
 import '../../models/ui/model_avatar.dart';
 
-/// Composer chip showing the active model. Opens a picker with the library
-/// models up top (name + one-line description) and the rest of the catalog
-/// under "More models", grouped by provider.
+/// Composer chip showing the active model. Opens a picker with My models
+/// (name + one-line description), a search over the whole shop, and a link to
+/// the shop window.
 class ModelChip extends ConsumerWidget {
   const ModelChip({super.key, required this.selected, required this.onSelected, this.enabled = true});
 
@@ -74,7 +74,7 @@ class _ModelPickerPanel extends ConsumerStatefulWidget {
 }
 
 class _ModelPickerPanelState extends ConsumerState<_ModelPickerPanel> {
-  bool _showAll = false;
+  String _query = '';
 
   @override
   Widget build(BuildContext context) {
@@ -82,15 +82,28 @@ class _ModelPickerPanelState extends ConsumerState<_ModelPickerPanel> {
     final catalog = ref.watch(modelCatalogProvider);
     final library = ref.watch(libraryProvider).value ?? const <ModelSpec>[];
     final pinned = {...library, widget.selected}.toList();
-    final rest = catalog.all.where((s) => !pinned.contains(s)).toList();
+    final q = _query.trim().toLowerCase();
+    final matches = q.isEmpty
+        ? const <ModelSpec>[]
+        : catalog.all
+              .where(
+                (s) =>
+                    !pinned.contains(s) &&
+                    (s.name.toLowerCase().contains(q) ||
+                        s.id.value.toLowerCase().contains(q) ||
+                        s.provider.label.toLowerCase().contains(q) ||
+                        s.provider.company.toLowerCase().contains(q)),
+              )
+              .take(20)
+              .toList();
 
     Widget row(ModelSpec spec) => PopoverRow(
       leading: ModelAvatar(spec.provider, size: 20),
       title: spec.name,
-      subtitle: spec.available ? (spec.blurb.isEmpty ? spec.provider.company : spec.blurb) : 'Coming soon',
+      subtitle: [if (spec.blurb.isNotEmpty) spec.blurb else spec.provider.company, if (spec.free) 'Free'].join(' · '),
       trailing: spec == widget.selected ? AdaptiveIcon(EveryIcon.check, size: 15, color: theme.accent) : null,
       selected: spec == widget.selected,
-      onTap: spec.available ? () => widget.onSelected(spec) : null,
+      onTap: () => widget.onSelected(spec),
     );
 
     return SingleChildScrollView(
@@ -99,25 +112,25 @@ class _ModelPickerPanelState extends ConsumerState<_ModelPickerPanel> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
-          for (final spec in pinned) row(spec),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 2, 8, 6),
+            child: AdaptiveTextField(
+              placeholder: 'Search ${catalog.length} models',
+              autofocus: true,
+              onChanged: (v) => setState(() => _query = v),
+            ),
+          ),
+          if (q.isEmpty)
+            for (final spec in pinned) row(spec)
+          else if (matches.isEmpty && !pinned.any((s) => s.name.toLowerCase().contains(q)))
+            PopoverRow(title: 'No models match "$_query"')
+          else ...[
+            for (final spec in pinned.where((s) => s.name.toLowerCase().contains(q))) row(spec),
+            for (final spec in matches) row(spec),
+          ],
           Container(height: 1, margin: const EdgeInsets.symmetric(vertical: 6), color: theme.border),
           PopoverRow(
-            title: 'More models',
-            trailing: AnimatedRotation(
-              turns: _showAll ? 0.5 : 0,
-              duration: const Duration(milliseconds: 150),
-              child: AdaptiveIcon(EveryIcon.chevronDown, size: 13, color: theme.textMuted),
-            ),
-            onTap: () => setState(() => _showAll = !_showAll),
-          ),
-          if (_showAll)
-            for (final provider in ModelProvider.values)
-              if (rest.where((s) => s.provider == provider).toList() case final specs when specs.isNotEmpty) ...[
-                PopoverHeader(provider.label),
-                for (final spec in specs) row(spec),
-              ],
-          PopoverRow(
-            title: 'Manage models…',
+            title: 'Browse model shop…',
             leading: AdaptiveIcon(EveryIcon.models, size: 16, color: theme.textMuted),
             onTap: widget.onBrowse,
           ),

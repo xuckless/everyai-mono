@@ -29,12 +29,14 @@ final class AuthController extends Notifier<AuthState> {
     state = token == null ? const SignedOut() : const SignedIn();
   }
 
-  Future<void> signIn({required String email, required String password}) =>
-      _authenticate(AuthMethod.password, () => _api.postJson('login', {'email': email.trim(), 'password': password}));
+  Future<void> signIn({required String email, required String password}) => _authenticate(
+    AuthMethod.password,
+    () => _api.postJson('v1/auth/login', {'email': email.trim(), 'password': password}),
+  );
 
   Future<void> signUp({required String name, required String email, required String password}) => _authenticate(
     AuthMethod.signUp,
-    () => _api.postJson('signup', {'name': name.trim(), 'email': email.trim(), 'password': password}),
+    () => _api.postJson('v1/auth/signup', {'name': name.trim(), 'email': email.trim(), 'password': password}),
   );
 
   /// The backend accepts Google ID tokens minted for its iOS, Android or web
@@ -48,13 +50,14 @@ final class AuthController extends Notifier<AuthState> {
     final account = await google.authenticate();
     final idToken = account.authentication.idToken;
     if (idToken == null) throw const ProtocolError('Google did not return an ID token.');
-    return _api.postJson('google_login', {
-      'token': idToken,
-      'platform': defaultTargetPlatform == TargetPlatform.iOS ? 'ios' : 'android',
-    });
+    return _api.postJson('v1/auth/google', {'token': idToken});
   });
 
   Future<void> signOut() async {
+    final refresh = await _tokens.readRefreshToken();
+    if (refresh != null) {
+      unawaited(_api.postJson('v1/auth/logout', {'refresh_token': refresh}).then((_) {}, onError: (_) {}));
+    }
     await _tokens.clear();
     if (ref.read(appConfigProvider).devSkipAuth) return;
     state = const SignedOut();

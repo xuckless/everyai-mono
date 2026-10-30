@@ -63,6 +63,10 @@ final class ChatSessionState {
     this.streamingText = '',
     this.mode = ChatMode.chat,
     this.liveSources = const [],
+    this.liveParts = const [],
+    this.streamingReasoning = '',
+    this.toolStatus = '',
+    this.toolsEnabled = true,
   });
 
   final String conversationId;
@@ -87,6 +91,19 @@ final class ChatSessionState {
   /// Sources for the in-flight answer, shown before its text arrives.
   final List<Source> liveSources;
 
+  /// Finished segments of the in-flight answer (text before a tool call, tool
+  /// calls, images), in order. [streamingText] is the segment still growing.
+  final List<MessagePart> liveParts;
+
+  /// The in-flight answer's thinking, so far.
+  final String streamingReasoning;
+
+  /// What a server tool is doing right now ("Reading example.com"), or empty.
+  final String toolStatus;
+
+  /// Whether the model may use tools (the composer's tools menu).
+  final bool toolsEnabled;
+
   bool get isEmpty => messages.isEmpty;
 
   ChatSessionState copyWith({
@@ -97,6 +114,10 @@ final class ChatSessionState {
     String? streamingText,
     ChatMode? mode,
     List<Source>? liveSources,
+    List<MessagePart>? liveParts,
+    String? streamingReasoning,
+    String? toolStatus,
+    bool? toolsEnabled,
   }) => ChatSessionState(
     conversationId: conversationId,
     title: title ?? this.title,
@@ -106,6 +127,10 @@ final class ChatSessionState {
     streamingText: streamingText ?? this.streamingText,
     mode: mode ?? this.mode,
     liveSources: liveSources ?? this.liveSources,
+    liveParts: liveParts ?? this.liveParts,
+    streamingReasoning: streamingReasoning ?? this.streamingReasoning,
+    toolStatus: toolStatus ?? this.toolStatus,
+    toolsEnabled: toolsEnabled ?? this.toolsEnabled,
   );
 }
 

@@ -34,8 +34,14 @@ final class UnauthorizedError extends ApiError {
 
 /// Non-2xx response that is not a 401.
 final class HttpStatusError extends ApiError {
-  const HttpStatusError(this.statusCode, super.message);
+  const HttpStatusError(this.statusCode, super.message, {this.code});
   final int statusCode;
+
+  /// Machine-readable reason, when the server sent one (`out_of_credits`).
+  final String? code;
+
+  /// A paid model with no plan quota or wallet balance left (HTTP 402).
+  bool get outOfCredits => statusCode == 402;
   @override
   bool get retryable => statusCode >= 500 || statusCode == 429;
 }

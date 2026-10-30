@@ -1,5 +1,8 @@
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../../app/router.dart';
 
 import '../../../core/platform/platform_kind.dart';
 import '../../../core/providers.dart';
@@ -66,14 +69,16 @@ class SettingsScreen extends ConsumerWidget {
             ], ref.read(defaultModelProvider.notifier).set),
           ),
           AdaptiveListTile(
-            title: const Text('Streaming responses'),
-            subtitle: Text(
-              config.sseEnabled
-                  ? 'On: responses stream token by token.'
-                  : 'Off: waiting for the backend streaming endpoint (SSE_ENABLED).',
-            ),
+            title: const Text('Model shop'),
+            subtitle: Text('${library.length} models in My models'),
+            onTap: () => context.go(Routes.models),
           ),
           const AdaptiveSectionHeader('Account'),
+          AdaptiveListTile(
+            title: const Text('Plan & usage'),
+            subtitle: const Text('Your plan, included usage, wallet and top-ups'),
+            onTap: () => context.go(Routes.billing),
+          ),
           switch (auth) {
             Bypassed() => const AdaptiveListTile(
               title: Text('Signed out (development mode)'),

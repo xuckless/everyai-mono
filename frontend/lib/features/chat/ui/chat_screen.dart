@@ -2,6 +2,8 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/net/api_error.dart';
+
 import '../../../app/router.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
@@ -52,6 +54,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       onStop: controller.cancel,
       onModelChanged: controller.selectModel,
       onModeChanged: controller.setMode,
+      toolsEnabled: ref.watch(provider.select((s) => s.toolsEnabled)),
+      onToolsChanged: controller.setToolsEnabled,
     );
 
     return AdaptivePage(
@@ -67,7 +71,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           children: [
             Expanded(child: _Transcript(conversationId: widget.conversationId)),
             if (phase case Failed(:final error))
-              _ErrorBanner(message: error.message, retryable: error.retryable, onRetry: controller.retry),
+              _ErrorBanner(
+                message: error.message,
+                retryable: error.retryable,
+                onRetry: controller.retry,
+                onTopUp: error is HttpStatusError && error.outOfCredits ? () => context.go(Routes.billing) : null,
+              ),
             SafeArea(
               top: false,
               child: Center(
@@ -238,11 +247,14 @@ class _Transcript extends ConsumerWidget {
 }
 
 class _ErrorBanner extends StatelessWidget {
-  const _ErrorBanner({required this.message, required this.retryable, required this.onRetry});
+  const _ErrorBanner({required this.message, required this.retryable, required this.onRetry, this.onTopUp});
 
   final String message;
   final bool retryable;
   final VoidCallback onRetry;
+
+  /// Out of credits: opens Plan & usage.
+  final VoidCallback? onTopUp;
 
   @override
   Widget build(BuildContext context) {
@@ -266,6 +278,8 @@ class _ErrorBanner extends StatelessWidget {
                   Expanded(
                     child: Text(message, style: TextStyle(color: theme.text, fontSize: 13)),
                   ),
+                  if (onTopUp != null)
+                    AdaptiveButton(label: 'Top up', emphasis: ButtonEmphasis.primary, onPressed: onTopUp),
                   if (retryable)
                     AdaptiveButton(
                       label: 'Retry',

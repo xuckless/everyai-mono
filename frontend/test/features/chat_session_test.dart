@@ -34,6 +34,12 @@ class FakeTransport implements ChatTransport {
   }
 }
 
+/// The built-in catalog, without the network refresh.
+class FixedCatalog extends CatalogController {
+  @override
+  ModelCatalog build() => builtInCatalog;
+}
+
 void main() {
   late AppDatabase db;
   late FakeTransport transport;
@@ -44,11 +50,14 @@ void main() {
     db = AppDatabase(NativeDatabase.memory());
     transport = FakeTransport();
     final prefs = await Preferences.load(db);
-    container = ProviderContainer(overrides: [
-      databaseProvider.overrideWithValue(db),
-      preferencesProvider.overrideWithValue(prefs),
-      chatTransportProvider.overrideWithValue(transport),
-    ]);
+    container = ProviderContainer(
+      overrides: [
+        databaseProvider.overrideWithValue(db),
+        preferencesProvider.overrideWithValue(prefs),
+        chatTransportProvider.overrideWithValue(transport),
+        modelCatalogProvider.overrideWith(FixedCatalog.new),
+      ],
+    );
     // Keep the auto-dispose family alive for the whole test.
     container.listen(chatSessionProvider(id), (_, _) {});
   });
@@ -152,11 +161,57 @@ void main() {
     expect(state().model, defaultModel, reason: 'override is one-shot');
   });
 
-  test('unavailable model fails fast without a request', () async {
+  test('tool calls keep their place among text; sources append; reasoning and session are kept', () async {
     await settle();
-    await ctl().send('@llama hi');
-    expect(transport.requests, isEmpty);
-    expect(state().phase, isA<Failed>());
+    await ctl().send('quiz me');
+    expect(transport.requests.single.conversationId, id);
+    final turn = transport.turns.single
+      ..add(const ReasoningDelta('Plan a quiz.'))
+      ..add(SourcesFound([Source(url: Uri.parse('https://a.dev'), title: 'A')]))
+      ..add(const TextDelta("Here's a quiz."))
+      ..add(const UiToolCall(id: 't1', name: 'make_quiz', argumentsJson: '{"title":"Q","questions":[]}'))
+      ..add(const ToolProgress(id: 't2', name: 'web_fetch', status: ToolRunStatus.running, detail: 'https://b.dev/x'));
+    await settle();
+    expect(state().liveParts, hasLength(2)); // the text before the call, then the call
+    expect(state().streamingText, isEmpty);
+    expect(state().toolStatus, 'Reading b.dev…');
+    turn
+      ..add(SourcesFound([Source(url: Uri.parse('https://b.dev'), title: 'B')]))
+      ..add(const TextDelta('Good luck [2]'))
+      ..add(const FollowUpsSuggested(['More?']))
+      ..add(const TurnDone());
+    unawaited(turn.close());
+    await settle();
+
+    final parts = state().messages.last.parts;
+    expect(parts.map((p) => p.runtimeType.toString()), [
+      'ReasoningPart',
+      'SourcesPart',
+      'TextPart',
+      'ToolCallPart',
+      'TextPart',
+      'FollowUpsPart',
+    ]);
+    expect(state().messages.last.sources.map((s) => s.title), ['A', 'B']);
+    expect((parts[3] as ToolCallPart).callId, 't1');
+    expect(state().toolStatus, isEmpty);
+
+    // Round-trips through the database.
+    container.invalidate(chatSessionProvider(id));
+    container.listen(chatSessionProvider(id), (_, _) {});
+    await settle();
+    final reloaded = state().messages.last.parts;
+    expect(reloaded.whereType<ToolCallPart>().single.toolName, 'make_quiz');
+    expect(reloaded.whereType<ReasoningPart>().single.text, 'Plan a quiz.');
+  });
+
+  test('a 402 fails the turn with an out-of-credits error', () async {
+    await settle();
+    await ctl().send('hi');
+    transport.turns.single.addError(const HttpStatusError(402, 'Out of credits', code: 'out_of_credits'));
+    await settle();
+    final phase = state().phase as Failed;
+    expect((phase.error as HttpStatusError).outOfCredits, isTrue);
   });
 
   test('reopening a conversation restores its messages', () async {

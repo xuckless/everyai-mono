@@ -39,6 +39,22 @@ final class ApiClient {
     await _readBody(res);
   }
 
+  /// GET and decode a JSON object response.
+  Future<Map<String, Object?>> getJson(
+    String path, {
+    bool authenticated = false,
+    Duration timeout = jsonTimeout,
+  }) async {
+    final res = await _send('GET', path, authenticated: authenticated, timeout: timeout);
+    return _decodeObject(await _readBody(res));
+  }
+
+  /// DELETE, ignoring any body.
+  Future<void> delete(String path, {bool authenticated = false}) async {
+    final res = await _send('DELETE', path, authenticated: authenticated, timeout: jsonTimeout);
+    await _readBody(res);
+  }
+
   /// POST a JSON body and decode a JSON object response.
   Future<Map<String, Object?>> postJson(
     String path,
@@ -48,7 +64,10 @@ final class ApiClient {
     Future<void>? cancel,
   }) async {
     final res = await _send('POST', path, json: body, authenticated: authenticated, timeout: timeout, cancel: cancel);
-    final bytes = await _readBody(res, cancel: cancel);
+    return _decodeObject(await _readBody(res, cancel: cancel));
+  }
+
+  static Map<String, Object?> _decodeObject(Uint8List bytes) {
     try {
       final decoded = jsonDecode(utf8.decode(bytes));
       if (decoded is Map<String, Object?>) return decoded;
@@ -163,15 +182,21 @@ final class ApiClient {
     final status = res.statusCode;
     if (status ~/ 100 == 2) return bytes;
     if (status == 401) throw const UnauthorizedError();
-    throw HttpStatusError(status, _detail(bytes) ?? 'Request failed ($status).');
+    final detail = _detail(bytes);
+    throw HttpStatusError(status, detail?.message ?? 'Request failed ($status).', code: detail?.code);
   }
 
-  /// FastAPI errors look like `{"detail": "..."}`.
-  static String? _detail(Uint8List bytes) {
+  /// `{"message", "code"}` (backend-exp), problem documents (`detail`/`title`),
+  /// `{"error": {"message"}}` (OpenAI style) and `{"detail"}` (FastAPI).
+  static ({String message, String? code})? _detail(Uint8List bytes) {
     try {
       final decoded = jsonDecode(utf8.decode(bytes));
-      if (decoded case {'detail': final String detail}) return detail;
-      if (decoded case {'error': final String error}) return error;
+      final code = decoded is Map ? decoded['code'] as String? : null;
+      if (decoded case {'message': final String message}) return (message: message, code: code);
+      if (decoded case {'detail': final String detail}) return (message: detail, code: code);
+      if (decoded case {'title': final String title}) return (message: title, code: code);
+      if (decoded case {'error': {'message': final String message}}) return (message: message, code: code);
+      if (decoded case {'error': final String error}) return (message: error, code: code);
     } on FormatException {
       // Not JSON; fall through.
     }

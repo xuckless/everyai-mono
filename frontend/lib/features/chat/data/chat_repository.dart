@@ -193,12 +193,14 @@ final class ChatRepository {
           kind: 'followups',
           body: Value(jsonEncode(questions)),
         );
-      case ToolCallPart(:final toolName, :final argumentsJson, :final resultJson):
+      case ReasoningPart(:final text):
+        return MessagePartsCompanion.insert(messageId: messageId, idx: idx, kind: 'reasoning', body: Value(text));
+      case ToolCallPart(:final toolName, :final argumentsJson, :final resultJson, :final callId):
         return MessagePartsCompanion.insert(
           messageId: messageId,
           idx: idx,
           kind: 'tool_call',
-          body: Value(jsonEncode({'tool': toolName, 'args': argumentsJson, 'result': resultJson})),
+          body: Value(jsonEncode({'tool': toolName, 'args': argumentsJson, 'result': resultJson, 'id': callId})),
         );
       case ArtifactPart(:final artifactId, :final title, :final kind):
         return MessagePartsCompanion.insert(
@@ -214,6 +216,7 @@ final class ChatRepository {
     'image' => ImagePart(bytes: blobs[p.blobId]?.bytes, blobRef: p.blobId, mimeType: p.mimeType ?? 'image/webp'),
     'artifact' => _artifact(p.body ?? '{}'),
     'tool_call' => _toolCall(p.body ?? '{}'),
+    'reasoning' => ReasoningPart(p.body ?? ''),
     'sources' => SourcesPart(
       (jsonDecode(p.body ?? '[]') as List<Object?>).map(Source.fromJson).nonNulls.toList(growable: false),
     ),
@@ -233,11 +236,9 @@ final class ChatRepository {
   };
 
   static MessagePart _toolCall(String body) => switch (jsonDecode(body)) {
-    {'tool': final String tool, 'args': final String args, 'result': final String? result} => ToolCallPart(
-      toolName: tool,
-      argumentsJson: args,
-      resultJson: result,
-    ),
+    {'tool': final String tool, 'args': final String args, 'result': final String? result} &&
+        final Map<String, Object?> m =>
+      ToolCallPart(toolName: tool, argumentsJson: args, resultJson: result, callId: m['id'] as String?),
     _ => const TextPart(''),
   };
 

@@ -78,12 +78,20 @@ final class FollowUpsPart extends MessagePart {
   final List<String> questions;
 }
 
-/// Placeholders for the agentic roadmap (tools, artifacts). Not produced yet.
+/// The model's thinking before (or between) its answer, shown collapsed.
+final class ReasoningPart extends MessagePart {
+  const ReasoningPart(this.text);
+  final String text;
+}
+
+/// A tool call the app renders by [toolName] (quiz, chart, artifact, …), in
+/// its place among the message's text.
 final class ToolCallPart extends MessagePart {
-  const ToolCallPart({required this.toolName, required this.argumentsJson, this.resultJson});
+  const ToolCallPart({required this.toolName, required this.argumentsJson, this.resultJson, this.callId});
   final String toolName;
   final String argumentsJson;
   final String? resultJson;
+  final String? callId;
 }
 
 final class ArtifactPart extends MessagePart {

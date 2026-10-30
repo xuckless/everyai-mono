@@ -12,6 +12,7 @@ import '../features/history/ui/chats_screen.dart';
 import '../features/history/ui/coming_soon_screen.dart';
 import '../features/models/ui/models_screen.dart';
 import '../features/settings/appearance.dart';
+import '../features/billing/ui/billing_screen.dart';
 import '../features/settings/ui/settings_screen.dart';
 import 'shell.dart';
 
@@ -20,6 +21,7 @@ abstract final class Routes {
   static const signUp = '/sign-up';
   static const models = '/models';
   static const settings = '/settings';
+  static const billing = '/settings/billing';
   static const newChat = '/chat/new';
   static const chats = '/chats';
   static const projects = '/projects';
@@ -106,6 +108,10 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: Routes.settings,
             pageBuilder: (_, _) => const NoTransitionPage(child: SettingsScreen()),
+          ),
+          GoRoute(
+            path: Routes.billing,
+            pageBuilder: (_, _) => const NoTransitionPage(child: BillingScreen()),
           ),
         ],
       ),

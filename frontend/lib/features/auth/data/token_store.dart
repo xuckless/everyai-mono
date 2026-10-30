@@ -22,9 +22,8 @@ final class TokenStore implements AccessTokenSource {
   static const _storage = FlutterSecureStorage(mOptions: MacOsOptions(usesDataProtectionKeychain: !kDebugMode));
   static const _refreshKey = 'everyai.refresh_token';
 
-  /// The backend issues 30-minute access tokens (ACCESS_TOKEN_EXPIRE_MINUTES).
-  /// Refresh a little early.
-  static const accessTokenLifetime = Duration(minutes: 28);
+  /// The backend issues 15-minute access tokens. Refresh a little early.
+  static const accessTokenLifetime = Duration(minutes: 14);
 
   String? _accessToken;
   DateTime? _accessExpiry;
@@ -61,7 +60,7 @@ final class TokenStore implements AccessTokenSource {
     try {
       final res = await client
           .post(
-            _config.apiBaseUrl.resolve('refresh_token'),
+            _config.apiBaseUrl.resolve('v1/auth/refresh'),
             headers: const {'Content-Type': 'application/json'},
             body: jsonEncode({'refresh_token': refresh}),
           )
@@ -74,6 +73,8 @@ final class TokenStore implements AccessTokenSource {
       final json = jsonDecode(res.body);
       if (json case {'access_token': final String access}) {
         _setAccess(access);
+        // Refresh tokens rotate: the old one is spent once used.
+        if (json case {'refresh_token': final String next}) await _storage.write(key: _refreshKey, value: next);
         return access;
       }
       return null;

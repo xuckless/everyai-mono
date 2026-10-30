@@ -19,19 +19,19 @@ final class AppConfig {
     return AppConfig(
       apiBaseUrl: Uri.parse(url.isEmpty ? _defaultBaseUrl() : url),
       devSkipAuth: const bool.fromEnvironment('DEV_SKIP_AUTH', defaultValue: true),
-      sseEnabled: const bool.fromEnvironment('SSE_ENABLED'),
+      sseEnabled: const bool.fromEnvironment('SSE_ENABLED', defaultValue: true),
       googleServerClientId: const String.fromEnvironment('GOOGLE_SERVER_CLIENT_ID'),
     );
   }
 
-  /// Backend origin, e.g. `http://localhost:8000` or the Render deployment.
+  /// Backend origin (backend-exp serves `/v1` under it), e.g. `http://localhost:8080`.
   final Uri apiBaseUrl;
 
-  /// Skip sign-in and go straight to chat. On by default until the backend
-  /// protects chat routes.
+  /// Skip sign-in and go straight to chat, as the backend's dev user (backend-exp
+  /// with `DEV_AUTH=true` serves credential-less requests as `dev-user`).
   final bool devSkipAuth;
 
-  /// Use the streaming (SSE) chat endpoint instead of one-shot POSTs.
+  /// Stream chat over SSE (`/v1/chat/stream`). Off only for debugging.
   final bool sseEnabled;
 
   /// OAuth web client ID that Google Sign-In uses to mint ID tokens for the backend.
@@ -39,5 +39,5 @@ final class AppConfig {
 
   /// The Android emulator reaches the host machine at 10.0.2.2, not localhost.
   static String _defaultBaseUrl() =>
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.android ? 'http://10.0.2.2:8000' : 'http://localhost:8000';
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android ? 'http://10.0.2.2:8080' : 'http://localhost:8080';
 }

@@ -15,10 +15,11 @@ final chatRepositoryProvider = Provider<ChatRepository>((ref) => ChatRepository(
 
 final chatTransportProvider = Provider<ChatTransport>((ref) {
   final api = ref.watch(apiClientProvider);
+  // With dev auth the backend serves anonymous requests as its dev user.
+  final authenticated = !ref.watch(appConfigProvider).devSkipAuth;
   return TransportRouter(
-    post: PostTransport(api),
-    sse: SseTransport(api),
-    sseEnabled: ref.watch(appConfigProvider).sseEnabled,
+    stream: SseTransport(api, authenticated: authenticated),
+    image: ImageTransport(api, authenticated: authenticated),
   );
 });
 
@@ -39,6 +40,7 @@ final class ChatController extends Notifier<ChatSessionState> {
   Completer<void>? _cancel;
   StreamSubscription<ChatEvent>? _turn;
   final _buffer = StringBuffer();
+  final _reasoning = StringBuffer();
 
   ChatRepository get _repo => ref.read(chatRepositoryProvider);
   ModelCatalog get _catalog => ref.read(modelCatalogProvider);
@@ -80,6 +82,8 @@ final class ChatController extends Notifier<ChatSessionState> {
   }
 
   void setMode(ChatMode mode) => state = state.copyWith(mode: mode);
+
+  void setToolsEnabled(bool enabled) => state = state.copyWith(toolsEnabled: enabled);
 
   /// Idle/Failed → Awaiting: drops the last answer and asks again, optionally
   /// with a different model ("Retry with…").
@@ -123,13 +127,6 @@ final class ChatController extends Notifier<ChatSessionState> {
   }
 
   Future<void> _startTurn({required String prompt, required ModelSpec model, required String? userText}) async {
-    if (!model.available) {
-      state = state.copyWith(
-        phase: Failed(HttpStatusError(501, '${model.name} is not available yet.'), prompt: prompt, model: model),
-      );
-      return;
-    }
-
     if (state.title == null) {
       final c = await _repo.createConversationWithId(
         id: conversationId,
@@ -165,21 +162,49 @@ final class ChatController extends Notifier<ChatSessionState> {
     messages.add(assistant);
 
     _buffer.clear();
+    _reasoning.clear();
     final cancel = _cancel = Completer<void>();
     state = state.copyWith(
       messages: List.unmodifiable(messages),
       phase: Awaiting(assistant.id),
       streamingText: '',
       liveSources: const [],
+      liveParts: const [],
+      streamingReasoning: '',
+      toolStatus: '',
     );
 
+    // Segments in arrival order: text before a tool call, the call, more text…
     final parts = <MessagePart>[];
     var sources = const <Source>[];
     var followUps = const <String>[];
+    void flushText() {
+      if (_buffer.isEmpty) return;
+      parts.add(TextPart(_buffer.toString()));
+      _buffer.clear();
+    }
+
+    List<MessagePart> collect() {
+      flushText();
+      return [
+        if (_reasoning.isNotEmpty) ReasoningPart(_reasoning.toString()),
+        if (sources.isNotEmpty) SourcesPart(sources),
+        ...parts,
+        if (followUps.isNotEmpty) FollowUpsPart(followUps),
+      ];
+    }
+
     final events = ref
         .read(chatTransportProvider)
         .send(
-          ChatRequest(model: model, prompt: prompt, history: history, mode: state.mode),
+          ChatRequest(
+            model: model,
+            prompt: prompt,
+            history: history,
+            mode: state.mode,
+            conversationId: conversationId,
+            toolsEnabled: state.toolsEnabled,
+          ),
           cancel: cancel.future,
         );
 
@@ -188,12 +213,33 @@ final class ChatController extends Notifier<ChatSessionState> {
         switch (event) {
           case TextDelta(:final text):
             _buffer.write(text);
-            state = state.copyWith(phase: Streaming(assistant.id), streamingText: _buffer.toString());
+            state = state.copyWith(phase: Streaming(assistant.id), streamingText: _buffer.toString(), toolStatus: '');
+          case ReasoningDelta(:final text):
+            _reasoning.write(text);
+            state = state.copyWith(streamingReasoning: _reasoning.toString());
           case ImageOutput(:final bytes, :final mimeType):
+            flushText();
             parts.add(ImagePart(bytes: bytes, mimeType: mimeType));
+            state = state.copyWith(
+              phase: Streaming(assistant.id),
+              liveParts: List.unmodifiable(parts),
+              streamingText: '',
+            );
+          case UiToolCall(:final id, :final name, :final argumentsJson):
+            flushText();
+            parts.add(ToolCallPart(toolName: name, argumentsJson: argumentsJson, callId: id));
+            state = state.copyWith(
+              phase: Streaming(assistant.id),
+              liveParts: List.unmodifiable(parts),
+              streamingText: '',
+            );
+          case ToolProgress(:final name, :final status, :final detail):
+            state = state.copyWith(toolStatus: status == ToolRunStatus.running ? toolStatusLabel(name, detail) : '');
           case SourcesFound(sources: final found):
-            sources = found;
-            state = state.copyWith(liveSources: found);
+            sources = List.unmodifiable([...sources, ...found]);
+            state = state.copyWith(liveSources: sources);
+          case UsageReport():
+            break; // Billing views read usage from the backend.
           case FollowUpsSuggested(:final questions):
             followUps = questions;
           case TurnDone():
@@ -203,11 +249,11 @@ final class ChatController extends Notifier<ChatSessionState> {
       onError: (Object error) {
         final apiError = error is ApiError ? error : ProtocolError('$error');
         if (apiError is CancelledError || cancel.isCompleted) {
-          _finish(assistant, _assemble(parts, sources, followUps), MessageStatus.cancelled, phase: const Idle());
+          _finish(assistant, collect(), MessageStatus.cancelled, phase: const Idle());
         } else {
           _finish(
             assistant,
-            _assemble(parts, sources, followUps),
+            collect(),
             MessageStatus.failed,
             error: apiError.message,
             phase: Failed(apiError, prompt: prompt, model: model),
@@ -218,7 +264,7 @@ final class ChatController extends Notifier<ChatSessionState> {
         if (state.phase is Failed || !state.phase.busy) return;
         _finish(
           assistant,
-          _assemble(parts, sources, followUps),
+          collect(),
           cancel.isCompleted ? MessageStatus.cancelled : MessageStatus.complete,
           phase: const Idle(),
         );
@@ -227,37 +273,23 @@ final class ChatController extends Notifier<ChatSessionState> {
     );
   }
 
-  /// Final part order: sources, then text (inserted by [_finish]), media, follow-ups.
-  static ({List<Source> sources, List<MessagePart> media, List<String> followUps}) _assemble(
-    List<MessagePart> media,
-    List<Source> sources,
-    List<String> followUps,
-  ) => (sources: sources, media: media, followUps: followUps);
-
   void _finish(
     Message assistant,
-    ({List<Source> sources, List<MessagePart> media, List<String> followUps}) output,
+    List<MessagePart> parts,
     MessageStatus status, {
     String? error,
     required TurnPhase phase,
   }) {
     if (!ref.mounted) return;
-    final text = _buffer.toString();
-    final finished = assistant.copyWith(
-      parts: [
-        if (output.sources.isNotEmpty) SourcesPart(output.sources),
-        if (text.isNotEmpty) TextPart(text),
-        ...output.media,
-        if (output.followUps.isNotEmpty) FollowUpsPart(output.followUps),
-      ],
-      status: status,
-      error: error,
-    );
+    final finished = assistant.copyWith(parts: parts, status: status, error: error);
     state = state.copyWith(
       messages: List.unmodifiable([for (final m in state.messages) m.id == assistant.id ? finished : m]),
       phase: phase,
       streamingText: '',
       liveSources: const [],
+      liveParts: const [],
+      streamingReasoning: '',
+      toolStatus: '',
     );
     _turn = null;
     _cancel = null;
@@ -266,3 +298,10 @@ final class ChatController extends Notifier<ChatSessionState> {
     }
   }
 }
+
+/// The status line shown while a server tool runs.
+String toolStatusLabel(String tool, String? detail) => switch (tool) {
+  'web_fetch' => 'Reading ${Uri.tryParse(detail ?? '')?.host ?? 'the page'}…',
+  'generate_image' => 'Creating an image…',
+  _ => 'Working…',
+};

@@ -126,15 +126,17 @@ fn parse(a: std.mem.Allocator, raw: []const u8, markup: f64) ![]const Model {
         const arch = if (o.get("architecture")) |x| x.object else null;
         const params = if (o.get("supported_parameters")) |p| p.array.items else &.{};
         const slash = std.mem.indexOfScalar(u8, id, '/') orelse 0;
+        // "~openai/gpt-latest" is an alias that follows a vendor's newest model.
+        const vendor = std.mem.trimStart(u8, id[0..slash], "~");
         var name = openrouter.jsonStr(o.get("name")) orelse id;
         // "Anthropic: Claude Haiku 5.5" -> "Claude Haiku 5.5"
         if (std.mem.indexOf(u8, name, ": ")) |i| name = name[i + 2 ..];
         try out.append(a, .{
             .id = id,
-            .owned_by = id[0..slash],
+            .owned_by = vendor,
             .name = name,
-            .provider = id[0..slash],
-            .blurb = blurbOf(openrouter.jsonStr(o.get("description")) orelse ""),
+            .provider = vendor,
+            .blurb = try blurbOf(a, openrouter.jsonStr(o.get("description")) orelse ""),
             .context_length = openrouter.jsonInt(o.get("context_length")),
             .input_modalities = try strings(a, if (arch) |x| x.get("input_modalities") else null),
             .output_modalities = try strings(a, if (arch) |x| x.get("output_modalities") else null),
@@ -177,11 +179,12 @@ fn isDefault(id: []const u8) bool {
     return false;
 }
 
-/// The description's first sentence, at most ~140 characters.
-fn blurbOf(desc: []const u8) []const u8 {
-    var end: usize = @min(desc.len, 140);
-    if (std.mem.indexOf(u8, desc[0..end], ". ")) |i| end = i + 1;
-    return desc[0..end];
+/// The description's first sentence; past 160 characters, cut at a word with "…".
+fn blurbOf(a: std.mem.Allocator, desc: []const u8) ![]const u8 {
+    const sentence = if (std.mem.indexOf(u8, desc, ". ")) |i| desc[0 .. i + 1] else desc;
+    if (sentence.len <= 160) return sentence;
+    const cut = std.mem.lastIndexOfScalar(u8, sentence[0..160], ' ') orelse 160;
+    return std.mem.concat(a, u8, &.{ std.mem.trimEnd(u8, sentence[0..cut], " ,;:"), "…" });
 }
 
 // ------------------------------------------------------------------ routes

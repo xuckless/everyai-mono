@@ -5,8 +5,9 @@ import '../../../core/platform/platform_kind.dart';
 import '../../../core/theme/every_theme.dart';
 import '../domain/model_catalog.dart';
 
-/// Provider logo, clipped to the design language's avatar shape: the
-/// Expressive cookie on Material, a squircle on Apple, a circle elsewhere.
+/// Provider logo (or a monogram for vendors without one), clipped to the
+/// design language's avatar shape: the Expressive cookie on Material, a
+/// squircle on Apple, a circle elsewhere.
 class ModelAvatar extends StatelessWidget {
   const ModelAvatar(this.provider, {super.key, this.size = 28});
 
@@ -16,7 +17,10 @@ class ModelAvatar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    final image = Image.asset(provider.asset, width: size, height: size, fit: BoxFit.cover);
+    final asset = provider.asset;
+    final image = asset != null
+        ? Image.asset(asset, width: size, height: size, fit: BoxFit.cover)
+        : _Monogram(provider, size: size);
     final clipped = switch (theme.design) {
       DesignLanguage.material => ClipPath(clipper: _PolygonClipper(MaterialShapes.cookie9Sided), child: image),
       DesignLanguage.cupertino ||
@@ -27,6 +31,36 @@ class ModelAvatar extends StatelessWidget {
       label: provider.label,
       image: true,
       child: SizedBox.square(dimension: size, child: clipped),
+    );
+  }
+}
+
+/// The vendor's initial on a color derived from its slug.
+class _Monogram extends StatelessWidget {
+  const _Monogram(this.provider, {required this.size});
+
+  final ModelProvider provider;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final hue = (provider.slug.codeUnits.fold(7, (h, c) => (h * 31 + c) & 0xffff) % 360).toDouble();
+    return ColoredBox(
+      color: HSLColor.fromAHSL(1, hue, 0.45, 0.42).toColor(),
+      child: SizedBox.square(
+        dimension: size,
+        child: Center(
+          child: Text(
+            provider.label.isEmpty ? '?' : provider.label[0].toUpperCase(),
+            style: TextStyle(
+              color: const Color(0xFFFFFFFF),
+              fontSize: size * 0.48,
+              fontWeight: FontWeight.w700,
+              height: 1,
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
