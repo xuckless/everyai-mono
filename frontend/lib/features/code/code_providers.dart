@@ -161,6 +161,12 @@ final class CodeProjects extends Notifier<List<CodeProject>> {
   }
 }
 
+/// New sessions answer question cards and plans inside the held tool call,
+/// so the agent keeps its turn (verified live: `tool/agent_eval/held_answers_test.dart`).
+/// Build with `--dart-define=CODE_HELD_ANSWERS=false` to send replies as new
+/// user messages instead.
+const heldAnswers = bool.fromEnvironment('CODE_HELD_ANSWERS', defaultValue: true);
+
 /// Every coding session, newest first (stored in preferences; transcripts
 /// live in the agent server).
 final codeSessionsProvider = NotifierProvider<CodeSessions, List<CodeSessionInfo>>(CodeSessions.new);
@@ -197,6 +203,8 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     final harness = await harnessFor(ref, project.path);
     // Settings and commit style come from the main checkout (local settings aren't in worktrees).
     final agentPrompt = demo ? null : await agentPromptFor(project.path);
+    // The scripted demo approves client tools like the old path does.
+    final hold = heldAnswers && !demo;
     final live = await harness.start(
       SessionSpec(
         workingDir: workingDir,
@@ -212,6 +220,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         persona: agentPrompt?.persona,
         promptSuffix: agentPrompt?.suffix,
         effort: effort,
+        holdClientTools: hold,
       ),
     );
     ref.read(_liveProvider)[id] = live;
@@ -227,6 +236,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       branch: worktree?.branch ?? '',
       worktree: worktree,
       effort: effort ?? '',
+      holdClientTools: hold,
     );
     state = [info, ...state];
     _save();
@@ -330,7 +340,10 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
   @override
   CodeSessionState build() {
     final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
-    ref.onDispose(() => _sub?.cancel());
+    ref.onDispose(() {
+      _sub?.cancel();
+      _gitTimer?.cancel();
+    });
     // After build returns, so the connected flag isn't overwritten.
     if (info != null) unawaited(Future.microtask(() => _connect(info)));
     return CodeSessionState(mode: info?.mode ?? AgentMode.ask);
@@ -360,32 +373,57 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     _builder.add(event);
     final transcript = _builder.snapshot;
     state = state.copyWith(transcript: transcript);
-    // A finished turn may have changed files.
-    if (wasRunning && !transcript.running && ref.exists(codeGitProvider(sessionId))) {
-      unawaited(ref.read(codeGitProvider(sessionId).notifier).refresh());
+    // Edits and commands change files: refresh Changes as they land, not just at turn end.
+    if (event is ToolResult && editsFiles(event.toolName)) _refreshGitSoon();
+    if (wasRunning && !transcript.running) {
+      _refreshGitSoon();
+      // The ledger can trail the last model call, so read it again once it settles.
+      ref.read(codeUsageProvider(sessionId).notifier)
+        ..refreshSoon(delay: const Duration(milliseconds: 300))
+        ..refreshSoon(delay: const Duration(seconds: 4), force: true);
     }
     _autoRespond(transcript);
     if (!transcript.running && transcript.pending.isEmpty && state.queued.isNotEmpty) {
       final [next, ...rest] = state.queued;
       state = state.copyWith(queued: rest);
-      unawaited(_checkpoint().then((_) => _session?.send(_noted(next.text), images: next.images)));
+      unawaited(_checkpoint().then((_) => _sendNow(next)));
     }
   }
 
+  Timer? _gitTimer;
+
+  /// Coalesces bursts of edits into one `git diff`.
+  void _refreshGitSoon() {
+    if (_gitTimer?.isActive ?? false) return;
+    _gitTimer = Timer(const Duration(milliseconds: 400), () {
+      if (ref.mounted && ref.exists(codeGitProvider(sessionId))) {
+        unawaited(ref.read(codeGitProvider(sessionId).notifier).refresh());
+      }
+    });
+  }
+
+  /// Whether this session answers cards and plans inside the held call.
+  bool get _holds => ref.read(codeSessionsProvider.notifier).byId(sessionId)?.holdClientTools ?? false;
+
   /// Approves or refuses pending actions the mode decides on its own.
   void _autoRespond(Transcript t) {
-    if (t.pending.isEmpty) return;
-    final key = t.pending.map((c) => c.id).join(',');
+    // A held card or plan waits for the user (one answer covers every
+    // pending action, so the rest wait with it); sessions that don't hold
+    // them approve them at once, as the agent ends its turn after the call.
+    if (t.held.isNotEmpty && _holds) return;
+    final waiting = [...t.pending, ...t.held];
+    if (waiting.isEmpty) return;
+    final key = waiting.map((c) => c.id).join(',');
     if (key == _answered) return;
     final mode = state.mode;
-    if (t.pending.any(mode.rejects)) {
+    if (waiting.any(mode.rejects)) {
       _answered = key;
       // The server parks the conversation after a rejection; run it again so
       // the agent reads the refusal and keeps exploring (a user's own "No"
       // still stops it).
       final session = _session;
       unawaited(session?.respond(accept: false, reason: AgentMode.planRefusal).then((_) => session.resume()));
-    } else if (t.pending.every(mode.autoApproves)) {
+    } else if (waiting.every(mode.autoApproves)) {
       _answered = key;
       unawaited(_session?.respond(accept: true));
     }
@@ -432,7 +470,21 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
       return;
     }
     await _checkpoint();
-    await _session?.send(_noted(out.text), images: out.images);
+    await _sendNow(out);
+  }
+
+  /// Sends [out]. A card or plan still held for the user is closed first: the
+  /// call's result says the user replied in chat, and the message follows.
+  Future<void> _sendNow(Outgoing out) async {
+    final session = _session;
+    if (session == null) return;
+    final held = state.transcript.held;
+    if (held.isNotEmpty) {
+      _answered = [...state.transcript.pending, ...held].map((c) => c.id).join(',');
+      final plan = held.any((c) => c.toolName == presentPlanTool);
+      await session.respond(accept: false, reason: plan ? '$planRevisionLead see their next message.' : repliedInChat);
+    }
+    await session.send(_noted(out.text), images: out.images);
   }
 
   /// Interrupts the agent and sends [text] right away.
@@ -441,7 +493,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     if (out == null) return;
     await _session?.interrupt();
     await _checkpoint();
-    await _session?.send(_noted(out.text), images: out.images);
+    await _sendNow(out);
   }
 
   void unqueue(int index) => state = state.copyWith(queued: [...state.queued]..removeAt(index));
@@ -470,22 +522,47 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     await _session?.respond(accept: false, reason: reason?.trim().isEmpty ?? true ? null : reason);
   }
 
-  Future<void> answer(QuestionItem item, List<QuestionAnswer> answers) =>
-      _session?.send(_noted(answersMessage(item.questions, answers))) ?? Future.value();
+  /// Sends the card's answers: as the held call's result when the server is
+  /// holding it, else as a new user message.
+  Future<void> answer(QuestionItem item, List<QuestionAnswer> answers) async {
+    final session = _session;
+    if (session == null) return;
+    if (_isHeld(item.call)) {
+      await _replyInCall(session, answersReason(item.questions, answers));
+    } else {
+      await session.send(_noted(answersMessage(item.questions, answers)));
+    }
+  }
+
+  bool _isHeld(ActionCall call) => state.transcript.held.any((c) => c.id == call.id);
+
+  /// Rejects the held call(s) with [reason], which the agent reads as the
+  /// call's result, then runs it again (a rejection parks the conversation).
+  Future<void> _replyInCall(HarnessSession session, String reason) async {
+    _answered = [...state.transcript.pending, ...state.transcript.held].map((c) => c.id).join(',');
+    await session.respond(accept: false, reason: reason);
+    await session.resume();
+  }
 
   Future<void> setMode(AgentMode mode) async {
     state = state.copyWith(mode: mode);
     final sessions = ref.read(codeSessionsProvider.notifier);
     if (sessions.byId(sessionId) case final info?) sessions.update(info.copyWith(mode: mode));
-    await _session?.setMode(mode);
+    await _session?.setMode(mode, holdClientTools: _holds);
     _answered = '';
     _autoRespond(state.transcript);
   }
 
   /// Approves the plan and tells the agent to go; Plan mode moves to Auto-edit.
   Future<void> startBuilding() async {
+    final held = state.transcript.openPlan?.call;
     if (state.mode == AgentMode.plan) await setMode(AgentMode.autoEdit);
-    await send(planApprovedMessage);
+    final session = _session;
+    if (session != null && held != null && _isHeld(held)) {
+      await _replyInCall(session, planApprovedReason);
+    } else {
+      await send(planApprovedMessage);
+    }
   }
 }
 
@@ -533,6 +610,10 @@ final class CodeStatuses extends Notifier<Map<String, SessionStatus>> {
   };
 }
 
+/// Tools that can change the worktree (file edits, shell commands).
+bool editsFiles(String toolName) =>
+    const {'file_editor', 'terminal', 'str_replace_editor', 'apply_patch'}.contains(toolName);
+
 /// Tokens and spend of a Code session, from the backend's ledger (the gateway
 /// attributes every model call to the session). Demo sessions have none.
 final codeUsageProvider = AsyncNotifierProvider.family<CodeUsage, UsageTotals, String>(CodeUsage.new);
@@ -544,7 +625,14 @@ final class CodeUsage extends AsyncNotifier<UsageTotals> {
 
   @override
   Future<UsageTotals> build() async {
-    ref.onDispose(() => _debounce?.cancel());
+    ref.onDispose(() {
+      _debounce?.cancel();
+      _later?.cancel();
+    });
+    return _fetch();
+  }
+
+  Future<UsageTotals> _fetch() async {
     final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
     if (info == null || isDemoPath(info.workingDir)) return UsageTotals.zero;
     final json = await ref
@@ -553,14 +641,26 @@ final class CodeUsage extends AsyncNotifier<UsageTotals> {
     return UsageTotals.fromJson(json);
   }
 
-  /// Refetches once events go quiet for a second.
-  void refreshSoon() {
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(seconds: 1), () async {
-      final next = await AsyncValue.guard(build);
-      // Keep the last reading if the server can't be reached.
-      if (ref.mounted && next.hasValue) state = next;
-    });
+  Timer? _later;
+
+  /// Refetches within [delay]. Calls while one is waiting join it (a steady
+  /// stream of events must not push the reading back forever); [force] queues
+  /// an extra, later read.
+  void refreshSoon({Duration delay = const Duration(seconds: 1), bool force = false}) {
+    if (force) {
+      _later?.cancel();
+      _later = Timer(delay, _read);
+      return;
+    }
+    if (_debounce?.isActive ?? false) return;
+    _debounce = Timer(delay, _read);
+  }
+
+  Future<void> _read() async {
+    if (!ref.mounted) return;
+    final next = await AsyncValue.guard(_fetch);
+    // Keep the last reading if the server can't be reached.
+    if (ref.mounted && next.hasValue) state = next;
   }
 }
 

@@ -3,6 +3,8 @@ import 'package:every_ai/core/theme/every_theme.dart';
 import 'package:every_ai/features/code/domain/questions.dart';
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/harness/events.dart';
+import 'package:every_ai/features/code/domain/agent_mode.dart';
+import 'package:every_ai/features/code/ui/session_view.dart';
 import 'package:every_ai/features/code/ui/transcript/question_card.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -89,5 +91,67 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('4 of 4'), findsOneWidget);
     expect(find.text('Which Address?'), findsOneWidget);
+  });
+
+  testWidgets('the card keeps its page while the transcript grows around it', (tester) async {
+    final builder = TranscriptBuilder()
+      ..add(
+        HarnessEvent.decode({
+          'kind': 'MessageEvent',
+          'id': 'u1',
+          'source': 'user',
+          'llm_message': {
+            'role': 'user',
+            'content': [
+              {'type': 'text', 'text': 'hi'},
+            ],
+          },
+        }),
+      )
+      ..add(call);
+    Widget list() => m.MaterialApp(
+      home: m.Material(
+        child: EveryThemeScope(
+          theme: EveryTheme.resolve(DesignLanguage.material, Brightness.light),
+          child: TranscriptList(
+            transcript: builder.snapshot,
+            mode: AgentMode.ask,
+            onAnswer: (_, _) {},
+            onRewind: null,
+            onApprovePlan: () {},
+            onRevisePlan: (_) {},
+            onRetry: () {},
+          ),
+        ),
+      ),
+    );
+
+    tester.view.physicalSize = const Size(1000, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(list());
+    await tester.tap(find.text('Address'));
+    await tester.pumpAndSettle();
+    expect(find.text('4 of 4'), findsOneWidget);
+
+    // New rows arrive after the card; the card must not reset to page 1.
+    for (var i = 0; i < 3; i++) {
+      builder.add(
+        HarnessEvent.decode({
+          'kind': 'MessageEvent',
+          'id': 'm$i',
+          'source': 'agent',
+          'llm_message': {
+            'role': 'assistant',
+            'content': [
+              {'type': 'text', 'text': 'note $i'},
+            ],
+          },
+        }),
+      );
+      await tester.pumpWidget(list());
+      await tester.pump();
+      expect(find.text('4 of 4'), findsOneWidget, reason: 'after event $i');
+    }
   });
 }

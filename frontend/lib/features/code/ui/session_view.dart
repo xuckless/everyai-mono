@@ -74,7 +74,7 @@ class CodeSessionScreen extends ConsumerWidget {
         child: Column(
           children: [
             Expanded(
-              child: _TranscriptList(
+              child: TranscriptList(
                 onRewind: info.worktree == null ? null : (turn) => _rewind(context, ref, turn),
                 transcript: t,
                 onAnswer: controller.answer,
@@ -276,8 +276,9 @@ class _WithDiff extends ConsumerWidget {
   }
 }
 
-class _TranscriptList extends StatelessWidget {
-  const _TranscriptList({
+class TranscriptList extends StatelessWidget {
+  const TranscriptList({
+    super.key,
     required this.onRewind,
     required this.transcript,
     required this.mode,
@@ -328,7 +329,15 @@ class _TranscriptList extends StatelessWidget {
         reverse: true,
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
         itemCount: children.length,
+        // Newest-first indices shift as items arrive; match rows by their key so
+        // a card keeps its state (the question card's page) across rebuilds.
+        findChildIndexCallback: (key) {
+          if (key is! ValueKey<Object?>) return null;
+          final i = children.indexWhere((c) => c.key == key.value);
+          return i < 0 ? null : i;
+        },
         itemBuilder: (context, i) => Center(
+          key: children[i].key == null ? null : ValueKey(children[i].key),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: _maxWidth),
             child: Padding(padding: const EdgeInsets.symmetric(vertical: 5), child: children[i]),

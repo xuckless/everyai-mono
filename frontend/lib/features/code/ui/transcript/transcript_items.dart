@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
@@ -276,6 +278,7 @@ class _CommandView extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           if (exit != null && exit != 0) Text('exit $exit', style: TextStyle(color: theme.danger, fontSize: 11.5)),
+          if (!step.done) const RunningTime(),
           const SizedBox(width: 6),
           _StatusDot(step: step),
         ],
@@ -834,6 +837,51 @@ class StepRunView extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [for (final s in run.steps) StepView(step: s)],
+      ),
+    );
+  }
+}
+
+/// "12s" / "1m 05s" for a clock, e.g. a command that has run this long.
+String formatElapsed(Duration d) {
+  final s = d.inSeconds;
+  if (s < 60) return '${s}s';
+  return '${s ~/ 60}m ${(s % 60).toString().padLeft(2, '0')}s';
+}
+
+/// Counts up from when it appears (a running command), once it passes two seconds.
+class RunningTime extends StatefulWidget {
+  const RunningTime({super.key});
+
+  @override
+  State<RunningTime> createState() => _RunningTimeState();
+}
+
+class _RunningTimeState extends State<RunningTime> {
+  final _clock = Stopwatch()..start();
+  Timer? _tick;
+
+  @override
+  void initState() {
+    super.initState();
+    _tick = Timer.periodic(const Duration(seconds: 1), (_) => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    _tick?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_clock.elapsed < const Duration(seconds: 2)) return const SizedBox.shrink();
+    final theme = EveryTheme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(left: 6),
+      child: Text(
+        formatElapsed(_clock.elapsed),
+        style: TextStyle(color: theme.textMuted, fontSize: 11.5, fontFeatures: const [FontFeature.tabularFigures()]),
       ),
     );
   }

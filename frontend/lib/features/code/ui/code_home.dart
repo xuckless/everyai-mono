@@ -438,17 +438,31 @@ class _AgentPicker extends ConsumerWidget {
     final catalog = ref.watch(agentCatalogProvider);
     final current = ref.watch(codeAgentProvider);
     String tierName(String id) => catalog.tiers.where((t) => t.id == id).firstOrNull?.name ?? id;
-    return AdaptiveMenuButton(
-      tooltip: 'Agent model',
-      actions: [
-        for (final tier in catalog.tiers)
-          for (final m in catalog.models.where((m) => m.tier == tier.id))
-            MenuAction(
-              label: '${tier.name} · ${m.label}${m.candidate ? ' (candidate)' : ''}',
-              checked: m.key == current.key,
-              onSelected: () => ref.read(codeAgentProvider.notifier).choose(m),
-            ),
-      ],
+    // A popover on every design language (the Cupertino menu is a bottom sheet).
+    return AnchoredPopover(
+      width: 300,
+      builder: (context, close) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 5),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (final tier in catalog.tiers) ...[
+              PopoverHeader(tier.name),
+              for (final m in catalog.models.where((m) => m.tier == tier.id))
+                PopoverRow(
+                  title: '${m.label}${m.candidate ? ' (candidate)' : ''}',
+                  selected: m.key == current.key,
+                  trailing: m.key == current.key ? AdaptiveIcon(EveryIcon.check, size: 14, color: theme.accent) : null,
+                  onTap: () {
+                    close();
+                    ref.read(codeAgentProvider.notifier).choose(m);
+                  },
+                ),
+            ],
+          ],
+        ),
+      ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
         child: Row(
