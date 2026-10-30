@@ -108,6 +108,10 @@ class AgentTextView extends StatelessWidget {
         if (reasoning.trim().isNotEmpty)
           _Disclosure(
             icon: EveryIcon.spark,
+            // Our mark, as the working row shows it, rather than a generic sparkle.
+            mark: true,
+            busy: streaming && text.isEmpty,
+            busyMark: MarkActivity.thinking,
             title: streaming && text.isEmpty ? 'Thinking…' : 'Thought',
             child: Text(
               reasoning.trim(),
@@ -709,6 +713,8 @@ class _Disclosure extends StatefulWidget {
     this.titleSpan,
     this.preview,
     this.busy = false,
+    this.busyMark = MarkActivity.tool,
+    this.mark = false,
     this.initiallyOpen = false,
   });
 
@@ -724,6 +730,12 @@ class _Disclosure extends StatefulWidget {
   final EveryIcon? icon;
   final Widget? trailing;
   final bool busy;
+
+  /// How the mark moves while [busy].
+  final MarkActivity busyMark;
+
+  /// The EveryAI mark in place of [icon] when settled (the agent's own thoughts).
+  final bool mark;
   final bool initiallyOpen;
 
   @override
@@ -761,7 +773,9 @@ class _DisclosureState extends State<_Disclosure> {
                     if (widget.icon != null) ...[
                       // The mark works while the step runs.
                       if (widget.busy)
-                        const EveryMarkActivity(activity: MarkActivity.tool, size: 13)
+                        EveryMarkActivity(activity: widget.busyMark, size: 13)
+                      else if (widget.mark)
+                        const BrandMark(size: 13)
                       else
                         AdaptiveIcon(widget.icon!, size: 13, color: theme.textMuted),
                       const SizedBox(width: 8),
