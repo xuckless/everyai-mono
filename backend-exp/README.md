@@ -28,7 +28,7 @@ Anole is a path dependency (`../../../PersonalProjects/anole` in
 
 ## Chat stream
 
-Request: `{model?, mode: chat|search|research, messages: [{role, content}], tools_enabled?, session?, client_tools?, images?: [{id, url?}]}`.
+Request: `{model?, mode: chat|search|research, messages: [{role, content}], tools_enabled?, session?, client_tools?, images?: [{id, url?}], memory?}`.
 `images` lists the conversation's images (`img_<n>` generated, `upload_<n>` attached) so
 `generate_image` can edit them (`edit_of`) or follow them (`references`); new ids continue from the highest `img_<n>`.
 
@@ -52,6 +52,12 @@ cached_tokens, cache_write_tokens, charged_micros}` (one per upstream call),
   `Error (timeout): …` after `CLIENT_TOOL_TIMEOUT_MS` (default 300 s). A
   `tool_status` (done, or failed with detail `timed out`) closes each wait; SSE
   comments keep the stream alive every 15 s.
+- Memory: `memory` (a string, at most 16 KiB) is the user's saved notes as the
+  app froze them when the chat began. It goes in as a second system message
+  right after the constant system prompt, so the cached prefix holds. The
+  `memory` and `search_chats` tools run only in the app (notes and chat history
+  stay on the device); when the app does not list them in `client_tools`, the
+  model gets an error saying they are off.
 
 ## Prompt caching
 

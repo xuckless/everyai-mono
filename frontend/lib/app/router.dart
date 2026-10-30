@@ -15,6 +15,7 @@ import '../features/history/ui/coming_soon_screen.dart';
 import '../features/models/ui/models_screen.dart';
 import '../features/settings/appearance.dart';
 import '../features/billing/ui/billing_screen.dart';
+import '../features/memory/ui/memory_screen.dart';
 import '../features/settings/ui/settings_screen.dart';
 import 'shell.dart';
 
@@ -24,6 +25,7 @@ abstract final class Routes {
   static const models = '/models';
   static const settings = '/settings';
   static const billing = '/settings/billing';
+  static const memory = '/settings/memory';
   static const newChat = '/chat/new';
   static const chats = '/chats';
   static const projects = '/projects';
@@ -127,6 +129,10 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: Routes.billing,
             pageBuilder: (_, _) => const NoTransitionPage(child: BillingScreen()),
+          ),
+          GoRoute(
+            path: Routes.memory,
+            pageBuilder: (_, _) => const NoTransitionPage(child: MemoryScreen()),
           ),
         ],
       ),

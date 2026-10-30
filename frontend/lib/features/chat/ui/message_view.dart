@@ -14,6 +14,8 @@ import '../../artifacts/ui/image_view.dart';
 import '../../artifacts/ui/visual_view.dart';
 import '../../attachments/attachment.dart';
 import '../../attachments/ui/attachment_tray.dart';
+import '../../memory/memory_providers.dart';
+import '../../memory/ui/local_tool_chip.dart';
 import '../../models/models_providers.dart';
 import '../../models/ui/model_avatar.dart';
 import '../chat_providers.dart';
@@ -606,6 +608,7 @@ class _PartView extends StatelessWidget {
         part: call,
         conversationId: conversationId,
       ),
+      final ToolCallPart call when localChatTools.contains(call.toolName) => LocalToolChip(part: call),
       final ToolCallPart call => InlineVisual(part: call, conversationId: conversationId),
       ArtifactPart(:final title) => Text(title, style: TextStyle(color: theme.accent)),
       UsagePart() || AttachmentPart() => const SizedBox.shrink(),

@@ -11,6 +11,7 @@ import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/adaptive_page.dart';
 import '../../auth/auth_providers.dart';
 import '../../auth/domain/auth_state.dart';
+import '../../memory/memory_providers.dart';
 import '../../models/models_providers.dart';
 import '../appearance.dart';
 import '../dev_upstream.dart';
@@ -73,6 +74,15 @@ class SettingsScreen extends ConsumerWidget {
             title: const Text('Model shop'),
             subtitle: Text('${library.length} models in My models'),
             onTap: () => context.go(Routes.models),
+          ),
+          AdaptiveListTile(
+            title: const Text('Memory'),
+            subtitle: Text(
+              ref.watch(memoryProvider.select((m) => m.enabled))
+                  ? 'On. Notes about you and search over your chats, kept on this device'
+                  : 'Off',
+            ),
+            onTap: () => context.go(Routes.memory),
           ),
           const AdaptiveSectionHeader('Account'),
           AdaptiveListTile(
