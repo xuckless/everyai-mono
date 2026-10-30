@@ -212,7 +212,8 @@ final class SseTransport implements ChatTransport {
       'session': ?request.conversationId,
       'memory': ?request.memory,
       if (request.clientTools.isNotEmpty) 'client_tools': request.clientTools.toList(growable: false),
-      if (request.toolsEnabled && images.isNotEmpty) 'images': imageRefsJson(images),
+      if (request.toolsEnabled && images.isNotEmpty)
+        'images': imageRefsJson(images, inMessages: uploadsInMessages(request.history, pending: request.attachments)),
       'messages': [
         for (final m in request.history)
           if (m.status == MessageStatus.complete)

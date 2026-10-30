@@ -86,19 +86,51 @@ Map<String, String> withImageNotes(Map<String, String> notes, List<ImageRef> ref
   return out;
 }
 
-/// The `images` field of a chat request: every ref by id, with the bytes of
-/// the newest ones as data URLs up to [budget] characters in all (older ones
-/// are listed without, so the server can say why it can't use them).
-List<Map<String, Object?>> imageRefsJson(List<ImageRef> refs, {int budget = 12 * 1024 * 1024}) {
+/// For each attached image whose bytes go in the request's messages (as an
+/// `image_url` part), its position among those parts, by upload id. The
+/// numbering follows [imageRefsIn]; the counting follows the transport,
+/// which sends complete history messages and attachments that have bytes.
+Map<String, int> uploadsInMessages(List<Message> history, {List<AttachmentPart> pending = const []}) {
+  final out = <String, int>{};
+  var uploads = 0;
+  var parts = 0;
+  void visit(AttachmentPart a, {required bool sent}) {
+    if (a.kind != AttachmentKind.image) return;
+    final id = 'upload_${++uploads}';
+    if (sent && a.bytes != null) out[id] = parts++;
+  }
+
+  for (final m in history) {
+    for (final part in m.parts) {
+      if (part is AttachmentPart) visit(part, sent: m.status == MessageStatus.complete);
+    }
+  }
+  for (final a in pending) {
+    visit(a, sent: true);
+  }
+  return out;
+}
+
+/// The `images` field of a chat request: every ref by id. Refs already in
+/// the messages ([inMessages], from [uploadsInMessages]) point at their part
+/// instead of repeating the bytes. Others carry their bytes as data URLs, the
+/// newest first, up to [budget] characters in all (older ones are listed
+/// without, so the server can say why it can't use them).
+List<Map<String, Object?>> imageRefsJson(
+  List<ImageRef> refs, {
+  Map<String, int> inMessages = const {},
+  int budget = 8 * 1024 * 1024,
+}) {
   var left = budget;
   final urls = <String, String>{};
   for (final r in refs.reversed) {
+    if (inMessages.containsKey(r.id)) continue;
     final url = r.dataUrl;
     if (url == null || url.length > left) continue;
     left -= url.length;
     urls[r.id] = url;
   }
   return [
-    for (final r in refs) {'id': r.id, 'url': ?urls[r.id]},
+    for (final r in refs) {'id': r.id, 'url': ?urls[r.id], 'message_image': ?inMessages[r.id]},
   ];
 }

@@ -84,6 +84,9 @@ pub const ImageRef = struct {
     id: []const u8,
     /// A data: or https: URL; absent when the app left the bytes out.
     url: ?[]const u8 = null,
+    /// Instead of `url`: the image is the n-th `image_url` part (from 0) in
+    /// `messages`, so attached photos are not sent twice.
+    message_image: ?u32 = null,
 };
 
 /// A message in the upstream conversation. `raw_tool_calls` is the assistant's
@@ -334,7 +337,7 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
     var docs: Artifacts = .{};
     for (messages.items) |m| if (std.mem.eql(u8, m.role, "assistant")) try docs.seed(arena, m.content);
     var pictures: ImageBook = .{};
-    try pictures.seed(arena, body.images);
+    try pictures.seed(arena, body.images, body.messages);
     var final_text: std.Io.Writer.Allocating = .init(arena);
     // Search needs OpenRouter's web plugin.
     const route = app.route(model, body.mode == .chat);
@@ -829,9 +832,16 @@ const ImageBook = struct {
     /// Number for the next generated image (`img_<next>`).
     next: u32 = 1,
 
-    fn seed(self: *ImageBook, arena: std.mem.Allocator, refs: []const ImageRef) !void {
+    fn seed(self: *ImageBook, arena: std.mem.Allocator, refs: []const ImageRef, messages: []const InMessage) !void {
+        var in_messages: std.ArrayList([]const u8) = .empty;
+        for (messages) |m| if (m.content == .array) for (m.content.array.items) |p| {
+            if (p != .object or !std.mem.eql(u8, openrouter.jsonStr(p.object.get("type")) orelse "", "image_url")) continue;
+            const iu = p.object.get("image_url") orelse continue;
+            if (openrouter.jsonString(iu, "url")) |u| try in_messages.append(arena, u);
+        };
         for (refs) |r| {
-            try self.map.put(arena, r.id, r.url);
+            const from_messages = if (r.message_image) |n| (if (n < in_messages.items.len) in_messages.items[n] else null) else null;
+            try self.map.put(arena, r.id, r.url orelse from_messages);
             if (numberOf(r.id)) |n| self.next = @max(self.next, n + 1);
         }
     }
@@ -917,7 +927,7 @@ test "image book: ids continue from the app's, references resolve, unknown ids a
     defer arena.deinit();
     const a = arena.allocator();
     var book: ImageBook = .{};
-    try book.seed(a, &.{ .{ .id = "upload_1", .url = "data:image/png;base64,AA" }, .{ .id = "img_4" }, .{ .id = "img_2", .url = "https://x/y.png" } });
+    try book.seed(a, &.{ .{ .id = "upload_1", .url = "data:image/png;base64,AA" }, .{ .id = "img_4" }, .{ .id = "img_2", .url = "https://x/y.png" } }, &.{});
     try std.testing.expectEqualStrings("img_5", try book.add(a, .{ .mime = "image/png", .data = "BB" }));
     const args = try std.json.parseFromSliceLeaky(std.json.Value, a,
         \\{"prompt":"p","edit_of":"img_5","references":["upload_1","img_5",""]}
@@ -931,6 +941,23 @@ test "image book: ids continue from the app's, references resolve, unknown ids a
     try std.testing.expect(std.mem.indexOf(u8, old.problem, "too old") != null);
     const missing = try book.resolve(a, &.{"img_9"});
     try std.testing.expect(std.mem.indexOf(u8, missing.problem, "Known images: upload_1, img_4, img_2, img_5") != null);
+}
+
+test "image book: attached images resolve from the message parts they came in" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const content = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\[{"type":"image_url","image_url":{"url":"data:image/png;base64,P0"}},{"type":"text","text":"hi"},
+        \\ {"type":"image_url","image_url":{"url":"data:image/png;base64,P1"}}]
+    , .{});
+    var book: ImageBook = .{};
+    try book.seed(a, &.{ .{ .id = "upload_1", .message_image = 1 }, .{ .id = "upload_2", .message_image = 7 } }, &.{
+        .{ .role = "user", .content = .{ .string = "text only" } },
+        .{ .role = "user", .content = content },
+    });
+    try std.testing.expectEqualStrings("data:image/png;base64,P1", (try book.resolve(a, &.{"upload_1"})).urls[0]);
+    try std.testing.expect(std.mem.indexOf(u8, (try book.resolve(a, &.{"upload_2"})).problem, "too old") != null);
 }
 
 /// Three short follow-up questions from the utility model.

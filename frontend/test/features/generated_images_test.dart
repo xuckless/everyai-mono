@@ -74,6 +74,27 @@ void main() {
     expect(json.first.containsKey('url'), isFalse);
   });
 
+  test('attached images point at their message part instead of repeating the bytes', () {
+    final pending = [
+      _photo('new.png', [7]),
+    ];
+    final withDraft = [
+      ...history,
+      _msg('u4', Role.user, [
+        _photo('draft.png', [6]),
+      ]).copyWith(status: MessageStatus.failed),
+    ];
+    final inMessages = uploadsInMessages(withDraft, pending: pending);
+    // upload_3 is in a failed message the transport leaves out.
+    expect(inMessages, {'upload_1': 0, 'upload_2': 1, 'upload_4': 2});
+    final json = imageRefsJson(imageRefsIn(withDraft, pending: pending), inMessages: inMessages);
+    final upload = json.firstWhere((j) => j['id'] == 'upload_2');
+    expect(upload['message_image'], 1);
+    expect(upload.containsKey('url'), isFalse);
+    expect(json.firstWhere((j) => j['id'] == 'upload_3')['url'], isNotNull);
+    expect(json.firstWhere((j) => j['id'] == 'img_1')['url'], isNotNull);
+  });
+
   test('generated images are versioned artifacts; SVG ones render as illustrations', () {
     final artifacts = artifactsIn(history);
     final cat = artifacts.firstWhere((a) => a.id == 'img_1');
