@@ -26,6 +26,7 @@ const util = @import("util.zig");
 const images = @import("images.zig");
 const tool_check = @import("tool_check.zig");
 const tool_wait = @import("tool_wait.zig");
+const truncation = @import("truncation.zig");
 
 const Events = @typeInfo(@typeInfo(@TypeOf(anole.Response.startEventStream)).@"fn".return_type.?).error_union.payload;
 
@@ -118,10 +119,19 @@ fn writeContent(s: *std.json.Stringify, text: []const u8, parts: ?[]const std.js
     try s.endArray();
 }
 
+/// Per-call knobs that don't change the cached prefix.
+const CallOpts = struct {
+    /// Output cap; null leaves the provider's default.
+    max_tokens: ?i64 = null,
+    /// The tools stay defined (the cache prefix and tool history need them)
+    /// but the model may not call one.
+    no_tool_calls: bool = false,
+};
+
 /// The upstream request body. Prefix order (tools, system, history) never
 /// varies, so caches hit; breakpoints go on the system prompt and the last
 /// message (the conversation so far, reused by the next turn).
-fn buildBody(arena: std.mem.Allocator, model: []const u8, mode: Mode, with_tools: bool, messages: []const Msg, ttl: []const u8, engine: []const u8) ![]const u8 {
+fn buildBody(arena: std.mem.Allocator, model: []const u8, mode: Mode, with_tools: bool, messages: []const Msg, ttl: []const u8, engine: []const u8, opts: CallOpts) ![]const u8 {
     var out: std.Io.Writer.Allocating = .init(arena);
     var s: std.json.Stringify = .{ .writer = &out.writer };
     const bp = wantsBreakpoints(model);
@@ -133,9 +143,17 @@ fn buildBody(arena: std.mem.Allocator, model: []const u8, mode: Mode, with_tools
     try s.write(true);
     try s.objectField("usage");
     try s.print("{{\"include\":true}}", .{});
+    if (opts.max_tokens) |n| {
+        try s.objectField("max_tokens");
+        try s.write(n);
+    }
     if (with_tools) {
         try s.objectField("tools");
         try s.print("{s}", .{tools.definitions});
+        if (opts.no_tool_calls) {
+            try s.objectField("tool_choice");
+            try s.write("none");
+        }
     }
     if (mode == .search) {
         try s.objectField("plugins");
@@ -220,7 +238,7 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
     var scratch: std.Io.Writer.Allocating = .init(req.arena);
     const sink: Sink = .{ .ev = &ev, .scratch = &scratch };
 
-    run(app, req, who, model, body, facts.tools, sink) catch |err| switch (err) {
+    run(app, req, who, model, body, facts, sink) catch |err| switch (err) {
         error.Upstream, error.OutOfCredits => {}, // already reported
         else => {
             std.log.err("chat turn failed: {t}", .{err});
@@ -230,7 +248,7 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
     try ev.end();
 }
 
-fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, body: ChatRequest, model_has_tools: bool, sink: Sink) !void {
+fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, body: ChatRequest, facts: @import("models.zig").Catalog.Facts, sink: Sink) !void {
     const arena = req.arena;
     var messages: std.ArrayList(Msg) = .empty;
     for (body.messages) |m| {
@@ -240,57 +258,78 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
             else => try messages.append(arena, .{ .role = role, .content = textOf(m.content) }),
         }
     }
-    const with_tools = body.tools_enabled and model_has_tools and body.mode != .research;
+    const with_tools = body.tools_enabled and facts.tools and body.mode != .research;
     var docs: Artifacts = .{};
     for (messages.items) |m| if (std.mem.eql(u8, m.role, "assistant")) try docs.seed(arena, m.content);
     var final_text: std.Io.Writer.Allocating = .init(arena);
     // Search needs OpenRouter's web plugin.
     const route = app.route(model, body.mode == .chat);
+    const turn: Turn = .{ .app = app, .req = req, .who = who, .model = model, .body = body, .route = route, .with_tools = with_tools };
 
-    var step: u8 = 0;
-    while (step < app.cfg.max_tool_steps) : (step += 1) {
-        const request_body = try buildBody(arena, model, body.mode, with_tools, messages.items, app.cfg.cache_ttl, app.cfg.search_engine);
-        var up_err: openrouter.UpstreamError = .{ .status = 0, .message = "" };
-        const result = openrouter.complete(route.up, req, arena, request_body, &.{}, sink, &up_err) catch |err| switch (err) {
-            error.Upstream => {
-                try sink.send("error", .{ .message = up_err.message, .retryable = up_err.status == 429 or up_err.status >= 500, .status = up_err.status });
-                return err;
-            },
-            else => return err,
-        };
+    var steps: u8 = 0;
+    var continuations: u8 = 0;
+    var cap: ?i64 = null;
+    var out_of_steps = false;
+    while (true) {
+        var result = try turn.call(messages.items, .{ .max_tokens = cap }, sink);
+
+        // A cut-off tool call never runs. Ask again once with room for the
+        // whole call; the app keeps what it already got of the reply.
+        if (truncation.isLength(result.finish_reason) and result.tool_calls.len > 0) {
+            if (truncation.boostedCap(cap orelse result.usage.completion_tokens, facts.max_output)) |bigger| {
+                cap = bigger;
+                var replay = truncation.Replay(Sink).init(arena, sink, result);
+                result = try turn.call(messages.items, .{ .max_tokens = cap }, &replay);
+            }
+        }
+        const cut_off = truncation.isLength(result.finish_reason);
         try final_text.writer.writeAll(result.text);
 
-        const c = try billing.charge(app, req, who.user_id, .{
-            .kind = "chat",
-            .model = model,
-            .prompt_tokens = result.usage.prompt_tokens,
-            .completion_tokens = result.usage.completion_tokens,
-            .cached_tokens = result.usage.cached_tokens,
-            .cache_write_tokens = result.usage.cache_write_tokens,
-            .cost_usd = result.usage.cost_usd,
-            .session = body.session,
-            .provider = route.provider,
-        });
-        try sink.send("usage", .{
-            .kind = "chat",
-            .model = model,
-            .prompt_tokens = result.usage.prompt_tokens,
-            .completion_tokens = result.usage.completion_tokens,
-            .cached_tokens = result.usage.cached_tokens,
-            .cache_write_tokens = result.usage.cache_write_tokens,
-            .charged_micros = c.charged_micros,
-        });
-
-        if (result.tool_calls.len == 0) break;
+        if (result.tool_calls.len == 0) {
+            // Cut-off text: let the model carry on where it stopped.
+            if (cut_off and result.text.len > 0 and continuations < truncation.max_continuations) {
+                continuations += 1;
+                try messages.append(arena, .{ .role = "assistant", .content = result.text });
+                try messages.append(arena, .{ .role = "user", .content = truncation.continue_nudge });
+                continue;
+            }
+            break;
+        }
 
         // The assistant turn with its tool calls, then one result per call.
-        try messages.append(arena, .{ .role = "assistant", .content = result.text, .raw_tool_calls = try toolCallsJson(arena, result.tool_calls) });
-        for (result.tool_calls) |call| {
-            const output = try runTool(app, req, who, body, call, sink, &docs);
+        // When the reply was cut off, the last call is incomplete: it is
+        // answered with an error and kept with empty arguments.
+        const calls = result.tool_calls;
+        const cut_call: ?usize = if (cut_off) calls.len - 1 else null;
+        var kept = calls;
+        if (cut_call) |i| {
+            const copy = try arena.dupe(openrouter.ToolCall, calls);
+            copy[i].arguments = "{}";
+            kept = copy;
+        }
+        try messages.append(arena, .{ .role = "assistant", .content = result.text, .raw_tool_calls = try toolCallsJson(arena, kept) });
+        for (calls, 0..) |call, i| {
+            const output = if (cut_call == i)
+                try truncation.notRun(arena, call.name)
+            else
+                try runTool(app, req, who, body, call, sink, &docs);
             try messages.append(arena, .{ .role = "tool", .tool_call_id = call.id, .content = output });
         }
+        steps += 1;
         // A model that stopped for another reason than tools is done.
-        if (!std.mem.eql(u8, result.finish_reason, "tool_calls") and result.text.len > 0) break;
+        if (!std.mem.eql(u8, result.finish_reason, "tool_calls") and !cut_off and result.text.len > 0) break;
+        if (steps >= app.cfg.max_tool_steps) {
+            out_of_steps = true;
+            break;
+        }
+    }
+
+    // Out of steps with tool results the model hasn't seen: one last call,
+    // no tools, for a summary rather than a turn that ends on a tool call.
+    if (out_of_steps) {
+        try messages.append(arena, .{ .role = "user", .content = truncation.summary_nudge });
+        const result = try turn.call(messages.items, .{ .no_tool_calls = true }, sink);
+        try final_text.writer.writeAll(result.text);
     }
 
     if (body.mode != .research and final_text.written().len > 0) {
@@ -298,6 +337,57 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
     }
     try sink.send("done", .{});
 }
+
+/// What every upstream call of one chat turn shares.
+const Turn = struct {
+    app: *App,
+    req: *anole.Request,
+    who: auth.Identity,
+    model: []const u8,
+    body: ChatRequest,
+    route: App.Route,
+    with_tools: bool,
+
+    /// One metered completion; deltas go to `deltas`, the rest of the
+    /// events to `sink`.
+    fn call(self: Turn, messages: []const Msg, opts: CallOpts, deltas: anytype) !openrouter.Result {
+        const app = self.app;
+        const sink: Sink = switch (@TypeOf(deltas)) {
+            Sink => deltas,
+            else => deltas.inner,
+        };
+        const request_body = try buildBody(self.req.arena, self.model, self.body.mode, self.with_tools, messages, app.cfg.cache_ttl, app.cfg.search_engine, opts);
+        var up_err: openrouter.UpstreamError = .{ .status = 0, .message = "" };
+        const result = openrouter.complete(self.route.up, self.req, self.req.arena, request_body, &.{}, deltas, &up_err) catch |err| switch (err) {
+            error.Upstream => {
+                try sink.send("error", .{ .message = up_err.message, .retryable = up_err.status == 429 or up_err.status >= 500, .status = up_err.status });
+                return err;
+            },
+            else => return err,
+        };
+        const c = try billing.charge(app, self.req, self.who.user_id, .{
+            .kind = "chat",
+            .model = self.model,
+            .prompt_tokens = result.usage.prompt_tokens,
+            .completion_tokens = result.usage.completion_tokens,
+            .cached_tokens = result.usage.cached_tokens,
+            .cache_write_tokens = result.usage.cache_write_tokens,
+            .cost_usd = result.usage.cost_usd,
+            .session = self.body.session,
+            .provider = self.route.provider,
+        });
+        try sink.send("usage", .{
+            .kind = "chat",
+            .model = self.model,
+            .prompt_tokens = result.usage.prompt_tokens,
+            .completion_tokens = result.usage.completion_tokens,
+            .cached_tokens = result.usage.cached_tokens,
+            .cache_write_tokens = result.usage.cache_write_tokens,
+            .charged_micros = c.charged_micros,
+        });
+        return result;
+    }
+};
 
 /// The latest content of each artifact in the conversation: seeded from the
 /// `<artifact id="…">` blocks the app puts in earlier assistant turns, then
@@ -624,6 +714,7 @@ pub fn routes(app: *anole.Server(App), state: *App) void {
 
 test {
     _ = tool_check;
+    _ = truncation;
 }
 
 test buildBody {
@@ -631,14 +722,14 @@ test buildBody {
     defer arena.deinit();
     const a = arena.allocator();
     const msgs = [_]Msg{ .{ .role = "user", .content = "hi" }, .{ .role = "assistant", .content = "hello" }, .{ .role = "user", .content = "again" } };
-    const anthropic = try buildBody(a, "anthropic/claude-haiku-5.5", .search, true, &msgs, "5m", "exa");
+    const anthropic = try buildBody(a, "anthropic/claude-haiku-5.5", .search, true, &msgs, "5m", "exa", .{});
     // System and last message carry breakpoints; the middle one does not.
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, anthropic, "cache_control"));
     try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"plugins\":[{\"id\":\"web\"") != null);
-    const openai = try buildBody(a, "openai/gpt-6.1-sol", .chat, true, &msgs, "5m", "exa");
+    const openai = try buildBody(a, "openai/gpt-6.1-sol", .chat, true, &msgs, "5m", "exa", .{});
     try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, openai, "cache_control"));
     // The prefix (everything before the messages) is identical across turns.
-    const turn2 = try buildBody(a, "openai/gpt-6.1-sol", .chat, true, msgs[0..1], "5m", "exa");
+    const turn2 = try buildBody(a, "openai/gpt-6.1-sol", .chat, true, msgs[0..1], "5m", "exa", .{});
     const cut = std.mem.indexOf(u8, openai, "\"role\":\"user\"").?;
     try std.testing.expectEqualStrings(openai[0..cut], turn2[0..cut]);
 }

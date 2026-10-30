@@ -355,7 +355,7 @@ test "dev switch: Claude on Anthropic's API, attachments, provider billed, sessi
     try before.expectJson(.{ .anthropic = "openrouter", .keys = .{ .openrouter = true, .anthropic = true } });
     var bad = try env.t.put("/v1/dev/upstream", .{ .json = .{ .anthropic = "bedrock" } });
     defer bad.deinit();
-    try std.testing.expect(@intFromEnum(bad.status) >= 400);
+    try std.testing.expect(@backingInt(bad.status) >= 400);
     var sw = try env.t.put("/v1/dev/upstream", .{ .json = .{ .anthropic = "anthropic" } });
     defer sw.deinit();
     try sw.expectStatus(.ok);
@@ -513,4 +513,218 @@ test "chat: an unanswered client tool times out with a typed error; undeclared t
     defer plain.deinit();
     try std.testing.expect(std.mem.indexOf(u8, plain.body, "event: tool_wait") == null);
     try std.testing.expect(std.mem.indexOf(u8, plain.body, "event: tool\n") != null);
+}
+
+// ------------------------------------------------------------------ cut-off replies
+
+const cut_quiz_turn =
+    \\data: {"model":"anthropic/claude-haiku-5.5","choices":[{"index":0,"delta":{"role":"assistant","content":"Here's a quiz."}}]}
+    \\
+    \\data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"toolu_c","type":"function","function":{"name":"make_quiz","arguments":"{\"title\": \"Zig\", \"questions\": [{\"question\": \"Who ma"}}]}}]}
+    \\
+    \\data: {"choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":1000,"completion_tokens":4096,"cost":0.0001}}
+    \\
+    \\data: [DONE]
+    \\
+    \\
+;
+
+const cut_text_turn =
+    \\data: {"choices":[{"index":0,"delta":{"content":"Part one, "}}]}
+    \\
+    \\data: {"choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":1100,"completion_tokens":32768,"cost":0.0001}}
+    \\
+    \\data: [DONE]
+    \\
+    \\
+;
+
+const rest_text_turn =
+    \\data: {"choices":[{"index":0,"delta":{"content":"part two."}}]}
+    \\
+    \\data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1200,"completion_tokens":5,"cost":0.0001}}
+    \\
+    \\data: [DONE]
+    \\
+    \\
+;
+
+test "chat: a cut-off tool call is asked for again with a bigger cap; cut-off text is continued" {
+    var env: Env = undefined;
+    try start(&env, &.{ cut_quiz_turn, quiz_turn, cut_text_turn, rest_text_turn, followups_reply }, true);
+    defer env.deinit();
+
+    var res = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = "Quiz me on Zig" }},
+    } });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    const body = res.body;
+    // The retry repeated "Here's a quiz." and the app saw it once; the quiz ran once.
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, body, "Here's a quiz."));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, body, "event: tool\n"));
+    try std.testing.expect(std.mem.indexOf(u8, body, "Part one, ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "part two.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "event: done") != null);
+
+    try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[0], "max_tokens") == null);
+    try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[1], "\"max_tokens\":32768") != null);
+    // The continuation carries the cut-off text and the nudge.
+    const cont = env.fake.bodies.items[3];
+    try std.testing.expect(std.mem.indexOf(u8, cont, "\"content\":\"Part one, \"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cont, "output length limit") != null);
+}
+
+test "chat: a call still cut off after the retry is not run, and the model is told why" {
+    var env: Env = undefined;
+    try start(&env, &.{ cut_quiz_turn, cut_quiz_turn, final_turn, followups_reply }, true);
+    defer env.deinit();
+
+    var res = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = "Quiz me on Zig" }},
+    } });
+    defer res.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "event: tool\n") == null);
+    const third = env.fake.bodies.items[2];
+    try std.testing.expect(std.mem.indexOf(u8, third, "this make_quiz call was not run") != null);
+    // The cut-off arguments are not sent back as history.
+    try std.testing.expect(std.mem.indexOf(u8, third, "Who ma") == null);
+}
+
+test "chat: out of tool steps, one last call without tools asks for a summary" {
+    var env: Env = undefined;
+    try start(&env, &.{ quiz_turn, quiz_turn, quiz_turn, quiz_turn, final_turn, followups_reply }, true);
+    defer env.deinit();
+
+    var res = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = "Quiz me on Zig" }},
+    } });
+    defer res.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "Good luck") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "event: done") != null);
+    const last = env.fake.bodies.items[4];
+    try std.testing.expect(std.mem.indexOf(u8, last, "\"tool_choice\":\"none\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, last, "used all of its tool steps") != null);
+    try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[3], "tool_choice") == null);
+}
+
+const gw_cut_call =
+    \\{"id":"gen-1","choices":[{"finish_reason":"length","message":{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"file_editor","arguments":"{\"command\":\"create\",\"path\":\"/a.txt\",\"file_text\":\"hel"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":16384,"cost":0.001}}
+;
+const gw_cut_text =
+    \\{"id":"gen-2","choices":[{"finish_reason":"length","message":{"role":"assistant","content":"Hello"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":0.001}}
+;
+const gw_rest_text =
+    \\{"id":"gen-3","choices":[{"finish_reason":"stop","message":{"role":"assistant","content":" world"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":0.001}}
+;
+
+fn gatewayKey(env: *Env) ![]const u8 {
+    var made = try env.t.post("/v1/keys", .{ .json = .{ .name = "openhands" } });
+    defer made.deinit();
+    return std.testing.allocator.dupe(u8, (try made.json(struct { key: []const u8 })).key);
+}
+
+test "gateway: a cut-off tool call is retried with a bigger cap, then made unparseable" {
+    var env: Env = undefined;
+    try start(&env, &.{ gw_cut_call, gw_cut_call }, true);
+    defer env.deinit();
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const key = try gatewayKey(&env);
+    defer alloc.free(key);
+
+    var res = try env.t.post("/v1/chat/completions", .{
+        .headers = &.{.{ "Authorization", try bearer(a, key) }},
+        .json = .{ .model = "openai/anthropic/claude-haiku-5.5", .max_tokens = 16384, .messages = .{.{ .role = "user", .content = "write a.txt" }} },
+    });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    try std.testing.expectEqual(@as(usize, 2), env.fake.bodies.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[1], "\"max_tokens\":32768") != null);
+    const reply = try std.json.parseFromSliceLeaky(std.json.Value, a, res.body, .{});
+    const args = reply.object.get("choices").?.array.items[0].object.get("message").?.object.get("tool_calls").?.array.items[0].object.get("function").?.object.get("arguments").?.string;
+    try std.testing.expect(std.mem.endsWith(u8, args, "not run]"));
+    try std.testing.expectError(error.SyntaxError, std.json.parseFromSliceLeaky(std.json.Value, a, args, .{}));
+    // Both attempts are billed.
+    var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = a };
+    try std.testing.expectEqual(@as(i64, 2), try env.state.db.one(i64, &c, "SELECT COUNT(*) FROM usage_events", .{}));
+}
+
+test "gateway: cut-off text is continued and returned as one reply" {
+    var env: Env = undefined;
+    try start(&env, &.{ gw_cut_text, gw_rest_text }, true);
+    defer env.deinit();
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const key = try gatewayKey(&env);
+    defer alloc.free(key);
+
+    var res = try env.t.post("/v1/chat/completions", .{
+        .headers = &.{.{ "Authorization", try bearer(a, key) }},
+        .json = .{ .model = "openai/gpt-6.1-sol", .messages = .{.{ .role = "user", .content = "hi" }} },
+    });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "\"content\":\"Hello world\"") != null);
+    const second = env.fake.bodies.items[1];
+    try std.testing.expect(std.mem.indexOf(u8, second, "{\"role\":\"assistant\",\"content\":\"Hello\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, second, "output length limit") != null);
+}
+
+const gw_cut_stream =
+    \\data: {"id":"g1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"Writing it."}}]}
+    \\
+    \\data: {"id":"g1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"file_editor","arguments":"{\"command\":\"cre"}}]}}]}
+    \\
+    \\data: {"id":"g1","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}
+    \\
+    \\data: {"id":"g1","model":"m","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":16384,"cost":0.001}}
+    \\
+    \\data: [DONE]
+    \\
+    \\
+;
+const gw_full_stream =
+    \\data: {"id":"g2","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"Writing it."}}]}
+    \\
+    \\data: {"id":"g2","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c2","type":"function","function":{"name":"file_editor","arguments":"{\"command\":\"view\",\"path\":\"/a\"}"}}]}}]}
+    \\
+    \\data: {"id":"g2","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+    \\
+    \\data: {"id":"g2","model":"m","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":20,"cost":0.001}}
+    \\
+    \\data: [DONE]
+    \\
+    \\
+;
+
+test "gateway: streamed, a cut-off tool call is held back and replaced by the retry's" {
+    var env: Env = undefined;
+    try start(&env, &.{ gw_cut_stream, gw_full_stream }, true);
+    defer env.deinit();
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const key = try gatewayKey(&env);
+    defer alloc.free(key);
+
+    var res = try env.t.post("/v1/chat/completions", .{
+        .headers = &.{.{ "Authorization", try bearer(a, key) }},
+        .json = .{ .model = "openai/gpt-6.1-sol", .stream = true, .messages = .{.{ .role = "user", .content = "go" }} },
+    });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    const body = res.body;
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, body, "Writing it."));
+    try std.testing.expect(std.mem.indexOf(u8, body, "\\\"cre\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"id\":\"c2\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"finish_reason\":\"length\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"finish_reason\":\"tool_calls\"") != null);
+    try std.testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, body, "\n"), "data: [DONE]"));
+    try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[1], "\"max_tokens\":32768") != null);
 }

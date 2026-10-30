@@ -27,6 +27,8 @@ pub const Model = struct {
     provider: []const u8,
     blurb: []const u8,
     context_length: i64,
+    /// Most output tokens per reply (OpenRouter `top_provider.max_completion_tokens`; 0 = not listed).
+    max_output_tokens: i64 = 0,
     input_modalities: []const []const u8,
     output_modalities: []const []const u8,
     /// USD per million tokens, markup included.
@@ -142,12 +144,12 @@ pub const Catalog = struct {
         return arena.dupe(u8, self.json);
     }
 
-    pub const Facts = struct { known: bool, free: bool, tools: bool, web_search: bool };
+    pub const Facts = struct { known: bool, free: bool, tools: bool, web_search: bool, max_output: i64 = 0 };
 
     pub fn facts(self: *Catalog, io: std.Io, id: []const u8) Facts {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
-        for (self.models) |m| if (std.mem.eql(u8, m.id, id)) return .{ .known = true, .free = m.free, .tools = m.tools, .web_search = m.web_search };
+        for (self.models) |m| if (std.mem.eql(u8, m.id, id)) return .{ .known = true, .free = m.free, .tools = m.tools, .web_search = m.web_search, .max_output = m.max_output_tokens };
         // Unknown (catalog not loaded): treat as paid, assume tools.
         return .{ .known = false, .free = std.mem.endsWith(u8, id, ":free"), .tools = true, .web_search = true };
     }
@@ -213,6 +215,7 @@ fn parse(a: std.mem.Allocator, raw: []const u8, markup: f64) !Parsed {
             .provider = vendor,
             .blurb = try blurbOf(a, openrouter.jsonStr(o.get("description")) orelse ""),
             .context_length = openrouter.jsonInt(o.get("context_length")),
+            .max_output_tokens = if (o.get("top_provider")) |t| (if (t == .object) openrouter.jsonInt(t.object.get("max_completion_tokens")) else 0) else 0,
             .input_modalities = try strings(a, if (arch) |x| x.get("input_modalities") else null),
             .output_modalities = try strings(a, if (arch) |x| x.get("output_modalities") else null),
             .prompt_per_mtok = prompt * 1_000_000 * markup,

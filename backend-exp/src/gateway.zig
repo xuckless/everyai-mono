@@ -11,6 +11,7 @@ const billing = @import("billing.zig");
 const chat = @import("chat.zig");
 const openrouter = @import("openrouter.zig");
 const sse = @import("net/sse_client.zig");
+const truncation = @import("truncation.zig");
 
 fn completions(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const who = try auth.identity(req);
@@ -45,49 +46,291 @@ fn completions(app: *App, req: *anole.Request, res: *anole.Response) !void {
 
     const route = app.route(model, true);
     const up = try route.up.post(req, "/chat/completions", body, &.{});
-    defer up.close();
+    var call: Call = .{ .app = app, .req = req, .who = who, .session = session, .model = model, .route = route, .o = o, .max_output = facts.max_output };
 
-    if (!streaming or up.status >= 300) {
+    if (up.status >= 300) {
+        defer up.close();
         const reply = try up.reader.allocRemaining(req.arena, .limited(64 * 1024 * 1024));
-        if (up.status < 300) {
-            if (std.json.parseFromSliceLeaky(std.json.Value, req.arena, reply, .{})) |v| {
-                if (v == .object) if (v.object.get("usage")) |u| if (u == .object) try meter(app, req, who, session, model, route.provider, openrouter.parseUsage(u.object));
-            } else |_| {}
-        }
-        res.status = @enumFromInt(up.status);
+        res.status = @fromBackingInt(@intCast(up.status));
         res.content_type = .json;
         res.body = reply;
         return;
     }
-
-    // Stream through event by event, watching for the usage chunk.
+    if (!streaming) {
+        res.status = .ok;
+        res.content_type = .json;
+        res.body = try call.whole(up);
+        return;
+    }
     var buf: [16 * 1024]u8 = undefined;
     try res.header("Content-Type", "text/event-stream");
     try res.header("Cache-Control", "no-cache");
     var out = try res.stream(&buf);
-    var parser = sse.Parser.init(req.arena, up.reader);
-    defer parser.deinit();
-    var scratch: std.heap.ArenaAllocator = .init(req.arena);
-    defer scratch.deinit();
-    var usage: ?openrouter.Usage = null;
-    while (try parser.next()) |ev| {
-        try out.interface.writeAll("data: ");
-        try out.interface.writeAll(ev.data);
-        try out.interface.writeAll("\n\n");
-        try out.interface.flush();
-        if (std.mem.eql(u8, ev.data, "[DONE]")) break;
-        if (std.mem.indexOf(u8, ev.data, "\"usage\"") == null) continue;
-        _ = scratch.reset(.retain_capacity);
-        const v = std.json.parseFromSliceLeaky(std.json.Value, scratch.allocator(), ev.data, .{}) catch continue;
-        if (v == .object) if (v.object.get("usage")) |u| if (u == .object) {
-            usage = openrouter.parseUsage(u.object);
-        };
-    }
+    try call.streamed(up, &out.interface);
     try out.end();
-    if (usage) |u| try meter(app, req, who, session, model, route.provider, u);
 }
 
-fn meter(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, model: []const u8, provider: []const u8, u: openrouter.Usage) !void {
+/// One gateway request and its recovery from cut-off replies (see
+/// truncation.zig): a cut-off tool call is asked for again once with a bigger
+/// output cap, cut-off text is continued with a nudge, and a call still cut
+/// off is made unparseable so the harness reports it instead of running it.
+const Call = struct {
+    app: *App,
+    req: *anole.Request,
+    who: auth.Identity,
+    session: ?[]const u8,
+    model: []const u8,
+    route: App.Route,
+    /// The request body; the output cap is raised in place.
+    o: *std.json.ObjectMap,
+    max_output: i64,
+    boosted: bool = false,
+    continuations: u8 = 0,
+    /// Text of the replies continued so far.
+    text: std.ArrayList(u8) = .empty,
+
+    const Next = enum { done, boost, continue_text };
+
+    /// What to do after a reply that finished with `finish` (`used` output tokens).
+    fn next(self: *Call, finish: []const u8, has_tools: bool, text: []const u8, used: i64) !Next {
+        if (!truncation.isLength(finish)) return .done;
+        const arena = self.req.arena;
+        if (has_tools) {
+            if (self.boosted) return .done;
+            const cap = truncation.boostedCap(capOf(self.o.*, used), self.max_output) orelse return .done;
+            self.boosted = true;
+            try self.o.put(arena, "max_tokens", .{ .integer = cap });
+            if (self.o.get("max_completion_tokens") != null) try self.o.put(arena, "max_completion_tokens", .{ .integer = cap });
+            return .boost;
+        }
+        if (text.len == 0 or self.continuations >= truncation.max_continuations) return .done;
+        self.continuations += 1;
+        return .continue_text;
+    }
+
+    /// The body for the next attempt: the request, plus the text so far and
+    /// a nudge when continuing.
+    fn body(self: *Call) ![]const u8 {
+        const arena = self.req.arena;
+        if (self.text.items.len == 0) return std.json.Stringify.valueAlloc(arena, std.json.Value{ .object = self.o.* }, .{});
+        var o = try self.o.clone(arena);
+        var msgs: std.json.Array = .init(arena);
+        if (o.get("messages")) |m| if (m == .array) try msgs.appendSlice(m.array.items);
+        try msgs.append(try jsonObject(arena, &.{ .{ "role", .{ .string = "assistant" } }, .{ "content", .{ .string = self.text.items } } }));
+        try msgs.append(try jsonObject(arena, &.{ .{ "role", .{ .string = "user" } }, .{ "content", .{ .string = truncation.continue_nudge } } }));
+        try o.put(arena, "messages", .{ .array = msgs });
+        return std.json.Stringify.valueAlloc(arena, std.json.Value{ .object = o }, .{});
+    }
+
+    /// The next attempt, or null when it failed (the caller keeps the last
+    /// reply). `text` is the reply being continued.
+    fn retry(self: *Call, step: Next, text: []const u8) !?openrouter.Stream {
+        const kept = self.text.items.len;
+        if (step == .continue_text) try self.text.appendSlice(self.req.arena, text);
+        const up = self.route.up.post(self.req, "/chat/completions", try self.body(), &.{}) catch |err| {
+            std.log.warn("gateway retry failed: {t}", .{err});
+            self.text.shrinkRetainingCapacity(kept);
+            return null;
+        };
+        if (up.status < 300) return up;
+        std.log.warn("gateway retry failed: HTTP {d}", .{up.status});
+        up.close();
+        self.text.shrinkRetainingCapacity(kept);
+        return null;
+    }
+
+    fn meter(self: *Call, u: openrouter.Usage) !void {
+        try meterUsage(self.app, self.req, self.who, self.session, self.model, self.route.provider, u);
+    }
+
+    /// Non-streamed: the final reply's JSON.
+    fn whole(self: *Call, first: openrouter.Stream) ![]const u8 {
+        const arena = self.req.arena;
+        var up = first;
+        while (true) {
+            const reply = blk: {
+                defer up.close();
+                break :blk try up.reader.allocRemaining(arena, .limited(64 * 1024 * 1024));
+            };
+            var v = std.json.parseFromSliceLeaky(std.json.Value, arena, reply, .{}) catch return reply;
+            if (v != .object) return reply;
+            var used: i64 = 0;
+            if (v.object.get("usage")) |u| if (u == .object) {
+                const usage = openrouter.parseUsage(u.object);
+                used = usage.completion_tokens;
+                try self.meter(usage);
+            };
+            const choice = firstChoice(v) orelse return reply;
+            const msg = choice.getPtr("message") orelse return reply;
+            if (msg.* != .object) return reply;
+            const finish = openrouter.jsonStr(choice.get("finish_reason")) orelse "";
+            const calls = if (msg.object.get("tool_calls")) |t| (if (t == .array) t.array.items else &.{}) else &.{};
+            const text = openrouter.jsonStr(msg.object.get("content")) orelse "";
+
+            const step = try self.next(finish, calls.len > 0, text, used);
+            if (step != .done) if (try self.retry(step, text)) |again| {
+                up = again;
+                continue;
+            };
+            // Final: the text before it, and a cut-off call made unparseable.
+            if (self.text.items.len > 0) try msg.object.put(arena, "content", .{ .string = try std.mem.concat(arena, u8, &.{ self.text.items, text }) });
+            if (truncation.isLength(finish) and calls.len > 0) try markCut(arena, @constCast(&calls[calls.len - 1]));
+            if (self.text.items.len == 0 and !(truncation.isLength(finish) and calls.len > 0)) return reply;
+            return std.json.Stringify.valueAlloc(arena, v, .{});
+        }
+    }
+
+    /// Streamed: text goes through as it arrives; tool calls, the finish
+    /// chunk and usage are held until the reply is known not to need a retry.
+    fn streamed(self: *Call, first: openrouter.Stream, out: *std.Io.Writer) !void {
+        const arena = self.req.arena;
+        var up = first;
+        var forward_text = true;
+        while (true) {
+            var held: Held = .{};
+            const current = up;
+            defer current.close();
+            try held.read(arena, up.reader, out, forward_text);
+            if (held.usage) |u| try self.meter(u);
+
+            const step = try self.next(held.finish, held.tools, held.text.items, if (held.usage) |u| u.completion_tokens else 0);
+            if (step != .done) if (try self.retry(step, held.text.items)) |again| {
+                // Text held in finish chunks still goes to the client.
+                if (forward_text) for (held.chunks.items) |c| if (c.text.len > 0) try writeData(out, try held.textChunk(arena, c.text));
+                up = again;
+                // A retried call repeats text the client already has.
+                forward_text = step == .continue_text;
+                continue;
+            };
+            for (held.chunks.items, 0..) |c, i| {
+                if (held.finish_at == i and truncation.isLength(held.finish) and held.tools)
+                    try writeData(out, try held.markChunk(arena));
+                try writeData(out, c.raw);
+            }
+            try writeData(out, "[DONE]");
+            return;
+        }
+    }
+};
+
+/// One streamed attempt's held-back chunks.
+const Held = struct {
+    chunks: std.ArrayList(struct { raw: []const u8, text: []const u8 }) = .empty,
+    finish_at: ?usize = null,
+    finish: []const u8 = "",
+    tools: bool = false,
+    last_tool: i64 = 0,
+    text: std.ArrayList(u8) = .empty,
+    usage: ?openrouter.Usage = null,
+    id: []const u8 = "",
+    model: []const u8 = "",
+
+    fn read(self: *Held, arena: std.mem.Allocator, reader: *std.Io.Reader, out: *std.Io.Writer, forward_text: bool) !void {
+        var parser = sse.Parser.init(arena, reader);
+        defer parser.deinit();
+        var scratch: std.heap.ArenaAllocator = .init(arena);
+        defer scratch.deinit();
+        while (try parser.next()) |ev| {
+            if (std.mem.eql(u8, ev.data, "[DONE]")) break;
+            _ = scratch.reset(.retain_capacity);
+            const v = std.json.parseFromSliceLeaky(std.json.Value, scratch.allocator(), ev.data, .{}) catch {
+                try writeData(out, ev.data);
+                continue;
+            };
+            if (v != .object or v.object.get("error") != null) {
+                try writeData(out, ev.data);
+                continue;
+            }
+            if (self.id.len == 0) if (openrouter.jsonStr(v.object.get("id"))) |id| {
+                self.id = try arena.dupe(u8, id);
+            };
+            if (self.model.len == 0) if (openrouter.jsonStr(v.object.get("model"))) |m| {
+                self.model = try arena.dupe(u8, m);
+            };
+            var hold = false;
+            if (v.object.get("usage")) |u| if (u == .object) {
+                self.usage = openrouter.parseUsage(u.object);
+                hold = true;
+            };
+            var text: []const u8 = "";
+            if (firstChoice(v)) |choice| {
+                if (openrouter.jsonStr(choice.get("finish_reason"))) |f| {
+                    self.finish = try arena.dupe(u8, f);
+                    self.finish_at = self.chunks.items.len;
+                    hold = true;
+                }
+                if (choice.get("delta")) |d| if (d == .object) {
+                    text = openrouter.jsonStr(d.object.get("content")) orelse "";
+                    if (d.object.get("tool_calls")) |tc| if (tc == .array and tc.array.items.len > 0) {
+                        self.tools = true;
+                        hold = true;
+                        for (tc.array.items) |c| if (c == .object) {
+                            self.last_tool = @max(self.last_tool, openrouter.jsonInt(c.object.get("index")));
+                        };
+                    };
+                };
+            } else hold = true;
+            try self.text.appendSlice(arena, text);
+            if (hold) {
+                try self.chunks.append(arena, .{ .raw = try arena.dupe(u8, ev.data), .text = try arena.dupe(u8, text) });
+            } else if (forward_text) {
+                try writeData(out, ev.data);
+            }
+        }
+    }
+
+    fn textChunk(self: *const Held, arena: std.mem.Allocator, text: []const u8) ![]const u8 {
+        return chunkJson(arena, self.id, self.model, .{ .content = text });
+    }
+
+    /// Appends `cut_marker` to the last tool call's arguments.
+    fn markChunk(self: *const Held, arena: std.mem.Allocator) ![]const u8 {
+        return chunkJson(arena, self.id, self.model, .{ .tool_calls = .{.{ .index = self.last_tool, .function = .{ .arguments = truncation.cut_marker } }} });
+    }
+};
+
+fn chunkJson(arena: std.mem.Allocator, id: []const u8, model: []const u8, delta: anytype) ![]const u8 {
+    return std.json.Stringify.valueAlloc(arena, .{
+        .id = id,
+        .object = "chat.completion.chunk",
+        .model = model,
+        .choices = .{.{ .index = 0, .delta = delta, .finish_reason = @as(?[]const u8, null) }},
+    }, .{});
+}
+
+fn writeData(out: *std.Io.Writer, data: []const u8) !void {
+    try out.writeAll("data: ");
+    try out.writeAll(data);
+    try out.writeAll("\n\n");
+    try out.flush();
+}
+
+fn firstChoice(v: std.json.Value) ?*std.json.ObjectMap {
+    if (v != .object) return null;
+    const choices = v.object.getPtr("choices") orelse return null;
+    if (choices.* != .array or choices.array.items.len == 0) return null;
+    const c = &choices.array.items[0];
+    return if (c.* == .object) &c.object else null;
+}
+
+/// The cap the request set, else the output the cut-off reply used.
+fn capOf(o: std.json.ObjectMap, used: i64) i64 {
+    const a = openrouter.jsonInt(o.get("max_completion_tokens"));
+    if (a > 0) return a;
+    const b = openrouter.jsonInt(o.get("max_tokens"));
+    return if (b > 0) b else used;
+}
+
+/// Makes a tool call's arguments unparseable (see `truncation.cut_marker`).
+fn markCut(arena: std.mem.Allocator, call: *std.json.Value) !void {
+    if (call.* != .object) return;
+    const f = call.object.getPtr("function") orelse return;
+    if (f.* != .object) return;
+    const args = openrouter.jsonStr(f.object.get("arguments")) orelse "";
+    try f.object.put(arena, "arguments", .{ .string = try std.mem.concat(arena, u8, &.{ args, truncation.cut_marker }) });
+}
+
+fn meterUsage(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, model: []const u8, provider: []const u8, u: openrouter.Usage) !void {
     _ = try billing.charge(app, req, who.user_id, .{
         .kind = "gateway",
         .model = model,
