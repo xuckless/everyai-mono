@@ -56,9 +56,7 @@ fn completions(app: *App, req: *anole.Request, res: *anole.Response) !void {
 
     // Metering needs the usage block.
     try o.put(req.arena, "usage", try jsonObject(req.arena, &.{.{ "include", .{ .bool = true } }}));
-    if (chat.wantsBreakpoints(model) and !std.mem.containsAtLeast(u8, raw, 1, "cache_control")) {
-        try addBreakpoints(req.arena, o, app.cfg.gateway_cache_ttl);
-    }
+    if (chat.wantsBreakpoints(model)) try addBreakpoints(req.arena, o, app.cfg.gateway_cache_ttl);
     try applyEffort(req.arena, o, req.headers.get("X-EveryAI-Effort"));
     const streaming = if (o.get("stream")) |s| s == .bool and s.bool else false;
     const body = try std.json.Stringify.valueAlloc(req.arena, root, .{});
@@ -420,22 +418,73 @@ fn cacheControl(arena: std.mem.Allocator, ttl: []const u8) !std.json.Value {
 }
 
 /// Breakpoints on: the last tool definition (tools + system prefix), the
-/// system message, and the last message.
+/// system message, and the last message. Marks the client set are kept
+/// (LiteLLM marks only the system message, so the growing conversation
+/// needs ours too); the oldest message marks go beyond the provider's four.
+/// Decided on the request's structure: text that merely mentions
+/// `cache_control` (a project's docs in the system prompt) changes nothing.
 pub fn addBreakpoints(arena: std.mem.Allocator, o: *std.json.ObjectMap, ttl: []const u8) !void {
     if (o.get("tools")) |t| if (t == .array and t.array.items.len > 0) {
         const last = &t.array.items[t.array.items.len - 1];
-        if (last.* == .object) try last.object.put(arena, "cache_control", try cacheControl(arena, ttl));
+        if (last.* == .object and !last.object.contains("cache_control")) try last.object.put(arena, "cache_control", try cacheControl(arena, ttl));
     };
     const msgs = (o.get("messages") orelse return);
     if (msgs != .array or msgs.array.items.len == 0) return;
     const items = msgs.array.items;
     for (items) |*m| {
         if (m.* == .object and std.mem.eql(u8, openrouter.jsonStr(m.object.get("role")) orelse "", "system")) {
-            try markLastPart(arena, m, ttl);
+            if (!hasMark(m.*)) try markLastPart(arena, m, ttl);
             break;
         }
     }
-    try markLastPart(arena, &items[items.len - 1], ttl);
+    if (!hasMark(items[items.len - 1])) try markLastPart(arena, &items[items.len - 1], ttl);
+    capBreakpoints(o);
+}
+
+const max_breakpoints = 4;
+
+/// Whether a message carries a breakpoint (on itself or one of its parts).
+fn hasMark(msg: std.json.Value) bool {
+    if (msg != .object) return false;
+    if (msg.object.contains("cache_control")) return true;
+    const content = msg.object.get("content") orelse return false;
+    if (content != .array) return false;
+    for (content.array.items) |p| if (p == .object and p.object.contains("cache_control")) return true;
+    return false;
+}
+
+/// Drops the oldest message breakpoints until at most four remain in all.
+fn capBreakpoints(o: *std.json.ObjectMap) void {
+    var total: usize = 0;
+    if (o.get("tools")) |t| if (t == .array) {
+        for (t.array.items) |b| if (b == .object and b.object.contains("cache_control")) {
+            total += 1;
+        };
+    };
+    const msgs = o.getPtr("messages") orelse return;
+    if (msgs.* != .array) return;
+    for (msgs.array.items) |m| total += countMarks(m);
+    if (total <= max_breakpoints) return;
+    var drop = total - max_breakpoints;
+    for (msgs.array.items) |*m| {
+        if (drop == 0) return;
+        // The system message's mark covers the stable prefix: kept.
+        if (m.* != .object or std.mem.eql(u8, openrouter.jsonStr(m.object.get("role")) orelse "", "system")) continue;
+        if (m.object.swapRemove("cache_control")) drop -= 1;
+        if (m.object.getPtr("content")) |c| if (c.* == .array) for (c.array.items) |*p| {
+            if (drop == 0) break;
+            if (p.* == .object and p.object.swapRemove("cache_control")) drop -= 1;
+        };
+    }
+}
+
+fn countMarks(msg: std.json.Value) usize {
+    if (msg != .object) return 0;
+    var n: usize = if (msg.object.contains("cache_control")) 1 else 0;
+    if (msg.object.get("content")) |c| if (c == .array) for (c.array.items) |p| {
+        if (p == .object and p.object.contains("cache_control")) n += 1;
+    };
+    return n;
 }
 
 /// Turns string content into a one-part array and marks its last text part.
@@ -480,6 +529,41 @@ test addBreakpoints {
     const out = try std.json.Stringify.valueAlloc(a, v, .{});
     try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, out, "cache_control"));
     try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, out, "\"ttl\":\"1h\""));
+}
+
+test "breakpoints come from the request's structure, not text that mentions cache_control" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // A project's docs in the system prompt mention cache_control: still marked.
+    var docs = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"messages":[{"role":"system","content":"The gateway adds cache_control itself."},{"role":"user","content":"hi"}]}
+    , .{});
+    try addBreakpoints(a, &docs.object, "5m");
+    var out = try std.json.Stringify.valueAlloc(a, docs, .{});
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, out, "\"cache_control\""));
+
+    // LiteLLM marked only the system message: the last message gets one too.
+    var litellm = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"messages":[{"role":"system","content":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral"}}]},
+        \\ {"role":"user","content":"a"},{"role":"assistant","content":"b"},{"role":"tool","tool_call_id":"t","content":"c"}]}
+    , .{});
+    try addBreakpoints(a, &litellm.object, "5m");
+    out = try std.json.Stringify.valueAlloc(a, litellm, .{});
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, out, "\"cache_control\""));
+    try std.testing.expect(hasMark(litellm.object.get("messages").?.array.items[3]));
+
+    // Never more than four: the oldest message marks go first.
+    var many = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"tools":[{"type":"function","function":{"name":"x"}}],"messages":[{"role":"system","content":"s"},
+        \\ {"role":"user","content":[{"type":"text","text":"1","cache_control":{"type":"ephemeral"}}]},
+        \\ {"role":"user","content":[{"type":"text","text":"2","cache_control":{"type":"ephemeral"}}]},
+        \\ {"role":"user","content":"3"}]}
+    , .{});
+    try addBreakpoints(a, &many.object, "5m");
+    const msgs = many.object.get("messages").?.array.items;
+    try std.testing.expect(!hasMark(msgs[1]));
+    try std.testing.expect(hasMark(msgs[0]) and hasMark(msgs[2]) and hasMark(msgs[3]));
 }
 
 test "held tool-call chunks keep the stream alive with comments, then go out whole" {
