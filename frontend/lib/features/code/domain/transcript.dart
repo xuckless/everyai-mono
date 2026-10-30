@@ -15,8 +15,11 @@ sealed class TranscriptItem {
 }
 
 final class UserTurn extends TranscriptItem {
-  const UserTurn(super.key, this.text);
+  const UserTurn(super.key, this.text, {this.mode});
   final String text;
+
+  /// The mode note the message carried (shown as a chip), if any.
+  final AgentMode? mode;
 }
 
 final class AgentText extends TranscriptItem {
@@ -86,6 +89,55 @@ final class QuestionItem extends TranscriptItem {
   final List<QuestionAnswer>? answers;
 }
 
+/// A `present_plan` proposal. [verdict] is null while it waits for the user.
+final class PlanProposal extends TranscriptItem {
+  PlanProposal(this.call, {this.verdict}) : super(call.id);
+  final ActionCall call;
+  final PlanVerdict? verdict;
+
+  String get title => call.str('title');
+  String get summary => call.str('summary');
+  String get verification => call.str('verification');
+
+  List<PlanStep> get steps => [
+    for (final s in (call.action['steps'] as List<Object?>? ?? const []))
+      if (s is Map<String, Object?>)
+        PlanStep(s['title'] as String? ?? '', s['detail'] as String? ?? '', [
+          for (final f in (s['files'] as List<Object?>? ?? const [])) '$f',
+        ])
+      else if (s is String)
+        PlanStep(s, '', const []),
+  ];
+
+  List<String> get risks => [for (final r in (call.action['risks'] as List<Object?>? ?? const [])) '$r'];
+
+  /// The plan as Markdown, for copying.
+  String get markdown => [
+    '# $title',
+    if (summary.isNotEmpty) '\n$summary',
+    '',
+    for (final (i, s) in steps.indexed) ...[
+      '${i + 1}. ${s.title}${s.detail.isEmpty ? '' : ': ${s.detail}'}',
+      if (s.files.isNotEmpty) '   Files: ${s.files.join(', ')}',
+    ],
+    if (risks.isNotEmpty) ...['', '## Risks', for (final r in risks) '- $r'],
+    if (verification.isNotEmpty) ...['', '## Verification', verification],
+  ].join('\n');
+}
+
+enum PlanVerdict { approved, revised }
+
+@immutable
+final class PlanStep {
+  const PlanStep(this.title, this.detail, this.files);
+  final String title;
+  final String detail;
+  final List<String> files;
+}
+
+/// The message "Start building" sends after a plan is approved.
+const planApprovedMessage = 'The plan is approved. Build it now, then verify it works.';
+
 final class NoticeItem extends TranscriptItem {
   const NoticeItem(super.key, this.message, {this.error = false});
   final String message;
@@ -101,6 +153,7 @@ final class Transcript {
     this.status = ExecutionStatus.idle,
     this.plan = const [],
     this.pending = const [],
+    this.notedMode,
   });
 
   final List<TranscriptItem> items;
@@ -115,6 +168,18 @@ final class Transcript {
 
   /// Actions waiting for approval.
   final List<ActionCall> pending;
+
+  /// The mode the agent was last told about (see `modeNote`).
+  final AgentMode? notedMode;
+
+  /// The latest plan proposal still waiting for the user.
+  PlanProposal? get openPlan {
+    for (final item in items.reversed) {
+      if (item is UserTurn) return null;
+      if (item is PlanProposal && item.verdict == null) return item;
+    }
+    return null;
+  }
 
   /// The card waiting for answers: the latest unanswered one since the user
   /// last spoke. The agent's own text after it ("I've asked…") doesn't close it.
@@ -142,6 +207,7 @@ final class TranscriptBuilder {
   final _reasoning = StringBuffer();
   var _status = ExecutionStatus.idle;
   var _plan = const <PlanTask>[];
+  AgentMode? _notedMode;
 
   Transcript get snapshot => Transcript(
     items: List.unmodifiable(_items),
@@ -149,6 +215,7 @@ final class TranscriptBuilder {
     streamingReasoning: _reasoning.toString(),
     status: _status,
     plan: _plan,
+    notedMode: _notedMode,
     pending: _status == ExecutionStatus.waitingForConfirmation ? _unanswered() : const [],
   );
 
@@ -168,10 +235,12 @@ final class TranscriptBuilder {
         _status = executionStatus;
       case StateChange():
         break;
-      case ChatMessage(fromUser: true, :final text):
+      case ChatMessage(fromUser: true, text: final raw):
+        final (mode, text) = splitModeNote(raw);
+        if (mode != null) _notedMode = mode;
         if (_answer(text)) return;
-        _items.add(UserTurn(e.id, text));
-        _closeOpenQuestion();
+        _items.add(UserTurn(e.id, text, mode: mode));
+        _settleOpenCards(text);
       case ChatMessage(:final text, :final reasoning):
         if (text.trim().isEmpty && reasoning.trim().isEmpty) return;
         _items.add(AgentText(e.id, text, reasoning: reasoning));
@@ -191,6 +260,10 @@ final class TranscriptBuilder {
     _open[call.id] = call;
     if (call.toolName == askUserQuestionTool) {
       _push(call.id, QuestionItem(call, Question.listFrom(call.action)));
+      return;
+    }
+    if (call.toolName == presentPlanTool) {
+      _push(call.id, PlanProposal(call));
       return;
     }
     switch (call.actionKind) {
@@ -250,14 +323,17 @@ final class TranscriptBuilder {
     };
   }
 
-  /// A reply in the user's own words settles any card still open.
-  void _closeOpenQuestion() {
+  /// A reply in the user's own words settles any card still open: a
+  /// question counts as answered in chat, a plan as approved or revised.
+  void _settleOpenCards(String text) {
     for (var i = _items.length - 2; i >= 0; i--) {
       final item = _items[i];
       if (item is UserTurn) return;
       if (item is QuestionItem && item.answers == null) {
         _items[i] = QuestionItem(item.call, item.questions, const []);
-        return;
+      } else if (item is PlanProposal && item.verdict == null) {
+        final approved = text.startsWith(planApprovedMessage);
+        _items[i] = PlanProposal(item.call, verdict: approved ? PlanVerdict.approved : PlanVerdict.revised);
       }
     }
   }

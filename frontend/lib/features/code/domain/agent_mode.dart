@@ -1,4 +1,5 @@
 import '../harness/events.dart';
+import 'shell_readonly.dart';
 
 /// How much the agent may do without asking.
 enum AgentMode {
@@ -36,28 +37,85 @@ enum AgentMode {
   /// Plan mode refuses anything that changes the workspace.
   bool rejects(ActionCall call) => this == plan && !isReadOnly(call) && !_isClientTool(call);
 
-  static bool _isClientTool(ActionCall call) => call.toolName == askUserQuestionTool;
+  static bool _isClientTool(ActionCall call) => clientTools.contains(call.toolName);
 
   /// Actions that only look: viewing files, listing, searching, planning.
   static bool isReadOnly(ActionCall call) => switch (call.actionKind) {
     'FileEditorAction' => call.str('command') == 'view',
     'ReadFileAction' || 'GlobAction' || 'GrepAction' || 'ListDirectoryAction' => true,
     'TaskTrackerAction' || 'ThinkAction' || 'FinishAction' => true,
-    'TerminalAction' => _readOnlyCommand(call.str('command')),
+    // is_input sends keys to a running process.
+    'TerminalAction' => call.action['is_input'] != true && isReadOnlyShell(call.str('command')),
     _ => false,
   };
 
-  static final _readOnly = RegExp(
-    r'^\s*(ls|pwd|cat|head|tail|wc|find|grep|rg|tree|which|file|stat|git (status|log|diff|show|branch|remote)|echo)\b',
-  );
+  /// Why Plan mode refused an action, phrased so the agent keeps exploring
+  /// instead of concluding its tools are broken.
+  static const planRefusal =
+      'Not run: Plan mode is read-only. Viewing files and read-only commands (cat, ls, rg, grep, find, sed -n, '
+      'git status/log/diff/show) still run without approval, so keep exploring with those. When you know what to '
+      'change, call present_plan and stop.';
 
-  static bool _readOnlyCommand(String command) =>
-      command.isNotEmpty && !RegExp(r'[;&|>]').hasMatch(command) && _readOnly.hasMatch(command);
-
-  String get planPrompt =>
-      'You are in plan mode. Explore the code read-only, then reply with a concise, numbered implementation '
-      'plan and stop. Do not edit files or run commands that change anything until the user says to start.';
+  /// What the agent is told when a message is sent in this mode (see
+  /// [modeNote]). Each note stands alone; the latest one wins.
+  String get instructions => switch (this) {
+    ask =>
+      'Mode: Ask. Use your tools: viewing files and read-only commands run at once; edits and other commands '
+          'wait for the user to approve them in the app, so propose them as tool calls rather than describing them. '
+          'Restrictions from earlier mode notes no longer apply.',
+    autoEdit =>
+      'Mode: Auto-edit. File edits apply at once and read-only commands run freely; other commands wait for the '
+          "user's approval. Do the work with your tools and verify it. Restrictions from earlier mode notes no "
+          'longer apply.',
+    plan =>
+      'Mode: Plan. Investigate before proposing: view files and run read-only commands (cat, ls, rg, grep, find, '
+          'sed -n, git status/log/diff/show); they run without approval. Do not edit files or run commands that change '
+          "anything. Ask with ask_user_question when a decision is genuinely the user's. When you understand the "
+          'change, call present_plan with concrete steps naming the files involved, then stop and wait.',
+    fullAuto =>
+      'Mode: Full auto. Every command and edit runs without approval. Do the task end to end: read the code, '
+          'make the change, run the tests or build, and fix what fails. Restrictions from earlier mode notes no '
+          'longer apply.',
+  };
 }
+
+/// The tag a user message starts with to tell the agent its mode.
+const _noteOpen = '<everyai-mode name="';
+const _noteClose = '</everyai-mode>';
+
+/// [text] prefixed with [mode]'s instructions. The app sends one with the
+/// first message and with the first message after every mode change.
+String modeNote(AgentMode mode, String text) =>
+    '$_noteOpen${mode.name}">${mode.instructions}$_noteClose${text.isEmpty ? '' : '\n\n$text'}';
+
+/// Splits a mode note off a user message: the mode (null without a note) and
+/// the text the user wrote.
+(AgentMode?, String) splitModeNote(String text) {
+  if (!text.startsWith(_noteOpen)) return (null, text);
+  final nameEnd = text.indexOf('"', _noteOpen.length);
+  final end = text.indexOf(_noteClose);
+  if (nameEnd < 0 || end < 0) return (null, text);
+  final name = text.substring(_noteOpen.length, nameEnd);
+  final mode = AgentMode.values.where((m) => m.name == name).firstOrNull;
+  return (mode, text.substring(end + _noteClose.length).trimLeft());
+}
+
+/// How EveryAI wants the agent to work, appended to OpenHands' system prompt.
+/// Constant, so prompt caching keeps working.
+const workingRules = '''
+<everyai>
+You are the coding agent inside EveryAI. The user watches your tool calls in a desktop app.
+- Act through your tools. Read the relevant code before proposing or changing anything; never answer with
+  instructions for the user to carry out when you can do the work yourself.
+- Your workspace is the current working directory, a checkout of the user's project. Files the user attaches are
+  saved under .everyai/uploads/ there.
+- User messages may start with an <everyai-mode> note. Follow the latest note; it replaces earlier ones.
+- If a tool call is refused, read the reason and continue within it. Never claim your tools or files are
+  unavailable without trying them.
+- Use ask_user_question only for decisions that are genuinely the user's. After calling it, end your turn. When the
+  answers arrive, carry on with the task.
+- Before saying you are done, verify the change: run the tests, the build or the program, and report what you ran.
+</everyai>''';
 
 /// The question-card client tool (see AGENTS.md "Question cards").
 const askUserQuestionTool = 'ask_user_question';
@@ -102,6 +160,52 @@ const askUserQuestionSpec = <String, Object?>{
       },
     },
     'required': ['questions'],
+  },
+  'annotations': {'readOnlyHint': true, 'destructiveHint': false},
+};
+
+/// Plan mode's hand-off: the agent proposes, the user approves or revises.
+const presentPlanTool = 'present_plan';
+
+/// The client tools registered with every session.
+const clientTools = {askUserQuestionTool, presentPlanTool};
+
+const presentPlanSpec = <String, Object?>{
+  'name': presentPlanTool,
+  'description':
+      'Present your implementation plan to the user for approval. Use it in Plan mode once you have read enough '
+      'of the code to be specific. Each step says what changes and in which files. After calling this tool, stop '
+      'and end your turn: the user either approves (you will be told to build it) or replies with changes.',
+  'parameters': {
+    'type': 'object',
+    'properties': {
+      'title': {'type': 'string', 'description': 'A short name for the change'},
+      'summary': {'type': 'string', 'description': 'One or two sentences on the approach'},
+      'steps': {
+        'type': 'array',
+        'minItems': 1,
+        'items': {
+          'type': 'object',
+          'properties': {
+            'title': {'type': 'string', 'description': 'What this step does'},
+            'detail': {'type': 'string', 'description': 'How, briefly'},
+            'files': {
+              'type': 'array',
+              'items': {'type': 'string'},
+              'description': 'Files created or changed',
+            },
+          },
+          'required': ['title'],
+        },
+      },
+      'risks': {
+        'type': 'array',
+        'items': {'type': 'string'},
+        'description': 'Open questions or things that could go wrong',
+      },
+      'verification': {'type': 'string', 'description': 'How you will check the change works'},
+    },
+    'required': ['title', 'steps'],
   },
   'annotations': {'readOnlyHint': true, 'destructiveHint': false},
 };

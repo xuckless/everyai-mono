@@ -113,9 +113,14 @@ void main() {
     final runTests = _call({'kind': 'TerminalAction', 'command': 'flutter test'});
     final ask = _call({}, tool: askUserQuestionTool);
 
-    test('read-only detection refuses chained commands', () {
+    test('read-only detection follows every part of a chained command', () {
       expect(AgentMode.isReadOnly(ls), isTrue);
       expect(AgentMode.isReadOnly(sneaky), isFalse);
+      expect(
+        AgentMode.isReadOnly(_call({'kind': 'TerminalAction', 'command': 'cat a.dart; git log -3 | head'})),
+        isTrue,
+      );
+      expect(AgentMode.isReadOnly(_call({'kind': 'TerminalAction', 'command': 'ls', 'is_input': true})), isFalse);
       expect(AgentMode.isReadOnly(view), isTrue);
       expect(AgentMode.isReadOnly(edit), isFalse);
     });
@@ -125,6 +130,79 @@ void main() {
       expect([view, edit, runTests, ask].map(AgentMode.autoEdit.autoApproves), [true, true, false, true]);
       expect([view, edit, runTests, ask].map(AgentMode.plan.rejects), [false, true, true, false]);
       expect([view, edit, runTests, ask].every(AgentMode.fullAuto.autoApproves), isTrue);
+      final plan = _call({}, tool: presentPlanTool);
+      expect(AgentMode.plan.autoApproves(plan) && !AgentMode.plan.rejects(plan), isTrue);
+    });
+
+    test('mode notes wrap a message and come back off it', () {
+      final sent = modeNote(AgentMode.plan, 'Add a signup form');
+      expect(sent, startsWith('<everyai-mode name="plan">Mode: Plan.'));
+      expect(splitModeNote(sent), (AgentMode.plan, 'Add a signup form'));
+      expect(splitModeNote('plain'), (null, 'plain'));
+      // Every note releases the restrictions of the ones before it.
+      for (final m in AgentMode.values.where((m) => m != AgentMode.plan)) {
+        expect(m.instructions, contains('no longer apply'));
+      }
+    });
+  });
+
+  group('mode notes and plans in the transcript', () {
+    HarnessEvent user(String id, String text) => HarnessEvent.decode({
+      'kind': 'MessageEvent',
+      'id': id,
+      'source': 'user',
+      'llm_message': {
+        'role': 'user',
+        'content': [
+          {'type': 'text', 'text': text},
+        ],
+      },
+    });
+    HarnessEvent proposal() => HarnessEvent.decode({
+      'kind': 'ActionEvent',
+      'id': 'p1',
+      'tool_name': presentPlanTool,
+      'action': {
+        'title': 'Signup form',
+        'steps': [
+          {
+            'title': 'Add the form widget',
+            'files': ['lib/signup.dart'],
+          },
+          'Write tests',
+        ],
+        'risks': ['Date parsing'],
+      },
+    });
+
+    test('the noted mode is tracked and the note is hidden from the turn', () {
+      final b = TranscriptBuilder()..add(user('u1', modeNote(AgentMode.plan, 'Plan a form')));
+      final turn = b.snapshot.items.single as UserTurn;
+      expect((turn.text, turn.mode), ('Plan a form', AgentMode.plan));
+      expect(b.snapshot.notedMode, AgentMode.plan);
+      b.add(user('u2', 'more detail'));
+      expect(b.snapshot.notedMode, AgentMode.plan);
+    });
+
+    test('a plan proposal waits, then Start building approves it', () {
+      final b = TranscriptBuilder()
+        ..add(user('u1', modeNote(AgentMode.plan, 'Plan a form')))
+        ..add(proposal());
+      final plan = b.snapshot.openPlan!;
+      expect(plan.steps.map((s) => s.title), ['Add the form widget', 'Write tests']);
+      expect(plan.steps.first.files, ['lib/signup.dart']);
+      expect(plan.markdown, contains('1. Add the form widget'));
+      b.add(user('u2', modeNote(AgentMode.autoEdit, planApprovedMessage)));
+      expect(b.snapshot.openPlan, isNull);
+      expect(b.snapshot.items.whereType<PlanProposal>().single.verdict, PlanVerdict.approved);
+      expect(b.snapshot.notedMode, AgentMode.autoEdit);
+    });
+
+    test('feedback sends the plan back', () {
+      final b = TranscriptBuilder()
+        ..add(proposal())
+        ..add(user('u2', 'Use a stepper instead'));
+      expect(b.snapshot.items.whereType<PlanProposal>().single.verdict, PlanVerdict.revised);
     });
   });
 

@@ -21,6 +21,7 @@ import '../domain/questions.dart';
 import '../domain/transcript.dart';
 import 'code_composer.dart';
 import 'transcript/approval_card.dart';
+import 'transcript/plan_card.dart';
 import 'transcript/question_card.dart';
 import 'transcript/transcript_items.dart';
 
@@ -55,6 +56,7 @@ class CodeSessionScreen extends ConsumerWidget {
         state.mode == AgentMode.plan &&
         !busy &&
         t.openQuestion == null &&
+        t.items.whereType<PlanProposal>().isEmpty &&
         t.items.lastOrNull is AgentText &&
         t.items.whereType<UserTurn>().isNotEmpty;
 
@@ -67,7 +69,13 @@ class CodeSessionScreen extends ConsumerWidget {
       body: Column(
         children: [
           Expanded(
-            child: _TranscriptList(transcript: t, onAnswer: controller.answer),
+            child: _TranscriptList(
+              transcript: t,
+              onAnswer: controller.answer,
+              mode: state.mode,
+              onApprovePlan: controller.startBuilding,
+              onRevisePlan: controller.send,
+            ),
           ),
           if (state.error case final error?)
             Padding(
@@ -144,10 +152,19 @@ class CodeSessionScreen extends ConsumerWidget {
 }
 
 class _TranscriptList extends StatelessWidget {
-  const _TranscriptList({required this.transcript, required this.onAnswer});
+  const _TranscriptList({
+    required this.transcript,
+    required this.mode,
+    required this.onAnswer,
+    required this.onApprovePlan,
+    required this.onRevisePlan,
+  });
 
   final Transcript transcript;
+  final AgentMode mode;
   final void Function(QuestionItem, List<QuestionAnswer>) onAnswer;
+  final VoidCallback onApprovePlan;
+  final ValueChanged<String> onRevisePlan;
 
   @override
   Widget build(BuildContext context) {
@@ -177,9 +194,9 @@ class _TranscriptList extends StatelessWidget {
   }
 
   Widget _itemView(TranscriptItem item) => switch (item) {
-    UserTurn(:final text) => Padding(
+    UserTurn(:final text, :final mode) => Padding(
       padding: const EdgeInsets.only(top: 10),
-      child: UserTurnView(text: text),
+      child: UserTurnView(text: text, mode: mode),
     ),
     AgentText(:final text, :final reasoning) => AgentTextView(text: text, reasoning: reasoning),
     ExploreGroup() => ExploreGroupView(group: item),
@@ -191,6 +208,14 @@ class _TranscriptList extends StatelessWidget {
       item: item,
       enabled: item == transcript.openQuestion,
       onSubmit: (answers) => onAnswer(item, answers),
+    ),
+    PlanProposal() => PlanCard(
+      key: ValueKey(item.key),
+      plan: item,
+      open: item == transcript.openPlan,
+      switchesToAutoEdit: mode == AgentMode.plan,
+      onApprove: onApprovePlan,
+      onRevise: onRevisePlan,
     ),
     NoticeItem() => NoticeView(item: item),
   };

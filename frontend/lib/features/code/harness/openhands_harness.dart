@@ -51,13 +51,12 @@ final class OpenHandsHarness implements Harness {
           // `task` (subagents) fails to start in agent-server 1.59.0:
           // TaskTool.create() got an unexpected keyword argument 'conv_state'.
         ],
+        'agent_context': {'system_message_suffix': workingRules},
       },
       'workspace': {'kind': 'LocalWorkspace', 'working_dir': spec.workingDir},
       'confirmation_policy': spec.mode.confirmationPolicy,
-      'client_tools': [askUserQuestionSpec],
-      'initial_message': ?(first == null
-          ? null
-          : _message(_withMode(first, spec.mode), run: true, images: spec.initialImages)),
+      'client_tools': [askUserQuestionSpec, presentPlanSpec],
+      'initial_message': ?(first == null ? null : _message(first, run: true, images: spec.initialImages)),
     });
     final id = (info as Map<String, Object?>?)?['id'] as String?;
     if (id == null) throw const HarnessError('The agent server returned no conversation id.');
@@ -79,8 +78,6 @@ final class OpenHandsHarness implements Harness {
     ],
     'run': run,
   };
-
-  static String _withMode(String text, AgentMode mode) => mode == AgentMode.plan ? '${mode.planPrompt}\n\n$text' : text;
 }
 
 final class _OpenHandsSession implements HarnessSession {

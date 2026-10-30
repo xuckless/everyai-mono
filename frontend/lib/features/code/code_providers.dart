@@ -188,7 +188,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         llmBaseUrl: demo ? '' : ref.read(appConfigProvider).apiBaseUrl.resolve('v1').toString(),
         llmApiKey: demo ? '' : await gatewayKey(ref),
         sessionTag: id,
-        initialMessage: first.text,
+        initialMessage: modeNote(mode, first.text),
         initialImages: first.images,
         vision: _sees(ref, model),
         maxInputTokens: ref.read(modelCatalogProvider)[ModelId(model)]?.contextLength,
@@ -251,7 +251,7 @@ final class CodeSessionState {
   SessionStatus get status => switch (transcript) {
     _ when error != null => SessionStatus.failed,
     Transcript(pending: [_, ...]) => SessionStatus.needsInput,
-    final t when t.openQuestion != null => SessionStatus.needsInput,
+    final t when t.openQuestion != null || t.openPlan != null => SessionStatus.needsInput,
     Transcript(status: ExecutionStatus.running) => SessionStatus.running,
     Transcript(status: ExecutionStatus.error || ExecutionStatus.stuck) => SessionStatus.failed,
     Transcript(status: ExecutionStatus.finished) => SessionStatus.done,
@@ -322,7 +322,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     if (!transcript.running && transcript.pending.isEmpty && state.queued.isNotEmpty) {
       final [next, ...rest] = state.queued;
       state = state.copyWith(queued: rest);
-      unawaited(_session?.send(next.text, images: next.images));
+      unawaited(_session?.send(_noted(next.text), images: next.images));
     }
   }
 
@@ -334,17 +334,15 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     final mode = state.mode;
     if (t.pending.any(mode.rejects)) {
       _answered = key;
-      unawaited(
-        _session?.respond(
-          accept: false,
-          reason: 'Plan mode is read-only. Finish the plan and wait for the user to start building.',
-        ),
-      );
+      unawaited(_session?.respond(accept: false, reason: AgentMode.planRefusal));
     } else if (t.pending.every(mode.autoApproves)) {
       _answered = key;
       unawaited(_session?.respond(accept: true));
     }
   }
+
+  /// [text] with a mode note when the agent hasn't been told the current mode.
+  String _noted(String text) => state.transcript.notedMode == state.mode ? text : modeNote(state.mode, text);
 
   Future<Outgoing?> _outgoing(String text, List<Attachment> files) async {
     final t = text.trim();
@@ -367,7 +365,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
       state = state.copyWith(queued: [...state.queued, out]);
       return;
     }
-    await _session?.send(out.text, images: out.images);
+    await _session?.send(_noted(out.text), images: out.images);
   }
 
   /// Interrupts the agent and sends [text] right away.
@@ -375,7 +373,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     final out = await _outgoing(text, files);
     if (out == null) return;
     await _session?.interrupt();
-    await _session?.send(out.text, images: out.images);
+    await _session?.send(_noted(out.text), images: out.images);
   }
 
   void unqueue(int index) => state = state.copyWith(queued: [...state.queued]..removeAt(index));
@@ -396,7 +394,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
   }
 
   Future<void> answer(QuestionItem item, List<QuestionAnswer> answers) =>
-      _session?.send(answersMessage(item.questions, answers)) ?? Future.value();
+      _session?.send(_noted(answersMessage(item.questions, answers))) ?? Future.value();
 
   Future<void> setMode(AgentMode mode) async {
     state = state.copyWith(mode: mode);
@@ -407,10 +405,10 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     _autoRespond(state.transcript);
   }
 
-  /// Plan mode → Auto-edit, and tell the agent to go.
+  /// Approves the plan and tells the agent to go; Plan mode moves to Auto-edit.
   Future<void> startBuilding() async {
-    await setMode(AgentMode.autoEdit);
-    await send('The plan looks good. Go ahead and build it.');
+    if (state.mode == AgentMode.plan) await setMode(AgentMode.autoEdit);
+    await send(planApprovedMessage);
   }
 }
 

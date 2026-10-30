@@ -7,6 +7,7 @@ import '../../../../core/ui/every_icons.dart';
 import '../../../attachments/attachment.dart';
 import '../../../attachments/ui/attachment_tray.dart';
 import '../../../chat/ui/chat_markdown.dart';
+import '../../domain/agent_mode.dart';
 import '../../domain/line_diff.dart';
 import '../../domain/transcript.dart';
 import '../../harness/events.dart';
@@ -16,8 +17,11 @@ const _mono = TextStyle(fontFamily: 'SourceCodePro', fontSize: 12.5, height: 1.4
 
 /// The user's message, right-aligned like chat.
 class UserTurnView extends StatelessWidget {
-  const UserTurnView({super.key, required this.text});
+  const UserTurnView({super.key, required this.text, this.mode});
   final String text;
+
+  /// The mode the message was sent in, when it told the agent about one.
+  final AgentMode? mode;
 
   @override
   Widget build(BuildContext context) {
@@ -28,6 +32,14 @@ class UserTurnView extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
+          if (mode case final mode?)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4, right: 4),
+              child: Text(
+                '${mode.label} mode',
+                style: TextStyle(color: theme.textMuted, fontSize: 11.5, fontWeight: FontWeight.w500),
+              ),
+            ),
           if (files.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(bottom: 6),

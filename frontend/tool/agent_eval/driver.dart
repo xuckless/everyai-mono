@@ -1,0 +1,151 @@
+import 'dart:async';
+
+import 'package:every_ai/features/code/domain/agent_mode.dart';
+import 'package:every_ai/features/code/domain/questions.dart';
+import 'package:every_ai/features/code/domain/transcript.dart';
+import 'package:every_ai/features/code/harness/events.dart';
+import 'package:every_ai/features/code/harness/harness.dart';
+
+/// Drives one Code session headlessly the way the app's controller does,
+/// standing in for the user: it approves what the mode would ask about,
+/// answers question cards with their first options and approves plans.
+final class EvalRun {
+  EvalRun(this.harness, this.spec) : mode = spec.mode;
+
+  final Harness harness;
+  final SessionSpec spec;
+  AgentMode mode;
+
+  final builder = TranscriptBuilder();
+  late HarnessSession session;
+
+  /// Prompts the user would have clicked through.
+  int userApprovals = 0;
+  int autoApprovals = 0;
+  int refusals = 0;
+  int answered = 0;
+  int plansApproved = 0;
+
+  String _respondedTo = '';
+  final _handled = <String>{};
+  bool _awaitingRun = true;
+  final _done = Completer<Transcript>();
+
+  Future<Transcript> run({Duration timeout = const Duration(minutes: 10)}) async {
+    session = await harness.start(spec);
+    final sub = session.events.listen(_onEvent);
+    try {
+      return await _done.future.timeout(timeout);
+    } finally {
+      await sub.cancel();
+    }
+  }
+
+  Transcript get snapshot => builder.snapshot;
+
+  void _onEvent(HarnessEvent e) {
+    builder.add(e);
+    final t = builder.snapshot;
+    if (t.running) _awaitingRun = false;
+    if (t.pending.isNotEmpty) {
+      final key = t.pending.map((c) => c.id).join(',');
+      if (key == _respondedTo) return;
+      _respondedTo = key;
+      if (t.pending.any(mode.rejects)) {
+        refusals++;
+        unawaited(session.respond(accept: false, reason: AgentMode.planRefusal));
+      } else {
+        t.pending.every(mode.autoApproves) ? autoApprovals++ : userApprovals++;
+        unawaited(session.respond(accept: true));
+      }
+      return;
+    }
+    if (t.running || _awaitingRun) return;
+    if (t.openQuestion case final q? when _handled.add(q.key)) {
+      answered++;
+      _send(
+        answersMessage(q.questions, [
+          for (final _ in q.questions) const QuestionAnswer(selected: {0}),
+        ]),
+      );
+      return;
+    }
+    if (t.openPlan case final p? when _handled.add(p.key)) {
+      plansApproved++;
+      if (mode == AgentMode.plan) mode = AgentMode.autoEdit;
+      _awaitingRun = true;
+      unawaited(session.setMode(mode).then((_) => _send(planApprovedMessage)));
+      return;
+    }
+    if (t.status == ExecutionStatus.finished || t.status == ExecutionStatus.idle) {
+      if (!_done.isCompleted) _done.complete(t);
+    }
+    if (t.status == ExecutionStatus.error || t.status == ExecutionStatus.stuck) {
+      if (!_done.isCompleted) _done.complete(t);
+    }
+  }
+
+  void _send(String text) {
+    _awaitingRun = true;
+    final noted = snapshot.notedMode == mode ? text : modeNote(mode, text);
+    unawaited(session.send(noted));
+  }
+
+  /// A readable dump of the transcript.
+  String report() {
+    final t = snapshot;
+    final out = StringBuffer();
+    String cut(String s, [int n = 400]) {
+      final one = s.replaceAll('\n', ' ⏎ ');
+      return one.length <= n ? one : '${one.substring(0, n)}…';
+    }
+
+    for (final item in t.items) {
+      switch (item) {
+        case UserTurn(:final text, :final mode):
+          out.writeln('USER${mode == null ? '' : ' [${mode.label}]'}: ${cut(text, 200)}');
+        case AgentText(:final text, :final reasoning):
+          if (text.trim().isNotEmpty) out.writeln('AGENT: ${cut(text)}');
+          if (text.trim().isEmpty && reasoning.trim().isNotEmpty) out.writeln('THINK: ${cut(reasoning, 160)}');
+        case ExploreGroup(:final steps):
+          out.writeln('EXPLORED (${exploreSummary(steps)}):');
+          for (final s in steps) {
+            out.writeln('   · ${cut(stepTitle(s.call), 160)}${s.rejected ? '  [REFUSED]' : ''}');
+          }
+        case StepItem(:final step):
+          final r = step.result;
+          out.writeln(
+            'STEP: ${cut(stepTitle(step.call), 160)}'
+            '${r == null
+                ? '  [no result]'
+                : step.rejected
+                ? '  [REFUSED]'
+                : step.failed
+                ? '  [FAILED]'
+                : ''}',
+          );
+        case SubagentItem(:final tasks):
+          out.writeln('SUBAGENTS: ${tasks.keys.join(', ')}');
+        case PlanItem(:final tasks):
+          out.writeln('TASKS: ${tasks.map((t) => '${t.title} (${t.status})').join('; ')}');
+        case QuestionItem(:final questions, :final answers):
+          out.writeln(
+            'QUESTIONS (${questions.length}): ${questions.map((q) => q.header.isEmpty ? q.question : q.header).join(' | ')}'
+            '${answers == null ? '  [OPEN]' : ''}',
+          );
+        case PlanProposal(:final title, :final steps, :final verdict):
+          out.writeln('PLAN "$title": ${steps.length} steps  [${verdict?.name ?? 'OPEN'}]');
+          for (final (i, s) in steps.indexed) {
+            out.writeln('   ${i + 1}. ${cut(s.title, 140)}${s.files.isEmpty ? '' : '  (${s.files.join(', ')})'}');
+          }
+        case NoticeItem(:final message):
+          out.writeln('NOTICE: ${cut(message)}');
+      }
+    }
+    out.writeln(
+      '-- status ${t.status.name}; user approvals $userApprovals, auto $autoApprovals, refused $refusals, '
+      'answered $answered cards, approved $plansApproved plans',
+    );
+    return out.toString();
+  }
+}
