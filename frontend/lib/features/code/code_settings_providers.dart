@@ -41,6 +41,10 @@ final class CodeSettings extends Notifier<StoredCodeSettings> {
   /// Compact EveryAI sessions at [percent] of the context window (0: off).
   void setAutoCompact(int percent) => _set(state.withAutoCompact(percent));
 
+  void setWorkStyle(WorkStyle style) => _set(state.withWorkStyle(style));
+
+  void setForksIsolated(bool on) => _set(state.withForksIsolated(on));
+
   /// Caps session [sessionId]'s spending at [usd] dollars (null: no cap).
   void setBudget(String sessionId, double? usd) => _set(state.withBudget(sessionId, usd));
 

@@ -157,6 +157,56 @@ const _askRuleHeld = '''The call waits for the
 /// that answers question cards and plans inside the call.
 String forHeldClientTools(String suffix) => suffix.replaceFirst(_askRuleEndsTurn, _askRuleHeld);
 
+/// Where a session sits between getting it done and getting it right (the
+/// Efficiency ↔ Quality setting). Balanced is the default.
+enum WorkStyle {
+  efficient('Efficient', 'Smallest sound change, essentials checked once'),
+  balanced('Balanced', 'Plan, build in parts, check like a user, one polish pass'),
+  thorough('Thorough', 'Showcase quality: verify every part, polish until nothing is left');
+
+  const WorkStyle(this.label, this.description);
+  final String label;
+  final String description;
+
+  static WorkStyle parse(Object? s) => values.where((v) => v.name == s).firstOrNull ?? balanced;
+}
+
+/// How [style] asks the agent to work. [forks]: the session can fork itself,
+/// so independent parts can run in parallel.
+String workStyleBlock(WorkStyle style, {bool forks = false}) {
+  final fork = !forks
+      ? ''
+      : switch (style) {
+          WorkStyle.efficient => '',
+          WorkStyle.balanced =>
+            '\n- When the work splits into independent parts (separate apps, modules, pages, investigations), fork '
+                'yourself for them in one reply so they run in parallel. Each fork builds and checks its part, and '
+                'its changes are merged back into your folder; you then put the parts together and check the whole.',
+          WorkStyle.thorough =>
+            '\n- Split independent parts across forks that run in parallel (one reply, several task calls). Each '
+                'fork builds, runs and looks at its part before it reports, and its changes are merged back into '
+                'your folder; you then integrate them and verify the whole end to end.',
+        };
+  final rules = switch (style) {
+    WorkStyle.efficient =>
+      '- Do what was asked with the smallest sound change. Check the essentials once (the build, the tests, or '
+          'one run) and stop when it works. No extras, no polish passes.',
+    WorkStyle.balanced =>
+      '- Aim for a result you would be glad to show, at a reasonable cost. For work with several parts, keep a todo '
+          'list and build it in sections (a skeleton, then each part) rather than one huge file in a single write.\n'
+          '- When it works, check it the way the user will: run it, and for anything visual take a screenshot and '
+          'look at it. Fix what is broken or clearly rough in one polish pass, then finish.\n'
+          '- Open-ended asks (build me a game, an app, a site) deserve some craft: sensible structure, a coherent '
+          'look, the obvious features done properly. Do not add large features nobody asked for.',
+    WorkStyle.thorough =>
+      '- Treat the result as a showcase. Plan with a todo list, build in sections, and verify each part as a user '
+          'would: run it, screenshot and look, try the edge cases.\n'
+          '- Keep improving until a fresh look finds nothing worth fixing: correctness first, then feel and polish. '
+          'Going beyond the minimum is welcome where it clearly makes the result better.',
+  };
+  return '<WORK_STYLE name="${style.name}">\n$rules$fork\n</WORK_STYLE>';
+}
+
 /// The system-prompt suffix: [workingRules], then what the settings add.
 /// [agents] are the library agents the session may start (name, one-line
 /// description, sorted); the settings' own `agents` roles follow unless a
@@ -165,8 +215,12 @@ String agentPromptSuffix(
   AgentSettings settings, {
   List<({String name, String description})> agents = const [],
   bool everyai = false,
+  WorkStyle workStyle = WorkStyle.balanced,
+  bool forks = false,
 }) {
-  final out = StringBuffer(everyai ? everyaiWorkingRules : workingRules);
+  final out = StringBuffer(everyai ? everyaiWorkingRules : workingRules)
+    ..write('\n\n')
+    ..write(workStyleBlock(workStyle, forks: forks));
   if (!settings.attribution) {
     out.write(
       '\n\n<ATTRIBUTION>\nThis overrides any earlier guidance about disclosing AI involvement or crediting tools in '

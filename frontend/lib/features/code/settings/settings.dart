@@ -3,6 +3,7 @@ import 'agent_settings.dart';
 import 'settings_stub.dart' if (dart.library.io) 'settings_io.dart' as impl;
 
 export 'agent_settings.dart';
+export 'agent_prompt.dart' show WorkStyle;
 
 /// Project settings committed with the repo.
 const projectSettingsPath = '.everyai/settings.json';
@@ -30,11 +31,13 @@ Future<({String persona, String suffix})> agentPromptFor(
   List<({String name, String description})> agents = const [],
   bool isolated = false,
   bool everyai = false,
+  WorkStyle workStyle = WorkStyle.balanced,
+  bool forks = false,
 }) async {
   final settings = await loadAgentSettings(projectDir);
   final style = await resolveCommitStyle(projectDir, settings.commitStyle);
   return (
     persona: agentPersona(style: style, attribution: settings.attribution, isolated: isolated, everyai: everyai),
-    suffix: agentPromptSuffix(settings, agents: agents, everyai: everyai),
+    suffix: agentPromptSuffix(settings, agents: agents, everyai: everyai, workStyle: workStyle, forks: forks),
   );
 }

@@ -417,6 +417,9 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
             agents: [for (final a in agents) (name: a.name, description: a.oneLine)],
             isolated: isolated,
             everyai: everyai,
+            workStyle: ref.read(codeSettingsProvider).workStyle,
+            // Only a main EveryAI session forks (forks are one level deep).
+            forks: everyai && !subagent,
           );
     // AGENTS.md and friends from the project folder up to the repository root (OpenHands doesn't load them).
     final context = !local ? const <ContextFile>[] : await _startContext(workingDir, projectDir);

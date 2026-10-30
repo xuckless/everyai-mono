@@ -6,6 +6,9 @@ import '../../skills/domain/skill_catalog.dart' show SkillSettings;
 import '../domain/agent_mode.dart';
 import '../domain/mcp_servers.dart';
 import '../domain/permissions.dart';
+import 'agent_prompt.dart' show WorkStyle;
+
+export 'agent_prompt.dart' show WorkStyle;
 import '../permissions_providers.dart' show StoredPermissions;
 
 /// Where a Code setting lives. Later layers win: global, then the project,
@@ -38,7 +41,16 @@ final class StoredCodeSettings {
     this.projectPrompts = const {},
     this.budgets = const {},
     this.autoCompactPercent = defaultAutoCompactPercent,
+    this.workStyle = WorkStyle.balanced,
+    this.forksIsolated = true,
   });
+
+  /// Efficiency ↔ Quality, for sessions started from now on.
+  final WorkStyle workStyle;
+
+  /// Writing forks work in a worktree of their own and merge back into the
+  /// parent's folder when they finish (false: they share the parent's folder).
+  final bool forksIsolated;
 
   /// Where most models still work well with a long history.
   static const defaultAutoCompactPercent = 60;
@@ -65,12 +77,20 @@ final class StoredCodeSettings {
 
   StoredCodeSettings withAutoCompact(int percent) => _copy(autoCompactPercent: percent.clamp(0, 95));
 
+  StoredCodeSettings withWorkStyle(WorkStyle style) => _copy(workStyle: style);
+
+  StoredCodeSettings withForksIsolated(bool on) => _copy(forksIsolated: on);
+
   StoredCodeSettings _copy({
     String? globalPrompt,
     Map<String, String>? projectPrompts,
     Map<String, double>? budgets,
     int? autoCompactPercent,
+    WorkStyle? workStyle,
+    bool? forksIsolated,
   }) => StoredCodeSettings(
+    workStyle: workStyle ?? this.workStyle,
+    forksIsolated: forksIsolated ?? this.forksIsolated,
     globalPrompt: globalPrompt ?? this.globalPrompt,
     projectPrompts: projectPrompts ?? this.projectPrompts,
     budgets: budgets ?? this.budgets,
@@ -91,6 +111,8 @@ final class StoredCodeSettings {
     final sessions = json['sessions'];
     final global = json['global'];
     return StoredCodeSettings(
+      workStyle: WorkStyle.parse(global is Map<String, Object?> ? global['workStyle'] : null),
+      forksIsolated: !(global is Map<String, Object?> && global['forksIsolated'] == false),
       autoCompactPercent: global is Map<String, Object?> && global['autoCompactPercent'] is num
           ? (global['autoCompactPercent']! as num).toInt()
           : defaultAutoCompactPercent,
@@ -112,6 +134,8 @@ final class StoredCodeSettings {
     'global': {
       if (globalPrompt.isNotEmpty) 'systemPrompt': globalPrompt,
       if (autoCompactPercent != defaultAutoCompactPercent) 'autoCompactPercent': autoCompactPercent,
+      if (workStyle != WorkStyle.balanced) 'workStyle': workStyle.name,
+      if (!forksIsolated) 'forksIsolated': false,
     },
     'projects': {
       for (final e in projectPrompts.entries) e.key: {'systemPrompt': e.value},

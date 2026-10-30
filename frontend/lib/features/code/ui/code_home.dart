@@ -321,6 +321,22 @@ class _SessionOptions extends StatelessWidget {
             ),
           ),
         ),
+        Consumer(
+          builder: (context, ref, _) {
+            final style = ref.watch(codeSettingsProvider.select((s) => s.workStyle));
+            return AdaptiveMenuButton(
+              tooltip: 'Efficiency ↔ quality',
+              actions: [
+                for (final s in WorkStyle.values)
+                  MenuAction(
+                    label: '${s.label} · ${s.description}',
+                    onSelected: () => ref.read(codeSettingsProvider.notifier).setWorkStyle(s),
+                  ),
+              ],
+              child: IgnorePointer(child: option(style.label, style != WorkStyle.balanced, () {})),
+            );
+          },
+        ),
         option('Project settings…', false, onSettings),
       ],
     );

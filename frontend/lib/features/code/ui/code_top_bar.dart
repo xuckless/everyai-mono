@@ -348,6 +348,45 @@ class _SettingsChip extends ConsumerWidget {
                 ),
               ),
               PopoverRow(
+                key: const ValueKey('top-bar.settings.style'),
+                title: 'Work style: ${prompts.workStyle.label}',
+                subtitle: 'Efficiency ↔ quality · ${prompts.workStyle.description} · from the next session',
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    AdaptiveIconButton(
+                      icon: EveryIcon.chevronLeft,
+                      tooltip: 'More efficient',
+                      size: 13,
+                      onPressed: prompts.workStyle.index == 0
+                          ? null
+                          : () => ref
+                                .read(codeSettingsProvider.notifier)
+                                .setWorkStyle(WorkStyle.values[prompts.workStyle.index - 1]),
+                    ),
+                    AdaptiveIconButton(
+                      icon: EveryIcon.chevronRight,
+                      tooltip: 'Higher quality',
+                      size: 13,
+                      onPressed: prompts.workStyle.index == WorkStyle.values.length - 1
+                          ? null
+                          : () => ref
+                                .read(codeSettingsProvider.notifier)
+                                .setWorkStyle(WorkStyle.values[prompts.workStyle.index + 1]),
+                    ),
+                  ],
+                ),
+              ),
+              PopoverRow(
+                key: const ValueKey('top-bar.settings.forks'),
+                title: 'Forks',
+                subtitle: prompts.forksIsolated
+                    ? 'Each in its own worktree, merged back when done · EveryAI sessions'
+                    : 'Share this session\'s folder · EveryAI sessions',
+                trailing: _check(EveryTheme.of(context), prompts.forksIsolated),
+                onTap: () => ref.read(codeSettingsProvider.notifier).setForksIsolated(!prompts.forksIsolated),
+              ),
+              PopoverRow(
                 key: const ValueKey('top-bar.settings.json'),
                 title: 'settings.json…',
                 subtitle: 'Global, project and session layers as JSON',
