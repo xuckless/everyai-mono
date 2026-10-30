@@ -63,7 +63,7 @@ class MemoryScreen extends ConsumerWidget {
               padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
               child: Text(
                 'Over the ${target.limit}-character limit: EveryAI can only add here after you shorten it.',
-                style: TextStyle(color: theme.warning, fontSize: 12),
+                style: theme.type.caption.tint(theme.warning),
               ),
             ),
           Align(
@@ -100,7 +100,7 @@ class MemoryScreen extends ConsumerWidget {
             padding: const EdgeInsets.only(top: 16, bottom: 8),
             child: Text(
               'Each chat keeps the notes it started with, so changes show up in your next chat.',
-              style: TextStyle(color: theme.textMuted, fontSize: 12),
+              style: theme.type.caption.tint(theme.textMuted),
             ),
           ),
           Align(

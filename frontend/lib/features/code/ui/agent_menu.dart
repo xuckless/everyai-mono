@@ -70,7 +70,7 @@ class AgentMenu extends ConsumerWidget {
                   label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: theme.textMuted, fontSize: 12.5),
+                  style: theme.type.callout.tint(theme.textMuted),
                 ),
               ),
               const SizedBox(width: 4),

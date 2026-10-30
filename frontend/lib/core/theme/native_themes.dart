@@ -50,11 +50,7 @@ m.ThemeData materialTheme(Brightness brightness, {required bool adwaita}) {
       centerTitle: adwaita,
       toolbarHeight: adwaita ? 47 : 64,
       shape: adwaita ? m.Border(bottom: BorderSide(color: tokens.border)) : null,
-      titleTextStyle: TextStyle(
-        color: tokens.text,
-        fontSize: adwaita ? 15 : 22,
-        fontWeight: adwaita ? FontWeight.w700 : FontWeight.w500,
-      ),
+      titleTextStyle: (adwaita ? tokens.type.headline : tokens.type.title).copyWith(color: tokens.text),
     ),
     // Filled buttons are violet 500 with white text in both themes.
     filledButtonTheme: m.FilledButtonThemeData(
@@ -108,28 +104,27 @@ c.CupertinoThemeData cupertinoTheme(Brightness brightness) {
     primaryColor: tokens.accent,
     scaffoldBackgroundColor: tokens.background,
     barBackgroundColor: tokens.surface.withValues(alpha: 0.6),
-    // Cupertino's defaults are phone sizes (17pt body). On a desktop window
-    // they read heavy, so use desktop sizes there.
-    textTheme: Host.isDesktop ? _desktopCupertinoText : null,
+    // Cupertino's defaults (17pt, heavy nav titles) don't match the rest of the
+    // app; every text style comes from the shared scale instead.
+    textTheme: _cupertinoText(tokens.type),
   );
 }
 
-final _desktopCupertinoText = () {
+c.CupertinoTextThemeData _cupertinoText(EveryType type) {
   const base = c.CupertinoTextThemeData();
-  TextStyle size(TextStyle s, double px, [FontWeight? w]) =>
-      s.copyWith(fontSize: px, letterSpacing: -0.1, fontWeight: w ?? s.fontWeight);
+  TextStyle from(TextStyle s, TextStyle role) => s.merge(role);
   return c.CupertinoTextThemeData(
-    textStyle: size(base.textStyle, 14),
-    actionTextStyle: size(base.actionTextStyle, 14),
-    actionSmallTextStyle: size(base.actionSmallTextStyle, 13),
-    tabLabelTextStyle: size(base.tabLabelTextStyle, 11),
-    navTitleTextStyle: size(base.navTitleTextStyle, 14, FontWeight.w600),
-    navLargeTitleTextStyle: size(base.navLargeTitleTextStyle, 26, FontWeight.w600),
-    navActionTextStyle: size(base.navActionTextStyle, 14),
-    pickerTextStyle: size(base.pickerTextStyle, 15),
-    dateTimePickerTextStyle: size(base.dateTimePickerTextStyle, 15),
+    textStyle: from(base.textStyle, type.body),
+    actionTextStyle: from(base.actionTextStyle, type.body),
+    actionSmallTextStyle: from(base.actionSmallTextStyle, type.callout),
+    tabLabelTextStyle: from(base.tabLabelTextStyle, type.micro.medium),
+    navTitleTextStyle: from(base.navTitleTextStyle, type.headline),
+    navLargeTitleTextStyle: from(base.navLargeTitleTextStyle, type.largeTitle),
+    navActionTextStyle: from(base.navActionTextStyle, type.body),
+    pickerTextStyle: from(base.pickerTextStyle, type.body),
+    dateTimePickerTextStyle: from(base.dateTimePickerTextStyle, type.body),
   );
-}();
+}
 
 /// macos_ui only takes system accent colors; brand violet reaches its push
 /// buttons through AdaptiveButton.

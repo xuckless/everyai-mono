@@ -78,15 +78,12 @@ class _QuizViewState extends ConsumerState<QuizView> {
         for (final (qi, q) in questions.indexed) ...[
           Padding(
             padding: EdgeInsets.only(top: qi == 0 ? 0 : 18, bottom: 8),
-            child: Text(
-              '${qi + 1}. ${q.text}',
-              style: TextStyle(color: theme.text, fontSize: 15, fontWeight: FontWeight.w600, height: 1.35),
-            ),
+            child: Text('${qi + 1}. ${q.text}', style: theme.type.headline.tint(theme.text).copyWith(height: 1.35)),
           ),
           if (q.multiple && !answers.containsKey(qi))
             Padding(
               padding: const EdgeInsets.only(bottom: 6),
-              child: Text('Select all that apply', style: TextStyle(color: theme.textMuted, fontSize: 12)),
+              child: Text('Select all that apply', style: theme.type.caption.tint(theme.textMuted)),
             ),
           for (final (oi, option) in q.options.indexed)
             _Option(
@@ -130,11 +127,7 @@ class _QuizViewState extends ConsumerState<QuizView> {
                 children: [
                   Text(
                     isRight(qi) ? 'Correct' : 'Not quite',
-                    style: TextStyle(
-                      color: isRight(qi) ? theme.success : theme.danger,
-                      fontWeight: FontWeight.w700,
-                      fontSize: 13,
-                    ),
+                    style: theme.type.callout.semibold.tint(isRight(qi) ? theme.success : theme.danger),
                   ),
                   ChatMarkdown(q.explanation),
                 ],
@@ -145,10 +138,7 @@ class _QuizViewState extends ConsumerState<QuizView> {
           const SizedBox(height: 18),
           Row(
             children: [
-              Text(
-                'Score: $score / ${questions.length}',
-                style: TextStyle(color: theme.text, fontSize: 16, fontWeight: FontWeight.w700),
-              ),
+              Text('Score: $score / ${questions.length}', style: theme.type.headline.tint(theme.text)),
               const Spacer(),
               AdaptiveButton(
                 label: 'Try again',
@@ -253,10 +243,7 @@ class _OptionStateWidget extends State<_Option> {
       ),
       child: widget.state == _OptionState.selected
           ? AdaptiveIcon(EveryIcon.check, size: 13, color: theme.onPrimary)
-          : Text(
-              widget.letter,
-              style: TextStyle(color: theme.textMuted, fontSize: 11, fontWeight: FontWeight.w700),
-            ),
+          : Text(widget.letter, style: theme.type.footnote.semibold.tint(theme.textMuted)),
     );
     return Semantics(
       button: widget.onTap != null,
@@ -283,9 +270,7 @@ class _OptionStateWidget extends State<_Option> {
                 children: [
                   box,
                   const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(widget.label, style: TextStyle(color: theme.text, fontSize: 14, height: 1.3)),
-                  ),
+                  Expanded(child: Text(widget.label, style: theme.type.body.tint(theme.text).copyWith(height: 1.3))),
                   ?mark,
                 ],
               ),

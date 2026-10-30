@@ -29,15 +29,12 @@ class ComingSoonScreen extends StatelessWidget {
               children: [
                 AdaptiveIcon(icon, size: 44, color: theme.accent),
                 const SizedBox(height: 16),
-                Text(
-                  title,
-                  style: TextStyle(color: theme.text, fontSize: 22, fontWeight: FontWeight.w700),
-                ),
+                Text(title, style: theme.type.title.tint(theme.text)),
                 const SizedBox(height: 8),
                 Text(
                   message,
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: theme.textMuted, fontSize: 14, height: 1.4),
+                  style: theme.type.body.copyWith(color: theme.textMuted, height: 1.4),
                 ),
               ],
             ),

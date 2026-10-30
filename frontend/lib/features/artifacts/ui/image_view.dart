@@ -88,9 +88,7 @@ class GeneratedImageView extends ConsumerWidget {
             ),
             Row(
               children: [
-                Expanded(
-                  child: Text(caption, style: TextStyle(color: theme.textMuted, fontSize: 12)),
-                ),
+                Expanded(child: Text(caption, style: theme.type.caption.tint(theme.textMuted))),
                 if (visual != null && !kIsWeb) DownloadButton(visual: visual),
                 if (artifact != null)
                   AdaptiveIconButton(

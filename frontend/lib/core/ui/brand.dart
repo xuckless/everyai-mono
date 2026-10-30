@@ -242,11 +242,7 @@ class BrandEmptyState extends StatelessWidget {
           children: [
             SvgPicture.asset('assets/brand/empty/$kind${light ? '-light' : ''}.svg', width: 72, height: 72),
             const SizedBox(height: 16),
-            Text(
-              title,
-              textAlign: TextAlign.center,
-              style: TextStyle(color: theme.text, fontSize: 16, fontWeight: FontWeight.w600),
-            ),
+            Text(title, textAlign: TextAlign.center, style: theme.type.headline.tint(theme.text)),
             if (message != null) ...[
               const SizedBox(height: 6),
               ConstrainedBox(
@@ -254,7 +250,7 @@ class BrandEmptyState extends StatelessWidget {
                 child: Text(
                   message!,
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: theme.textMuted, fontSize: 13.5, height: 1.4),
+                  style: theme.type.body.copyWith(color: theme.textMuted, height: 1.4),
                 ),
               ),
             ],

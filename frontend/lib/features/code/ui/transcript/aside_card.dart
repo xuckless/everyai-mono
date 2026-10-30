@@ -75,20 +75,18 @@ class AsideCard extends StatelessWidget {
     final Widget body = switch (aside) {
       Aside(kind: AsideKind.cost) =>
         usage.isEmpty
-            ? Text('No model calls yet.', style: TextStyle(color: theme.textMuted, fontSize: 13))
+            ? Text('No model calls yet.', style: theme.type.callout.tint(theme.textMuted))
             : UsageBreakdown(totals: usage, contextWindow: contextWindow, modelName: modelName),
       Aside(busy: true) => Row(
         children: [
           const EveryMarkActivity(activity: MarkActivity.thinking, size: 14),
           const SizedBox(width: 8),
-          Expanded(
-            child: Text(_busyLabel, style: TextStyle(color: theme.textMuted, fontSize: 13)),
-          ),
+          Expanded(child: Text(_busyLabel, style: theme.type.callout.tint(theme.textMuted))),
           if (childId != null && onOpenSession != null)
             AdaptiveButton(label: 'Watch', emphasis: ButtonEmphasis.plain, onPressed: () => onOpenSession!(childId)),
         ],
       ),
-      Aside(:final error?) => Text(error, style: TextStyle(color: theme.danger, fontSize: 13)),
+      Aside(:final error?) => Text(error, style: theme.type.callout.tint(theme.danger)),
       Aside(kind: AsideKind.commit, ready: true) => _CommitDraft(
         key: ValueKey('commit-${aside.id}'),
         message: aside.answer,
@@ -121,7 +119,7 @@ class AsideCard extends StatelessWidget {
                   _title,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: theme.textMuted, fontSize: 12.5, fontWeight: FontWeight.w600),
+                  style: theme.type.callout.semibold.tint(theme.textMuted),
                 ),
               ),
               AdaptiveIconButton(icon: EveryIcon.close, tooltip: 'Dismiss', size: 14, onPressed: onDismiss),
@@ -252,7 +250,7 @@ class _PrDraftState extends State<_PrDraft> {
         const SizedBox(height: 6),
         Text(
           'Commits anything left with the title, pushes the branch and opens the pull request with gh.',
-          style: TextStyle(color: theme.textMuted, fontSize: 12),
+          style: theme.type.caption.tint(theme.textMuted),
         ),
         const SizedBox(height: 8),
         Align(

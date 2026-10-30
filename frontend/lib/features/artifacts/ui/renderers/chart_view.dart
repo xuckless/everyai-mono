@@ -49,7 +49,7 @@ class ChartView extends StatelessWidget {
         for (final p in s.$2) '${p.$1}',
     }.toList();
     double xOf(Object x) => categorical ? categories.indexOf('$x').toDouble() : (x as num).toDouble();
-    final label = TextStyle(color: theme.textMuted, fontSize: 11);
+    final label = theme.type.footnote.tint(theme.textMuted);
 
     Widget bottomTitle(double v, TitleMeta meta) {
       if (!categorical) {
@@ -108,7 +108,7 @@ class ChartView extends StatelessWidget {
                 color: palette[i % palette.length],
                 title: '${p.$1}',
                 radius: height * 0.26,
-                titleStyle: const TextStyle(color: Color(0xFFFFFFFF), fontSize: 11, fontWeight: FontWeight.w600),
+                titleStyle: theme.type.footnote.semibold.tint(Color(0xFFFFFFFF)),
               ),
           ],
         ),
@@ -204,7 +204,7 @@ class ChartView extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(width: 6),
-                      Text(name, style: TextStyle(color: theme.text, fontSize: 12)),
+                      Text(name, style: theme.type.caption.tint(theme.text)),
                     ],
                   ),
               ],

@@ -34,31 +34,23 @@ class BillingScreen extends ConsumerWidget {
               children: [
                 Row(
                   children: [
-                    Expanded(
-                      child: Text(
-                        '${b.plan.name} plan',
-                        style: TextStyle(color: theme.text, fontSize: 20, fontWeight: FontWeight.w700),
-                      ),
-                    ),
+                    Expanded(child: Text('${b.plan.name} plan', style: theme.type.title.tint(theme.text))),
                     Text(
                       b.plan.priceCents == 0 ? 'Free' : '\$${b.plan.priceCents ~/ 100}/month',
-                      style: TextStyle(color: theme.textMuted, fontWeight: FontWeight.w600),
+                      style: theme.type.headline.tint(theme.textMuted),
                     ),
                   ],
                 ),
                 const SizedBox(height: 4),
-                Text(b.plan.blurb, style: TextStyle(color: theme.textMuted, fontSize: 13)),
+                Text(b.plan.blurb, style: theme.type.callout.tint(theme.textMuted)),
                 const SizedBox(height: 16),
                 Row(
                   children: [
-                    Text(
-                      'Included usage',
-                      style: TextStyle(color: theme.text, fontWeight: FontWeight.w600),
-                    ),
+                    Text('Included usage', style: theme.type.headline.tint(theme.text)),
                     const Spacer(),
                     Text(
                       '${formatMicros(b.usedMicros)} of ${formatMicros(b.includedMicros)}',
-                      style: TextStyle(color: theme.textMuted, fontSize: 13),
+                      style: theme.type.callout.tint(theme.textMuted),
                     ),
                   ],
                 ),
@@ -67,7 +59,7 @@ class BillingScreen extends ConsumerWidget {
                 const SizedBox(height: 6),
                 Text(
                   'Renews ${_date(b.periodEnd)}. Free models never count against it.',
-                  style: TextStyle(color: theme.textMuted, fontSize: 12),
+                  style: theme.type.caption.tint(theme.textMuted),
                 ),
               ],
             ),
@@ -79,21 +71,15 @@ class BillingScreen extends ConsumerWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            'Wallet',
-                            style: TextStyle(color: theme.text, fontWeight: FontWeight.w600),
-                          ),
+                          Text('Wallet', style: theme.type.headline.tint(theme.text)),
                           Text(
                             'Used after the included usage runs out.',
-                            style: TextStyle(color: theme.textMuted, fontSize: 12),
+                            style: theme.type.caption.tint(theme.textMuted),
                           ),
                         ],
                       ),
                     ),
-                    Text(
-                      formatMicros(b.walletMicros),
-                      style: TextStyle(color: theme.text, fontSize: 20, fontWeight: FontWeight.w700),
-                    ),
+                    Text(formatMicros(b.walletMicros), style: theme.type.title.tint(theme.text)),
                   ],
                 ),
                 const SizedBox(height: 12),
@@ -117,10 +103,7 @@ class BillingScreen extends ConsumerWidget {
                 title: Text(p.priceCents == 0 ? p.name : '${p.name} · \$${p.priceCents ~/ 100}/month'),
                 subtitle: Text(p.blurb),
                 trailing: p.id == b.plan.id
-                    ? Text(
-                        'Current',
-                        style: TextStyle(color: theme.textMuted, fontWeight: FontWeight.w600),
-                      )
+                    ? Text('Current', style: theme.type.headline.tint(theme.textMuted))
                     : AdaptiveButton(
                         label: p.priceCents > b.plan.priceCents ? 'Upgrade' : 'Switch',
                         emphasis: p.priceCents > b.plan.priceCents ? ButtonEmphasis.primary : ButtonEmphasis.secondary,
@@ -146,16 +129,9 @@ class BillingScreen extends ConsumerWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  'Couldn’t load your plan.',
-                  style: TextStyle(color: theme.text, fontWeight: FontWeight.w600),
-                ),
+                Text('Couldn’t load your plan.', style: theme.type.headline.tint(theme.text)),
                 const SizedBox(height: 4),
-                Text(
-                  '$error',
-                  style: TextStyle(color: theme.textMuted, fontSize: 13),
-                  textAlign: TextAlign.center,
-                ),
+                Text('$error', style: theme.type.callout.tint(theme.textMuted), textAlign: TextAlign.center),
                 const SizedBox(height: 12),
                 AdaptiveButton(label: 'Try again', onPressed: ctl.reload),
               ],

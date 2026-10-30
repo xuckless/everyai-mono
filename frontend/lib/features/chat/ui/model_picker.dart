@@ -38,7 +38,7 @@ class ModelChip extends ConsumerWidget {
                 selected.name,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: theme.textMuted, fontSize: 13, fontWeight: FontWeight.w500),
+                style: theme.type.callout.medium.tint(theme.textMuted),
               ),
             ),
             const SizedBox(width: 3),

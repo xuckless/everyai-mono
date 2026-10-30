@@ -10,7 +10,7 @@ import '../../code_providers.dart';
 import '../../domain/code_session.dart';
 import '../../git/git_service.dart';
 
-const _mono = TextStyle(fontFamily: 'SourceCodePro', fontSize: 12, height: 1.45);
+final _mono = EveryType.resolve().caption.mono.copyWith(height: 1.45);
 
 /// The session's changes since it branched: files, hunks (each revertable)
 /// and what to do with the work: commit, squash merge, push, PR, discard.
@@ -119,17 +119,14 @@ class _DiffPaneState extends ConsumerState<DiffPane> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        'Changes',
-                        style: TextStyle(color: theme.text, fontSize: 14, fontWeight: FontWeight.w600),
-                      ),
+                      Text('Changes', style: theme.type.headline.tint(theme.text)),
                       if (w != null)
                         Text(
                           '${w.branch} → ${w.baseBranch}'
                           '${git == null || git.ahead == 0 ? '' : ' · ${git.ahead} commit${git.ahead == 1 ? '' : 's'}'}'
                           '${git == null || git.behind == 0 ? '' : ' · ${w.baseBranch} moved ${git.behind} ahead'}',
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(color: theme.textMuted, fontSize: 12),
+                          style: theme.type.caption.tint(theme.textMuted),
                         ),
                     ],
                   ),
@@ -211,11 +208,7 @@ class _Empty extends StatelessWidget {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24),
-        child: Text(
-          message,
-          textAlign: TextAlign.center,
-          style: TextStyle(color: theme.textMuted, fontSize: 13),
-        ),
+        child: Text(message, textAlign: TextAlign.center, style: theme.type.callout.tint(theme.textMuted)),
       ),
     );
   }
@@ -256,10 +249,7 @@ class _FileView extends StatelessWidget {
                 children: [
                   AdaptiveIcon(collapsed ? EveryIcon.chevronRight : EveryIcon.chevronDown, size: 13),
                   const SizedBox(width: 6),
-                  Text(
-                    file.kind.letter,
-                    style: TextStyle(color: kindColor, fontSize: 12, fontWeight: FontWeight.w700),
-                  ),
+                  Text(file.kind.letter, style: theme.type.caption.medium.tint(kindColor)),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -278,7 +268,7 @@ class _FileView extends StatelessWidget {
           if (!collapsed && file.binary)
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-              child: Text('Binary file', style: TextStyle(color: theme.textMuted, fontSize: 12)),
+              child: Text('Binary file', style: theme.type.caption.tint(theme.textMuted)),
             ),
           if (!collapsed)
             for (final (i, hunk) in file.hunks.indexed)

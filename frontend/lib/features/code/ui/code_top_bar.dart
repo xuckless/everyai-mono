@@ -102,7 +102,7 @@ class _Chip extends StatelessWidget {
               Text(
                 label,
                 maxLines: 1,
-                style: TextStyle(color: fg, fontSize: 12.5, fontFeatures: const [FontFeature.tabularFigures()]),
+                style: theme.type.callout.copyWith(color: fg, fontFeatures: const [FontFeature.tabularFigures()]),
               ),
             const SizedBox(width: 4),
             AdaptiveIcon(EveryIcon.chevronDown, size: 10, color: fg),

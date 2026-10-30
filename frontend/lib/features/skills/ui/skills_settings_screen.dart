@@ -59,7 +59,7 @@ class SkillsSettingsScreen extends ConsumerWidget {
             'A skill is a folder with a SKILL.md: instructions, and sometimes scripts and reference files, that the '
             'Code agent loads when a task calls for it. Chat can use the EveryAI and ~/.agents/skills ones too, '
             'except skills that run programs. Only the name and description sit in the prompt until a skill is used.',
-            style: TextStyle(color: theme.textMuted, fontSize: 12),
+            style: theme.type.caption.tint(theme.textMuted),
           ),
           Padding(
             padding: const EdgeInsets.only(top: 10, bottom: 4),
@@ -94,7 +94,7 @@ class SkillsSettingsScreen extends ConsumerWidget {
               'Project skills live in <project>/.agents/skills. A skill that came with a repository stays off until '
               'you review it, and goes off again if its files change. Lines like !`command` are shown to the agent '
               'as text; they never run on their own.',
-              style: TextStyle(color: theme.textMuted, fontSize: 12),
+              style: theme.type.caption.tint(theme.textMuted),
             ),
           ),
         ],
@@ -109,7 +109,6 @@ class SkillsSettingsScreen extends ConsumerWidget {
     List<CodeProject> projects, {
     required bool zip,
   }) {
-    final theme = EveryTheme.of(context);
     return AdaptiveMenuButton(
       tooltip: 'Choose where the skill goes',
       actions: [
@@ -123,13 +122,7 @@ class SkillsSettingsScreen extends ConsumerWidget {
             onSelected: () => _import(context, ref, zip: zip, project: p),
           ),
       ],
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-        child: Text(
-          label,
-          style: TextStyle(color: theme.accent, fontWeight: FontWeight.w600),
-        ),
-      ),
+      child: MenuTrigger(label),
     );
   }
 
@@ -225,7 +218,7 @@ class _SkillTile extends ConsumerWidget {
               notes.join(' · '),
               maxLines: 3,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: s.usable ? theme.textMuted : theme.danger, fontSize: 12),
+              style: theme.type.caption.tint(s.usable ? theme.textMuted : theme.danger),
             ),
         ],
       ),

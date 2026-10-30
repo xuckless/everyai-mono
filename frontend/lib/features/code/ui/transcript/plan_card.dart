@@ -6,7 +6,7 @@ import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/every_icons.dart';
 import '../../domain/transcript.dart';
 
-const _mono = TextStyle(fontFamily: 'SourceCodePro', fontSize: 12, height: 1.4);
+final _mono = EveryType.resolve().caption.mono.copyWith(height: 1.4);
 
 /// The agent's `present_plan` proposal: numbered steps with the files they
 /// touch, risks, and how it will verify. While [open], the user can start
@@ -80,20 +80,15 @@ class _PlanCardState extends State<PlanCard> {
               AdaptiveIcon(EveryIcon.document, size: 15, color: theme.accent),
               const SizedBox(width: 8),
               Expanded(
-                child: Text(
-                  plan.title.isEmpty ? 'Plan' : plan.title,
-                  style: TextStyle(color: theme.text, fontSize: 14, fontWeight: FontWeight.w600),
-                ),
+                child: Text(plan.title.isEmpty ? 'Plan' : plan.title, style: theme.type.headline.tint(theme.text)),
               ),
               if (plan.verdict case final verdict?)
                 Padding(
                   padding: const EdgeInsets.only(right: 4),
                   child: Text(
                     verdict == PlanVerdict.approved ? 'Approved' : 'Sent back',
-                    style: TextStyle(
-                      color: verdict == PlanVerdict.approved ? theme.success : theme.textMuted,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
+                    style: theme.type.caption.semibold.tint(
+                      verdict == PlanVerdict.approved ? theme.success : theme.textMuted,
                     ),
                   ),
                 ),
@@ -107,7 +102,7 @@ class _PlanCardState extends State<PlanCard> {
           ),
           if (plan.summary.isNotEmpty) ...[
             const SizedBox(height: 6),
-            Text(plan.summary, style: TextStyle(color: theme.textMuted, fontSize: 13, height: 1.4)),
+            Text(plan.summary, style: theme.type.callout.copyWith(color: theme.textMuted, height: 1.4)),
           ],
           const SizedBox(height: 10),
           for (final (i, step) in steps.indexed)
@@ -116,32 +111,18 @@ class _PlanCardState extends State<PlanCard> {
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  SizedBox(
-                    width: 22,
-                    child: Text(
-                      '${i + 1}.',
-                      style: TextStyle(color: theme.accent, fontSize: 13, fontWeight: FontWeight.w600),
-                    ),
-                  ),
+                  SizedBox(width: 22, child: Text('${i + 1}.', style: theme.type.callout.semibold.tint(theme.accent))),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          step.title,
-                          style: TextStyle(
-                            color: theme.text,
-                            fontSize: 13.5,
-                            fontWeight: FontWeight.w500,
-                            height: 1.35,
-                          ),
-                        ),
+                        Text(step.title, style: theme.type.body.medium.copyWith(color: theme.text, height: 1.35)),
                         if (step.detail.isNotEmpty)
                           Padding(
                             padding: const EdgeInsets.only(top: 2),
                             child: Text(
                               step.detail,
-                              style: TextStyle(color: theme.textMuted, fontSize: 12.5, height: 1.35),
+                              style: theme.type.callout.copyWith(color: theme.textMuted, height: 1.35),
                             ),
                           ),
                         if (step.files.isNotEmpty)
@@ -157,15 +138,12 @@ class _PlanCardState extends State<PlanCard> {
             ),
           if (risks.isNotEmpty) ...[
             const SizedBox(height: 4),
-            Text(
-              'Risks',
-              style: TextStyle(color: theme.text, fontSize: 12.5, fontWeight: FontWeight.w600),
-            ),
+            Text('Risks', style: theme.type.callout.semibold.tint(theme.text)),
             const SizedBox(height: 3),
             for (final r in risks)
               Padding(
                 padding: const EdgeInsets.only(bottom: 2),
-                child: Text('•  $r', style: TextStyle(color: theme.textMuted, fontSize: 12.5, height: 1.35)),
+                child: Text('•  $r', style: theme.type.callout.copyWith(color: theme.textMuted, height: 1.35)),
               ),
           ],
           if (plan.verification.isNotEmpty) ...[
@@ -180,7 +158,7 @@ class _PlanCardState extends State<PlanCard> {
                   TextSpan(text: plan.verification),
                 ],
               ),
-              style: TextStyle(color: theme.textMuted, fontSize: 12.5, height: 1.35),
+              style: theme.type.callout.copyWith(color: theme.textMuted, height: 1.35),
             ),
           ],
           if (open) ...[
@@ -201,7 +179,7 @@ class _PlanCardState extends State<PlanCard> {
                 Expanded(
                   child: Text(
                     widget.switchesToAutoEdit ? 'Start building switches to Auto-edit.' : '',
-                    style: TextStyle(color: theme.textMuted, fontSize: 12),
+                    style: theme.type.caption.tint(theme.textMuted),
                   ),
                 ),
                 if (_revising)

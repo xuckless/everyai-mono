@@ -37,10 +37,7 @@ class FilesCard extends ConsumerWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(
-            files.length == 1 ? 'Result' : 'Results',
-            style: TextStyle(color: theme.textMuted, fontSize: 12, fontWeight: FontWeight.w600),
-          ),
+          Text(files.length == 1 ? 'Result' : 'Results', style: theme.type.caption.semibold.tint(theme.textMuted)),
           const SizedBox(height: 4),
           for (final f in files)
             _FileRow(
@@ -81,13 +78,13 @@ class _FileRow extends StatelessWidget {
                   file.name,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: theme.text, fontSize: 13.5, fontWeight: FontWeight.w500),
+                  style: theme.type.body.medium.tint(theme.text),
                 ),
                 Text(
                   exists ? (file.description.isNotEmpty ? file.description : file.path) : '${file.path} (not found)',
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: theme.textMuted, fontSize: 12, height: 1.35),
+                  style: theme.type.caption.copyWith(color: theme.textMuted, height: 1.35),
                 ),
               ],
             ),

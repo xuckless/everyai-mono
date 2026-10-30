@@ -130,12 +130,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                     const SizedBox(width: 12),
                     Text(
                       project == null ? 'Code with an agent' : 'What should we build?',
-                      style: TextStyle(
-                        color: theme.text,
-                        fontSize: 26,
-                        fontWeight: FontWeight.w400,
-                        letterSpacing: -0.5,
-                      ),
+                      style: theme.type.largeTitle.regular.copyWith(color: theme.text, letterSpacing: -0.5),
                     ),
                   ],
                 ),
@@ -192,14 +187,11 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                         : 'Each session works on its own branch in a separate worktree, so your checkout stays as it is. '
                               '${_mode.description}.',
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: theme.textMuted, fontSize: 12.5),
+                    style: theme.type.callout.tint(theme.textMuted),
                   ),
                   if (sessions.isNotEmpty) ...[
                     const SizedBox(height: 28),
-                    Text(
-                      'Recent sessions',
-                      style: TextStyle(color: theme.textMuted, fontSize: 12, fontWeight: FontWeight.w600),
-                    ),
+                    Text('Recent sessions', style: theme.type.caption.semibold.tint(theme.textMuted)),
                     const SizedBox(height: 6),
                     for (final s in sessions) SessionTile(info: s, onOpen: () => context.go(Routes.codeSession(s.id))),
                   ],
@@ -231,7 +223,7 @@ class _NoProjects extends StatelessWidget {
           Text(
             'Pick a project on your paired computer and describe what you want. The agent runs there.',
             textAlign: TextAlign.center,
-            style: TextStyle(color: theme.textMuted, fontSize: 14, height: 1.45),
+            style: theme.type.body.copyWith(color: theme.textMuted, height: 1.45),
           ),
           const SizedBox(height: 12),
           RemoteProjectRows(onAdd: onRemote),
@@ -244,7 +236,7 @@ class _NoProjects extends StatelessWidget {
           'Open a project folder and describe what you want. The agent reads the code, runs commands and edits '
           'files, asking before anything risky.',
           textAlign: TextAlign.center,
-          style: TextStyle(color: theme.textMuted, fontSize: 14, height: 1.45),
+          style: theme.type.body.copyWith(color: theme.textMuted, height: 1.45),
         ),
         const SizedBox(height: 20),
         Wrap(
@@ -358,7 +350,7 @@ class _ProjectPicker extends StatelessWidget {
               child: Text(
                 project.name,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: theme.textMuted, fontSize: 12.5, fontWeight: FontWeight.w500),
+                style: theme.type.callout.medium.tint(theme.textMuted),
               ),
             ),
             const SizedBox(width: 4),
@@ -424,11 +416,10 @@ class _SessionTileState extends ConsumerState<SessionTile> {
                     widget.info.title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: theme.text, fontSize: 13),
+                    style: theme.type.callout.tint(theme.text),
                   ),
                 ),
-                if (!widget.dense)
-                  Text(_age(widget.info.createdAt), style: TextStyle(color: theme.textMuted, fontSize: 12)),
+                if (!widget.dense) Text(_age(widget.info.createdAt), style: theme.type.caption.tint(theme.textMuted)),
                 Opacity(
                   opacity: _hover || widget.selected || Host.isMobile ? 1 : 0,
                   child: AdaptiveMenuButton(

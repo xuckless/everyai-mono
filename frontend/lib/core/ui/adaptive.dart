@@ -132,7 +132,7 @@ class AdaptiveButton extends StatelessWidget {
                   label,
                   overflow: TextOverflow.ellipsis,
                   // Compact buttons share one label size across design languages.
-                  style: large ? null : const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                  style: large ? null : theme.type.callout.medium,
                 ),
               ),
             ],
@@ -141,11 +141,11 @@ class AdaptiveButton extends StatelessWidget {
     final cupertinoSize = large ? c.CupertinoButtonSize.large : c.CupertinoButtonSize.small;
     final materialSize = large
         ? null
-        : const m.ButtonStyle(
+        : m.ButtonStyle(
             visualDensity: m.VisualDensity.compact,
-            minimumSize: m.WidgetStatePropertyAll(Size(0, 34)),
-            padding: m.WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 14)),
-            textStyle: m.WidgetStatePropertyAll(TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
+            minimumSize: const m.WidgetStatePropertyAll(Size(0, 34)),
+            padding: const m.WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 14)),
+            textStyle: m.WidgetStatePropertyAll(theme.type.callout.medium),
           );
 
     final Widget button = switch (theme.design) {
@@ -263,11 +263,11 @@ class AdaptiveTextField extends StatelessWidget {
         autofocus: autofocus,
         prefix: prefix == null ? null : Padding(padding: const EdgeInsets.only(left: 8), child: prefix),
         padding: borderless ? EdgeInsets.zero : const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
-        placeholderStyle: TextStyle(color: theme.textMuted, fontSize: Host.isDesktop ? 14.5 : null),
+        placeholderStyle: theme.type.body.tint(theme.textMuted),
         decoration: borderless
             ? null
             : BoxDecoration(color: theme.surfaceRaised, borderRadius: BorderRadius.circular(theme.radius)),
-        style: TextStyle(color: theme.text, fontSize: Host.isDesktop ? 14.5 : null),
+        style: theme.type.body.tint(theme.text),
       ),
       DesignLanguage.macos => mac.MacosTextField(
         controller: controller,
@@ -284,8 +284,10 @@ class AdaptiveTextField extends StatelessWidget {
         autofocus: autofocus,
         prefix: prefix,
         padding: borderless ? EdgeInsets.zero : const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-        style: TextStyle(color: theme.text, fontSize: borderless ? 14 : 13),
-        placeholderStyle: TextStyle(color: theme.textMuted.withValues(alpha: 0.8)),
+        style: (borderless ? theme.type.body : theme.type.callout).tint(theme.text),
+        placeholderStyle: (borderless ? theme.type.body : theme.type.callout).tint(
+          theme.textMuted.withValues(alpha: 0.8),
+        ),
         // macos_ui paints a 3px focus ring onto any non-null focusedDecoration.
         decoration: borderless ? null : mac.kDefaultRoundedBorderDecoration,
         focusedDecoration: borderless ? null : mac.kDefaultFocusedBorderDecoration,
@@ -430,16 +432,17 @@ class AdaptiveListTile extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     DefaultTextStyle.merge(
-                      style: TextStyle(color: theme.text, fontSize: theme.design == DesignLanguage.macos ? 13 : 16),
+                      style: (theme.design == DesignLanguage.macos ? theme.type.callout : theme.type.body).tint(
+                        theme.text,
+                      ),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       child: title,
                     ),
                     if (subtitle != null)
                       DefaultTextStyle.merge(
-                        style: TextStyle(
-                          color: theme.textMuted,
-                          fontSize: theme.design == DesignLanguage.macos ? 11 : 13,
+                        style: (theme.design == DesignLanguage.macos ? theme.type.footnote : theme.type.caption).tint(
+                          theme.textMuted,
                         ),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
@@ -529,14 +532,8 @@ class AdaptiveSectionHeader extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(12, 16, 12, 6),
       child: Text(
         upper ? label.toUpperCase() : label,
-        style: TextStyle(
+        style: (theme.design == DesignLanguage.macos ? theme.type.footnote : theme.type.caption).semibold.copyWith(
           color: theme.textMuted,
-          fontSize: switch (theme.design) {
-            DesignLanguage.macos => 11,
-            DesignLanguage.cupertino => 13,
-            _ => 12,
-          },
-          fontWeight: FontWeight.w600,
           letterSpacing: upper ? 0.4 : 0.1,
         ),
       ),
@@ -562,123 +559,85 @@ class MenuAction {
   final bool destructive;
 }
 
-/// A button that opens a native menu: a pull-down popover (macOS, and Cupertino
-/// on desktop and web), an action sheet (Cupertino on phones),
-/// flyout (Windows) or Material menu.
+/// A button that opens a menu. Every menu in the app is the same anchored
+/// glass popover with [PopoverRow]s (the model picker, the composer's menus,
+/// "…" menus, value pickers), on every platform, so they all look alike.
 class AdaptiveMenuButton extends StatelessWidget {
-  const AdaptiveMenuButton({super.key, required this.actions, required this.child, this.tooltip});
+  const AdaptiveMenuButton({super.key, required this.actions, required this.child, this.tooltip, this.width});
 
   final List<MenuAction> actions;
   final Widget child;
   final String? tooltip;
+  final double? width;
 
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    Widget check(MenuAction a) =>
-        SizedBox(width: 20, child: a.checked ? Icon(EveryIcon.check.of(theme.design), size: 14) : null);
-    switch (theme.design) {
-      case DesignLanguage.fluent:
-        return f.DropDownButton(
-          title: child,
-          items: [
+    final popover = AnchoredPopover(
+      width: width,
+      builder: (context, close) => SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(vertical: 5),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
             for (final a in actions)
-              f.MenuFlyoutItem(
-                leading: check(a),
-                text: Text(a.label, style: TextStyle(color: a.destructive ? theme.danger : null)),
-                onPressed: a.onSelected,
-              ),
-          ],
-        );
-      case DesignLanguage.macos:
-        return _popover(theme);
-      // A pull-down popover wherever there's a pointer; the action sheet only on phones and tablets.
-      case DesignLanguage.cupertino:
-        return Host.isMobile ? _CupertinoMenuButton(actions: actions, child: child) : _popover(theme);
-      case DesignLanguage.material || DesignLanguage.adwaita:
-        return m.MenuAnchor(
-          menuChildren: [
-            for (final a in actions)
-              m.MenuItemButton(
-                leadingIcon: a.icon == null ? check(a) : Icon(a.icon!.of(theme.design), size: 18),
-                trailingIcon: a.icon != null && a.checked ? Icon(EveryIcon.check.of(theme.design), size: 18) : null,
-                style: a.destructive ? m.MenuItemButton.styleFrom(foregroundColor: theme.danger) : null,
-                onPressed: a.onSelected,
-                child: Text(a.label),
-              ),
-          ],
-          builder: (context, controller, _) => m.InkWell(
-            borderRadius: BorderRadius.circular(theme.radius),
-            onTap: () => controller.isOpen ? controller.close() : controller.open(),
-            child: child,
-          ),
-        );
-    }
-  }
-
-  Widget _popover(EveryTheme theme) => AnchoredPopover(
-    builder: (context, close) => Padding(
-      padding: const EdgeInsets.symmetric(vertical: 5),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          for (final a in actions)
-            PopoverRow(
-              title: a.label,
-              destructive: a.destructive,
-              trailing: a.checked ? Icon(EveryIcon.check.of(theme.design), size: 14, color: theme.accent) : null,
-              onTap: () {
-                close();
-                a.onSelected();
-              },
-            ),
-        ],
-      ),
-    ),
-    child: child,
-  );
-}
-
-class _CupertinoMenuButton extends StatelessWidget {
-  const _CupertinoMenuButton({required this.actions, required this.child});
-
-  final List<MenuAction> actions;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: () => c.showCupertinoModalPopup<void>(
-        context: context,
-        builder: (sheetContext) => c.CupertinoActionSheet(
-          actions: [
-            for (final a in actions)
-              c.CupertinoActionSheetAction(
-                isDestructiveAction: a.destructive,
-                isDefaultAction: a.checked,
-                onPressed: () {
-                  Navigator.of(sheetContext).pop();
+              PopoverRow(
+                title: a.label,
+                destructive: a.destructive,
+                selected: a.checked,
+                leading: a.icon == null
+                    ? null
+                    : AdaptiveIcon(a.icon!, size: 16, color: a.destructive ? theme.danger : theme.textMuted),
+                trailing: a.checked ? Icon(EveryIcon.check.of(theme.design), size: 14, color: theme.accent) : null,
+                onTap: () {
+                  close();
                   a.onSelected();
                 },
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(a.label),
-                    if (a.checked) ...[const SizedBox(width: 6), Icon(EveryIcon.check.of(theme.design), size: 16)],
-                  ],
-                ),
               ),
           ],
-          cancelButton: c.CupertinoActionSheetAction(
-            onPressed: () => Navigator.of(sheetContext).pop(),
-            child: const Text('Cancel'),
-          ),
         ),
       ),
       child: child,
+    );
+    return tooltip == null ? popover : Semantics(label: tooltip, button: true, child: popover);
+  }
+}
+
+/// The trigger for a value picker: the current value in accent text with an
+/// up/down chevron, like a native pop-up button. Pair it with
+/// [AdaptiveMenuButton] or [AnchoredPopover].
+class MenuTrigger extends StatelessWidget {
+  const MenuTrigger(this.label, {super.key, this.leading, this.muted = false});
+
+  final String label;
+  final Widget? leading;
+
+  /// Secondary text color instead of the accent (triggers inside dense chrome).
+  final bool muted;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final color = muted ? theme.textMuted : theme.accent;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (leading != null) ...[leading!, const SizedBox(width: 6)],
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.type.callout.medium.tint(color),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Icon(EveryIcon.chevronUpDown.of(theme.design), size: 13, color: color),
+        ],
+      ),
     );
   }
 }
@@ -792,11 +751,7 @@ class ConfirmDetail extends StatelessWidget {
         ),
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(10),
-          child: Text(
-            text,
-            textAlign: TextAlign.start,
-            style: TextStyle(fontSize: 12.5, color: theme.text),
-          ),
+          child: Text(text, textAlign: TextAlign.start, style: theme.type.callout.tint(theme.text)),
         ),
       ),
     );
@@ -907,7 +862,7 @@ void showAdaptiveToast(BuildContext context, String message) {
             level: GlassLevel.thick,
             radius: 999,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            child: Text(message, style: TextStyle(color: theme.text, fontSize: 14)),
+            child: Text(message, style: theme.type.body.tint(theme.text)),
           ),
         ),
       ),

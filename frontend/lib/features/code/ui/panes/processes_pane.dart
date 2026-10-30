@@ -10,7 +10,7 @@ import '../../domain/local_ports.dart';
 import '../../panes/panes_providers.dart';
 import '../../panes/processes.dart';
 
-const _mono = TextStyle(fontFamily: 'SourceCodePro', fontSize: 11.5, height: 1.4);
+final _mono = EveryType.resolve().caption.mono.copyWith(height: 1.4);
 
 /// What the session has running: the agent's background jobs and servers,
 /// and what was started from the Terminal pane, with their ports.
@@ -47,7 +47,7 @@ class ProcessesPane extends ConsumerWidget {
                   snapshot.isLoading && snapshot.value == null
                       ? 'Looking…'
                       : '${list.length} running · ${list.fold(0, (n, p) => n + p.ports.length)} listening',
-                  style: TextStyle(color: theme.textMuted, fontSize: 12),
+                  style: theme.type.caption.tint(theme.textMuted),
                 ),
               ),
               AdaptiveIconButton(
@@ -67,7 +67,7 @@ class ProcessesPane extends ConsumerWidget {
                     child: Text(
                       'Nothing running. Servers and background jobs the agent or the terminal starts show here.',
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: theme.textMuted, fontSize: 13),
+                      style: theme.type.callout.tint(theme.textMuted),
                     ),
                   ),
                 )
@@ -116,13 +116,13 @@ class _ProcessRow extends StatelessWidget {
                       child: Text(
                         p.name,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: theme.text, fontSize: 13, fontWeight: FontWeight.w600),
+                        style: theme.type.callout.semibold.tint(theme.text),
                       ),
                     ),
                     const SizedBox(width: 6),
                     Text(
                       '${p.pid} · ${p.origin == ProcessOrigin.agent ? 'agent' : 'terminal'}',
-                      style: TextStyle(color: theme.textMuted, fontSize: 11.5),
+                      style: theme.type.caption.tint(theme.textMuted),
                     ),
                   ],
                 ),
@@ -189,7 +189,7 @@ class _PortChip extends StatelessWidget {
           ),
           child: Text(
             onTap == null ? label : '$label  Preview',
-            style: _mono.copyWith(color: theme.accent, fontSize: 11),
+            style: theme.type.footnote.mono.copyWith(color: theme.accent, height: 1.4),
           ),
         ),
       ),

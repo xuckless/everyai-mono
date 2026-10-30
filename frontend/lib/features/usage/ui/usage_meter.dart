@@ -41,9 +41,8 @@ class UsageMeter extends StatelessWidget {
             children: [
               Text(
                 label,
-                style: TextStyle(
+                style: theme.type.caption.copyWith(
                   color: theme.textMuted,
-                  fontSize: 12,
                   fontFeatures: const [FontFeature.tabularFigures()],
                 ),
               ),
@@ -134,15 +133,11 @@ class UsageBreakdown extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
         children: [
-          Expanded(
-            child: Text(label, style: TextStyle(color: theme.textMuted, fontSize: 13)),
-          ),
+          Expanded(child: Text(label, style: theme.type.callout.tint(theme.textMuted))),
           Text(
             value,
-            style: TextStyle(
+            style: (strong ? theme.type.callout.semibold : theme.type.callout).copyWith(
               color: theme.text,
-              fontSize: 13,
-              fontWeight: strong ? FontWeight.w600 : FontWeight.w400,
               fontFeatures: const [FontFeature.tabularFigures()],
             ),
           ),
@@ -167,12 +162,12 @@ class UsageBreakdown extends StatelessWidget {
                     children: [
                       Text(
                         'Context ${pct! < 1 && pct > 0 ? '<1' : pct.round()}% full',
-                        style: TextStyle(color: theme.text, fontSize: 13, fontWeight: FontWeight.w600),
+                        style: theme.type.callout.semibold.tint(theme.text),
                       ),
                       Text(
                         '${formatTokens(totals.contextTokens)} of ${formatTokens(contextWindow)}'
                         '${modelName == null ? '' : ' · $modelName'}',
-                        style: TextStyle(color: theme.textMuted, fontSize: 12),
+                        style: theme.type.caption.tint(theme.textMuted),
                       ),
                     ],
                   ),

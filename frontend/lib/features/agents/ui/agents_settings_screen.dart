@@ -99,7 +99,7 @@ class _AgentsSettingsScreenState extends ConsumerState<AgentsSettingsScreen> {
             'model, effort, tools and permissions lines, and its instructions. The Code agent starts one as a '
             'subagent when a task fits its description. An agent can make a subagent more careful than the session '
             'that starts it, never less.',
-            style: TextStyle(color: theme.textMuted, fontSize: 12),
+            style: theme.type.caption.tint(theme.textMuted),
           ),
           Padding(
             padding: const EdgeInsets.only(top: 10, bottom: 4),
@@ -137,7 +137,7 @@ class _AgentsSettingsScreenState extends ConsumerState<AgentsSettingsScreen> {
               'in <project>/$projectAgentsDir; one that came with a repository stays off until you review it, and goes '
               'off again if its file changes. A project agent takes the place of a global or built-in one of the same '
               'name once trusted.',
-              style: TextStyle(color: theme.textMuted, fontSize: 12),
+              style: theme.type.caption.tint(theme.textMuted),
             ),
           ),
         ],
@@ -171,20 +171,20 @@ class _AgentsSettingsScreenState extends ConsumerState<AgentsSettingsScreen> {
                 ? 'Built-in agents are read-only. Customize makes a copy in your global agents that you can edit; it '
                       'takes the built-in\'s place.'
                 : a.path!,
-            style: TextStyle(color: theme.textMuted, fontSize: 12),
+            style: theme.type.caption.tint(theme.textMuted),
           ),
           if (problems.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(
                 problems.join('\n'),
-                style: TextStyle(color: preview.usable ? theme.textMuted : theme.danger, fontSize: 12),
+                style: theme.type.caption.tint(preview.usable ? theme.textMuted : theme.danger),
               ),
             ),
           Padding(
             padding: const EdgeInsets.only(top: 10),
             child: readOnly
-                ? Text(a.text, style: const TextStyle(fontFamily: 'SourceCodePro', fontSize: 12.5))
+                ? Text(a.text, style: theme.type.callout.mono)
                 : AdaptiveTextField(controller: _text, minLines: 18, maxLines: null, onChanged: (_) => setState(() {})),
           ),
         ],
@@ -265,13 +265,13 @@ class _AgentTile extends ConsumerWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (a.description.isNotEmpty) Text(a.description, maxLines: 2, overflow: TextOverflow.ellipsis),
-          if (traits.isNotEmpty) Text(traits.join(' · '), style: TextStyle(color: theme.textMuted, fontSize: 12)),
+          if (traits.isNotEmpty) Text(traits.join(' · '), style: theme.type.caption.tint(theme.textMuted)),
           if (notes.isNotEmpty)
             Text(
               notes.join(' · '),
               maxLines: 3,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: a.usable ? theme.textMuted : theme.danger, fontSize: 12),
+              style: theme.type.caption.tint(a.usable ? theme.textMuted : theme.danger),
             ),
         ],
       ),

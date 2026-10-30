@@ -61,7 +61,7 @@ class UltraRunCard extends ConsumerWidget {
                     'Ultra · ${_firstLine(entry.goal)}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: theme.text, fontSize: 13, fontWeight: FontWeight.w600),
+                    style: theme.type.callout.semibold.tint(theme.text),
                   ),
                 ),
                 if (entry.orchestratorId.isNotEmpty && _exists(ref, entry.orchestratorId))
@@ -92,9 +92,8 @@ class UltraRunCard extends ConsumerWidget {
               child: Text(
                 ultraSummaryLine(entry),
                 key: const ValueKey('ultra.summary'),
-                style: TextStyle(
+                style: theme.type.caption.copyWith(
                   color: entry.stage == UltraStage.failed ? theme.danger : theme.textMuted,
-                  fontSize: 12,
                   fontFeatures: const [FontFeature.tabularFigures()],
                 ),
               ),
@@ -249,7 +248,7 @@ class _PhaseViewState extends State<_PhaseView> {
                         label,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: theme.text, fontSize: 12.5, fontWeight: FontWeight.w500),
+                        style: theme.type.callout.medium.tint(theme.text),
                       ),
                     ),
                   ],
@@ -266,7 +265,7 @@ class _PhaseViewState extends State<_PhaseView> {
             if (waiting > 0)
               Padding(
                 padding: const EdgeInsets.only(top: 4, left: 16),
-                child: Text('$waiting waiting', style: TextStyle(color: theme.textMuted, fontSize: 12)),
+                child: Text('$waiting waiting', style: theme.type.caption.tint(theme.textMuted)),
               ),
           ],
         ],
@@ -326,15 +325,14 @@ class _AgentRow extends ConsumerWidget {
                   title,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: theme.text, fontSize: 12.5),
+                  style: theme.type.callout.tint(theme.text),
                 ),
               ),
               const SizedBox(width: 6),
               Text(
                 meta,
-                style: TextStyle(
+                style: theme.type.caption.copyWith(
                   color: theme.textMuted,
-                  fontSize: 11.5,
                   fontFeatures: const [FontFeature.tabularFigures()],
                 ),
               ),
@@ -354,13 +352,13 @@ class _AgentRow extends ConsumerWidget {
                 r.note,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: theme.textMuted, fontSize: 11.5),
+                style: theme.type.caption.tint(theme.textMuted),
               ),
             ),
           if (r.merge case MergeOutcome(merged: false, :final branch))
             Padding(
               padding: const EdgeInsets.only(top: 2, left: 15),
-              child: Text('Not merged: left on $branch', style: TextStyle(color: theme.warning, fontSize: 11.5)),
+              child: Text('Not merged: left on $branch', style: theme.type.caption.tint(theme.warning)),
             ),
         ],
       ),

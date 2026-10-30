@@ -122,7 +122,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> {
                         Text(
                           'No built-in browser on this system; $url opens in your browser.',
                           textAlign: TextAlign.center,
-                          style: TextStyle(color: theme.textMuted, fontSize: 13),
+                          style: theme.type.callout.tint(theme.textMuted),
                         ),
                         const SizedBox(height: 10),
                         AdaptiveButton(label: 'Open again', onPressed: () => _openOutside(url)),
@@ -165,7 +165,7 @@ class _Empty extends StatelessWidget {
               'Start a dev server in the Terminal, or ask the agent to; '
               'its address shows up here. You can also type one above.',
               textAlign: TextAlign.center,
-              style: TextStyle(color: theme.textMuted, fontSize: 13),
+              style: theme.type.callout.tint(theme.textMuted),
             ),
             for (final c in candidates) ...[
               const SizedBox(height: 8),

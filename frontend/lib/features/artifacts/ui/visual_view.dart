@@ -119,7 +119,7 @@ class InlineVisual extends ConsumerWidget {
     final theme = EveryTheme.of(context);
     final call = Visual.fromPart(part);
     if (call == null) {
-      return Text('Used ${part.toolName}', style: TextStyle(color: theme.textMuted, fontSize: 13));
+      return Text('Used ${part.toolName}', style: theme.type.callout.tint(theme.textMuted));
     }
     final panel = ref.read(artifactPanelProvider(conversationId).notifier);
     final isArtifact = artifactTools.contains(part.toolName);
@@ -133,10 +133,7 @@ class InlineVisual extends ConsumerWidget {
               .where((v) => v.callId == call.callId)
               .firstOrNull;
     if (part.toolName == 'edit_artifact' && made == null) {
-      return Text(
-        'Edited an artifact that is not in this chat',
-        style: TextStyle(color: theme.textMuted, fontSize: 13),
-      );
+      return Text('Edited an artifact that is not in this chat', style: theme.type.callout.tint(theme.textMuted));
     }
     final visual = made ?? call;
     // A widget is part of the answer: drawn in the message, without a card.
@@ -203,9 +200,9 @@ class InlineVisual extends ConsumerWidget {
                 visual.title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: theme.text, fontWeight: FontWeight.w600, fontSize: 14),
+                style: theme.type.body.semibold.tint(theme.text),
               ),
-              Text(subtitle, style: TextStyle(color: theme.textMuted, fontSize: 12)),
+              Text(subtitle, style: theme.type.caption.tint(theme.textMuted)),
             ],
           ),
         ),

@@ -87,7 +87,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
                     Text(
                       _signUp ? 'Create your account' : 'Every model. One app.',
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: theme.textMuted, fontSize: 15),
+                      style: theme.type.headline.tint(theme.textMuted),
                     ),
                     const SizedBox(height: 28),
                     if (_signUp) ...[
@@ -117,10 +117,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
                     ),
                     if (error != null) ...[
                       const SizedBox(height: 12),
-                      Semantics(
-                        liveRegion: true,
-                        child: Text(error, style: TextStyle(color: theme.danger, fontSize: 13)),
-                      ),
+                      Semantics(liveRegion: true, child: Text(error, style: theme.type.callout.tint(theme.danger))),
                     ],
                     const SizedBox(height: 20),
                     AdaptiveButton(

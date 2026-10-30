@@ -85,7 +85,7 @@ class ArtifactPanel extends ConsumerWidget {
                         artifact?.title ?? v.title,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: theme.text, fontWeight: FontWeight.w600, fontSize: 14),
+                        style: theme.type.body.semibold.tint(theme.text),
                       ),
                       Text(
                         [
@@ -100,7 +100,7 @@ class ArtifactPanel extends ConsumerWidget {
                             if (v.editedByUser) 'Edited by you',
                           ],
                         ].join(' · '),
-                        style: TextStyle(color: theme.textMuted, fontSize: 12),
+                        style: theme.type.caption.tint(theme.textMuted),
                       ),
                     ],
                   ),

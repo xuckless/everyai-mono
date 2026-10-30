@@ -121,7 +121,7 @@ class CustomCommandsScreen extends ConsumerWidget {
             child: Text(
               'A command is a Markdown file. Type / in a composer to run it; \$ARGUMENTS in the file is replaced by '
               'what you type after the name. Add description, args, mode and model lines between --- marks at the top.',
-              style: TextStyle(color: theme.textMuted, fontSize: 12),
+              style: theme.type.caption.tint(theme.textMuted),
             ),
           ),
           section('Global', null, [
@@ -145,7 +145,7 @@ class CustomCommandsScreen extends ConsumerWidget {
                     padding: const EdgeInsets.only(top: 16),
                     child: Text(
                       'Global folder: ${s.data}\nProject folders: <project>/.everyai/commands',
-                      style: TextStyle(color: theme.textMuted, fontSize: 12),
+                      style: theme.type.caption.tint(theme.textMuted),
                     ),
                   ),
           ),

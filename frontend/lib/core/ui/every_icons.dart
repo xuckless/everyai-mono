@@ -29,6 +29,7 @@ enum EveryIcon {
   attach(c.CupertinoIcons.paperclip, f.FluentIcons.attach, m.Icons.attach_file_rounded),
   mention(c.CupertinoIcons.at, f.FluentIcons.mail, m.Icons.alternate_email_rounded),
   chevronDown(c.CupertinoIcons.chevron_down, f.FluentIcons.chevron_down, m.Icons.expand_more_rounded),
+  chevronUpDown(c.CupertinoIcons.chevron_up_chevron_down, f.FluentIcons.chevron_unfold10, m.Icons.unfold_more_rounded),
   more(c.CupertinoIcons.ellipsis, f.FluentIcons.more, m.Icons.more_horiz_rounded),
   chat(c.CupertinoIcons.bubble_left_bubble_right, f.FluentIcons.chat, m.Icons.chat_bubble_outline_rounded),
   edit(c.CupertinoIcons.pencil, f.FluentIcons.edit, m.Icons.edit_outlined),

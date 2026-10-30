@@ -2,6 +2,7 @@ import 'package:everyai_markdown/everyai_markdown.dart';
 import 'package:flutter/widgets.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../../core/platform/platform_kind.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../artifacts/ui/renderers/svg_view.dart';
 import '../../artifacts/ui/renderers/web_view.dart';
@@ -64,19 +65,21 @@ class ChatMarkdown extends StatelessWidget {
 
   static MarkdownStyle _styleFor(EveryTheme t, TextStyle ambient, Color? textColor) {
     final base = MarkdownStyle.fallback(t.brightness);
-    final body = ambient.copyWith(color: textColor ?? t.text, fontSize: 15, height: 1.55);
-    TextStyle heading(double size) => body.copyWith(fontSize: size, fontWeight: FontWeight.w700, height: 1.3);
-    final mono = body.copyWith(fontFamily: 'SourceCodePro', fontSize: 13.5, height: 1.5);
+    // Reading text is the scale's body; on desktop one point up, since answers are long-form.
+    final size = t.type.body.fontSize! + (Host.isDesktop ? 1 : 0);
+    final body = ambient.merge(t.type.body).copyWith(color: textColor ?? t.text, fontSize: size, height: 1.55);
+    TextStyle heading(double scale) => body.semibold.copyWith(fontSize: size * scale, height: 1.3);
+    final mono = body.mono.copyWith(fontSize: size - 1.5, height: 1.5);
     return base.copyWith(
       body: body,
-      h1: heading(24),
-      h2: heading(20),
-      h3: heading(17),
-      h4: heading(15),
-      h5: heading(14),
-      h6: heading(13),
+      h1: heading(1.6),
+      h2: heading(1.33),
+      h3: heading(1.13),
+      h4: heading(1),
+      h5: heading(0.93),
+      h6: heading(0.87),
       // Text color comes from the package's chip palette (warm on dark, plum on light).
-      inlineCode: base.inlineCode.copyWith(fontFamily: 'SourceCodePro', fontSize: 13),
+      inlineCode: base.inlineCode.mono.copyWith(fontSize: size - 2),
       codeBlock: mono,
       blockquote: body.copyWith(color: t.textMuted),
       // Underline on hover only (handled by the renderer).

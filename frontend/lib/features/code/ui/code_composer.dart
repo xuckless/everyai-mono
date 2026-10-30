@@ -325,10 +325,7 @@ class ModeMenu extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(
-                mode.label,
-                style: TextStyle(color: color, fontSize: 12.5, fontWeight: FontWeight.w600),
-              ),
+              Text(mode.label, style: theme.type.callout.medium.tint(color)),
               const SizedBox(width: 4),
               AdaptiveIcon(EveryIcon.chevronDown, size: 11, color: color),
             ],
@@ -358,14 +355,9 @@ class _QueuedChip extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text('Queued · ', style: TextStyle(color: theme.textMuted, fontSize: 12)),
+          Text('Queued · ', style: theme.type.caption.tint(theme.textMuted)),
           Flexible(
-            child: Text(
-              text,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: theme.text, fontSize: 12),
-            ),
+            child: Text(text, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.type.caption.tint(theme.text)),
           ),
           if (onRemove != null)
             AdaptiveIconButton(icon: EveryIcon.close, tooltip: 'Remove', size: 12, onPressed: onRemove),

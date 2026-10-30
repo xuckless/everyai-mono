@@ -275,36 +275,24 @@ class _PairingCodeCard extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Scan with your phone',
-                  style: TextStyle(color: theme.text, fontWeight: FontWeight.w600),
-                ),
+                Text('Scan with your phone', style: theme.type.headline.tint(theme.text)),
                 const SizedBox(height: 6),
                 Text(
                   'In EveryAI on the other device, open Settings → Remote coding and scan this code, or type it:',
-                  style: TextStyle(color: theme.textMuted, fontSize: 13, height: 1.4),
+                  style: theme.type.callout.copyWith(color: theme.textMuted, height: 1.4),
                 ),
                 const SizedBox(height: 10),
                 Text(
                   displayCode(code.code),
-                  style: TextStyle(
-                    color: theme.text,
-                    fontFamily: 'SourceCodePro',
-                    fontSize: 26,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 3,
-                  ),
+                  style: theme.type.largeTitle.mono.copyWith(color: theme.text, letterSpacing: 3),
                 ),
                 const SizedBox(height: 6),
                 Text(
                   left.isNegative ? 'Expired. Make a new code.' : 'Single use, expires in ${_countdown(left)}',
-                  style: TextStyle(color: theme.textMuted, fontSize: 12),
+                  style: theme.type.caption.tint(theme.textMuted),
                 ),
                 const SizedBox(height: 4),
-                Text(
-                  'Security code: $fingerprint',
-                  style: TextStyle(color: theme.textMuted, fontSize: 12, fontFamily: 'SourceCodePro'),
-                ),
+                Text('Security code: $fingerprint', style: theme.type.caption.mono.tint(theme.textMuted)),
               ],
             ),
           ),
@@ -335,15 +323,12 @@ class _PairRequestCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            '${request.deviceName} wants to use Code on this computer',
-            style: TextStyle(color: theme.text, fontWeight: FontWeight.w600),
-          ),
+          Text('${request.deviceName} wants to use Code on this computer', style: theme.type.headline.tint(theme.text)),
           const SizedBox(height: 6),
           Text(
             'Approve only if that device shows this security code: ${request.fingerprint}'
             '${left.isNegative ? '' : ' (${_countdown(left)} left)'}',
-            style: TextStyle(color: theme.textMuted, fontSize: 13, height: 1.4),
+            style: theme.type.callout.copyWith(color: theme.textMuted, height: 1.4),
           ),
           const SizedBox(height: 10),
           Wrap(
@@ -472,7 +457,7 @@ class _PairedHostsSectionState extends ConsumerState<_PairedHostsSection> {
           padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
           child: Text(
             'On the computer, open Settings → Remote coding, turn on hosting and choose Pair a device.',
-            style: TextStyle(color: theme.textMuted, fontSize: 13, height: 1.4),
+            style: theme.type.callout.copyWith(color: theme.textMuted, height: 1.4),
           ),
         ),
         if (Host.isMobile) ...[

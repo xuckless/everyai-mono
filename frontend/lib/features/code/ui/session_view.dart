@@ -323,7 +323,7 @@ class _ChangesButton extends ConsumerWidget {
                 ],
               ],
             ),
-            style: TextStyle(color: theme.text, fontSize: 12.5, fontWeight: FontWeight.w500),
+            style: theme.type.callout.medium.tint(theme.text),
           ),
         ),
       ),
@@ -459,7 +459,7 @@ class _Working extends StatelessWidget {
       children: [
         const EveryMarkActivity(size: 16),
         const SizedBox(width: 10),
-        Text('Working…', style: TextStyle(color: theme.textMuted, fontSize: 13)),
+        Text('Working…', style: theme.type.callout.tint(theme.textMuted)),
       ],
     );
   }
@@ -484,7 +484,7 @@ class _StartBuilding extends StatelessWidget {
           Expanded(
             child: Text(
               'Happy with the plan? Start building switches to Auto-edit.',
-              style: TextStyle(color: theme.text, fontSize: 13),
+              style: theme.type.callout.tint(theme.text),
             ),
           ),
           AdaptiveButton(label: 'Start building', onPressed: onStart),
@@ -525,7 +525,7 @@ class StatusPill extends StatelessWidget {
         children: [
           dot,
           const SizedBox(width: 6),
-          Text(status.label, style: TextStyle(color: theme.textMuted, fontSize: 12.5)),
+          Text(status.label, style: theme.type.callout.tint(theme.textMuted)),
         ],
       ),
     );

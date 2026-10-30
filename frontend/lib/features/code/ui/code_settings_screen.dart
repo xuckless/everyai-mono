@@ -179,10 +179,7 @@ class _CodeSettingsScreenState extends ConsumerState<CodeSettingsScreen> {
             border: Border.all(color: on ? theme.accent : theme.border),
             borderRadius: BorderRadius.circular(8),
           ),
-          child: Text(
-            label,
-            style: TextStyle(color: onTap == null && !on ? theme.textMuted : theme.text, fontSize: 13),
-          ),
+          child: Text(label, style: theme.type.callout.tint(onTap == null && !on ? theme.textMuted : theme.text)),
         ),
       ),
     );
@@ -239,15 +236,12 @@ class _CodeSettingsScreenState extends ConsumerState<CodeSettingsScreen> {
                       onSelected: () => _go(projectId: p.id),
                     ),
                 ],
-                child: Text(
-                  'Project: ${project?.name ?? 'choose…'}',
-                  style: TextStyle(color: theme.accent, fontSize: 13),
-                ),
+                child: MenuTrigger('Project: ${project?.name ?? 'choose…'}'),
               ),
             ),
           Padding(
             padding: const EdgeInsets.only(bottom: 10),
-            child: Text(blurb, style: TextStyle(color: theme.textMuted, fontSize: 12.5)),
+            child: Text(blurb, style: theme.type.callout.tint(theme.textMuted)),
           ),
           if (readOnly)
             Container(
@@ -259,13 +253,13 @@ class _CodeSettingsScreenState extends ConsumerState<CodeSettingsScreen> {
               child: AdaptiveSelectionArea(
                 child: Text(
                   _text.text.isEmpty ? '(none)' : _text.text,
-                  style: TextStyle(fontFamily: 'SourceCodePro', fontSize: 12.5, color: theme.text),
+                  style: theme.type.callout.mono.tint(theme.text),
                 ),
               ),
             )
           else
             DefaultTextStyle.merge(
-              style: TextStyle(fontFamily: _tab == CodeSettingsTab.json ? 'SourceCodePro' : null, fontSize: 12.5),
+              style: _tab == CodeSettingsTab.json ? theme.type.callout.mono : theme.type.callout,
               child: AdaptiveTextField(
                 key: ValueKey('code-settings.editor.${_scope.name}.${_tab.name}'),
                 controller: _text,
@@ -281,7 +275,7 @@ class _CodeSettingsScreenState extends ConsumerState<CodeSettingsScreen> {
           for (final e in _errors)
             Padding(
               padding: const EdgeInsets.only(top: 6),
-              child: Text(e, style: TextStyle(color: theme.danger, fontSize: 12.5)),
+              child: Text(e, style: theme.type.callout.tint(theme.danger)),
             ),
           if (!readOnly)
             Padding(

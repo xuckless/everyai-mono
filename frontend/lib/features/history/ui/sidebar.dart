@@ -292,10 +292,8 @@ class _SpaceSwitch extends StatelessWidget {
                   const SizedBox(width: 6),
                   Text(
                     label,
-                    style: TextStyle(
-                      color: selected ? theme.text : theme.textMuted,
-                      fontSize: 13,
-                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                    style: (selected ? theme.type.callout.semibold : theme.type.callout.medium).tint(
+                      selected ? theme.text : theme.textMuted,
                     ),
                   ),
                 ],
@@ -330,7 +328,7 @@ class _CodeRecents extends ConsumerWidget {
     if (projects.isEmpty) {
       return Padding(
         padding: const EdgeInsets.all(20),
-        child: Text('Open a project to start a session.', style: TextStyle(color: theme.textMuted, fontSize: 13)),
+        child: Text('Open a project to start a session.', style: theme.type.callout.tint(theme.textMuted)),
       );
     }
     return ListView(
@@ -347,7 +345,7 @@ class _CodeRecents extends ConsumerWidget {
                   child: Text(
                     p.name,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: theme.textMuted, fontSize: 12, fontWeight: FontWeight.w600),
+                    style: theme.type.caption.semibold.tint(theme.textMuted),
                   ),
                 ),
               ],
@@ -441,10 +439,8 @@ class _NavItemState extends State<_NavItem> {
                   child: Text(
                     widget.label,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: widget.accent ? theme.accent : theme.text,
-                      fontSize: 13.5,
-                      fontWeight: widget.accent || widget.selected ? FontWeight.w500 : FontWeight.w400,
+                    style: (widget.accent || widget.selected ? theme.type.body.medium : theme.type.body).tint(
+                      widget.accent ? theme.accent : theme.text,
                     ),
                   ),
                 ),
@@ -500,17 +496,14 @@ class _Recents extends ConsumerWidget {
         padding: const EdgeInsets.all(20),
         child: Text(
           matches != null ? 'No chats match.' : 'Your chats will appear here.',
-          style: TextStyle(color: theme.textMuted, fontSize: 13),
+          style: theme.type.callout.tint(theme.textMuted),
         ),
       );
     }
 
     Widget label(String text) => Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
-      child: Text(
-        text,
-        style: TextStyle(color: theme.textMuted, fontSize: 12, fontWeight: FontWeight.w600),
-      ),
+      child: Text(text, style: theme.type.caption.semibold.tint(theme.textMuted)),
     );
 
     return ListView(
@@ -592,10 +585,10 @@ class _ConversationTileState extends ConsumerState<ConversationTile> {
                         c.title,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: theme.text, fontSize: 13),
+                        style: theme.type.callout.tint(theme.text),
                       ),
                       if (widget.subtitle != null)
-                        Text(widget.subtitle!, style: TextStyle(color: theme.textMuted, fontSize: 12)),
+                        Text(widget.subtitle!, style: theme.type.caption.tint(theme.textMuted)),
                     ],
                   ),
                 ),
@@ -672,12 +665,7 @@ class _AccountRow extends ConsumerWidget {
       width: 30,
       height: 30,
       decoration: BoxDecoration(color: theme.accent.withValues(alpha: 0.25), shape: BoxShape.circle),
-      child: Center(
-        child: Text(
-          name[0],
-          style: TextStyle(color: theme.text, fontSize: 13, fontWeight: FontWeight.w700),
-        ),
-      ),
+      child: Center(child: Text(name[0], style: theme.type.callout.semibold.tint(theme.text))),
     );
     return SafeArea(
       top: false,
@@ -708,11 +696,8 @@ class _AccountRow extends ConsumerWidget {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Text(
-                                  name,
-                                  style: TextStyle(color: theme.text, fontSize: 13.5, fontWeight: FontWeight.w600),
-                                ),
-                                if (plan.isNotEmpty) Text(plan, style: TextStyle(color: theme.textMuted, fontSize: 12)),
+                                Text(name, style: theme.type.body.semibold.tint(theme.text)),
+                                if (plan.isNotEmpty) Text(plan, style: theme.type.caption.tint(theme.textMuted)),
                               ],
                             ),
                           ),

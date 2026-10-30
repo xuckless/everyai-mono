@@ -111,22 +111,13 @@ class _FlashcardsViewState extends ConsumerState<FlashcardsView> {
                           children: [
                             Text(
                               showBack ? 'ANSWER' : 'QUESTION',
-                              style: TextStyle(
-                                color: theme.textMuted,
-                                fontSize: 11,
-                                letterSpacing: 1.2,
-                                fontWeight: FontWeight.w700,
-                              ),
+                              style: theme.type.footnote.semibold.tint(theme.textMuted).copyWith(letterSpacing: 1.2),
                             ),
                             const SizedBox(height: 10),
                             if (showBack)
                               ChatMarkdown(back)
                             else
-                              Text(
-                                front,
-                                textAlign: TextAlign.center,
-                                style: TextStyle(color: theme.text, fontSize: 18, fontWeight: FontWeight.w600),
-                              ),
+                              Text(front, textAlign: TextAlign.center, style: theme.type.title.tint(theme.text)),
                           ],
                         ),
                       ),
@@ -148,7 +139,7 @@ class _FlashcardsViewState extends ConsumerState<FlashcardsView> {
               const Spacer(),
               Text(
                 '${progress.known.length} known · ${progress.learning.length} learning',
-                style: TextStyle(color: theme.textMuted, fontSize: 12),
+                style: theme.type.caption.tint(theme.textMuted),
               ),
               const SizedBox(width: 10),
               AdaptiveButton(label: 'Still learning', emphasis: ButtonEmphasis.plain, onPressed: () => _mark(false)),

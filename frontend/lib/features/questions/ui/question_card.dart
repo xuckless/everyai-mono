@@ -149,7 +149,7 @@ class _QuestionCardState extends State<QuestionCard> {
     final questions = _questions;
 
     if (questions.isEmpty) {
-      return Text('The agent asked an empty question.', style: TextStyle(color: theme.textMuted, fontSize: 13));
+      return Text('The agent asked an empty question.', style: theme.type.callout.tint(theme.textMuted));
     }
     if (answered != null) return _Answered(questions: questions, answers: answered, reply: widget.reply);
 
@@ -182,11 +182,11 @@ class _QuestionCardState extends State<QuestionCard> {
                   Expanded(
                     child: Text(
                       questions.length == 1 ? 'A question for you' : '${questions.length} questions for you',
-                      style: TextStyle(color: theme.text, fontSize: 13, fontWeight: FontWeight.w600),
+                      style: theme.type.callout.semibold.tint(theme.text),
                     ),
                   ),
                   if (_paged)
-                    Text('${page + 1} of ${questions.length}', style: TextStyle(color: theme.textMuted, fontSize: 12)),
+                    Text('${page + 1} of ${questions.length}', style: theme.type.caption.tint(theme.textMuted)),
                 ],
               ),
               if (_paged) ...[
@@ -237,7 +237,7 @@ class _QuestionCardState extends State<QuestionCard> {
                           : 'Pick an answer to continue',
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: theme.textMuted, fontSize: 12),
+                      style: theme.type.caption.tint(theme.textMuted),
                     ),
                   ),
                   if (_paged && page > 0) ...[
@@ -304,16 +304,12 @@ class _QuestionPage extends StatelessWidget {
           Row(
             children: [
               if (showHeader && q.header.isNotEmpty) ...[_HeaderChip(q.header), const SizedBox(width: 8)],
-              if (q.multiSelect)
-                Text('Select all that apply', style: TextStyle(color: theme.textMuted, fontSize: 11.5)),
+              if (q.multiSelect) Text('Select all that apply', style: theme.type.caption.tint(theme.textMuted)),
             ],
           ),
           const SizedBox(height: 6),
         ],
-        Text(
-          q.question,
-          style: TextStyle(color: theme.text, fontSize: 14.5, fontWeight: FontWeight.w600, height: 1.35),
-        ),
+        Text(q.question, style: theme.type.body.semibold.tint(theme.text).copyWith(height: 1.35)),
         const SizedBox(height: 8),
         for (final (oi, option) in q.options.indexed)
           _OptionRow(
@@ -348,10 +344,7 @@ class _HeaderChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
       decoration: BoxDecoration(color: theme.accent.withValues(alpha: 0.14), borderRadius: BorderRadius.circular(5)),
-      child: Text(
-        label,
-        style: TextStyle(color: theme.accent, fontSize: 11, fontWeight: FontWeight.w700),
-      ),
+      child: Text(label, style: theme.type.footnote.medium.tint(theme.accent)),
     );
   }
 }
@@ -391,10 +384,8 @@ class _QuestionTab extends StatelessWidget {
                 if (done) ...[AdaptiveIcon(EveryIcon.check, size: 11, color: theme.accent), const SizedBox(width: 4)],
                 Text(
                   label,
-                  style: TextStyle(
-                    color: current ? theme.accent : theme.text,
-                    fontSize: 12,
-                    fontWeight: current ? FontWeight.w700 : FontWeight.w500,
+                  style: (current ? theme.type.caption.semibold : theme.type.caption.medium).tint(
+                    current ? theme.accent : theme.text,
                   ),
                 ),
               ],
@@ -474,16 +465,13 @@ class _OptionRowState extends State<_OptionRow> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        widget.label,
-                        style: TextStyle(color: theme.text, fontSize: 13.5, fontWeight: FontWeight.w600),
-                      ),
+                      Text(widget.label, style: theme.type.body.semibold.tint(theme.text)),
                       if (widget.description.isNotEmpty)
                         Padding(
                           padding: const EdgeInsets.only(top: 2),
                           child: Text(
                             widget.description,
-                            style: TextStyle(color: theme.textMuted, fontSize: 12.5, height: 1.3),
+                            style: theme.type.callout.tint(theme.textMuted).copyWith(height: 1.3),
                           ),
                         ),
                     ],
@@ -606,11 +594,11 @@ class _Answered extends StatelessWidget {
           children: [
             Text(
               questions.length == 1 ? 'Question answered in chat' : '${questions.length} questions, answered in chat',
-              style: TextStyle(color: theme.textMuted, fontSize: 12.5),
+              style: theme.type.callout.tint(theme.textMuted),
             ),
             if (reply case final r? when r.trim().isNotEmpty) ...[
               const SizedBox(height: 4),
-              Text(r.trim(), style: TextStyle(color: theme.text, fontSize: 13)),
+              Text(r.trim(), style: theme.type.callout.tint(theme.text)),
             ],
           ],
         ),
@@ -632,7 +620,7 @@ class _Answered extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(q.question, style: TextStyle(color: theme.textMuted, fontSize: 12.5)),
+                  Text(q.question, style: theme.type.callout.tint(theme.textMuted)),
                   const SizedBox(height: 3),
                   Wrap(
                     spacing: 6,
@@ -650,15 +638,12 @@ class _Answered extends StatelessWidget {
                             children: [
                               AdaptiveIcon(EveryIcon.check, size: 11, color: theme.accent),
                               const SizedBox(width: 4),
-                              Text(
-                                label,
-                                style: TextStyle(color: theme.text, fontSize: 12.5, fontWeight: FontWeight.w500),
-                              ),
+                              Text(label, style: theme.type.callout.medium.tint(theme.text)),
                             ],
                           ),
                         ),
                       if (i >= answers.length || answers[i].isEmpty)
-                        Text('Skipped', style: TextStyle(color: theme.textMuted, fontSize: 12.5)),
+                        Text('Skipped', style: theme.type.callout.tint(theme.textMuted)),
                     ],
                   ),
                 ],

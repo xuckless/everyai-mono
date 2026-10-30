@@ -174,15 +174,7 @@ class _Home extends StatelessWidget {
                   const BrandMark(size: 26),
                   const SizedBox(width: 12),
                   Flexible(
-                    child: Text(
-                      _greeting(DateTime.now()),
-                      style: TextStyle(
-                        color: theme.text,
-                        fontSize: 28,
-                        fontWeight: FontWeight.w400,
-                        letterSpacing: -0.6,
-                      ),
-                    ),
+                    child: Text(_greeting(DateTime.now()), style: theme.type.largeTitle.regular.tint(theme.text)),
                   ),
                 ],
               ),
@@ -244,7 +236,7 @@ class _StarterChipState extends State<_StarterChip> {
               children: [
                 AdaptiveIcon(widget.icon, size: 14, color: theme.textMuted),
                 const SizedBox(width: 6),
-                Text(widget.label, style: TextStyle(color: theme.text, fontSize: 13)),
+                Text(widget.label, style: theme.type.callout.tint(theme.text)),
               ],
             ),
           ),
@@ -316,9 +308,7 @@ class _ErrorBanner extends StatelessWidget {
               ),
               child: Row(
                 children: [
-                  Expanded(
-                    child: Text(message, style: TextStyle(color: theme.text, fontSize: 13)),
-                  ),
+                  Expanded(child: Text(message, style: theme.type.callout.tint(theme.text))),
                   if (onTopUp != null)
                     AdaptiveButton(label: 'Top up', emphasis: ButtonEmphasis.primary, onPressed: onTopUp),
                   if (retryable)

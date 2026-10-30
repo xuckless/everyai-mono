@@ -41,12 +41,7 @@ class GoalCard extends StatelessWidget {
                 const EveryMarkActivity(activity: MarkActivity.thinking, size: 13),
                 const SizedBox(width: 6),
               ],
-              Expanded(
-                child: Text(
-                  'Goal · ${goal.statusLabel}',
-                  style: TextStyle(color: color, fontSize: 12.5, fontWeight: FontWeight.w600),
-                ),
-              ),
+              Expanded(child: Text('Goal · ${goal.statusLabel}', style: theme.type.callout.semibold.tint(color))),
               AdaptiveIconButton(
                 icon: EveryIcon.close,
                 tooltip: goal.status.settled ? 'Dismiss' : 'Stop the goal',
@@ -57,17 +52,12 @@ class GoalCard extends StatelessWidget {
           ),
           Padding(
             padding: const EdgeInsets.only(right: 6),
-            child: Text(
-              goal.objective,
-              maxLines: 4,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 13),
-            ),
+            child: Text(goal.objective, maxLines: 4, overflow: TextOverflow.ellipsis, style: theme.type.callout),
           ),
           if (goal.note.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 4, right: 6),
-              child: Text(goal.note, style: TextStyle(color: theme.textMuted, fontSize: 12)),
+              child: Text(goal.note, style: theme.type.caption.tint(theme.textMuted)),
             ),
         ],
       ),

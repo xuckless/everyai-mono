@@ -91,14 +91,14 @@ class LocalToolChip extends StatelessWidget {
                 children: [
                   TextSpan(
                     text: label,
-                    style: const TextStyle(fontWeight: FontWeight.w600),
+                    style: const TextStyle(fontWeight: FontWeight.w500),
                   ),
                   if (detail.isNotEmpty) TextSpan(text: '  $detail'),
                 ],
               ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: color, fontSize: 13),
+              style: theme.type.callout.tint(color),
             ),
           ),
         ],

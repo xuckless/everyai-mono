@@ -35,13 +35,7 @@ class SettingsScreen extends ConsumerWidget {
         for (final (label, value) in options)
           MenuAction(label: label, checked: label == current, onSelected: () => onPick(value)),
       ],
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        child: Text(
-          current,
-          style: TextStyle(color: theme.accent, fontWeight: FontWeight.w600),
-        ),
-      ),
+      child: MenuTrigger(current),
     );
 
     return AdaptivePage(

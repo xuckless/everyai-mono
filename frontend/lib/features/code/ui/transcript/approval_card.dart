@@ -81,7 +81,7 @@ class _ApprovalCardState extends State<ApprovalCard> {
             children: [
               Text(
                 calls.length == 1 ? approvalTitle(calls.single) : 'Allow ${calls.length} actions?',
-                style: TextStyle(color: theme.text, fontSize: 14, fontWeight: FontWeight.w600),
+                style: theme.type.headline.tint(theme.text),
               ),
               const SizedBox(height: 8),
               ConstrainedBox(
@@ -147,7 +147,7 @@ class _ApprovalCardState extends State<ApprovalCard> {
                   child: Text(
                     'Session and always cover: ${remember.join(', ')}',
                     textAlign: TextAlign.end,
-                    style: TextStyle(color: theme.textMuted, fontSize: 12),
+                    style: theme.type.caption.tint(theme.textMuted),
                   ),
                 ),
             ],
@@ -166,7 +166,7 @@ class _Preview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    const mono = TextStyle(fontFamily: 'SourceCodePro', fontSize: 12.5, height: 1.45);
+    final mono = theme.type.callout.mono.copyWith(height: 1.45);
     final risk = call.risk.toUpperCase();
     final body = switch (call.actionKind) {
       'TerminalAction' => Container(
@@ -210,14 +210,14 @@ class _Preview extends StatelessWidget {
               ),
               TextSpan(
                 text: call.toolName,
-                style: const TextStyle(fontWeight: FontWeight.w600),
+                style: const TextStyle(fontWeight: FontWeight.w500),
               ),
               TextSpan(text: '\n${mcpArgumentsPreview(call)}'),
             ],
           ),
         ),
       ),
-      _ => Text(stepTitle(call), style: TextStyle(color: theme.textMuted, fontSize: 13)),
+      _ => Text(stepTitle(call), style: theme.type.callout.tint(theme.textMuted)),
     };
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
@@ -235,7 +235,7 @@ class _Preview extends StatelessWidget {
                   Expanded(
                     child: Text(
                       'Needs a look: this ${why.replaceFirst(RegExp(r'^an? '), '')}',
-                      style: TextStyle(color: theme.danger, fontSize: 12),
+                      style: theme.type.caption.tint(theme.danger),
                     ),
                   ),
                 ],
@@ -250,7 +250,7 @@ class _Preview extends StatelessWidget {
                   const SizedBox(width: 4),
                   Text(
                     'The agent rates this ${risk.toLowerCase()} risk',
-                    style: TextStyle(color: risk == 'HIGH' ? theme.danger : theme.textMuted, fontSize: 12),
+                    style: theme.type.caption.tint(risk == 'HIGH' ? theme.danger : theme.textMuted),
                   ),
                 ],
               ),

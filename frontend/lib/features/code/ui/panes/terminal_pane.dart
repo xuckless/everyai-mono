@@ -65,7 +65,7 @@ class _TerminalPaneState extends ConsumerState<TerminalPane> {
                 child: Text(
                   status.exitCode != null ? 'Exited (${status.exitCode})' : widget.session.workingDir,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: theme.textMuted, fontSize: 12),
+                  style: theme.type.caption.tint(theme.textMuted),
                 ),
               ),
               AdaptiveIconButton(
@@ -85,7 +85,10 @@ class _TerminalPaneState extends ConsumerState<TerminalPane> {
               controller: _controller,
               autofocus: true,
               padding: const EdgeInsets.all(8),
-              textStyle: const TerminalStyle(fontFamily: 'SourceCodePro', fontSize: 12.5),
+              textStyle: TerminalStyle(
+                fontFamily: 'SourceCodePro',
+                fontSize: EveryTheme.of(context).type.callout.fontSize!,
+              ),
               onSecondaryTapDown: (_, _) => _copyOrPaste(),
             ),
           ),

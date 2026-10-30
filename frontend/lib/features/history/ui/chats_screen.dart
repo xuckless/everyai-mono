@@ -82,7 +82,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                 padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
                 child: Text(
                   '${visible.length} chat${visible.length == 1 ? '' : 's'}',
-                  style: TextStyle(color: theme.textMuted, fontSize: 12.5),
+                  style: theme.type.callout.tint(theme.textMuted),
                 ),
               ),
               Expanded(

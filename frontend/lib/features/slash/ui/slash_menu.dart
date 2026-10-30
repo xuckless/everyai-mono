@@ -143,13 +143,10 @@ class _SlashRow extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.baseline,
                 textBaseline: TextBaseline.alphabetic,
                 children: [
-                  Text(
-                    '/${command.name}',
-                    style: TextStyle(color: theme.text, fontSize: 13.5, fontWeight: FontWeight.w600),
-                  ),
+                  Text('/${command.name}', style: theme.type.body.semibold.tint(theme.text)),
                   if (command.takesArgs) ...[
                     const SizedBox(width: 6),
-                    Text(command.argsHint!, style: TextStyle(color: theme.textMuted, fontSize: 12.5)),
+                    Text(command.argsHint!, style: theme.type.callout.tint(theme.textMuted)),
                   ],
                   const SizedBox(width: 12),
                   Expanded(
@@ -158,7 +155,7 @@ class _SlashRow extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       textAlign: TextAlign.right,
-                      style: TextStyle(color: theme.textMuted, fontSize: 12.5),
+                      style: theme.type.callout.tint(theme.textMuted),
                     ),
                   ),
                 ],

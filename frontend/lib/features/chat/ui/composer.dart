@@ -445,13 +445,7 @@ class EffortMenu extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 4, 14, 6),
-              child: Text(
-                'Thinking effort',
-                style: TextStyle(color: theme.textMuted, fontSize: 12, fontWeight: FontWeight.w600),
-              ),
-            ),
+            const PopoverHeader('Thinking effort'),
             for (final e in ReasoningEffort.values)
               PopoverRow(
                 title: e.label,
@@ -477,10 +471,7 @@ class EffortMenu extends StatelessWidget {
               BrandGlyph('extended-thinking', size: 16, active: effort != ReasoningEffort.auto),
               if (effort != ReasoningEffort.auto) ...[
                 const SizedBox(width: 4),
-                Text(
-                  effort.label,
-                  style: TextStyle(color: theme.textMuted, fontSize: 12.5, fontWeight: FontWeight.w500),
-                ),
+                Text(effort.label, style: theme.type.callout.medium.tint(theme.textMuted)),
               ],
             ],
           ),
@@ -529,10 +520,7 @@ class _ModeMenu extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              mode.label,
-              style: TextStyle(color: theme.text, fontSize: 13, fontWeight: FontWeight.w600),
-            ),
+            Text(mode.label, style: theme.type.callout.medium.tint(theme.text)),
             const SizedBox(width: 3),
             AdaptiveIcon(EveryIcon.chevronDown, size: 11, color: theme.textMuted),
           ],
@@ -578,11 +566,7 @@ class _ModeSelector extends StatelessWidget {
                     ),
                     child: Text(
                       m.label,
-                      style: TextStyle(
-                        color: m == mode ? theme.text : theme.textMuted,
-                        fontSize: 12.5,
-                        fontWeight: m == mode ? FontWeight.w600 : FontWeight.w500,
-                      ),
+                      style: theme.type.callout.medium.tint(m == mode ? theme.text : theme.textMuted),
                     ),
                   ),
                 ),

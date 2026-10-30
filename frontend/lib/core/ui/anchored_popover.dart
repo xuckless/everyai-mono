@@ -164,14 +164,11 @@ class _PopoverRowState extends State<PopoverRow> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text(
-                        widget.title,
-                        style: TextStyle(color: titleColor, fontSize: 14, fontWeight: FontWeight.w500),
-                      ),
+                      Text(widget.title, style: theme.type.body.tint(titleColor)),
                       if (widget.subtitle != null)
                         Padding(
                           padding: const EdgeInsets.only(top: 1),
-                          child: Text(widget.subtitle!, style: TextStyle(color: theme.textMuted, fontSize: 12)),
+                          child: Text(widget.subtitle!, style: theme.type.caption.tint(theme.textMuted)),
                         ),
                     ],
                   ),
@@ -197,10 +194,7 @@ class PopoverHeader extends StatelessWidget {
     final theme = EveryTheme.of(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
-      child: Text(
-        label,
-        style: TextStyle(color: theme.textMuted, fontSize: 12, fontWeight: FontWeight.w600),
-      ),
+      child: Text(label, style: theme.type.caption.medium.tint(theme.textMuted)),
     );
   }
 }

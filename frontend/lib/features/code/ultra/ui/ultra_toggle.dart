@@ -55,11 +55,11 @@ class UltraChip extends ConsumerWidget {
               const SizedBox(width: 5),
               Text(
                 running > 0 ? 'Ultra · $running' : 'Ultra',
-                style: TextStyle(color: color, fontSize: 12.5, fontWeight: on ? FontWeight.w600 : null),
+                style: theme.type.callout.copyWith(color: color, fontWeight: on ? FontWeight.w500 : null),
               ),
               if (locked && access.hasValue) ...[
                 const SizedBox(width: 4),
-                Text('Max', style: TextStyle(color: theme.textMuted, fontSize: 10.5)),
+                Text('Max', style: theme.type.footnote.tint(theme.textMuted)),
               ],
               const SizedBox(width: 4),
               AdaptiveIcon(EveryIcon.chevronDown, size: 10, color: color),
@@ -92,7 +92,7 @@ class UltraPanel extends ConsumerWidget {
     void set(UltraLimits Function(UltraLimits now) step) =>
         controller.setLimits(step(ref.read(ultraToggleProvider(sessionId)).limits), max: max ?? const UltraLimits());
 
-    return Padding(
+    return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(vertical: 5),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -188,7 +188,7 @@ class UltraPanel extends ConsumerWidget {
                 'Opus plans and does the hard steps; easy ones go to Sonnet or Haiku. '
                 'Your plan allows up to ${max.maxConcurrent} at once, ${max.maxAgents} in total, '
                 '${formatMicros(max.budgetMicros)} and ${formatUltraDuration(max.wallTime)}.',
-                style: TextStyle(color: theme.textMuted, fontSize: 11.5),
+                style: theme.type.caption.tint(theme.textMuted),
               ),
             ),
             PopoverRow(key: const ValueKey('ultra.reset'), title: 'Reset to the plan’s caps', onTap: controller.reset),
@@ -249,7 +249,7 @@ class CapStepper extends StatelessWidget {
               border: Border.all(color: theme.border),
               borderRadius: BorderRadius.circular(6),
             ),
-            child: Text(glyph, style: TextStyle(color: theme.text, fontSize: 14, height: 1)),
+            child: Text(glyph, style: theme.type.body.copyWith(color: theme.text, height: 1)),
           ),
         ),
       ),
@@ -258,16 +258,14 @@ class CapStepper extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: Row(
         children: [
-          Expanded(
-            child: Text(label, style: TextStyle(color: theme.text, fontSize: 13)),
-          ),
+          Expanded(child: Text(label, style: theme.type.callout.tint(theme.text))),
           button('−', -1, 'Lower'),
           SizedBox(
             width: 78,
             child: Text(
               value,
               textAlign: TextAlign.center,
-              style: TextStyle(color: theme.text, fontSize: 12.5, fontFeatures: const [FontFeature.tabularFigures()]),
+              style: theme.type.callout.copyWith(color: theme.text, fontFeatures: const [FontFeature.tabularFigures()]),
             ),
           ),
           button('+', 1, 'Raise'),
@@ -307,7 +305,7 @@ class UltraComposerBanner extends ConsumerWidget {
             child: Text(
               'Ultra is on: your next message starts a run with up to ${l.maxAgents} agents '
               '(${l.maxConcurrent} at once), ${formatMicros(l.budgetMicros)} and ${formatUltraDuration(l.wallTime)}.',
-              style: TextStyle(color: theme.text, fontSize: 12.5),
+              style: theme.type.callout.tint(theme.text),
             ),
           ),
           AdaptiveButton(

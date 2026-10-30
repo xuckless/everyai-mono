@@ -1,8 +1,10 @@
 import 'package:flutter/widgets.dart';
 
 import '../platform/platform_kind.dart';
+import 'every_type.dart';
 import 'everyai_brand.dart';
 
+export 'every_type.dart';
 export 'everyai_brand.dart';
 
 /// Design-language-neutral tokens for app content: chat bubbles, code, markdown,
@@ -31,6 +33,7 @@ final class EveryTheme {
     required this.codeBackground,
     required this.radius,
     required this.bubbleRadius,
+    required this.type,
   });
 
   factory EveryTheme.resolve(DesignLanguage design, Brightness brightness) {
@@ -42,6 +45,7 @@ final class EveryTheme {
       DesignLanguage.fluent => 6.0,
       DesignLanguage.adwaita => 12.0,
     };
+    final type = EveryType.resolve();
     return dark
         ? EveryTheme(
             design: design,
@@ -64,6 +68,7 @@ final class EveryTheme {
             codeBackground: EveryRolesDark.codeBackground,
             radius: radius,
             bubbleRadius: 18,
+            type: type,
           )
         : EveryTheme(
             design: design,
@@ -86,6 +91,7 @@ final class EveryTheme {
             codeBackground: EveryRolesLight.codeBackground,
             radius: radius,
             bubbleRadius: 18,
+            type: type,
           );
   }
 
@@ -116,6 +122,9 @@ final class EveryTheme {
   /// Native control radius for the design language.
   final double radius;
   final double bubbleRadius;
+
+  /// The app's type scale; see [EveryType].
+  final EveryType type;
 
   /// Brand shapes: cards r20, panels r24, the bubble's tail corner r6.
   static const cardRadius = 20.0;

@@ -21,7 +21,8 @@ import '../../domain/transcript.dart';
 import '../../harness/events.dart';
 import '../../uploads/uploads.dart';
 
-const _mono = TextStyle(fontFamily: 'SourceCodePro', fontSize: 12.5, height: 1.45);
+final _mono = EveryType.resolve().callout.mono.copyWith(height: 1.45);
+final _monoSmall = EveryType.resolve().caption.mono.copyWith(height: 1.45);
 
 /// The user's message, right-aligned like chat.
 class UserTurnView extends StatelessWidget {
@@ -46,10 +47,7 @@ class UserTurnView extends StatelessWidget {
           if (mode case final mode?)
             Padding(
               padding: const EdgeInsets.only(bottom: 4, right: 4),
-              child: Text(
-                '${mode.label} mode',
-                style: TextStyle(color: theme.textMuted, fontSize: 11.5, fontWeight: FontWeight.w500),
-              ),
+              child: Text('${mode.label} mode', style: theme.type.caption.medium.tint(theme.textMuted)),
             ),
           if (files.isNotEmpty)
             Padding(
@@ -84,7 +82,7 @@ class UserTurnView extends StatelessWidget {
                 cursor: SystemMouseCursors.click,
                 child: Padding(
                   padding: const EdgeInsets.only(top: 4, right: 4),
-                  child: Text('Rewind to here', style: TextStyle(color: theme.textMuted, fontSize: 11.5)),
+                  child: Text('Rewind to here', style: theme.type.caption.tint(theme.textMuted)),
                 ),
               ),
             ),
@@ -110,7 +108,10 @@ class AgentTextView extends StatelessWidget {
           _Disclosure(
             icon: EveryIcon.spark,
             title: streaming && text.isEmpty ? 'Thinking…' : 'Thought',
-            child: Text(reasoning.trim(), style: TextStyle(color: EveryTheme.of(context).textMuted, fontSize: 13)),
+            child: Text(
+              reasoning.trim(),
+              style: EveryTheme.of(context).type.callout.tint(EveryTheme.of(context).textMuted),
+            ),
           ),
         if (text.trim().isNotEmpty) ChatMarkdown(text, streaming: streaming),
       ],
@@ -186,7 +187,7 @@ class _ToolView extends StatelessWidget {
     return _Disclosure(
       icon: EveryIcon.code,
       title: stepTitle(step.call),
-      titleSpan: stepTitleSpan(context, step.call, TextStyle(color: theme.textMuted, fontSize: 13)),
+      titleSpan: stepTitleSpan(context, step.call, theme.type.callout.tint(theme.textMuted)),
       busy: !step.done,
       preview: step.done && output.trim().isNotEmpty ? TextSpan(text: lastLine(output)) : null,
       trailing: _StatusDot(step: step),
@@ -224,7 +225,7 @@ TextSpan stepTitleSpan(BuildContext context, ActionCall call, TextStyle base) {
   final path = stepPath(call);
   if (path.isEmpty || !title.endsWith(path)) return TextSpan(text: title, style: base);
   final mono = base.fontFamily == null
-      ? _mono.copyWith(color: base.color, fontSize: (base.fontSize ?? 13) - 0.5)
+      ? _mono.copyWith(color: base.color, fontSize: base.fontSize == null ? null : base.fontSize! - 0.5)
       : base;
   return TextSpan(
     style: base,
@@ -280,7 +281,7 @@ class _CommandView extends StatelessWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (exit != null && exit != 0) Text('exit $exit', style: TextStyle(color: theme.danger, fontSize: 11.5)),
+          if (exit != null && exit != 0) Text('exit $exit', style: theme.type.caption.tint(theme.danger)),
           if (!step.done) const RunningTime(),
           const SizedBox(width: 6),
           _StatusDot(step: step),
@@ -310,15 +311,15 @@ class _EditView extends StatelessWidget {
       key: ValueKey(step.done),
       icon: EveryIcon.edit,
       title: stepTitle(call),
-      titleSpan: stepTitleSpan(context, call, TextStyle(color: theme.textMuted, fontSize: 13)),
+      titleSpan: stepTitleSpan(context, call, theme.type.callout.tint(theme.textMuted)),
       busy: !step.done,
       initiallyOpen: step.done && !step.rejected,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (stats.added > 0) Text('+${stats.added}', style: TextStyle(color: theme.success, fontSize: 12)),
+          if (stats.added > 0) Text('+${stats.added}', style: theme.type.caption.tint(theme.success)),
           const SizedBox(width: 4),
-          if (stats.removed > 0) Text('−${stats.removed}', style: TextStyle(color: theme.danger, fontSize: 12)),
+          if (stats.removed > 0) Text('−${stats.removed}', style: theme.type.caption.tint(theme.danger)),
           const SizedBox(width: 6),
           _StatusDot(step: step),
         ],
@@ -341,7 +342,7 @@ class DiffBlock extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    if (lines.isEmpty) return Text('No changes', style: TextStyle(color: theme.textMuted, fontSize: 12.5));
+    if (lines.isEmpty) return Text('No changes', style: theme.type.callout.tint(theme.textMuted));
     final shown = lines.take(maxLines).toList();
     return Container(
       decoration: BoxDecoration(color: theme.codeBackground, borderRadius: BorderRadius.circular(8)),
@@ -373,7 +374,7 @@ class DiffBlock extends StatelessWidget {
           child: l.kind == DiffKind.gap
               ? Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-                  child: Text('⋯ ${l.text}', style: _mono.copyWith(color: theme.textMuted, fontSize: 11.5)),
+                  child: Text('⋯ ${l.text}', style: _monoSmall.copyWith(color: theme.textMuted)),
                 )
               : Row(
                   children: [
@@ -382,7 +383,7 @@ class DiffBlock extends StatelessWidget {
                       child: Text(
                         '${l.newNo ?? l.oldNo ?? ''}',
                         textAlign: TextAlign.right,
-                        style: _mono.copyWith(color: theme.textMuted.withValues(alpha: 0.7), fontSize: 11.5),
+                        style: _monoSmall.copyWith(color: theme.textMuted.withValues(alpha: 0.7)),
                       ),
                     ),
                     SizedBox(
@@ -409,7 +410,7 @@ class DiffBlock extends StatelessWidget {
           padding: const EdgeInsets.all(8),
           child: Text(
             '${lines.length - maxLines} more lines in the Diff pane',
-            style: TextStyle(color: theme.textMuted, fontSize: 12),
+            style: theme.type.caption.tint(theme.textMuted),
           ),
         ),
     ],
@@ -443,7 +444,7 @@ class SubagentView extends StatelessWidget {
               Expanded(
                 child: Text(
                   step.done ? 'Subagent ${names.join(', ')} finished' : 'Subagent ${names.join(', ')} working…',
-                  style: TextStyle(color: theme.text, fontSize: 13, fontWeight: FontWeight.w600),
+                  style: theme.type.callout.semibold.tint(theme.text),
                 ),
               ),
               _StatusDot(step: step),
@@ -452,7 +453,7 @@ class SubagentView extends StatelessWidget {
           for (final e in tasks.entries)
             Padding(
               padding: const EdgeInsets.only(top: 6, left: 22),
-              child: Text(e.value, style: TextStyle(color: theme.textMuted, fontSize: 12.5)),
+              child: Text(e.value, style: theme.type.callout.tint(theme.textMuted)),
             ),
           if (step.result case final r?)
             Padding(
@@ -485,10 +486,7 @@ class PlanView extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(
-            'Plan · $done of ${tasks.length} done',
-            style: TextStyle(color: theme.textMuted, fontSize: 12, fontWeight: FontWeight.w600),
-          ),
+          Text('Plan · $done of ${tasks.length} done', style: theme.type.caption.semibold.tint(theme.textMuted)),
           const SizedBox(height: 6),
           for (final t in tasks)
             Padding(
@@ -501,12 +499,11 @@ class PlanView extends StatelessWidget {
                   Expanded(
                     child: Text(
                       t.title,
-                      style: TextStyle(
+                      style: theme.type.callout.copyWith(
                         color: t.status == 'done' ? theme.textMuted : theme.text,
-                        fontSize: 13,
-                        fontWeight: t.status == 'in_progress' ? FontWeight.w600 : FontWeight.w400,
                         decoration: t.status == 'done' ? TextDecoration.lineThrough : null,
                         decorationColor: theme.textMuted,
+                        fontWeight: t.status == 'in_progress' ? FontWeight.w600 : FontWeight.w400,
                       ),
                     ),
                   ),
@@ -575,9 +572,7 @@ class NoticeView extends StatelessWidget {
       child: Row(
         children: [
           if (!item.error) ...[const BrandAvatar(size: 18), const SizedBox(width: 8)],
-          Expanded(
-            child: Text(item.message, style: TextStyle(color: color, fontSize: 13)),
-          ),
+          Expanded(child: Text(item.message, style: theme.type.callout.tint(color))),
           if (onRetry != null) ...[
             const SizedBox(width: 8),
             AdaptiveButton(label: 'Retry', emphasis: ButtonEmphasis.secondary, onPressed: onRetry),
@@ -610,7 +605,7 @@ class _Output extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    if (text.trim().isEmpty) return Text('No output', style: TextStyle(color: theme.textMuted, fontSize: 12.5));
+    if (text.trim().isEmpty) return Text('No output', style: theme.type.callout.tint(theme.textMuted));
     final lines = text.split('\n');
     final clipped = lines.length > 40 ? [...lines.take(40), '… ${lines.length - 40} more lines'].join('\n') : text;
     return Container(
@@ -723,7 +718,7 @@ class _DisclosureState extends State<_Disclosure> {
                                     widget.title,
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(color: theme.textMuted, fontSize: 13),
+                                    style: theme.type.callout.tint(theme.textMuted),
                                   )
                                 : Text.rich(
                                     widget.titleSpan!,
@@ -755,7 +750,7 @@ class _DisclosureState extends State<_Disclosure> {
               widget.preview!,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: _mono.copyWith(color: theme.textMuted, fontSize: 11.5),
+              style: _monoSmall.copyWith(color: theme.textMuted),
             ),
           ),
         if (_open) Padding(padding: const EdgeInsets.fromLTRB(6, 4, 0, 4), child: widget.child),
@@ -836,7 +831,7 @@ class StepRunView extends StatelessWidget {
       title: stepRunSummary(run.steps),
       preview: stepTitleSpan(context, run.steps.last.call, _mono),
       trailing: failed > 0
-          ? Text('$failed failed', style: TextStyle(color: theme.danger, fontSize: 11.5))
+          ? Text('$failed failed', style: theme.type.caption.tint(theme.danger))
           : AdaptiveIcon(EveryIcon.check, size: 13, color: theme.success),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -885,7 +880,7 @@ class _RunningTimeState extends State<RunningTime> {
       padding: const EdgeInsets.only(left: 6),
       child: Text(
         formatElapsed(_clock.elapsed),
-        style: TextStyle(color: theme.textMuted, fontSize: 11.5, fontFeatures: const [FontFeature.tabularFigures()]),
+        style: theme.type.caption.copyWith(color: theme.textMuted, fontFeatures: const [FontFeature.tabularFigures()]),
       ),
     );
   }

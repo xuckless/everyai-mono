@@ -118,10 +118,7 @@ class _WebContentViewState extends State<WebContentView> {
           ChatMarkdown('```\n${widget.fallbackSource}\n```'),
           GestureDetector(
             onTap: () => openHtmlInBrowser(widget.html, surface: widget.surface),
-            child: Text(
-              'Open in browser',
-              style: TextStyle(color: theme.accent, fontWeight: FontWeight.w600),
-            ),
+            child: Text('Open in browser', style: theme.type.callout.medium.tint(theme.accent)),
           ),
         ],
       );

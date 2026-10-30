@@ -7,8 +7,6 @@ import '../../../core/ui/every_icons.dart';
 import '../data/chat_transport.dart' show ToolRunStatus;
 import '../domain/chat_session.dart';
 
-const _mono = TextStyle(fontFamily: 'SourceCodePro', fontSize: 12, height: 1.4);
-
 /// What a server tool is doing or did: "Reading", "Read", "Couldn't read".
 String toolStepLabel(String name, ToolRunStatus status) => switch ((name, status)) {
   ('web_fetch', ToolRunStatus.running) => 'Reading',
@@ -107,7 +105,7 @@ class _LiveToolStepsState extends State<LiveToolSteps> {
                           child: Text(
                             '${toolRunSummary(finished)}${failed > 0 ? ' · $failed failed' : ''}',
                             overflow: TextOverflow.ellipsis,
-                            style: TextStyle(color: theme.textMuted, fontSize: 13),
+                            style: theme.type.callout.tint(theme.textMuted),
                           ),
                         ),
                         const SizedBox(width: 4),
@@ -157,7 +155,7 @@ class ToolStepRow extends StatelessWidget {
           const SizedBox(width: 8),
           Text(
             '${toolStepLabel(step.name, step.status)}${step.running && detail.isEmpty ? '…' : ''}',
-            style: TextStyle(color: theme.textMuted, fontSize: 13),
+            style: theme.type.callout.tint(theme.textMuted),
           ),
           if (detail.isNotEmpty) ...[
             const SizedBox(width: 6),
@@ -165,7 +163,7 @@ class ToolStepRow extends StatelessWidget {
               child: Text.rich(
                 toolDetailSpan(
                   detail,
-                  base: _mono.copyWith(color: theme.text),
+                  base: theme.type.caption.mono.tint(theme.text).copyWith(height: 1.4),
                   muted: theme.textMuted,
                 ),
                 maxLines: 1,

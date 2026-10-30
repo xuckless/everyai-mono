@@ -118,7 +118,7 @@ class _ModelsScreenState extends ConsumerState<ModelsScreen> {
         padding: const EdgeInsets.only(top: 10, bottom: 4),
         child: Text(
           '${models.length} models · prices per million input / output tokens',
-          style: TextStyle(color: theme.textMuted, fontSize: 12),
+          style: theme.type.caption.tint(theme.textMuted),
         ),
       ),
     ];
@@ -239,10 +239,8 @@ class _Badge extends StatelessWidget {
       ),
       child: Text(
         text,
-        style: TextStyle(
+        style: theme.type.footnote.medium.copyWith(
           color: highlight ? theme.accent : theme.textMuted,
-          fontSize: 11,
-          fontWeight: FontWeight.w600,
           fontFeatures: const [FontFeature.tabularFigures()],
         ),
       ),
@@ -287,10 +285,7 @@ class _FilterChip extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 if (leading != null) ...[leading!, const SizedBox(width: 6)],
-                Text(
-                  label,
-                  style: TextStyle(color: fg, fontSize: subtle ? 12 : 13, fontWeight: FontWeight.w600),
-                ),
+                Text(label, style: (subtle ? theme.type.caption : theme.type.callout).medium.tint(fg)),
               ],
             ),
           ),

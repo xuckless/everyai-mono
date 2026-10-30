@@ -246,11 +246,11 @@ class _AssistantMessage extends ConsumerWidget {
             padding: const EdgeInsets.only(top: 4),
             child: Text(
               'Stopped',
-              style: TextStyle(color: theme.textMuted, fontSize: 12, fontStyle: FontStyle.italic),
+              style: theme.type.caption.tint(theme.textMuted).copyWith(fontStyle: FontStyle.italic),
             ),
           ),
         if (message.status == MessageStatus.failed && message.error != null)
-          Text(message.error!, style: TextStyle(color: theme.danger, fontSize: 13)),
+          Text(message.error!, style: theme.type.callout.tint(theme.danger)),
       ],
     ];
 
@@ -265,7 +265,7 @@ class _AssistantMessage extends ConsumerWidget {
               const SizedBox(width: 8),
               Text(
                 spec?.name ?? message.model?.value ?? 'Assistant',
-                style: TextStyle(color: theme.textMuted, fontSize: 13, fontWeight: FontWeight.w600),
+                style: theme.type.callout.semibold.tint(theme.textMuted),
               ),
             ],
           ),
@@ -361,7 +361,7 @@ class _AssistantActions extends ConsumerWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text('Retry with', style: TextStyle(color: theme.textMuted, fontSize: 12.5)),
+                      Text('Retry with', style: theme.type.callout.tint(theme.textMuted)),
                       const SizedBox(width: 2),
                       AdaptiveIcon(EveryIcon.chevronDown, size: 11, color: theme.textMuted),
                     ],
@@ -434,7 +434,7 @@ class _SourcesRow extends StatelessWidget {
         children: [
           Text(
             '${sources.length} source${sources.length == 1 ? '' : 's'}',
-            style: TextStyle(color: theme.textMuted, fontSize: 12.5, fontWeight: FontWeight.w600),
+            style: theme.type.callout.semibold.tint(theme.textMuted),
           ),
           const SizedBox(height: 8),
           SizedBox(
@@ -495,7 +495,7 @@ class _SourceCardState extends State<_SourceCard> {
                     s.title,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: theme.text, fontSize: 12.5, height: 1.3, fontWeight: FontWeight.w500),
+                    style: theme.type.callout.medium.tint(theme.text).copyWith(height: 1.3),
                   ),
                 ),
                 Row(
@@ -506,7 +506,7 @@ class _SourceCardState extends State<_SourceCard> {
                       child: Text(
                         '${s.site} · ${widget.index}',
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: theme.textMuted, fontSize: 11.5),
+                        style: theme.type.caption.tint(theme.textMuted),
                       ),
                     ),
                   ],
@@ -541,7 +541,7 @@ class SiteBadge extends StatelessWidget {
       ),
       child: Text(
         site.isEmpty ? '?' : site[0].toUpperCase(),
-        style: TextStyle(color: const Color(0xFFFFFFFF), fontSize: size * 0.62, fontWeight: FontWeight.w700),
+        style: TextStyle(color: const Color(0xFFFFFFFF), fontSize: size * 0.62, fontWeight: FontWeight.w600),
       ),
     );
   }
@@ -562,10 +562,7 @@ class _FollowUps extends ConsumerWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(
-            'Related',
-            style: TextStyle(color: theme.text, fontSize: 15, fontWeight: FontWeight.w700),
-          ),
+          Text('Related', style: theme.type.headline.tint(theme.text)),
           const SizedBox(height: 6),
           for (final q in questions) ...[
             Container(height: 1, color: theme.border),
@@ -640,7 +637,7 @@ class _ReasoningState extends State<_Reasoning> {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    final muted = TextStyle(color: theme.textMuted, fontSize: 13);
+    final muted = theme.type.callout.tint(theme.textMuted);
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Column(
@@ -653,10 +650,7 @@ class _ReasoningState extends State<_Reasoning> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                    widget.live ? 'Thinking…' : 'Thought process',
-                    style: muted.copyWith(fontWeight: FontWeight.w600),
-                  ),
+                  Text(widget.live ? 'Thinking…' : 'Thought process', style: muted.medium),
                   const SizedBox(width: 4),
                   AnimatedRotation(
                     turns: _open ? 0.5 : 0,

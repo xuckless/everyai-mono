@@ -56,16 +56,13 @@ class SubagentCard extends ConsumerWidget {
                   item.task.title,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: theme.text, fontSize: 13, fontWeight: FontWeight.w600),
+                  style: theme.type.callout.semibold.tint(theme.text),
                 ),
               ),
               Text(
                 [status, if (steps > 0) '$steps ${steps == 1 ? 'step' : 'steps'}'].join(' · '),
-                style: TextStyle(
-                  color: childState?.status == SessionStatus.needsInput && report == null
-                      ? theme.warning
-                      : theme.textMuted,
-                  fontSize: 12,
+                style: theme.type.caption.tint(
+                  childState?.status == SessionStatus.needsInput && report == null ? theme.warning : theme.textMuted,
                 ),
               ),
               if (child != null) ...[
@@ -81,13 +78,13 @@ class SubagentCard extends ConsumerWidget {
           if (item.task.agent.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 4, left: 22),
-              child: Text('Role: ${item.task.agent}', style: TextStyle(color: theme.textMuted, fontSize: 12)),
+              child: Text('Role: ${item.task.agent}', style: theme.type.caption.tint(theme.textMuted)),
             ),
           Padding(
             padding: const EdgeInsets.only(top: 6, left: 22),
             child: _Fold(
               title: 'Instructions',
-              child: Text(item.task.prompt, style: TextStyle(color: theme.textMuted, fontSize: 12.5)),
+              child: Text(item.task.prompt, style: theme.type.callout.tint(theme.textMuted)),
             ),
           ),
           if (report != null)
@@ -155,7 +152,7 @@ class _FoldState extends State<_Fold> {
                     child: AdaptiveIcon(EveryIcon.chevronDown, size: 12, color: theme.textMuted),
                   ),
                   const SizedBox(width: 4),
-                  Text(widget.title, style: TextStyle(color: theme.textMuted, fontSize: 12.5)),
+                  Text(widget.title, style: theme.type.callout.tint(theme.textMuted)),
                 ],
               ),
             ),

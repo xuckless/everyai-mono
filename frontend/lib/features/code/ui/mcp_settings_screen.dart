@@ -94,15 +94,11 @@ class _McpSettingsScreenState extends ConsumerState<McpSettingsScreen> {
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            s.transport.remote ? s.url : s.commandLine,
-            style: TextStyle(fontFamily: 'SourceCodePro', fontSize: 12, color: theme.textMuted),
-          ),
+          Text(s.transport.remote ? s.url : s.commandLine, style: theme.type.caption.mono.tint(theme.textMuted)),
           Text(
             status(s),
-            style: TextStyle(
-              fontSize: 12,
-              color: s.problem != null || s.blocked
+            style: theme.type.caption.tint(
+              s.problem != null || s.blocked
                   ? theme.danger
                   : s.enabled && s.needsConsent
                   ? theme.warning
@@ -156,7 +152,7 @@ class _McpSettingsScreenState extends ConsumerState<McpSettingsScreen> {
               'Tools from MCP servers for Code sessions. The agent server starts local servers and connects to '
               'remote ones when a session starts. Every MCP tool asks before it runs, except in Full auto or when '
               'you allow it.',
-              style: TextStyle(color: theme.textMuted, fontSize: 13),
+              style: theme.type.callout.tint(theme.textMuted),
             ),
           ),
           AdaptiveListTile(
@@ -181,13 +177,7 @@ class _McpSettingsScreenState extends ConsumerState<McpSettingsScreen> {
                     }),
                   ),
               ],
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                child: Text(
-                  _projectId == null ? 'Every project' : _scopeLabel(_projectId),
-                  style: TextStyle(color: theme.accent, fontWeight: FontWeight.w600),
-                ),
-              ),
+              child: MenuTrigger(_projectId == null ? 'Every project' : _scopeLabel(_projectId)),
             ),
           ),
           AdaptiveSectionHeader(_projectId == null ? 'Every project' : 'Only ${_scopeLabel(_projectId)}'),
@@ -236,13 +226,7 @@ class _McpSettingsScreenState extends ConsumerState<McpSettingsScreen> {
                         onSelected: () => _addPreset(p),
                       ),
                   ],
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                    child: Text(
-                      'Add a preset',
-                      style: TextStyle(color: theme.accent, fontWeight: FontWeight.w600),
-                    ),
-                  ),
+                  child: const MenuTrigger('Add a preset'),
                 ),
               ],
             ),
@@ -252,16 +236,16 @@ class _McpSettingsScreenState extends ConsumerState<McpSettingsScreen> {
             for (final s in inherited)
               AdaptiveListTile(
                 title: Text(s.name),
-                subtitle: Text(status(s), style: TextStyle(color: theme.textMuted, fontSize: 12)),
+                subtitle: Text(status(s), style: theme.type.caption.tint(theme.textMuted)),
               ),
           ],
           const AdaptiveSectionHeader('Presets'),
           for (final p in mcpPresets)
             AdaptiveListTile(
               title: Text(p.title),
-              subtitle: Text(p.blurb, style: TextStyle(color: theme.textMuted, fontSize: 12)),
+              subtitle: Text(p.blurb, style: theme.type.caption.tint(theme.textMuted)),
               trailing: names.contains(p.server.name)
-                  ? Text('Added', style: TextStyle(color: theme.textMuted, fontSize: 12))
+                  ? Text('Added', style: theme.type.caption.tint(theme.textMuted))
                   : AdaptiveButton(label: 'Add', emphasis: ButtonEmphasis.secondary, onPressed: () => _addPreset(p)),
             ),
           Padding(
@@ -270,7 +254,7 @@ class _McpSettingsScreenState extends ConsumerState<McpSettingsScreen> {
               'Allow an MCP tool for good from its approval card ("Always allow"), or add a rule such as '
               'Mcp(browser_take_screenshot) or Mcp(playwright_*) to your permissions. A server asking for input '
               'mid-call (elicitation) is not supported yet.',
-              style: TextStyle(color: theme.textMuted, fontSize: 12),
+              style: theme.type.caption.tint(theme.textMuted),
             ),
           ),
         ],
@@ -347,7 +331,7 @@ class _ServerEditorState extends State<_ServerEditor> {
     final stdio = _transport == McpTransport.stdio;
     Widget label(String text) => Padding(
       padding: const EdgeInsets.only(top: 10, bottom: 4),
-      child: Text(text, style: TextStyle(color: theme.textMuted, fontSize: 12)),
+      child: Text(text, style: theme.type.caption.tint(theme.textMuted)),
     );
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 6),
@@ -374,13 +358,7 @@ class _ServerEditorState extends State<_ServerEditor> {
                       onSelected: () => setState(() => _transport = t),
                     ),
                 ],
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  child: Text(
-                    _transport.label,
-                    style: TextStyle(color: theme.accent, fontWeight: FontWeight.w600),
-                  ),
-                ),
+                child: MenuTrigger(_transport.label),
               ),
             ],
           ),
@@ -400,14 +378,14 @@ class _ServerEditorState extends State<_ServerEditor> {
           if (_error case final e?)
             Padding(
               padding: const EdgeInsets.only(top: 8),
-              child: Text(e, style: TextStyle(color: theme.danger, fontSize: 12)),
+              child: Text(e, style: theme.type.caption.tint(theme.danger)),
             ),
           if (stdio)
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(
                 'You will see the full command and approve it before any session runs it.',
-                style: TextStyle(color: theme.textMuted, fontSize: 12),
+                style: theme.type.caption.tint(theme.textMuted),
               ),
             ),
           Padding(

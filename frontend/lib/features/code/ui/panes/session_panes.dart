@@ -153,10 +153,9 @@ class _Tab extends StatelessWidget {
           ),
           child: Text(
             label,
-            style: TextStyle(
+            style: theme.type.callout.copyWith(
               color: selected ? theme.accent : theme.textMuted,
-              fontSize: 12.5,
-              fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+              fontWeight: FontWeight.w500,
             ),
           ),
         ),

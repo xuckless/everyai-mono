@@ -65,7 +65,7 @@ class AttachmentTray extends StatelessWidget {
                   child: Text(
                     '${blocked.first.unsupportedBy(m!)}. Remove ${blocked.length == 1 ? 'it' : 'them'}'
                     '${suggestion == null ? '' : ' or switch models'} to send.',
-                    style: TextStyle(color: theme.warning, fontSize: 12.5),
+                    style: theme.type.callout.tint(theme.warning),
                   ),
                 ),
                 if (suggestion case final s? when onSwitchModel != null) ...[
@@ -80,7 +80,7 @@ class AttachmentTray extends StatelessWidget {
             ),
           ] else if (note != null) ...[
             const SizedBox(height: 6),
-            Text(note!, style: TextStyle(color: theme.textMuted, fontSize: 12)),
+            Text(note!, style: theme.type.caption.tint(theme.textMuted)),
           ],
         ],
       ),
@@ -159,11 +159,11 @@ class AttachmentChip extends StatelessWidget {
                     name,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: theme.text, fontSize: 12.5, fontWeight: FontWeight.w500),
+                    style: theme.type.callout.medium.tint(theme.text),
                   ),
                   Text(
                     [kind.label, if (size != null) formatBytes(size!)].join(' · '),
-                    style: TextStyle(color: theme.textMuted, fontSize: 11),
+                    style: theme.type.footnote.tint(theme.textMuted),
                   ),
                 ],
               ),

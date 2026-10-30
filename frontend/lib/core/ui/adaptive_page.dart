@@ -78,7 +78,7 @@ class AdaptivePage extends StatelessWidget {
               leading: sidebarButton == null
                   ? null
                   : Padding(padding: const EdgeInsets.only(right: 8), child: sidebarButton),
-              title: DefaultTextStyle.merge(style: const TextStyle(fontSize: 20), child: titleView),
+              title: DefaultTextStyle.merge(style: theme.type.title, child: titleView),
               commandBar: Row(mainAxisAlignment: MainAxisAlignment.end, children: actions),
             ),
           ),

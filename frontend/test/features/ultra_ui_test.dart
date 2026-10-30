@@ -248,6 +248,8 @@ void main() {
       expect(l.wallTime, const Duration(minutes: 90));
       expect(find.text('100 agents'), findsOneWidget);
 
+      await tester.ensureVisible(find.byKey(const ValueKey('ultra.reset')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('ultra.reset')));
       await tester.pump();
       expect(container.read(ultraToggleProvider('s1')).limits.maxAgents, 150);

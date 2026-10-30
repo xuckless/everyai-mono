@@ -103,7 +103,7 @@ class _UsageScreenState extends ConsumerState<UsageScreen> {
                   children: [
                     Text(
                       '${_metric.label} by ${_by.label.toLowerCase()}, ${_range.weekly ? 'per week' : 'per day'}',
-                      style: TextStyle(color: theme.text, fontWeight: FontWeight.w600),
+                      style: theme.type.headline.tint(theme.text),
                     ),
                     const SizedBox(height: 12),
                     _StackedBars(
@@ -123,16 +123,9 @@ class _UsageScreenState extends ConsumerState<UsageScreen> {
               padding: const EdgeInsets.all(24),
               child: Column(
                 children: [
-                  Text(
-                    'Couldn’t load your usage.',
-                    style: TextStyle(color: theme.text, fontWeight: FontWeight.w600),
-                  ),
+                  Text('Couldn’t load your usage.', style: theme.type.headline.tint(theme.text)),
                   const SizedBox(height: 4),
-                  Text(
-                    '$error',
-                    style: TextStyle(color: theme.textMuted, fontSize: 13),
-                    textAlign: TextAlign.center,
-                  ),
+                  Text('$error', style: theme.type.callout.tint(theme.textMuted), textAlign: TextAlign.center),
                   const SizedBox(height: 12),
                   AdaptiveButton(label: 'Try again', onPressed: () => ref.invalidate(usageStatsProvider(query))),
                 ],
@@ -171,14 +164,11 @@ class _QuotaCard extends StatelessWidget {
       children: [
         Row(
           children: [
-            Text(
-              '${b.plan.name} plan · included usage',
-              style: TextStyle(color: theme.text, fontWeight: FontWeight.w600),
-            ),
+            Text('${b.plan.name} plan · included usage', style: theme.type.headline.tint(theme.text)),
             const Spacer(),
             Text(
               '${formatMicros(b.usedMicros)} of ${formatMicros(b.includedMicros)}',
-              style: TextStyle(color: theme.textMuted, fontSize: 13),
+              style: theme.type.callout.tint(theme.textMuted),
             ),
           ],
         ),
@@ -201,7 +191,7 @@ class _QuotaCard extends StatelessWidget {
         const SizedBox(height: 6),
         Text(
           '${formatMicros(b.quotaLeftMicros)} left this period · wallet ${formatMicros(b.walletMicros)}',
-          style: TextStyle(color: theme.textMuted, fontSize: 12),
+          style: theme.type.caption.tint(theme.textMuted),
         ),
       ],
     );
@@ -260,22 +250,13 @@ class _Stat extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: TextStyle(color: theme.textMuted, fontSize: 12)),
+          Text(label, style: theme.type.caption.tint(theme.textMuted)),
           const SizedBox(height: 2),
           Text(
             value,
-            style: TextStyle(
-              color: theme.text,
-              fontSize: 20,
-              fontWeight: FontWeight.w700,
-              fontFeatures: const [FontFeature.tabularFigures()],
-            ),
+            style: theme.type.title.copyWith(color: theme.text, fontFeatures: const [FontFeature.tabularFigures()]),
           ),
-          Text(
-            note,
-            style: TextStyle(color: theme.textMuted, fontSize: 11),
-            overflow: TextOverflow.ellipsis,
-          ),
+          Text(note, style: theme.type.footnote.tint(theme.textMuted), overflow: TextOverflow.ellipsis),
         ],
       ),
     );
@@ -309,7 +290,7 @@ class _StackedBars extends StatelessWidget {
         ),
       );
     }
-    final axis = TextStyle(color: theme.textMuted, fontSize: 11);
+    final axis = theme.type.footnote.tint(theme.textMuted);
     final n = series.starts.length;
     final labelEvery = n <= 7 ? 1 : (n <= 12 ? 2 : 5);
     final maxY = series.maxStack == 0 ? 1.0 : series.maxStack * 1.1;
@@ -373,14 +354,14 @@ class _StackedBars extends StatelessWidget {
                         : shortDate(series.starts[group.x]);
                     return BarTooltipItem(
                       '$title · ${_value(rod.toY)}',
-                      TextStyle(color: theme.text, fontWeight: FontWeight.w600, fontSize: 12),
+                      theme.type.caption.semibold.tint(theme.text),
                       textAlign: TextAlign.left,
                       children: [
                         for (final (k, v) in col.indexed)
                           if (v > 0)
                             TextSpan(
                               text: '\n${label(series.keys[k])}: ${_value(v)}',
-                              style: TextStyle(color: theme.textMuted, fontWeight: FontWeight.w400, fontSize: 11),
+                              style: theme.type.footnote.tint(theme.textMuted),
                             ),
                       ],
                     );
@@ -428,7 +409,7 @@ class _StackedBars extends StatelessWidget {
                     decoration: BoxDecoration(color: colorOf(k), borderRadius: BorderRadius.circular(3)),
                   ),
                   const SizedBox(width: 6),
-                  Text(label(key), style: TextStyle(color: theme.text, fontSize: 12)),
+                  Text(label(key), style: theme.type.caption.tint(theme.text)),
                 ],
               ),
           ],
@@ -471,7 +452,7 @@ class _ProviderSplit extends StatelessWidget {
       children: [
         Text(
           byTokens ? 'Provider split (tokens)' : 'Provider split (spend)',
-          style: TextStyle(color: theme.text, fontWeight: FontWeight.w600),
+          style: theme.type.headline.tint(theme.text),
         ),
         const SizedBox(height: 10),
         ClipRRect(
@@ -502,7 +483,7 @@ class _ProviderSplit extends StatelessWidget {
               Text(
                 '${usageProviderLabel(k.key)} ${(weight(k) * 100 / total).round()}% · '
                 '${byTokens ? formatTokens(k.tokens) : _money(k.chargedMicros)}',
-                style: TextStyle(color: i < colors.length ? theme.text : theme.textMuted, fontSize: 12),
+                style: theme.type.caption.tint(i < colors.length ? theme.text : theme.textMuted),
               ),
           ],
         ),
@@ -587,10 +568,8 @@ class _Segments<T> extends StatelessWidget {
                     ),
                     child: Text(
                       label(v),
-                      style: TextStyle(
-                        color: v == selected ? theme.text : theme.textMuted,
-                        fontSize: 12.5,
-                        fontWeight: v == selected ? FontWeight.w600 : FontWeight.w500,
+                      style: (v == selected ? theme.type.callout.semibold : theme.type.callout.medium).tint(
+                        v == selected ? theme.text : theme.textMuted,
                       ),
                     ),
                   ),
