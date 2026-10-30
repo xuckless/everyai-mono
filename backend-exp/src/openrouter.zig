@@ -297,6 +297,8 @@ pub fn parseUsage(u: std.json.ObjectMap) Usage {
         out.cached_tokens = jsonInt(d.object.get("cached_tokens"));
         out.cache_write_tokens = jsonInt(d.object.get("cache_write_tokens"));
     };
+    // DeepSeek reports its context-cache hits at the top level of usage.
+    if (out.cached_tokens == 0) out.cached_tokens = jsonInt(u.get("prompt_cache_hit_tokens"));
     return out;
 }
 
@@ -374,3 +376,17 @@ pub const Fake = struct {
         return arena.dupe(u8, self.models_json);
     }
 };
+
+test "parseUsage reads DeepSeek prompt_cache_hit_tokens" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const ds = try std.json.parseFromSliceLeaky(std.json.Value, arena,
+        \\{"prompt_tokens":100,"completion_tokens":5,"prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":20}
+    , .{});
+    try std.testing.expectEqual(@as(i64, 80), parseUsage(ds.object).cached_tokens);
+    const oa = try std.json.parseFromSliceLeaky(std.json.Value, arena,
+        \\{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":60},"prompt_cache_hit_tokens":80}
+    , .{});
+    try std.testing.expectEqual(@as(i64, 60), parseUsage(oa.object).cached_tokens);
+}
