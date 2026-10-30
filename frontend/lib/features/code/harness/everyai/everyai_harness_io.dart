@@ -89,7 +89,7 @@ const maxStepsPerRun = 400;
 
 /// One conversation: its history (OpenAI-style messages), its events, and the
 /// loop that calls the model and runs tools.
-final class EveryAISession implements HarnessSession, AsksAside {
+final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundShells {
   EveryAISession._(this.id, this._spec, this._dir, http.Client? client)
     : _gateway = GatewayClient(baseUrl: _spec.llmBaseUrl, apiKey: _spec.llmApiKey, client: client),
       _shell = SessionShell(root: _spec.workingDir, sessionTag: _spec.sessionTag, scratchDir: '${_dir.path}/shell') {
@@ -497,6 +497,22 @@ final class EveryAISession implements HarnessSession, AsksAside {
     );
     return reply.text;
   }
+
+  @override
+  List<BackgroundTask> get backgroundTasks => [
+    for (final b in _shell.background)
+      (
+        id: b.id,
+        command: b.command,
+        description: b.description,
+        running: b.running,
+        exitCode: b.exitCode,
+        startedAt: b.startedAt,
+      ),
+  ];
+
+  @override
+  Future<void> stopBackground(String id) async => _shell.backgroundShell(id)?.kill();
 
   /// Kills what the session's shell is still running.
   Future<void> killProcesses() => _shell.killAll();

@@ -10,6 +10,7 @@ import '../../domain/code_session.dart';
 import '../../panes/panes_providers.dart';
 import '../../panes/pty.dart';
 import 'diff_pane.dart';
+import 'tasks_pane.dart';
 import 'preview_pane.dart';
 import 'processes_pane.dart';
 import 'terminal_pane.dart';
@@ -18,6 +19,7 @@ import 'terminal_pane.dart';
 /// Processes and Preview for a real folder on a desktop.
 List<CodePane> panesFor(CodeSessionInfo session) => [
   if (session.diffTarget != null) CodePane.diff,
+  if (!isDemoPath(session.workingDir) && !session.isSubagent) CodePane.tasks,
   if (Host.isDesktop && shellSupported && !isDemoPath(session.workingDir)) ...[
     CodePane.terminal,
     CodePane.processes,
@@ -84,6 +86,7 @@ class _SessionPanesState extends ConsumerState<SessionPanes> {
     final close = ref.read(codePaneProvider(widget.session.id).notifier).close;
     return switch (p) {
       CodePane.diff => DiffPane(session: widget.session, onClose: close),
+      CodePane.tasks => TasksPane(session: widget.session),
       CodePane.terminal => TerminalPane(session: widget.session),
       // Polls only while showing.
       CodePane.processes => active ? ProcessesPane(session: widget.session) : const SizedBox.shrink(),

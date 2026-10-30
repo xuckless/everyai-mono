@@ -151,6 +151,23 @@ abstract interface class AsksAside {
   Future<String> askAside(String question, {int maxTokens = 800});
 }
 
+/// A command a session left running in the background.
+typedef BackgroundTask = ({
+  String id,
+  String command,
+  String description,
+  bool running,
+  int? exitCode,
+  DateTime startedAt,
+});
+
+/// A session whose background shells the app can list and stop (the EveryAI
+/// harness).
+abstract interface class HasBackgroundShells {
+  List<BackgroundTask> get backgroundTasks;
+  Future<void> stopBackground(String id);
+}
+
 /// Starts and reopens sessions on some agent server.
 abstract interface class Harness {
   Future<HarnessSession> start(SessionSpec spec);

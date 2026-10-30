@@ -700,6 +700,14 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     return transcriptMarkdown(info, _events, usage: ref.read(codeUsageProvider(sessionId)).value);
   }
 
+  /// What the session left running in the background (EveryAI harness).
+  List<BackgroundTask> get backgroundTasks =>
+      _session is HasBackgroundShells ? (_session! as HasBackgroundShells).backgroundTasks : const [];
+
+  Future<void> stopBackground(String id) async {
+    if (_session case final HasBackgroundShells s) await s.stopBackground(id);
+  }
+
   /// The open harness session, for the built-ins mixed in.
   @override
   HarnessSession? get _harnessSession => _session;

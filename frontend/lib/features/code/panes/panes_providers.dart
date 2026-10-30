@@ -13,6 +13,7 @@ import 'pty.dart';
 /// The tabs beside a Code session.
 enum CodePane {
   diff('Changes'),
+  tasks('Tasks'),
   terminal('Terminal'),
   processes('Processes'),
   preview('Preview');
