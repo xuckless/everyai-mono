@@ -1,6 +1,7 @@
 //! Typed settings, loaded once in `main` by `anole.config.load`: the defaults
 //! below, then `.env` files (backend-exp/.env, then the monorepo's root .env),
 //! then the environment. `Secret`s never print.
+const std = @import("std");
 const anole = @import("anole");
 
 pub const Config = struct {
@@ -65,6 +66,9 @@ pub const Config = struct {
     /// Prototype convenience: requests without credentials act as the seeded
     /// dev user (the app's DEV_SKIP_AUTH mode). Off in production builds.
     dev_auth: bool = true,
+    /// Acknowledges that DEV_AUTH is open to the network when `host` is not
+    /// loopback; without it `main` refuses to start (see `lanExposure`).
+    dev_auth_lan: bool = false,
 
     /// Google OAuth client ids whose ID tokens we accept (comma separated:
     /// android, ios, web/desktop).
@@ -76,3 +80,29 @@ pub const Config = struct {
 
     pub const production = .{ .dev_auth = false };
 };
+
+/// Whether `host` only accepts connections from this machine.
+pub fn isLoopback(host: []const u8) bool {
+    return std.mem.eql(u8, host, "localhost") or std.mem.eql(u8, host, "::1") or std.mem.eql(u8, host, "[::1]") or
+        std.mem.startsWith(u8, host, "127.");
+}
+
+/// True when dev auth would hand the dev account to anyone who can reach the
+/// server, and nobody said that was intended (`DEV_AUTH_LAN=true`).
+pub fn lanExposure(cfg: Config) bool {
+    return cfg.dev_auth and !cfg.dev_auth_lan and !isLoopback(cfg.host);
+}
+
+test "dev auth on a non-loopback host needs DEV_AUTH_LAN" {
+    const base: Config = .{ .jwt_secret = .init("x"), .openrouter_api_key = .init("x") };
+    try std.testing.expect(!lanExposure(base));
+    var lan = base;
+    lan.host = "0.0.0.0";
+    try std.testing.expect(lanExposure(lan));
+    lan.dev_auth_lan = true;
+    try std.testing.expect(!lanExposure(lan));
+    lan.dev_auth_lan = false;
+    lan.dev_auth = false;
+    try std.testing.expect(!lanExposure(lan));
+    try std.testing.expect(isLoopback("127.0.0.1") and isLoopback("localhost") and !isLoopback("192.168.1.5"));
+}

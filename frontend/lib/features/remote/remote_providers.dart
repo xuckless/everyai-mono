@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/platform/platform_kind.dart';
 import '../../core/providers.dart';
 import '../code/code_providers.dart' show codeProjectsProvider, codeSessionsProvider, isDemoPath, sidecarProvider;
+import '../auth/data/token_store.dart' show tokenStoreProvider;
 import '../code/gateway_key.dart' show secretStoreProvider;
 import 'data/host_bridge.dart';
 import 'data/host_link.dart';
@@ -24,7 +25,10 @@ final remoteApiProvider = Provider<RemoteApi>(
 );
 
 /// Opens relay sockets; tests override it with a fake relay.
-final relayConnectorProvider = Provider<RelayConnector>((ref) => connectRelay);
+final relayConnectorProvider = Provider<RelayConnector>((ref) {
+  final tokens = ref.watch(tokenStoreProvider);
+  return (url, token) async => connectRelay(url, token, userToken: await tokens.accessToken());
+});
 
 /// A name for this device, as other devices and the host list show it.
 String thisDeviceName() {

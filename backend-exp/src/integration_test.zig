@@ -1307,3 +1307,29 @@ test "Anthropic pause_turn: continued in place, searches billed as their own kin
     const gw_search = try env.state.db.one(struct { n: i64 }, &c, "SELECT COUNT(*) AS n FROM usage_events WHERE kind = 'search' AND session = 'code-p'", .{});
     try std.testing.expectEqual(@as(i64, 1), gw_search.n);
 }
+
+test "modality guard: chat and gateway refuse attachments the model's catalog entry cannot read" {
+    var env: Env = undefined;
+    try start(&env, &.{ "", "" }, true);
+    defer env.deinit();
+
+    // Haiku reads images but not PDFs.
+    var pdf = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = .{.{ .type = "file", .file = .{ .filename = "a.pdf", .file_data = "data:application/pdf;base64,JVBE" } }} }},
+    } });
+    defer pdf.deinit();
+    try pdf.expectStatus(.bad_request);
+    try std.testing.expect(std.mem.indexOf(u8, pdf.body, "does not accept PDF") != null);
+
+    // The free text-only model refuses an image on the gateway, in OpenAI's error shape.
+    var made = try env.t.post("/v1/keys", .{ .json = .{ .name = "k" } });
+    defer made.deinit();
+    var gw = try env.t.post("/v1/chat/completions", .{ .json = .{
+        .model = "dots-studio/dots-3-note-preview:free",
+        .messages = .{.{ .role = "user", .content = .{.{ .type = "image_url", .image_url = .{ .url = "data:image/png;base64,AAAA" } }} }},
+    } });
+    defer gw.deinit();
+    try gw.expectStatus(.bad_request);
+    try std.testing.expect(std.mem.indexOf(u8, gw.body, "unsupported_modality") != null);
+}

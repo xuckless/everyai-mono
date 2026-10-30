@@ -237,8 +237,18 @@ test "remote: the relay carries opaque frames between host and client, and unpai
             // A wrong device token is refused before the upgrade.
             try std.testing.expectError(error.WebSocketUpgradeFailed, client.connectWebSocket(try std.fmt.allocPrint(ar, "ws://127.0.0.1:{d}/v1/remote/client/{s}?token=rd_nope", .{ port, host_id }), .{}));
 
-            // The client, with its token in the query.
-            var c = try client.connectWebSocket(try std.fmt.allocPrint(ar, "ws://127.0.0.1:{d}/v1/remote/client/{s}?token={s}", .{ port, host_id, dev.device_token }), .{});
+            // The device token alone is not enough: the caller's account JWT has to match too.
+            const secret = st.cfg.jwt_secret.expose();
+            const other = try app_main.auth.accessToken(ar, io, secret, "someone-else");
+            const mine = try app_main.auth.accessToken(ar, io, secret, "dev-user");
+            const base = try std.fmt.allocPrint(ar, "ws://127.0.0.1:{d}/v1/remote/client/{s}?token={s}", .{ port, host_id, dev.device_token });
+            try std.testing.expectError(error.WebSocketUpgradeFailed, client.connectWebSocket(try std.fmt.allocPrint(ar, "{s}&user_token={s}", .{ base, other }), .{}));
+            try std.testing.expectError(error.WebSocketUpgradeFailed, client.connectWebSocket(try std.fmt.allocPrint(ar, "{s}&user_token=garbage", .{base}), .{}));
+            const host_url = try std.fmt.allocPrint(ar, "ws://127.0.0.1:{d}/v1/remote/host?token={s}&user_token={s}", .{ port, host_token, other });
+            try std.testing.expectError(error.WebSocketUpgradeFailed, client.connectWebSocket(host_url, .{}));
+
+            // The client, with its token and its account's JWT in the query.
+            var c = try client.connectWebSocket(try std.fmt.allocPrint(ar, "{s}&user_token={s}", .{ base, mine }), .{});
             defer c.deinit();
             const chello = try expectNotice(&c, ar, "hello");
             try std.testing.expect(chello.object.get("host_online").?.bool);

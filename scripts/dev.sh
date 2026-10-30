@@ -30,6 +30,7 @@ die() { printf '\033[1;31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 
 # --- where the app should find the backend --------------------------------
 HOST=127.0.0.1
+DEV_AUTH_LAN=false
 API="http://localhost:$PORT"
 DEVICE=""
 case "$TARGET" in
@@ -62,6 +63,7 @@ for d in json.load(sys.stdin):
     LAN="$(ipconfig getifaddr en0 || ipconfig getifaddr en1 || true)"
     [[ -n "$LAN" ]] || die "No LAN address found for the phone to reach the backend."
     HOST=0.0.0.0
+    DEV_AUTH_LAN=true
     API="http://$LAN:$PORT"
     say "Phone talks to the backend at $API (dev auth is open to your LAN while this runs)"
     ;;
@@ -87,7 +89,8 @@ else
   fi
   command -v zig >/dev/null || die "zig 0.17 is not on PATH."
   say "Starting backend-exp on $HOST:$PORT (log: .dev/backend.log)"
-  (cd "$BACKEND" && HOST="$HOST" PORT="$PORT" exec zig build run) >"$DEV/backend.log" 2>&1 &
+  # DEV_AUTH_LAN acknowledges that dev auth is open to the LAN (physical iPhone only).
+  (cd "$BACKEND" && HOST="$HOST" DEV_AUTH_LAN="$DEV_AUTH_LAN" PORT="$PORT" exec zig build run) >"$DEV/backend.log" 2>&1 &
   BACKEND_PID=$!
   for _ in $(seq 1 240); do
     curl -sf "$API/healthz" >/dev/null 2>&1 && break

@@ -103,6 +103,12 @@ pub fn prepare(state: *App, ctx: anytype) !void {
 pub fn main(init: std.process.Init) !void {
     const cfg = try anole.config.load(config.Config, init, .{ .env_files = &.{ ".env", "../.env" } });
 
+    if (config.lanExposure(cfg)) {
+        std.log.err("refusing to start: HOST={s} is reachable from the network and DEV_AUTH=true lets anyone there use the dev account. " ++
+            "Set DEV_AUTH=false, bind HOST=127.0.0.1, or set DEV_AUTH_LAN=true to accept this on a trusted LAN.", .{cfg.host});
+        return error.DevAuthOnLan;
+    }
+
     var state: App = .{
         .gpa = init.gpa,
         .cfg = cfg,

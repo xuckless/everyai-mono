@@ -15,7 +15,9 @@
 //!   POST   /v1/remote/pair/:id/approve    (+ X-Remote-Host-Token) -> {id, status}
 //!   POST   /v1/remote/pair/:id/deny       (+ X-Remote-Host-Token) -> {id, status}
 //!
-//! WebSockets (token in `Authorization: Bearer` or `?token=`):
+//! WebSockets (token in `Authorization: Bearer` or `?token=`, plus the
+//! account's access JWT in `X-User-Token` or `?user_token=`; the host or
+//! device must belong to that account):
 //!
 //!   GET /v1/remote/host                   the host, with its `rh_` token
 //!   GET /v1/remote/client/:host_id        a paired device, with its `rd_` token
@@ -443,11 +445,22 @@ fn socketToken(req: *anole.Request) ?[]const u8 {
     return req.query.get("token");
 }
 
+/// The account a relay socket claims to act for: its access JWT in
+/// `X-User-Token` (or `?user_token=` for browsers). Without one, the dev user
+/// when `dev_auth` is on. The host or device must belong to this account.
+fn socketUser(app: *App, req: *anole.Request) ?[]const u8 {
+    const token = req.headers.get("X-User-Token") orelse req.query.get("user_token") orelse
+        return if (app.cfg.dev_auth) auth.dev_user_id else null;
+    return auth.userOfToken(app, req, token);
+}
+
 fn hostSocket(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const token = socketToken(req) orelse return res.fail(.unauthorized, "host token required");
     if (!std.mem.startsWith(u8, token, host_token_prefix)) return res.fail(.unauthorized, "host token required");
     const host = try app.db.optional(HostRow, req, "SELECT id, user_id, name FROM remote_hosts WHERE token_hash = ?", .{try util.sha256Hex(req.arena, token)}) orelse
         return res.fail(.unauthorized, "unknown host token");
+    const user = socketUser(app, req) orelse return res.fail(.unauthorized, "sign in required");
+    if (!std.mem.eql(u8, user, host.user_id)) return res.fail(.forbidden, "this host belongs to another account");
     var ws = (try websocket.upgrade(req, res, upgrade_options)) orelse return res.fail(.upgrade_required, "this endpoint speaks WebSocket");
     defer ws.deinit();
     serveHost(app, &ws, req, host) catch |err| {
@@ -562,15 +575,17 @@ fn serveHost(app: *App, ws: *websocket.Socket, req: *anole.Request, host: HostRo
     }
 }
 
-const DeviceRow = struct { id: []const u8, host_id: []const u8, name: []const u8, public_key: []const u8, approved: i64 };
+const DeviceRow = struct { id: []const u8, user_id: []const u8, host_id: []const u8, name: []const u8, public_key: []const u8, approved: i64 };
 
 fn clientSocket(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const host_id = req.param("host_id") orelse return res.fail(.not_found, "no such host");
     const token = socketToken(req) orelse return res.fail(.unauthorized, "device token required");
     if (!std.mem.startsWith(u8, token, device_token_prefix)) return res.fail(.unauthorized, "device token required");
-    const device = try app.db.optional(DeviceRow, req, "SELECT id, host_id, name, public_key, approved FROM remote_devices WHERE token_hash = ? AND host_id = ?", .{
+    const device = try app.db.optional(DeviceRow, req, "SELECT id, user_id, host_id, name, public_key, approved FROM remote_devices WHERE token_hash = ? AND host_id = ?", .{
         try util.sha256Hex(req.arena, token), host_id,
     }) orelse return res.fail(.unauthorized, "this device is not paired with that host");
+    const user = socketUser(app, req) orelse return res.fail(.unauthorized, "sign in required");
+    if (!std.mem.eql(u8, user, device.user_id)) return res.fail(.forbidden, "this device belongs to another account");
     if (device.approved == 0) return res.fail(.forbidden, "waiting for the host to approve this device");
     var ws = (try websocket.upgrade(req, res, upgrade_options)) orelse return res.fail(.upgrade_required, "this endpoint speaks WebSocket");
     defer ws.deinit();

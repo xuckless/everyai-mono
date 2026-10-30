@@ -144,12 +144,23 @@ pub const Catalog = struct {
         return arena.dupe(u8, self.json);
     }
 
-    pub const Facts = struct { known: bool, free: bool, tools: bool, web_search: bool, max_output: i64 = 0, reasoning: bool = false };
+    pub const Facts = struct {
+        known: bool,
+        free: bool,
+        tools: bool,
+        web_search: bool,
+        max_output: i64 = 0,
+        reasoning: bool = false,
+        inputs: Inputs = .{},
+
+        /// Which attachment kinds the model takes (all, when the catalog doesn't say).
+        pub const Inputs = struct { image: bool = true, file: bool = true, audio: bool = true };
+    };
 
     pub fn facts(self: *Catalog, io: std.Io, id: []const u8) Facts {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
-        for (self.models) |m| if (std.mem.eql(u8, m.id, id)) return .{ .known = true, .free = m.free, .tools = m.tools, .web_search = m.web_search, .max_output = m.max_output_tokens, .reasoning = m.reasoning };
+        for (self.models) |m| if (std.mem.eql(u8, m.id, id)) return .{ .known = true, .free = m.free, .tools = m.tools, .web_search = m.web_search, .max_output = m.max_output_tokens, .reasoning = m.reasoning, .inputs = inputsOf(m.input_modalities) };
         // Unknown (catalog not loaded): treat as paid, assume tools.
         return .{ .known = false, .free = std.mem.endsWith(u8, id, ":free"), .tools = true, .web_search = true };
     }
@@ -162,6 +173,37 @@ pub const Catalog = struct {
         return null;
     }
 };
+
+fn inputsOf(modalities: []const []const u8) Catalog.Facts.Inputs {
+    if (modalities.len == 0) return .{};
+    var in: Catalog.Facts.Inputs = .{ .image = false, .file = false, .audio = false };
+    for (modalities) |m| {
+        if (std.mem.eql(u8, m, "image")) in.image = true;
+        if (std.mem.eql(u8, m, "file")) in.file = true;
+        if (std.mem.eql(u8, m, "audio")) in.audio = true;
+    }
+    return in;
+}
+
+/// The first attachment kind in `content` (a string or OpenAI content parts)
+/// that `inputs` does not accept, as the name users know it ("image", "PDF",
+/// "audio"); null when everything is accepted.
+pub fn unsupportedPart(inputs: Catalog.Facts.Inputs, content: std.json.Value) ?[]const u8 {
+    if (content != .array) return null;
+    for (content.array.items) |p| {
+        if (p != .object) continue;
+        const kind = openrouter.jsonStr(p.object.get("type")) orelse continue;
+        if (!inputs.image and std.mem.eql(u8, kind, "image_url")) return "image";
+        if (!inputs.file and std.mem.eql(u8, kind, "file")) return "PDF or file";
+        if (!inputs.audio and std.mem.eql(u8, kind, "input_audio")) return "audio";
+    }
+    return null;
+}
+
+/// 400 text for a rejected attachment.
+pub fn unsupportedMessage(arena: std.mem.Allocator, model: []const u8, what: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "{s} does not accept {s} attachments. Remove them or pick a model that does.", .{ model, what });
+}
 
 const Parsed = struct { models: []const Model, prices: []const Prices };
 
@@ -281,4 +323,22 @@ fn defaultList(_: *App, _: *anole.Request) struct { models: []const []const u8 }
 pub fn routes(app: *anole.Server(App), _: *App) void {
     app.get("/v1/models", list);
     app.get("/v1/models/defaults", defaultList);
+}
+
+test "attachments the model cannot read are named" {
+    const inputs = inputsOf(&.{ "text", "image" });
+    const a = std.testing.allocator;
+    var img = try std.json.parseFromSlice(std.json.Value, a, "[{\"type\":\"text\",\"text\":\"hi\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:\"}}]", .{});
+    defer img.deinit();
+    try std.testing.expect(unsupportedPart(inputs, img.value) == null);
+    var pdf = try std.json.parseFromSlice(std.json.Value, a, "[{\"type\":\"file\",\"file\":{}}]", .{});
+    defer pdf.deinit();
+    try std.testing.expectEqualStrings("PDF or file", unsupportedPart(inputs, pdf.value).?);
+    var aud = try std.json.parseFromSlice(std.json.Value, a, "[{\"type\":\"input_audio\"}]", .{});
+    defer aud.deinit();
+    try std.testing.expectEqualStrings("audio", unsupportedPart(inputs, aud.value).?);
+    try std.testing.expect(unsupportedPart(inputsOf(&.{"text"}), img.value) != null);
+    // A model the catalog says nothing about takes anything; plain strings are fine.
+    try std.testing.expect(unsupportedPart(inputsOf(&.{}), pdf.value) == null);
+    try std.testing.expect(unsupportedPart(inputsOf(&.{"text"}), .{ .string = "hi" }) == null);
 }

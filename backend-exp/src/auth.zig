@@ -60,6 +60,15 @@ pub const Authenticate = struct {
     }
 };
 
+/// The account behind an access JWT, or null when it is invalid or expired.
+pub fn userOfToken(app: *App, req: *anole.Request, token: []const u8) ?[]const u8 {
+    const verified = anole.auth.verify(req.arena, token, &app.jwt_keys, .{
+        .issuer = issuer,
+        .audience = audience,
+    }, util.now(req.io)) catch return null;
+    return verified.string("sub");
+}
+
 fn lookupKey(app: *App, req: *anole.Request, key: []const u8) !?Identity {
     const digest = try util.sha256Hex(req.arena, key);
     const row = try app.db.optional(struct { id: []const u8, user_id: []const u8 }, req, "SELECT id, user_id FROM api_keys WHERE digest = ?", .{digest}) orelse return null;

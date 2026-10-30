@@ -20,6 +20,8 @@ const anole = @import("anole");
 const App = @import("main.zig").App;
 const auth = @import("auth.zig");
 const billing = @import("billing.zig");
+const builtin = @import("builtin");
+const models = @import("models.zig");
 const openrouter = @import("openrouter.zig");
 const tools = @import("tools.zig");
 const util = @import("util.zig");
@@ -328,6 +330,8 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
     };
     app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
     const facts = app.catalog.facts(req.io, model);
+    for (body.messages) |m| if (models.unsupportedPart(facts.inputs, m.content)) |what|
+        return res.fail(.bad_request, try models.unsupportedMessage(req.arena, model, what));
     billing.preflight(app, req, who.user_id, facts.free) catch {
         res.status = .payment_required;
         return res.json(.{ .message = "You're out of credits. Top up or upgrade your plan to keep using paid models.", .code = "out_of_credits" });
@@ -454,7 +458,10 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
     }
 
     if (body.mode != .research and final_text.written().len > 0) {
-        followUps(app, req, who, body, final_text.written(), sink) catch |err| std.log.warn("follow-ups failed: {t}", .{err});
+        followUps(app, req, who, body, final_text.written(), sink) catch |err| {
+            // Test fixtures reuse their last (streamed) reply for this call; its parse error is expected.
+            if (!builtin.is_test) std.log.warn("follow-ups failed: {t}", .{err});
+        };
     }
     try sink.send("done", .{});
 }

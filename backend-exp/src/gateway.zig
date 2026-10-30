@@ -9,6 +9,7 @@ const App = @import("main.zig").App;
 const auth = @import("auth.zig");
 const billing = @import("billing.zig");
 const chat = @import("chat.zig");
+const models = @import("models.zig");
 const openrouter = @import("openrouter.zig");
 const sse = anole.sse;
 const truncation = @import("truncation.zig");
@@ -29,6 +30,13 @@ fn completions(app: *App, req: *anole.Request, res: *anole.Response) !void {
 
     app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
     const facts = app.catalog.facts(req.io, model);
+    if (o.get("messages")) |msgs| if (msgs == .array) for (msgs.array.items) |m| {
+        if (m != .object) continue;
+        if (models.unsupportedPart(facts.inputs, m.object.get("content") orelse continue)) |what| {
+            res.status = .bad_request;
+            return res.json(.{ .@"error" = .{ .message = try models.unsupportedMessage(req.arena, model, what), .type = "invalid_request_error", .code = "unsupported_modality" } });
+        }
+    };
     billing.preflight(app, req, who.user_id, facts.free) catch {
         res.status = .payment_required;
         return res.json(.{ .@"error" = .{ .message = "Out of EveryAI credits", .type = "insufficient_quota", .code = "out_of_credits" } });
