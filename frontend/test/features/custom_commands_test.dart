@@ -43,4 +43,31 @@ void main() {
     expect(const CustomCommand(name: 'a', body: 'b').toSlash().scope, SlashScope.both);
     expect(const CustomCommand(name: 'a', body: 'b', project: 'p').toSlash().scope, SlashScope.code);
   });
+
+  test('a project command never turns approvals off', () {
+    String? mode(String m, {String? project}) => CustomCommand.parse(
+      't',
+      '---\nmode: $m\n---\nGo',
+      project: project,
+      projectDir: project,
+    ).modeFor(SlashScope.code);
+    expect(mode('full-auto'), 'fullAuto');
+    expect(mode('auto-edit'), 'autoEdit');
+    expect(mode('full-auto', project: '/repo'), isNull);
+    expect(mode('auto-edit', project: '/repo'), isNull);
+    expect(mode('plan', project: '/repo'), 'plan');
+    expect(mode('ask', project: '/repo'), 'ask');
+  });
+
+  test('a project command only shows in its own project', () {
+    final c = CustomCommand.parse('deploy', 'Ship it', project: 'b', projectDir: '/work/b').toSlash();
+    expect(c.project, '/work/b');
+    expect(filterSlashCommands([c], 'deploy', SlashScope.code, project: '/work/b'), [c]);
+    expect(filterSlashCommands([c], 'deploy', SlashScope.code, project: '/work/a'), isEmpty);
+    expect(filterSlashCommands([c], 'deploy', SlashScope.code), isEmpty);
+    // In another project it no longer shadows a global command of the same name.
+    final global = CustomCommand.parse('deploy', 'Global').toSlash();
+    expect(filterSlashCommands([c, global], 'deploy', SlashScope.code, project: '/work/a'), [global]);
+    expect(filterSlashCommands([c, global], 'deploy', SlashScope.code, project: '/work/b'), [c]);
+  });
 }

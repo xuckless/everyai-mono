@@ -40,6 +40,7 @@ class CodeComposer extends ConsumerStatefulWidget {
     this.autofocus = true,
     this.model,
     this.slashHost,
+    this.project,
   });
 
   final bool busy;
@@ -67,6 +68,9 @@ class CodeComposer extends ConsumerStatefulWidget {
   /// What `/` commands can drive in an open session; null: only the mode and Stop.
   final CodeSlashHost? slashHost;
 
+  /// The project folder: its own `/` commands show here.
+  final String? project;
+
   @override
   ConsumerState<CodeComposer> createState() => _CodeComposerState();
 }
@@ -80,10 +84,17 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
   @override
   void initState() {
     super.initState();
+    _slash.project = widget.project;
     _controller.addListener(() {
       _slash.update(_controller.value, ref.read(slashCommandsProvider));
       setState(() {});
     });
+  }
+
+  @override
+  void didUpdateWidget(CodeComposer old) {
+    super.didUpdateWidget(old);
+    _slash.project = widget.project;
   }
 
   @override
@@ -121,7 +132,8 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
     if (!_hasText) return;
     final text = _controller.text;
     if (_files.isEmpty) {
-      if (parseSlashLine(text, ref.read(slashCommandsProvider), SlashScope.code) case final line?) {
+      if (parseSlashLine(text, ref.read(slashCommandsProvider), SlashScope.code, project: widget.project)
+          case final line?) {
         runSlash(line.command, line.args, _slashContext, complete: false);
         _focus.requestFocus();
         return;

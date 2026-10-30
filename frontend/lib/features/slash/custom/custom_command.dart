@@ -22,6 +22,7 @@ final class CustomCommand {
     this.mode,
     this.path,
     this.project,
+    this.projectDir,
   });
 
   /// The file name without `.md`.
@@ -44,12 +45,16 @@ final class CustomCommand {
   /// The project name, null for a global command.
   final String? project;
 
+  /// The project's folder, null for a global command. A project command is
+  /// only offered in that project's sessions.
+  final String? projectDir;
+
   bool get isGlobal => project == null;
 
   static final validName = RegExp(r'^[a-z0-9][a-z0-9_-]{0,47}$');
 
   /// Parses a file. The frontmatter is optional; unknown keys are ignored.
-  static CustomCommand parse(String name, String source, {String? path, String? project}) {
+  static CustomCommand parse(String name, String source, {String? path, String? project, String? projectDir}) {
     final text = source.replaceAll('\r\n', '\n');
     final meta = <String, String>{};
     var body = text;
@@ -81,6 +86,7 @@ final class CustomCommand {
       mode: pick(['mode']),
       path: path,
       project: project,
+      projectDir: projectDir,
     );
   }
 
@@ -111,12 +117,16 @@ final class CustomCommand {
   }
 
   /// Resolves [mode] against a surface's names, or null when it doesn't name one.
+  /// A project command came with the repository, so it may only make the
+  /// agent ask for more (Ask, Plan): it never turns approvals off.
   String? modeFor(SlashScope surface) {
     final raw = mode?.toLowerCase().replaceAll(RegExp(r'[\s_-]'), '');
     if (raw == null) return null;
     const chat = {'chat', 'search', 'research'};
     const code = {'ask': 'ask', 'autoedit': 'autoEdit', 'plan': 'plan', 'fullauto': 'fullAuto'};
-    return surface == SlashScope.chat ? (chat.contains(raw) ? raw : null) : code[raw];
+    const projectCode = {'ask': 'ask', 'plan': 'plan'};
+    if (surface == SlashScope.chat) return chat.contains(raw) ? raw : null;
+    return (isGlobal ? code : projectCode)[raw];
   }
 
   /// The `/` menu entry. Project commands only show in Code.
@@ -126,6 +136,7 @@ final class CustomCommand {
     argsHint: args,
     group: SlashGroup.custom,
     scope: isGlobal ? SlashScope.both : SlashScope.code,
+    project: projectDir,
     run: (ctx, arguments) {
       final mode = modeFor(ctx.surface);
       if (mode != null) {

@@ -143,6 +143,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                       ),
                     ),
                   CodeComposer(
+                    project: project.path,
                     slashHost: CodeSlashHost(
                       setMode: (name) => setState(() => _mode = AgentMode.values.byName(name)),
                       morning: ref.read(morningBriefProvider.notifier).refresh,

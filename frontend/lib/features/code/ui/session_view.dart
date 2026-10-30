@@ -178,6 +178,11 @@ class CodeSessionScreen extends ConsumerWidget {
                           ),
                         CodeComposer(
                           slashHost: codeSlashHost(context, ref, sessionId, busy: busy),
+                          project: ref
+                              .watch(codeProjectsProvider)
+                              .where((p) => p.id == info.projectId)
+                              .firstOrNull
+                              ?.path,
                           busy: busy,
                           mode: state.mode,
                           onModeChanged: controller.setMode,

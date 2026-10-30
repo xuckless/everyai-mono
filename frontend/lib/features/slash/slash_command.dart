@@ -174,6 +174,7 @@ class SlashCommand {
     this.argsHint,
     this.group = SlashGroup.builtIn,
     this.scope = SlashScope.both,
+    this.project,
   });
 
   /// Without the slash: `search`, `plan`, a skill or custom command name.
@@ -185,6 +186,10 @@ class SlashCommand {
   final String? argsHint;
   final SlashGroup group;
   final SlashScope scope;
+
+  /// The project folder this command belongs to; it only shows in that
+  /// project's sessions. Null: everywhere [scope] allows.
+  final String? project;
   final FutureOr<void> Function(SlashContext context, String args) run;
 
   bool get takesArgs => argsHint != null && argsHint!.isNotEmpty;
@@ -205,36 +210,60 @@ String? slashQuery(TextEditingValue value) {
   return word;
 }
 
-/// Commands for [surface] matching [query], grouped in [SlashGroup] order.
-/// Inside a group: name prefix first, then name substring, then description.
-List<SlashCommand> filterSlashCommands(Iterable<SlashCommand> commands, String query, SlashScope surface) {
+/// Commands for [surface] (and, in Code, [project]: the session's folder)
+/// matching [query]. A name shadows the same name in a later [SlashGroup] (a
+/// built-in over a custom command over a skill). Groups stay together; the
+/// group holding the best match comes first, so the top row (what Enter
+/// runs) is an exact name over a name match over a description match. Inside
+/// a group: exact name, name prefix, name substring, then description.
+List<SlashCommand> filterSlashCommands(
+  Iterable<SlashCommand> commands,
+  String query,
+  SlashScope surface, {
+  String? project,
+}) {
   final q = query.toLowerCase();
   int? rank(SlashCommand c) {
     final name = c.name.toLowerCase();
-    if (name.startsWith(q)) return 0;
-    if (name.contains(q)) return 1;
-    if (c.description.toLowerCase().contains(q)) return 2;
+    if (q.isNotEmpty && name == q) return 0;
+    if (name.startsWith(q)) return 1;
+    if (name.contains(q)) return 2;
+    if (c.description.toLowerCase().contains(q)) return 3;
     return null;
   }
 
-  final hits = [
-    for (final c in commands)
-      if (c.scope.covers(surface))
-        if (rank(c) case final r?) (c, r),
+  final listed = commands.toList();
+  final order = [for (var i = 0; i < listed.length; i++) i]
+    ..sort((a, b) {
+      final g = listed[a].group.index.compareTo(listed[b].group.index);
+      return g != 0 ? g : a.compareTo(b);
+    });
+  // Earlier in the list wins inside a group (a project command over a global one).
+  final seen = <String>{};
+  final kept = [
+    for (final i in order)
+      if (listed[i] case final c when c.scope.covers(surface) && (c.project == null || c.project == project))
+        if (seen.add(c.name))
+          if (rank(c) case final r?) (c, r),
   ];
-  hits.sort((a, b) {
-    final g = a.$1.group.index.compareTo(b.$1.group.index);
-    if (g != 0) return g;
+  // A tier per group: 0 for an exact name, 1 for a name match, 2 for a description match.
+  int tier(int rank) => rank == 0 ? 0 : (rank < 3 ? 1 : 2);
+  final best = <SlashGroup, int>{};
+  for (final (c, r) in kept) {
+    final t = tier(r);
+    if (t < (best[c.group] ?? 3)) best[c.group] = t;
+  }
+  kept.sort((a, b) {
+    final ga = a.$1.group, gb = b.$1.group;
+    if (ga != gb) {
+      final t = best[ga]!.compareTo(best[gb]!);
+      return t != 0 ? t : ga.index.compareTo(gb.index);
+    }
     final r = a.$2.compareTo(b.$2);
     if (r != 0) return r;
     return a.$1.name.compareTo(b.$1.name);
   });
-  // A name shadows the same name later in the list (a custom command over a skill).
-  final seen = <String>{};
-  return [
-    for (final (c, _) in hits)
-      if (seen.add(c.name)) c,
-  ];
+  return [for (final (c, _) in kept) c];
 }
 
 /// A full command line typed into the box: `/name args`. Null when the text
@@ -242,12 +271,13 @@ List<SlashCommand> filterSlashCommands(Iterable<SlashCommand> commands, String q
 ({SlashCommand command, String args})? parseSlashLine(
   String text,
   Iterable<SlashCommand> commands,
-  SlashScope surface,
-) {
+  SlashScope surface, {
+  String? project,
+}) {
   final m = RegExp(r'^/(\S+)(?:\s+([\s\S]*))?$').firstMatch(text.trim());
   if (m == null) return null;
   final name = m.group(1)!;
-  for (final c in filterSlashCommands(commands, name, surface)) {
+  for (final c in filterSlashCommands(commands, name, surface, project: project)) {
     if (c.name == name) return (command: c, args: (m.group(2) ?? '').trim());
   }
   return null;
@@ -259,6 +289,9 @@ class SlashMenuController extends ChangeNotifier {
   SlashMenuController({required this.surface});
 
   final SlashScope surface;
+
+  /// The Code session's project folder: its project commands show.
+  String? project;
   List<SlashCommand> _all = const [];
   List<SlashCommand> _matches = const [];
   int _highlight = 0;
@@ -278,7 +311,7 @@ class SlashMenuController extends ChangeNotifier {
     if (query != _dismissed) _dismissed = null;
     final matches = query == null || query == _dismissed
         ? const <SlashCommand>[]
-        : filterSlashCommands(commands, query, surface);
+        : filterSlashCommands(commands, query, surface, project: project);
     final queryChanged = query != _query;
     _query = query;
     if (queryChanged || _highlight >= matches.length) _highlight = 0;

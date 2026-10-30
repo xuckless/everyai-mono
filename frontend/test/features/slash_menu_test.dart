@@ -72,6 +72,20 @@ void main() {
       expect(filterSlashCommands(commands, 'zzz', SlashScope.code), isEmpty);
     });
 
+    test('an exact name beats a description match in an earlier group', () {
+      final list = [
+        cmd('search', 'Search the web for an answer', scope: SlashScope.chat),
+        cmd('web', 'Open my web notes', group: SlashGroup.custom),
+        cmd('clear', 'Start a fresh session', scope: SlashScope.code),
+        cmd('session', 'Mine', group: SlashGroup.custom),
+      ];
+      expect([for (final c in filterSlashCommands(list, 'web', SlashScope.chat)) c.name], ['web', 'search']);
+      expect([for (final c in filterSlashCommands(list, 'session', SlashScope.code)) c.name], ['session', 'clear']);
+      expect(parseSlashLine('/web', list, SlashScope.chat)!.command.name, 'web');
+      // A name match in a later group also beats a description match.
+      expect([for (final c in filterSlashCommands(list, 'we', SlashScope.chat)) c.name], ['web', 'search']);
+    });
+
     test('an earlier group shadows the same name', () {
       final list = [cmd('learn', 'skill', group: SlashGroup.skills), cmd('learn', 'built-in')];
       expect(filterSlashCommands(list, 'le', SlashScope.chat).single.description, 'built-in');

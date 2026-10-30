@@ -19,12 +19,12 @@ Future<List<CustomCommand>> loadCommands(List<({String name, String path})> proj
   final global = await globalDir();
   if (global != null) out.addAll(await _readDir(global, null));
   for (final p in projects) {
-    out.addAll(await _readDir('${p.path}/$_dirName', p.name));
+    out.addAll(await _readDir('${p.path}/$_dirName', p.name, p.path));
   }
   return out;
 }
 
-Future<List<CustomCommand>> _readDir(String dir, String? project) async {
+Future<List<CustomCommand>> _readDir(String dir, String? project, [String? projectDir]) async {
   final d = Directory(dir);
   if (!d.existsSync()) return const [];
   final out = <CustomCommand>[];
@@ -35,7 +35,9 @@ Future<List<CustomCommand>> _readDir(String dir, String? project) async {
       if (!CustomCommand.validName.hasMatch(name)) continue;
       try {
         if (await f.length() > 256 * 1024) continue;
-        out.add(CustomCommand.parse(name, await f.readAsString(), path: f.path, project: project));
+        out.add(
+          CustomCommand.parse(name, await f.readAsString(), path: f.path, project: project, projectDir: projectDir),
+        );
       } on FileSystemException {
         continue;
       }
@@ -62,6 +64,7 @@ Future<CustomCommand> create(String name, String? projectPath, String? projectNa
     body: 'Write the prompt here. \$ARGUMENTS is replaced by what you type after /$name.',
     path: file.path,
     project: projectPath == null ? null : projectName,
+    projectDir: projectPath,
   );
   await file.parent.create(recursive: true);
   await file.writeAsString(command.toSource());
