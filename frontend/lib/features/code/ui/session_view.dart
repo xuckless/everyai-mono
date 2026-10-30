@@ -20,6 +20,7 @@ import '../domain/code_session.dart';
 import '../domain/questions.dart';
 import '../domain/transcript.dart';
 import 'code_composer.dart';
+import 'panes/diff_pane.dart';
 import 'transcript/approval_card.dart';
 import 'transcript/plan_card.dart';
 import 'transcript/question_card.dart';
@@ -63,101 +64,217 @@ class CodeSessionScreen extends ConsumerWidget {
     return AdaptivePage(
       title: info.title,
       actions: [
+        if (info.worktree != null) _ChangesButton(sessionId: sessionId),
         StatusPill(status: state.status),
         AdaptiveIconButton(icon: EveryIcon.newChat, tooltip: 'New session', onPressed: () => context.go(Routes.code)),
       ],
-      body: Column(
-        children: [
-          Expanded(
-            child: _TranscriptList(
-              transcript: t,
-              onAnswer: controller.answer,
-              mode: state.mode,
-              onApprovePlan: controller.startBuilding,
-              onRevisePlan: controller.send,
+      body: _WithDiff(
+        session: info,
+        child: Column(
+          children: [
+            Expanded(
+              child: _TranscriptList(
+                onRewind: info.worktree == null ? null : (turn) => _rewind(context, ref, turn),
+                transcript: t,
+                onAnswer: controller.answer,
+                mode: state.mode,
+                onApprovePlan: controller.startBuilding,
+                onRevisePlan: controller.send,
+              ),
             ),
-          ),
-          if (state.error case final error?)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: NoticeView(item: NoticeItem('error', error, error: true)),
-            )
-          else if (!state.connected && t.items.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: NoticeView(item: const NoticeItem('reconnecting', 'Reconnecting to the agent server…')),
-            ),
-          SafeArea(
-            top: false,
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: _maxWidth),
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      if (t.pending.isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: ApprovalCard(
-                            key: ValueKey(t.pending.map((c) => c.id).join()),
-                            pending: t.pending,
-                            mode: state.mode,
-                            onAllow: controller.approve,
-                            onDeny: controller.deny,
-                            onMode: controller.setMode,
+            if (state.error case final error?)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: NoticeView(item: NoticeItem('error', error, error: true)),
+              )
+            else if (!state.connected && t.items.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: NoticeView(item: const NoticeItem('reconnecting', 'Reconnecting to the agent server…')),
+              ),
+            SafeArea(
+              top: false,
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: _maxWidth),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (t.pending.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: ApprovalCard(
+                              key: ValueKey(t.pending.map((c) => c.id).join()),
+                              pending: t.pending,
+                              mode: state.mode,
+                              onAllow: controller.approve,
+                              onDeny: controller.deny,
+                              onMode: controller.setMode,
+                            ),
+                          )
+                        else if (t.plan.isNotEmpty && t.running)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: PlanView(tasks: t.plan, compact: true),
                           ),
-                        )
-                      else if (t.plan.isNotEmpty && t.running)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: PlanView(tasks: t.plan, compact: true),
+                        if (showStartBuilding)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: _StartBuilding(onStart: controller.startBuilding),
+                          ),
+                        CodeComposer(
+                          busy: busy,
+                          mode: state.mode,
+                          onModeChanged: controller.setMode,
+                          onSend: (text, files) => controller.send(text, files: files),
+                          onSteer: (text, files) => controller.steer(text, files: files),
+                          onStop: controller.stop,
+                          queued: [for (final q in state.queued) q.text],
+                          onUnqueue: controller.unqueue,
+                          placeholder: t.openQuestion != null
+                              ? 'Answer the questions above, or reply in your own words'
+                              : 'Ask for a change, or reply to the agent',
+                          trailing: Text(
+                            info.model.split('/').last,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(color: theme.textMuted, fontSize: 12.5),
+                          ),
+                          model: ref.watch(modelCatalogProvider)[ModelId(info.model)],
+                          meter: UsageMeter(
+                            totals: ref.watch(codeUsageProvider(sessionId)).value ?? UsageTotals.zero,
+                            contextWindow: ref.watch(modelCatalogProvider)[ModelId(info.model)]?.contextLength ?? 0,
+                            modelName: ref.watch(modelCatalogProvider)[ModelId(info.model)]?.name,
+                          ),
                         ),
-                      if (showStartBuilding)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: _StartBuilding(onStart: controller.startBuilding),
-                        ),
-                      CodeComposer(
-                        busy: busy,
-                        mode: state.mode,
-                        onModeChanged: controller.setMode,
-                        onSend: (text, files) => controller.send(text, files: files),
-                        onSteer: (text, files) => controller.steer(text, files: files),
-                        onStop: controller.stop,
-                        queued: [for (final q in state.queued) q.text],
-                        onUnqueue: controller.unqueue,
-                        placeholder: t.openQuestion != null
-                            ? 'Answer the questions above, or reply in your own words'
-                            : 'Ask for a change, or reply to the agent',
-                        trailing: Text(
-                          info.model.split('/').last,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(color: theme.textMuted, fontSize: 12.5),
-                        ),
-                        model: ref.watch(modelCatalogProvider)[ModelId(info.model)],
-                        meter: UsageMeter(
-                          totals: ref.watch(codeUsageProvider(sessionId)).value ?? UsageTotals.zero,
-                          contextWindow: ref.watch(modelCatalogProvider)[ModelId(info.model)]?.contextLength ?? 0,
-                          modelName: ref.watch(modelCatalogProvider)[ModelId(info.model)]?.name,
-                        ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
+    );
+  }
+
+  Future<void> _rewind(BuildContext context, WidgetRef ref, int turn) async {
+    final ok = await showAdaptiveConfirm(
+      context,
+      title: 'Restore files?',
+      message: "Puts this session's files back to how they were before this message. The conversation stays as it is.",
+      confirmLabel: 'Restore',
+      destructive: true,
+    );
+    if (!ok) return;
+    try {
+      await ref.read(codeGitProvider(sessionId).notifier).rewind(turn);
+      if (context.mounted) showAdaptiveToast(context, 'Files restored');
+    } on Object catch (e) {
+      if (context.mounted) showAdaptiveToast(context, "Couldn't restore: $e");
+    }
+  }
+}
+
+/// Whether the Diff pane is open, per session.
+final _diffOpenProvider = NotifierProvider.family<_PaneOpen, bool, String>(_PaneOpen.new);
+
+final class _PaneOpen extends Notifier<bool> {
+  _PaneOpen(this.sessionId);
+  final String sessionId;
+
+  @override
+  bool build() => false;
+
+  void toggle() => state = !state;
+}
+
+/// "3 files +40 −2": opens the Diff pane.
+class _ChangesButton extends ConsumerWidget {
+  const _ChangesButton({required this.sessionId});
+  final String sessionId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = EveryTheme.of(context);
+    final git = ref.watch(codeGitProvider(sessionId)).value;
+    final open = ref.watch(_diffOpenProvider(sessionId));
+    final files = git?.files.length ?? 0;
+    return GestureDetector(
+      onTap: ref.read(_diffOpenProvider(sessionId).notifier).toggle,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+          decoration: BoxDecoration(
+            color: open ? theme.accent.withValues(alpha: 0.14) : null,
+            border: Border.all(color: open ? theme.accent : theme.border),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text.rich(
+            TextSpan(
+              children: [
+                TextSpan(text: files == 0 ? 'No changes' : '$files file${files == 1 ? '' : 's'} '),
+                if (files > 0) ...[
+                  TextSpan(
+                    text: '+${git!.added} ',
+                    style: TextStyle(color: theme.success),
+                  ),
+                  TextSpan(
+                    text: '−${git.removed}',
+                    style: TextStyle(color: theme.danger),
+                  ),
+                ],
+              ],
+            ),
+            style: TextStyle(color: theme.text, fontSize: 12.5, fontWeight: FontWeight.w500),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The session beside its Diff pane (over it when narrow).
+class _WithDiff extends ConsumerWidget {
+  const _WithDiff({required this.session, required this.child});
+
+  final CodeSessionInfo session;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (!ref.watch(_diffOpenProvider(session.id))) return child;
+    final pane = DiffPane(session: session, onClose: ref.read(_diffOpenProvider(session.id).notifier).toggle);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 900) {
+          return Stack(
+            children: [
+              child,
+              Positioned.fill(child: pane),
+            ],
+          );
+        }
+        final width = (constraints.maxWidth * 0.48).clamp(380.0, 760.0);
+        return Row(
+          children: [
+            Expanded(child: child),
+            SizedBox(width: width, child: pane),
+          ],
+        );
+      },
     );
   }
 }
 
 class _TranscriptList extends StatelessWidget {
   const _TranscriptList({
+    required this.onRewind,
     required this.transcript,
     required this.mode,
     required this.onAnswer,
@@ -168,6 +285,9 @@ class _TranscriptList extends StatelessWidget {
   final Transcript transcript;
   final AgentMode mode;
   final void Function(QuestionItem, List<QuestionAnswer>) onAnswer;
+
+  /// Restores the files to before user turn n (1-based); null without git.
+  final void Function(int turn)? onRewind;
   final VoidCallback onApprovePlan;
   final ValueChanged<String> onRevisePlan;
 
@@ -201,7 +321,13 @@ class _TranscriptList extends StatelessWidget {
   Widget _itemView(TranscriptItem item) => switch (item) {
     UserTurn(:final text, :final mode) => Padding(
       padding: const EdgeInsets.only(top: 10),
-      child: UserTurnView(text: text, mode: mode),
+      child: UserTurnView(
+        text: text,
+        mode: mode,
+        onRewind: onRewind == null
+            ? null
+            : () => onRewind!(transcript.items.whereType<UserTurn>().toList().indexOf(item) + 1),
+      ),
     ),
     AgentText(:final text, :final reasoning) => AgentTextView(text: text, reasoning: reasoning),
     ExploreGroup() => ExploreGroupView(group: item),

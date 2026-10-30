@@ -17,6 +17,7 @@ import 'domain/agent_mode.dart';
 import 'domain/code_session.dart';
 import 'domain/questions.dart';
 import 'domain/transcript.dart';
+import 'git/git_service.dart';
 import 'harness/events.dart';
 import 'harness/fake_harness.dart';
 import 'harness/harness.dart';
@@ -188,12 +189,16 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
   }) async {
     final id = const Uuid().v7();
     final demo = isDemoPath(project.path);
-    final first = await prepareMessage(ref, text: prompt, workingDir: project.path, model: model, files: files);
+    final title = titleFor(prompt.isEmpty ? files.first.name : prompt);
+    final worktree = demo ? null : await _worktreeFor(project, title, id);
+    final workingDir = worktree?.path ?? project.path;
+    final first = await prepareMessage(ref, text: prompt, workingDir: workingDir, model: model, files: files);
     final harness = await harnessFor(ref, project.path);
+    // Settings and commit style come from the main checkout (local settings aren't in worktrees).
     final agentPrompt = demo ? null : await agentPromptFor(project.path);
     final live = await harness.start(
       SessionSpec(
-        workingDir: project.path,
+        workingDir: workingDir,
         model: model,
         mode: mode,
         llmBaseUrl: demo ? '' : ref.read(appConfigProvider).apiBaseUrl.resolve('v1').toString(),
@@ -211,16 +216,32 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     final info = CodeSessionInfo(
       id: id,
       projectId: project.id,
-      title: titleFor(prompt.isEmpty ? files.first.name : prompt),
+      title: title,
       conversationId: live.id,
       model: model,
       mode: mode,
-      workingDir: project.path,
+      workingDir: workingDir,
       createdAt: DateTime.now(),
+      branch: worktree?.branch ?? '',
+      worktree: worktree,
     );
     state = [info, ...state];
     _save();
     return info;
+  }
+
+  /// A worktree for the session when [project] is a git repository.
+  static Future<SessionWorktree?> _worktreeFor(CodeProject project, String title, String id) async {
+    final root = await GitService.repoRoot(project.path);
+    if (root == null) return null;
+    final data = await GitService.dataDir();
+    final repoName = root.split('/').last;
+    return GitService.createWorktree(
+      repoRoot: root,
+      slug: sessionSlug(title, id),
+      worktreesDir: '$data/worktrees/$repoName-${project.id.substring(project.id.length - 6)}',
+      hooksDir: '$data/git-hooks',
+    );
   }
 
   void update(CodeSessionInfo info) {
@@ -332,14 +353,19 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     }
     // OpenHands reports `stats` after every model call; the cost lives in our ledger.
     if (event is StateChange) ref.read(codeUsageProvider(sessionId).notifier).refreshSoon();
+    final wasRunning = state.transcript.running;
     _builder.add(event);
     final transcript = _builder.snapshot;
     state = state.copyWith(transcript: transcript);
+    // A finished turn may have changed files.
+    if (wasRunning && !transcript.running && ref.exists(codeGitProvider(sessionId))) {
+      unawaited(ref.read(codeGitProvider(sessionId).notifier).refresh());
+    }
     _autoRespond(transcript);
     if (!transcript.running && transcript.pending.isEmpty && state.queued.isNotEmpty) {
       final [next, ...rest] = state.queued;
       state = state.copyWith(queued: rest);
-      unawaited(_session?.send(_noted(next.text), images: next.images));
+      unawaited(_checkpoint().then((_) => _session?.send(_noted(next.text), images: next.images)));
     }
   }
 
@@ -355,6 +381,19 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     } else if (t.pending.every(mode.autoApproves)) {
       _answered = key;
       unawaited(_session?.respond(accept: true));
+    }
+  }
+
+  /// Snapshots the worktree before the next user turn, so "Restore files"
+  /// can bring it back. Turn 1 needs none: it's the base commit.
+  Future<void> _checkpoint() async {
+    final w = ref.read(codeSessionsProvider.notifier).byId(sessionId)?.worktree;
+    final turn = state.transcript.items.whereType<UserTurn>().length + 1;
+    if (w == null || turn < 2) return;
+    try {
+      await GitService.checkpoint(w, turn);
+    } on Object {
+      // A missing checkpoint only disables rewinding to this turn.
     }
   }
 
@@ -382,6 +421,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
       state = state.copyWith(queued: [...state.queued, out]);
       return;
     }
+    await _checkpoint();
     await _session?.send(_noted(out.text), images: out.images);
   }
 
@@ -390,6 +430,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     final out = await _outgoing(text, files);
     if (out == null) return;
     await _session?.interrupt();
+    await _checkpoint();
     await _session?.send(_noted(out.text), images: out.images);
   }
 
@@ -503,3 +544,87 @@ final class CodeUsage extends AsyncNotifier<UsageTotals> {
     });
   }
 }
+
+/// A session's changes since its base commit, for the header and Diff pane.
+@immutable
+final class GitSnapshot {
+  const GitSnapshot({this.files = const [], this.ahead = 0, this.behind = 0});
+
+  final List<FileDiff> files;
+
+  /// Commits on the session branch / on the base branch since it forked.
+  final int ahead;
+  final int behind;
+
+  int get added => files.fold(0, (n, f) => n + f.hunks.fold(0, (m, h) => m + h.added));
+  int get removed => files.fold(0, (n, f) => n + f.hunks.fold(0, (m, h) => m + h.removed));
+}
+
+final codeGitProvider = AsyncNotifierProvider.family<CodeGit, GitSnapshot, String>(CodeGit.new);
+
+/// The session's worktree: its diff, and what the user can do with it.
+final class CodeGit extends AsyncNotifier<GitSnapshot> {
+  CodeGit(this.sessionId);
+  final String sessionId;
+
+  CodeSessionInfo? get _info => ref.read(codeSessionsProvider.notifier).byId(sessionId);
+  SessionWorktree get _w => _info?.worktree ?? (throw const GitError('This session has no git worktree.'));
+
+  @override
+  Future<GitSnapshot> build() => _load();
+
+  Future<GitSnapshot> _load() async {
+    final w = _info?.worktree;
+    if (w == null) return const GitSnapshot();
+    final (files, counts) = await (GitService.diff(w), GitService.aheadBehind(w)).wait;
+    return GitSnapshot(files: files, ahead: counts.ahead, behind: counts.behind);
+  }
+
+  Future<void> refresh() async {
+    final next = await AsyncValue.guard(_load);
+    if (ref.mounted) state = next;
+  }
+
+  Future<void> revertHunk(FileDiff file, int hunk) async {
+    await GitService.revertHunk(_w, file, hunk);
+    await refresh();
+  }
+
+  /// Commits everything on the session branch; false when nothing changed.
+  Future<bool> commit(String message) async {
+    final done = await GitService.commitAll(_w, message);
+    await refresh();
+    return done;
+  }
+
+  /// Squashes the session onto its base branch in the main checkout.
+  Future<String> squashMerge(String message) async {
+    final sha = await GitService.squashMerge(_w, message);
+    await refresh();
+    return sha;
+  }
+
+  Future<void> push() => GitService.push(_w);
+
+  Future<String> createPr({required String title, required String body}) async {
+    await GitService.push(_w);
+    return GitService.createPr(_w, title: title, body: body);
+  }
+
+  /// Puts the files back to how they were before user turn [turn] (1-based).
+  Future<void> rewind(int turn) async {
+    final w = _w;
+    await GitService.restoreCheckpoint(w, turn <= 1 ? w.baseCommit : checkpointRef(w, turn));
+    await refresh();
+  }
+
+  /// Removes the session, its worktree, branch and checkpoints.
+  Future<void> discard() async {
+    final w = _w;
+    final data = await GitService.dataDir();
+    ref.read(codeSessionsProvider.notifier).remove(sessionId);
+    await GitService.removeWorktree(w, hooksDir: '$data/git-hooks');
+  }
+}
+
+String checkpointRef(SessionWorktree w, int turn) => 'refs/everyai/${w.slug}/turn-$turn';

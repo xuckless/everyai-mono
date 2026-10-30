@@ -17,8 +17,11 @@ const _mono = TextStyle(fontFamily: 'SourceCodePro', fontSize: 12.5, height: 1.4
 
 /// The user's message, right-aligned like chat.
 class UserTurnView extends StatelessWidget {
-  const UserTurnView({super.key, required this.text, this.mode});
+  const UserTurnView({super.key, required this.text, this.mode, this.onRewind});
   final String text;
+
+  /// Restores the files to before this message.
+  final VoidCallback? onRewind;
 
   /// The mode the message was sent in, when it told the agent about one.
   final AgentMode? mode;
@@ -63,6 +66,17 @@ class UserTurnView extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
                     child: IntrinsicWidth(child: ChatMarkdown(body, textColor: theme.onUserBubble)),
                   ),
+                ),
+              ),
+            ),
+          if (onRewind case final rewind?)
+            GestureDetector(
+              onTap: rewind,
+              child: MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 4, right: 4),
+                  child: Text('Restore files to here', style: TextStyle(color: theme.textMuted, fontSize: 11.5)),
                 ),
               ),
             ),

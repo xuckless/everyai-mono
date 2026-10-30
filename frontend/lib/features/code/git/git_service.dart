@@ -14,6 +14,9 @@ final class GitError implements Exception {
 /// Session worktrees and what the app does with them, on top of the `git`
 /// and `gh` command-line tools. See `git_service_io.dart`.
 abstract final class GitService {
+  /// The app's data folder (App Support), where worktrees and hooks live.
+  static Future<String> dataDir() => impl.dataDir();
+
   /// The top of the repository [dir] is in, or null outside one.
   static Future<String?> repoRoot(String dir) => impl.repoRoot(dir);
 

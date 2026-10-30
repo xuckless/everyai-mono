@@ -91,6 +91,17 @@ final class FileDiff {
   final List<DiffHunk> hunks;
   final bool binary;
 
+  ChangeKind get kind => header.any((l) => l.startsWith('new file mode'))
+      ? ChangeKind.added
+      : header.any((l) => l.startsWith('deleted file mode'))
+      ? ChangeKind.deleted
+      : header.any((l) => l.startsWith('rename from'))
+      ? ChangeKind.renamed
+      : ChangeKind.modified;
+
+  int get added => hunks.fold(0, (n, h) => n + h.added);
+  int get removed => hunks.fold(0, (n, h) => n + h.removed);
+
   /// A patch with only hunk [i], for `git apply`.
   String patchFor(int i) => '${[...header, hunks[i].header, ...hunks[i].lines].join('\n')}\n';
 }

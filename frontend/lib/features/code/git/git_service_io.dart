@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:path_provider/path_provider.dart';
+
 import 'git_models.dart';
 import 'git_service.dart' show GitError;
 
@@ -15,6 +17,8 @@ Future<ProcessResult> _git(String dir, List<String> args, {Map<String, String>? 
 
 Future<String> _out(String dir, List<String> args, {Map<String, String>? env}) async =>
     '${(await _git(dir, args, env: env)).stdout}'.trim();
+
+Future<String> dataDir() async => (await getApplicationSupportDirectory()).path;
 
 Future<String?> repoRoot(String dir) async {
   try {
