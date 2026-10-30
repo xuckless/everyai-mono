@@ -146,9 +146,13 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                   children: [
                     const BrandGlyph('code', active: true, size: 26),
                     const SizedBox(width: 12),
-                    Text(
-                      project == null ? 'Code with an agent' : 'What should we build?',
-                      style: theme.type.largeTitle.regular.copyWith(color: theme.text, letterSpacing: -0.5),
+                    Flexible(
+                      child: Text(
+                        project == null ? 'Code with an agent' : 'What should we build?',
+                        maxLines: 2,
+                        textAlign: TextAlign.center,
+                        style: theme.type.largeTitle.regular.copyWith(color: theme.text, letterSpacing: -0.5),
+                      ),
                     ),
                   ],
                 ),

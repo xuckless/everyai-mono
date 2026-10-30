@@ -61,6 +61,7 @@ class SubagentCard extends ConsumerWidget {
               ),
               Text(
                 [status, if (steps > 0) '$steps ${steps == 1 ? 'step' : 'steps'}'].join(' · '),
+                maxLines: 1,
                 style: theme.type.caption.tint(
                   childState?.status == SessionStatus.needsInput && report == null ? theme.warning : theme.textMuted,
                 ),
@@ -152,7 +153,14 @@ class _FoldState extends State<_Fold> {
                     child: AdaptiveIcon(EveryIcon.chevronDown, size: 12, color: theme.textMuted),
                   ),
                   const SizedBox(width: 4),
-                  Text(widget.title, style: theme.type.callout.tint(theme.textMuted)),
+                  Flexible(
+                    child: Text(
+                      widget.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.type.callout.tint(theme.textMuted),
+                    ),
+                  ),
                 ],
               ),
             ),

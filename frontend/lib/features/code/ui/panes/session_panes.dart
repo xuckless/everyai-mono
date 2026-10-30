@@ -116,8 +116,17 @@ class _PaneFrame extends ConsumerWidget {
             padding: const EdgeInsets.fromLTRB(8, 6, 6, 0),
             child: Row(
               children: [
-                for (final p in panes) _Tab(label: p.label, selected: p == open, onTap: () => panesNotifier.show(p)),
-                const Spacer(),
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        for (final p in panes)
+                          _Tab(label: p.label, selected: p == open, onTap: () => panesNotifier.show(p)),
+                      ],
+                    ),
+                  ),
+                ),
                 AdaptiveIconButton(icon: EveryIcon.close, tooltip: 'Close', size: 16, onPressed: panesNotifier.close),
               ],
             ),

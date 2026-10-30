@@ -244,13 +244,17 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
                       onPressed: () async => _add(await pickAttachmentFiles()),
                     ),
                     ModeMenu(mode: widget.mode, onChanged: widget.onModeChanged),
-                    // Capped rather than flexible, so the free space all goes to the model label.
+                    // Both sides shrink on narrow composers (project first, it is
+                    // capped); the model sits at the right, next to send.
                     if (widget.leading != null) ...[
                       const SizedBox(width: 4),
-                      ConstrainedBox(constraints: const BoxConstraints(maxWidth: 240), child: widget.leading),
+                      Flexible(
+                        flex: 2,
+                        child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 240), child: widget.leading),
+                      ),
                     ],
-                    // The model sits at the right, next to send.
                     Expanded(
+                      flex: 3,
                       child: Align(alignment: Alignment.centerRight, child: widget.trailing ?? const SizedBox()),
                     ),
                     ?widget.meter,

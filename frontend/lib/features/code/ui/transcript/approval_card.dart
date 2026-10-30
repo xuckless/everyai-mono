@@ -248,9 +248,11 @@ class _Preview extends StatelessWidget {
                 children: [
                   AdaptiveIcon(EveryIcon.close, size: 12, color: risk == 'HIGH' ? theme.danger : theme.textMuted),
                   const SizedBox(width: 4),
-                  Text(
-                    'The agent rates this ${risk.toLowerCase()} risk',
-                    style: theme.type.caption.tint(risk == 'HIGH' ? theme.danger : theme.textMuted),
+                  Flexible(
+                    child: Text(
+                      'The agent rates this ${risk.toLowerCase()} risk',
+                      style: theme.type.caption.tint(risk == 'HIGH' ? theme.danger : theme.textMuted),
+                    ),
                   ),
                 ],
               ),
