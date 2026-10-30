@@ -3,7 +3,9 @@
 //
 //   AGENT_SERVER_URL=http://127.0.0.1:18731 AGENT_SERVER_KEY=… GATEWAY_KEY=sk-eai-… \
 //   EVAL_DIR=/path/to/repo EVAL_MODE=plan EVAL_MODEL=anthropic/claude-haiku-5.5 \
-//   EVAL_PROMPT='…' flutter test tool/agent_eval/scenario_test.dart
+//   EVAL_PROMPT='…' [EVAL_EFFORT=medium EVAL_MAX_USD=5 EVAL_TAG=… EVAL_MINUTES=10] \
+//   flutter test tool/agent_eval/scenario_test.dart
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:every_ai/features/code/domain/agent_mode.dart';
@@ -19,21 +21,38 @@ void main() {
   test('scenario', () async {
     final mode = AgentMode.values.byName(env['EVAL_MODE'] ?? 'plan');
     final prompt = await agentPromptFor(env['EVAL_DIR']!);
+    final api = env['API_BASE_URL'] ?? 'http://localhost:8080';
+    final tag = env['EVAL_TAG'] ?? 'eval-${DateTime.now().millisecondsSinceEpoch}';
+    Future<double> spent() async {
+      final client = HttpClient();
+      try {
+        final req = await client.getUrl(Uri.parse('$api/v1/usage/session/$tag'));
+        // Gateway keys can't read usage; DEV_AUTH serves it to anonymous callers.
+        if (env['USER_TOKEN'] case final t?) req.headers.set('Authorization', 'Bearer $t');
+        final body = await (await req.close()).transform(utf8.decoder).join();
+        return ((jsonDecode(body) as Map<String, Object?>)['charged_micros'] as num? ?? 0) / 1e6;
+      } finally {
+        client.close();
+      }
+    }
+
     final run = EvalRun(
       OpenHandsHarness(baseUrl: Uri.parse('${env['AGENT_SERVER_URL']}/'), sessionApiKey: env['AGENT_SERVER_KEY']!),
       SessionSpec(
         workingDir: env['EVAL_DIR']!,
         model: env['EVAL_MODEL'] ?? 'anthropic/claude-haiku-5.5',
         mode: mode,
-        llmBaseUrl: '${env['API_BASE_URL'] ?? 'http://localhost:8080'}/v1',
+        llmBaseUrl: '$api/v1',
         llmApiKey: env['GATEWAY_KEY']!,
-        sessionTag: 'eval-${DateTime.now().millisecondsSinceEpoch}',
+        sessionTag: tag,
         initialMessage: modeNote(mode, env['EVAL_PROMPT']!),
         maxInputTokens: 200000,
         persona: prompt.persona,
         promptSuffix: prompt.suffix,
         effort: env['EVAL_EFFORT'],
       ),
+      spent: spent,
+      maxUsd: double.tryParse(env['EVAL_MAX_USD'] ?? ''),
     );
     try {
       await run.run(timeout: Duration(minutes: int.tryParse(env['EVAL_MINUTES'] ?? '') ?? 10));

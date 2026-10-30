@@ -10,11 +10,19 @@ import 'package:every_ai/features/code/harness/harness.dart';
 /// standing in for the user: it approves what the mode would ask about,
 /// answers question cards with their first options and approves plans.
 final class EvalRun {
-  EvalRun(this.harness, this.spec) : mode = spec.mode;
+  EvalRun(this.harness, this.spec, {this.spent, this.maxUsd}) : mode = spec.mode;
 
   final Harness harness;
   final SessionSpec spec;
   AgentMode mode;
+
+  /// What the session has cost so far, in dollars; checked about every 20 s.
+  final Future<double> Function()? spent;
+
+  /// Interrupts the agent once [spent] passes this.
+  final double? maxUsd;
+  double cost = 0;
+  bool overBudget = false;
 
   final builder = TranscriptBuilder();
   late HarnessSession session;
@@ -34,10 +42,13 @@ final class EvalRun {
   Future<Transcript> run({Duration timeout = const Duration(minutes: 10)}) async {
     session = await harness.start(spec);
     final sub = session.events.listen(_onEvent);
+    final meter = spent == null ? null : Timer.periodic(const Duration(seconds: 20), (_) => _checkBudget());
     try {
       return await _done.future.timeout(timeout);
     } finally {
+      meter?.cancel();
       await sub.cancel();
+      if (spent != null) cost = await spent!().catchError((_) => cost);
     }
   }
 
@@ -83,6 +94,18 @@ final class EvalRun {
     if (t.status == ExecutionStatus.error || t.status == ExecutionStatus.stuck) {
       if (!_done.isCompleted) _done.complete(t);
     }
+  }
+
+  Future<void> _checkBudget() async {
+    try {
+      cost = await spent!();
+    } on Object {
+      return;
+    }
+    if (maxUsd == null || cost <= maxUsd! || overBudget) return;
+    overBudget = true;
+    await session.interrupt();
+    if (!_done.isCompleted) _done.complete(snapshot);
   }
 
   void _send(String text) {
@@ -144,7 +167,8 @@ final class EvalRun {
     }
     out.writeln(
       '-- status ${t.status.name}; user approvals $userApprovals, auto $autoApprovals, refused $refusals, '
-      'answered $answered cards, approved $plansApproved plans',
+      'answered $answered cards, approved $plansApproved plans'
+      '${spent == null ? '' : '; cost \$${cost.toStringAsFixed(3)}${overBudget ? ' (over budget, interrupted)' : ''}'}',
     );
     return out.toString();
   }
