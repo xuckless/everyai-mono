@@ -17,6 +17,9 @@ Sidecar createSidecar() => _url.isNotEmpty ? _External() : ProcessSidecar();
 /// A server someone else started (`AGENT_SERVER_URL`).
 final class _External implements Sidecar {
   @override
+  bool get started => true;
+
+  @override
   Future<AgentServerEndpoint> endpoint() async =>
       AgentServerEndpoint(Uri.parse(_url.endsWith('/') ? _url : '$_url/'), _key);
 
@@ -55,6 +58,9 @@ final class ProcessSidecar implements Sidecar {
   /// The running server's process id, if any (tests).
   @visibleForTesting
   int? get pid => _process?.pid;
+
+  @override
+  bool get started => _ready != null;
 
   @override
   Future<AgentServerEndpoint> endpoint() {

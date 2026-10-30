@@ -74,13 +74,6 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
     return project;
   }
 
-  @override
-  void initState() {
-    super.initState();
-    // Warm the agent server up while the user types; errors surface on start.
-    if (Host.isDesktop) ref.read(sidecarProvider).endpoint().ignore();
-  }
-
   Future<void> _addSample() async {
     try {
       final path = await createSampleProject();
@@ -220,9 +213,6 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                           : isRemotePath(project.path)
                           ? CodeHarnessKind.openHands
                           : ref.watch(codeHarnessProvider),
-                      onHarness: isDemoPath(project.path) || isRemotePath(project.path)
-                          ? null
-                          : ref.read(codeHarnessProvider.notifier).choose,
                       onChanged: ref.read(codeAgentProvider.notifier).chooseModel,
                       tier: ref.watch(codeSettingsProvider.select((s) => s.tier)),
                       onTier: ref.read(codeSettingsProvider.notifier).setTier,

@@ -6,6 +6,7 @@ import 'package:every_ai/core/db/app_database.dart';
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/core/providers.dart';
 import 'package:every_ai/features/code/code_providers.dart';
+import 'package:every_ai/features/code/domain/agent_menu.dart' show CodeHarnessKind;
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
 import 'package:every_ai/features/code/domain/questions.dart';
@@ -266,6 +267,8 @@ void main() {
           databaseProvider.overrideWithValue(db),
           preferencesProvider.overrideWithValue(prefs),
           harnessProvider.overrideWithValue(FakeHarness(step: Duration.zero)),
+          // These cover fresh child conversations (OpenHands); EveryAI forks are tested elsewhere.
+          codeHarnessProvider.overrideWith(_OpenHandsChoice.new),
           modelCatalogProvider.overrideWith(_FixedCatalog.new),
         ],
       );
@@ -389,4 +392,9 @@ void main() {
     expect(notice.detail, contains('lib/a.dart:4'));
     expect(forkingTaskSpec().toString(), contains('run_in_background'));
   });
+}
+
+final class _OpenHandsChoice extends CodeHarnessChoice {
+  @override
+  CodeHarnessKind build() => CodeHarnessKind.openHands;
 }

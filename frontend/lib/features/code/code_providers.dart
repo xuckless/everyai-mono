@@ -154,22 +154,17 @@ final everyaiAgentServerProvider = FutureProvider<({Uri baseUrl, String key})>((
   );
 });
 
-/// The harness new Code sessions start on (the agent menu's Harness page).
+/// The harness new Code sessions start on: EveryAI. Switching harnesses
+/// (OpenHands, and later Claude Code, Codex, opencode) is stubbed out of
+/// the menu; `--dart-define=CODE_HARNESS=openHands` still picks one for
+/// development. Sessions keep the harness they started on.
 final codeHarnessProvider = NotifierProvider<CodeHarnessChoice, CodeHarnessKind>(CodeHarnessChoice.new);
 
-final class CodeHarnessChoice extends Notifier<CodeHarnessKind> {
-  static const _key = 'code.harness';
-
+class CodeHarnessChoice extends Notifier<CodeHarnessKind> {
   @override
   CodeHarnessKind build() {
     const forced = String.fromEnvironment('CODE_HARNESS');
-    return CodeHarnessKind.parse(forced.isNotEmpty ? forced : ref.read(preferencesProvider)[_key]);
-  }
-
-  void choose(CodeHarnessKind kind) {
-    if (!kind.available || kind == CodeHarnessKind.demo) return;
-    ref.read(preferencesProvider)[_key] = kind.name;
-    state = kind;
+    return forced.isNotEmpty ? CodeHarnessKind.parse(forced) : CodeHarnessKind.everyai;
   }
 }
 
@@ -2164,10 +2159,12 @@ final class CodeStatuses extends Notifier<Map<String, SessionStatus>> {
           for (final s in sessions)
             if (s.harness == everyai) s.conversationId,
         ]),
-        ...await ref.read(_sidecarHarnessProvider).statuses([
-          for (final s in sessions)
-            if (s.harness != everyai) s.conversationId,
-        ]),
+        // Older OpenHands sessions only when that server is up already: polling doesn't start it.
+        if (ref.read(sidecarProvider).started)
+          ...await ref.read(_sidecarHarnessProvider).statuses([
+            for (final s in sessions)
+              if (s.harness != everyai) s.conversationId,
+          ]),
       };
       if (!ref.mounted) return;
       final before = state;
@@ -2208,7 +2205,18 @@ Future<Map<String, SessionStatus>> sessionStatusesNow(Ref ref, List<CodeSessionI
   }
   if (ask.isEmpty) return out;
   try {
-    final byConversation = await ref.read(_sidecarHarnessProvider).statuses([for (final s in ask) s.conversationId]);
+    final everyai = CodeHarnessKind.everyai.name;
+    final byConversation = {
+      ...await ref.read(everyaiHarnessProvider).statuses([
+        for (final s in ask)
+          if (s.harness == everyai) s.conversationId,
+      ]),
+      if (ref.read(sidecarProvider).started)
+        ...await ref.read(_sidecarHarnessProvider).statuses([
+          for (final s in ask)
+            if (s.harness != everyai) s.conversationId,
+        ]),
+    };
     for (final s in ask) {
       if (byConversation[s.conversationId] case final status?) out[s.id] = CodeStatuses._sessionStatus(status);
     }

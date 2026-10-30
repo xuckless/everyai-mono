@@ -20,6 +20,9 @@ abstract interface class Sidecar {
   /// Starts the server if it isn't running and resolves once it is ready.
   Future<AgentServerEndpoint> endpoint();
 
+  /// Started (or starting) already: asking it something won't start it.
+  bool get started;
+
   /// Fires when a server that crashed is running again (new port and key).
   /// Sessions reconnect at once and resume a run the crash cut off.
   Stream<void> get restarts;

@@ -112,8 +112,9 @@ void main() {
         ),
       ),
     );
-    expect(find.text('Harness'), findsOneWidget);
-    expect(find.text('OpenHands'), findsOneWidget);
+    // Harness switching is stubbed out of the menu.
+    expect(find.text('Harness'), findsNothing);
+    expect(find.text('Harness mode'), findsOneWidget);
     expect(find.text('Opus 5.5 · Everyday · Orchestrator'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('agent-menu.model')));
@@ -134,16 +135,7 @@ void main() {
     await tester.pump();
     expect(picks.last, 'openai/gpt-6.1-sol@');
 
-    await tester.tap(find.byKey(const ValueKey('agent-menu.harness')));
-    await tester.pump();
-    expect(find.text('Claude Code'), findsOneWidget);
-    expect(find.text('Scripted demo'), findsNothing);
-    await tester.tap(find.text('Codex CLI'));
-    await tester.pump();
-    // Placeholders do nothing.
-    expect(find.text('Codex CLI'), findsOneWidget);
-    await tester.tap(find.byKey(const ValueKey('agent-menu.back')));
-    await tester.pump();
+    expect(find.byKey(const ValueKey('agent-menu.harness')), findsNothing);
     expect(find.text('Model'), findsOneWidget);
   });
 

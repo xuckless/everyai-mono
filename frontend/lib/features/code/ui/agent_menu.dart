@@ -14,7 +14,7 @@ import '../settings/agent_prompt.dart' show HarnessMode, HarnessTier;
 import '../settings/code_settings.dart' show budgetPresets;
 import '../ultra/ultra_access.dart' show ultraAccessProvider;
 
-/// The agent menu: Harness, Harness mode, the tier bar (Efficient → Ultra),
+/// The agent menu: Harness mode, the tier bar (Efficient → Ultra),
 /// Model (the user's own models that can call tools) and Effort, in one
 /// popover on every design language (never a bottom sheet). [onChanged] gets
 /// the new model and effort ('' is the model's default); an open session
@@ -26,7 +26,6 @@ class AgentMenu extends ConsumerWidget {
     required this.effort,
     required this.onChanged,
     this.harness = CodeHarnessKind.openHands,
-    this.onHarness,
     this.bordered = false,
     this.tier = HarnessTier.efficient,
     this.onTier,
@@ -54,9 +53,6 @@ class AgentMenu extends ConsumerWidget {
   final double? budget;
   final ValueChanged<double?>? onBudget;
 
-  /// Picks the harness (before a session starts); null: fixed for the session.
-  final ValueChanged<CodeHarnessKind>? onHarness;
-
   /// A pill outline, for the page header.
   final bool bordered;
 
@@ -81,7 +77,6 @@ class AgentMenu extends ConsumerWidget {
         model: model,
         effort: effort,
         harness: harness,
-        onHarness: onHarness,
         reasons: specs[ModelId(model)]?.reasoning ?? true,
         onChanged: onChanged,
         close: close,
@@ -125,7 +120,7 @@ class AgentMenu extends ConsumerWidget {
   }
 }
 
-enum _Page { root, harness, model, effort, budget }
+enum _Page { root, model, effort, budget }
 
 /// The popover's content: a root list whose rows open their submenu in place,
 /// with a back row to return.
@@ -138,7 +133,6 @@ class AgentMenuPanel extends StatefulWidget {
     required this.harness,
     required this.onChanged,
     required this.close,
-    this.onHarness,
     this.reasons = true,
     this.tier = HarnessTier.efficient,
     this.onTier,
@@ -163,7 +157,6 @@ class AgentMenuPanel extends StatefulWidget {
   final String model;
   final String effort;
   final CodeHarnessKind harness;
-  final ValueChanged<CodeHarnessKind>? onHarness;
 
   /// Whether the current model takes an effort at all.
   final bool reasons;
@@ -223,13 +216,6 @@ class _AgentMenuPanelState extends State<AgentMenuPanel> {
     final rows = switch (_page) {
       _Page.root => [
         const PopoverHeader('Agent'),
-        PopoverRow(
-          key: const ValueKey('agent-menu.harness'),
-          title: 'Harness',
-          subtitle: widget.harness.label,
-          trailing: more,
-          onTap: () => setState(() => _page = _Page.harness),
-        ),
         PopoverRow(
           key: const ValueKey('agent-menu.harness-mode'),
           title: 'Harness mode',
@@ -299,28 +285,6 @@ class _AgentMenuPanelState extends State<AgentMenuPanel> {
               });
               widget.onBudget!(usd);
             },
-          ),
-      ],
-      _Page.harness => [
-        _Back('Harness', onTap: () => setState(() => _page = _Page.root)),
-        for (final h in CodeHarnessKind.menuFor(widget.harness))
-          PopoverRow(
-            title: h.label,
-            subtitle: h.blurb,
-            selected: h == widget.harness,
-            trailing: check(h == widget.harness),
-            // A session keeps the harness it started on; before one starts
-            // any available harness can be picked.
-            onTap: !h.available
-                ? null
-                : h == widget.harness
-                ? () => setState(() => _page = _Page.root)
-                : widget.onHarness == null
-                ? null
-                : () {
-                    widget.onHarness!(h);
-                    setState(() => _page = _Page.root);
-                  },
           ),
       ],
       _Page.model => [
