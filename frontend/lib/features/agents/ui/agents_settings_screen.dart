@@ -328,7 +328,6 @@ class _AgentTile extends ConsumerWidget {
 
   Future<void> _review(BuildContext context, AgentLibrarySettingsNotifier ctl) async {
     final a = agent;
-    final body = a.prompt.length > 1500 ? '${a.prompt.substring(0, 1500)}…' : a.prompt;
     final traits = [
       if (a.model != null) 'Model: ${a.model}',
       if (a.effort != null) 'Effort: ${a.effort}',
@@ -340,7 +339,9 @@ class _AgentTile extends ConsumerWidget {
       title: 'Trust ${a.name}?',
       message:
           'This agent came with the project, in ${a.path}. Subagents started with it follow its instructions.\n\n'
-          '${a.description}\n${traits.isEmpty ? '' : '${traits.join('\n')}\n'}\n$body',
+          '${a.description}${traits.isEmpty ? '' : '\n${traits.join('\n')}'}',
+      // The whole prompt: trust covers all of it.
+      detail: a.prompt,
       confirmLabel: 'Trust and turn on',
     );
     if (ok) ctl.trust(a);

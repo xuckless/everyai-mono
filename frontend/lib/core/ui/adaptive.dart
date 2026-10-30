@@ -684,20 +684,34 @@ class _CupertinoMenuButton extends StatelessWidget {
 }
 
 /// Native confirmation dialog. Resolves to true when the user confirms.
+/// `detail` is shown in full below the message, in a scrolling box (for text
+/// the user is asked to approve, which must never be cut short).
 Future<bool> showAdaptiveConfirm(
   BuildContext context, {
   required String title,
   required String message,
   required String confirmLabel,
   bool destructive = false,
+  String? detail,
 }) async {
   final theme = EveryTheme.of(context);
+  Widget content({TextAlign align = TextAlign.start}) => detail == null
+      ? Text(message, textAlign: align)
+      : Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(message, textAlign: align),
+            const SizedBox(height: 10),
+            ConfirmDetail(detail),
+          ],
+        );
   final Future<bool?> result = switch (theme.design) {
     DesignLanguage.cupertino => c.showCupertinoDialog<bool>(
       context: context,
       builder: (ctx) => c.CupertinoAlertDialog(
         title: Text(title),
-        content: Text(message),
+        content: content(),
         actions: [
           c.CupertinoDialogAction(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
           c.CupertinoDialogAction(
@@ -714,7 +728,7 @@ Future<bool> showAdaptiveConfirm(
       builder: (ctx) => mac.MacosAlertDialog(
         appIcon: AdaptiveIcon(destructive ? EveryIcon.delete : EveryIcon.spark, size: 40, color: theme.accent),
         title: Text(title),
-        message: Text(message, textAlign: TextAlign.center),
+        message: content(align: TextAlign.center),
         primaryButton: mac.PushButton(
           controlSize: mac.ControlSize.large,
           color: destructive ? theme.danger : null,
@@ -733,7 +747,7 @@ Future<bool> showAdaptiveConfirm(
       context: context,
       builder: (ctx) => f.ContentDialog(
         title: Text(title),
-        content: Text(message),
+        content: content(),
         actions: [
           f.FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: Text(confirmLabel)),
           f.Button(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
@@ -744,7 +758,7 @@ Future<bool> showAdaptiveConfirm(
       context: context,
       builder: (ctx) => m.AlertDialog(
         title: Text(title),
-        content: Text(message),
+        content: content(),
         actions: [
           m.TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
           m.FilledButton(
@@ -757,6 +771,36 @@ Future<bool> showAdaptiveConfirm(
     ),
   };
   return await result ?? false;
+}
+
+/// The full text a confirmation asks about, in a scrolling box.
+class ConfirmDetail extends StatelessWidget {
+  const ConfirmDetail(this.text, {super.key});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxHeight: 280),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: theme.codeBackground,
+          border: Border.all(color: theme.border),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(10),
+          child: Text(
+            text,
+            textAlign: TextAlign.start,
+            style: TextStyle(fontSize: 12.5, color: theme.text),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// Single-field text prompt (rename and similar). Returns null when cancelled.

@@ -68,13 +68,14 @@ final class CommandTrustNotifier extends Notifier<CommandTrust> {
 
   /// Shows the command and trusts it on a yes. Returns whether it is trusted now.
   Future<bool> review(BuildContext context, CustomCommand c) async {
-    final body = c.body.length > 1500 ? '${c.body.substring(0, 1500)}…' : c.body;
+    // The whole body, scrollable: trust is bound to the digest of all of it.
     final ok = await showAdaptiveConfirm(
       context,
       title: 'Trust /${c.name}?',
       message:
           'This command came with the project, in ${c.path ?? c.projectDir}. Running it sends this text to the '
-          'agent as your message${c.mode != null ? ' and switches to ${c.mode} mode' : ''}.\n\n$body',
+          'agent as your message${c.mode != null ? ' and switches to ${c.mode} mode' : ''}.',
+      detail: c.body,
       confirmLabel: 'Trust and turn on',
     );
     if (ok) set(c, true);

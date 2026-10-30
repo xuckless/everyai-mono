@@ -265,14 +265,15 @@ class _SkillTile extends ConsumerWidget {
 
   Future<void> _review(BuildContext context, SkillSettingsNotifier ctl) async {
     final m = skill.manifest!;
-    final body = m.body.length > 1200 ? '${m.body.substring(0, 1200)}…' : m.body;
     final ok = await showAdaptiveConfirm(
       context,
       title: 'Trust ${m.name}?',
       message:
           'This skill came with the project, in ${skill.dir}. The agent will follow its instructions'
           '${skill.report.hasScripts ? ' and may run its scripts (each command still asks in Ask mode)' : ''}.\n\n'
-          '${m.description}\n\n$body',
+          '${m.description}',
+      // The whole body: trust covers all of it.
+      detail: m.body,
       confirmLabel: 'Trust and turn on',
     );
     if (ok) ctl.trust(skill);
