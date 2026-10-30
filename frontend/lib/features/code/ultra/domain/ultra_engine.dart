@@ -251,6 +251,10 @@ final class UltraEngine {
   /// Caps checked on a timer and after every child: money, time, the wallet.
   void _check() {
     if (_halt != null) return;
+    // The progress tree's clock and running costs, without a disk write.
+    journal.elapsed = elapsed;
+    _stamp();
+    onChange?.call(journal);
     if (spentMicros >= journal.budgetMicros) {
       _haltWith(UltraRunStatus.capped, 'The run reached its \$${(journal.budgetMicros / 1e6).toStringAsFixed(2)} cap.');
     } else if (elapsed >= limits.wallTime) {
@@ -593,7 +597,9 @@ final class UltraEngine {
       if (child != null) {
         _active.remove(child.id);
         final cost = child.costMicros;
-        rec.costMicros += cost;
+        rec
+          ..costMicros += cost
+          ..liveCostMicros = 0;
         _finishedChildren++;
         _finishedCost += cost;
       }
@@ -619,8 +625,30 @@ final class UltraEngine {
 
   void _save() {
     journal.elapsed = _halt?.status == UltraRunStatus.failed ? journal.elapsed : elapsed;
+    _stamp();
     _saving = _saving.then((_) => store.save(journal)).catchError((Object _) {});
     onChange?.call(journal);
+  }
+
+  /// Start and end times, and what running children have cost so far.
+  void _stamp() {
+    final now = _clock();
+    for (final s in journal.steps.values) {
+      switch (s.status) {
+        case StepStatus.running:
+          s
+            ..startedAt ??= now
+            ..endedAt = null
+            ..liveCostMicros = s.childIds.fold(0, (n, id) => n + (_active[id]?.costMicros ?? 0));
+        case StepStatus.pending:
+          s
+            ..endedAt = null
+            ..liveCostMicros = 0;
+        default:
+          if (s.startedAt != null) s.endedAt ??= now;
+          s.liveCostMicros = 0;
+      }
+    }
   }
 }
 

@@ -760,6 +760,53 @@ void main() {
     });
   });
 
+  test('stamps when steps start and end, and shows running costs live', () async {
+    final runner = FakeRunner(_default, manual: true);
+    final store = MemoryStore();
+    var now = DateTime(2026, 10, 30, 9);
+    final plan = _plan({
+      'goal': 'One step',
+      'phases': [
+        {
+          'id': 'a',
+          'steps': [
+            {'id': 's', 'prompt': 'Do it'},
+          ],
+        },
+      ],
+    });
+    final seen = <int>[];
+    final engine = UltraEngine(
+      journal: _journal(plan),
+      runner: runner,
+      wallet: FakeWallet(),
+      workspace: FakeWorkspace(),
+      store: store,
+      clock: () => now,
+      checkEvery: const Duration(milliseconds: 1),
+      onChange: (j) => seen.add(j.steps['a.s']?.shownCostMicros ?? -1),
+    );
+    final done = engine.run();
+    await pumpUntil(() => runner.started.isNotEmpty);
+    final rec = engine.journal.steps['a.s']!;
+    expect(rec.startedAt, DateTime(2026, 10, 30, 9));
+    expect(rec.endedAt, isNull);
+    runner.started.single.costMicros = 700;
+    now = now.add(const Duration(minutes: 3));
+    await pumpUntil(() => seen.contains(700));
+    expect(rec.elapsedAt(now), const Duration(minutes: 3));
+    runner.started.single.answer(ok('done', cost: 300));
+    await pumpUntil(() => runner.started.length == 2);
+    expect(rec.costMicros, 1000);
+    expect(rec.liveCostMicros, 0);
+    expect(rec.endedAt, DateTime(2026, 10, 30, 9, 3));
+    runner.started.last.answer(ok(_criticDone));
+    final j = await done;
+    final back = UltraJournal.fromJson(jsonDecode(jsonEncode(j.toJson())) as Map<String, Object?>)!;
+    expect(back.steps['a.s']!.startedAt, rec.startedAt);
+    expect(back.steps['a.s']!.elapsedAt(DateTime(2027)), const Duration(minutes: 3));
+  });
+
   test('the orchestrator rules state the caps', () {
     final rules = ultraOrchestratorRules(const UltraLimits());
     expect(rules, contains('16 agents at once'));

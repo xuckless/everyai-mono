@@ -8,6 +8,7 @@ import '../skills/skills_providers.dart' show SkillSettings, SkillSettingsNotifi
 import 'mcp_providers.dart';
 import 'permissions_providers.dart';
 import 'settings/code_settings.dart';
+import 'ultra/ui/ultra_toggle.dart' show ultraTopBarSlot;
 
 export 'settings/code_settings.dart';
 
@@ -98,6 +99,5 @@ CodeSettingsSources codeSettingsSources(WidgetRef ref, {SessionLayer? session, b
 /// Builds the Ultra toggle for a session's top bar; null hides the slot.
 typedef CodeTopBarSlot = Widget Function(BuildContext context, String sessionId);
 
-/// The Ultra toggle's place in the Code top bar. The Ultra mode work fills it
-/// (and locks it to the Max plan); until then the bar shows nothing there.
-final codeUltraSlotProvider = Provider<CodeTopBarSlot?>((ref) => null);
+/// The Ultra toggle's place in the Code top bar (locked off the Max plan).
+final codeUltraSlotProvider = Provider<CodeTopBarSlot?>((ref) => ultraTopBarSlot);

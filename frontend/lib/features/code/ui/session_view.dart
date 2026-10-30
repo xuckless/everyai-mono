@@ -38,6 +38,11 @@ import 'transcript/goal_card.dart';
 import 'transcript/plan_card.dart';
 import 'transcript/subagent_card.dart';
 import 'transcript/transcript_items.dart';
+import '../../attachments/attachment.dart' show Attachment;
+import '../ultra/ultra_providers.dart' show UltraError;
+import '../ultra/ultra_ui_providers.dart';
+import '../ultra/ui/ultra_run_card.dart' show ultraRunCards;
+import '../ultra/ui/ultra_toggle.dart' show UltraComposerBanner;
 
 const _maxWidth = 780.0;
 
@@ -65,6 +70,7 @@ class CodeSessionScreen extends ConsumerWidget {
     final controller = ref.read(provider.notifier);
     final t = state.transcript;
     final busy = t.running || t.pending.isNotEmpty;
+    final ultraArmed = ref.watch(ultraToggleProvider(sessionId).select((u) => u.armed));
 
     final showStartBuilding =
         state.mode == AgentMode.plan &&
@@ -118,6 +124,7 @@ class CodeSessionScreen extends ConsumerWidget {
                 onRetry: controller.retry,
                 sessionId: sessionId,
                 workingDir: info.workingDir,
+                trailing: ultraRunCards(ref, sessionId),
               ),
             ),
             if (state.error case final error?)
@@ -206,6 +213,7 @@ class CodeSessionScreen extends ConsumerWidget {
                               ),
                             ),
                           ),
+                        UltraComposerBanner(sessionId: sessionId),
                         CodeComposer(
                           slashHost: codeSlashHost(context, ref, sessionId, busy: busy),
                           project: ref
@@ -216,12 +224,15 @@ class CodeSessionScreen extends ConsumerWidget {
                           busy: busy,
                           mode: state.mode,
                           onModeChanged: controller.setMode,
-                          onSend: (text, files) => controller.send(text, files: files),
+                          onSend: (text, files) =>
+                              ultraArmed ? _startUltra(context, ref, text, files) : controller.send(text, files: files),
                           onSteer: (text, files) => controller.steer(text, files: files),
                           onStop: controller.stop,
                           queued: [for (final q in state.queued) q.text],
                           onUnqueue: controller.unqueue,
-                          placeholder: t.openQuestion != null
+                          placeholder: ultraArmed
+                              ? 'Describe the goal for an Ultra run'
+                              : t.openQuestion != null
                               ? 'Answer the questions above, or reply in your own words'
                               : 'Ask for a change, or reply to the agent',
                           trailing: agentMenu(),
@@ -242,6 +253,20 @@ class CodeSessionScreen extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  /// Ultra is on: the message is the run's goal (files aren't passed on).
+  Future<void> _startUltra(BuildContext context, WidgetRef ref, String text, List<Attachment> files) async {
+    try {
+      await startUltraRun(ref, sessionId, text);
+      if (files.isNotEmpty && context.mounted) {
+        showAdaptiveToast(context, 'Ultra runs take text only; the attachments were left out');
+      }
+    } on UltraError catch (e) {
+      if (context.mounted) showAdaptiveToast(context, e.message);
+    } on Object catch (e) {
+      if (context.mounted) showAdaptiveToast(context, "Couldn't start the Ultra run: $e");
+    }
   }
 
   Future<void> _rewind(BuildContext context, WidgetRef ref, int turn) async {
@@ -318,7 +343,11 @@ class TranscriptList extends StatelessWidget {
     required this.onRetry,
     this.sessionId,
     this.workingDir = '',
+    this.trailing = const [],
   });
+
+  /// Shown newest-side, below the items (the session's Ultra runs).
+  final List<Widget> trailing;
 
   /// For the presented-files card's shortcuts.
   final String? sessionId;
@@ -342,6 +371,7 @@ class TranscriptList extends StatelessWidget {
     final live = t.streaming.isNotEmpty || t.streamingReasoning.isNotEmpty;
     // Newest at the bottom; a reversed list keeps the view pinned there.
     final children = <Widget>[
+      ...trailing.reversed,
       if (live)
         AgentTextView(text: t.streaming, reasoning: t.streamingReasoning, streaming: true)
       else if (t.running)

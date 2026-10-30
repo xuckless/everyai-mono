@@ -98,6 +98,8 @@ final class StepRecord {
     this.merge,
     this.costMicros = 0,
     this.note = '',
+    this.startedAt,
+    this.endedAt,
   });
 
   /// `phase.step`, or `phase.step[i]` for item i of a `for_each`.
@@ -132,6 +134,23 @@ final class StepRecord {
   /// Why it was skipped, failed or stopped.
   String note;
 
+  /// When its first child started, and when it settled (null while it runs).
+  DateTime? startedAt;
+  DateTime? endedAt;
+
+  /// What its running children have cost so far; not saved (settled into
+  /// [costMicros] once they finish).
+  int liveCostMicros = 0;
+
+  /// Settled plus live cost, for the progress tree.
+  int get shownCostMicros => costMicros + liveCostMicros;
+
+  /// How long it has run, or ran; null before it starts.
+  Duration? elapsedAt(DateTime now) => switch (startedAt) {
+    null => null,
+    final start => (endedAt ?? now).difference(start),
+  };
+
   /// The result later steps and the orchestrator read: the JSON when there is
   /// one, else the text.
   String get result => structured == null ? output : _json(structured);
@@ -154,6 +173,8 @@ final class StepRecord {
     'merge': ?merge?.toJson(),
     'cost_micros': costMicros,
     if (note.isNotEmpty) 'note': note,
+    'started_at': ?startedAt?.toUtc().toIso8601String(),
+    'ended_at': ?endedAt?.toUtc().toIso8601String(),
   };
 
   factory StepRecord.fromJson(Map<String, Object?> j) => StepRecord(
@@ -174,6 +195,8 @@ final class StepRecord {
     merge: MergeOutcome.fromJson(j['merge']),
     costMicros: (j['cost_micros'] as num?)?.toInt() ?? 0,
     note: j['note'] as String? ?? '',
+    startedAt: DateTime.tryParse(j['started_at'] as String? ?? '')?.toLocal(),
+    endedAt: DateTime.tryParse(j['ended_at'] as String? ?? '')?.toLocal(),
   );
 }
 
