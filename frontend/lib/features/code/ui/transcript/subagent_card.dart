@@ -107,6 +107,7 @@ class SubagentCard extends ConsumerWidget {
     SubagentStatus.failed => 'Failed',
     SubagentStatus.stopped => 'Stopped',
     SubagentStatus.notStarted => 'Not started',
+    SubagentStatus.background => 'In background${child == null ? '' : ' · ${child.label}'}',
     null => switch (child) {
       null || SessionStatus.starting => 'Starting',
       SessionStatus.needsInput => 'Needs your approval',

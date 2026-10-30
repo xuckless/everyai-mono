@@ -10,6 +10,9 @@ mixin _SessionBuiltins on Notifier<CodeSessionState> {
   String get sessionId;
   List<HarnessEvent> get _events;
   HarnessSession? get _harnessSession;
+
+  /// Background subagents still working: their reports will wake the agent.
+  bool get _backgroundBusy;
   int get _asideIds;
   set _asideIds(int value);
   void _putAside(Aside aside);
@@ -164,6 +167,9 @@ mixin _SessionBuiltins on Notifier<CodeSessionState> {
         );
       case GoalMoment.failed:
         _pauseGoal('The agent stopped with an error. Send a message, or set the goal again, to carry on.');
+      case GoalMoment.judge when _backgroundBusy:
+        // A background report will start another turn; judge after that.
+        return;
       case GoalMoment.judge:
         unawaited(_judgeGoal());
     }

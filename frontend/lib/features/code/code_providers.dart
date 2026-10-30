@@ -788,6 +788,9 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     if (_session case final HasBackgroundShells s) await s.stopBackground(id);
   }
 
+  @override
+  bool get _backgroundBusy => _background.isNotEmpty;
+
   /// The open harness session, for the built-ins mixed in.
   @override
   HarnessSession? get _harnessSession => _session;
@@ -835,6 +838,10 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
   /// Reports not yet handed to the agent, by call id.
   final _reports = <String, SubagentReport>{};
   final _childWaiting = <String>{};
+
+  /// Background subagents by call id: their call was answered at the start,
+  /// and their report goes to this session as a task notification.
+  final _background = <String, ({String childId, String title})>{};
   bool _delivering = false;
 
   @override
@@ -1637,6 +1644,11 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
         return;
       }
       _spawning.remove(callId);
+      if (call.action['run_in_background'] == true) {
+        _background[callId] = (childId: child.id, title: child.title);
+        _reports[callId] = backgroundStarted(child.id);
+        _deliver();
+      }
       _watch(callId, child.id);
     } on Object catch (e) {
       _spawning.remove(callId);
@@ -1668,6 +1680,15 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
   }
 
   void _ready(String callId, SubagentReport report) {
+    if (_background.remove(callId) case final bg?) {
+      _childOf.remove(callId);
+      _childSubs.remove(callId)?.close();
+      _childWaiting.remove(callId);
+      state = state.copyWith(subagentNeedsInput: _childWaiting.isNotEmpty);
+      // While the agent works this joins its next step; when idle it wakes it.
+      unawaited(_session?.send(taskNotification(bg.childId, bg.title, report)).catchError((Object _) {}));
+      return;
+    }
     _reports[callId] = report;
     _childOf.remove(callId);
     _childSubs.remove(callId)?.close();

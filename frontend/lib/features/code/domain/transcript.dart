@@ -317,6 +317,17 @@ final class TranscriptBuilder {
           return;
         }
         if (_answer(text) || _reported(text)) return;
+        if (parseTaskNotification(text) case final n?) {
+          _items.add(
+            NoticeItem(
+              e.id,
+              '${n.title} ${n.status == SubagentStatus.completed ? 'finished' : n.status.label.toLowerCase()} in the background',
+              error: n.status == SubagentStatus.failed,
+              detail: n.result,
+            ),
+          );
+          return;
+        }
         _items.add(UserTurn(e.id, text, mode: changed ? mode : null));
         _settleOpenCards(text);
       case ChatMessage(:final text, :final reasoning):

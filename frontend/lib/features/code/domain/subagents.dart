@@ -104,6 +104,18 @@ const taskSpec = <String, Object?>{
 /// agent: the child starts from this whole conversation.
 Map<String, Object?> forkingTaskSpec() => {
   ...taskSpecFor(held: true),
+  'parameters': {
+    ...taskSpec['parameters']! as Map<String, Object?>,
+    'properties': {
+      ...(taskSpec['parameters']! as Map<String, Object?>)['properties']! as Map<String, Object?>,
+      'run_in_background': {
+        'type': 'boolean',
+        'description':
+            'Return at once and keep working; the report arrives later as a <task-notification> message. Use it for '
+            'long work you do not need before your next step. Default false: wait for the report.',
+      },
+    },
+  },
   'description':
       'Hand a piece of work to a subagent and get its final report back as this call\'s result. Two kinds:\n'
       '- Leave out agent to fork yourself: the fork starts with this whole conversation (it knows everything you '
@@ -139,11 +151,22 @@ enum SubagentStatus {
   stopped,
 
   /// Refused before it started (too many at once, or it couldn't start).
-  notStarted;
+  notStarted,
+
+  /// Started in the background: its report comes later as a task notification.
+  background;
 
   String get wire => switch (this) {
     notStarted => 'not_started',
     _ => name,
+  };
+
+  String get label => switch (this) {
+    completed => 'Done',
+    failed => 'Failed',
+    stopped => 'Stopped',
+    notStarted => 'Not started',
+    background => 'In background',
   };
 
   static SubagentStatus parse(String s) => values.where((v) => v.wire == s).firstOrNull ?? completed;
@@ -254,4 +277,28 @@ String subagentReason(Map<String, SubagentReport> reports) =>
 Map<String, SubagentReport> parseSubagentReports(String text) {
   if (!text.contains(_open)) return const {};
   return {for (final m in _block.allMatches(text)) m[1]!: SubagentReport(SubagentStatus.parse(m[2]!), m[3]!)};
+}
+
+/// What a background subagent's call returns straight away.
+SubagentReport backgroundStarted(String childId) => SubagentReport(
+  SubagentStatus.background,
+  'Started in the background as task $childId. Carry on with other work; its report arrives as a '
+  '<task-notification> message when it finishes. Do not wait or poll for it, and do not do the same work yourself.',
+);
+
+/// A background subagent's report, sent to its parent when it ends.
+String taskNotification(String childId, String title, SubagentReport report) =>
+    '<task-notification>\n<task-id>$childId</task-id>\n<description>$title</description>\n'
+    '<status>${report.status.wire}</status>\n<result>\n${report.text}\n</result>\n</task-notification>';
+
+final _notification = RegExp(
+  r'^<task-notification>\n<task-id>([^<]*)</task-id>\n<description>([^<]*)</description>\n<status>([^<]*)</status>\n'
+  r'<result>\n([\s\S]*)\n</result>\n</task-notification>$',
+);
+
+/// A [taskNotification] read back, for the transcript; null for other text.
+({String childId, String title, SubagentStatus status, String result})? parseTaskNotification(String text) {
+  final m = _notification.firstMatch(text.trim());
+  if (m == null) return null;
+  return (childId: m[1]!, title: m[2]!, status: SubagentStatus.parse(m[3]!), result: m[4]!);
 }

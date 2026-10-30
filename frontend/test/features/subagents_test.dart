@@ -360,4 +360,33 @@ void main() {
       expect(childOf(id).isSubagent, isTrue);
     });
   });
+
+  test('a background subagent notification reads back and shows as a notice', () {
+    const report = SubagentReport(SubagentStatus.completed, 'Found it in lib/a.dart:4');
+    final text = taskNotification('child-1', 'Find callers', report);
+    final n = parseTaskNotification(text)!;
+    expect(n.childId, 'child-1');
+    expect(n.title, 'Find callers');
+    expect(n.status, SubagentStatus.completed);
+    expect(n.result, 'Found it in lib/a.dart:4');
+    expect(parseTaskNotification('hello'), isNull);
+    final b = TranscriptBuilder()
+      ..add(
+        HarnessEvent.decode({
+          'kind': 'MessageEvent',
+          'id': 'n1',
+          'source': 'user',
+          'llm_message': {
+            'role': 'user',
+            'content': [
+              {'type': 'text', 'text': text},
+            ],
+          },
+        }),
+      );
+    final notice = b.snapshot.items.single as NoticeItem;
+    expect(notice.message, 'Find callers finished in the background');
+    expect(notice.detail, contains('lib/a.dart:4'));
+    expect(forkingTaskSpec().toString(), contains('run_in_background'));
+  });
 }
