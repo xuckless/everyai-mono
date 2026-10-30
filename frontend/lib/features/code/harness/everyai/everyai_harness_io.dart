@@ -323,6 +323,7 @@ final class EveryAISession implements HarnessSession, AsksAside {
 
   /// Emits an event built from agent-server-shaped [raw] JSON, and keeps it.
   HarnessEvent _emit(Map<String, Object?> raw) {
+    raw['timestamp'] ??= DateTime.now().toIso8601String();
     final e = HarnessEvent.decode(raw);
     if (e is! StreamDelta) {
       _history.add(e);

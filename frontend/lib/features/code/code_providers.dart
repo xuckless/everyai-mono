@@ -38,6 +38,7 @@ import 'domain/transcript.dart';
 import 'gateway_key.dart';
 import 'git/git_service.dart';
 import 'domain/agent_menu.dart' show CodeHarnessKind;
+import 'domain/transcript_export.dart';
 import 'harness/everyai/everyai.dart';
 import 'harness/events.dart';
 import 'harness/fake_harness.dart';
@@ -685,6 +686,19 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
   final String sessionId;
 
   HarnessSession? _session;
+
+  /// The session as Markdown (see [transcriptMarkdown]): this conversation's
+  /// events, with the usage so far.
+  /// A session that wasn't open loads its history first (up to [wait]).
+  Future<String> exportMarkdown({Duration wait = const Duration(seconds: 8)}) async {
+    final until = DateTime.now().add(wait);
+    while (_events.whereType<ChatMessage>().isEmpty && DateTime.now().isBefore(until)) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
+    if (info == null) return '';
+    return transcriptMarkdown(info, _events, usage: ref.read(codeUsageProvider(sessionId)).value);
+  }
 
   /// The open harness session, for the built-ins mixed in.
   @override

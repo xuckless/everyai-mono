@@ -1,6 +1,9 @@
 import '../../../core/preferences.dart';
 import '../../../core/ui/brand.dart';
 
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -508,6 +511,7 @@ class _SessionTileState extends ConsumerState<SessionTile> {
                     tooltip: 'Session options',
                     actions: [
                       MenuAction(label: 'Rename', icon: EveryIcon.edit, onSelected: _rename),
+                      MenuAction(label: 'Export transcript…', icon: EveryIcon.download, onSelected: _export),
                       MenuAction(label: 'Delete', icon: EveryIcon.delete, destructive: true, onSelected: _delete),
                     ],
                     child: Padding(
@@ -522,6 +526,24 @@ class _SessionTileState extends ConsumerState<SessionTile> {
         ),
       ),
     );
+  }
+
+  /// Saves the session as Markdown (to compare runs, or keep a record).
+  Future<void> _export() async {
+    final markdown = await ref.read(codeSessionProvider(widget.info.id).notifier).exportMarkdown();
+    if (markdown.isEmpty) return;
+    final name = '${widget.info.title}-${widget.info.harness}'
+        .replaceAll(RegExp(r'[^\w\- ]+'), '')
+        .trim()
+        .replaceAll(RegExp(r'\s+'), '-');
+    final location = await getSaveLocation(suggestedName: '$name.md');
+    if (location == null) return;
+    try {
+      await XFile.fromData(Uint8List.fromList(utf8.encode(markdown)), mimeType: 'text/markdown').saveTo(location.path);
+      if (mounted) showAdaptiveToast(context, 'Saved');
+    } on Object catch (e) {
+      if (mounted) showAdaptiveToast(context, "Couldn't save: $e");
+    }
   }
 
   Future<void> _rename() async {
