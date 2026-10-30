@@ -1,9 +1,12 @@
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
+import 'package:pasteboard/pasteboard.dart';
 import 'package:uuid/uuid.dart';
 
 import 'attachment.dart';
+import 'image_normalize.dart';
 
 /// Opens the system file picker. With [allowed], only those kinds can be
 /// picked (the rest are greyed out in the native dialog); text and code are
@@ -23,19 +26,33 @@ Future<List<XFile>> pickAttachmentFiles({Set<AttachmentKind>? allowed}) {
   );
 }
 
+String _extOf(String name) => name.contains('.') ? name.substring(name.lastIndexOf('.') + 1).toLowerCase() : '';
+
 /// Reads picked or dropped files. Files over a size limit (per kind, or the
 /// message total on top of [alreadyBytes]) are left out and reported to
-/// [onError]; nothing is truncated.
+/// [onError]; nothing is truncated. With [shrinkImages], big photos are scaled down first (see [normalizeImage]);
+/// the Code agent gets the originals.
 Future<List<Attachment>> readAttachments(
   Iterable<XFile> files, {
   int alreadyBytes = 0,
   required void Function(String message) onError,
+  bool shrinkImages = false,
 }) async {
   final out = <Attachment>[];
   var total = alreadyBytes;
   for (final f in files) {
-    final bytes = await f.readAsBytes();
-    final (:attachment, :error) = Attachment.from(id: const Uuid().v4(), name: f.name, bytes: bytes, mime: f.mimeType);
+    var bytes = await f.readAsBytes();
+    var name = f.name;
+    var mime = f.mimeType;
+    if (shrinkImages && imageExtensions.contains(_extOf(name))) {
+      final small = await normalizeImage(bytes, _extOf(name));
+      if (small != null) {
+        bytes = small.bytes;
+        name = '${name.contains('.') ? name.substring(0, name.lastIndexOf('.')) : name}.${small.extension}';
+        mime = null;
+      }
+    }
+    final (:attachment, :error) = Attachment.from(id: const Uuid().v4(), name: name, bytes: bytes, mime: mime);
     if (error != null) {
       onError(error);
       continue;
@@ -50,7 +67,53 @@ Future<List<Attachment>> readAttachments(
   return out;
 }
 
-/// Accepts files dragged onto [child], highlighting it while they hover.
+/// Files or an image on the system clipboard, as files ready for [readAttachments]. Empty when the clipboard
+/// holds only text (or nothing). The readers are injectable for tests.
+Future<List<XFile>> clipboardFiles({
+  Future<List<String>> Function()? readFiles,
+  Future<Uint8List?> Function()? readImage,
+}) async {
+  try {
+    final paths = await (readFiles ?? (kIsWeb ? () async => <String>[] : Pasteboard.files))();
+    // Android hands out content URIs, which dart:io can't open.
+    final real = [
+      for (final p in paths)
+        if (!p.contains('://')) p,
+    ];
+    if (real.isNotEmpty) return [for (final p in real) XFile(p)];
+    final image = await (readImage ?? (() => Pasteboard.image))();
+    if (image == null || image.isEmpty) return const [];
+    final png = image.length > 4 && image[0] == 0x89 && image[1] == 0x50;
+    final jpeg = image.length > 3 && image[0] == 0xFF && image[1] == 0xD8;
+    final (ext, mime) = png ? ('png', 'image/png') : (jpeg ? ('jpg', 'image/jpeg') : ('tiff', 'image/tiff'));
+    // Unknown formats are not images the models accept; leave them to the text paste.
+    if (!png && !jpeg) return const [];
+    return [XFile.fromData(image, name: 'Pasted image.$ext', path: 'Pasted image.$ext', mimeType: mime)];
+  } catch (_) {
+    return const [];
+  }
+}
+
+/// Takes over paste (Cmd/Ctrl+V and the Edit menu) in the text field below it: files and images on the clipboard
+/// become attachments, anything else pastes as text as before.
+class _PasteAction extends Action<PasteTextIntent> {
+  _PasteAction(this.onFiles);
+
+  final ValueChanged<List<XFile>> onFiles;
+
+  @override
+  Future<void> invoke(PasteTextIntent intent) async {
+    final files = await clipboardFiles();
+    if (files.isNotEmpty) {
+      onFiles(files);
+    } else {
+      callingAction?.invoke(intent);
+    }
+  }
+}
+
+/// Accepts files dragged onto [child], highlighting it while they hover, and files or images pasted into a text
+/// field inside it.
 class AttachmentDropZone extends StatefulWidget {
   const AttachmentDropZone({super.key, required this.onFiles, required this.child, this.enabled = true});
 
@@ -75,10 +138,13 @@ class _AttachmentDropZoneState extends State<AttachmentDropZone> {
         setState(() => _hovering = false);
         if (details.files.isNotEmpty) widget.onFiles(details.files);
       },
-      child: AnimatedOpacity(
-        duration: const Duration(milliseconds: 120),
-        opacity: _hovering ? 0.7 : 1,
-        child: widget.child,
+      child: Actions(
+        actions: {if (widget.enabled) PasteTextIntent: _PasteAction(widget.onFiles)},
+        child: AnimatedOpacity(
+          duration: const Duration(milliseconds: 120),
+          opacity: _hovering ? 0.7 : 1,
+          child: widget.child,
+        ),
       ),
     );
   }

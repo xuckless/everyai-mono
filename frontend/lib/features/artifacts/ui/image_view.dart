@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -8,6 +9,7 @@ import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../chat/domain/message.dart';
+import '../../attachments/ui/image_viewer.dart';
 import '../artifact_providers.dart';
 import 'download_button.dart';
 import 'renderers/svg_view.dart';
@@ -24,11 +26,17 @@ class RasterImageView extends StatelessWidget {
     final theme = EveryTheme.of(context);
     final b = bytes;
     if (b == null) return Text('[Image unavailable]', style: TextStyle(color: theme.textMuted));
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(theme.radius),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxHeight: maxHeight),
-        child: Image.memory(b, fit: BoxFit.contain, semanticLabel: 'Generated image'),
+    return MouseRegion(
+      cursor: SystemMouseCursors.zoomIn,
+      child: GestureDetector(
+        onTap: () => showImageViewer(context, b, label: 'Generated image'),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(theme.radius),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maxHeight),
+            child: Image.memory(b, fit: BoxFit.contain, semanticLabel: 'Generated image'),
+          ),
+        ),
       ),
     );
   }

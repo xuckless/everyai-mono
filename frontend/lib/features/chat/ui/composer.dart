@@ -163,6 +163,7 @@ class ComposerState extends ConsumerState<Composer> {
     final added = await readAttachments(
       files,
       alreadyBytes: _attachments.fold(0, (sum, a) => sum + a.size),
+      shrinkImages: true,
       onError: (message) {
         if (mounted) showAdaptiveToast(context, message);
       },

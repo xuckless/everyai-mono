@@ -9,6 +9,15 @@ const _perChat = ['chat.effort.'];
 /// Preferences keyed by tool call id (quiz answers, flashcard progress).
 const _perCall = ['artifacts.quiz.', 'artifacts.cards.'];
 
+/// Deletes blobs (generated images, attachments) that no message part refers to any more, which is what is left
+/// after chats or messages are deleted. Returns how many went. Meant to run in the background at launch.
+Future<int> collectBlobGarbage(AppDatabase db) {
+  return db.customUpdate(
+    'DELETE FROM blobs WHERE id NOT IN (SELECT blob_id FROM message_parts WHERE blob_id IS NOT NULL)',
+    updates: {db.blobs},
+  );
+}
+
 /// Removes per-chat Preferences whose chat no longer exists: the keys above,
 /// each deleted chat's memory pointer and the memory blocks no chat uses.
 /// Runs at launch and after a chat is deleted.

@@ -14,6 +14,7 @@ import '../../artifacts/ui/image_view.dart';
 import '../../artifacts/ui/visual_view.dart';
 import '../../attachments/attachment.dart';
 import '../../attachments/ui/attachment_tray.dart';
+import '../../attachments/ui/image_viewer.dart';
 import '../../memory/memory_providers.dart';
 import '../../memory/ui/local_tool_chip.dart';
 import '../../models/models_providers.dart';
@@ -203,11 +204,17 @@ class _SentAttachment extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     if (part.kind == AttachmentKind.image && part.bytes != null) {
-      return ClipRRect(
-        borderRadius: BorderRadius.circular(theme.radius),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 240, maxHeight: 240),
-          child: Image.memory(part.bytes!, fit: BoxFit.cover, semanticLabel: part.name),
+      return MouseRegion(
+        cursor: SystemMouseCursors.zoomIn,
+        child: GestureDetector(
+          onTap: () => showImageViewer(context, part.bytes!, label: part.name),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(theme.radius),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 240, maxHeight: 240),
+              child: Image.memory(part.bytes!, fit: BoxFit.cover, semanticLabel: part.name),
+            ),
+          ),
         ),
       );
     }

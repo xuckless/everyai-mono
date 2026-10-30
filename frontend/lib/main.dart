@@ -38,6 +38,8 @@ Future<void> main() async {
   final preferences = await Preferences.load(db);
   // Per-chat settings of chats deleted since (or before) the last launch.
   unawaited(sweepChatPreferences(db, preferences));
+  // Pictures of deleted chats; a moment after launch so it never competes with the first frames.
+  unawaited(Future<void>.delayed(const Duration(seconds: 5), () => collectBlobGarbage(db)));
 
   runApp(
     ProviderScope(
