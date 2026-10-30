@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -11,6 +9,7 @@ import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/anchored_popover.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../models/models_providers.dart';
+import '../../artifacts/ui/visual_view.dart';
 import '../../models/ui/model_avatar.dart';
 import '../chat_providers.dart';
 import '../domain/message.dart';
@@ -620,7 +619,7 @@ class _PartView extends StatelessWidget {
       ImagePart() => Text('[Image unavailable]', style: TextStyle(color: theme.textMuted)),
       FollowUpsPart(:final questions) =>
         isLatest ? _FollowUps(questions: questions, conversationId: conversationId) : const SizedBox.shrink(),
-      final ToolCallPart call => _ToolCard(call),
+      final ToolCallPart call => InlineVisual(part: call, conversationId: conversationId),
       ArtifactPart(:final title) => Text(title, style: TextStyle(color: theme.accent)),
     };
   }
@@ -689,72 +688,6 @@ class _ReasoningState extends State<_Reasoning> {
                 style: muted,
               ),
             ),
-        ],
-      ),
-    );
-  }
-}
-
-/// A UI tool call (quiz, chart, slides, …). Interactive renderers arrive with
-/// the chat tools pass; until then this shows what was made.
-class _ToolCard extends StatelessWidget {
-  const _ToolCard(this.call);
-
-  final ToolCallPart call;
-
-  static const _kinds = {
-    'create_artifact': 'Artifact',
-    'update_artifact': 'Artifact update',
-    'render_svg': 'Illustration',
-    'render_diagram': 'Diagram',
-    'render_chart': 'Chart',
-    'make_quiz': 'Quiz',
-    'make_flashcards': 'Flashcards',
-    'make_slides': 'Slides',
-  };
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    final args = switch (jsonDecode(call.argumentsJson)) {
-      final Map<String, Object?> m => m,
-      _ => const <String, Object?>{},
-    };
-    final title = args['title'] as String? ?? args['id'] as String? ?? '';
-    final count = switch (call.toolName) {
-      'make_quiz' => '${(args['questions'] as List?)?.length ?? 0} questions',
-      'make_flashcards' => '${(args['cards'] as List?)?.length ?? 0} cards',
-      'make_slides' => '${(args['slides'] as List?)?.length ?? 0} slides',
-      _ => null,
-    };
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 6),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      constraints: const BoxConstraints(maxWidth: 520),
-      decoration: BoxDecoration(
-        color: theme.surfaceRaised,
-        borderRadius: BorderRadius.circular(theme.radius),
-        border: Border.all(color: theme.border),
-      ),
-      child: Row(
-        children: [
-          AdaptiveIcon(EveryIcon.artifacts, size: 18, color: theme.accent),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title.isEmpty ? (_kinds[call.toolName] ?? call.toolName) : title,
-                  style: TextStyle(color: theme.text, fontWeight: FontWeight.w600, fontSize: 14),
-                ),
-                Text(
-                  [_kinds[call.toolName] ?? call.toolName, ?count].join(' · '),
-                  style: TextStyle(color: theme.textMuted, fontSize: 12),
-                ),
-              ],
-            ),
-          ),
         ],
       ),
     );

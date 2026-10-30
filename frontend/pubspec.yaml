@@ -45,6 +45,11 @@ dependencies:
   url_launcher: ^6.3.3
 
   everyai_markdown:
+  flutter_svg: ^2.3.2
+  fl_chart: ^1.3.0
+  flutter_inappwebview: ^6.1.5
+  file_selector: ^1.1.0
+  archive: ^4.5.2
 
 dev_dependencies:
   flutter_test:

@@ -193,21 +193,36 @@ class ComposerState extends ConsumerState<Composer> {
                 ),
               ),
               const SizedBox(height: 10),
-              Row(
-                children: [
-                  _ToolsButton(
-                    mode: widget.mode,
-                    onModeChanged: widget.onModeChanged,
-                    toolsEnabled: widget.toolsEnabled,
-                    onToolsChanged: widget.onToolsChanged,
-                  ),
-                  const SizedBox(width: 4),
-                  _ModeSelector(mode: widget.mode, onChanged: widget.onModeChanged),
-                  const Spacer(),
-                  ModelChip(selected: widget.model, enabled: !widget.busy, onSelected: widget.onModelChanged),
-                  const SizedBox(width: 6),
-                  _SendButton(busy: widget.busy, enabled: _canSend, onSend: _send, onStop: widget.onStop),
-                ],
+              LayoutBuilder(
+                // Narrow composers (beside the artifact panel, phones) fold the
+                // mode switcher into a menu.
+                builder: (context, constraints) => Row(
+                  children: [
+                    _ToolsButton(
+                      mode: widget.mode,
+                      onModeChanged: widget.onModeChanged,
+                      toolsEnabled: widget.toolsEnabled,
+                      onToolsChanged: widget.onToolsChanged,
+                    ),
+                    const SizedBox(width: 4),
+                    if (constraints.maxWidth < 560)
+                      _ModeMenu(mode: widget.mode, onChanged: widget.onModeChanged)
+                    else
+                      _ModeSelector(mode: widget.mode, onChanged: widget.onModeChanged),
+                    Expanded(
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: ModelChip(
+                          selected: widget.model,
+                          enabled: !widget.busy,
+                          onSelected: widget.onModelChanged,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    _SendButton(busy: widget.busy, enabled: _canSend, onSend: _send, onStop: widget.onStop),
+                  ],
+                ),
               ),
             ],
           ),
@@ -279,6 +294,57 @@ class _ToolsButton extends StatelessWidget {
 }
 
 /// Chat · Search · Research. A compact segmented control.
+/// The answer mode as one pill with a menu, for narrow composers.
+class _ModeMenu extends StatelessWidget {
+  const _ModeMenu({required this.mode, required this.onChanged});
+
+  final ChatMode mode;
+  final ValueChanged<ChatMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return AnchoredPopover(
+      width: 240,
+      builder: (context, close) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (final m in ChatMode.values)
+              PopoverRow(
+                title: m.label,
+                subtitle: m.description,
+                selected: m == mode,
+                trailing: m == mode ? AdaptiveIcon(EveryIcon.check, size: 14, color: theme.accent) : null,
+                onTap: () {
+                  close();
+                  onChanged(m);
+                },
+              ),
+          ],
+        ),
+      ),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(color: theme.text.withValues(alpha: 0.06), borderRadius: BorderRadius.circular(9)),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              mode.label,
+              style: TextStyle(color: theme.text, fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(width: 3),
+            AdaptiveIcon(EveryIcon.chevronDown, size: 11, color: theme.textMuted),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ModeSelector extends StatelessWidget {
   const _ModeSelector({required this.mode, required this.onChanged});
 

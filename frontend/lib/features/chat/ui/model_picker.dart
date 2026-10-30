@@ -33,9 +33,13 @@ class ModelChip extends ConsumerWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              selected.name,
-              style: TextStyle(color: theme.textMuted, fontSize: 13, fontWeight: FontWeight.w500),
+            Flexible(
+              child: Text(
+                selected.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: theme.textMuted, fontSize: 13, fontWeight: FontWeight.w500),
+              ),
             ),
             const SizedBox(width: 3),
             AdaptiveIcon(EveryIcon.chevronDown, size: 12, color: theme.textMuted),

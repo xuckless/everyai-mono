@@ -34,7 +34,20 @@ enum EveryIcon {
   edit(c.CupertinoIcons.pencil, f.FluentIcons.edit, m.Icons.edit_outlined),
   projects(c.CupertinoIcons.folder, f.FluentIcons.folder_horizontal, m.Icons.folder_outlined),
   artifacts(c.CupertinoIcons.cube, f.FluentIcons.cube_shape, m.Icons.category_outlined),
-  globe(c.CupertinoIcons.globe, f.FluentIcons.globe, m.Icons.public_rounded);
+  globe(c.CupertinoIcons.globe, f.FluentIcons.globe, m.Icons.public_rounded),
+  openPanel(c.CupertinoIcons.sidebar_right, f.FluentIcons.open_pane_mirrored, m.Icons.open_in_full_rounded),
+  chevronLeft(c.CupertinoIcons.chevron_left, f.FluentIcons.chevron_left, m.Icons.chevron_left_rounded),
+  chevronRight(c.CupertinoIcons.chevron_right, f.FluentIcons.chevron_right, m.Icons.chevron_right_rounded),
+  download(c.CupertinoIcons.arrow_down_doc, f.FluentIcons.download, m.Icons.download_rounded),
+  external(c.CupertinoIcons.arrow_up_right_square, f.FluentIcons.open_in_new_window, m.Icons.open_in_new_rounded),
+  document(c.CupertinoIcons.doc_text, f.FluentIcons.text_document, m.Icons.description_outlined),
+  code(c.CupertinoIcons.chevron_left_slash_chevron_right, f.FluentIcons.code, m.Icons.code_rounded),
+  quiz(c.CupertinoIcons.checkmark_rectangle, f.FluentIcons.questionnaire, m.Icons.quiz_outlined),
+  cards(c.CupertinoIcons.rectangle_stack, f.FluentIcons.stack, m.Icons.style_outlined),
+  slides(c.CupertinoIcons.rectangle_on_rectangle_angled, f.FluentIcons.slideshow, m.Icons.slideshow_outlined),
+  chart(c.CupertinoIcons.chart_bar, f.FluentIcons.chart, m.Icons.bar_chart_rounded),
+  diagram(c.CupertinoIcons.flowchart, f.FluentIcons.flow, m.Icons.account_tree_outlined),
+  image(c.CupertinoIcons.photo, f.FluentIcons.photo2, m.Icons.image_outlined);
 
   const EveryIcon(this._apple, this._fluent, this._material);
 

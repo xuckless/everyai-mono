@@ -2,15 +2,18 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../../core/net/api_error.dart';
-
 import '../../../app/router.dart';
+import '../../../core/net/api_error.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/adaptive_page.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../../core/ui/selection.dart';
+import '../../artifacts/artifact_providers.dart';
+import '../../artifacts/domain/artifact.dart';
+import '../../artifacts/ui/artifact_panel.dart';
 import '../chat_providers.dart';
+import '../domain/message.dart';
 import '../domain/chat_session.dart';
 import 'composer.dart';
 import 'message_view.dart';
@@ -43,6 +46,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final isEmpty = ref.watch(provider.select((s) => s.isEmpty));
     final home = isEmpty && phase is! Loading;
 
+    // Like Claude: a new or revised artifact (or a deck) opens the side panel.
+    ref.listen(provider.select((s) => s.liveParts), (previous, next) {
+      if (next.length <= (previous?.length ?? 0)) return;
+      if (next.last case final ToolCallPart call
+          when const {'create_artifact', 'update_artifact', 'make_slides'}.contains(call.toolName)) {
+        final visual = Visual.fromPart(call);
+        if (visual == null) return;
+        final panel = ref.read(artifactPanelProvider(widget.conversationId).notifier);
+        if (call.toolName == 'make_slides') {
+          panel.openVisual(visual);
+        } else {
+          panel.openArtifact(visual.str('id').isEmpty ? visual.callId : visual.str('id'));
+        }
+      }
+    });
+
     final composer = Composer(
       key: _composer,
       busy: phase.busy,
@@ -64,31 +83,34 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         if (!home)
           AdaptiveIconButton(icon: EveryIcon.newChat, tooltip: 'New chat', onPressed: () => context.go(Routes.newChat)),
       ],
-      body: switch (phase) {
-        Loading() => const Center(child: AdaptiveProgress()),
-        _ when home => _Home(composer: composer, onStarter: (text) => _composer.currentState?.prefill(text)),
-        _ => Column(
-          children: [
-            Expanded(child: _Transcript(conversationId: widget.conversationId)),
-            if (phase case Failed(:final error))
-              _ErrorBanner(
-                message: error.message,
-                retryable: error.retryable,
-                onRetry: controller.retry,
-                onTopUp: error is HttpStatusError && error.outOfCredits ? () => context.go(Routes.billing) : null,
-              ),
-            SafeArea(
-              top: false,
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: _maxContentWidth),
-                  child: Padding(padding: const EdgeInsets.fromLTRB(16, 4, 16, 14), child: composer),
+      body: _WithPanel(
+        conversationId: widget.conversationId,
+        child: switch (phase) {
+          Loading() => const Center(child: AdaptiveProgress()),
+          _ when home => _Home(composer: composer, onStarter: (text) => _composer.currentState?.prefill(text)),
+          _ => Column(
+            children: [
+              Expanded(child: _Transcript(conversationId: widget.conversationId)),
+              if (phase case Failed(:final error))
+                _ErrorBanner(
+                  message: error.message,
+                  retryable: error.retryable,
+                  onRetry: controller.retry,
+                  onTopUp: error is HttpStatusError && error.outOfCredits ? () => context.go(Routes.billing) : null,
+                ),
+              SafeArea(
+                top: false,
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: _maxContentWidth),
+                    child: Padding(padding: const EdgeInsets.fromLTRB(16, 4, 16, 14), child: composer),
+                  ),
                 ),
               ),
-            ),
-          ],
-        ),
-      },
+            ],
+          ),
+        },
+      ),
     );
   }
 }
@@ -293,6 +315,41 @@ class _ErrorBanner extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// The chat with the artifact side panel: beside it on wide windows, over it
+/// on narrow ones.
+class _WithPanel extends ConsumerWidget {
+  const _WithPanel({required this.conversationId, required this.child});
+
+  final String conversationId;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final open = ref.watch(artifactPanelProvider(conversationId).select((t) => t != null));
+    if (!open) return child;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final panel = ArtifactPanel(conversationId: conversationId);
+        if (constraints.maxWidth < 720) {
+          return Stack(
+            children: [
+              child,
+              Positioned.fill(child: panel),
+            ],
+          );
+        }
+        final width = (constraints.maxWidth * 0.52).clamp(360.0, 780.0);
+        return Row(
+          children: [
+            Expanded(child: child),
+            SizedBox(width: width, child: panel),
+          ],
+        );
+      },
     );
   }
 }
