@@ -124,6 +124,11 @@ class SettingsScreen extends ConsumerWidget {
             subtitle: const Text('Your plan, included usage, wallet and top-ups'),
             onTap: () => context.go(Routes.billing),
           ),
+          AdaptiveListTile(
+            title: const Text('Usage'),
+            subtitle: const Text('Spend and tokens by day or week, cache savings and the provider split'),
+            onTap: () => context.go(Routes.usage),
+          ),
           switch (auth) {
             Bypassed() => const AdaptiveListTile(
               title: Text('Signed out (development mode)'),

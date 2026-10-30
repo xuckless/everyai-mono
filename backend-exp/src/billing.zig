@@ -167,9 +167,142 @@ fn summary(app: *App, req: *anole.Request) !struct {
     };
 }
 
-fn usage(app: *App, req: *anole.Request, in: anole.In(.{ .query = struct { from: i64 = 0, to: i64 = std.math.maxInt(i64), limit: u32 = 500 } })) ![]const UsageRow {
+const UsageQuery = struct {
+    from: i64 = 0,
+    to: i64 = std.math.maxInt(i64),
+    limit: u32 = 500,
+    /// "day" or "week" returns aggregates instead of rows.
+    group: []const u8 = "",
+    /// What each series is keyed by: "model", "kind" or "provider".
+    by: []const u8 = "model",
+    /// The caller's UTC offset in seconds, so buckets start at local midnight.
+    tz_offset: i64 = 0,
+    pub const field_rules = .{
+        .group = .{anole.validate.oneOf(.{ "", "day", "week" })},
+        .by = .{anole.validate.oneOf(.{ "model", "kind", "provider" })},
+    };
+};
+
+/// `GET /v1/usage`: the raw rows, or with `group=day|week` the totals per
+/// bucket and key (`by=model|kind|provider`), per key and overall. Each
+/// aggregate carries `saved_micros`, what cache reads saved against the
+/// uncached input price (marked up; 0 for models the catalog doesn't list).
+fn usage(app: *App, req: *anole.Request, res: *anole.Response, in: anole.In(.{ .query = UsageQuery })) !void {
     const who = try auth.identity(req);
-    return app.db.all(UsageRow, req, "SELECT " ++ usage_columns ++ " FROM usage_events WHERE user_id = ? AND created_at BETWEEN ? AND ? ORDER BY id DESC LIMIT ?", .{ who.user_id, in.query.from, in.query.to, in.query.limit });
+    const q = in.query;
+    if (q.group.len == 0) {
+        return res.json(try app.db.all(UsageRow, req, "SELECT " ++ usage_columns ++ " FROM usage_events WHERE user_id = ? AND created_at BETWEEN ? AND ? ORDER BY id DESC LIMIT ?", .{ who.user_id, q.from, q.to, q.limit }));
+    }
+    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
+    try res.json(try aggregate(app, req, who.user_id, q));
+}
+
+pub const Bucket = struct {
+    /// Unix seconds where the bucket starts (0 for per-key totals).
+    start: i64 = 0,
+    key: []const u8 = "",
+    calls: i64 = 0,
+    prompt_tokens: i64 = 0,
+    completion_tokens: i64 = 0,
+    cached_tokens: i64 = 0,
+    cache_write_tokens: i64 = 0,
+    charged_micros: i64 = 0,
+    saved_micros: i64 = 0,
+
+    fn add(self: *Bucket, o: Bucket) void {
+        self.calls += o.calls;
+        self.prompt_tokens += o.prompt_tokens;
+        self.completion_tokens += o.completion_tokens;
+        self.cached_tokens += o.cached_tokens;
+        self.cache_write_tokens += o.cache_write_tokens;
+        self.charged_micros += o.charged_micros;
+        self.saved_micros += o.saved_micros;
+    }
+};
+
+pub const Aggregate = struct {
+    group: []const u8,
+    by: []const u8,
+    from: i64,
+    to: i64,
+    /// Ordered by start, then key.
+    buckets: []const Bucket,
+    /// One per key over the whole range, most charged first.
+    keys: []const Bucket,
+    total: Bucket,
+};
+
+/// Day buckets start at local midnight; week buckets on local Monday (the
+/// epoch was a Thursday, hence the 3-day shift).
+pub fn bucketStart(t: i64, week: bool, tz_offset: i64) i64 {
+    const size: i64 = if (week) 7 * 86400 else 86400;
+    const shift: i64 = tz_offset + @as(i64, if (week) 3 * 86400 else 0);
+    return @divFloor(t + shift, size) * size - shift;
+}
+
+fn aggregate(app: *App, req: *anole.Request, user_id: []const u8, q: UsageQuery) !Aggregate {
+    const Row = struct { created_at: i64, key: []const u8, model: []const u8, prompt_tokens: i64, completion_tokens: i64, cached_tokens: i64, cache_write_tokens: i64, charged_micros: i64 };
+    const cols = "created_at, model, prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens, charged_micros FROM usage_events WHERE user_id = ? AND created_at BETWEEN ? AND ? ORDER BY created_at";
+    const args = .{ user_id, q.from, q.to };
+    const rows = if (std.mem.eql(u8, q.by, "kind"))
+        try app.db.all(Row, req, "SELECT kind AS key, " ++ cols, args)
+    else if (std.mem.eql(u8, q.by, "provider"))
+        try app.db.all(Row, req, "SELECT provider AS key, " ++ cols, args)
+    else
+        try app.db.all(Row, req, "SELECT model AS key, " ++ cols, args);
+
+    const week = std.mem.eql(u8, q.group, "week");
+    var buckets: std.ArrayList(Bucket) = .empty;
+    var keys: std.ArrayList(Bucket) = .empty;
+    var total: Bucket = .{};
+    for (rows) |r| {
+        var saved: i64 = 0;
+        if (r.cached_tokens > 0) if (app.catalog.pricesOf(req.io, r.model)) |p| {
+            const per = p.base.prompt - p.base.cache_read;
+            if (per > 0) saved = @intFromFloat(@round(per * @as(f64, @floatFromInt(r.cached_tokens)) * 1_000_000.0 * app.cfg.markup));
+        };
+        const one: Bucket = .{
+            .start = bucketStart(r.created_at, week, q.tz_offset),
+            .key = r.key,
+            .calls = 1,
+            .prompt_tokens = r.prompt_tokens,
+            .completion_tokens = r.completion_tokens,
+            .cached_tokens = r.cached_tokens,
+            .cache_write_tokens = r.cache_write_tokens,
+            .charged_micros = r.charged_micros,
+            .saved_micros = saved,
+        };
+        total.add(one);
+        // Rows come in time order, so the current bucket's entries are at the tail.
+        var i = buckets.items.len;
+        const b = while (i > 0 and buckets.items[i - 1].start == one.start) : (i -= 1) {
+            if (std.mem.eql(u8, buckets.items[i - 1].key, one.key)) break &buckets.items[i - 1];
+        } else blk: {
+            try buckets.append(req.arena, .{ .start = one.start, .key = one.key });
+            break :blk &buckets.items[buckets.items.len - 1];
+        };
+        b.add(one);
+        const k = for (keys.items) |*k| {
+            if (std.mem.eql(u8, k.key, one.key)) break k;
+        } else blk: {
+            try keys.append(req.arena, .{ .key = one.key });
+            break :blk &keys.items[keys.items.len - 1];
+        };
+        k.add(one);
+    }
+    std.mem.sort(Bucket, buckets.items, {}, struct {
+        fn lt(_: void, a: Bucket, b: Bucket) bool {
+            if (a.start != b.start) return a.start < b.start;
+            return std.mem.lessThan(u8, a.key, b.key);
+        }
+    }.lt);
+    std.mem.sort(Bucket, keys.items, {}, struct {
+        fn lt(_: void, a: Bucket, b: Bucket) bool {
+            if (a.charged_micros != b.charged_micros) return a.charged_micros > b.charged_micros;
+            return std.mem.lessThan(u8, a.key, b.key);
+        }
+    }.lt);
+    return .{ .group = q.group, .by = q.by, .from = q.from, .to = q.to, .buckets = buckets.items, .keys = keys.items, .total = total };
 }
 
 const SessionTotals = struct {

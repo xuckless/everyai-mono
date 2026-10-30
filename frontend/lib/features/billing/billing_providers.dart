@@ -132,7 +132,7 @@ String formatMicros(int micros) {
 
 final billingProvider = AsyncNotifierProvider.autoDispose<BillingController, BillingSummary>(BillingController.new);
 
-final class BillingController extends AsyncNotifier<BillingSummary> {
+class BillingController extends AsyncNotifier<BillingSummary> {
   ApiClient get _api => ref.read(apiClientProvider);
   bool get _authenticated => !ref.read(appConfigProvider).devSkipAuth;
 

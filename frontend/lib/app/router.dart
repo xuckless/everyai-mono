@@ -26,6 +26,7 @@ import '../features/remote/ui/remote_settings_screen.dart';
 import '../features/settings/ui/notices_screen.dart';
 import '../features/settings/ui/settings_screen.dart';
 import '../features/skills/ui/skills_settings_screen.dart';
+import '../features/usage/ui/usage_screen.dart';
 import 'shell.dart';
 
 abstract final class Routes {
@@ -34,6 +35,7 @@ abstract final class Routes {
   static const models = '/models';
   static const settings = '/settings';
   static const billing = '/settings/billing';
+  static const usage = '/settings/usage';
   static const memory = '/settings/memory';
   static const commands = '/settings/commands';
   static const mcpServers = '/settings/mcp';
@@ -161,6 +163,10 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: Routes.billing,
             pageBuilder: (_, _) => const NoTransitionPage(child: BillingScreen()),
+          ),
+          GoRoute(
+            path: Routes.usage,
+            pageBuilder: (_, _) => const NoTransitionPage(child: UsageScreen()),
           ),
           GoRoute(
             path: Routes.mcpServers,
