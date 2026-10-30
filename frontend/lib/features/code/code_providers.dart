@@ -271,6 +271,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     String? sessionTag,
     List<String>? tools,
     String? rolePrompt,
+    List<Map<String, Object?>>? clientTools,
   }) async {
     final demo = isDemoPath(projectDir);
     final projectId = ref.read(codeProjectsProvider).where((p) => p.path == projectDir).firstOrNull?.id;
@@ -313,6 +314,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       skills: skills,
       tools: tools,
       rolePrompt: rolePrompt,
+      clientTools: clientTools,
     );
   }
 
@@ -384,7 +386,10 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
   /// parent's folder, model and effort (unless [model] or [effort] say
   /// otherwise), [mode], billed to the parent. A `run_subagent` child has the
   /// call's id as [callId]; one the app starts itself (a `/review`) has its
-  /// own. [tools] and [rolePrompt] come from a library agent.
+  /// own. [tools] and [rolePrompt] come from a library agent. An Ultra
+  /// child may work in its own [workingDir] (a step worktree), bill under
+  /// its own id ([ownTag], so its cost can be read alone) and get other
+  /// [clientTools].
   Future<CodeSessionInfo> startChild({
     required CodeSessionInfo parent,
     required String title,
@@ -396,18 +401,22 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     String? effort,
     List<String>? tools,
     String? rolePrompt,
+    String? workingDir,
+    bool ownTag = false,
+    List<Map<String, Object?>>? clientTools,
   }) async {
     model ??= parent.model;
     effort ??= parent.effort;
     final id = const Uuid().v7();
     projectDir ??=
         ref.read(codeProjectsProvider).where((p) => p.id == parent.projectId).firstOrNull?.path ?? parent.workingDir;
+    workingDir ??= parent.workingDir;
     final live = await (await harnessFor(ref, parent.workingDir)).start(
       await specFor(
         sessionId: id,
-        sessionTag: parent.id,
+        sessionTag: ownTag ? id : parent.id,
         projectDir: projectDir,
-        workingDir: parent.workingDir,
+        workingDir: workingDir,
         model: model,
         mode: mode,
         effort: effort,
@@ -416,6 +425,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         initialMessage: modeNote(mode, brief, subagent: true),
         tools: tools,
         rolePrompt: rolePrompt,
+        clientTools: clientTools,
       ),
     );
     ref.read(_liveProvider)[id] = live;
@@ -426,7 +436,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       conversationId: live.id,
       model: model,
       mode: mode,
-      workingDir: parent.workingDir,
+      workingDir: workingDir,
       createdAt: DateTime.now(),
       branch: parent.branch,
       effort: effort,

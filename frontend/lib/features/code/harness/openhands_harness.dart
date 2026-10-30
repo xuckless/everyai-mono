@@ -79,7 +79,8 @@ final class OpenHandsHarness implements Harness {
       'workspace': {'kind': 'LocalWorkspace', 'working_dir': spec.workingDir},
       'confirmation_policy': spec.mode.confirmationPolicy(holdClientTools: spec.holdClientTools),
       // Subagents get none: they can't ask the user, and depth stays at 1.
-      'client_tools': spec.subagent ? const <Object?>[] : clientToolSpecs(held: spec.holdClientTools),
+      'client_tools':
+          spec.clientTools ?? (spec.subagent ? const <Object?>[] : clientToolSpecs(held: spec.holdClientTools)),
       'initial_message': ?(first == null ? null : _message(first, run: spec.runInitial, images: spec.initialImages)),
     });
     final id = (info as Map<String, Object?>?)?['id'] as String?;

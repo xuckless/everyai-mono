@@ -28,6 +28,7 @@ final class SessionSpec {
     this.skills = const [],
     this.tools,
     this.rolePrompt,
+    this.clientTools,
   });
 
   /// The session's worktree.
@@ -99,6 +100,10 @@ final class SessionSpec {
   /// A library agent's instructions, after `subagentRules` in a child's
   /// system prompt.
   final String? rolePrompt;
+
+  /// The client tools it gets instead of the usual ones (an Ultra
+  /// orchestrator's `ultra_plan`); null keeps the defaults.
+  final List<Map<String, Object?>>? clientTools;
 }
 
 /// A running agent conversation. Events arrive on [events] (history first,
