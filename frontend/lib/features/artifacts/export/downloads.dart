@@ -209,6 +209,7 @@ Uint8List pptxOf(Visual v) {
       extension: 'tsv',
     ),
     VisualKind.image => (text: v.str('prompt'), name: safe, extension: imageExtension(v.str('mime'))),
+    VisualKind.drawing => (text: v.str('content'), name: safe, extension: 'excalidraw'),
     VisualKind.slides => (
       text: [
         for (final s in slidesOf(v))

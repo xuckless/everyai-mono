@@ -80,3 +80,19 @@ final class WebInteractive extends Notifier<bool> {
 
   void toggle() => state = !state;
 }
+
+/// A drawing's unsaved scene (the JSON the editor last reported), keyed by
+/// the version being edited ([Visual.callId]); null when nothing changed.
+final drawingDraftProvider = NotifierProvider.autoDispose.family<DrawingDraft, String?, String>(DrawingDraft.new);
+
+final class DrawingDraft extends Notifier<String?> {
+  DrawingDraft(this.versionKey);
+  final String versionKey;
+
+  @override
+  String? build() => null;
+
+  void set(String scene) => state = scene;
+
+  void clear() => state = null;
+}

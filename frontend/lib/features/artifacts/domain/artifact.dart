@@ -21,14 +21,17 @@ enum VisualKind {
   image('Image'),
 
   /// A small interactive HTML widget drawn inside the message (`render_widget`).
-  widget('Widget');
+  widget('Widget'),
+
+  /// An Excalidraw scene the user can edit in the panel (`drawing.dart`).
+  drawing('Drawing');
 
   const VisualKind(this.label);
   final String label;
 
   /// Kinds that live in the side panel; the rest render inline in the chat.
   bool get opensInPanel => switch (this) {
-    document || code || html || slides => true,
+    document || code || html || slides || drawing => true,
     _ => false,
   };
 }
@@ -55,6 +58,7 @@ final class Visual {
         'html' => VisualKind.html,
         'svg' => VisualKind.svg,
         'mermaid' => VisualKind.diagram,
+        'drawing' => VisualKind.drawing,
         _ => VisualKind.document,
       },
       // The real kind comes from the artifact it edits (see [artifactsIn]).

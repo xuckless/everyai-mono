@@ -219,8 +219,18 @@ fn semantic(issues: *Issues, name: []const u8, args: Value) !void {
     if (eql(name, "render_svg")) try checkSvg(issues, "svg", str(args, "svg") orelse "");
     if (eql(name, "create_artifact") and eql(str(args, "kind") orelse "", "svg"))
         try checkSvg(issues, "content", str(args, "content") orelse "");
+    if (eql(name, "create_artifact") and eql(str(args, "kind") orelse "", "drawing"))
+        try checkDrawing(issues, str(args, "content") orelse "");
     if (eql(name, "web_fetch")) if (str(args, "url")) |u| if (!blank(u) and !std.mem.startsWith(u8, u, "https://") and !std.mem.startsWith(u8, u, "http://"))
         try issues.add("url must start with https:// or http://", .{});
+
+    if (eql(name, "memory")) {
+        const action = str(args, "action") orelse "";
+        if (!eql(action, "remove") and blank(str(args, "text") orelse "")) try issues.add("text is required for action {s}", .{action});
+        if (!eql(action, "add") and blank(str(args, "old_text") orelse "")) try issues.add("old_text is required for action {s}", .{action});
+    }
+    if (eql(name, "search_chats") and blank(str(args, "query") orelse "") and blank(str(args, "chat_id") orelse ""))
+        try issues.add("give a query or a chat_id", .{});
 
     if (eql(name, "render_chart")) for (arr(args, "series"), 0..) |s, i| {
         if (arr(s, "points").len == 0) try issues.add("series[{d}].points is empty", .{i});
@@ -267,6 +277,23 @@ fn checkSvg(issues: *Issues, field: []const u8, svg: []const u8) !void {
     // Figures with many shapes need ids so edit_artifact can target parts.
     if (shapeCount(svg) >= min_shapes_for_ids and !hasId(svg))
         try issues.add("{s}: give the layers and key shapes stable ids (e.g. <g id=\"sky\">, <circle id=\"sun\">) so later edits can find them", .{field});
+}
+
+/// A drawing is Excalidraw scene JSON (or a bare element list) whose
+/// elements each name a type; the app fills in the rest of each element.
+fn checkDrawing(issues: *Issues, content: []const u8) !void {
+    if (blank(content)) return;
+    const scene = std.json.parseFromSliceLeaky(Value, issues.arena, content, .{}) catch
+        return issues.add("content must be Excalidraw scene JSON: {{\"type\":\"excalidraw\",\"elements\":[...]}}", .{});
+    const elements: []const Value = switch (scene) {
+        .array => |a| a.items,
+        .object => arr(scene, "elements"),
+        else => &.{},
+    };
+    if (elements.len == 0) return issues.add("content: the scene has no elements", .{});
+    for (elements, 0..) |e, i| {
+        if (e != .object or str(e, "type") == null) try issues.add("content: elements[{d}] needs a string type (rectangle, ellipse, diamond, text, arrow, line)", .{i});
+    }
 }
 
 const min_shapes_for_ids = 6;
@@ -383,6 +410,43 @@ test "ask_user needs 1-4 questions with 2-4 labeled options" {
         \\{"questions":[{"question":"Which tone?","options":[{"label":"Formal"},{"description":"no label"}]}]}
     );
     try std.testing.expect((try check(a, "ask_user", unlabeled)) != null);
+}
+
+test "memory and search_chats need the fields their action uses" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expect((try check(a, "memory", try parse(a,
+        \\{"action":"add","target":"user","text":"Prefers metric units."}
+    ))) == null);
+    try std.testing.expect((try check(a, "memory", try parse(a,
+        \\{"action":"replace","target":"notes","text":"x"}
+    ))) != null);
+    try std.testing.expect((try check(a, "memory", try parse(a,
+        \\{"action":"forget","target":"user","old_text":"x"}
+    ))) != null);
+    try std.testing.expect((try check(a, "search_chats", try parse(a, "{}"))) != null);
+    try std.testing.expect((try check(a, "search_chats", try parse(a,
+        \\{"query":"tax return"}
+    ))) == null);
+}
+
+test "drawings are Excalidraw scene JSON with typed elements" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expect((try check(a, "create_artifact", try parse(a,
+        \\{"id":"d","title":"D","kind":"drawing","content":"{\"type\":\"excalidraw\",\"elements\":[{\"type\":\"rectangle\",\"x\":0,\"y\":0}]}"}
+    ))) == null);
+    try std.testing.expect((try check(a, "create_artifact", try parse(a,
+        \\{"id":"d","title":"D","kind":"drawing","content":"a box"}
+    ))) != null);
+    try std.testing.expect((try check(a, "create_artifact", try parse(a,
+        \\{"id":"d","title":"D","kind":"drawing","content":"{\"elements\":[{\"x\":1}]}"}
+    ))) != null);
+    try std.testing.expect((try check(a, "create_artifact", try parse(a,
+        \\{"id":"d","title":"D","kind":"drawing","content":"[]"}
+    ))) != null);
 }
 
 test "svg style rules and stable ids" {

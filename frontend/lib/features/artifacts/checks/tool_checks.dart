@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../chat/domain/message.dart';
 import '../domain/artifact.dart';
+import '../domain/drawing.dart';
 import '../export/doc_model.dart';
 import 'diagram_render.dart';
 import 'math_check.dart';
@@ -70,6 +71,7 @@ class AppToolChecker {
           'code' => VisualKind.code,
           'html' => VisualKind.html,
           'svg' => VisualKind.svg,
+          'drawing' => VisualKind.drawing,
           final String _ => VisualKind.document,
           _ => artifactsIn(history).where((a) => a.id == id).lastOrNull?.latest.kind ?? VisualKind.document,
         };
@@ -79,6 +81,7 @@ class AppToolChecker {
         final problems = switch (kind) {
           VisualKind.diagram => [?(await _drawDiagram(content)).error],
           VisualKind.document => await _documentProblems(content),
+          VisualKind.drawing => drawingProblems(content),
           _ => const <String>[],
         };
         if (problems.isEmpty) return (text: shown, isError: false);

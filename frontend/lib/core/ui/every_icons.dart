@@ -49,7 +49,8 @@ enum EveryIcon {
   diagram(c.CupertinoIcons.flowchart, f.FluentIcons.flow, m.Icons.account_tree_outlined),
   image(c.CupertinoIcons.photo, f.FluentIcons.photo2, m.Icons.image_outlined),
   play(c.CupertinoIcons.play_circle, f.FluentIcons.play, m.Icons.play_circle_outline_rounded),
-  pause(c.CupertinoIcons.pause_circle, f.FluentIcons.pause, m.Icons.pause_circle_outline_rounded);
+  pause(c.CupertinoIcons.pause_circle, f.FluentIcons.pause, m.Icons.pause_circle_outline_rounded),
+  drawing(c.CupertinoIcons.scribble, f.FluentIcons.pen_workspace, m.Icons.draw_outlined);
 
   const EveryIcon(this._apple, this._fluent, this._material);
 

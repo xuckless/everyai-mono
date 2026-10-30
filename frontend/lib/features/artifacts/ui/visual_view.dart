@@ -10,9 +10,11 @@ import '../../chat/domain/message.dart';
 import '../../chat/ui/chat_markdown.dart';
 import '../artifact_providers.dart';
 import '../domain/artifact.dart';
+import '../domain/drawing.dart';
 import 'download_button.dart';
 import 'image_view.dart';
 import 'renderers/chart_view.dart';
+import 'renderers/drawing_page.dart';
 import 'renderers/flashcards_view.dart';
 import 'renderers/quiz_view.dart';
 import 'renderers/slides_view.dart';
@@ -29,6 +31,7 @@ EveryIcon iconOf(VisualKind kind) => switch (kind) {
   VisualKind.flashcards => EveryIcon.cards,
   VisualKind.slides => EveryIcon.slides,
   VisualKind.image => EveryIcon.image,
+  VisualKind.drawing => EveryIcon.drawing,
 };
 
 /// The rendered content of a visual. [expanded] is the side panel's size.
@@ -74,6 +77,13 @@ class VisualBody extends ConsumerWidget {
       VisualKind.flashcards => FlashcardsView(visual: visual, height: expanded ? 300 : 210),
       VisualKind.slides => SlidesView(visual: visual, showNotes: expanded),
       VisualKind.image => RasterImageView(bytes: visual.args['bytes'] as Uint8List?, maxHeight: expanded ? 900 : 512),
+      VisualKind.drawing => WebContentView(
+        html: drawingPage(scene: content, mermaid: visual.args['mermaid'] as String?, dark: dark),
+        fallbackSource: content,
+        height: expanded ? null : 360,
+        surface: WebSurface.drawing,
+        onScene: (scene) => ref.read(drawingDraftProvider(visual.callId).notifier).set(scene),
+      ),
     };
   }
 }
@@ -138,6 +148,7 @@ class InlineVisual extends ConsumerWidget {
 
     final subtitle = [
       switch (part.toolName) {
+        _ when call.args['edited_by'] == 'user' => 'Edited by you',
         'update_artifact' => 'Updated ${visual.kind.label.toLowerCase()}',
         'edit_artifact' => 'Edited ${visual.kind.label.toLowerCase()}',
         _ => visual.kind.label,
@@ -147,6 +158,11 @@ class InlineVisual extends ConsumerWidget {
         VisualKind.quiz => '${(visual.args['questions'] as List?)?.length ?? 0} questions',
         VisualKind.flashcards => '${(visual.args['cards'] as List?)?.length ?? 0} cards',
         VisualKind.slides => '${slidesOf(visual).length} slides',
+        VisualKind.drawing => switch (drawingElementCount(visual.str('content'))) {
+          0 => null,
+          1 => '1 element',
+          final n => '$n elements',
+        },
         VisualKind.code when visual.str('language').isNotEmpty => visual.str('language'),
         _ => null,
       },

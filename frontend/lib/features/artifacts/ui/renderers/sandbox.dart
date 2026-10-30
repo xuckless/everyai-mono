@@ -18,12 +18,17 @@ enum WebSurface {
   /// An inline chat widget: transparent, themed text, sized to its content,
   /// and `window.everyai.send(text)` posts a chat message.
   widget,
+
+  /// The Excalidraw editor (our own page, `drawing_page.dart`): it reports
+  /// the scene after each edit.
+  drawing,
 }
 
 /// Messages a sandboxed page posts to the host page, which forwards them to
 /// these webview handlers.
 const sendHandler = 'everyaiSend';
 const heightHandler = 'everyaiHeight';
+const sceneHandler = 'everyaiScene';
 
 /// The longest message a widget may send.
 const maxWidgetMessage = 4000;
@@ -156,6 +161,7 @@ if(!d||typeof d!=="object"||!b)return;
 var a=navigator.userActivation;
 if(d.everyai==="send"&&typeof d.text==="string"&&!(a&&!a.isActive))b.callHandler("$sendHandler",${jsonEncode(token)},d.text.slice(0,$maxWidgetMessage));
 if(d.everyai==="height"&&typeof d.height==="number")b.callHandler("$heightHandler",${jsonEncode(token)},d.height);
+${surface == WebSurface.drawing ? 'if(d.everyai==="scene"&&typeof d.scene==="string")b.callHandler("$sceneHandler",${jsonEncode(token)},d.scene);' : ''}
 });
 })();</script></body></html>''';
 }

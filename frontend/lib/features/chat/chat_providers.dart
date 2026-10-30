@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -143,6 +144,39 @@ final class ChatController extends Notifier<ChatSessionState> {
     await _repo.deleteMessages(dropped.map((m) => m.id));
     final (:model, :prompt) = parseMention(text, _catalog);
     await _startTurn(prompt: prompt, model: model ?? state.model, userText: text.trim(), attachments: attachments);
+  }
+
+  /// Saves an artifact version the user made in the side panel (an edited
+  /// drawing) as a `create_artifact` or `update_artifact` call marked
+  /// `edited_by: user`, at the end of the chat, so the model sees it next
+  /// turn. It joins the last answer, or a new assistant message when the chat
+  /// does not end in a finished answer. False while a turn runs.
+  Future<bool> saveUserArtifact(String toolName, Map<String, Object?> args) async {
+    if (state.phase.busy || state.phase is Loading) return false;
+    final part = ToolCallPart(
+      toolName: toolName,
+      argumentsJson: jsonEncode({...args, 'edited_by': 'user'}),
+      callId: 'user-${_repo.newId()}',
+    );
+    final last = state.messages.lastOrNull;
+    final message = last != null && !last.isUser && last.status == MessageStatus.complete
+        ? last.copyWith(parts: [...last.parts, part])
+        : Message(
+            id: _repo.newId(),
+            conversationId: conversationId,
+            role: Role.assistant,
+            parts: [part],
+            createdAt: DateTime.now(),
+          );
+    state = state.copyWith(
+      messages: List.unmodifiable([
+        for (final m in state.messages)
+          if (m.id != message.id) m,
+        message,
+      ]),
+    );
+    await _repo.saveMessage(message);
+    return true;
   }
 
   /// Failed → Awaiting with the same prompt and model.

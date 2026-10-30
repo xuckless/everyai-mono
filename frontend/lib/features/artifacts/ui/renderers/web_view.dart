@@ -11,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../../core/theme/every_theme.dart';
 import '../../../chat/ui/chat_markdown.dart';
 import '../../checks/web_scripts.dart';
+import 'drawing_page.dart';
 import 'sandbox.dart';
 
 export 'sandbox.dart' show WebSurface;
@@ -40,7 +41,8 @@ $mermaidScriptMarker
 /// scripts the page asks for ([mermaidScriptMarker]) are inlined first.
 ///
 /// A [WebSurface.widget] with no [height] sizes itself to its content, and
-/// its `window.everyai.send(text)` calls [onSend].
+/// its `window.everyai.send(text)` calls [onSend]. A [WebSurface.drawing]
+/// reports the edited scene to [onScene].
 class WebContentView extends StatefulWidget {
   const WebContentView({
     super.key,
@@ -50,6 +52,7 @@ class WebContentView extends StatefulWidget {
     this.surface = WebSurface.page,
     this.interactive = true,
     this.onSend,
+    this.onScene,
   });
 
   final String html;
@@ -62,6 +65,7 @@ class WebContentView extends StatefulWidget {
   /// False shows the page without running any script.
   final bool interactive;
   final ValueChanged<String>? onSend;
+  final ValueChanged<String>? onScene;
 
   @override
   State<WebContentView> createState() => _WebContentViewState();
@@ -150,6 +154,14 @@ class _WebContentViewState extends State<WebContentView> {
                 callback: (args) {
                   final text = acceptWidgetMessage(acceptHandlerCall(args, _token));
                   if (text != null && mounted) _send(text);
+                  return null;
+                },
+              );
+              controller.addJavaScriptHandler(
+                handlerName: sceneHandler,
+                callback: (args) {
+                  final scene = acceptHandlerCall(args, _token);
+                  if (scene is String && scene.length <= maxSceneLength && mounted) widget.onScene?.call(scene);
                   return null;
                 },
               );
