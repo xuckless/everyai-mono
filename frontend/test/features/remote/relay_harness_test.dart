@@ -363,7 +363,11 @@ void main() {
     final session = await harness.start(_spec(remotePath('host-1', '/work/app')));
     final res = await client.request('GET', 'api/conversations/conv-1/events/search');
     expect(res.status, 200);
-    expect(((jsonDecode(res.body) as Map)['items'] as List).single['data'], hasLength(6 << 20));
+    expect(jsonDecode(res.body), {
+      'items': [
+        {'id': 'big', 'data': hasLength(6 << 20)},
+      ],
+    });
     // The device's side splits too.
     await session.send('y' * (5 << 20));
     final sent = server.requests.lastWhere((r) => r.$2 == '/api/conversations/conv-1/events');
@@ -386,7 +390,7 @@ void main() {
     );
     final session = await harness.start(_spec(remotePath('host-1', '/work/app/./lib/..')));
     final create = server.requests.firstWhere((r) => r.$1 == 'POST' && r.$2 == '/api/conversations');
-    expect((jsonDecode(create.$4) as Map)['workspace']['working_dir'], '/work/app');
+    expect((jsonDecode(create.$4) as Map)['workspace'], {'kind': 'LocalWorkspace', 'working_dir': '/work/app'});
     await session.close();
   });
 

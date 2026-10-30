@@ -8,6 +8,7 @@ import '../../core/net/api_client.dart';
 import '../../core/net/api_error.dart';
 import '../../core/providers.dart';
 import '../code/gateway_key.dart';
+import '../remote/remote_providers.dart' show pairedHostsProvider, remoteHostingProvider;
 import 'data/token_store.dart';
 import 'domain/auth_state.dart';
 
@@ -55,6 +56,9 @@ final class AuthController extends Notifier<AuthState> {
   });
 
   Future<void> signOut() async {
+    // Remote hosting and pairings belong to this account too. They go
+    // first, while the backend still takes this account's calls.
+    await _leaveRemote();
     final refresh = await _tokens.readRefreshToken();
     if (refresh != null) {
       unawaited(_api.postJson('v1/auth/logout', {'refresh_token': refresh}).then((_) {}, onError: (_) {}));
@@ -68,6 +72,22 @@ final class AuthController extends Notifier<AuthState> {
     }
     if (ref.read(appConfigProvider).devSkipAuth) return;
     state = const SignedOut();
+  }
+
+  /// Stops hosting and drops this device's pairings: the next account to
+  /// sign in here must not drive this computer for the old one's devices,
+  /// nor reach the old account's hosts.
+  Future<void> _leaveRemote() async {
+    try {
+      await ref.read(remoteHostingProvider.notifier).signedOut();
+    } on Object {
+      // No keychain (a test): nothing was kept.
+    }
+    try {
+      await ref.read(pairedHostsProvider.notifier).signedOut();
+    } on Object {
+      // Likewise.
+    }
   }
 
   Future<void> _authenticate(AuthMethod method, Future<Map<String, Object?>> Function() call) async {

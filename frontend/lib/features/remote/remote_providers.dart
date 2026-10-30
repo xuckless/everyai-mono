@@ -84,15 +84,41 @@ final class RemoteHosting extends Notifier<RemoteHostingState> {
   RemoteStore get _store => ref.read(remoteStoreProvider);
   RemoteApi get _api => ref.read(remoteApiProvider);
 
+  /// Bumped on sign-out, so a load still under way doesn't start hosting again.
+  int _epoch = 0;
+
   Future<void> _load() async {
+    final epoch = _epoch;
     final host = await _store.host();
+    if (epoch != _epoch || !ref.mounted) return;
     if (host == null) {
       state = state.copyWith(loaded: true);
       return;
     }
     final identity = await RemoteIdentity.restore(host.privateKey);
+    if (epoch != _epoch || !ref.mounted) return;
     state = RemoteHostingState(host: host, fingerprint: keyFingerprint(identity.publicKey), loaded: true);
     if (host.enabled) await _startLink(host, identity);
+  }
+
+  /// The account signed out: hosting stops and this desktop leaves the
+  /// account. Its `rh_` token and key belong to that account, so the next
+  /// one to sign in sets up hosting of its own, and the old account's
+  /// devices can no longer reach this computer. Call it while still signed
+  /// in (the host is removed on the backend too, best effort).
+  Future<void> signedOut() async {
+    _epoch++;
+    final host = state.host ?? await _store.host();
+    await _stopLink();
+    if (host != null) {
+      try {
+        await _api.deleteHost(host.id);
+      } on Object {
+        // Offline: the backend's entry stays, but nothing here can use it.
+      }
+    }
+    await _store.saveHost(null);
+    if (ref.mounted) state = const RemoteHostingState(loaded: true);
   }
 
   /// Turns hosting on, registering this desktop with the backend the first time.
@@ -300,6 +326,24 @@ final class PairedHosts extends AsyncNotifier<List<PairedHost>> {
         await _save([..._hosts.where((h) => h.deviceId != host.deviceId)]);
     }
     return status;
+  }
+
+  /// The account signed out: every pairing goes, here and on the backend
+  /// (best effort), and the open links close. The `rd_` tokens and keys
+  /// belong to that account; the next one to sign in pairs its own.
+  Future<void> signedOut() async {
+    final store = ref.read(remoteStoreProvider);
+    final hosts = state.value ?? await store.paired();
+    await ref.read(remoteLinksProvider).closeAll();
+    for (final h in hosts) {
+      try {
+        await ref.read(remoteApiProvider).deleteDevice(h.deviceId);
+      } on Object {
+        // Offline or gone already.
+      }
+    }
+    await store.savePaired(const []);
+    if (ref.mounted) state = const AsyncData([]);
   }
 
   /// Unpairs this device from [hostId].
