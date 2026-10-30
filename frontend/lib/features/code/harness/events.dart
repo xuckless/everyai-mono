@@ -233,8 +233,12 @@ final class ConversationFailure extends HarnessEvent {
 /// Not from the server: the session's event socket connected or dropped
 /// (it reconnects on its own).
 final class ConnectionChange extends HarnessEvent {
-  const ConnectionChange({required this.connected}) : super(id: '', raw: const {});
+  const ConnectionChange({required this.connected, this.restarted = false}) : super(id: '', raw: const {});
   final bool connected;
+
+  /// Connected to a different server than before (the sidecar restarted
+  /// after a crash): a run that was going on was cut off.
+  final bool restarted;
 }
 
 final class UnknownEvent extends HarnessEvent {

@@ -5,6 +5,9 @@ final class _Unsupported implements Sidecar {
   Future<AgentServerEndpoint> endpoint() => Future.error(const SidecarError('The coding agent runs on desktop only.'));
 
   @override
+  Stream<void> get restarts => const Stream.empty();
+
+  @override
   Future<void> stop() async {}
 }
 

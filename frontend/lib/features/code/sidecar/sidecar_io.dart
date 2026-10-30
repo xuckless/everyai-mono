@@ -12,7 +12,7 @@ const _url = String.fromEnvironment('AGENT_SERVER_URL');
 const _key = String.fromEnvironment('AGENT_SERVER_KEY');
 const _bin = String.fromEnvironment('AGENT_SERVER_BIN');
 
-Sidecar createSidecar() => _url.isNotEmpty ? _External() : _Process();
+Sidecar createSidecar() => _url.isNotEmpty ? _External() : ProcessSidecar();
 
 /// A server someone else started (`AGENT_SERVER_URL`).
 final class _External implements Sidecar {
@@ -21,31 +21,85 @@ final class _External implements Sidecar {
       AgentServerEndpoint(Uri.parse(_url.endsWith('/') ? _url : '$_url/'), _key);
 
   @override
+  Stream<void> get restarts => const Stream.empty();
+
+  @override
   Future<void> stop() async {}
 }
 
 /// The binary, run as a child process on a free loopback port with a fresh
 /// session key. Its state (conversations, logs) lives in app support
 /// `agent-server/`, so sessions survive restarts.
-final class _Process implements Sidecar {
+///
+/// A server that exits on its own (a crash, a kill) is started again at
+/// once, within [CrashPolicy]; [restarts] then tells the sessions, which
+/// reattach to their persisted conversations.
+final class ProcessSidecar implements Sidecar {
+  /// [binary] and [home] stand in for the found binary and app support
+  /// `agent-server/` (tests).
+  ProcessSidecar({this._binary, this._home, CrashPolicy? policy}) : _policy = policy ?? CrashPolicy();
+
+  final String? _binary;
+  final Directory? _home;
+  final CrashPolicy _policy;
   Process? _process;
   Future<AgentServerEndpoint>? _ready;
+  final _restarts = StreamController<void>.broadcast();
+
+  /// A server crashed since the last one was ready: the next ready one is a restart.
+  bool _crashed = false;
 
   @override
-  Future<AgentServerEndpoint> endpoint() => _ready ??= _start().catchError((Object e) {
-    _ready = null;
-    throw e;
-  });
+  Stream<void> get restarts => _restarts.stream;
+
+  /// The running server's process id, if any (tests).
+  @visibleForTesting
+  int? get pid => _process?.pid;
+
+  @override
+  Future<AgentServerEndpoint> endpoint() {
+    if (_ready case final ready?) return ready;
+    if (_policy.blockedUntil(DateTime.now()) case final until?) {
+      final wait = until.difference(DateTime.now()).inSeconds + 1;
+      return Future.error(
+        SidecarError('The agent server keeps crashing; trying again in ${wait}s. See agent-server/server.log.'),
+      );
+    }
+    late final Future<AgentServerEndpoint> ready;
+    ready = _ready = _start().then(
+      (e) {
+        if (_crashed) {
+          _crashed = false;
+          _restarts.add(null);
+        }
+        return e;
+      },
+      onError: (Object e) {
+        if (_ready == ready) _ready = null;
+        throw e;
+      },
+    );
+    return ready;
+  }
+
+  /// [wasUp]: it had answered `/ready`. One that dies while starting fails
+  /// that start instead; it still counts toward the crash limit.
+  void _onCrash({required bool wasUp}) {
+    _policy.crashed(DateTime.now());
+    if (!wasUp) return;
+    _crashed = true;
+    if (_policy.blockedUntil(DateTime.now()) == null) endpoint().ignore();
+  }
 
   Future<AgentServerEndpoint> _start() async {
-    final bin = await _findBinary();
+    final bin = _binary ?? await _findBinary();
     if (bin == null) {
       throw const SidecarError(
         'The agent server isn\'t installed. Run frontend/tool/fetch_agent_server.sh, or start the app with '
         'scripts/dev.sh.',
       );
     }
-    final home = Directory('${(await getApplicationSupportDirectory()).path}/agent-server');
+    final home = _home ?? Directory('${(await getApplicationSupportDirectory()).path}/agent-server');
     await home.create(recursive: true);
     await _killStale(home);
 
@@ -63,6 +117,7 @@ final class _Process implements Sidecar {
     final log = File('${home.path}/server.log').openWrite(mode: FileMode.append)
       ..writeln('--- ${DateTime.now().toIso8601String()} $bin on :$port');
     var exited = false;
+    var up = false;
     process.stdout.listen(log.add);
     process.stderr.listen(log.add);
     unawaited(
@@ -70,9 +125,11 @@ final class _Process implements Sidecar {
         exited = true;
         log.writeln('--- exited with $code');
         await log.close();
+        // Not stopped by us: a crash.
         if (_process == process) {
           _process = null;
           _ready = null;
+          _onCrash(wasUp: up);
         }
       }),
     );
@@ -86,12 +143,17 @@ final class _Process implements Sidecar {
         if (exited) throw SidecarError('The agent server stopped while starting. See ${home.path}/server.log.');
         try {
           final res = await client.get(base.resolve('ready')).timeout(const Duration(seconds: 2));
-          if (res.statusCode == 200) return AgentServerEndpoint(base, key);
+          if (res.statusCode == 200 && !exited) {
+            up = true;
+            return AgentServerEndpoint(base, key);
+          }
         } on Object {
           // Not listening yet.
         }
         await Future<void>.delayed(const Duration(milliseconds: 400));
       }
+      // Not a crash: this start gave up on it.
+      if (_process == process) _process = null;
       process.kill();
       throw SidecarError('The agent server didn\'t start in time. See ${home.path}/server.log.');
     } finally {

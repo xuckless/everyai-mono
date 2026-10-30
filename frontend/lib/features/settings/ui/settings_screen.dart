@@ -164,6 +164,11 @@ class SettingsScreen extends ConsumerWidget {
           const AdaptiveSectionHeader('About'),
           AdaptiveListTile(title: const Text('Server'), subtitle: Text(config.apiBaseUrl.toString())),
           const AdaptiveListTile(title: Text('Version'), subtitle: Text('0.1.0')),
+          AdaptiveListTile(
+            title: const Text('Third-party notices'),
+            subtitle: const Text('Open-source software EveryAI includes, and its licenses'),
+            onTap: () => context.go(Routes.notices),
+          ),
         ],
       ),
     );

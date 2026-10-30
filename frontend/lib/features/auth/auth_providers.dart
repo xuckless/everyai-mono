@@ -7,6 +7,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 import '../../core/net/api_client.dart';
 import '../../core/net/api_error.dart';
 import '../../core/providers.dart';
+import '../code/gateway_key.dart';
 import 'data/token_store.dart';
 import 'domain/auth_state.dart';
 
@@ -59,6 +60,12 @@ final class AuthController extends Notifier<AuthState> {
       unawaited(_api.postJson('v1/auth/logout', {'refresh_token': refresh}).then((_) {}, onError: (_) {}));
     }
     await _tokens.clear();
+    // The Code gateway key belongs to this account; the next user mints their own.
+    try {
+      await ref.read(gatewayKeysProvider).clear();
+    } on Object {
+      // No keychain (or no preferences in a test): nothing was kept.
+    }
     if (ref.read(appConfigProvider).devSkipAuth) return;
     state = const SignedOut();
   }

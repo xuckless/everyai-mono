@@ -20,7 +20,37 @@ abstract interface class Sidecar {
   /// Starts the server if it isn't running and resolves once it is ready.
   Future<AgentServerEndpoint> endpoint();
 
+  /// Fires when a server that crashed is running again (new port and key).
+  /// Sessions reconnect at once and resume a run the crash cut off.
+  Stream<void> get restarts;
+
   Future<void> stop();
+}
+
+/// How often a crashed server is started again: at once, unless it crashed
+/// [limit] times within [window]; then not before [cooldown] has passed since
+/// the last crash, so a server that dies on start doesn't spin.
+final class CrashPolicy {
+  CrashPolicy({this.limit = 3, this.window = const Duration(minutes: 1), this.cooldown = const Duration(seconds: 30)});
+
+  final int limit;
+  final Duration window;
+  final Duration cooldown;
+  final _crashes = <DateTime>[];
+
+  void crashed(DateTime at) {
+    _crashes
+      ..add(at)
+      ..removeWhere((t) => at.difference(t) > window);
+  }
+
+  /// When a start is allowed again, or null if it is now.
+  DateTime? blockedUntil(DateTime now) {
+    final recent = _crashes.where((t) => now.difference(t) <= window).toList();
+    if (recent.length < limit) return null;
+    final until = recent.last.add(cooldown);
+    return now.isBefore(until) ? until : null;
+  }
 }
 
 final class SidecarError implements Exception {

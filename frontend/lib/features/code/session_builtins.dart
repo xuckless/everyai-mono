@@ -40,6 +40,7 @@ mixin _SessionBuiltins on Notifier<CodeSessionState> {
       apiKey: await gatewayKey(ref),
       sessionTag: info.id,
       model: asideModel,
+      onUnauthorized: (k) => remintGatewayKey(ref, k),
     );
   }
 

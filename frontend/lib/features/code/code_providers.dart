@@ -32,6 +32,7 @@ import 'domain/subagents.dart';
 import 'domain/questions.dart';
 import 'domain/session_commands.dart';
 import 'domain/transcript.dart';
+import 'gateway_key.dart';
 import 'git/git_service.dart';
 import 'harness/events.dart';
 import 'harness/fake_harness.dart';
@@ -90,24 +91,12 @@ final _sidecarHarnessProvider = Provider<Harness>((ref) {
   return OpenHandsHarness.located(() async {
     final e = await sidecar.endpoint();
     return (e.baseUrl, e.sessionApiKey);
-  });
+  }, restarts: sidecar.restarts);
 });
 
 /// The user's `sk-eai-` key for the backend's OpenAI-compatible gateway; the
-/// agent-server sends its LLM calls there. Minted once, then kept.
-Future<String> gatewayKey(Ref ref) async {
-  const prefKey = 'code.gateway_key';
-  final prefs = ref.read(preferencesProvider);
-  if (prefs[prefKey] case final key? when key.isNotEmpty) return key;
-  // Dev builds skip sign-in; the backend's DEV_AUTH treats them as its dev user.
-  final authenticated = !ref.read(appConfigProvider).devSkipAuth;
-  final res = await ref.read(apiClientProvider).postJson('v1/keys', {
-    'name': 'EveryAI Code',
-  }, authenticated: authenticated);
-  final key = res['key']! as String;
-  prefs[prefKey] = key;
-  return key;
-}
+/// agent-server sends its LLM calls there. Kept in the keychain (see [GatewayKeys]).
+Future<String> gatewayKey(Ref ref) => ref.read(gatewayKeysProvider).key();
 
 /// The backend's OpenAI-compatible gateway (`…/v1`), the agent's LLM provider.
 String gatewayBaseUrl(Ref ref) => ref.read(appConfigProvider).apiBaseUrl.resolve('v1').toString();
@@ -715,7 +704,11 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
   void _onEvent(HarnessEvent event) {
     if (event is ConnectionChange) {
       state = state.copyWith(connected: event.connected);
+      if (event.restarted) _resumeAfterRestart();
       return;
+    }
+    if (_live && event is ConversationFailure && isGatewayAuthFailure(event.message)) {
+      unawaited(_renewGatewayKey());
     }
     if (event is ChatMessage && event.fromUser) {
       _doom.reset();
@@ -971,7 +964,12 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     try {
       final summarize =
           summarizer ??
-          gatewaySummarizer(baseUrl: gatewayBaseUrl(ref), apiKey: await gatewayKey(ref), sessionTag: info.id);
+          gatewaySummarizer(
+            baseUrl: gatewayBaseUrl(ref),
+            apiKey: await gatewayKey(ref),
+            sessionTag: info.id,
+            onUnauthorized: (k) => remintGatewayKey(ref, k),
+          );
       final summary = cleanSummary(await summarize(summaryRequest(plan, focus: focus)));
       if (summary == null) return const CompactOutcome.failed("The summary didn't come back in the expected form.");
       final message = continuationMessage(summary: summary, recent: renderTail(plan), resume: resume);
@@ -1055,6 +1053,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
             apiKey: await gatewayKey(ref),
             sessionTag: info.id,
             model: asideModel,
+            onUnauthorized: (k) => remintGatewayKey(ref, k),
           );
       final answer = await ask(btwRequest(record: renderSessionRecord(_events), question: question));
       if (!ref.mounted) return;
@@ -1105,6 +1104,54 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
   /// upstream error); the conversation keeps everything so far. A stuck
   /// agent needs a new message: the server's stuck check reads the history
   /// and would stop a plain re-run at once.
+  /// The sidecar crashed and came back: the conversation is reloaded from
+  /// disk, but a run it was in the middle of stopped. Carry it on (waiting
+  /// approvals and questions keep waiting for the user).
+  void _resumeAfterRestart() {
+    final t = state.transcript;
+    if (!t.running || t.pending.isNotEmpty || _doomOpen) return;
+    // Give the replayed state a moment to settle first.
+    Timer(const Duration(milliseconds: 500), () {
+      if (!ref.mounted || !state.transcript.running || !state.connected) return;
+      _session?.resume().ignore();
+    });
+  }
+
+  DateTime? _keyRenewedAt;
+
+  /// The gateway refused the agent's key (revoked, another account, a reset
+  /// dev database): mint a new one, hand it to the agent and run again. Once
+  /// per few minutes, so a refusal the new key doesn't fix can't loop.
+  Future<void> _renewGatewayKey() async {
+    final last = _keyRenewedAt;
+    if (last != null && DateTime.now().difference(last) < const Duration(minutes: 5)) return;
+    _keyRenewedAt = DateTime.now();
+    final sessions = ref.read(codeSessionsProvider.notifier);
+    final info = sessions.byId(sessionId);
+    final session = _session;
+    if (info == null || session == null || isDemoPath(info.workingDir)) return;
+    try {
+      await ref.read(gatewayKeysProvider).renewAfterRefusal();
+      if (!ref.mounted) return;
+      final project = ref.read(codeProjectsProvider).where((p) => p.id == info.projectId).firstOrNull;
+      final spec = await sessions.specFor(
+        sessionId: info.id,
+        projectDir: project?.path ?? info.workingDir,
+        workingDir: info.workingDir,
+        model: info.model,
+        mode: state.mode,
+        effort: info.effort,
+        holdClientTools: info.holdClientTools,
+        // A subagent bills to the session that started it.
+        sessionTag: info.parentId,
+      );
+      await session.switchLlm(spec);
+      await session.resume();
+    } on Object {
+      // The error stays in the transcript; Retry is still there.
+    }
+  }
+
   Future<void> retry() async {
     if (state.transcript.status == ExecutionStatus.stuck) return send('Carry on from where you stopped.');
     await _session?.resume();

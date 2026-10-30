@@ -23,10 +23,15 @@ final class OpenHandsHarness implements Harness {
   OpenHandsHarness({required Uri baseUrl, required String sessionApiKey, http.Client? client})
     : this.located(() async => (baseUrl, sessionApiKey), client: client);
 
-  OpenHandsHarness.located(this._locate, {http.Client? client}) : _http = client ?? http.Client();
+  /// [restarts] fires when the server came back after a crash; sessions
+  /// waiting to reconnect do so at once.
+  OpenHandsHarness.located(this._locate, {http.Client? client, Stream<void>? restarts})
+    : _http = client ?? http.Client(),
+      _restarts = restarts ?? const Stream.empty();
 
   final AgentServerLocator _locate;
   final http.Client _http;
+  final Stream<void> _restarts;
 
   Future<Object?> _request(String method, String path, [Object? body]) async {
     final (base, key) = await _locate();
@@ -97,6 +102,7 @@ final class OpenHandsHarness implements Harness {
       rethrow;
     }
     final session = _OpenHandsSession(this, conversationId);
+    session._restartSub = _restarts.listen((_) => session._reconnectNow());
     unawaited(session._connect());
     return session;
   }
@@ -166,6 +172,11 @@ final class _OpenHandsSession implements HarnessSession {
   StreamSubscription<Object?>? _sub;
   bool _closed = false;
   int _retries = 0;
+  Timer? _retry;
+  StreamSubscription<void>? _restartSub;
+
+  /// The server ("base key") the socket last connected to; another one means it restarted.
+  String? _server;
 
   @override
   Stream<HarnessEvent> get events {
@@ -183,10 +194,14 @@ final class _OpenHandsSession implements HarnessSession {
 
   Future<void> _connect() async {
     if (_closed) return;
+    _retry?.cancel();
+    _retry = null;
     final WebSocketChannel socket;
+    String? server;
     try {
       // Asked each time: the sidecar may have restarted on another port.
       final (base, key) = await _h._locate();
+      server = '$base $key';
       final ws = base.replace(
         scheme: base.scheme == 'https' ? 'wss' : 'ws',
         path: '${base.path.replaceAll(RegExp(r'/$'), '')}/sockets/events/$id',
@@ -203,7 +218,9 @@ final class _OpenHandsSession implements HarnessSession {
       unawaited(socket.sink.close());
       return;
     }
-    _emit(const ConnectionChange(connected: true));
+    final restarted = _server != null && _server != server;
+    _server = server;
+    _emit(ConnectionChange(connected: true, restarted: restarted));
     _sub = socket.stream.listen(
       (frame) {
         _retries = 0;
@@ -239,7 +256,14 @@ final class _OpenHandsSession implements HarnessSession {
     _emit(const ConnectionChange(connected: false));
     final delay = Duration(milliseconds: 300 * (1 << _retries.clamp(0, 5)));
     _retries++;
-    Timer(delay, _connect);
+    _retry = Timer(delay, _connect);
+  }
+
+  /// The server is back: skip the rest of the backoff.
+  void _reconnectNow() {
+    if (_closed || _retry == null) return;
+    _retries = 0;
+    unawaited(_connect());
   }
 
   String get _base => 'api/conversations/$id';
@@ -271,6 +295,8 @@ final class _OpenHandsSession implements HarnessSession {
   @override
   Future<void> close() async {
     _closed = true;
+    _retry?.cancel();
+    await _restartSub?.cancel();
     await _sub?.cancel();
     await _socket?.sink.close();
     for (final c in [..._listeners]) {
