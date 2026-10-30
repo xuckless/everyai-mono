@@ -49,6 +49,7 @@ final class CodeSessionInfo {
     this.compactedFrom = const [],
     this.parentId,
     this.parentCallId = '',
+    this.ownTag = false,
   });
 
   final String id;
@@ -84,7 +85,15 @@ final class CodeSessionInfo {
   final String? parentId;
   final String parentCallId;
 
+  /// A child billed under its own id rather than its parent's (an Ultra
+  /// step or orchestrator), so its cost can be read alone.
+  final bool ownTag;
+
   bool get isSubagent => parentId != null;
+
+  /// The id its model calls are billed under (`X-EveryAI-Session`), and
+  /// the tag its processes carry: its own, or its parent's for a subagent.
+  String get billingTag => ownTag ? id : parentId ?? id;
 
   CodeSessionInfo copyWith({
     String? title,
@@ -110,6 +119,7 @@ final class CodeSessionInfo {
     compactedFrom: compactedFrom ?? this.compactedFrom,
     parentId: parentId,
     parentCallId: parentCallId,
+    ownTag: ownTag,
   );
 
   factory CodeSessionInfo.fromJson(Map<String, Object?> json) => CodeSessionInfo(
@@ -133,6 +143,8 @@ final class CodeSessionInfo {
     createdAt: DateTime.tryParse(json['created_at'] as String? ?? '') ?? DateTime.now(),
     parentId: json['parent_id'] as String?,
     parentCallId: json['parent_call_id'] as String? ?? '',
+    // Ultra children saved before the flag was kept billed under their own id too.
+    ownTag: json['own_tag'] == true || (json['parent_call_id'] as String? ?? '').startsWith('ultra-'),
   );
 
   Map<String, Object?> toJson() => {
@@ -151,5 +163,6 @@ final class CodeSessionInfo {
     'created_at': createdAt.toIso8601String(),
     'parent_id': ?parentId,
     if (parentCallId.isNotEmpty) 'parent_call_id': parentCallId,
+    if (ownTag) 'own_tag': true,
   };
 }

@@ -49,13 +49,24 @@ final class CommandNotifier implements SystemNotifier {
 
 final systemNotifierProvider = Provider<SystemNotifier>((ref) => const CommandNotifier());
 
-/// Whether the app is in front; tests replace it.
-final appFocusedProvider = Provider<bool>((ref) => WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed);
+/// Asks whether the app is in front, at the moment of asking (a cached
+/// answer would hold for the life of the app); tests replace it.
+final appFocusedProvider = Provider<bool Function()>((ref) => _appInFront);
+
+bool _appInFront() {
+  try {
+    return WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+    // No binding (a headless test): there is no window to be behind.
+    // ignore: avoid_catching_errors
+  } on Error {
+    return true;
+  }
+}
 
 /// Notifies about a status change of [session] unless the app is in front
 /// (then the status pill and the session list already show it).
 void notifyStatusChange(Ref ref, SessionStatus? from, SessionStatus to, String session) {
   final n = notificationFor(from, to, session);
-  if (n == null || ref.read(appFocusedProvider)) return;
+  if (n == null || ref.read(appFocusedProvider)()) return;
   unawaited(ref.read(systemNotifierProvider).show(n.title, n.body));
 }

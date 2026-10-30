@@ -455,6 +455,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       effort: effort,
       parentId: parent.id,
       parentCallId: callId,
+      ownTag: ownTag,
     );
     state = [...state, info];
     _save();
@@ -564,12 +565,13 @@ final class CodeSessionState {
     List<Aside>? asides,
     Goal? goal,
     bool clearGoal = false,
+    bool clearError = false,
   }) => CodeSessionState(
     transcript: transcript ?? this.transcript,
     mode: mode ?? this.mode,
     queued: queued ?? this.queued,
     connected: connected ?? this.connected,
-    error: error ?? this.error,
+    error: clearError ? null : error ?? this.error,
     subagentNeedsInput: subagentNeedsInput ?? this.subagentNeedsInput,
     asides: asides ?? this.asides,
     goal: clearGoal ? null : goal ?? this.goal,
@@ -675,9 +677,81 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
       final title = ref.read(codeSessionsProvider.notifier).byId(sessionId)?.title ?? 'Code session';
       notifyStatusChange(ref, prev?.status, next.status, title);
     });
+    // The budget holds whether or not the session is on screen: every new
+    // reading (and a lowered budget) is checked here.
+    if (info != null) {
+      final owner = info.parentId ?? sessionId;
+      ref.listen(codeUsageProvider(sessionId), (_, _) => _enforceBudget());
+      ref.listen(codeSettingsProvider.select((s) => s.budgets[owner]), (_, _) => _enforceBudget());
+    }
     // After build returns, so the connected flag isn't overwritten.
     if (info != null) unawaited(Future.microtask(() => _connect(info)));
     return CodeSessionState(mode: info?.mode ?? AgentMode.ask);
+  }
+
+  /// The session whose budget this one spends: itself, or the one that started it.
+  String get _budgetOwner => ref.read(codeSessionsProvider.notifier).byId(sessionId)?.parentId ?? sessionId;
+
+  /// The budget note shown once spending reaches it, or null under it.
+  String? get budgetReached {
+    final owner = _budgetOwner;
+    final budget = ref.read(codeSettingsProvider).budgets[owner];
+    final spent = budgetSpentMicros(
+      owner,
+      sessions: ref.read(codeSessionsProvider),
+      usage: (id) => ref.exists(codeUsageProvider(id)) ? ref.read(codeUsageProvider(id)).value?.chargedMicros : null,
+    );
+    if (budget == null || budget <= 0 || spent < budget * 1e6) return null;
+    return 'This session reached its \$${budget.toStringAsFixed(2)} budget. Raise it in the top bar to carry on.';
+  }
+
+  /// Stops the run once the budget is reached, and tells the session that
+  /// owns the budget (an Ultra step bills under its own id, so its spend
+  /// only shows there through this).
+  void _enforceBudget() {
+    if (!ref.mounted) return;
+    final note = budgetReached;
+    if (note == null) {
+      if (state.error == _budgetNote) state = state.copyWith(clearError: true);
+      _budgetNote = null;
+    } else {
+      final t = state.transcript;
+      final busy = t.running || t.pending.isNotEmpty || t.held.isNotEmpty || t.openSubagents.isNotEmpty;
+      final last = _budgetStoppedAt;
+      // Readings arrive often; one Stop at a time (again if the run carries on).
+      if (busy && (last == null || DateTime.now().difference(last) > const Duration(seconds: 10))) {
+        _budgetStoppedAt = DateTime.now();
+        unawaited(stop());
+      }
+      if (_budgetNote != note) state = state.copyWith(error: _budgetNote = note);
+    }
+    // A child billed under its own id: its spend only reaches the owner's
+    // budget through here (after this listener returns).
+    final owner = _budgetOwner;
+    final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
+    if (owner != sessionId && (info?.ownTag ?? false)) {
+      scheduleMicrotask(() {
+        if (ref.mounted && ref.exists(codeSessionProvider(owner))) {
+          ref.read(codeSessionProvider(owner).notifier)._enforceBudget();
+        }
+      });
+    }
+  }
+
+  String? _budgetNote;
+  DateTime? _budgetStoppedAt;
+
+  /// False (with the budget note shown) when the budget is spent: nothing
+  /// more is sent, resumed or approved until it is raised.
+  bool _withinBudget() {
+    final note = budgetReached;
+    if (note == null) {
+      if (_budgetNote != null && state.error == _budgetNote) state = state.copyWith(clearError: true);
+      _budgetNote = null;
+      return true;
+    }
+    state = state.copyWith(error: _budgetNote = note);
+    return false;
   }
 
   Future<void> _connect(CodeSessionInfo info) async {
@@ -784,7 +858,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
         state.queued.isNotEmpty) {
       final [next, ...rest] = state.queued;
       state = state.copyWith(queued: rest);
-      unawaited(_checkpoint().then((_) => _sendNow(next)));
+      if (_withinBudget()) unawaited(_checkpoint().then((_) => _sendNow(next)));
     }
   }
 
@@ -847,6 +921,8 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
       _answered = pending.map((c) => c.id).join(',');
       await session.respond(accept: false, reason: text);
     }
+    // It becomes a user turn like any other, so it gets a checkpoint to rewind to.
+    await _checkpoint();
     await session.send(_noted(text));
   }
 
@@ -892,6 +968,11 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     if (key == _answered) return;
     final verdict = policy.decideAll(waiting, state.mode);
     if (verdict == null) return;
+    // Over budget: nothing is approved on its own; the run stops instead.
+    if (verdict.accept && !_withinBudget()) {
+      unawaited(stop());
+      return;
+    }
     _answered = key;
     final session = _session;
     if (verdict.accept) {
@@ -943,6 +1024,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
   /// Sends [text] (and [files], saved into the project), or queues it while the agent is busy.
   @override
   Future<void> send(String text, {List<Attachment> files = const []}) async {
+    if (!_withinBudget()) return;
     final out = await _outgoing(text, files);
     if (out == null) return;
     final t = state.transcript;
@@ -975,6 +1057,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
 
   /// Interrupts the agent and sends [text] right away.
   Future<void> steer(String text, {List<Attachment> files = const []}) async {
+    if (!_withinBudget()) return;
     final out = await _outgoing(text, files);
     if (out == null) return;
     await _session?.interrupt();
@@ -1007,7 +1090,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
           gatewaySummarizer(
             baseUrl: gatewayBaseUrl(ref),
             apiKey: await gatewayKey(ref),
-            sessionTag: info.id,
+            sessionTag: info.billingTag,
             onUnauthorized: (k) => remintGatewayKey(ref, k),
           );
       final summary = cleanSummary(await summarize(summaryRequest(plan, focus: focus)));
@@ -1023,6 +1106,8 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
         mode: state.mode,
         effort: info.effort,
         holdClientTools: info.holdClientTools,
+        // A compacted subagent still bills where it did.
+        sessionTag: info.billingTag,
         initialMessage: modeNote(state.mode, message),
         runInitial: resume,
       );
@@ -1239,7 +1324,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     if (!t.running || t.pending.isNotEmpty || _doomOpen) return;
     // Give the replayed state a moment to settle first.
     Timer(const Duration(milliseconds: 500), () {
-      if (!ref.mounted || !state.transcript.running || !state.connected) return;
+      if (!ref.mounted || !state.transcript.running || !state.connected || !_withinBudget()) return;
       _session?.resume().ignore();
     });
   }
@@ -1269,8 +1354,8 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
         mode: state.mode,
         effort: info.effort,
         holdClientTools: info.holdClientTools,
-        // A subagent bills to the session that started it.
-        sessionTag: info.parentId,
+        // A subagent bills to the session that started it; an Ultra child to itself.
+        sessionTag: info.billingTag,
       );
       await session.switchLlm(spec);
       await session.resume();
@@ -1280,6 +1365,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
   }
 
   Future<void> retry() async {
+    if (!_withinBudget()) return;
     if (state.transcript.status == ExecutionStatus.stuck) return send('Carry on from where you stopped.');
     await _session?.resume();
   }
@@ -1303,11 +1389,16 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     }
     // Ctrl-C reaches only the terminal's foreground command; background jobs,
     // servers and commands left running after a timeout are ended here. A
-    // subagent shares its parent's tag, so only the parent's Stop does this.
+    // subagent shares its parent's tag, so only the parent's Stop does this;
+    // an Ultra child has its own tag (and maybe its own worktree), so it does.
     await Future.wait([
       ?_session?.interrupt(),
-      if (info != null && !noLocalFolder(info.workingDir) && !info.isSubagent)
-        killSessionProcesses(tag: info.id, workingDir: info.workingDir, ownsDir: info.worktree != null),
+      if (info != null && killsOwnProcesses(info))
+        killSessionProcesses(
+          tag: info.id,
+          workingDir: info.workingDir,
+          ownsDir: ownsWorkingDir(info, parent: ref.read(codeSessionsProvider.notifier).byId(info.parentId ?? '')),
+        ),
     ]);
   }
 
@@ -1605,6 +1696,31 @@ Future<Map<String, SessionStatus>> sessionStatusesNow(Ref ref, List<CodeSessionI
   }
   return out;
 }
+
+/// What [owner]'s budget has spent: its own ledger (subagents bill there
+/// too) plus children billed under their own ids (Ultra steps and the
+/// orchestrator), as far as [usage] has read them.
+int budgetSpentMicros(
+  String owner, {
+  required List<CodeSessionInfo> sessions,
+  required int? Function(String id) usage,
+}) {
+  var n = usage(owner) ?? 0;
+  for (final s in sessions) {
+    if (s.parentId == owner && s.ownTag) n += usage(s.id) ?? 0;
+  }
+  return n;
+}
+
+/// Whether Stop on [info] ends the background processes tagged with its id:
+/// a top-level session, or a child with its own tag (an Ultra step). Other
+/// subagents carry their parent's tag, so the parent's Stop ends theirs.
+bool killsOwnProcesses(CodeSessionInfo info) => !noLocalFolder(info.workingDir) && (!info.isSubagent || info.ownTag);
+
+/// Whether no other session works in [info]'s folder: a session worktree, or
+/// an Ultra step's own worktree (a folder other than its [parent]'s).
+bool ownsWorkingDir(CodeSessionInfo info, {CodeSessionInfo? parent}) =>
+    info.worktree != null || (info.ownTag && parent != null && parent.workingDir != info.workingDir);
 
 /// Tools that can change the worktree (file edits, shell commands).
 bool editsFiles(String toolName) =>

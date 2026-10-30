@@ -40,14 +40,12 @@ class CodeTopBar extends ConsumerWidget {
     final ultra = ref.watch(codeUltraSlotProvider);
     final wide = MediaQuery.sizeOf(context).width >= 1000;
 
-    // Stops the session once its spending reaches the budget.
+    // The session controller stops the run at the budget; this only says so.
     ref.listen(codeUsageProvider(sessionId), (before, after) {
       final budget = ref.read(codeSettingsProvider).budgets[sessionId];
       final was = before?.value?.chargedMicros ?? 0;
       final now = after.value?.chargedMicros ?? was;
       if (!crossedBudget(was, now, budget)) return;
-      final t = ref.read(codeSessionProvider(sessionId)).transcript;
-      if (t.running || t.pending.isNotEmpty) controller.stop().ignore();
       if (context.mounted) {
         showAdaptiveToast(context, 'Stopped: this session reached its ${formatMicros((budget! * 1e6).round())} budget');
       }

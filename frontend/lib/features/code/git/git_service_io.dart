@@ -193,6 +193,13 @@ Future<String> checkpoint(SessionWorktree w, int turn) => _withSnapshot(w, (env)
 });
 
 Future<void> restoreCheckpoint(SessionWorktree w, String ref) async {
+  // Nothing is touched without a checkpoint to restore from: cleaning first
+  // would delete untracked files and then have nothing to put back.
+  try {
+    await _git(w.path, ['rev-parse', '--verify', '--quiet', '$ref^{commit}']);
+  } on Object {
+    throw const GitError('There is no checkpoint for that turn, so the files were left as they are.');
+  }
   // Untracked files the checkpoint has are restored from it below.
   await _git(w.path, ['clean', '-fdq']);
   await _git(w.path, ['restore', '--source=$ref', '--worktree', '--', ':/']);

@@ -121,6 +121,13 @@ void main() {
     expect(await _git(w.path, ['rev-parse', 'HEAD']), w.baseCommit);
   });
 
+  test('a missing checkpoint leaves the files alone', () async {
+    final w = await start();
+    File('${w.path}/made.txt').writeAsStringSync('new\n');
+    await expectLater(GitService.restoreCheckpoint(w, 'refs/everyai/${w.slug}/turn-9'), throwsA(isA<GitError>()));
+    expect(File('${w.path}/made.txt').readAsStringSync(), 'new\n');
+  });
+
   test('squash merge lands one commit on the base branch, then the session is removed', () async {
     final w = await start();
     File('${w.path}/lib/new.txt').writeAsStringSync('feature\n');
