@@ -10,6 +10,7 @@ import 'package:every_ai/features/chat/data/chat_transport.dart';
 import 'package:every_ai/features/chat/domain/chat_session.dart';
 import 'package:every_ai/features/chat/domain/message.dart';
 import 'package:every_ai/features/models/domain/model_catalog.dart';
+import 'package:every_ai/features/models/models_providers.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -173,5 +174,76 @@ void main() {
     expect(state().phase, isA<Idle>());
     expect(state().messages.map((m) => m.plainText), ['persist me', 'ok']);
     expect(state().title, 'persist me');
+  });
+
+  Future<void> answer(String text) async {
+    transport.turns.last
+      ..add(TextDelta(text))
+      ..add(const TurnDone());
+    unawaited(transport.turns.last.close());
+    await settle();
+  }
+
+  test('regenerate drops the last answer and asks again, optionally with another model', () async {
+    await settle();
+    await ctl().send('question');
+    await answer('first');
+    final claude = container.read(modelCatalogProvider).byProvider(ModelProvider.anthropic).first;
+
+    await ctl().regenerate(model: claude);
+    expect(transport.requests, hasLength(2));
+    expect(transport.requests.last.prompt, 'question');
+    expect(transport.requests.last.model, claude);
+    await answer('second');
+
+    expect(state().messages.map((m) => m.plainText), ['question', 'second']);
+    final stored = await container.read(chatRepositoryProvider).messages(id);
+    expect(stored.map((m) => m.plainText), ['question', 'second'], reason: 'old answer deleted from the DB');
+  });
+
+  test('editAndResend replaces the message and everything after it', () async {
+    await settle();
+    await ctl().send('one');
+    await answer('a1');
+    await ctl().send('two');
+    await answer('a2');
+
+    final first = state().messages.first;
+    await ctl().editAndResend(first.id, 'one, edited');
+    await answer('b1');
+
+    expect(state().messages.map((m) => m.plainText), ['one, edited', 'b1']);
+    final stored = await container.read(chatRepositoryProvider).messages(id);
+    expect(stored.map((m) => m.plainText), ['one, edited', 'b1']);
+  });
+
+  test('mode is sent with the request; sources and follow-ups are stored as parts', () async {
+    await settle();
+    ctl().setMode(ChatMode.search);
+    await ctl().send('latest news');
+    expect(transport.requests.single.mode, ChatMode.search);
+
+    final source = Source(url: Uri.parse('https://example.com/a'), title: 'Example');
+    transport.turns.single.add(SourcesFound([source]));
+    await settle();
+    expect(state().liveSources, hasLength(1), reason: 'sources show before text arrives');
+
+    transport.turns.single
+      ..add(const TextDelta('Answer [1]'))
+      ..add(const FollowUpsSuggested(['And then?']))
+      ..add(const TurnDone());
+    unawaited(transport.turns.single.close());
+    await settle();
+
+    final last = state().messages.last;
+    expect(last.parts.map((p) => p.runtimeType), [SourcesPart, TextPart, FollowUpsPart]);
+    expect(state().liveSources, isEmpty);
+
+    container.invalidate(chatSessionProvider(id));
+    container.read(chatSessionProvider(id));
+    await settle();
+    final reloaded = state().messages.last;
+    expect(reloaded.sources.single.url, source.url);
+    expect((reloaded.parts.last as FollowUpsPart).questions, ['And then?']);
   });
 }

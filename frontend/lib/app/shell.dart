@@ -2,13 +2,16 @@ import 'package:fluent_ui/fluent_ui.dart' as f;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:macos_ui/macos_ui.dart' as mac;
+import 'package:macos_window_utils/widgets/transparent_macos_sidebar.dart';
 import 'package:material_ui/material_ui.dart' as m;
 
 import '../core/platform/platform_kind.dart';
+import '../core/preferences.dart';
 import '../core/theme/every_theme.dart';
-import '../features/history/ui/history_pane.dart';
+import '../features/history/ui/sidebar.dart';
 import 'router.dart';
 
 /// Lets pages toggle the sidebar and know whether it is showing.
@@ -25,8 +28,9 @@ class ShellScope extends InheritedWidget {
   final bool compact;
   final VoidCallback toggleSidebar;
 
-  /// Pages show a sidebar button when the sidebar is hidden or overlaid.
-  bool get showSidebarButton => compact || !sidebarVisible;
+  /// Pages show a sidebar button only when the sidebar is an overlay drawer;
+  /// on wide windows it collapses to a rail that is always present.
+  bool get showSidebarButton => compact;
 
   static ShellScope of(BuildContext context) => context.dependOnInheritedWidgetOfExactType<ShellScope>()!;
 
@@ -34,25 +38,28 @@ class ShellScope extends InheritedWidget {
   bool updateShouldNotify(ShellScope old) => sidebarVisible != old.sidebarVisible || compact != old.compact;
 }
 
-class AppShell extends StatefulWidget {
+class AppShell extends ConsumerStatefulWidget {
   const AppShell({super.key, required this.location, required this.child});
 
   final String location;
   final Widget child;
 
   @override
-  State<AppShell> createState() => _AppShellState();
+  ConsumerState<AppShell> createState() => _AppShellState();
 }
 
-class _AppShellState extends State<AppShell> {
-  bool _sidebarPinned = true; // wide layouts
+class _AppShellState extends ConsumerState<AppShell> {
+  static const _collapsedKey = 'sidebar.collapsed';
+
+  late bool _collapsed = ref.read(preferencesProvider)[_collapsedKey] == 'true'; // wide layouts
   bool _drawerOpen = false; // compact layouts
 
   void _toggle(bool compact) => setState(() {
     if (compact) {
       _drawerOpen = !_drawerOpen;
     } else {
-      _sidebarPinned = !_sidebarPinned;
+      _collapsed = !_collapsed;
+      ref.read(preferencesProvider)[_collapsedKey] = '$_collapsed';
     }
   });
 
@@ -65,34 +72,28 @@ class _AppShellState extends State<AppShell> {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final compact = WindowSize.of(context) == WindowSize.compact;
-    final pane = HistoryPane(location: widget.location, onNavigate: _navigate);
 
-    Widget body;
-    if (theme.design == DesignLanguage.macos) {
-      // Native sidebar: vibrancy, resizable, collapses below the window breakpoint.
-      body = mac.MacosWindow(
-        sidebar: mac.Sidebar(
-          // The pane draws its own header in the title-bar row, beside the traffic lights.
-          topOffset: 0,
-          minWidth: 220,
-          startWidth: 260,
-          maxWidth: 360,
-          builder: (context, scrollController) => pane,
+    Widget body = _SplitView(
+      compact: compact,
+      collapsed: _collapsed,
+      drawerOpen: _drawerOpen,
+      onDismissDrawer: () => setState(() => _drawerOpen = false),
+      sidebar: _SidebarSurface(
+        child: Sidebar(
+          location: widget.location,
+          collapsed: !compact && _collapsed,
+          onNavigate: _navigate,
+          onToggle: () => _toggle(compact),
         ),
-        child: widget.child,
-      );
-    } else {
-      body = _SplitView(
-        compact: compact,
-        sidebarVisible: compact ? _drawerOpen : _sidebarPinned,
-        onDismissDrawer: () => setState(() => _drawerOpen = false),
-        sidebar: _SidebarSurface(child: pane),
-        content: widget.child,
-      );
-    }
+      ),
+      content: widget.child,
+    );
+    // macOS: MacosWindow supplies the window chrome; the sidebar draws its own
+    // vibrancy so it can collapse to a rail (macos_ui's Sidebar only hides).
+    if (theme.design == DesignLanguage.macos) body = mac.MacosWindow(child: body);
 
     body = ShellScope(
-      sidebarVisible: compact ? _drawerOpen : _sidebarPinned,
+      sidebarVisible: compact ? _drawerOpen : true,
       compact: compact,
       toggleSidebar: () => _toggle(compact),
       child: body,
@@ -184,23 +185,26 @@ class _AppShellState extends State<AppShell> {
   }
 }
 
-/// Sidebar + content. Wide: side by side, collapsible. Compact: an overlay drawer.
+/// Sidebar + content. Wide: side by side; the sidebar collapses to an icon rail.
+/// Compact: an overlay drawer with the full sidebar.
 class _SplitView extends StatelessWidget {
   const _SplitView({
     required this.compact,
-    required this.sidebarVisible,
+    required this.collapsed,
+    required this.drawerOpen,
     required this.onDismissDrawer,
     required this.sidebar,
     required this.content,
   });
 
   final bool compact;
-  final bool sidebarVisible;
+  final bool collapsed;
+  final bool drawerOpen;
   final VoidCallback onDismissDrawer;
   final Widget sidebar;
   final Widget content;
 
-  static const _width = 280.0;
+  static const _width = 272.0;
   static const _duration = Duration(milliseconds: 220);
 
   @override
@@ -215,12 +219,10 @@ class _SplitView extends StatelessWidget {
           AnimatedContainer(
             duration: duration,
             curve: Curves.easeOutCubic,
-            width: sidebarVisible ? _width : 0,
-            child: ClipRect(
-              child: OverflowBox(alignment: Alignment.centerRight, minWidth: _width, maxWidth: _width, child: sidebar),
-            ),
+            width: collapsed ? sidebarRailWidth(theme.design) : _width,
+            child: ClipRect(child: sidebar),
           ),
-          if (sidebarVisible) Container(width: 1, color: theme.border),
+          Container(width: 1, color: theme.border),
           Expanded(child: content),
         ],
       );
@@ -231,12 +233,12 @@ class _SplitView extends StatelessWidget {
       children: [
         Positioned.fill(child: content),
         IgnorePointer(
-          ignoring: !sidebarVisible,
+          ignoring: !drawerOpen,
           child: GestureDetector(
             onTap: onDismissDrawer,
             child: AnimatedContainer(
               duration: duration,
-              color: sidebarVisible ? const Color(0x66000000) : const Color(0x00000000),
+              color: drawerOpen ? const Color(0x66000000) : const Color(0x00000000),
             ),
           ),
         ),
@@ -245,7 +247,7 @@ class _SplitView extends StatelessWidget {
           curve: Curves.easeOutCubic,
           top: 0,
           bottom: 0,
-          left: sidebarVisible ? 0 : -width - 8,
+          left: drawerOpen ? 0 : -width - 8,
           width: width,
           child: GestureDetector(
             onHorizontalDragEnd: (d) {
@@ -253,7 +255,7 @@ class _SplitView extends StatelessWidget {
             },
             child: DecoratedBox(
               decoration: BoxDecoration(
-                boxShadow: [if (sidebarVisible) const BoxShadow(color: Color(0x40000000), blurRadius: 24)],
+                boxShadow: [if (drawerOpen) const BoxShadow(color: Color(0x40000000), blurRadius: 24)],
               ),
               child: sidebar,
             ),
@@ -275,6 +277,13 @@ class _SidebarSurface extends StatelessWidget {
     final theme = EveryTheme.of(context);
     final content = SafeArea(right: false, child: child);
     return switch (theme.design) {
+      // Native NSVisualEffectView vibrancy behind a cleared Flutter layer.
+      DesignLanguage.macos when !kIsWeb => TransparentMacOSSidebar(
+        child: DecoratedBox(
+          decoration: const BoxDecoration(color: Color(0xFF000000), backgroundBlendMode: BlendMode.clear),
+          child: content,
+        ),
+      ),
       DesignLanguage.fluent => f.Mica(child: content),
       DesignLanguage.cupertino => ColoredBox(
         color: theme.isDark ? const Color(0xFF14171F) : const Color(0xFFF2F2F7),

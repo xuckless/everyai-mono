@@ -65,7 +65,7 @@ final class ChatController extends Notifier<ChatSessionState> {
     );
   }
 
-  /// Changes the conversation's default model (the toolbar picker).
+  /// Changes the conversation's model (the composer's model picker).
   void selectModel(ModelSpec model) {
     if (state.phase.busy) return;
     state = state.copyWith(model: model);
@@ -77,6 +77,33 @@ final class ChatController extends Notifier<ChatSessionState> {
     final (:model, :prompt) = parseMention(input, _catalog);
     if (prompt.isEmpty) return;
     await _startTurn(prompt: prompt, model: model ?? state.model, userText: input.trim());
+  }
+
+  void setMode(ChatMode mode) => state = state.copyWith(mode: mode);
+
+  /// Idle/Failed → Awaiting: drops the last answer and asks again, optionally
+  /// with a different model ("Retry with…").
+  Future<void> regenerate({ModelSpec? model}) async {
+    if (state.phase.busy || state.phase is Loading) return;
+    final lastUser = state.messages.lastIndexWhere((m) => m.isUser);
+    if (lastUser == -1) return;
+    final dropped = state.messages.sublist(lastUser + 1);
+    final previousModel = dropped.map((m) => m.model).nonNulls.map((id) => _catalog[id]).nonNulls.firstOrNull;
+    state = state.copyWith(messages: List.unmodifiable(state.messages.take(lastUser + 1)));
+    await _repo.deleteMessages(dropped.map((m) => m.id));
+    final (model: mentioned, :prompt) = parseMention(state.messages[lastUser].plainText, _catalog);
+    await _startTurn(prompt: prompt, model: model ?? previousModel ?? mentioned ?? state.model, userText: null);
+  }
+
+  /// Replaces a user message and everything after it, then answers the new text.
+  Future<void> editAndResend(String userMessageId, String text) async {
+    if (state.phase.busy || state.phase is Loading || text.trim().isEmpty) return;
+    final index = state.messages.indexWhere((m) => m.id == userMessageId);
+    if (index == -1) return;
+    final dropped = state.messages.sublist(index);
+    state = state.copyWith(messages: List.unmodifiable(state.messages.take(index)), phase: const Idle());
+    await _repo.deleteMessages(dropped.map((m) => m.id));
+    await send(text);
   }
 
   /// Failed → Awaiting with the same prompt and model.
@@ -139,13 +166,20 @@ final class ChatController extends Notifier<ChatSessionState> {
 
     _buffer.clear();
     final cancel = _cancel = Completer<void>();
-    state = state.copyWith(messages: List.unmodifiable(messages), phase: Awaiting(assistant.id), streamingText: '');
+    state = state.copyWith(
+      messages: List.unmodifiable(messages),
+      phase: Awaiting(assistant.id),
+      streamingText: '',
+      liveSources: const [],
+    );
 
     final parts = <MessagePart>[];
+    var sources = const <Source>[];
+    var followUps = const <String>[];
     final events = ref
         .read(chatTransportProvider)
         .send(
-          ChatRequest(model: model, prompt: prompt, history: history),
+          ChatRequest(model: model, prompt: prompt, history: history, mode: state.mode),
           cancel: cancel.future,
         );
 
@@ -157,6 +191,11 @@ final class ChatController extends Notifier<ChatSessionState> {
             state = state.copyWith(phase: Streaming(assistant.id), streamingText: _buffer.toString());
           case ImageOutput(:final bytes, :final mimeType):
             parts.add(ImagePart(bytes: bytes, mimeType: mimeType));
+          case SourcesFound(sources: final found):
+            sources = found;
+            state = state.copyWith(liveSources: found);
+          case FollowUpsSuggested(:final questions):
+            followUps = questions;
           case TurnDone():
             break;
         }
@@ -164,11 +203,11 @@ final class ChatController extends Notifier<ChatSessionState> {
       onError: (Object error) {
         final apiError = error is ApiError ? error : ProtocolError('$error');
         if (apiError is CancelledError || cancel.isCompleted) {
-          _finish(assistant, parts, MessageStatus.cancelled, phase: const Idle());
+          _finish(assistant, _assemble(parts, sources, followUps), MessageStatus.cancelled, phase: const Idle());
         } else {
           _finish(
             assistant,
-            parts,
+            _assemble(parts, sources, followUps),
             MessageStatus.failed,
             error: apiError.message,
             phase: Failed(apiError, prompt: prompt, model: model),
@@ -179,7 +218,7 @@ final class ChatController extends Notifier<ChatSessionState> {
         if (state.phase is Failed || !state.phase.busy) return;
         _finish(
           assistant,
-          parts,
+          _assemble(parts, sources, followUps),
           cancel.isCompleted ? MessageStatus.cancelled : MessageStatus.complete,
           phase: const Idle(),
         );
@@ -188,9 +227,16 @@ final class ChatController extends Notifier<ChatSessionState> {
     );
   }
 
+  /// Final part order: sources, then text (inserted by [_finish]), media, follow-ups.
+  static ({List<Source> sources, List<MessagePart> media, List<String> followUps}) _assemble(
+    List<MessagePart> media,
+    List<Source> sources,
+    List<String> followUps,
+  ) => (sources: sources, media: media, followUps: followUps);
+
   void _finish(
     Message assistant,
-    List<MessagePart> parts,
+    ({List<Source> sources, List<MessagePart> media, List<String> followUps}) output,
     MessageStatus status, {
     String? error,
     required TurnPhase phase,
@@ -198,7 +244,12 @@ final class ChatController extends Notifier<ChatSessionState> {
     if (!ref.mounted) return;
     final text = _buffer.toString();
     final finished = assistant.copyWith(
-      parts: [if (text.isNotEmpty) TextPart(text), ...parts],
+      parts: [
+        if (output.sources.isNotEmpty) SourcesPart(output.sources),
+        if (text.isNotEmpty) TextPart(text),
+        ...output.media,
+        if (output.followUps.isNotEmpty) FollowUpsPart(output.followUps),
+      ],
       status: status,
       error: error,
     );
@@ -206,6 +257,7 @@ final class ChatController extends Notifier<ChatSessionState> {
       messages: List.unmodifiable([for (final m in state.messages) m.id == assistant.id ? finished : m]),
       phase: phase,
       streamingText: '',
+      liveSources: const [],
     );
     _turn = null;
     _cancel = null;

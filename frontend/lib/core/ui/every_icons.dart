@@ -30,7 +30,11 @@ enum EveryIcon {
   mention(c.CupertinoIcons.at, f.FluentIcons.mail, m.Icons.alternate_email_rounded),
   chevronDown(c.CupertinoIcons.chevron_down, f.FluentIcons.chevron_down, m.Icons.expand_more_rounded),
   more(c.CupertinoIcons.ellipsis, f.FluentIcons.more, m.Icons.more_horiz_rounded),
-  chat(c.CupertinoIcons.bubble_left_bubble_right, f.FluentIcons.chat, m.Icons.chat_bubble_outline_rounded);
+  chat(c.CupertinoIcons.bubble_left_bubble_right, f.FluentIcons.chat, m.Icons.chat_bubble_outline_rounded),
+  edit(c.CupertinoIcons.pencil, f.FluentIcons.edit, m.Icons.edit_outlined),
+  projects(c.CupertinoIcons.folder, f.FluentIcons.folder_horizontal, m.Icons.folder_outlined),
+  artifacts(c.CupertinoIcons.cube, f.FluentIcons.cube_shape, m.Icons.category_outlined),
+  globe(c.CupertinoIcons.globe, f.FluentIcons.globe, m.Icons.public_rounded);
 
   const EveryIcon(this._apple, this._fluent, this._material);
 

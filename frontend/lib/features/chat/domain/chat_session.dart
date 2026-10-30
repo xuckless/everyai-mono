@@ -61,6 +61,8 @@ final class ChatSessionState {
     this.messages = const [],
     this.phase = const Loading(),
     this.streamingText = '',
+    this.mode = ChatMode.chat,
+    this.liveSources = const [],
   });
 
   final String conversationId;
@@ -80,6 +82,11 @@ final class ChatSessionState {
   /// Text received so far for the in-flight assistant message. Bubbles select this.
   final String streamingText;
 
+  final ChatMode mode;
+
+  /// Sources for the in-flight answer, shown before its text arrives.
+  final List<Source> liveSources;
+
   bool get isEmpty => messages.isEmpty;
 
   ChatSessionState copyWith({
@@ -88,6 +95,8 @@ final class ChatSessionState {
     List<Message>? messages,
     TurnPhase? phase,
     String? streamingText,
+    ChatMode? mode,
+    List<Source>? liveSources,
   }) => ChatSessionState(
     conversationId: conversationId,
     title: title ?? this.title,
@@ -95,6 +104,8 @@ final class ChatSessionState {
     messages: messages ?? this.messages,
     phase: phase ?? this.phase,
     streamingText: streamingText ?? this.streamingText,
+    mode: mode ?? this.mode,
+    liveSources: liveSources ?? this.liveSources,
   );
 }
 

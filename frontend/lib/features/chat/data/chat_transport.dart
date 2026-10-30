@@ -11,10 +11,11 @@ import '../domain/message.dart';
 /// What the client sends for one assistant turn.
 @immutable
 final class ChatRequest {
-  const ChatRequest({required this.model, required this.prompt, this.history = const []});
+  const ChatRequest({required this.model, required this.prompt, this.history = const [], this.mode = ChatMode.chat});
 
   final ModelSpec model;
   final String prompt;
+  final ChatMode mode;
 
   /// Prior turns, oldest first. The current one-shot endpoints ignore this; the
   /// SSE contract carries it.
@@ -35,6 +36,16 @@ final class ImageOutput extends ChatEvent {
   const ImageOutput(this.bytes, this.mimeType);
   final Uint8List bytes;
   final String mimeType;
+}
+
+final class SourcesFound extends ChatEvent {
+  const SourcesFound(this.sources);
+  final List<Source> sources;
+}
+
+final class FollowUpsSuggested extends ChatEvent {
+  const FollowUpsSuggested(this.questions);
+  final List<String> questions;
 }
 
 final class TurnDone extends ChatEvent {
@@ -98,6 +109,8 @@ final class PostTransport implements ChatTransport {
 /// `POST /chat/stream` with `{"model", "provider", "messages": [{"role", "content"}]}`
 /// and `Accept: text/event-stream`. Events:
 /// - `event: delta`, `data: {"text": "..."}`
+/// - `event: sources`, `data: {"sources": [{"url", "title", "snippet"?}]}`
+/// - `event: followups`, `data: {"questions": ["..."]}`
 /// - `event: done`, `data: {}`
 /// - `event: error`, `data: {"message": "...", "retryable": bool}`
 final class SseTransport implements ChatTransport {
@@ -112,6 +125,7 @@ final class SseTransport implements ChatTransport {
     final body = <String, Object?>{
       'model': request.model.id.value,
       'provider': request.model.provider.name,
+      'mode': request.mode.name,
       'messages': [
         for (final m in request.history)
           if (m.status == MessageStatus.complete && m.plainText.isNotEmpty)
@@ -130,6 +144,10 @@ final class SseTransport implements ChatTransport {
       switch ((event.event, data)) {
         case ('delta' || 'message', {'text': final String text}):
           yield TextDelta(text);
+        case ('sources', {'sources': final List<Object?> list}):
+          yield SourcesFound(list.map(Source.fromJson).nonNulls.toList(growable: false));
+        case ('followups', {'questions': final List<Object?> list}):
+          yield FollowUpsSuggested(list.whereType<String>().toList(growable: false));
         case ('done', _):
           yield const TurnDone();
           return;

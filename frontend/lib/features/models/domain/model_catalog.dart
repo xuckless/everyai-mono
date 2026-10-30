@@ -2,7 +2,7 @@ import 'package:flutter/foundation.dart';
 
 /// Wire identifier of a model, exactly as the provider API expects it.
 /// An extension type: zero runtime cost, but can't be confused with other strings.
-extension type const ModelId(String value) {}
+extension type const ModelId(String value) implements Object {}
 
 enum ModelProvider {
   openai('ChatGPT', 'OpenAI', 'chat/gpt', 'assets/models/chatgpt.webp'),

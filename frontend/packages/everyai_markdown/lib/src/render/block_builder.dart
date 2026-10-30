@@ -7,9 +7,11 @@ import '../code/code_block_view.dart';
 import '../parser/document.dart';
 import '../style.dart';
 import '../syntax/math_syntax.dart';
+import 'chips.dart';
 import 'inline_builder.dart';
 import 'link_text.dart';
 import 'math.dart';
+import 'scroll.dart';
 
 /// Everything that affects how a block renders. Compared by value so that
 /// unchanged blocks can reuse their previously built widgets.
@@ -21,6 +23,8 @@ class RenderConfig {
     required this.codeBlockBuilder,
     required this.linksEnabled,
     required this.preserveSoftBreaks,
+    this.citationBuilder = defaultCitationBuilder,
+    this.citationsEnabled = false,
   });
 
   final MarkdownStyle style;
@@ -28,6 +32,10 @@ class RenderConfig {
   final CodeBlockBuilder codeBlockBuilder;
   final bool linksEnabled;
   final bool preserveSoftBreaks;
+  final CitationBuilder citationBuilder;
+
+  /// Whether citation chips are tappable.
+  final bool citationsEnabled;
 
   @override
   bool operator ==(Object other) =>
@@ -36,10 +44,20 @@ class RenderConfig {
       other.mathBuilder == mathBuilder &&
       other.codeBlockBuilder == codeBlockBuilder &&
       other.linksEnabled == linksEnabled &&
-      other.preserveSoftBreaks == preserveSoftBreaks;
+      other.preserveSoftBreaks == preserveSoftBreaks &&
+      other.citationBuilder == citationBuilder &&
+      other.citationsEnabled == citationsEnabled;
 
   @override
-  int get hashCode => Object.hash(style, mathBuilder, codeBlockBuilder, linksEnabled, preserveSoftBreaks);
+  int get hashCode => Object.hash(
+    style,
+    mathBuilder,
+    codeBlockBuilder,
+    linksEnabled,
+    preserveSoftBreaks,
+    citationBuilder,
+    citationsEnabled,
+  );
 }
 
 /// Languages whose fenced blocks render as display math.
@@ -66,16 +84,27 @@ const Set<String> _blockTags = <String>{
 };
 
 const List<String> _bullets = <String>['•', '◦', '▪'];
+
+/// A built block plus its heading level (0 for non-headings), used to space
+/// headings: more room above than below.
+typedef _Built = ({Widget widget, int heading});
 const String _checkboxEmpty = '☐';
 const String _checkboxChecked = '☑';
 
 /// Converts block-level markdown AST nodes into widgets.
 class BlockBuilder {
-  BlockBuilder({required this.context, required this.config, required this.onTapLink, this.openCodeBlock});
+  BlockBuilder({
+    required this.context,
+    required this.config,
+    required this.onTapLink,
+    this.onTapCitation,
+    this.openCodeBlock,
+  });
 
   final BuildContext context;
   final RenderConfig config;
   final ValueChanged<String> onTapLink;
+  final ValueChanged<int>? onTapCitation;
 
   /// The `pre` element of a fence that has not been closed yet (streaming);
   /// it always renders as a code block, even for ```math.
@@ -88,6 +117,28 @@ class BlockBuilder {
     return _column(_blocks(nodes, base ?? style.body), style.blockSpacing);
   }
 
+  /// The heading level (1-6) of [node], or 0 if it is not a heading.
+  static int headingLevel(md.Node? node) {
+    if (node is! md.Element) return 0;
+    final tag = node.tag;
+    if (tag.length == 2 && tag.codeUnitAt(0) == 0x68 /* h */ ) {
+      final level = tag.codeUnitAt(1) - 0x30;
+      if (level >= 1 && level <= 6) return level;
+    }
+    return 0;
+  }
+
+  /// The vertical gap between two blocks: extra room above a heading
+  /// (scaled by its level), less below one.
+  static double gapBetween(int previousHeading, int nextHeading, double spacing) {
+    if (nextHeading > 0) {
+      const extra = <double>[1.0, 0.8, 0.55, 0.35, 0.25, 0.25];
+      return spacing * (1 + extra[nextHeading - 1]);
+    }
+    if (previousHeading > 0) return spacing * 0.55;
+    return spacing;
+  }
+
   /// Builds the footnote definitions section.
   Widget buildFootnotes(List<MarkdownFootnote> footnotes) {
     final small = style.body.copyWith(fontSize: (style.body.fontSize ?? 15) * 0.85);
@@ -97,7 +148,8 @@ class BlockBuilder {
       spacing: 4,
       children: <Widget>[
         _rule(),
-        for (final note in footnotes) _markerRow('${note.number}.', small, _column(_blocks(note.nodes, small), 4)),
+        for (final note in footnotes)
+          _markerRow('${note.number}.', small, _column(_blocks(note.nodes, small), 4), _markerWidth(small, 3)),
       ],
     );
   }
@@ -114,13 +166,13 @@ class BlockBuilder {
     return null;
   }
 
-  List<Widget> _blocks(List<md.Node> nodes, TextStyle base, [int depth = 0]) {
-    final out = <Widget>[];
+  List<_Built> _blocks(List<md.Node> nodes, TextStyle base, [int depth = 0]) {
+    final out = <_Built>[];
     final run = <md.Node>[];
     void flush() {
       if (run.isEmpty) return;
       final paragraph = _paragraph(List.of(run), base);
-      if (paragraph != null) out.add(paragraph);
+      if (paragraph != null) out.add((widget: paragraph, heading: 0));
       run.clear();
     }
 
@@ -129,7 +181,7 @@ class BlockBuilder {
       if (node is md.Element && _blockTags.contains(node.tag)) {
         flush();
         final widget = _block(node, base, depth);
-        if (widget != null) out.add(widget);
+        if (widget != null) out.add((widget: widget, heading: headingLevel(node)));
       } else {
         run.add(node);
       }
@@ -180,6 +232,8 @@ class BlockBuilder {
       style: style,
       mathBuilder: config.mathBuilder,
       preserveSoftBreaks: config.preserveSoftBreaks,
+      citationBuilder: config.citationBuilder,
+      onTapCitation: config.citationsEnabled ? onTapCitation : null,
     );
     final span = inline.build(nodes, textStyle);
     if (span.children == null || span.children!.isEmpty) return null;
@@ -222,12 +276,10 @@ class BlockBuilder {
   }
 
   Widget _quote(List<md.Node> children, TextStyle quoteStyle, int depth) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        border: Border(left: BorderSide(color: style.blockquoteBar, width: 3)),
-      ),
+    return CustomPaint(
+      painter: _QuoteBarPainter(style.blockquoteBar),
       child: Padding(
-        padding: const EdgeInsets.only(left: 12, top: 2, bottom: 2),
+        padding: const EdgeInsets.only(left: 15, top: 2, bottom: 2),
         child: _column(_blocks(children, quoteStyle, depth), style.blockSpacing * 0.75),
       ),
     );
@@ -235,7 +287,7 @@ class BlockBuilder {
 
   Widget _list(md.Element list, TextStyle base, int depth) {
     final ordered = list.tag == 'ol';
-    var number = int.tryParse(list.attributes['start'] ?? '') ?? 1;
+    final start = int.tryParse(list.attributes['start'] ?? '') ?? 1;
     final items = <md.Element>[
       for (final child in list.children ?? const <md.Node>[])
         if (child is md.Element && child.tag == 'li') child,
@@ -243,20 +295,28 @@ class BlockBuilder {
     final loose = items.any((li) => (li.children ?? const <md.Node>[]).any((c) => c is md.Element && c.tag == 'p'));
     final itemSpacing = loose ? style.blockSpacing * 0.5 : 4.0;
 
-    final rows = <Widget>[];
-    for (final li in items) {
-      final checked = _taskState(li);
-      final String marker;
+    final markers = <String>[];
+    for (var i = 0; i < items.length; i++) {
+      final checked = _taskState(items[i]);
       if (checked != null) {
-        marker = checked ? _checkboxChecked : _checkboxEmpty;
+        markers.add(checked ? _checkboxChecked : _checkboxEmpty);
       } else if (ordered) {
-        marker = '$number.';
+        markers.add('${start + i}.');
       } else {
-        marker = _bullets[depth % _bullets.length];
+        markers.add(_bullets[depth % _bullets.length]);
       }
-      number++;
-      final content = _blocks(li.children ?? const <md.Node>[], base, depth + 1);
-      rows.add(_markerRow(marker, base, _column(content, itemSpacing)));
+    }
+    // One marker column per list, sized for its widest marker, so that
+    // `9.` and `10.` line up on the dot.
+    final width = _markerWidth(base, markers.fold(0, (w, m) => math.max(w, m.length)));
+    final markerStyle = ordered
+        ? base.copyWith(fontFeatures: const <FontFeature>[FontFeature.tabularFigures()])
+        : base.copyWith(color: base.color?.withValues(alpha: 0.8));
+
+    final rows = <_Built>[];
+    for (var i = 0; i < items.length; i++) {
+      final content = _blocks(items[i].children ?? const <md.Node>[], base, depth + 1);
+      rows.add((widget: _markerRow(markers[i], markerStyle, _column(content, itemSpacing), width), heading: 0));
     }
     return _column(rows, itemSpacing);
   }
@@ -277,18 +337,20 @@ class BlockBuilder {
     return null;
   }
 
-  Widget _markerRow(String marker, TextStyle base, Widget content) {
+  double _markerWidth(TextStyle base, int markerLength) {
     final fontSize = base.fontSize ?? 15;
-    final extraChars = math.max(0, marker.length - 2);
-    final width = style.listIndent + extraChars * fontSize * 0.55;
+    return style.listIndent + math.max(0, markerLength - 2) * fontSize * 0.6;
+  }
+
+  Widget _markerRow(String marker, TextStyle markerStyle, Widget content, double width) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
         SizedBox(
           width: width,
           child: Padding(
-            padding: const EdgeInsets.only(right: 6),
-            child: Text(marker, style: base, textAlign: TextAlign.right),
+            padding: const EdgeInsets.only(right: 7),
+            child: Text(marker, style: markerStyle, textAlign: TextAlign.right),
           ),
         ),
         Expanded(child: content),
@@ -321,35 +383,48 @@ class BlockBuilder {
         'left' => TextAlign.start,
         _ => TextAlign.start,
       };
+      final textStyle = header
+          ? style.tableHeader.copyWith(fontWeight: style.tableHeader.fontWeight ?? FontWeight.w600)
+          : style.tableCell;
       return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         child:
-            _paragraph(
-              element.children ?? const <md.Node>[],
-              header ? style.tableHeader : style.tableCell,
-              textAlign: textAlign,
-            ) ??
+            _paragraph(element.children ?? const <md.Node>[], textStyle, textAlign: textAlign) ??
             const SizedBox.shrink(),
       );
     }
 
+    final radius = BorderRadius.circular(math.min(style.codeBlockRadius, 10));
+    final side = BorderSide(color: style.tableBorder);
+    var bodyRow = 0;
     return Align(
       alignment: AlignmentDirectional.centerStart,
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Table(
-          defaultColumnWidth: const MinColumnWidth(IntrinsicColumnWidth(), FixedColumnWidth(360)),
-          border: TableBorder.all(color: style.tableBorder),
-          defaultVerticalAlignment: TableCellVerticalAlignment.top,
-          children: <TableRow>[
-            for (final row in rows)
-              TableRow(
-                decoration: row.header ? BoxDecoration(color: style.codeBlockBackground) : null,
-                children: <Widget>[
-                  for (var i = 0; i < columns; i++) cell(i < row.cells.length ? row.cells[i] : null, row.header),
-                ],
-              ),
-          ],
+      child: HorizontalScroller(
+        thumbColor: (style.body.color ?? const Color(0xFF888888)).withValues(alpha: 0.25),
+        child: DecoratedBox(
+          position: DecorationPosition.foreground,
+          decoration: BoxDecoration(border: Border.fromBorderSide(side), borderRadius: radius),
+          child: ClipRRect(
+            borderRadius: radius,
+            child: Table(
+              defaultColumnWidth: const MinColumnWidth(IntrinsicColumnWidth(), FixedColumnWidth(360)),
+              border: TableBorder(horizontalInside: side, verticalInside: side),
+              defaultVerticalAlignment: TableCellVerticalAlignment.top,
+              children: <TableRow>[
+                for (final row in rows)
+                  TableRow(
+                    decoration: row.header
+                        ? BoxDecoration(color: style.tableHeaderBackground)
+                        : (bodyRow++).isOdd
+                        ? BoxDecoration(color: style.tableStripe)
+                        : null,
+                    children: <Widget>[
+                      for (var i = 0; i < columns; i++) cell(i < row.cells.length ? row.cells[i] : null, row.header),
+                    ],
+                  ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -357,19 +432,38 @@ class BlockBuilder {
 
   Widget _rule() {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(vertical: 8),
       child: SizedBox(height: 1, child: ColoredBox(color: style.ruleColor)),
     );
   }
 
-  static Widget _column(List<Widget> children, double spacing) {
+  static Widget _column(List<_Built> children, double spacing) {
     if (children.isEmpty) return const SizedBox.shrink();
-    if (children.length == 1) return children.single;
+    if (children.length == 1) return children.single.widget;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
-      spacing: spacing,
-      children: children,
+      children: <Widget>[
+        for (var i = 0; i < children.length; i++) ...<Widget>[
+          if (i > 0) SizedBox(height: gapBetween(children[i - 1].heading, children[i].heading, spacing)),
+          children[i].widget,
+        ],
+      ],
     );
   }
+}
+
+/// Paints a block quote's 3px rounded accent bar along the left edge.
+class _QuoteBarPainter extends CustomPainter {
+  const _QuoteBarPainter(this.color);
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRRect(RRect.fromLTRBR(0, 0, 3, size.height, const Radius.circular(1.5)), Paint()..color = color);
+  }
+
+  @override
+  bool shouldRepaint(_QuoteBarPainter oldDelegate) => oldDelegate.color != color;
 }

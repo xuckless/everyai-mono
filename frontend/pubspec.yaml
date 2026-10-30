@@ -22,6 +22,7 @@ dependencies:
   material_new_shapes: ^1.0.0
   fluent_ui: ^4.17.0
   macos_ui: ^2.2.2
+  macos_window_utils: ^1.9.1
   window_manager: ^0.5.2
 
   # State, routing, data

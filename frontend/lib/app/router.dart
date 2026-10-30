@@ -6,7 +6,10 @@ import 'package:uuid/uuid.dart';
 import '../features/auth/auth_providers.dart';
 import '../features/auth/domain/auth_state.dart';
 import '../features/auth/ui/sign_in_screen.dart';
+import '../core/ui/every_icons.dart';
 import '../features/chat/ui/chat_screen.dart';
+import '../features/history/ui/chats_screen.dart';
+import '../features/history/ui/coming_soon_screen.dart';
 import '../features/models/ui/models_screen.dart';
 import '../features/settings/appearance.dart';
 import '../features/settings/ui/settings_screen.dart';
@@ -18,6 +21,9 @@ abstract final class Routes {
   static const models = '/models';
   static const settings = '/settings';
   static const newChat = '/chat/new';
+  static const chats = '/chats';
+  static const projects = '/projects';
+  static const artifacts = '/artifacts';
   static String chat(String id) => '/chat/$id';
 }
 
@@ -67,6 +73,30 @@ final routerProvider = Provider<GoRouter>((ref) {
             pageBuilder: (_, state) => NoTransitionPage(
               key: ValueKey(state.pathParameters['id']),
               child: ChatScreen(conversationId: state.pathParameters['id']!),
+            ),
+          ),
+          GoRoute(
+            path: Routes.chats,
+            pageBuilder: (_, _) => const NoTransitionPage(child: ChatsScreen()),
+          ),
+          GoRoute(
+            path: Routes.projects,
+            pageBuilder: (_, _) => const NoTransitionPage(
+              child: ComingSoonScreen(
+                title: 'Projects',
+                icon: EveryIcon.projects,
+                message: 'Group chats with shared files and instructions. Coming with the agentic tools.',
+              ),
+            ),
+          ),
+          GoRoute(
+            path: Routes.artifacts,
+            pageBuilder: (_, _) => const NoTransitionPage(
+              child: ComingSoonScreen(
+                title: 'Artifacts',
+                icon: EveryIcon.artifacts,
+                message: 'Documents, code and apps created in your chats will collect here.',
+              ),
             ),
           ),
           GoRoute(

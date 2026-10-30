@@ -4,6 +4,18 @@ import '../../models/domain/model_catalog.dart';
 
 enum Role { user, assistant, system }
 
+/// How the assistant should answer. Search and Research need a backend with web
+/// search; until then they are sent as hints and answered like Chat.
+enum ChatMode {
+  chat('Chat', 'Answer from the model alone'),
+  search('Search', 'Search the web and cite sources'),
+  research('Research', 'Multi-step research with a report');
+
+  const ChatMode(this.label, this.description);
+  final String label;
+  final String description;
+}
+
 enum MessageStatus {
   /// Assistant message still receiving tokens.
   streaming,
@@ -28,6 +40,42 @@ final class ImagePart extends MessagePart {
   final Uint8List? bytes;
   final String? blobRef;
   final String mimeType;
+}
+
+/// A web source the answer drew on (search modes). Cited in text as `[n]`.
+@immutable
+final class Source {
+  const Source({required this.url, required this.title, this.snippet});
+
+  final Uri url;
+  final String title;
+  final String? snippet;
+
+  /// `en.wikipedia.org` → `wikipedia.org`
+  String get site => url.host.replaceFirst(RegExp(r'^(www|en|m)\.'), '');
+
+  Map<String, Object?> toJson() => {'url': '$url', 'title': title, 'snippet': snippet};
+
+  static Source? fromJson(Object? json) => switch (json) {
+    {'url': final String url, 'title': final String title} => Source(
+      url: Uri.parse(url),
+      title: title,
+      snippet: json['snippet'] as String?,
+    ),
+    _ => null,
+  };
+}
+
+/// Sources shown above an answer, in citation order (`[1]` is `sources[0]`).
+final class SourcesPart extends MessagePart {
+  const SourcesPart(this.sources);
+  final List<Source> sources;
+}
+
+/// Suggested next questions shown under an answer.
+final class FollowUpsPart extends MessagePart {
+  const FollowUpsPart(this.questions);
+  final List<String> questions;
 }
 
 /// Placeholders for the agentic roadmap (tools, artifacts). Not produced yet.
@@ -70,6 +118,8 @@ final class Message {
   final String? error;
 
   bool get isUser => role == Role.user;
+
+  List<Source> get sources => parts.whereType<SourcesPart>().expand((p) => p.sources).toList(growable: false);
 
   /// All text parts joined, for copy, search and titles.
   String get plainText => parts.whereType<TextPart>().map((p) => p.text).join('\n\n');

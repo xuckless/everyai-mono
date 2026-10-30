@@ -46,6 +46,12 @@ MarkdownView(
 );
 ```
 
+Citation markers from search-backed models (`[1]`, `[1][3]`) render as small
+accent chips. A marker is not a citation when it is a link (`[1](url)`, a
+defined `[1]: url` reference), or when it sits inside a link or code. Handle
+taps with `onTapCitation: (index) => ...`, and replace the chip with
+`citationBuilder`.
+
 Pass stable functions (top-level or static) as builders. Unchanged blocks
 then skip rebuilding.
 

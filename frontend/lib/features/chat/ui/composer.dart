@@ -5,27 +5,44 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/platform/platform_kind.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
+import '../../../core/ui/anchored_popover.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../models/domain/model_catalog.dart';
 import '../../models/models_providers.dart';
 import '../../models/ui/model_avatar.dart';
+import '../domain/message.dart';
+import 'model_picker.dart';
 
-/// Message input. Grows to 8 lines. On desktop and web, Enter sends and
-/// Shift+Enter inserts a newline; on phones the keyboard's return key adds lines.
-/// Typing `@` offers models to route this one message to.
+/// The message box: text on top, a tool bar underneath with
+/// `+` (attach and tools), the answer mode, the model picker and send/stop.
+///
+/// Desktop and web: Enter sends, Shift+Enter adds a line, Esc stops.
+/// Phones: return adds a line. `@alias` routes one message to another model.
 class Composer extends ConsumerStatefulWidget {
   const Composer({
     super.key,
     required this.busy,
+    required this.model,
+    required this.mode,
     required this.onSend,
     required this.onStop,
-    this.placeholder = 'Message',
+    required this.onModelChanged,
+    required this.onModeChanged,
+    this.placeholder = 'How can I help you today?',
+    this.minLines = 1,
   });
 
   final bool busy;
+  final ModelSpec model;
+  final ChatMode mode;
   final ValueChanged<String> onSend;
   final VoidCallback onStop;
+  final ValueChanged<ModelSpec> onModelChanged;
+  final ValueChanged<ChatMode> onModeChanged;
   final String placeholder;
+
+  /// The home screen's composer starts taller.
+  final int minLines;
 
   @override
   ConsumerState<Composer> createState() => ComposerState();
@@ -34,8 +51,6 @@ class Composer extends ConsumerStatefulWidget {
 class ComposerState extends ConsumerState<Composer> {
   final _controller = TextEditingController();
   late final FocusNode _focus = FocusNode(onKeyEvent: _onKey);
-
-  /// The `@partial` token under the caret, if any.
   ({int start, String query})? _mention;
 
   @override
@@ -51,7 +66,14 @@ class ComposerState extends ConsumerState<Composer> {
     super.dispose();
   }
 
-  void focus() => _focus.requestFocus();
+  /// Puts text in the box (starter prompts) and focuses it.
+  void prefill(String text) {
+    _controller.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    _focus.requestFocus();
+  }
 
   bool get _canSend => !widget.busy && _controller.text.trim().isNotEmpty;
 
@@ -64,10 +86,9 @@ class ComposerState extends ConsumerState<Composer> {
 
   void _onChanged() {
     final sel = _controller.selection;
-    final text = _controller.text;
     ({int start, String query})? mention;
     if (sel.isValid && sel.isCollapsed) {
-      final before = text.substring(0, sel.baseOffset);
+      final before = _controller.text.substring(0, sel.baseOffset);
       final m = RegExp(r'(^|\s)@([\w.\-]*)$').firstMatch(before);
       if (m != null) mention = (start: m.start + m.group(1)!.length, query: m.group(2)!);
     }
@@ -86,39 +107,39 @@ class ComposerState extends ConsumerState<Composer> {
     _focus.requestFocus();
   }
 
-  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent || Host.isMobile) return KeyEventResult.ignored;
-    if (event.logicalKey == LogicalKeyboardKey.enter || event.logicalKey == LogicalKeyboardKey.numpadEnter) {
-      if (HardwareKeyboard.instance.isShiftPressed) return KeyEventResult.ignored;
-      // Composing (IME) input: let the input method commit first.
-      if (_controller.value.composing.isValid && !_controller.value.composing.isCollapsed) {
-        return KeyEventResult.ignored;
-      }
-      final suggestions = _suggestions();
-      if (suggestions.isNotEmpty) {
-        _applyMention(suggestions.first.$1);
-      } else {
-        _send();
-      }
-      return KeyEventResult.handled;
-    }
-    if (event.logicalKey == LogicalKeyboardKey.escape && widget.busy) {
-      widget.onStop();
-      return KeyEventResult.handled;
-    }
-    return KeyEventResult.ignored;
-  }
-
   List<(String, ModelSpec)> _suggestions() {
     final m = _mention;
     if (m == null) return const [];
     return ref.read(modelCatalogProvider).mentionSuggestions(m.query).take(6).toList();
   }
 
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent || Host.isMobile) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter) {
+      if (HardwareKeyboard.instance.isShiftPressed) return KeyEventResult.ignored;
+      final composing = _controller.value.composing;
+      if (composing.isValid && !composing.isCollapsed) return KeyEventResult.ignored;
+      final suggestions = _suggestions();
+      suggestions.isNotEmpty ? _applyMention(suggestions.first.$1) : _send();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.escape && widget.busy) {
+      widget.onStop();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final suggestions = _suggestions();
+    final radius = switch (theme.design) {
+      DesignLanguage.fluent => 8.0,
+      DesignLanguage.macos => 14.0,
+      _ => 22.0,
+    };
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -128,16 +149,15 @@ class ComposerState extends ConsumerState<Composer> {
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
             child: GlassSurface(
-              padding: const EdgeInsets.all(6),
+              padding: const EdgeInsets.symmetric(vertical: 6),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   for (final (alias, spec) in suggestions)
-                    AdaptiveListTile(
-                      dense: true,
-                      leading: ModelAvatar(spec.provider, size: 22),
-                      title: Text('@$alias'),
-                      subtitle: Text(spec.name),
+                    PopoverRow(
+                      leading: ModelAvatar(spec.provider, size: 20),
+                      title: '@$alias',
+                      subtitle: spec.name,
                       onTap: () => _applyMention(alias),
                     ),
                 ],
@@ -145,39 +165,176 @@ class ComposerState extends ConsumerState<Composer> {
             ),
           ),
         GlassSurface(
-          radius: theme.design == DesignLanguage.cupertino || theme.design == DesignLanguage.material
-              ? 26
-              : theme.radius + 4,
-          padding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
+          radius: radius,
+          padding: const EdgeInsets.fromLTRB(16, 14, 10, 10),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Semantics(
-                    label: 'Message input',
-                    textField: true,
-                    child: AdaptiveTextField(
-                      controller: _controller,
-                      focusNode: _focus,
-                      placeholder: widget.placeholder,
-                      minLines: 1,
-                      maxLines: 8,
-                      borderless: true,
-                      keyboardType: TextInputType.multiline,
-                      textInputAction: Host.isMobile ? TextInputAction.newline : TextInputAction.send,
-                      autofocus: !Host.isMobile,
-                    ),
-                  ),
+              Semantics(
+                label: 'Message',
+                textField: true,
+                child: AdaptiveTextField(
+                  controller: _controller,
+                  focusNode: _focus,
+                  placeholder: widget.placeholder,
+                  minLines: widget.minLines,
+                  maxLines: 10,
+                  borderless: true,
+                  keyboardType: TextInputType.multiline,
+                  textInputAction: Host.isMobile ? TextInputAction.newline : TextInputAction.send,
+                  autofocus: !Host.isMobile,
                 ),
               ),
-              const SizedBox(width: 6),
-              _SendButton(busy: widget.busy, enabled: _canSend, onSend: _send, onStop: widget.onStop),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  _ToolsButton(mode: widget.mode, onModeChanged: widget.onModeChanged),
+                  const SizedBox(width: 4),
+                  _ModeSelector(mode: widget.mode, onChanged: widget.onModeChanged),
+                  const Spacer(),
+                  ModelChip(selected: widget.model, enabled: !widget.busy, onSelected: widget.onModelChanged),
+                  const SizedBox(width: 6),
+                  _SendButton(busy: widget.busy, enabled: _canSend, onSend: _send, onStop: widget.onStop),
+                ],
+              ),
             ],
           ),
         ),
       ],
+    );
+  }
+}
+
+/// `+`: attachments and tools. Attachments and connectors arrive with the agentic
+/// roadmap; entries are visible so the surface is in place.
+class _ToolsButton extends StatelessWidget {
+  const _ToolsButton({required this.mode, required this.onModeChanged});
+
+  final ChatMode mode;
+  final ValueChanged<ChatMode> onModeChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    Widget icon(EveryIcon i) => AdaptiveIcon(i, size: 16, color: theme.textMuted);
+    return AnchoredPopover(
+      width: 260,
+      builder: (context, close) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            PopoverRow(leading: icon(EveryIcon.attach), title: 'Add files or photos', subtitle: 'Coming soon'),
+            PopoverRow(
+              leading: icon(EveryIcon.search),
+              title: 'Web search',
+              subtitle: 'Answer with cited sources',
+              trailing: mode == ChatMode.search ? AdaptiveIcon(EveryIcon.check, size: 14, color: theme.accent) : null,
+              onTap: () {
+                close();
+                onModeChanged(mode == ChatMode.search ? ChatMode.chat : ChatMode.search);
+              },
+            ),
+            PopoverRow(leading: icon(EveryIcon.spark), title: 'Extended thinking', subtitle: 'Coming soon'),
+            Container(height: 1, margin: const EdgeInsets.symmetric(vertical: 6), color: theme.border),
+            PopoverRow(leading: icon(EveryIcon.models), title: 'Connectors (MCP)', subtitle: 'Coming soon'),
+          ],
+        ),
+      ),
+      child: _RoundIcon(icon: EveryIcon.add, tooltip: 'Add files and tools'),
+    );
+  }
+}
+
+/// Chat · Search · Research. A compact segmented control.
+class _ModeSelector extends StatelessWidget {
+  const _ModeSelector({required this.mode, required this.onChanged});
+
+  final ChatMode mode;
+  final ValueChanged<ChatMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(color: theme.text.withValues(alpha: 0.06), borderRadius: BorderRadius.circular(9)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final m in ChatMode.values)
+            Semantics(
+              button: true,
+              selected: m == mode,
+              label: '${m.label} mode',
+              child: GestureDetector(
+                onTap: () => onChanged(m),
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 150),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: m == mode ? theme.surface : null,
+                      borderRadius: BorderRadius.circular(7),
+                      boxShadow: m == mode
+                          ? const [BoxShadow(color: Color(0x22000000), blurRadius: 3, offset: Offset(0, 1))]
+                          : null,
+                    ),
+                    child: Text(
+                      m.label,
+                      style: TextStyle(
+                        color: m == mode ? theme.text : theme.textMuted,
+                        fontSize: 12.5,
+                        fontWeight: m == mode ? FontWeight.w600 : FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RoundIcon extends StatefulWidget {
+  const _RoundIcon({required this.icon, required this.tooltip});
+
+  final EveryIcon icon;
+  final String tooltip;
+
+  @override
+  State<_RoundIcon> createState() => _RoundIconState();
+}
+
+class _RoundIconState extends State<_RoundIcon> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return Semantics(
+      button: true,
+      label: widget.tooltip,
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          width: 32,
+          height: 32,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(color: theme.border),
+            color: _hover ? theme.text.withValues(alpha: 0.07) : null,
+          ),
+          child: Center(child: AdaptiveIcon(widget.icon, size: 16, color: theme.text)),
+        ),
+      ),
     );
   }
 }
@@ -194,6 +351,8 @@ class _SendButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final active = busy || enabled;
+    // Plain glyphs inside our own filled circle, in every design language.
+    final glyph = (busy ? EveryIcon.stop : EveryIcon.send).of(DesignLanguage.material);
     return Semantics(
       button: true,
       label: busy ? 'Stop generating' : 'Send message',
@@ -203,22 +362,13 @@ class _SendButton extends StatelessWidget {
           cursor: active ? SystemMouseCursors.click : SystemMouseCursors.basic,
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 150),
-            width: 36,
-            height: 36,
+            width: 34,
+            height: 34,
             decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: active ? theme.accent : theme.text.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+              color: active ? theme.accent : theme.text.withValues(alpha: 0.10),
             ),
-            child: Icon(
-              (busy ? EveryIcon.stop : EveryIcon.send).of(
-                // The filled Cupertino glyphs are already circles; use the plain arrow inside our circle.
-                theme.design == DesignLanguage.cupertino || theme.design == DesignLanguage.macos
-                    ? DesignLanguage.material
-                    : theme.design,
-              ),
-              size: 20,
-              color: active ? theme.onAccent : theme.textMuted,
-            ),
+            child: Icon(glyph, size: 19, color: active ? theme.onAccent : theme.textMuted),
           ),
         ),
       ),

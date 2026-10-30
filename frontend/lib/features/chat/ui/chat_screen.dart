@@ -8,9 +8,6 @@ import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/adaptive_page.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../../core/ui/selection.dart';
-import '../../models/domain/model_catalog.dart';
-import '../../models/models_providers.dart';
-import '../../models/ui/model_avatar.dart';
 import '../chat_providers.dart';
 import '../domain/chat_session.dart';
 import 'composer.dart';
@@ -19,55 +16,189 @@ import 'message_view.dart';
 /// Readable line length for the transcript and composer on wide windows.
 const _maxContentWidth = 820.0;
 
-class ChatScreen extends ConsumerWidget {
+class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key, required this.conversationId});
 
   final String conversationId;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final provider = chatSessionProvider(conversationId);
+  ConsumerState<ChatScreen> createState() => _ChatScreenState();
+}
+
+class _ChatScreenState extends ConsumerState<ChatScreen> {
+  // Keeps the composer (draft, focus) alive as it moves from the centered home
+  // layout to the bottom of the transcript after the first message.
+  final _composer = GlobalKey<ComposerState>();
+
+  @override
+  Widget build(BuildContext context) {
+    final provider = chatSessionProvider(widget.conversationId);
     final controller = ref.read(provider.notifier);
     final model = ref.watch(provider.select((s) => s.model));
+    final mode = ref.watch(provider.select((s) => s.mode));
     final phase = ref.watch(provider.select((s) => s.phase));
     final title = ref.watch(provider.select((s) => s.title));
     final isEmpty = ref.watch(provider.select((s) => s.isEmpty));
+    final home = isEmpty && phase is! Loading;
+
+    final composer = Composer(
+      key: _composer,
+      busy: phase.busy,
+      model: model,
+      mode: mode,
+      minLines: home ? 2 : 1,
+      placeholder: home ? 'How can I help you today?' : 'Reply to ${model.name}…',
+      onSend: controller.send,
+      onStop: controller.cancel,
+      onModelChanged: controller.selectModel,
+      onModeChanged: controller.setMode,
+    );
 
     return AdaptivePage(
-      title: title ?? 'New chat',
-      titleWidget: _ModelPicker(selected: model, enabled: !phase.busy, onSelected: controller.selectModel),
+      title: home ? '' : (title ?? 'New chat'),
       actions: [
-        AdaptiveIconButton(icon: EveryIcon.newChat, tooltip: 'New chat', onPressed: () => context.go(Routes.newChat)),
+        if (!home)
+          AdaptiveIconButton(icon: EveryIcon.newChat, tooltip: 'New chat', onPressed: () => context.go(Routes.newChat)),
       ],
-      body: Column(
-        children: [
-          Expanded(
-            child: switch (phase) {
-              Loading() => const Center(child: AdaptiveProgress()),
-              _ when isEmpty => _EmptyChat(model: model),
-              _ => _Transcript(conversationId: conversationId),
-            },
-          ),
-          if (phase case Failed(:final error))
-            _ErrorBanner(message: error.message, retryable: error.retryable, onRetry: controller.retry),
-          SafeArea(
-            top: false,
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: _maxContentWidth),
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-                  child: Composer(
-                    busy: phase.busy,
-                    placeholder: 'Message ${model.name}  ·  @ to switch model',
-                    onSend: controller.send,
-                    onStop: controller.cancel,
-                  ),
+      body: switch (phase) {
+        Loading() => const Center(child: AdaptiveProgress()),
+        _ when home => _Home(composer: composer, onStarter: (text) => _composer.currentState?.prefill(text)),
+        _ => Column(
+          children: [
+            Expanded(child: _Transcript(conversationId: widget.conversationId)),
+            if (phase case Failed(:final error))
+              _ErrorBanner(message: error.message, retryable: error.retryable, onRetry: controller.retry),
+            SafeArea(
+              top: false,
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: _maxContentWidth),
+                  child: Padding(padding: const EdgeInsets.fromLTRB(16, 4, 16, 14), child: composer),
                 ),
               ),
             ),
+          ],
+        ),
+      },
+    );
+  }
+}
+
+/// New-chat landing: greeting, a large centered composer and starter prompts.
+class _Home extends StatelessWidget {
+  const _Home({required this.composer, required this.onStarter});
+
+  final Widget composer;
+  final ValueChanged<String> onStarter;
+
+  static const _starters = <(EveryIcon, String, String)>[
+    (EveryIcon.edit, 'Write', 'Help me write '),
+    (EveryIcon.spark, 'Learn', 'Explain like I\'m new to it: '),
+    (EveryIcon.chat, 'Code', 'Write code that '),
+    (EveryIcon.globe, 'Research', 'Find the latest on '),
+    (EveryIcon.copy, 'Summarize', 'Summarize this: '),
+  ];
+
+  static String _greeting(DateTime now) => switch (now.hour) {
+    < 5 => 'Up late?',
+    < 12 => 'Good morning',
+    < 17 => 'Good afternoon',
+    _ => 'Good evening',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 24, 20, 48),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 680),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  AdaptiveIcon(EveryIcon.spark, size: 28, color: theme.accent),
+                  const SizedBox(width: 12),
+                  Flexible(
+                    child: Text(
+                      _greeting(DateTime.now()),
+                      style: TextStyle(
+                        color: theme.text,
+                        fontSize: 34,
+                        fontWeight: FontWeight.w500,
+                        letterSpacing: -0.6,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 28),
+              composer,
+              const SizedBox(height: 16),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final (icon, label, prompt) in _starters)
+                    _StarterChip(icon: icon, label: label, onTap: () => onStarter(prompt)),
+                ],
+              ),
+            ],
           ),
-        ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StarterChip extends StatefulWidget {
+  const _StarterChip({required this.icon, required this.label, required this.onTap});
+
+  final EveryIcon icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  State<_StarterChip> createState() => _StarterChipState();
+}
+
+class _StarterChipState extends State<_StarterChip> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return Semantics(
+      button: true,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            decoration: BoxDecoration(
+              color: _hover ? theme.surfaceRaised : null,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: theme.border),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                AdaptiveIcon(widget.icon, size: 14, color: theme.textMuted),
+                const SizedBox(width: 6),
+                Text(widget.label, style: TextStyle(color: theme.text, fontSize: 13)),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -96,86 +227,11 @@ class _Transcript extends ConsumerWidget {
               constraints: const BoxConstraints(maxWidth: _maxContentWidth),
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                child: MessageView(message: message, conversationId: conversationId),
+                child: MessageView(message: message, conversationId: conversationId, isLatest: i == 0),
               ),
             ),
           );
         },
-      ),
-    );
-  }
-}
-
-class _ModelPicker extends ConsumerWidget {
-  const _ModelPicker({required this.selected, required this.enabled, required this.onSelected});
-
-  final ModelSpec selected;
-  final bool enabled;
-  final ValueChanged<ModelSpec> onSelected;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final theme = EveryTheme.of(context);
-    final library = ref.watch(libraryProvider).value ?? const [];
-    final options = {...library, selected}.toList();
-    final label = Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        ModelAvatar(selected.provider, size: 22),
-        const SizedBox(width: 8),
-        Flexible(
-          child: Text(
-            selected.name,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: theme.text, fontWeight: FontWeight.w600),
-          ),
-        ),
-        const SizedBox(width: 4),
-        AdaptiveIcon(EveryIcon.chevronDown, size: 14, color: theme.textMuted),
-      ],
-    );
-    if (!enabled) return Opacity(opacity: 0.6, child: label);
-    return AdaptiveMenuButton(
-      tooltip: 'Choose model',
-      actions: [
-        for (final spec in options)
-          MenuAction(label: spec.name, checked: spec == selected, onSelected: () => onSelected(spec)),
-        MenuAction(label: 'All models…', icon: EveryIcon.models, onSelected: () => context.go(Routes.models)),
-      ],
-      child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), child: label),
-    );
-  }
-}
-
-class _EmptyChat extends StatelessWidget {
-  const _EmptyChat({required this.model});
-
-  final ModelSpec model;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ModelAvatar(model.provider, size: 56),
-            const SizedBox(height: 16),
-            Text(
-              'What can I help with?',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: theme.text, fontSize: 24, fontWeight: FontWeight.w700, letterSpacing: -0.3),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Chatting with ${model.name}. Type @ to ask a different model for one message.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: theme.textMuted, fontSize: 14),
-            ),
-          ],
-        ),
       ),
     );
   }

@@ -59,7 +59,9 @@ TextStyle? styleOfText(WidgetTester tester, String text) {
 void main() {
   testWidgets('renders paragraphs with inline formatting', (tester) async {
     await pumpMarkdown(tester, 'Hello **bold** and *it* and `code`.');
-    expect(find.text('Hello bold and it and code.'), findsOneWidget);
+    // Short inline code is a chip (a WidgetSpan), so it is its own Text.
+    expect(find.text('Hello bold and it and ￼.'), findsOneWidget);
+    expect(find.text('code'), findsOneWidget);
     expect(styleOfText(tester, 'bold')!.fontWeight, FontWeight.bold);
     expect(styleOfText(tester, 'it')!.fontStyle, FontStyle.italic);
     expect(

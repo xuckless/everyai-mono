@@ -1,12 +1,15 @@
 import 'package:flutter/widgets.dart';
 
+import 'code/syntax_themes.dart';
+
 /// Monospace font stack used by the fallback styles.
 const String _monoFamily = 'monospace';
 const List<String> _monoFallback = <String>[
-  'Menlo',
   'SF Mono',
-  'Consolas',
+  'Menlo',
+  'JetBrains Mono',
   'Cascadia Mono',
+  'Consolas',
   'Roboto Mono',
   'DejaVu Sans Mono',
   'Ubuntu Mono',
@@ -46,10 +49,18 @@ class MarkdownStyle {
     this.blockSpacing = 12,
     this.listIndent = 24,
     this.codeBlockRadius = 8,
+    this.inlineCodeBackground = const Color(0x1F818B98),
+    this.inlineCodeBorder = const Color(0x33818B98),
+    this.codeHeaderBackground = const Color(0x0F818B98),
+    this.tableHeaderBackground = const Color(0x14818B98),
+    this.tableStripe = const Color(0x0A818B98),
+    this.citationBackground = const Color(0x264493F8),
+    this.citationText = const Color(0xFF2F6FCF),
   });
 
-  /// Neutral defaults for the given [brightness], loosely following GitHub's
-  /// Markdown styling. Text styles inherit the ambient font family.
+  /// Neutral defaults for the given [brightness]: GitHub-like text styling,
+  /// One Dark / GitHub syntax colors, and chat-app style inline code and
+  /// citation chips. Text styles inherit the ambient font family.
   factory MarkdownStyle.fallback(Brightness brightness) {
     final dark = brightness == Brightness.dark;
     final text = dark ? const Color(0xFFE6EDF3) : const Color(0xFF1F2328);
@@ -67,26 +78,33 @@ class MarkdownStyle {
       h4: heading(16),
       h5: heading(15),
       h6: heading(14).copyWith(color: muted),
-      inlineCode: mono.copyWith(
-        fontSize: 13.5,
-        backgroundColor: dark ? const Color(0x33656C76) : const Color(0x33818B98),
+      // Warm amber on slate (dark, 7.8:1) / plum on lavender (light, 5.7:1).
+      inlineCode: mono.copyWith(fontSize: 13, color: dark ? const Color(0xFFE6C07B) : const Color(0xFF9A3D6A)),
+      codeBlock: mono.copyWith(
+        fontSize: 13,
+        height: 1.5,
+        color: dark ? const Color(0xFFC9CED6) : const Color(0xFF1F2328),
       ),
-      codeBlock: mono.copyWith(fontSize: 13.5, height: 1.45, color: text),
       blockquote: body.copyWith(color: muted),
       tableHeader: body.copyWith(fontWeight: FontWeight.w600),
       tableCell: body,
-      link: TextStyle(
-        color: dark ? const Color(0xFF4493F8) : const Color(0xFF0969DA),
-        decoration: TextDecoration.underline,
-        decorationColor: dark ? const Color(0x804493F8) : const Color(0x800969DA),
-      ),
-      codeBlockBackground: dark ? const Color(0xFF151B23) : const Color(0xFFF6F8FA),
-      codeBlockBorder: border,
-      blockquoteBar: border,
+      // No underline at rest; links underline while hovered.
+      link: TextStyle(color: dark ? const Color(0xFF58A6FF) : const Color(0xFF0969DA)),
+      codeBlockBackground: dark ? const Color(0xFF1E2127) : const Color(0xFFF6F8FA),
+      codeBlockBorder: dark ? const Color(0xFF30353E) : const Color(0xFFDDE2E8),
+      blockquoteBar: dark ? const Color(0xFF4A515C) : const Color(0xFFD0D7DE),
       tableBorder: border,
       ruleColor: border,
       selection: dark ? const Color(0x664493F8) : const Color(0x400969DA),
       syntaxTheme: dark ? darkSyntaxTheme : lightSyntaxTheme,
+      codeBlockRadius: 12,
+      inlineCodeBackground: dark ? const Color(0xFF2B2F3A) : const Color(0xFFF1EFF7),
+      inlineCodeBorder: dark ? const Color(0xFF3A3F4C) : const Color(0xFFE2DFEA),
+      codeHeaderBackground: dark ? const Color(0xFF282C34) : const Color(0xFFEDF0F4),
+      tableHeaderBackground: dark ? const Color(0x14FFFFFF) : const Color(0x0D1F2328),
+      tableStripe: dark ? const Color(0x08FFFFFF) : const Color(0x061F2328),
+      citationBackground: dark ? const Color(0xFF23324A) : const Color(0xFFE5EDFB),
+      citationText: dark ? const Color(0xFF8AB4F8) : const Color(0xFF1F5BC1),
     );
   }
 
@@ -100,6 +118,10 @@ class MarkdownStyle {
   final TextStyle h6;
 
   /// Merged on top of the surrounding text for `inline code`.
+  ///
+  /// Short spans render as a chip filled with [inlineCodeBackground] and
+  /// outlined with [inlineCodeBorder]; a `backgroundColor` set here is
+  /// ignored for chips and only used as a fallback fill for long spans.
   final TextStyle inlineCode;
 
   /// Base text style of fenced / indented code blocks.
@@ -110,7 +132,8 @@ class MarkdownStyle {
   final TextStyle tableHeader;
   final TextStyle tableCell;
 
-  /// Merged on top of the surrounding text for links.
+  /// Merged on top of the surrounding text for links. An underline is added
+  /// while a link is hovered.
   final TextStyle link;
 
   final Color codeBlockBackground;
@@ -128,14 +151,36 @@ class MarkdownStyle {
   /// Width reserved for list markers.
   final double listIndent;
 
-  /// Corner radius of code blocks.
+  /// Corner radius of code blocks (tables use a slightly smaller one).
   final double codeBlockRadius;
 
+  /// Fill of the inline code chip.
+  final Color inlineCodeBackground;
+
+  /// Hairline border of the inline code chip.
+  final Color inlineCodeBorder;
+
+  /// Background of a code block's header bar (language label, buttons).
+  final Color codeHeaderBackground;
+
+  /// Background of table header rows.
+  final Color tableHeaderBackground;
+
+  /// Background of every other table body row.
+  final Color tableStripe;
+
+  /// Fill of the default citation chip (`[1]`).
+  final Color citationBackground;
+
+  /// Text color of the default citation chip.
+  final Color citationText;
+
   /// Syntax highlighting styles keyed by highlight.js scope (`keyword`,
-  /// `string`, `comment`, `number`, `title`, `title.function_`, ...).
+  /// `string`, `comment`, `number`, `title`, `title.function`, ...).
   ///
-  /// Dotted scopes fall back to their prefix: `title.class_` uses `title`
-  /// when it has no entry of its own.
+  /// Dotted scopes fall back to their prefix: `title.class` uses `title`
+  /// when it has no entry of its own. highlight.js CSS-style keys with a
+  /// trailing underscore (`title.class_`) are accepted too.
   final Map<String, TextStyle> syntaxTheme;
 
   /// The heading style for [level] (1-6).
@@ -181,6 +226,13 @@ class MarkdownStyle {
     double? listIndent,
     double? codeBlockRadius,
     Map<String, TextStyle>? syntaxTheme,
+    Color? inlineCodeBackground,
+    Color? inlineCodeBorder,
+    Color? codeHeaderBackground,
+    Color? tableHeaderBackground,
+    Color? tableStripe,
+    Color? citationBackground,
+    Color? citationText,
   }) {
     return MarkdownStyle(
       body: body ?? this.body,
@@ -206,6 +258,13 @@ class MarkdownStyle {
       listIndent: listIndent ?? this.listIndent,
       codeBlockRadius: codeBlockRadius ?? this.codeBlockRadius,
       syntaxTheme: syntaxTheme ?? this.syntaxTheme,
+      inlineCodeBackground: inlineCodeBackground ?? this.inlineCodeBackground,
+      inlineCodeBorder: inlineCodeBorder ?? this.inlineCodeBorder,
+      codeHeaderBackground: codeHeaderBackground ?? this.codeHeaderBackground,
+      tableHeaderBackground: tableHeaderBackground ?? this.tableHeaderBackground,
+      tableStripe: tableStripe ?? this.tableStripe,
+      citationBackground: citationBackground ?? this.citationBackground,
+      citationText: citationText ?? this.citationText,
     );
   }
 
@@ -235,6 +294,13 @@ class MarkdownStyle {
         other.blockSpacing == blockSpacing &&
         other.listIndent == listIndent &&
         other.codeBlockRadius == codeBlockRadius &&
+        other.inlineCodeBackground == inlineCodeBackground &&
+        other.inlineCodeBorder == inlineCodeBorder &&
+        other.codeHeaderBackground == codeHeaderBackground &&
+        other.tableHeaderBackground == tableHeaderBackground &&
+        other.tableStripe == tableStripe &&
+        other.citationBackground == citationBackground &&
+        other.citationText == citationText &&
         _mapEquals(other.syntaxTheme, syntaxTheme);
   }
 
@@ -262,6 +328,13 @@ class MarkdownStyle {
     blockSpacing,
     listIndent,
     codeBlockRadius,
+    inlineCodeBackground,
+    inlineCodeBorder,
+    codeHeaderBackground,
+    tableHeaderBackground,
+    tableStripe,
+    citationBackground,
+    citationText,
     syntaxTheme.length,
   ]);
 
@@ -274,95 +347,11 @@ class MarkdownStyle {
     return true;
   }
 
-  /// GitHub-dark-inspired syntax colors.
-  static const Map<String, TextStyle> darkSyntaxTheme = <String, TextStyle>{
-    'keyword': TextStyle(color: Color(0xFFFF7B72)),
-    'doctag': TextStyle(color: Color(0xFFFF7B72)),
-    'template-tag': TextStyle(color: Color(0xFFFF7B72)),
-    'template-variable': TextStyle(color: Color(0xFFFF7B72)),
-    'type': TextStyle(color: Color(0xFFFF7B72)),
-    'variable.language_': TextStyle(color: Color(0xFFFF7B72)),
-    'title': TextStyle(color: Color(0xFFD2A8FF)),
-    'title.class_': TextStyle(color: Color(0xFFFFA657)),
-    'title.function_': TextStyle(color: Color(0xFFD2A8FF)),
-    'attr': TextStyle(color: Color(0xFF79C0FF)),
-    'attribute': TextStyle(color: Color(0xFF79C0FF)),
-    'literal': TextStyle(color: Color(0xFF79C0FF)),
-    'meta': TextStyle(color: Color(0xFF79C0FF)),
-    'number': TextStyle(color: Color(0xFF79C0FF)),
-    'operator': TextStyle(color: Color(0xFF79C0FF)),
-    'variable': TextStyle(color: Color(0xFF79C0FF)),
-    'selector-attr': TextStyle(color: Color(0xFF79C0FF)),
-    'selector-class': TextStyle(color: Color(0xFF79C0FF)),
-    'selector-id': TextStyle(color: Color(0xFF79C0FF)),
-    'built_in': TextStyle(color: Color(0xFFFFA657)),
-    'symbol': TextStyle(color: Color(0xFFFFA657)),
-    'regexp': TextStyle(color: Color(0xFFA5D6FF)),
-    'string': TextStyle(color: Color(0xFFA5D6FF)),
-    'meta.string': TextStyle(color: Color(0xFFA5D6FF)),
-    'subst': TextStyle(color: Color(0xFFC9D1D9)),
-    'params': TextStyle(color: Color(0xFFC9D1D9)),
-    'comment': TextStyle(color: Color(0xFF8B949E), fontStyle: FontStyle.italic),
-    'code': TextStyle(color: Color(0xFF8B949E)),
-    'formula': TextStyle(color: Color(0xFF8B949E)),
-    'name': TextStyle(color: Color(0xFF7EE787)),
-    'quote': TextStyle(color: Color(0xFF7EE787)),
-    'selector-tag': TextStyle(color: Color(0xFF7EE787)),
-    'selector-pseudo': TextStyle(color: Color(0xFF7EE787)),
-    'section': TextStyle(color: Color(0xFF1F6FEB), fontWeight: FontWeight.bold),
-    'bullet': TextStyle(color: Color(0xFFF2CC60)),
-    'emphasis': TextStyle(fontStyle: FontStyle.italic),
-    'strong': TextStyle(fontWeight: FontWeight.bold),
-    'addition': TextStyle(color: Color(0xFFAFF5B4)),
-    'deletion': TextStyle(color: Color(0xFFFFDCD7)),
-    'property': TextStyle(color: Color(0xFF79C0FF)),
-    'tag': TextStyle(color: Color(0xFF7EE787)),
-  };
+  /// One Dark-inspired syntax colors (dark backgrounds).
+  static const Map<String, TextStyle> darkSyntaxTheme = oneDarkSyntaxTheme;
 
-  /// GitHub-light-inspired syntax colors.
-  static const Map<String, TextStyle> lightSyntaxTheme = <String, TextStyle>{
-    'keyword': TextStyle(color: Color(0xFFCF222E)),
-    'doctag': TextStyle(color: Color(0xFFCF222E)),
-    'template-tag': TextStyle(color: Color(0xFFCF222E)),
-    'template-variable': TextStyle(color: Color(0xFFCF222E)),
-    'type': TextStyle(color: Color(0xFFCF222E)),
-    'variable.language_': TextStyle(color: Color(0xFFCF222E)),
-    'title': TextStyle(color: Color(0xFF8250DF)),
-    'title.class_': TextStyle(color: Color(0xFF953800)),
-    'title.function_': TextStyle(color: Color(0xFF8250DF)),
-    'attr': TextStyle(color: Color(0xFF0550AE)),
-    'attribute': TextStyle(color: Color(0xFF0550AE)),
-    'literal': TextStyle(color: Color(0xFF0550AE)),
-    'meta': TextStyle(color: Color(0xFF0550AE)),
-    'number': TextStyle(color: Color(0xFF0550AE)),
-    'operator': TextStyle(color: Color(0xFF0550AE)),
-    'variable': TextStyle(color: Color(0xFF0550AE)),
-    'selector-attr': TextStyle(color: Color(0xFF0550AE)),
-    'selector-class': TextStyle(color: Color(0xFF0550AE)),
-    'selector-id': TextStyle(color: Color(0xFF0550AE)),
-    'built_in': TextStyle(color: Color(0xFF953800)),
-    'symbol': TextStyle(color: Color(0xFF953800)),
-    'regexp': TextStyle(color: Color(0xFF0A3069)),
-    'string': TextStyle(color: Color(0xFF0A3069)),
-    'meta.string': TextStyle(color: Color(0xFF0A3069)),
-    'subst': TextStyle(color: Color(0xFF1F2328)),
-    'params': TextStyle(color: Color(0xFF1F2328)),
-    'comment': TextStyle(color: Color(0xFF59636E), fontStyle: FontStyle.italic),
-    'code': TextStyle(color: Color(0xFF59636E)),
-    'formula': TextStyle(color: Color(0xFF59636E)),
-    'name': TextStyle(color: Color(0xFF116329)),
-    'quote': TextStyle(color: Color(0xFF116329)),
-    'selector-tag': TextStyle(color: Color(0xFF116329)),
-    'selector-pseudo': TextStyle(color: Color(0xFF116329)),
-    'section': TextStyle(color: Color(0xFF0550AE), fontWeight: FontWeight.bold),
-    'bullet': TextStyle(color: Color(0xFF953800)),
-    'emphasis': TextStyle(fontStyle: FontStyle.italic),
-    'strong': TextStyle(fontWeight: FontWeight.bold),
-    'addition': TextStyle(color: Color(0xFF116329)),
-    'deletion': TextStyle(color: Color(0xFF82071E)),
-    'property': TextStyle(color: Color(0xFF0550AE)),
-    'tag': TextStyle(color: Color(0xFF116329)),
-  };
+  /// GitHub-inspired syntax colors (light backgrounds).
+  static const Map<String, TextStyle> lightSyntaxTheme = githubLightSyntaxTheme;
 }
 
 /// Provides the active [MarkdownStyle] to custom builders below a

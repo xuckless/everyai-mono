@@ -116,6 +116,10 @@ final class ChatRepository {
     )..where((c) => c.id.equals(m.conversationId))).write(ConversationsCompanion(updatedAt: Value(DateTime.now())));
   });
 
+  /// Deletes the given messages (and their parts). Used by edit and regenerate.
+  Future<void> deleteMessages(Iterable<String> ids) =>
+      (_db.delete(_db.messages)..where((m) => m.id.isIn(ids.toList()))).go();
+
   Future<void> rename(String conversationId, String title) => (_db.update(
     _db.conversations,
   )..where((c) => c.id.equals(conversationId))).write(ConversationsCompanion(title: Value(title)));
@@ -175,6 +179,20 @@ final class ChatRepository {
           blobId: Value(ref),
           mimeType: Value(mimeType),
         );
+      case SourcesPart(:final sources):
+        return MessagePartsCompanion.insert(
+          messageId: messageId,
+          idx: idx,
+          kind: 'sources',
+          body: Value(jsonEncode([for (final s in sources) s.toJson()])),
+        );
+      case FollowUpsPart(:final questions):
+        return MessagePartsCompanion.insert(
+          messageId: messageId,
+          idx: idx,
+          kind: 'followups',
+          body: Value(jsonEncode(questions)),
+        );
       case ToolCallPart(:final toolName, :final argumentsJson, :final resultJson):
         return MessagePartsCompanion.insert(
           messageId: messageId,
@@ -196,6 +214,12 @@ final class ChatRepository {
     'image' => ImagePart(bytes: blobs[p.blobId]?.bytes, blobRef: p.blobId, mimeType: p.mimeType ?? 'image/webp'),
     'artifact' => _artifact(p.body ?? '{}'),
     'tool_call' => _toolCall(p.body ?? '{}'),
+    'sources' => SourcesPart(
+      (jsonDecode(p.body ?? '[]') as List<Object?>).map(Source.fromJson).nonNulls.toList(growable: false),
+    ),
+    'followups' => FollowUpsPart(
+      (jsonDecode(p.body ?? '[]') as List<Object?>).whereType<String>().toList(growable: false),
+    ),
     _ => TextPart(p.body ?? ''),
   };
 

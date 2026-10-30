@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart' show immutable;
 import 'package:markdown/markdown.dart' as md;
 
+import '../syntax/citation_syntax.dart';
 import '../syntax/math_syntax.dart';
 import 'segmenter.dart';
 
@@ -190,6 +191,9 @@ final List<md.InlineSyntax> _inlineSyntaxes = List.unmodifiable(<md.InlineSyntax
   ParenInlineMathSyntax(),
   BracketDisplayMathSyntax(),
   ...md.ExtensionSet.gitHubWeb.inlineSyntaxes.where((s) => s is! md.ColorSwatchSyntax),
+  // After the GFM syntaxes so autolinks win; before the built-in link
+  // syntax, which only sees what this one declines.
+  CitationSyntax(),
 ]);
 
 /// Holds the cross-block state of a parse (link references, footnotes).
@@ -236,6 +240,7 @@ class _ParseContext {
     for (var i = 0; i < segments.length; i++) {
       final nodes = blockNodes[i];
       _parseInline(nodes);
+      unwrapCitationsInLinks(nodes);
       blocks.add(
         MarkdownBlock(
           start: segments[i].start,

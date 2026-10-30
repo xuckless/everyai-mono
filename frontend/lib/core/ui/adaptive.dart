@@ -9,6 +9,7 @@ import 'package:material_ui/material_ui.dart' as m;
 
 import '../platform/platform_kind.dart';
 import '../theme/every_theme.dart';
+import 'anchored_popover.dart';
 import 'every_icons.dart';
 
 /// Design-language-aware building blocks. Screens compose these instead of
@@ -553,7 +554,28 @@ class AdaptiveMenuButton extends StatelessWidget {
           ],
         );
       case DesignLanguage.macos:
-        return _PopoverMenuButton(actions: actions, child: child);
+        return AnchoredPopover(
+          builder: (context, close) => Padding(
+            padding: const EdgeInsets.symmetric(vertical: 5),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (final a in actions)
+                  PopoverRow(
+                    title: a.label,
+                    destructive: a.destructive,
+                    trailing: a.checked ? Icon(EveryIcon.check.of(theme.design), size: 14, color: theme.accent) : null,
+                    onTap: () {
+                      close();
+                      a.onSelected();
+                    },
+                  ),
+              ],
+            ),
+          ),
+          child: child,
+        );
       case DesignLanguage.cupertino:
         return _CupertinoMenuButton(actions: actions, child: child);
       case DesignLanguage.material || DesignLanguage.adwaita:
@@ -575,143 +597,6 @@ class AdaptiveMenuButton extends StatelessWidget {
           ),
         );
     }
-  }
-}
-
-/// An NSMenu-style popover anchored under its child (macOS). macos_ui's
-/// pull-down button only accepts a string title or an icon, not a custom child.
-class _PopoverMenuButton extends StatefulWidget {
-  const _PopoverMenuButton({required this.actions, required this.child});
-
-  final List<MenuAction> actions;
-  final Widget child;
-
-  @override
-  State<_PopoverMenuButton> createState() => _PopoverMenuButtonState();
-}
-
-class _PopoverMenuButtonState extends State<_PopoverMenuButton> {
-  final _portal = OverlayPortalController();
-  final _link = LayerLink();
-
-  void _select(MenuAction a) {
-    _portal.hide();
-    a.onSelected();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    return CompositedTransformTarget(
-      link: _link,
-      child: OverlayPortal(
-        controller: _portal,
-        overlayChildBuilder: (overlayContext) {
-          // Open toward the side with room, like NSMenu: right-aligned when the
-          // button sits in the right half, upward when it sits low in the window.
-          final box = context.findRenderObject()! as RenderBox;
-          final origin = box.localToGlobal(Offset.zero);
-          final window = MediaQuery.sizeOf(overlayContext);
-          final alignRight = origin.dx + box.size.width / 2 > window.width / 2;
-          final openUp = origin.dy + box.size.height > window.height * 0.6;
-          final target = Alignment(alignRight ? 1 : -1, openUp ? -1 : 1);
-          final follower = Alignment(alignRight ? 1 : -1, openUp ? 1 : -1);
-          return Stack(
-            children: [
-              Positioned.fill(
-                child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: _portal.hide),
-              ),
-              Positioned(
-                left: 0,
-                top: 0,
-                child: CompositedTransformFollower(
-                  link: _link,
-                  targetAnchor: target,
-                  followerAnchor: follower,
-                  offset: Offset(0, openUp ? -4 : 4),
-                  child: CallbackShortcuts(
-                    bindings: {const SingleActivator(LogicalKeyboardKey.escape): _portal.hide},
-                    child: Focus(
-                      autofocus: true,
-                      child: Container(
-                        constraints: const BoxConstraints(minWidth: 180, maxWidth: 320),
-                        padding: const EdgeInsets.all(5),
-                        decoration: BoxDecoration(
-                          color: theme.isDark ? const Color(0xF02A2A2E) : const Color(0xF5F6F6F6),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: theme.border),
-                          boxShadow: const [BoxShadow(color: Color(0x33000000), blurRadius: 18, offset: Offset(0, 6))],
-                        ),
-                        child: IntrinsicWidth(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              for (final a in widget.actions) _PopoverItem(action: a, onTap: () => _select(a)),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          );
-        },
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: _portal.toggle,
-          child: MouseRegion(cursor: SystemMouseCursors.click, child: widget.child),
-        ),
-      ),
-    );
-  }
-}
-
-class _PopoverItem extends StatefulWidget {
-  const _PopoverItem({required this.action, required this.onTap});
-
-  final MenuAction action;
-  final VoidCallback onTap;
-
-  @override
-  State<_PopoverItem> createState() => _PopoverItemState();
-}
-
-class _PopoverItemState extends State<_PopoverItem> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    final a = widget.action;
-    final fg = _hover ? const Color(0xFFFFFFFF) : (a.destructive ? theme.danger : theme.text);
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            color: _hover ? mac.MacosTheme.of(context).primaryColor : null,
-            borderRadius: BorderRadius.circular(4),
-          ),
-          child: Row(
-            children: [
-              SizedBox(
-                width: 18,
-                child: a.checked ? Icon(EveryIcon.check.of(theme.design), size: 12, color: fg) : null,
-              ),
-              Flexible(
-                child: Text(a.label, style: TextStyle(color: fg, fontSize: 13)),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 }
 
@@ -787,7 +672,7 @@ Future<bool> showAdaptiveConfirm(
     DesignLanguage.macos => mac.showMacosAlertDialog<bool>(
       context: context,
       builder: (ctx) => mac.MacosAlertDialog(
-        appIcon: const FlutterLogo(size: 56),
+        appIcon: AdaptiveIcon(destructive ? EveryIcon.delete : EveryIcon.spark, size: 40, color: theme.accent),
         title: Text(title),
         message: Text(message, textAlign: TextAlign.center),
         primaryButton: mac.PushButton(
@@ -832,6 +717,89 @@ Future<bool> showAdaptiveConfirm(
     ),
   };
   return await result ?? false;
+}
+
+/// Single-field text prompt (rename and similar). Returns null when cancelled.
+Future<String?> showAdaptivePrompt(
+  BuildContext context, {
+  required String title,
+  required String confirmLabel,
+  String initialValue = '',
+}) async {
+  final theme = EveryTheme.of(context);
+  final controller = TextEditingController(text: initialValue)
+    ..selection = TextSelection(baseOffset: 0, extentOffset: initialValue.length);
+  Widget field(BuildContext ctx) => Padding(
+    padding: const EdgeInsets.only(top: 12),
+    child: AdaptiveTextField(
+      controller: controller,
+      autofocus: true,
+      textInputAction: TextInputAction.done,
+      onSubmitted: (value) => Navigator.of(ctx).pop(value),
+    ),
+  );
+  void cancel(BuildContext ctx) => Navigator.of(ctx).pop();
+  void confirm(BuildContext ctx) => Navigator.of(ctx).pop(controller.text);
+
+  final Future<String?> result = switch (theme.design) {
+    DesignLanguage.cupertino => c.showCupertinoDialog<String>(
+      context: context,
+      builder: (ctx) => c.CupertinoAlertDialog(
+        title: Text(title),
+        content: field(ctx),
+        actions: [
+          c.CupertinoDialogAction(onPressed: () => cancel(ctx), child: const Text('Cancel')),
+          c.CupertinoDialogAction(isDefaultAction: true, onPressed: () => confirm(ctx), child: Text(confirmLabel)),
+        ],
+      ),
+    ),
+    DesignLanguage.macos => mac.showMacosAlertDialog<String>(
+      context: context,
+      builder: (ctx) => mac.MacosAlertDialog(
+        appIcon: AdaptiveIcon(EveryIcon.edit, size: 40, color: theme.accent),
+        title: Text(title),
+        message: field(ctx),
+        primaryButton: mac.PushButton(
+          controlSize: mac.ControlSize.large,
+          onPressed: () => confirm(ctx),
+          child: Text(confirmLabel),
+        ),
+        secondaryButton: mac.PushButton(
+          controlSize: mac.ControlSize.large,
+          secondary: true,
+          onPressed: () => cancel(ctx),
+          child: const Text('Cancel'),
+        ),
+      ),
+    ),
+    DesignLanguage.fluent => f.showDialog<String>(
+      context: context,
+      builder: (ctx) => f.ContentDialog(
+        title: Text(title),
+        content: field(ctx),
+        actions: [
+          f.FilledButton(onPressed: () => confirm(ctx), child: Text(confirmLabel)),
+          f.Button(onPressed: () => cancel(ctx), child: const Text('Cancel')),
+        ],
+      ),
+    ),
+    DesignLanguage.material || DesignLanguage.adwaita => m.showDialog<String>(
+      context: context,
+      builder: (ctx) => m.AlertDialog(
+        title: Text(title),
+        content: field(ctx),
+        actions: [
+          m.TextButton(onPressed: () => cancel(ctx), child: const Text('Cancel')),
+          m.FilledButton(onPressed: () => confirm(ctx), child: Text(confirmLabel)),
+        ],
+      ),
+    ),
+  };
+  try {
+    return await result;
+  } finally {
+    controller.dispose();
+  }
 }
 
 /// Transient message: toast-style on desktop, snack bar on Material.

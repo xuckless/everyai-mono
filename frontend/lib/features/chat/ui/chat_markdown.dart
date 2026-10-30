@@ -3,14 +3,18 @@ import 'package:flutter/widgets.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/theme/every_theme.dart';
+import '../domain/message.dart';
 
 /// Markdown for chat content, styled from the app tokens so it matches every
 /// design language. The only place the app touches the renderer package.
 class ChatMarkdown extends StatelessWidget {
-  const ChatMarkdown(this.data, {super.key, this.streaming = false, this.textColor});
+  const ChatMarkdown(this.data, {super.key, this.streaming = false, this.textColor, this.sources = const []});
 
   final String data;
   final bool streaming;
+
+  /// Sources the `[n]` citations in [data] point at (search modes).
+  final List<Source> sources;
 
   /// Overrides the body color (user bubbles sit on the accent-tinted fill).
   final Color? textColor;
@@ -22,6 +26,13 @@ class ChatMarkdown extends StatelessWidget {
       data: data,
       streaming: streaming,
       style: _styleFor(theme, DefaultTextStyle.of(context).style, textColor),
+      onTapCitation: sources.isEmpty
+          ? null
+          : (index) {
+              if (index >= 1 && index <= sources.length) {
+                launchUrl(sources[index - 1].url, mode: LaunchMode.externalApplication);
+              }
+            },
       onTapLink: (href) {
         final uri = Uri.tryParse(href);
         if (uri != null && (uri.scheme == 'https' || uri.scheme == 'http' || uri.scheme == 'mailto')) {
@@ -44,11 +55,15 @@ class ChatMarkdown extends StatelessWidget {
       h4: heading(15),
       h5: heading(14),
       h6: heading(13),
-      inlineCode: mono.copyWith(backgroundColor: t.codeBackground, fontSize: 13.5),
+      // Text color comes from the package's chip palette (warm on dark, plum on light).
+      inlineCode: base.inlineCode.copyWith(fontFamily: 'SourceCodePro', fontSize: 13),
       codeBlock: mono,
       blockquote: body.copyWith(color: t.textMuted),
-      link: body.copyWith(color: t.accent, decoration: TextDecoration.underline, decorationColor: t.accent),
+      // Underline on hover only (handled by the renderer).
+      link: body.copyWith(color: t.accent, decorationColor: t.accent),
       codeBlockBackground: t.codeBackground,
+      citationBackground: t.accent.withValues(alpha: 0.18),
+      citationText: t.text,
       codeBlockBorder: t.border,
       blockquoteBar: t.accent.withValues(alpha: 0.6),
       tableBorder: t.border,
