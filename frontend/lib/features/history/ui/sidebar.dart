@@ -14,6 +14,8 @@ import '../../auth/domain/auth_state.dart';
 import '../../chat/chat_providers.dart';
 import '../../chat/data/chat_repository.dart';
 import '../../chat/domain/message.dart';
+import '../../code/code_providers.dart';
+import '../../code/ui/code_home.dart';
 
 /// Width of the collapsed rail. macOS needs room for the traffic lights above it.
 double sidebarRailWidth(DesignLanguage design) => design == DesignLanguage.macos ? 92 : 60;
@@ -98,20 +100,28 @@ class _SidebarState extends ConsumerState<Sidebar> {
     final collapsed = widget.collapsed;
     final loc = widget.location;
 
-    final destinations = <_Destination>[
-      _Destination(
-        EveryIcon.newChat,
-        'New chat',
-        loc.startsWith('/chat/') && _isBlankChat(loc),
-        Routes.newChat,
-        accent: true,
-      ),
-      _Destination(EveryIcon.search, 'Search', _searching, null, onTap: _searching ? _closeSearch : _openSearch),
-      _Destination(EveryIcon.chat, 'Chats', loc == Routes.chats, Routes.chats),
-      _Destination(EveryIcon.projects, 'Projects', loc == Routes.projects, Routes.projects),
-      _Destination(EveryIcon.artifacts, 'Artifacts', loc == Routes.artifacts, Routes.artifacts),
-      _Destination(EveryIcon.models, 'Models', loc == Routes.models, Routes.models),
-    ];
+    final codeMode = loc.startsWith(Routes.code);
+    final destinations = codeMode
+        ? <_Destination>[
+            _Destination(EveryIcon.add, 'New session', loc == Routes.code, Routes.code, accent: true),
+            if (collapsed) _Destination(EveryIcon.chat, 'Chat', false, Routes.newChat),
+            _Destination(EveryIcon.models, 'Models', loc == Routes.models, Routes.models),
+          ]
+        : <_Destination>[
+            _Destination(
+              EveryIcon.newChat,
+              'New chat',
+              loc.startsWith('/chat/') && _isBlankChat(loc),
+              Routes.newChat,
+              accent: true,
+            ),
+            _Destination(EveryIcon.search, 'Search', _searching, null, onTap: _searching ? _closeSearch : _openSearch),
+            _Destination(EveryIcon.chat, 'Chats', loc == Routes.chats, Routes.chats),
+            _Destination(EveryIcon.projects, 'Projects', loc == Routes.projects, Routes.projects),
+            _Destination(EveryIcon.artifacts, 'Artifacts', loc == Routes.artifacts, Routes.artifacts),
+            if (collapsed) _Destination(EveryIcon.code, 'Code', false, Routes.code),
+            _Destination(EveryIcon.models, 'Models', loc == Routes.models, Routes.models),
+          ];
 
     final header = SizedBox(
       // macOS: the title-bar row, clear of the traffic lights.
@@ -145,6 +155,14 @@ class _SidebarState extends ConsumerState<Sidebar> {
       children: [
         header,
         if (collapsed && macos) Center(child: _toggleButton()),
+        if (!collapsed)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+            child: _SpaceSwitch(
+              code: codeMode,
+              onChanged: (code) => widget.onNavigate(code ? Routes.code : Routes.newChat),
+            ),
+          ),
         Padding(
           padding: EdgeInsets.symmetric(horizontal: collapsed ? 0 : 8, vertical: 2),
           child: Column(
@@ -162,7 +180,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
             ],
           ),
         ),
-        if (!collapsed && _searching)
+        if (!collapsed && _searching && !codeMode)
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
             child: CallbackShortcuts(
@@ -180,6 +198,8 @@ class _SidebarState extends ConsumerState<Sidebar> {
         Expanded(
           child: collapsed
               ? const SizedBox.shrink()
+              : codeMode
+              ? _CodeRecents(location: loc, onNavigate: widget.onNavigate)
               : _Recents(location: loc, matches: _matches, onNavigate: widget.onNavigate),
         ),
         Container(height: 1, color: theme.border),
@@ -203,6 +223,119 @@ class _SidebarState extends ConsumerState<Sidebar> {
     final id = location.substring('/chat/'.length);
     final all = ref.watch(conversationsProvider).value;
     return all != null && !all.any((c) => c.id == id);
+  }
+}
+
+/// Chat | Code.
+class _SpaceSwitch extends StatelessWidget {
+  const _SpaceSwitch({required this.code, required this.onChanged});
+
+  final bool code;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    Widget segment(String label, EveryIcon icon, bool selected, bool value) => Expanded(
+      child: Semantics(
+        button: true,
+        selected: selected,
+        label: label,
+        excludeSemantics: true,
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: selected ? null : () => onChanged(value),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 120),
+              padding: const EdgeInsets.symmetric(vertical: 5),
+              decoration: BoxDecoration(
+                color: selected ? theme.surfaceRaised : null,
+                borderRadius: BorderRadius.circular(7),
+                boxShadow: [
+                  if (selected) const BoxShadow(color: Color(0x1A000000), blurRadius: 3, offset: Offset(0, 1)),
+                ],
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  AdaptiveIcon(icon, size: 14, color: selected ? theme.text : theme.textMuted),
+                  const SizedBox(width: 6),
+                  Text(
+                    label,
+                    style: TextStyle(
+                      color: selected ? theme.text : theme.textMuted,
+                      fontSize: 13,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(color: theme.text.withValues(alpha: 0.06), borderRadius: BorderRadius.circular(9)),
+      child: Row(
+        children: [segment('Chat', EveryIcon.chat, !code, false), segment('Code', EveryIcon.code, code, true)],
+      ),
+    );
+  }
+}
+
+/// Code mode: projects, each with its sessions.
+class _CodeRecents extends ConsumerWidget {
+  const _CodeRecents({required this.location, required this.onNavigate});
+
+  final String location;
+  final ValueChanged<String> onNavigate;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = EveryTheme.of(context);
+    final projects = ref.watch(codeProjectsProvider);
+    final sessions = ref.watch(codeSessionsProvider);
+    final active = location.startsWith('/code/s/') ? location.substring('/code/s/'.length) : null;
+    if (projects.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.all(20),
+        child: Text('Open a project to start a session.', style: TextStyle(color: theme.textMuted, fontSize: 13)),
+      );
+    }
+    return ListView(
+      padding: const EdgeInsets.only(bottom: 8),
+      children: [
+        for (final p in projects) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+            child: Row(
+              children: [
+                AdaptiveIcon(EveryIcon.projects, size: 13, color: theme.textMuted),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    p.name,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: theme.textMuted, fontSize: 12, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          for (final s in sessions.where((s) => s.projectId == p.id))
+            SessionTile(
+              info: s,
+              dense: true,
+              selected: s.id == active,
+              onOpen: () => onNavigate(Routes.codeSession(s.id)),
+            ),
+        ],
+      ],
+    );
   }
 }
 

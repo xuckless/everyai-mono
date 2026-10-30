@@ -132,37 +132,42 @@ class _UserMessageState extends ConsumerState<_UserMessage> {
       );
     }
 
-    return _HoverActions(
-      builder: (context, show) => Column(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          LayoutBuilder(
-            builder: (context, constraints) => ConstrainedBox(
-              constraints: BoxConstraints(maxWidth: constraints.maxWidth * 0.8),
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: theme.userBubble,
-                  borderRadius: BorderRadius.circular(theme.bubbleRadius),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  // Hug short messages instead of stretching to the max width.
-                  child: IntrinsicWidth(child: ChatMarkdown(widget.message.plainText, textColor: theme.onUserBubble)),
+    // Loose width from the centered transcript column would shrink this to
+    // the bubble and center it; fill the width so the bubble sits right.
+    return Align(
+      alignment: Alignment.centerRight,
+      child: _HoverActions(
+        builder: (context, show) => Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            LayoutBuilder(
+              builder: (context, constraints) => ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: constraints.maxWidth * 0.8),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: theme.userBubble,
+                    borderRadius: BorderRadius.circular(theme.bubbleRadius),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    // Hug short messages instead of stretching to the max width.
+                    child: IntrinsicWidth(child: ChatMarkdown(widget.message.plainText, textColor: theme.onUserBubble)),
+                  ),
                 ),
               ),
             ),
-          ),
-          _Reveal(
-            visible: show,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _ActionIcon(icon: EveryIcon.edit, tooltip: 'Edit message', onPressed: busy ? null : _startEdit),
-                _CopyAction(text: widget.message.plainText),
-              ],
+            _Reveal(
+              visible: show,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _ActionIcon(icon: EveryIcon.edit, tooltip: 'Edit message', onPressed: busy ? null : _startEdit),
+                  _CopyAction(text: widget.message.plainText),
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

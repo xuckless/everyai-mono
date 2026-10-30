@@ -8,6 +8,8 @@ import '../features/auth/domain/auth_state.dart';
 import '../features/auth/ui/sign_in_screen.dart';
 import '../core/ui/every_icons.dart';
 import '../features/chat/ui/chat_screen.dart';
+import '../features/code/ui/code_home.dart';
+import '../features/code/ui/session_view.dart';
 import '../features/history/ui/chats_screen.dart';
 import '../features/history/ui/coming_soon_screen.dart';
 import '../features/models/ui/models_screen.dart';
@@ -26,7 +28,9 @@ abstract final class Routes {
   static const chats = '/chats';
   static const projects = '/projects';
   static const artifacts = '/artifacts';
+  static const code = '/code';
   static String chat(String id) => '/chat/$id';
+  static String codeSession(String id) => '/code/s/$id';
 }
 
 /// Survives router rebuilds (switching design language swaps the app root and
@@ -99,6 +103,17 @@ final routerProvider = Provider<GoRouter>((ref) {
                 icon: EveryIcon.artifacts,
                 message: 'Documents, code and apps created in your chats will collect here.',
               ),
+            ),
+          ),
+          GoRoute(
+            path: Routes.code,
+            pageBuilder: (_, _) => const NoTransitionPage(child: CodeHome()),
+          ),
+          GoRoute(
+            path: '/code/s/:id',
+            pageBuilder: (_, state) => NoTransitionPage(
+              key: ValueKey('code-${state.pathParameters['id']}'),
+              child: CodeSessionScreen(sessionId: state.pathParameters['id']!),
             ),
           ),
           GoRoute(

@@ -10,6 +10,10 @@ import '../theme/every_theme.dart';
 import 'adaptive.dart';
 import 'every_icons.dart';
 
+/// The leading space macos_ui's ToolBar reserves for the traffic lights, less
+/// a normal content inset.
+const _macTrafficLightInset = 62.0;
+
 /// A top-level page with native chrome:
 /// - Cupertino: translucent navigation bar that content scrolls beneath (glass)
 /// - macOS: unified toolbar inside the window, sidebar toggle implied
@@ -55,8 +59,11 @@ class AdaptivePage extends StatelessWidget {
       case DesignLanguage.macos:
         return mac.MacosScaffold(
           toolBar: mac.ToolBar(
-            title: titleView,
-            titleWidth: 280,
+            // ToolBar keeps 70pt free for the traffic lights unless macos_ui's
+            // own sidebar is showing; ours draws its own, so pull the title
+            // back to the content edge.
+            title: Transform.translate(offset: const Offset(-_macTrafficLightInset, 0), child: titleView),
+            titleWidth: 480,
             enableBlur: true,
             actions: [for (final a in actions) mac.CustomToolbarItem(inToolbarBuilder: (_) => a)],
           ),
