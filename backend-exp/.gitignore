@@ -1,0 +1,10 @@
+zig-out/
+.zig-cache/
+zig-pkg/
+.env
+.env*.local
+openapi.json.tmp
+data/
+*.db
+*.db-wal
+*.db-shm
