@@ -81,23 +81,50 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if curl -sf "$API/healthz" >/dev/null 2>&1; then
+# -m: a backend that accepts but never answers (suspended, wedged) must not hang this.
+healthy() { curl -sf -m 2 "$1/healthz" >/dev/null 2>&1; }
+
+# A backend left from an earlier run that holds the port without answering
+# (state T after a stray Ctrl-Z, or wedged) is replaced.
+STALE="$(lsof -nP -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)"
+if [[ -n "$STALE" ]] && ! healthy "$API" && ! healthy "http://localhost:$PORT"; then
+  for pid in $STALE; do
+    if ps -o command= -p "$pid" | grep -q everyai-backend-exp; then
+      say "Replacing an unresponsive backend on :$PORT (pid $pid)"
+      parent="$(ps -o ppid= -p "$pid" | tr -d ' ')"
+      # Its `zig build run` parent, when that is what started it.
+      if [[ -n "$parent" ]] && ps -o command= -p "$parent" | grep -q 'build.*run'; then
+        kill -CONT "$parent" 2>/dev/null || true
+        kill "$parent" 2>/dev/null || true
+      fi
+      kill -CONT "$pid" 2>/dev/null || true
+      kill "$pid" 2>/dev/null || true
+    else
+      die "Port $PORT is held by something else (pid $pid: $(ps -o command= -p "$pid" | cut -c1-60)). Free it or set PORT=."
+    fi
+  done
+  for _ in $(seq 1 20); do lsof -nP -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 || break; sleep 0.25; done
+  lsof -nP -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 && kill -9 $STALE 2>/dev/null || true
+fi
+
+if healthy "$API"; then
   say "Backend already running at $API"
 else
-  if curl -sf "http://localhost:$PORT/healthz" >/dev/null 2>&1; then
+  if healthy "http://localhost:$PORT"; then
     die "A backend on :$PORT only listens on localhost. Stop it, then rerun (this one binds $HOST)."
   fi
   command -v zig >/dev/null || die "zig 0.17 is not on PATH."
   say "Starting backend-exp on $HOST:$PORT (log: .dev/backend.log)"
   # DEV_AUTH_LAN acknowledges that dev auth is open to the LAN (physical iPhone only).
-  (cd "$BACKEND" && HOST="$HOST" DEV_AUTH_LAN="$DEV_AUTH_LAN" PORT="$PORT" exec zig build run) >"$DEV/backend.log" 2>&1 &
+  # stdin from /dev/null: a background job that touches the terminal is stopped (SIGTTIN).
+  (cd "$BACKEND" && HOST="$HOST" DEV_AUTH_LAN="$DEV_AUTH_LAN" PORT="$PORT" exec zig build run) </dev/null >"$DEV/backend.log" 2>&1 &
   BACKEND_PID=$!
   for _ in $(seq 1 240); do
-    curl -sf "$API/healthz" >/dev/null 2>&1 && break
+    healthy "$API" && break
     kill -0 "$BACKEND_PID" 2>/dev/null || { tail -20 "$DEV/backend.log"; die "Backend failed to start."; }
     sleep 0.5
   done
-  curl -sf "$API/healthz" >/dev/null || die "Backend didn't come up; see .dev/backend.log."
+  healthy "$API" || die "Backend didn't come up; see .dev/backend.log."
   say "Backend ready"
 fi
 
