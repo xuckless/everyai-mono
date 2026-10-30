@@ -37,22 +37,32 @@ case "$TARGET" in
   macos) DEVICE=macos ;;
   web | chrome) DEVICE=chrome ;;
   ios-sim)
-    DEVICE="$(xcrun simctl list devices booted -j | python3 -c '
-import json,sys
-for rt in json.load(sys.stdin)["devices"].values():
-    for d in rt:
-        if "iPhone" in d["name"] or "iPad" in d["name"]: print(d["udid"]); raise SystemExit' || true)"
-    if [[ -z "$DEVICE" ]]; then
-      DEVICE="$(xcrun simctl list devices available -j | python3 -c '
-import json,sys
-for rt in json.load(sys.stdin)["devices"].values():
-    for d in rt:
-        if d["name"].startswith("iPhone"): print(d["udid"]); raise SystemExit')"
-      [[ -n "$DEVICE" ]] || die "No iPhone simulator installed (Xcode → Settings → Components)."
-      say "Booting simulator $DEVICE"
-      xcrun simctl boot "$DEVICE"
+    # A booted iPhone/iPad wins; otherwise the iPhone on the newest iOS runtime.
+    DEVICE="$(xcrun simctl list devices -j | python3 -c '
+import json,re,sys
+devs = json.load(sys.stdin)["devices"]
+def ver(rt): return [int(n) for n in re.findall(r"\d+", rt.split("iOS")[-1])] if "iOS" in rt else [-1]
+booted = [d for rt in devs.values() for d in rt if d["state"] == "Booted" and ("iPhone" in d["name"] or "iPad" in d["name"])]
+pick = booted[0] if booted else next((d for rt in sorted(devs, key=ver, reverse=True) if "iOS" in rt
+                                      for d in devs[rt] if d.get("isAvailable") and d["name"].startswith("iPhone")), None)
+if pick: print(pick["udid"], pick["state"], pick["name"], sep="\t")')"
+    [[ -n "$DEVICE" ]] || die "No iPhone simulator installed (Xcode → Settings → Components)."
+    IFS=$'\t' read -r DEVICE SIM_STATE SIM_NAME <<<"$DEVICE"
+    if [[ "$SIM_STATE" != Booted ]]; then
+      say "Booting $SIM_NAME"
+      xcrun simctl boot "$DEVICE" 2>/dev/null || true
     fi
-    open -a Simulator 2>/dev/null || say "No Simulator.app window on this Xcode; the device runs headless (screenshots: xcrun simctl io booted screenshot x.png)"
+    xcrun simctl bootstatus "$DEVICE" -b >/dev/null || die "Simulator $SIM_NAME didn't boot."
+    # The window app: Simulator.app up to Xcode 26, Device Hub from Xcode 27.
+    XCODE_APPS="$(dirname "$(xcode-select -p)")/Applications"
+    if [[ -d "$XCODE_APPS/Simulator.app" ]]; then
+      open -g "$XCODE_APPS/Simulator.app" --args -CurrentDeviceUDID "$DEVICE"
+    elif [[ -d "$XCODE_APPS/DeviceHub.app" ]]; then
+      open -g "$XCODE_APPS/DeviceHub.app"
+    else
+      say "No simulator window app in this Xcode; $SIM_NAME runs headless (xcrun simctl io booted screenshot x.png)"
+    fi
+    say "Simulator: $SIM_NAME ($DEVICE)"
     ;;
   ios)
     DEVICE="$(cd "$FRONTEND" && flutter devices --machine 2>/dev/null | python3 -c '
@@ -137,6 +147,19 @@ base = json.load(open(src)) if os.path.exists(src) else {"DEV_SKIP_AUTH": True, 
 base["API_BASE_URL"] = api
 json.dump(base, open(dst, "w"), indent=2)
 PY
+
+# An earlier run on this device left suspended (Ctrl-Z) keeps its build lock and
+# agent-server; resume-and-kill it. A live run in another terminal is left alone.
+for pid in $(pgrep -f "flutter_tools.snapshot run -d $DEVICE " 2>/dev/null || true); do
+  if [[ "$(ps -o stat= -p "$pid" 2>/dev/null)" == T* ]]; then
+    say "Stopping a suspended flutter run on $DEVICE (pid $pid)"
+    parent="$(ps -o ppid= -p "$pid" | tr -d ' ')"
+    pkill -KILL -P "$pid" 2>/dev/null || true
+    kill -KILL "$pid" 2>/dev/null || true
+    # Its dev.sh, stopped along with it.
+    ps -o command= -p "$parent" 2>/dev/null | grep -q 'scripts/dev.sh' && kill -KILL "$parent" 2>/dev/null || true
+  fi
+done
 
 ARGS=(-d "$DEVICE" --dart-define-from-file="$DEFINES")
 if [[ "$DEVICE" == macos ]]; then
