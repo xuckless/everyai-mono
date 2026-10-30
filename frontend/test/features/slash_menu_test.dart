@@ -1,0 +1,211 @@
+import 'package:every_ai/core/platform/platform_kind.dart';
+import 'package:every_ai/core/theme/every_theme.dart';
+import 'package:every_ai/features/code/domain/agent_mode.dart';
+import 'package:every_ai/features/code/ui/code_composer.dart';
+import 'package:every_ai/features/slash/slash_command.dart';
+import 'package:every_ai/features/slash/slash_registry.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart' as m;
+
+void main() {
+  final ran = <String>[];
+  SlashCommand cmd(
+    String name,
+    String description, {
+    SlashGroup group = SlashGroup.builtIn,
+    SlashScope scope = SlashScope.both,
+    String? argsHint,
+  }) => SlashCommand(
+    name: name,
+    description: description,
+    group: group,
+    scope: scope,
+    argsHint: argsHint,
+    run: (ctx, args) => ran.add('$name|$args'),
+  );
+
+  final commands = [
+    cmd('review', 'Review the diff with a subagent', group: SlashGroup.custom),
+    cmd('plan', 'Switch to Plan mode', scope: SlashScope.code, argsHint: '[what to plan]'),
+    cmd('pdf-tools', 'Fill and merge PDFs', group: SlashGroup.skills),
+    cmd('search', 'Search the web', scope: SlashScope.chat),
+    cmd('stop', 'Stop the agent', scope: SlashScope.code),
+    cmd('compact', 'Summarize to free context'),
+  ];
+
+  setUp(ran.clear);
+
+  group('slashQuery', () {
+    TextEditingValue at(String text, [int? caret]) => TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: caret ?? text.length),
+    );
+
+    test('opens only for a slash at the start, with the caret in the first word', () {
+      expect(slashQuery(at('/')), '');
+      expect(slashQuery(at('/pl')), 'pl');
+      expect(slashQuery(at('/plan now')), isNull);
+      expect(slashQuery(at('hi /plan')), isNull);
+      expect(slashQuery(at(' /plan')), isNull);
+      expect(slashQuery(at('/plan', 3)), isNull);
+      expect(slashQuery(at('/pl x', 3)), 'pl');
+    });
+  });
+
+  group('filterSlashCommands', () {
+    test('keeps the scope, groups in order and ranks prefix over substring over description', () {
+      final names = [for (final c in filterSlashCommands(commands, '', SlashScope.code)) c.name];
+      expect(names, ['compact', 'plan', 'stop', 'review', 'pdf-tools']);
+      expect(
+        [for (final c in filterSlashCommands(commands, '', SlashScope.chat)) c.name],
+        ['compact', 'search', 'review', 'pdf-tools'],
+      );
+      expect(
+        [for (final c in filterSlashCommands(commands, 'p', SlashScope.code)) c.name],
+        ['plan', 'compact', 'stop', 'pdf-tools'],
+      );
+      expect([for (final c in filterSlashCommands(commands, 'PDF', SlashScope.code)) c.name], ['pdf-tools']);
+      expect([for (final c in filterSlashCommands(commands, 'subagent', SlashScope.code)) c.name], ['review']);
+      expect(filterSlashCommands(commands, 'zzz', SlashScope.code), isEmpty);
+    });
+
+    test('an earlier group shadows the same name', () {
+      final list = [cmd('learn', 'skill', group: SlashGroup.skills), cmd('learn', 'built-in')];
+      expect(filterSlashCommands(list, 'le', SlashScope.chat).single.description, 'built-in');
+    });
+  });
+
+  test('parseSlashLine finds known commands with their arguments', () {
+    final line = parseSlashLine('/plan add a login page\nwith tests', commands, SlashScope.code)!;
+    expect(line.command.name, 'plan');
+    expect(line.args, 'add a login page\nwith tests');
+    expect(parseSlashLine('/search x', commands, SlashScope.code), isNull);
+    expect(parseSlashLine('/etc/hosts is odd', commands, SlashScope.code), isNull);
+    expect(parseSlashLine('/stop', commands, SlashScope.code)!.args, '');
+  });
+
+  group('CodeComposer', () {
+    final sent = <String>[];
+    AgentMode? mode;
+
+    Widget host() => ProviderScope(
+      overrides: [slashCommandsProvider.overrideWithValue(commands)],
+      child: m.MaterialApp(
+        home: m.Material(
+          child: EveryThemeScope(
+            theme: EveryTheme.resolve(DesignLanguage.material, Brightness.light),
+            child: Align(
+              alignment: Alignment.bottomCenter,
+              child: CodeComposer(
+                busy: false,
+                mode: AgentMode.ask,
+                onModeChanged: (m) => mode = m,
+                onSend: (text, _) => sent.add(text),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    setUp(() {
+      sent.clear();
+      mode = null;
+    });
+
+    Future<void> type(WidgetTester tester, String text) async {
+      await tester.enterText(find.byType(EditableText), text);
+      await tester.pump();
+    }
+
+    Finder row(String name) => find.text('/$name');
+
+    // Desktop key handling: Enter sends.
+    void desktop(String description, WidgetTesterCallback body) =>
+        testWidgets(description, body, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+    desktop('typing / lists commands grouped; typing more filters', (tester) async {
+      await tester.pumpWidget(host());
+      expect(row('plan'), findsNothing);
+
+      await type(tester, '/');
+      for (final n in ['compact', 'plan', 'stop', 'review', 'pdf-tools']) {
+        expect(row(n), findsOneWidget);
+      }
+      expect(row('search'), findsNothing);
+      expect(find.text('Built-in'), findsOneWidget);
+      expect(find.text('Custom'), findsOneWidget);
+      expect(find.text('Skills'), findsOneWidget);
+      expect(find.text('Connectors'), findsNothing);
+      expect(find.text('[what to plan]'), findsOneWidget);
+
+      await type(tester, '/st');
+      expect(row('stop'), findsOneWidget);
+      expect(row('plan'), findsNothing);
+
+      await type(tester, '/st now');
+      expect(row('stop'), findsNothing);
+    });
+
+    desktop('arrows move, Enter runs, Tab completes commands that take arguments', (tester) async {
+      await tester.pumpWidget(host());
+      await type(tester, '/');
+      // compact, plan, stop, …: down twice lands on stop; up once is plan.
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pump();
+      expect(ran, isEmpty);
+      final field = tester.widget<EditableText>(find.byType(EditableText));
+      expect(field.controller.text, '/plan ');
+      expect(row('plan'), findsNothing);
+
+      await tester.enterText(find.byType(EditableText), '/plan add auth');
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(ran, ['plan|add auth']);
+      expect(sent, isEmpty);
+      expect(field.controller.text, '');
+
+      // Wraps from the top to the last row; Enter runs a command without arguments.
+      await type(tester, '/');
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(ran.last, 'stop|');
+      expect(mode, isNull);
+    });
+
+    desktop('Esc closes the menu until the word changes; tapping a row picks it', (tester) async {
+      await tester.pumpWidget(host());
+      await type(tester, '/c');
+      expect(row('compact'), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(row('compact'), findsNothing);
+
+      await type(tester, '/co');
+      expect(row('compact'), findsOneWidget);
+      await tester.tap(row('compact'));
+      await tester.pump();
+      expect(ran, ['compact|']);
+    });
+
+    desktop('unknown commands and paths are sent as messages', (tester) async {
+      await tester.pumpWidget(host());
+      await type(tester, '/etc/hosts looks wrong');
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(sent, ['/etc/hosts looks wrong']);
+      expect(ran, isEmpty);
+    });
+  });
+}

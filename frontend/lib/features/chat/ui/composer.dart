@@ -15,6 +15,9 @@ import '../../attachments/ui/attachment_tray.dart';
 import '../../models/domain/model_catalog.dart';
 import '../../models/models_providers.dart';
 import '../../models/ui/model_avatar.dart';
+import '../../slash/slash_command.dart';
+import '../../slash/slash_registry.dart';
+import '../../slash/ui/slash_menu.dart';
 import '../domain/message.dart';
 import '../domain/reasoning_effort.dart';
 import 'model_picker.dart';
@@ -24,6 +27,7 @@ import 'model_picker.dart';
 ///
 /// Desktop and web: Enter sends, Shift+Enter adds a line, Esc stops.
 /// Phones: return adds a line. `@alias` routes one message to another model.
+/// `/` at the start opens the command menu.
 class Composer extends ConsumerStatefulWidget {
   const Composer({
     super.key,
@@ -81,6 +85,7 @@ class ComposerState extends ConsumerState<Composer> {
   late final FocusNode _focus = FocusNode(onKeyEvent: _onKey);
   ({int start, String query})? _mention;
   final _attachments = <Attachment>[];
+  final _slash = SlashMenuController(surface: SlashScope.chat);
 
   @override
   void initState() {
@@ -92,7 +97,24 @@ class ComposerState extends ConsumerState<Composer> {
   void dispose() {
     _controller.dispose();
     _focus.dispose();
+    _slash.dispose();
     super.dispose();
+  }
+
+  SlashContext get _slashContext => SlashContext(
+    context: context,
+    surface: SlashScope.chat,
+    setDraft: (text) => _controller.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    ),
+    send: (text) => widget.onSend(text, const []),
+    chat: ChatSlashHost(setMode: (name) => widget.onModeChanged(ChatMode.values.byName(name))),
+  );
+
+  void _pickSlash(SlashCommand command) {
+    runSlash(command, '', _slashContext);
+    _focus.requestFocus();
   }
 
   /// Puts text in the box (starter prompts) and focuses it.
@@ -119,6 +141,13 @@ class ComposerState extends ConsumerState<Composer> {
 
   void _send() {
     if (!_canSend) return;
+    if (_attachments.isEmpty && !widget.busy) {
+      if (parseSlashLine(_controller.text, ref.read(slashCommandsProvider), SlashScope.chat) case final line?) {
+        runSlash(line.command, line.args, _slashContext, complete: false);
+        _focus.requestFocus();
+        return;
+      }
+    }
     widget.onSend(_controller.text, List.unmodifiable(_attachments));
     _controller.clear();
     setState(_attachments.clear);
@@ -152,6 +181,7 @@ class ComposerState extends ConsumerState<Composer> {
       final m = RegExp(r'(^|\s)@([\w.\-]*)$').firstMatch(before);
       if (m != null) mention = (start: m.start + m.group(1)!.length, query: m.group(2)!);
     }
+    _slash.update(_controller.value, ref.read(slashCommandsProvider));
     setState(() => _mention = mention);
   }
 
@@ -174,6 +204,7 @@ class ComposerState extends ConsumerState<Composer> {
   }
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (_slash.handleKey(event, _pickSlash) case final handled?) return handled;
     if (event is! KeyDownEvent || Host.isMobile) return KeyEventResult.ignored;
     final key = event.logicalKey;
     if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter) {
@@ -202,6 +233,7 @@ class ComposerState extends ConsumerState<Composer> {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        SlashMenu(controller: _slash, onPick: _pickSlash),
         if (suggestions.isNotEmpty)
           Padding(
             padding: const EdgeInsets.only(bottom: 8),

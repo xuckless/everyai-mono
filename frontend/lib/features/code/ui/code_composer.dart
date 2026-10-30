@@ -1,6 +1,7 @@
 import 'package:file_selector/file_selector.dart' show XFile;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/platform/platform_kind.dart';
 import '../../../core/theme/every_theme.dart';
@@ -11,12 +12,16 @@ import '../../attachments/attachment.dart';
 import '../../attachments/attachment_input.dart';
 import '../../attachments/ui/attachment_tray.dart';
 import '../../models/domain/model_catalog.dart';
+import '../../slash/slash_command.dart';
+import '../../slash/slash_registry.dart';
+import '../../slash/ui/slash_menu.dart';
 import '../domain/agent_mode.dart';
 import '../uploads/uploads.dart';
 
 /// The Code composer. Enter sends (or queues while the agent works),
-/// ⌥Enter interrupts and sends now, Esc stops.
-class CodeComposer extends StatefulWidget {
+/// ⌥Enter interrupts and sends now, Esc stops. `/` at the start opens the
+/// command menu.
+class CodeComposer extends ConsumerStatefulWidget {
   const CodeComposer({
     super.key,
     required this.busy,
@@ -59,25 +64,49 @@ class CodeComposer extends StatefulWidget {
   final ModelSpec? model;
 
   @override
-  State<CodeComposer> createState() => _CodeComposerState();
+  ConsumerState<CodeComposer> createState() => _CodeComposerState();
 }
 
-class _CodeComposerState extends State<CodeComposer> {
+class _CodeComposerState extends ConsumerState<CodeComposer> {
   final _controller = TextEditingController();
   late final _focus = FocusNode(onKeyEvent: _onKey);
   final _files = <Attachment>[];
+  final _slash = SlashMenuController(surface: SlashScope.code);
 
   @override
   void initState() {
     super.initState();
-    _controller.addListener(() => setState(() {}));
+    _controller.addListener(() {
+      _slash.update(_controller.value, ref.read(slashCommandsProvider));
+      setState(() {});
+    });
   }
 
   @override
   void dispose() {
     _controller.dispose();
     _focus.dispose();
+    _slash.dispose();
     super.dispose();
+  }
+
+  SlashContext get _slashContext => SlashContext(
+    context: context,
+    surface: SlashScope.code,
+    setDraft: (text) => _controller.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    ),
+    send: (text) => widget.onSend(text, const []),
+    code: CodeSlashHost(
+      setMode: (name) => widget.onModeChanged(AgentMode.values.byName(name)),
+      stop: widget.busy ? widget.onStop : null,
+    ),
+  );
+
+  void _pickSlash(SlashCommand command) {
+    runSlash(command, '', _slashContext);
+    _focus.requestFocus();
   }
 
   bool get _hasText => _controller.text.trim().isNotEmpty || _files.isNotEmpty;
@@ -85,6 +114,13 @@ class _CodeComposerState extends State<CodeComposer> {
   void _submit({bool steer = false}) {
     if (!_hasText) return;
     final text = _controller.text;
+    if (_files.isEmpty) {
+      if (parseSlashLine(text, ref.read(slashCommandsProvider), SlashScope.code) case final line?) {
+        runSlash(line.command, line.args, _slashContext, complete: false);
+        _focus.requestFocus();
+        return;
+      }
+    }
     (steer && widget.busy && widget.onSteer != null ? widget.onSteer! : widget.onSend)(text, List.unmodifiable(_files));
     _controller.clear();
     setState(_files.clear);
@@ -113,6 +149,7 @@ class _CodeComposerState extends State<CodeComposer> {
   }
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (_slash.handleKey(event, _pickSlash) case final handled?) return handled;
     if (event is! KeyDownEvent || Host.isMobile) return KeyEventResult.ignored;
     final key = event.logicalKey;
     final keyboard = HardwareKeyboard.instance;
@@ -138,6 +175,7 @@ class _CodeComposerState extends State<CodeComposer> {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        SlashMenu(controller: _slash, onPick: _pickSlash),
         if (widget.queued.isNotEmpty)
           Padding(
             padding: const EdgeInsets.only(bottom: 6),
