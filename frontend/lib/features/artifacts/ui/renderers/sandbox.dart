@@ -102,28 +102,20 @@ addEventListener("load",h);
 if(window.ResizeObserver)new ResizeObserver(h).observe(document.documentElement);else setInterval(h,500);
 })();''';
 
-final _headTag = RegExp(r'<head\b[^>]*>', caseSensitive: false);
-final _doctype = RegExp(r'^\s*<!doctype[^>]*>', caseSensitive: false);
-
-/// [html] with [prelude] placed first in its head, so a CSP `<meta>` comes
-/// before anything it governs. Without a `<head>`, the prelude goes right
-/// after the doctype and the parser opens the head for it.
-String injectIntoHead(String html, String prelude) {
-  final head = _headTag.firstMatch(html);
-  if (head != null) return html.replaceRange(head.end, head.end, prelude);
-  final doctype = _doctype.firstMatch(html);
-  if (doctype != null) return html.replaceRange(doctype.end, doctype.end, prelude);
-  return '<!doctype html>$prelude$html';
-}
-
 /// The document that runs inside the sandbox: [html] with the CSP, the theme
 /// variables and, for widgets, the base styles and the bridge.
+///
+/// The CSP `<meta>` is the very first thing after the doctype, before any of
+/// [html]: the parser opens the head for it, so it governs everything after.
+/// [html] is never parsed to find its head, because markup before that tag
+/// (or a `<head>` inside a comment or a string) would run with no policy.
+/// The model's own doctype, `<html>` and `<head>` tags later on are harmless.
 String sandboxedDocument(String html, {required WebSurface surface, required bool interactive, String theme = ''}) {
   final csp = const HtmlEscape(HtmlEscapeMode.attribute).convert(contentSecurityPolicy(interactive: interactive));
-  final prelude = StringBuffer('<meta http-equiv="Content-Security-Policy" content="$csp">')
+  final prelude = StringBuffer('<!doctype html><meta http-equiv="Content-Security-Policy" content="$csp">')
     ..write('<style>$theme${surface == WebSurface.widget ? _widgetCss : ''}</style>');
   if (surface == WebSurface.widget && interactive) prelude.write('<script>$_widgetBridge</script>');
-  return injectIntoHead(html, prelude.toString());
+  return '$prelude$html';
 }
 
 /// The sandbox attribute: scripts only when [interactive], and never
@@ -147,7 +139,12 @@ String sandboxedHostPage(
   final doc = sandboxedDocument(html, surface: surface, interactive: interactive, theme: theme);
   final srcdoc = const HtmlEscape(HtmlEscapeMode.attribute).convert(doc);
   final background = surface == WebSurface.page ? '#fff' : 'transparent';
+  // The host page carries the interactive policy too. A srcdoc frame
+  // inherits its embedder's policy, so this covers the content from its
+  // first byte even if a webview ignored the inner `<meta>`.
+  final hostCsp = const HtmlEscape(HtmlEscapeMode.attribute).convert(contentSecurityPolicy(interactive: true));
   return '''<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="$hostCsp">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>html,body{margin:0;height:100%;background:transparent;overflow:hidden}
 iframe{display:block;border:0;width:100%;height:100%;background:$background}</style></head>

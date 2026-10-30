@@ -60,7 +60,8 @@ class VisualBody extends ConsumerWidget {
         fallbackSource: visual.str('html'),
         height: null,
         surface: WebSurface.widget,
-        onSend: (text) => ref.read(chatSessionProvider(conversationId).notifier).send(text),
+        onSend: (text) =>
+            sendFromWidget(context, text, (t) => ref.read(chatSessionProvider(conversationId).notifier).send(t)),
       ),
       VisualKind.svg => SvgView(svg: visual.args['svg'] as String? ?? content, maxHeight: expanded ? 900 : 420),
       VisualKind.diagram => () {
@@ -86,6 +87,19 @@ class VisualBody extends ConsumerWidget {
       ),
     };
   }
+}
+
+/// A widget's `everyai.send(text)`: the widget is model-written (and could
+/// carry injected code), so its text goes out as the user's message only
+/// after the user has read it and confirmed.
+Future<void> sendFromWidget(BuildContext context, String text, void Function(String text) send) async {
+  final ok = await showAdaptiveConfirm(
+    context,
+    title: 'Send this message?',
+    message: 'The widget wants to send this as your message:\n\n$text',
+    confirmLabel: 'Send',
+  );
+  if (ok && context.mounted) send(text);
 }
 
 /// The key of a web page's static/interactive switch: its artifact id.
