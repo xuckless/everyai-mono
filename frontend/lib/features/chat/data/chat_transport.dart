@@ -24,6 +24,7 @@ final class ChatRequest {
     this.toolsEnabled = true,
     this.attachments = const [],
     this.clientTools = const {},
+    this.memory,
   });
 
   final ModelSpec model;
@@ -45,6 +46,9 @@ final class ChatRequest {
   /// UI tools the app runs itself: the server sends them as [ToolWait] and
   /// holds the turn until [ToolResults.resolve] answers (or it times out).
   final Set<String> clientTools;
+
+  /// The chat's frozen memory block (the same text every turn), or null.
+  final String? memory;
 }
 
 /// Incremental output of one assistant turn.
@@ -205,6 +209,7 @@ final class SseTransport implements ChatTransport {
       'mode': request.mode.name,
       'tools_enabled': request.toolsEnabled,
       'session': ?request.conversationId,
+      'memory': ?request.memory,
       if (request.clientTools.isNotEmpty) 'client_tools': request.clientTools.toList(growable: false),
       if (request.toolsEnabled && images.isNotEmpty) 'images': imageRefsJson(images),
       'messages': [
@@ -330,6 +335,10 @@ Map<String, String> toolOutputsByMessage(List<Message> history) {
         notes.add(askUserNote(call));
         continue;
       }
+      if (call.toolName == 'memory') {
+        if (memoryCallNote(call) case final note?) notes.add(note);
+        continue;
+      }
       final visual = Visual.fromPart(call);
       if (visual == null) continue;
       if (artifactTools.contains(call.toolName)) {
@@ -395,4 +404,26 @@ final class TransportRouter implements ChatTransport {
   @override
   Stream<ChatEvent> send(ChatRequest request, {Future<void>? cancel}) =>
       (request.model.output == Modality.image ? image : stream).send(request, cancel: cancel);
+}
+
+/// "[Saved to memory (user): …]" for a memory edit in an earlier turn, so
+/// the model knows it happened (the chat's memory block stays frozen).
+String? memoryCallNote(ToolCallPart call) {
+  final Map<String, Object?> args;
+  try {
+    args = switch (jsonDecode(call.argumentsJson)) {
+      final Map<String, Object?> m => m,
+      _ => const {},
+    };
+  } on FormatException {
+    return null;
+  }
+  if (call.resultJson case final String r when r.contains('"error":true')) return null;
+  final target = args['target'] ?? 'user';
+  return switch (args['action']) {
+    'add' => '[Saved to memory ($target): ${args['text']}]',
+    'replace' => '[Changed memory ($target): ${args['text']}]',
+    'remove' => '[Removed from memory ($target): ${args['old_text']}]',
+    _ => null,
+  };
 }

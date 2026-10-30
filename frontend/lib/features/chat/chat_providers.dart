@@ -7,6 +7,7 @@ import '../../core/net/api_error.dart';
 import '../../core/providers.dart';
 import '../artifacts/checks/tool_checks.dart';
 import '../attachments/attachment.dart';
+import '../memory/memory_providers.dart';
 import '../models/domain/model_catalog.dart';
 import '../models/models_providers.dart';
 import '../usage/usage_totals.dart';
@@ -37,7 +38,8 @@ final toolResultsProvider = Provider<ToolResults>((ref) {
 /// (sent as `client_tools`): the question card (`ask_user`).
 final chatClientToolsProvider = Provider<Set<String>>(
   // …and the artifact and diagram checks (Mermaid errors, bad TeX).
-  (ref) => {askUserTool, ...ref.watch(appToolCheckerProvider).tools},
+  // …and, with memory on, the local memory and chat-search tools.
+  (ref) => {askUserTool, ...ref.watch(appToolCheckerProvider).tools, ...ref.watch(enabledLocalChatToolsProvider)},
 );
 
 final conversationsProvider = StreamProvider<List<Conversation>>(
@@ -223,6 +225,19 @@ final class ChatController extends Notifier<ChatSessionState> {
     }
   }
 
+  /// Answers a `memory` or `search_chats` call on this device; the outcome is
+  /// kept on its part for the chip.
+  Future<void> _answerLocal(ToolWait wait) async {
+    final result = await ref.read(localChatToolsProvider).run(wait.name, wait.argumentsJson, chatId: conversationId);
+    if (!ref.mounted) return;
+    _recordResult?.call(wait.id, localToolResultJson(result));
+    try {
+      await resolveTool(wait.id, result.text, isError: result.isError);
+    } on Object {
+      // The turn ended or the server stopped waiting; it times out on its own.
+    }
+  }
+
   void _settleTool(String callId) {
     if (!ref.mounted) return;
     state = state.copyWith(pendingTools: List.unmodifiable(state.pendingTools.where((t) => t.id != callId)));
@@ -345,6 +360,7 @@ final class ChatController extends Notifier<ChatSessionState> {
             toolsEnabled: state.toolsEnabled,
             attachments: attachments,
             clientTools: state.toolsEnabled ? ref.read(chatClientToolsProvider) : const {},
+            memory: ref.read(memoryProvider.notifier).snapshotFor(conversationId),
           ),
           cancel: cancel.future,
         );
@@ -384,12 +400,14 @@ final class ChatController extends Notifier<ChatSessionState> {
               pendingTools: List.unmodifiable([...state.pendingTools, wait]),
             );
             if (ref.read(appToolCheckerProvider).handles(wait.name)) unawaited(_answerCheck(wait));
+            if (ref.read(localChatToolsProvider).handles(wait.name)) unawaited(_answerLocal(wait));
           // The server stopped waiting (answered elsewhere, or timed out). A
           // question card shows its own state, and a checked visual its own
           // card, so neither gets a step row.
           case ToolProgress(:final id, :final name)
               when state.pendingTools.any((t) => t.id == id) ||
                   name == askUserTool ||
+                  localChatTools.contains(name) ||
                   ref.read(appToolCheckerProvider).handles(name):
             _settleTool(id);
           case ToolProgress(:final id, :final name, :final status, :final detail):
