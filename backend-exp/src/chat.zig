@@ -12,7 +12,7 @@
 //! (done, or failed with detail "timed out") then closes the wait.
 //!
 //! Events: delta {text}, reasoning {text}, sources {sources} (new ones, appended), tool {id, name,
-//! arguments}, tool_wait {id, name, arguments}, tool_status {id, name, status, detail?}, image {id, mime, data},
+//! arguments}, tool_wait {id, name, arguments}, tool_status {id, name, status, detail?}, image {id, image_id, mime, data, prompt, revises?},
 //! usage {kind: chat|followups, model, tokens..., charged_micros}, followups {questions}, done {},
 //! error {message, retryable}.
 const std = @import("std");
@@ -49,6 +49,15 @@ pub const ChatRequest = struct {
     session: ?[]const u8 = null,
     /// UI tools the app runs itself and answers via `/v1/chat/tool_result`.
     client_tools: []const []const u8 = &.{},
+    /// The conversation's images by id (`img_<n>` generated, `upload_<n>`
+    /// attached), for `generate_image` edits and references.
+    images: []const ImageRef = &.{},
+};
+
+pub const ImageRef = struct {
+    id: []const u8,
+    /// A data: or https: URL; absent when the app left the bytes out.
+    url: ?[]const u8 = null,
 };
 
 /// A message in the upstream conversation. `raw_tool_calls` is the assistant's
@@ -262,6 +271,8 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
     const with_tools = body.tools_enabled and facts.tools and body.mode != .research;
     var docs: Artifacts = .{};
     for (messages.items) |m| if (std.mem.eql(u8, m.role, "assistant")) try docs.seed(arena, m.content);
+    var pictures: ImageBook = .{};
+    try pictures.seed(arena, body.images);
     var final_text: std.Io.Writer.Allocating = .init(arena);
     // Search needs OpenRouter's web plugin.
     const route = app.route(model, body.mode == .chat);
@@ -313,7 +324,7 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
             const output = if (cut_call == i)
                 try truncation.notRun(arena, call.name)
             else
-                try runTool(app, req, who, body, call, sink, &docs);
+                try runTool(app, req, who, body, call, sink, &docs, &pictures);
             try messages.append(arena, .{ .role = "tool", .tool_call_id = call.id, .content = output });
         }
         steps += 1;
@@ -512,7 +523,7 @@ fn toolCallsJson(arena: std.mem.Allocator, calls: []const openrouter.ToolCall) !
 }
 
 /// Runs or forwards one tool call; returns the text the model sees.
-fn runTool(app: *App, req: *anole.Request, who: auth.Identity, body: ChatRequest, call: openrouter.ToolCall, sink: Sink, docs: *Artifacts) ![]const u8 {
+fn runTool(app: *App, req: *anole.Request, who: auth.Identity, body: ChatRequest, call: openrouter.ToolCall, sink: Sink, docs: *Artifacts, pictures: *ImageBook) ![]const u8 {
     const session = body.session;
     const args_text = if (call.arguments.len == 0) "{}" else call.arguments;
     const args = std.json.parseFromSliceLeaky(std.json.Value, req.arena, args_text, .{}) catch {
@@ -536,7 +547,7 @@ fn runTool(app: *App, req: *anole.Request, who: auth.Identity, body: ChatRequest
             const output = (if (std.mem.eql(u8, call.name, "web_fetch"))
                 webFetch(app, req, openrouter.jsonString(args, "url") orelse "")
             else
-                generateImage(app, req, who, session, call.id, args, sink)) catch |err| blk: {
+                generateImage(app, req, who, session, call.id, args, sink, pictures)) catch |err| blk: {
                 break :blk try std.fmt.allocPrint(req.arena, "Error: {t}", .{err});
             };
             try sink.send("tool_status", .{ .id = call.id, .name = call.name, .status = if (std.mem.startsWith(u8, output, "Error")) "failed" else "done" });
@@ -676,12 +687,115 @@ fn indexOfIgnoreCase(haystack: []const u8, needle: []const u8) ?usize {
     return null;
 }
 
-/// Calls the image model; streams the image to the app as an `image` event.
-fn generateImage(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, id: []const u8, args: std.json.Value, sink: Sink) ![]const u8 {
+/// The conversation's images by id: what the app sent (`ChatRequest.images`)
+/// plus what this turn generated, so a later call can edit them.
+const ImageBook = struct {
+    /// id → data: or https: URL (null: known, but the app left the bytes out).
+    map: std.StringArrayHashMapUnmanaged(?[]const u8) = .empty,
+    /// Number for the next generated image (`img_<next>`).
+    next: u32 = 1,
+
+    fn seed(self: *ImageBook, arena: std.mem.Allocator, refs: []const ImageRef) !void {
+        for (refs) |r| {
+            try self.map.put(arena, r.id, r.url);
+            if (numberOf(r.id)) |n| self.next = @max(self.next, n + 1);
+        }
+    }
+
+    fn numberOf(id: []const u8) ?u32 {
+        if (!std.mem.startsWith(u8, id, "img_")) return null;
+        return std.fmt.parseInt(u32, id[4..], 10) catch null;
+    }
+
+    /// Records a generated image; returns its new id.
+    fn add(self: *ImageBook, arena: std.mem.Allocator, img: images.Image) ![]const u8 {
+        const id = try std.fmt.allocPrint(arena, "img_{d}", .{self.next});
+        self.next += 1;
+        try self.map.put(arena, id, try std.fmt.allocPrint(arena, "data:{s};base64,{s}", .{ img.mime, img.data }));
+        return id;
+    }
+
+    /// The URLs of `ids`, or the error text for the model.
+    fn resolve(self: *const ImageBook, arena: std.mem.Allocator, ids: []const []const u8) !union(enum) { urls: []const []const u8, problem: []const u8 } {
+        var urls: std.ArrayList([]const u8) = .empty;
+        for (ids) |id| {
+            const entry = self.map.get(id) orelse {
+                var known: std.Io.Writer.Allocating = .init(arena);
+                for (self.map.keys(), 0..) |k, i| try known.writer.print("{s}{s}", .{ if (i == 0) "" else ", ", k });
+                return .{ .problem = try std.fmt.allocPrint(arena, "Error: there is no image \"{s}\" in this chat. Known images: {s}.", .{ id, if (known.written().len == 0) "none" else known.written() }) };
+            };
+            const url = entry orelse return .{ .problem = try std.fmt.allocPrint(arena, "Error: image \"{s}\" is too old or too large to use as a reference here; describe it in the prompt instead.", .{id}) };
+            try urls.append(arena, url);
+        }
+        return .{ .urls = urls.items };
+    }
+};
+
+/// The image ids a generate_image call refers to: `edit_of` first, then
+/// `references`, without repeats.
+fn referencedIds(arena: std.mem.Allocator, args: std.json.Value) ![]const []const u8 {
+    var ids: std.ArrayList([]const u8) = .empty;
+    if (openrouter.jsonString(args, "edit_of")) |id| if (id.len > 0) try ids.append(arena, id);
+    const refs = if (args == .object) args.object.get("references") else null;
+    if (refs) |r| if (r == .array) for (r.array.items) |item| {
+        if (item != .string or item.string.len == 0) continue;
+        for (ids.items) |seen| {
+            if (std.mem.eql(u8, seen, item.string)) break;
+        } else try ids.append(arena, item.string);
+    };
+    return ids.items;
+}
+
+/// Calls the image model; streams the image to the app as an `image` event
+/// {id, image_id, mime, data, prompt, revises?}. An edit of a generated image
+/// (`edit_of: "img_…"`) is its next version in the app.
+fn generateImage(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, id: []const u8, args: std.json.Value, sink: Sink, pictures: *ImageBook) ![]const u8 {
+    const arena = req.arena;
     const prompt = openrouter.jsonString(args, "prompt") orelse return error.MissingPrompt;
-    const img = try images.generate(app, req, who, session, app.cfg.image_model, prompt, openrouter.jsonString(args, "aspect_ratio") orelse "1:1");
-    try sink.send("image", .{ .id = id, .mime = img.mime, .data = img.data });
-    return "The image was generated and shown to the user.";
+    const vector = std.mem.eql(u8, openrouter.jsonString(args, "engine") orelse "", "vector");
+    const refs = switch (try pictures.resolve(arena, try referencedIds(arena, args))) {
+        .problem => |p| return p,
+        .urls => |u| u,
+    };
+    var message: []const u8 = "the image model returned no image";
+    const list = images.generate(app, req, who, session, .{
+        .model = if (vector) app.cfg.vector_model else app.cfg.image_model,
+        .prompt = prompt,
+        .aspect_ratio = openrouter.jsonString(args, "aspect_ratio") orelse "1:1",
+        .output_format = if (vector) "svg" else null,
+        .references = refs,
+    }, &message) catch |err| switch (err) {
+        error.UpstreamFailed, error.NoImage => return std.fmt.allocPrint(arena, "Error: {s}.", .{message}),
+        else => return err,
+    };
+    const img = list[0];
+    const image_id = try pictures.add(arena, img);
+    const edit_of = openrouter.jsonString(args, "edit_of");
+    const revises = if (edit_of) |e| (if (ImageBook.numberOf(e) != null) e else null) else null;
+    try sink.send("image", .{ .id = id, .image_id = image_id, .mime = img.mime, .data = img.data, .prompt = prompt, .revises = revises });
+    const what = if (std.mem.eql(u8, img.mime, "image/svg+xml")) "an SVG illustration" else "an image";
+    return std.fmt.allocPrint(arena, "Generated {s}, {s}, and showed it to the user. Use the id {s} to edit it or as a reference.", .{ what, image_id, image_id });
+}
+
+test "image book: ids continue from the app's, references resolve, unknown ids are named" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var book: ImageBook = .{};
+    try book.seed(a, &.{ .{ .id = "upload_1", .url = "data:image/png;base64,AA" }, .{ .id = "img_4" }, .{ .id = "img_2", .url = "https://x/y.png" } });
+    try std.testing.expectEqualStrings("img_5", try book.add(a, .{ .mime = "image/png", .data = "BB" }));
+    const args = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"prompt":"p","edit_of":"img_5","references":["upload_1","img_5",""]}
+    , .{});
+    const ids = try referencedIds(a, args);
+    try std.testing.expectEqual(@as(usize, 2), ids.len);
+    const ok = try book.resolve(a, ids);
+    try std.testing.expectEqualStrings("data:image/png;base64,BB", ok.urls[0]);
+    try std.testing.expectEqualStrings("data:image/png;base64,AA", ok.urls[1]);
+    const old = try book.resolve(a, &.{"img_4"});
+    try std.testing.expect(std.mem.indexOf(u8, old.problem, "too old") != null);
+    const missing = try book.resolve(a, &.{"img_9"});
+    try std.testing.expect(std.mem.indexOf(u8, missing.problem, "Known images: upload_1, img_4, img_2, img_5") != null);
 }
 
 /// Three short follow-up questions from the utility model.

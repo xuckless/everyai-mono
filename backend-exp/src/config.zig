@@ -36,6 +36,8 @@ pub const Config = struct {
     utility_model: []const u8 = "google/gemini-3.5-flash-lite",
     /// Model for image generation (`generate_image` tool and /v1/images).
     image_model: []const u8 = "google/gemini-3.1-flash-image",
+    /// Vector (SVG) model for `generate_image` with `engine: "vector"`.
+    vector_model: []const u8 = "recraft/recraft-v4.1-vector",
     /// Tool-loop rounds per chat turn before the server stops calling the model.
     max_tool_steps: u8 = 6,
     /// How long a chat turn waits for the app to answer a client-executed

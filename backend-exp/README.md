@@ -23,18 +23,21 @@ Anole is a path dependency (`../../../PersonalProjects/anole` in
 | Models | `GET /v1/models` (OpenRouter catalog, hourly, marked-up prices), `GET /v1/models/defaults` | `models.zig` |
 | Chat | `POST /v1/chat/stream` (SSE), `POST /v1/chat/tool_result` | `chat.zig`, `tools.zig`, `tool_wait.zig` |
 | Gateway | `POST /v1/chat/completions` (OpenAI-compatible, streaming) | `gateway.zig` |
-| Images | `POST /v1/images` | `images.zig` |
+| Images | `POST /v1/images` `{prompt, model?, engine?: raster\|vector, n?, quality?, output_format?, input_references?}` returns `{mime, data, images}` (OpenRouter `/images`) | `images.zig` |
 | Billing | `GET /v1/plans`, `GET /v1/billing`, `GET /v1/usage`, `POST /v1/billing/checkout`, `POST /v1/billing/webhook` | `billing.zig` |
 
 ## Chat stream
 
-Request: `{model?, mode: chat|search|research, messages: [{role, content}], tools_enabled?, session?, client_tools?}`.
+Request: `{model?, mode: chat|search|research, messages: [{role, content}], tools_enabled?, session?, client_tools?, images?: [{id, url?}]}`.
+`images` lists the conversation's images (`img_<n>` generated, `upload_<n>` attached) so
+`generate_image` can edit them (`edit_of`) or follow them (`references`); new ids continue from the highest `img_<n>`.
 
 Events: `delta {text}`, `reasoning {text}`, `sources {sources}` (new sources,
 appended in citation order), `tool {id, name, arguments}` (a UI tool for the
 app to render), `tool_wait {id, name, arguments}` (a client-executed tool the
 turn waits on), `tool_status {id, name, status, detail?}` (a server tool),
-`image {id, mime, data}`, `usage {model, prompt_tokens, completion_tokens,
+`image {id, image_id, mime, data, prompt, revises?}` (`revises`: the image it is a new version of;
+vector images are `image/svg+xml`), `usage {model, prompt_tokens, completion_tokens,
 cached_tokens, cache_write_tokens, charged_micros}` (one per upstream call),
 `followups {questions}`, `done {}`, `error {message, retryable, status?}`.
 

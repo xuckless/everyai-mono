@@ -728,3 +728,81 @@ test "gateway: streamed, a cut-off tool call is held back and replaced by the re
     try std.testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, body, "\n"), "data: [DONE]"));
     try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[1], "\"max_tokens\":32768") != null);
 }
+
+const image_turn =
+    \\data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_img","type":"function","function":{"name":"generate_image","arguments":"{\"prompt\":\"make the cat blue\",\"edit_of\":\"img_1\",\"references\":[\"upload_1\"]}"}}]}}]}
+    \\
+    \\data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":900,"completion_tokens":30,"cost":0.0001}}
+    \\
+    \\data: [DONE]
+    \\
+    \\
+;
+
+const image_reply =
+    \\{"data":[{"b64_json":"iVBORw0KGgoNEW","media_type":"image/png"}],"usage":{"cost":0.04}}
+;
+
+test "chat: generate_image edits an earlier image by id with references and reports the new id" {
+    var env: Env = undefined;
+    try start(&env, &.{ image_turn, image_reply, final_turn, followups_reply }, true);
+    defer env.deinit();
+
+    var res = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = "Make it blue, like my photo" }},
+        .images = .{ .{ .id = "img_1", .url = "data:image/png;base64,OLDCAT" }, .{ .id = "upload_1", .url = "data:image/jpeg;base64,PHOTO" } },
+    } });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    const body = res.body;
+    try std.testing.expect(std.mem.indexOf(u8, body, "event: image") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"image_id\":\"img_2\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"revises\":\"img_1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"data\":\"iVBORw0KGgoNEW\"") != null);
+
+    // The image request: the edited image first, then the reference.
+    const up = env.fake.bodies.items[1];
+    try std.testing.expect(std.mem.indexOf(u8, up, "\"input_references\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,OLDCAT\"}},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/jpeg;base64,PHOTO\"}}]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, up, "\"model\":\"google/gemini-3.1-flash-image\"") != null);
+    // The model learns the new id.
+    try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[2], "Generated an image, img_2,") != null);
+
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = arena.allocator() };
+    try std.testing.expectEqual(@as(i64, 46_000), try env.state.db.one(i64, &c, "SELECT charged_micros FROM usage_events WHERE kind = 'image'", .{}));
+}
+
+test "chat: generate_image with an unknown id tells the model which ids exist" {
+    var env: Env = undefined;
+    try start(&env, &.{ image_turn, final_turn, followups_reply }, true);
+    defer env.deinit();
+
+    var res = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = "Make it blue" }},
+        .images = .{.{ .id = "upload_1", .url = "data:image/jpeg;base64,PHOTO" }},
+    } });
+    defer res.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "event: image") == null);
+    try std.testing.expectEqual(@as(usize, 3), env.fake.bodies.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[1], "there is no image \\\"img_1\\\" in this chat. Known images: upload_1.") != null);
+}
+
+test "images: the vector engine asks a Recraft vector model for SVG" {
+    var env: Env = undefined;
+    try start(&env, &.{"{\"data\":[{\"b64_json\":\"PHN2ZyB2aWV3Qm94PSIwIDAgMSAxIi8+\"}],\"usage\":{\"cost\":0.08}}"}, true);
+    defer env.deinit();
+
+    var res = try env.t.post("/v1/images", .{ .json = .{ .prompt = "a fox mascot", .engine = "vector" } });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    const Out = struct { mime: []const u8, images: []const struct { mime: []const u8, data: []const u8 } };
+    const out = try res.json(Out);
+    try std.testing.expectEqualStrings("image/svg+xml", out.mime);
+    try std.testing.expectEqual(@as(usize, 1), out.images.len);
+    const up = env.fake.bodies.items[0];
+    try std.testing.expect(std.mem.indexOf(u8, up, "\"model\":\"recraft/recraft-v4.1-vector\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, up, "\"output_format\":\"svg\"") != null);
+}
