@@ -106,6 +106,9 @@ pub fn main(init: std.process.Init) !void {
         .client = .{ .timeout = null },
         // Chat attachments (images, PDFs) arrive inline as base64.
         .limits = .{ .body_max = body_max },
+        // Non-streamed gateway completions (agents writing whole files) run
+        // well past the 30 s default; the upstream bounds them anyway.
+        .timeouts = .{ .request = .fromSeconds(600) },
     }, &state);
     defer app.deinit();
     const io = app.io();
