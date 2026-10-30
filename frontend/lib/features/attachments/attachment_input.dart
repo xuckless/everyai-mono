@@ -111,11 +111,13 @@ class _PasteAction extends Action<PasteTextIntent> {
 
   @override
   Future<void> invoke(PasteTextIntent intent) async {
+    // The text field's own paste action is only set while invoke runs synchronously; take it before awaiting.
+    final textPaste = callingAction;
     final files = await clipboardFiles();
     if (files.isNotEmpty) {
       onFiles(files);
     } else {
-      callingAction?.invoke(intent);
+      textPaste?.invoke(intent);
     }
   }
 }

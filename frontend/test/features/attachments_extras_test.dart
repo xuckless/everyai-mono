@@ -12,6 +12,7 @@ import 'package:every_ai/features/chat/domain/message.dart';
 import 'package:every_ai/features/models/domain/model_catalog.dart';
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/theme/every_theme.dart';
+import 'package:file_selector/file_selector.dart' show XFile;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -19,6 +20,36 @@ import 'package:image/image.dart' as img;
 
 void main() {
   group('clipboard', () {
+    testWidgets('Cmd+V still pastes text inside the drop zone', (tester) async {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.getData') return {'text': 'hello'};
+        if (call.method == 'Clipboard.hasStrings') return {'value': true};
+        return null;
+      });
+      addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+      final controller = TextEditingController();
+      final got = <XFile>[];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: AttachmentDropZone(
+              onFiles: got.addAll,
+              child: TextField(controller: controller, autofocus: true),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
+      // The clipboard plugins answer on real async.
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 200)));
+      await tester.pumpAndSettle();
+      expect(got, isEmpty);
+      expect(controller.text, 'hello');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
     test('files on the clipboard win over an image', () async {
       final files = await clipboardFiles(
         readFiles: () async => ['/tmp/a.pdf', 'content://x/1'],
