@@ -1,4 +1,3 @@
-
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -65,6 +64,18 @@ void main() {
     expect(WindowBounds.decode('{'), isNull);
     expect(WindowBounds.decode('{"x":0,"y":0,"w":10,"h":10}'), isNull);
     expect(WindowBounds.decode('{"x":0,"y":0,"w":99999,"h":700}'), isNull);
+  });
+
+  test('window bounds from a disconnected monitor are not visible', () {
+    const laptop = Rect.fromLTWH(0, 0, 1440, 900);
+    const external = Rect.fromLTWH(1440, 0, 2560, 1440);
+    const onExternal = WindowBounds(Rect.fromLTWH(2000, 200, 1200, 800));
+    expect(onExternal.visibleOn([laptop, external]), isTrue);
+    expect(onExternal.visibleOn([laptop]), isFalse);
+    // Mostly off the edge, but enough title bar left to grab.
+    expect(const WindowBounds(Rect.fromLTWH(1200, 100, 1200, 800)).visibleOn([laptop]), isTrue);
+    // Title bar above the top of the screen.
+    expect(const WindowBounds(Rect.fromLTWH(100, -500, 1200, 800)).visibleOn([laptop]), isFalse);
   });
 }
 

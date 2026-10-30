@@ -24,6 +24,7 @@ dependencies:
   macos_ui: ^2.2.2
   macos_window_utils: ^1.9.1
   window_manager: ^0.5.2
+  screen_retriever: ^0.2.2 # already under window_manager; lists displays for restoring the window
 
   # State, routing, data
   flutter_riverpod: ^3.4.3

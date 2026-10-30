@@ -36,6 +36,17 @@ final class WindowBounds {
       return null;
     }
   }
+
+  /// Whether enough of the title bar lies on one of [displays] to see and drag the window. Saved bounds from a
+  /// monitor that is no longer connected fail this, and the window is centered instead.
+  bool visibleOn(Iterable<Rect> displays) {
+    final titleBar = Rect.fromLTWH(rect.left, rect.top, rect.width, 40);
+    for (final d in displays) {
+      final overlap = titleBar.intersect(d);
+      if (overlap.width >= 100 && overlap.height >= 20) return true;
+    }
+    return false;
+  }
 }
 
 /// Saves the window's bounds as it moves and resizes (Windows and Linux; macOS

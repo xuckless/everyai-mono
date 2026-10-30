@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:macos_ui/macos_ui.dart' as mac;
+import 'package:screen_retriever/screen_retriever.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'app/app.dart';
@@ -26,7 +27,17 @@ Future<void> main() async {
         await const mac.MacosWindowUtilsConfig().apply();
       case TargetPlatform.windows || TargetPlatform.linux:
         await windowManager.ensureInitialized();
-        final saved = WindowBounds.decode(preferences[WindowBounds.key]);
+        var saved = WindowBounds.decode(preferences[WindowBounds.key]);
+        // Bounds saved on a monitor that is gone would open the window off-screen, every launch.
+        if (saved != null) {
+          try {
+            final displays = await screenRetriever.getAllDisplays();
+            final areas = [for (final d in displays) (d.visiblePosition ?? Offset.zero) & (d.visibleSize ?? d.size)];
+            if (areas.isNotEmpty && !saved.visibleOn(areas)) saved = null;
+          } catch (_) {
+            // No display list: keep the saved bounds.
+          }
+        }
         await windowManager.waitUntilReadyToShow(
           WindowOptions(
             title: 'EveryAI',
