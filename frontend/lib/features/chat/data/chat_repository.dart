@@ -12,9 +12,12 @@ import '../domain/message.dart';
 /// Persists conversations and messages. Reads are reactive: watch* streams
 /// emit again whenever the underlying tables change (no polling).
 final class ChatRepository {
-  ChatRepository(this._db);
+  ChatRepository(this._db, {this.afterDelete});
 
   final AppDatabase _db;
+
+  /// Runs after a chat is deleted (sweeps its per-chat preferences).
+  final Future<void> Function()? afterDelete;
   static const _uuid = Uuid();
 
   String newId() => _uuid.v7();
@@ -130,8 +133,10 @@ final class ChatRepository {
     _db.conversations,
   )..where((c) => c.id.equals(conversationId))).write(ConversationsCompanion(pinned: Value(pinned)));
 
-  Future<void> delete(String conversationId) =>
-      (_db.delete(_db.conversations)..where((c) => c.id.equals(conversationId))).go();
+  Future<void> delete(String conversationId) async {
+    await (_db.delete(_db.conversations)..where((c) => c.id.equals(conversationId))).go();
+    await afterDelete?.call();
+  }
 
   /// Conversations that hold artifacts (create/update/edit_artifact calls or
   /// generated images), most recently updated first. Emits again when

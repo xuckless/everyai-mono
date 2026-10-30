@@ -324,8 +324,10 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
 fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, body: ChatRequest, facts: @import("models.zig").Catalog.Facts, sink: Sink) !void {
     const arena = req.arena;
     var messages: std.ArrayList(Msg) = .empty;
-    // Memory goes after the constant system prompt and before the history.
-    if (body.memory) |m| if (std.mem.trim(u8, m, " \t\r\n").len > 0) try messages.append(arena, .{ .role = "system", .content = m });
+    // Memory goes after the constant system prompt and before the history,
+    // as user-role content: the model may have written it (possibly from
+    // something it read on the web), so it must not carry system authority.
+    if (body.memory) |m| if (std.mem.trim(u8, m, " \t\r\n").len > 0) try messages.append(arena, .{ .role = "user", .content = m });
     for (body.messages) |m| {
         const role = if (std.mem.eql(u8, m.role, "assistant")) "assistant" else "user";
         switch (m.content) {

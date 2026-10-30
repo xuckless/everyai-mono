@@ -98,10 +98,15 @@ final _injection = RegExp(
   caseSensitive: false,
 );
 
+final _link = RegExp(r'\b[a-z][a-z0-9+.-]*://|\bwww\.|!\[|\]\(', caseSensitive: false);
+
 /// Why [text] can't go into memory (it lands in every later prompt), or null.
+/// Links are refused: an injected note could otherwise make every later
+/// chat send data to a URL.
 String? memoryProblem(String text) {
   if (text.isEmpty) return 'the entry is empty';
   if (_invisible.hasMatch(text)) return 'the entry has invisible or direction-changing characters';
+  if (_link.hasMatch(text)) return 'the entry holds a link or URL; save plain facts without links';
   if (_injection.hasMatch(text)) return 'the entry reads like instructions to a model; save plain facts instead';
   return null;
 }

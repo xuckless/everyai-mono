@@ -937,6 +937,8 @@ test "chat: memory rides after the system prompt; undeclared memory calls get an
     const mem = std.mem.indexOf(u8, first, "<memory>Name: Sam</memory>").?;
     const user = std.mem.indexOf(u8, first, "Remember I use metric").?;
     try std.testing.expect(sys < mem and mem < user);
+    // Notes are user content, never system instructions.
+    try std.testing.expect(std.mem.indexOf(u8, first, "{\"role\":\"user\",\"content\":\"<memory>Name: Sam</memory>\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[1], "Error: memory is turned off in the user's app") != null);
 }
 

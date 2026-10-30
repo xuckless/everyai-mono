@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,6 +10,7 @@ import 'app/app.dart';
 import 'core/db/app_database.dart';
 import 'core/preferences.dart';
 import 'core/providers.dart';
+import 'features/chat/data/chat_cleanup.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -33,6 +36,8 @@ Future<void> main() async {
 
   final db = AppDatabase();
   final preferences = await Preferences.load(db);
+  // Per-chat settings of chats deleted since (or before) the last launch.
+  unawaited(sweepChatPreferences(db, preferences));
 
   runApp(
     ProviderScope(

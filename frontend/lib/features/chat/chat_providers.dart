@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/net/api_error.dart';
+import '../../core/preferences.dart';
 import '../../core/providers.dart';
 import '../artifacts/checks/tool_checks.dart';
 import '../attachments/attachment.dart';
@@ -11,13 +12,17 @@ import '../memory/memory_providers.dart';
 import '../models/domain/model_catalog.dart';
 import '../models/models_providers.dart';
 import '../usage/usage_totals.dart';
+import 'data/chat_cleanup.dart';
 import 'data/chat_repository.dart';
 import 'data/chat_transport.dart';
 import 'domain/ask_user.dart';
 import 'domain/chat_session.dart';
 import 'domain/message.dart';
 
-final chatRepositoryProvider = Provider<ChatRepository>((ref) => ChatRepository(ref.watch(databaseProvider)));
+final chatRepositoryProvider = Provider<ChatRepository>((ref) {
+  final db = ref.watch(databaseProvider);
+  return ChatRepository(db, afterDelete: () => sweepChatPreferences(db, ref.read(preferencesProvider)));
+});
 
 final chatTransportProvider = Provider<ChatTransport>((ref) {
   final api = ref.watch(apiClientProvider);
@@ -228,7 +233,9 @@ final class ChatController extends Notifier<ChatSessionState> {
   /// Answers a `memory` or `search_chats` call on this device; the outcome is
   /// kept on its part for the chip.
   Future<void> _answerLocal(ToolWait wait) async {
-    final result = await ref.read(localChatToolsProvider).run(wait.name, wait.argumentsJson, chatId: conversationId);
+    final result = await ref
+        .read(localChatToolsProvider)
+        .run(wait.name, wait.argumentsJson, chatId: conversationId, readWeb: state.liveSources.isNotEmpty);
     if (!ref.mounted) return;
     _recordResult?.call(wait.id, localToolResultJson(result));
     try {

@@ -26,6 +26,12 @@ final class Preferences {
 
   String? operator [](String key) => _values[key];
 
+  /// The keys that start with [prefix] (a copy, so callers may remove them).
+  List<String> keysStartingWith(String prefix) => [
+    for (final k in _values.keys)
+      if (k.startsWith(prefix)) k,
+  ];
+
   void operator []=(String key, String? value) {
     final db = _db;
     if (value == null) {
