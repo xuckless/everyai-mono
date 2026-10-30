@@ -347,6 +347,11 @@ final class TranscriptBuilder {
           return;
         }
         if (_answer(text) || _reported(text)) return;
+        if (text.trimLeft().startsWith('<$researchWorkflowTag')) {
+          final n = RegExp(r'reports="(\d+)"').firstMatch(text)?[1] ?? '';
+          _items.add(NoticeItem(e.id, 'Research workflow: $n reports', detail: text));
+          return;
+        }
         if (parsePhaseNote(text) case final p?) {
           _phase = (flow: p.flow, phase: p.phase, stuck: p.stuck);
           final flow = p.flow == 'ultra' ? 'Ultra' : 'Max';

@@ -31,7 +31,8 @@ import 'domain/goal.dart';
 import 'domain/review.dart';
 import 'domain/rewind.dart';
 import 'domain/spill.dart';
-import 'domain/phases.dart' show Phase;
+import 'domain/phases.dart'
+    show Phase, parseResearchAngles, researchAnglesQuestion, researchCallPrefix, researchWorkflowMessage;
 import 'domain/subagents.dart';
 import 'domain/questions.dart';
 import 'domain/session_commands.dart';
@@ -463,8 +464,26 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     required ActionCall call,
     required AgentMode mode,
     bool onParentModel = false,
+  }) => startTask(
+    parent: parent,
+    task: SubagentTask.of(call),
+    callId: call.id,
+    mode: mode,
+    isolation: call.str('isolation'),
+    onParentModel: onParentModel,
+  );
+
+  /// [startSubagent] for a task the app starts itself (an Ultra research
+  /// worker): [callId] names it under [parent].
+  Future<CodeSessionInfo> startTask({
+    required CodeSessionInfo parent,
+    required SubagentTask task,
+    required String callId,
+    required AgentMode mode,
+    String isolation = '',
+    bool onParentModel = false,
+    String model = '',
   }) async {
-    final task = SubagentTask.of(call);
     final project = ref.read(codeProjectsProvider).where((p) => p.id == parent.projectId).firstOrNull;
     final projectDir = project?.path ?? parent.workingDir;
     AgentType? role;
@@ -491,6 +510,9 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
           ? null
           : onParentModel
           ? (model: parent.model, effort: parent.effort)
+          // The orchestrator's pick for this task, else the user's for the role.
+          : model.isNotEmpty
+          ? (model: model, effort: '')
           : ref.read(agentLibrarySettingsProvider).preferredFor(agent.name),
       // A role's model must be one the catalog has and that can call tools; else the orchestrator's.
       modelKnown: (m) {
@@ -511,8 +533,8 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     final isolate =
         fork &&
         !research &&
-        call.str('isolation') != 'shared' &&
-        (call.str('isolation') == 'worktree' || ref.read(codeSettingsProvider).forksIsolated);
+        isolation != 'shared' &&
+        (isolation == 'worktree' || ref.read(codeSettingsProvider).forksIsolated);
     ForkCopy? copy;
     if (isolate) {
       try {
@@ -540,7 +562,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       fork: fork,
       forkCopy: copy,
       mode: setup.mode,
-      callId: call.id,
+      callId: callId,
       projectDir: projectDir,
       // A fork keeps the parent's model, effort and tools, so the cache holds.
       model: fork ? null : setup.model,
@@ -883,7 +905,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
       _sub?.cancel();
       _gitTimer?.cancel();
       _disposeBuiltins();
-      for (final s in _childSubs.values) {
+      for (final s in [..._childSubs.values, ..._researchSubs.values]) {
         s.close();
       }
     });
@@ -1065,6 +1087,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     }
     if (looped) _raiseDoomLoop(_doom.looped!);
     _autoRespond(transcript);
+    _ultraResearch(transcript);
     _syncSubagents();
     _deliver();
     _goalTick(turnEnded: wasRunning && !transcript.running);
@@ -1742,6 +1765,89 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     if (waiting ? _childWaiting.add(callId) : _childWaiting.remove(callId)) {
       state = state.copyWith(subagentNeedsInput: _childWaiting.isNotEmpty);
     }
+  }
+
+  // ------------------------------------------------- Ultra research workflow
+
+  final _researchSubs = <String, ProviderSubscription<CodeSessionState>>{};
+  final _researchReports = <String, ({String title, SubagentReport report})>{};
+  bool _researchStarting = false;
+  bool _researchSent = false;
+
+  /// The session's Ultra research workers (started earlier, maybe before a restart).
+  List<CodeSessionInfo> get _researchers => [
+    for (final s in ref.read(codeSessionsProvider))
+      if (s.parentId == sessionId && s.parentCallId.startsWith(researchCallPrefix)) s,
+  ];
+
+  /// An Ultra session at research: start its workflow of 10–12 researchers
+  /// once (the session's own model drafts the angles), watch them, and send
+  /// their reports together when the last one is in.
+  void _ultraResearch(Transcript t) {
+    final p = t.phase;
+    if (p == null || p.flow != 'ultra' || p.phase != Phase.research || _researchStarting || _researchSent) return;
+    final sessions = ref.read(codeSessionsProvider.notifier);
+    final info = sessions.byId(sessionId);
+    if (info == null || info.isSubagent) return;
+    final running = _researchers;
+    if (running.isNotEmpty) {
+      for (final r in running) {
+        if (!_researchSubs.containsKey(r.parentCallId)) _watchResearcher(r.parentCallId, r.id, r.title);
+      }
+      return;
+    }
+    final session = _session;
+    if (session is! AsksAside) return;
+    _researchStarting = true;
+    unawaited(() async {
+      try {
+        // The orchestrator picks how many researchers and each one's model, from the user's models.
+        final models = {
+          for (final m in (ref.read(libraryProvider).value ?? const <ModelSpec>[]).where((m) => m.tools).take(8))
+            if (m.id.value != info.model) m.id.value: m.name,
+        };
+        final reply = await (session as AsksAside).askAside(researchAnglesQuestion(models: models), maxTokens: 3000);
+        final angles = parseResearchAngles(reply);
+        for (final (i, a) in angles.indexed) {
+          if (!ref.mounted) return;
+          final callId = '$researchCallPrefix${i + 1}';
+          final child = await sessions.startTask(
+            parent: info,
+            task: SubagentTask(description: a.title, prompt: a.question, agent: 'researcher'),
+            callId: callId,
+            mode: subagentMode(state.mode),
+            // Only a model it was offered; anything else runs on the orchestrator's.
+            model: models.containsKey(a.model) ? a.model : '',
+          );
+          _watchResearcher(callId, child.id, child.title);
+        }
+      } on Object catch (e) {
+        if (ref.mounted) state = state.copyWith(error: "The research workflow couldn't start: $e");
+      } finally {
+        _researchStarting = false;
+      }
+      // Some may have finished while the rest were starting.
+      if (ref.mounted) _researchMaybeDone();
+    }());
+  }
+
+  void _watchResearcher(String callId, String childId, String title) {
+    _researchSubs[callId] = ref.listen(codeSessionProvider(childId), (_, next) {
+      final outcome = subagentOutcome(next.transcript, error: next.error);
+      if (outcome == null || _researchReports.containsKey(callId)) return;
+      _researchReports[callId] = (title: title, report: outcome);
+      _researchSubs.remove(callId)?.close();
+      _researchMaybeDone();
+    }, fireImmediately: true);
+  }
+
+  void _researchMaybeDone() {
+    if (_researchSent || _researchStarting) return;
+    final all = _researchers;
+    if (all.isEmpty || all.any((r) => !_researchReports.containsKey(r.parentCallId))) return;
+    _researchSent = true;
+    final reports = [for (final r in all) _researchReports[r.parentCallId]!];
+    unawaited(_session?.send(researchWorkflowMessage(reports)).catchError((Object _) {}));
   }
 
   /// Each subagent call, for starting it again.

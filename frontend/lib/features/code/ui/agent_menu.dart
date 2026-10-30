@@ -12,7 +12,7 @@ import '../agent_models.dart';
 import '../domain/agent_menu.dart';
 import '../settings/agent_prompt.dart' show HarnessMode, HarnessTier;
 import '../settings/code_settings.dart' show budgetPresets;
-import '../ultra/ultra_ui_providers.dart' show ultraAccessProvider;
+import '../ultra/ultra_access.dart' show ultraAccessProvider;
 
 /// The agent menu: Harness, Harness mode, the tier bar (Efficient → Ultra),
 /// Model (the user's own models that can call tools) and Effort, in one
@@ -64,7 +64,7 @@ class AgentMenu extends ConsumerWidget {
     final library = ref.watch(libraryProvider).value ?? const <ModelSpec>[];
     final groups = libraryMenuGroups(library, catalog, current: model, nameOf: (id) => specs[ModelId(id)]?.name);
     final current = [for (final (_, ms) in groups) ...ms].where((m) => m.model == model).firstOrNull;
-    final ultraAllowed = ref.watch(ultraAccessProvider).value != null;
+    final ultraAllowed = ref.watch(ultraAccessProvider).value ?? false;
     final label = [
       agentMenuLabel(current?.name ?? model.split('/').last, effort),
       if (onTier != null) tier.label,

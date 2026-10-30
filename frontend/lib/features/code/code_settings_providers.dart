@@ -1,6 +1,5 @@
 import 'dart:convert';
 
-import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/preferences.dart';
@@ -8,7 +7,6 @@ import '../skills/skills_providers.dart' show SkillSettings, SkillSettingsNotifi
 import 'mcp_providers.dart';
 import 'permissions_providers.dart';
 import 'settings/code_settings.dart';
-import 'ultra/ui/ultra_toggle.dart' show ultraTopBarSlot;
 
 export 'settings/code_settings.dart';
 
@@ -104,9 +102,3 @@ CodeSettingsSources codeSettingsSources(WidgetRef ref, {SessionLayer? session, b
         skills: ref.read(skillSettingsProvider),
         session: session,
       );
-
-/// Builds the Ultra toggle for a session's top bar; null hides the slot.
-typedef CodeTopBarSlot = Widget Function(BuildContext context, String sessionId);
-
-/// The Ultra toggle's place in the Code top bar (locked off the Max plan).
-final codeUltraSlotProvider = Provider<CodeTopBarSlot?>((ref) => ultraTopBarSlot);

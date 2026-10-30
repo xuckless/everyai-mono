@@ -1,5 +1,4 @@
 import '../harness/events.dart';
-import '../ultra/domain/ultra_plan.dart' show ultraPlanTool;
 import 'shell_readonly.dart';
 import 'subagents.dart';
 
@@ -215,7 +214,7 @@ const presentFilesTool = 'present_files';
 bool isHeldTool(ActionCall call) => isClientTool(call) && call.toolName != presentFilesTool;
 
 /// The client tools registered with every session.
-const clientTools = {askUserQuestionTool, presentPlanTool, presentFilesTool, taskTool, ultraPlanTool};
+const clientTools = {askUserQuestionTool, presentPlanTool, presentFilesTool, taskTool};
 
 /// A call to one of [clientTools]. An MCP server's tool with the same name
 /// is not one: it doesn't get a client tool's free pass.

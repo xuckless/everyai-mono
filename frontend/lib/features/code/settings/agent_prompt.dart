@@ -166,7 +166,7 @@ enum HarnessTier {
   efficient('Efficient', 'Plan, build in parts, check like a user, one polish pass'),
   thorough('Thorough', 'Showcase quality: verify every part, polish until nothing is left'),
   max('Max', 'Research with forks first, ask you, plan, then build with forks'),
-  ultra('Ultra', 'A workflow of 10–12 researchers, then questions, a plan and a parallel build');
+  ultra('Ultra', 'A research workflow sized to the task, then questions, a plan and a parallel build');
 
   const HarnessTier(this.label, this.description);
   final String label;
@@ -254,8 +254,9 @@ String tierBlock(HarnessTier tier, {bool forks = false}) {
                 'its own fork (isolation "worktree"); each builds and checks its part to the Thorough standard and '
                 'is merged back; you integrate and verify the whole.',
           HarnessTier.ultra =>
-            '\n- Research and build run as workflows the harness starts: many workers in parallel. You read their '
-                'reports, ask the questions, write the plan, then integrate the built parts and verify the whole.',
+            '\n- Research runs as a workflow you size: researchers in parallel on models you pick, whose reports reach you '
+                'together in one message. You ask the questions and write the plan; in build, give each independent '
+                'part of the plan to its own fork (isolation "worktree"), integrate them and verify the whole.',
         };
   final rules = switch (tier) {
     HarnessTier.ultraEfficient =>
