@@ -30,11 +30,23 @@ fn completions(app: *App, req: *anole.Request, res: *anole.Response) !void {
 
     app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
     const facts = app.catalog.facts(req.io, model);
-    if (o.get("messages")) |msgs| if (msgs == .array) for (msgs.array.items) |m| {
-        if (m != .object) continue;
-        if (models.unsupportedPart(facts.inputs, m.object.get("content") orelse continue)) |what| {
-            res.status = .bad_request;
-            return res.json(.{ .@"error" = .{ .message = try models.unsupportedMessage(req.arena, model, what), .type = "invalid_request_error", .code = "unsupported_modality" } });
+    // The newest user message carries what is being attached now; earlier
+    // attachments (from before a model switch) become text notes instead.
+    if (o.get("messages")) |msgs| if (msgs == .array) {
+        const items = msgs.array.items;
+        var newest: ?usize = null;
+        for (items, 0..) |m, i| if (m == .object) if (openrouter.jsonStr(m.object.get("role"))) |r| if (std.mem.eql(u8, r, "user")) {
+            newest = i;
+        };
+        for (items, 0..) |*m, i| {
+            if (m.* != .object) continue;
+            const content = m.object.getPtr("content") orelse continue;
+            if (newest != null and i == newest.?) {
+                if (models.unsupportedPart(facts.inputs, content.*)) |what| {
+                    res.status = .bad_request;
+                    return res.json(.{ .@"error" = .{ .message = try models.unsupportedMessage(req.arena, model, what), .type = "invalid_request_error", .code = "unsupported_modality" } });
+                }
+            } else content.* = try models.dropUnsupported(req.arena, facts.inputs, content.*);
         }
     };
     billing.preflight(app, req, who.user_id, facts.free) catch {

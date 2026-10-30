@@ -44,6 +44,13 @@ pub const InMessage = struct {
     content: std.json.Value,
 };
 
+/// Index of the newest user message (the one being sent now), or null.
+pub fn newestUser(messages: []const InMessage) ?usize {
+    var i = messages.len;
+    while (i > 0) : (i -= 1) if (std.mem.eql(u8, messages[i - 1].role, "user")) return i - 1;
+    return null;
+}
+
 pub const ChatRequest = struct {
     model: ?[]const u8 = null,
     mode: Mode = .chat,
@@ -315,7 +322,7 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const who = try auth.identity(req);
     // std.json directly: content may be a string or an array of parts.
     const raw = (try req.body()) orelse return res.fail(.bad_request, "missing body");
-    const body = std.json.parseFromSliceLeaky(ChatRequest, req.arena, raw, .{ .ignore_unknown_fields = true }) catch
+    var body = std.json.parseFromSliceLeaky(ChatRequest, req.arena, raw, .{ .ignore_unknown_fields = true }) catch
         return res.fail(.unprocessable_entity, "body must be {model?, mode, messages: [{role, content}], tools_enabled, session?}");
     if (body.messages.len == 0) return res.fail(.unprocessable_entity, "messages must not be empty");
     if (body.memory) |m| if (m.len > memory_max) return res.fail(.unprocessable_entity, "memory is too long");
@@ -330,8 +337,17 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
     };
     app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
     const facts = app.catalog.facts(req.io, model);
-    for (body.messages) |m| if (models.unsupportedPart(facts.inputs, m.content)) |what|
-        return res.fail(.bad_request, try models.unsupportedMessage(req.arena, model, what));
+    // Only the newest user message's attachments are being sent now; earlier
+    // ones (resent with the history) become notes when the model can't read them.
+    const newest = newestUser(body.messages);
+    const msgs = try req.arena.dupe(InMessage, body.messages);
+    for (msgs, 0..) |*m, i| {
+        if (newest != null and i == newest.?) {
+            if (models.unsupportedPart(facts.inputs, m.content)) |what|
+                return res.fail(.bad_request, try models.unsupportedMessage(req.arena, model, what));
+        } else m.content = try models.dropUnsupported(req.arena, facts.inputs, m.content);
+    }
+    body.messages = msgs;
     billing.preflight(app, req, who.user_id, facts.free) catch {
         res.status = .payment_required;
         return res.json(.{ .message = "You're out of credits. Top up or upgrade your plan to keep using paid models.", .code = "out_of_credits" });

@@ -190,14 +190,36 @@ fn inputsOf(modalities: []const []const u8) Catalog.Facts.Inputs {
 /// "audio"); null when everything is accepted.
 pub fn unsupportedPart(inputs: Catalog.Facts.Inputs, content: std.json.Value) ?[]const u8 {
     if (content != .array) return null;
-    for (content.array.items) |p| {
-        if (p != .object) continue;
-        const kind = openrouter.jsonStr(p.object.get("type")) orelse continue;
-        if (!inputs.image and std.mem.eql(u8, kind, "image_url")) return "image";
-        if (!inputs.file and std.mem.eql(u8, kind, "file")) return "PDF or file";
-        if (!inputs.audio and std.mem.eql(u8, kind, "input_audio")) return "audio";
-    }
+    for (content.array.items) |p| if (partUnsupported(inputs, p)) |what| return what;
     return null;
+}
+
+/// What kind of attachment the content part `p` is, when the model can't read it.
+fn partUnsupported(inputs: Catalog.Facts.Inputs, p: std.json.Value) ?[]const u8 {
+    if (p != .object) return null;
+    const kind = openrouter.jsonStr(p.object.get("type")) orelse return null;
+    if (!inputs.image and std.mem.eql(u8, kind, "image_url")) return "image";
+    if (!inputs.file and std.mem.eql(u8, kind, "file")) return "PDF or file";
+    if (!inputs.audio and std.mem.eql(u8, kind, "input_audio")) return "audio";
+    return null;
+}
+
+/// `content` with every part the model can't read swapped for a short text
+/// note, for attachments sent in earlier turns (the app resends history, so
+/// switching a chat to a text-only model must not fail every later turn).
+/// Returns `content` itself when nothing needs dropping.
+pub fn dropUnsupported(arena: std.mem.Allocator, inputs: Catalog.Facts.Inputs, content: std.json.Value) !std.json.Value {
+    if (unsupportedPart(inputs, content) == null) return content;
+    var out: std.json.Array = .init(arena);
+    for (content.array.items) |p| {
+        if (partUnsupported(inputs, p)) |w| {
+            var note: std.json.ObjectMap = .empty;
+            try note.put(arena, "type", .{ .string = "text" });
+            try note.put(arena, "text", .{ .string = try std.fmt.allocPrint(arena, "[An earlier {s} attachment was left out: this model can't read it.]", .{w}) });
+            try out.append(.{ .object = note });
+        } else try out.append(p);
+    }
+    return .{ .array = out };
 }
 
 /// 400 text for a rejected attachment.
@@ -341,4 +363,20 @@ test "attachments the model cannot read are named" {
     // A model the catalog says nothing about takes anything; plain strings are fine.
     try std.testing.expect(unsupportedPart(inputsOf(&.{}), pdf.value) == null);
     try std.testing.expect(unsupportedPart(inputsOf(&.{"text"}), .{ .string = "hi" }) == null);
+}
+
+test "earlier attachments a model can't read become notes" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, "[{\"type\":\"text\",\"text\":\"see\"},{\"type\":\"file\",\"file\":{}},{\"type\":\"image_url\"}]", .{});
+    const text_only = inputsOf(&.{"text"});
+    const out = try dropUnsupported(a, text_only, parsed);
+    try std.testing.expect(unsupportedPart(text_only, out) == null);
+    try std.testing.expectEqual(@as(usize, 3), out.array.items.len);
+    try std.testing.expectEqualStrings("see", out.array.items[0].object.get("text").?.string);
+    try std.testing.expect(std.mem.indexOf(u8, out.array.items[1].object.get("text").?.string, "PDF or file") != null);
+    // A model that reads everything keeps the parts as they were.
+    const same = try dropUnsupported(a, inputsOf(&.{ "text", "image", "file" }), parsed);
+    try std.testing.expectEqual(parsed.array.items.ptr, same.array.items.ptr);
 }

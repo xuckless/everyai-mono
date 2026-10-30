@@ -1332,4 +1332,28 @@ test "modality guard: chat and gateway refuse attachments the model's catalog en
     defer gw.deinit();
     try gw.expectStatus(.bad_request);
     try std.testing.expect(std.mem.indexOf(u8, gw.body, "unsupported_modality") != null);
+
+    // An attachment from an earlier turn (before a model switch) is left out, not refused.
+    var later = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{
+            .{ .role = "user", .content = .{.{ .type = "file", .file = .{ .filename = "a.pdf", .file_data = "data:application/pdf;base64,JVBE" } }} },
+            .{ .role = "assistant", .content = .{.{ .type = "text", .text = "Read it." }} },
+            .{ .role = "user", .content = .{.{ .type = "text", .text = "and then?" }} },
+        },
+    } });
+    defer later.deinit();
+    try later.expectStatus(.ok);
+    try std.testing.expect(std.mem.indexOf(u8, later.body, "does not accept") == null);
+
+    var gw_later = try env.t.post("/v1/chat/completions", .{ .json = .{
+        .model = "dots-studio/dots-3-note-preview:free",
+        .messages = .{
+            .{ .role = "user", .content = .{.{ .type = "image_url", .image_url = .{ .url = "data:image/png;base64,AAAA" } }} },
+            .{ .role = "assistant", .content = .{.{ .type = "text", .text = "A cat." }} },
+            .{ .role = "user", .content = .{.{ .type = "text", .text = "and then?" }} },
+        },
+    } });
+    defer gw_later.deinit();
+    try std.testing.expect(@backingInt(gw_later.status) != 400);
 }
