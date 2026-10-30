@@ -5,6 +5,7 @@ Never _unsupported() => throw const GitError('Git worktrees need the desktop app
 
 Future<String> dataDir() async => '';
 Future<String?> repoRoot(String dir) async => null;
+Future<bool> hasCommits(String repoRoot) async => false;
 Future<SessionWorktree> createWorktree({
   required String repoRoot,
   required String slug,

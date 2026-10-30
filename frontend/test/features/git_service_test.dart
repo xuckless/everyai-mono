@@ -36,6 +36,15 @@ void main() {
     hooksDir: hooks,
   );
 
+  test('a repository with no commits yet is not branched from', () async {
+    expect(await GitService.hasCommits(repo), isTrue);
+    final fresh = '${tmp.path}/fresh';
+    await Directory(fresh).create();
+    await _git(fresh, ['init', '-q']);
+    expect(await GitService.repoRoot(fresh), isNotNull);
+    expect(await GitService.hasCommits(fresh), isFalse);
+  });
+
   test('a session gets its own branch and checkout; the main checkout is untouched', () async {
     final w = await start();
     expect(w.branch, 'everyai/${w.slug}');

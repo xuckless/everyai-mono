@@ -20,6 +20,10 @@ abstract final class GitService {
   /// The top of the repository [dir] is in, or null outside one.
   static Future<String?> repoRoot(String dir) => impl.repoRoot(dir);
 
+  /// Whether the repository at [repoRoot] has a commit to branch from (a
+  /// fresh `git init` has none).
+  static Future<bool> hasCommits(String repoRoot) => impl.hasCommits(repoRoot);
+
   /// A worktree for a new session on `everyai/<slug>`, branched from the main
   /// checkout's current commit, with EveryAI's commit hooks.
   static Future<SessionWorktree> createWorktree({

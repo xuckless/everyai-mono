@@ -29,6 +29,14 @@ Future<String?> repoRoot(String dir) async {
   }
 }
 
+Future<bool> hasCommits(String repoRoot) async {
+  try {
+    return (await _git(repoRoot, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], check: false)).exitCode == 0;
+  } on ProcessException {
+    return false;
+  }
+}
+
 Future<SessionWorktree> createWorktree({
   required String repoRoot,
   required String slug,

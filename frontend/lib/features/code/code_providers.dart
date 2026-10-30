@@ -470,10 +470,11 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     }
   }
 
-  /// A worktree for the session when [project] is a git repository.
+  /// A worktree for the session when [project] is a git repository with a commit to branch from. A fresh
+  /// `git init` has none, so its session runs in the folder itself, like a folder outside git.
   static Future<SessionWorktree?> _worktreeFor(CodeProject project, String title, String id) async {
     final root = await GitService.repoRoot(project.path);
-    if (root == null) return null;
+    if (root == null || !await GitService.hasCommits(root)) return null;
     final data = await GitService.dataDir();
     final repoName = root.split('/').last;
     return GitService.createWorktree(
