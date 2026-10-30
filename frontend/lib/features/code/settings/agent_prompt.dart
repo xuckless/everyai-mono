@@ -303,14 +303,18 @@ String agentPromptSuffix(
   ];
   if (roles.isNotEmpty) {
     out.write(
-      '\n\n<AGENT_TYPES>\nAgents you can hand work to with run_subagent: pass the name as its agent. Each brings its '
-      'own instructions and may run on another model or with stricter permissions. Pick the one whose description '
-      'fits the task; leave agent out for a general-purpose subagent.\n',
+      everyai
+          ? '\n\n<ROLES>\nRoles you can give a fork with run_subagent\'s role. Each brings its own instructions and may '
+                'run on a model the user picked for it, or with stricter permissions. Give the one whose description '
+                'fits; leave role out for a plain fork.\n'
+          : '\n\n<AGENT_TYPES>\nAgents you can hand work to with run_subagent: pass the name as its agent. Each brings '
+                'its own instructions and may run on another model or with stricter permissions. Pick the one whose '
+                'description fits the task; leave agent out for a general-purpose subagent.\n',
     );
     for (final a in roles) {
       out.write('- ${a.name}: ${a.description}\n');
     }
-    out.write('</AGENT_TYPES>');
+    out.write(everyai ? '</ROLES>' : '</AGENT_TYPES>');
   }
   return out.toString();
 }

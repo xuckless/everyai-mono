@@ -115,12 +115,12 @@ void main() {
       expect(a.description.length, lessThan(200), reason: name);
       names.add(a.name);
     }
-    expect(names, {'reviewer', 'explorer', 'test-writer', 'doc-writer', 'security'});
+    expect(names, {'reviewer', 'explorer', 'researcher', 'test-writer', 'doc-writer', 'security'});
   });
 
   test('the built-in agents load from the asset bundle', () async {
     final all = await loadBuiltinAgents();
-    expect(all.map((a) => a.name), ['doc-writer', 'explorer', 'reviewer', 'security', 'test-writer']);
+    expect(all.map((a) => a.name), ['doc-writer', 'explorer', 'researcher', 'reviewer', 'security', 'test-writer']);
     expect(all.every((a) => a.source == AgentSource.builtin && a.path == null), isTrue);
   });
 

@@ -248,9 +248,23 @@ AgentMode stricterMode(AgentMode a, AgentMode b) {
 /// trusted (bound to the digest they saw). Preferences `code.agent_library`.
 @immutable
 final class AgentLibrarySettings {
-  const AgentLibrarySettings({this.disabled = const {}, this.trusted = const {}});
+  const AgentLibrarySettings({this.disabled = const {}, this.trusted = const {}, this.preferred = const {}});
 
   final Set<String> disabled;
+
+  /// Agent name → the model and effort the user wants it on ('' for the
+  /// orchestrator's), over what its file says.
+  final Map<String, ({String model, String effort})> preferred;
+
+  ({String model, String effort}) preferredFor(String name) => preferred[name] ?? (model: '', effort: '');
+
+  AgentLibrarySettings withPreferred(String name, {String? model, String? effort}) {
+    final was = preferredFor(name);
+    final next = (model: model ?? was.model, effort: effort ?? was.effort);
+    final all = {...preferred}..remove(name);
+    if (next.model.isNotEmpty || next.effort.isNotEmpty) all[name] = next;
+    return AgentLibrarySettings(disabled: disabled, trusted: trusted, preferred: all);
+  }
 
   /// Agent key → digest trusted.
   final Map<String, String> trusted;
@@ -263,20 +277,36 @@ final class AgentLibrarySettings {
         for (final e in ((json['trusted'] as Map?) ?? const {}).entries)
           if (e.key is String && e.value is String) e.key as String: e.value as String,
       },
+      preferred: {
+        for (final e in ((json['preferred'] as Map?) ?? const {}).entries)
+          if (e.key is String && e.value is Map)
+            e.key as String: (
+              model: (e.value as Map)['model'] as String? ?? '',
+              effort: (e.value as Map)['effort'] as String? ?? '',
+            ),
+      },
     );
   }
 
   Map<String, Object?> toJson() => {
     'disabled': [...disabled]..sort(),
     'trusted': trusted,
+    if (preferred.isNotEmpty)
+      'preferred': {
+        for (final MapEntry(:key, :value) in preferred.entries) key: {'model': value.model, 'effort': value.effort},
+      },
   };
 
-  AgentLibrarySettings withEnabled(String key, bool on) =>
-      AgentLibrarySettings(disabled: on ? ({...disabled}..remove(key)) : {...disabled, key}, trusted: trusted);
+  AgentLibrarySettings withEnabled(String key, bool on) => AgentLibrarySettings(
+    disabled: on ? ({...disabled}..remove(key)) : {...disabled, key},
+    trusted: trusted,
+    preferred: preferred,
+  );
 
   AgentLibrarySettings withTrust(String key, String? digest) => AgentLibrarySettings(
     disabled: disabled,
     trusted: digest == null ? ({...trusted}..remove(key)) : {...trusted, key: digest},
+    preferred: preferred,
   );
 
   bool enabled(AgentDefinition a) => !disabled.contains(a.key);
@@ -337,24 +367,30 @@ typedef ChildSetup = ({AgentMode mode, String model, String? effort, List<String
 
 /// What [agent] changes for a child of a session in [parentMode] on
 /// [parentModel] at [parentEffort]. The agent can make the child more careful
-/// than its parent, never less. A model [modelKnown] says no to (one the
-/// catalog doesn't list) falls back to the parent's.
+/// than its parent, never less. The user's [preferred] model and effort for
+/// the role win over the file's; a model [modelKnown] says no to (one the
+/// catalog doesn't list, or that can't call tools) falls back to the
+/// parent's, the orchestrator's.
 ChildSetup childSetup(
   AgentDefinition? agent, {
   required AgentMode parentMode,
   required String parentModel,
   String? parentEffort,
   bool Function(String model)? modelKnown,
+  ({String model, String effort})? preferred,
 }) {
   if (agent == null) return (mode: parentMode, model: parentModel, effort: parentEffort, tools: null, rolePrompt: null);
-  final model = switch (agent.model) {
+  final wanted = preferred != null && preferred.model.isNotEmpty ? preferred.model : agent.model;
+  final model = switch (wanted) {
     final m? when modelKnown?.call(m) ?? true => m,
     _ => parentModel,
   };
+  final effort = preferred != null && preferred.effort.isNotEmpty ? preferred.effort : agent.effort;
   return (
     mode: agent.mode == null ? parentMode : stricterMode(parentMode, agent.mode!),
     model: model,
-    effort: agent.effort ?? parentEffort,
+    // A model it fell back to keeps the orchestrator's effort.
+    effort: model == parentModel && wanted != null && wanted != parentModel ? parentEffort : effort ?? parentEffort,
     tools: agent.tools,
     rolePrompt: agentRolePrompt(agent),
   );

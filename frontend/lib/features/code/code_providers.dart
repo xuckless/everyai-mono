@@ -9,7 +9,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/preferences.dart';
 import '../../core/providers.dart';
-import '../agents/agents_providers.dart' show AgentDefinition, childSetup, codeAgentsFor;
+import '../agents/agents_providers.dart' show AgentDefinition, agentLibrarySettingsProvider, childSetup, codeAgentsFor;
 import '../attachments/attachment.dart';
 import '../models/domain/model_catalog.dart';
 import '../models/models_providers.dart';
@@ -151,26 +151,6 @@ final everyaiAgentServerProvider = FutureProvider<({Uri baseUrl, String key})>((
     },
   );
 });
-
-/// A library agent's instructions as the main agent's role.
-String mainAgentBlock(String name, String prompt) =>
-    '<MAIN_AGENT name="$name">\nIn this session you work as the "$name" agent. Follow these instructions on top of '
-    'the rules above:\n${prompt.trim()}\n</MAIN_AGENT>';
-
-/// The library agent new Code sessions run as ('' for the EveryAI agent).
-final codeMainAgentProvider = NotifierProvider<CodeMainAgent, String>(CodeMainAgent.new);
-
-final class CodeMainAgent extends Notifier<String> {
-  static const _key = 'code.mainAgent';
-
-  @override
-  String build() => ref.read(preferencesProvider)[_key] ?? '';
-
-  void choose(String name) {
-    ref.read(preferencesProvider)[_key] = name;
-    state = name;
-  }
-}
 
 /// The harness new Code sessions start on (the agent menu's Harness page).
 final codeHarnessProvider = NotifierProvider<CodeHarnessChoice, CodeHarnessKind>(CodeHarnessChoice.new);
@@ -317,7 +297,6 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     List<Attachment> files = const [],
     bool isolated = false,
     CodeHarnessKind? harnessKind,
-    String mainAgent = '',
     HarnessTier? tier,
   }) async {
     final id = const Uuid().v7();
@@ -332,12 +311,6 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     final workingDir = worktree?.path ?? project.path;
     final first = await prepareMessage(ref, text: prompt, workingDir: workingDir, model: model, files: files);
     final CodeHarnessKind kind = harnessKind ?? ref.read(codeHarnessProvider);
-    // A library agent as the main agent: its instructions, tools and model.
-    final main = mainAgent.isEmpty || !local
-        ? null
-        : (await _agentsFor(project.id)).where((a) => a.name == mainAgent).firstOrNull;
-    if (main?.model case final m? when ref.read(modelCatalogProvider)[ModelId(m)] != null) model = m;
-    if (main?.effort case final e? when e.isNotEmpty) effort = e;
     final harness = await harnessFor(ref, project.path, harness: kind.name);
     // The scripted demo approves client tools like the old path does.
     final hold = heldAnswers && !demo;
@@ -354,8 +327,6 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         initialImages: first.images,
         isolated: worktree != null,
         everyai: kind == CodeHarnessKind.everyai,
-        tools: main?.tools,
-        mainAgentPrompt: main == null ? null : mainAgentBlock(main.name, main.prompt),
         tier: tier ?? ref.read(codeSettingsProvider).tier,
       ),
     );
@@ -373,7 +344,6 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       worktree: worktree,
       baseline: baseline,
       harness: kind.name,
-      mainAgent: main?.name ?? '',
       effort: effort ?? '',
       holdClientTools: hold || kind == CodeHarnessKind.everyai,
       tier: tier ?? ref.read(codeSettingsProvider).tier,
@@ -404,9 +374,9 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     List<Map<String, Object?>>? clientTools,
     bool isolated = false,
     bool everyai = false,
-    String? mainAgentPrompt,
     Map<String, String> pathMap = const {},
     HarnessTier? tier,
+    List<String>? researchSites,
   }) async {
     final demo = isDemoPath(projectDir);
     // A session's own tier; a new one's comes from the caller, else the default.
@@ -450,10 +420,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       promptSuffix: agentPrompt == null
           ? null
           : withSystemPrompts(
-              withProjectContext(
-                mainAgentPrompt == null ? agentPrompt.suffix : '${agentPrompt.suffix}\n\n$mainAgentPrompt',
-                context,
-              ),
+              withProjectContext(agentPrompt.suffix, context),
               global: ref.read(codeSettingsProvider).globalPrompt,
               project: projectId == null ? '' : ref.read(codeSettingsProvider).promptFor(projectId),
             ),
@@ -464,6 +431,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       skills: skills,
       tools: tools,
       rolePrompt: rolePrompt,
+      researchSites: researchSites,
       clientTools: clientTools,
       autoCompactAt: ref.read(codeSettingsProvider).autoCompactPercent / 100,
       pathMap: pathMap,
@@ -491,6 +459,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     required CodeSessionInfo parent,
     required ActionCall call,
     required AgentMode mode,
+    bool onParentModel = false,
   }) async {
     final task = SubagentTask.of(call);
     final project = ref.read(codeProjectsProvider).where((p) => p.id == parent.projectId).firstOrNull;
@@ -515,17 +484,30 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       parentMode: mode,
       parentModel: parent.model,
       parentEffort: parent.effort,
+      preferred: agent == null
+          ? null
+          : onParentModel
+          ? (model: parent.model, effort: parent.effort)
+          : ref.read(agentLibrarySettingsProvider).preferredFor(agent.name),
+      // A role's model must be one the catalog has and that can call tools; else the orchestrator's.
       modelKnown: (m) {
         final catalog = ref.read(modelCatalogProvider);
-        return catalog.length == 0 || catalog[ModelId(m)] != null;
+        if (catalog.length == 0) return true;
+        return catalog[ModelId(m)]?.tools ?? false;
       },
     );
-    // On the EveryAI harness a subagent without a named agent is a fork: it
-    // starts from the parent's whole conversation (and its cached prefix).
-    final fork = agent == null && role == null && parent.harness == CodeHarnessKind.everyai.name;
+    final everyai = parent.harness == CodeHarnessKind.everyai.name;
+    // On the EveryAI harness a subagent is a fork, starting from the parent's
+    // whole conversation (and its cached prefix), unless its role runs on
+    // another model: then it is a fresh child with the role's instructions.
+    final fork = everyai && (agent == null ? role == null : setup.model == parent.model);
+    // A researcher is sandboxed: the research sites only, no shell, no secrets.
+    final research = agent?.name == 'researcher' || task.agent == 'researcher';
+    final sites = research ? ref.read(codeSettingsProvider).researchSites : null;
     // A fork gets its own worktree unless the user's setting or the call says to share the folder.
     final isolate =
         fork &&
+        !research &&
         call.str('isolation') != 'shared' &&
         (call.str('isolation') == 'worktree' || ref.read(codeSettingsProvider).forksIsolated);
     ForkCopy? copy;
@@ -544,17 +526,25 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       parent: parent,
       title: task.title,
       brief: fork
-          ? forkBrief(task, copyAt: copy?.path, parentDir: copy == null ? null : parent.workingDir)
+          ? forkBrief(
+              task,
+              copyAt: copy?.path,
+              parentDir: copy == null ? null : parent.workingDir,
+              role: setup.rolePrompt,
+              research: sites,
+            )
           : subagentBrief(task, role: role),
       fork: fork,
       forkCopy: copy,
       mode: setup.mode,
       callId: call.id,
       projectDir: projectDir,
-      model: setup.model,
-      effort: setup.effort,
-      tools: setup.tools,
-      rolePrompt: setup.rolePrompt,
+      // A fork keeps the parent's model, effort and tools, so the cache holds.
+      model: fork ? null : setup.model,
+      effort: fork ? null : setup.effort,
+      tools: fork ? null : setup.tools,
+      rolePrompt: fork ? null : setup.rolePrompt,
+      researchSites: sites,
     );
   }
 
@@ -582,6 +572,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     List<Map<String, Object?>>? clientTools,
     bool fork = false,
     ForkCopy? forkCopy,
+    List<String>? researchSites,
   }) async {
     model ??= parent.model;
     effort ??= parent.effort;
@@ -613,6 +604,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         pathMap: forkCopy == null ? const {} : {parent.workingDir: forkCopy.path, forkCopy.repoRoot: forkCopy.root},
         // The parent's, so a fork's prompt (and cache) matches it.
         tier: parent.tier,
+        researchSites: researchSites,
       ),
     );
     ref.read(_liveProvider)[id] = live;
@@ -1683,18 +1675,19 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     }
   }
 
-  Future<void> _spawn(String callId, ActionCall call, CodeSessionInfo parent) async {
+  Future<void> _spawn(String callId, ActionCall call, CodeSessionInfo parent, {bool onParentModel = false}) async {
     _spawning.add(callId);
+    _calls[callId] = call;
     try {
       final child = await ref
           .read(codeSessionsProvider.notifier)
-          .startSubagent(parent: parent, call: call, mode: subagentMode(state.mode));
+          .startSubagent(parent: parent, call: call, mode: subagentMode(state.mode), onParentModel: onParentModel);
       if (!ref.mounted || _abandoned.remove(callId)) {
         unawaited(ref.read(_liveProvider)[child.id]?.interrupt());
         return;
       }
       _spawning.remove(callId);
-      if (call.action['run_in_background'] == true) {
+      if (call.action['run_in_background'] == true && !onParentModel) {
         _background[callId] = (childId: child.id, title: child.title);
         _reports[callId] = backgroundStarted(child.id);
         _deliver();
@@ -1722,11 +1715,36 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
   void _onSubagent(String callId, CodeSessionState child) {
     if (!_childOf.containsKey(callId)) return;
     final outcome = subagentOutcome(child.transcript, error: child.error);
+    if (outcome?.status == SubagentStatus.failed && _retryOnParentModel(callId, outcome!)) return;
     if (outcome != null) return _finishChild(callId, outcome);
     final waiting = child.status == SessionStatus.needsInput;
     if (waiting ? _childWaiting.add(callId) : _childWaiting.remove(callId)) {
       state = state.copyWith(subagentNeedsInput: _childWaiting.isNotEmpty);
     }
+  }
+
+  /// Each subagent call, for starting it again.
+  final _calls = <String, ActionCall>{};
+
+  /// Calls already moved to the orchestrator's model, and why.
+  final _fellBack = <String, String>{};
+
+  /// A role on a model the user picked failed: run it once more on this
+  /// session's model and effort. False when that doesn't apply.
+  bool _retryOnParentModel(String callId, SubagentReport failed) {
+    final sessions = ref.read(codeSessionsProvider.notifier);
+    final parent = sessions.byId(sessionId);
+    final child = _childOf[callId] == null ? null : sessions.byId(_childOf[callId]!);
+    final call = _calls[callId];
+    if (parent == null || child == null || call == null || child.model == parent.model) return false;
+    if (_fellBack.containsKey(callId)) return false;
+    final name = ref.read(modelCatalogProvider)[ModelId(child.model)]?.name ?? child.model;
+    final reason = failed.text.length > 200 ? '${failed.text.substring(0, 200)}…' : failed.text;
+    _fellBack[callId] = '[$name failed ($reason), so it ran on this session\'s model instead.]';
+    _childSubs.remove(callId)?.close();
+    _childOf.remove(callId);
+    unawaited(_spawn(callId, call, parent, onParentModel: true));
+    return true;
   }
 
   /// Calls whose fork is being merged back, so its report waits.
@@ -1774,6 +1792,8 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
   }
 
   void _ready(String callId, SubagentReport report) {
+    _calls.remove(callId);
+    if (_fellBack.remove(callId) case final note?) report = SubagentReport(report.status, '$note\n\n${report.text}');
     if (_background.remove(callId) case final bg?) {
       _childOf.remove(callId);
       _childSubs.remove(callId)?.close();

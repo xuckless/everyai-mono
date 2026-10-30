@@ -8,6 +8,9 @@ import '../../../core/ui/adaptive_page.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../code/code_providers.dart' show codeProjectsProvider;
 import '../../code/domain/code_session.dart';
+import '../../../core/ui/anchored_popover.dart';
+import '../../models/domain/model_catalog.dart';
+import '../../models/models_providers.dart';
 import '../agents_providers.dart';
 
 /// Settings → Agents: the agents a Code session can hand work to with
@@ -266,6 +269,11 @@ class _AgentTile extends ConsumerWidget {
         children: [
           if (a.description.isNotEmpty) Text(a.description, maxLines: 2, overflow: TextOverflow.ellipsis),
           if (traits.isNotEmpty) Text(traits.join(' · '), style: theme.type.caption.tint(theme.textMuted)),
+          if (a.usable)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: _PreferredModel(agent: a),
+            ),
           if (notes.isNotEmpty)
             Text(
               notes.join(' · '),
@@ -356,5 +364,69 @@ class _AgentTile extends ConsumerWidget {
       destructive: true,
     );
     if (ok) await ref.read(agentLibraryProvider.notifier).remove(agent);
+  }
+}
+
+/// The model and effort the user runs [agent] on when a fork or workflow
+/// takes its role; "Same as orchestrator" keeps the session's.
+class _PreferredModel extends ConsumerWidget {
+  const _PreferredModel({required this.agent});
+
+  final AgentDefinition agent;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = EveryTheme.of(context);
+    final pick = ref.watch(agentLibrarySettingsProvider.select((s) => s.preferredFor(agent.name)));
+    final ctl = ref.read(agentLibrarySettingsProvider.notifier);
+    // The model list loads only when the popover opens.
+    final name = pick.model.isEmpty ? 'Same as orchestrator' : pick.model.split('/').last;
+    final label = pick.effort.isEmpty ? name : '$name · ${pick.effort}';
+    Widget check(bool on) => on ? AdaptiveIcon(EveryIcon.check, size: 14, color: theme.accent) : const SizedBox();
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: AnchoredPopover(
+        width: 300,
+        builder: (context, close) => Consumer(
+          builder: (context, ref, _) {
+            final library = (ref.watch(libraryProvider).value ?? const <ModelSpec>[]).where((m) => m.tools).toList();
+            return SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(vertical: 5),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  PopoverHeader('${agent.name}: preferred model'),
+                  PopoverRow(
+                    title: 'Same as orchestrator',
+                    subtitle: 'The session\'s model: forks share its cache',
+                    trailing: check(pick.model.isEmpty),
+                    onTap: () => ctl.setPreferred(agent.name, model: ''),
+                  ),
+                  for (final m in library)
+                    PopoverRow(
+                      key: ValueKey('agent.${agent.name}.model.${m.id.value}'),
+                      title: m.name,
+                      trailing: check(pick.model == m.id.value),
+                      onTap: () => ctl.setPreferred(agent.name, model: m.id.value),
+                    ),
+                  const PopoverHeader('Effort'),
+                  for (final e in ['', ...agentEfforts])
+                    PopoverRow(
+                      title: e.isEmpty ? 'Same as orchestrator' : e,
+                      trailing: check(pick.effort == e),
+                      onTap: () => ctl.setPreferred(agent.name, effort: e),
+                    ),
+                ],
+              ),
+            );
+          },
+        ),
+        child: Text(
+          'Runs on: $label ▾',
+          style: theme.type.caption.tint(pick.model.isEmpty ? theme.textMuted : theme.accent),
+        ),
+      ),
+    );
   }
 }

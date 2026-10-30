@@ -35,6 +35,10 @@ final class AgentLibrarySettingsNotifier extends Notifier<AgentLibrarySettings> 
 
   void setEnabled(AgentDefinition a, bool on) => _set(state.withEnabled(a.key, on));
 
+  /// The model ('' for the orchestrator's) and effort ('' likewise) the user wants [name] on.
+  void setPreferred(String name, {String? model, String? effort}) =>
+      _set(state.withPreferred(name, model: model, effort: effort));
+
   /// Trusts [a] as it is on disk now; a later change turns it off again.
   void trust(AgentDefinition a) => _set(state.withTrust(a.key, a.digest).withEnabled(a.key, true));
 
