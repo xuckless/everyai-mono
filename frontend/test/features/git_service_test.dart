@@ -235,4 +235,15 @@ void main() {
     expect(await _git(repo, ['log', '--format=%s', '-1']), 'Initial commit');
     expect(await _git(repo, ['diff', '--cached', '--name-only']), isEmpty);
   });
+
+  test('a repository with no commit yet still gets a baseline: everything new shows as added', () async {
+    final fresh = '${tmp.path}/fresh';
+    await Directory(fresh).create();
+    await _git(fresh, ['init', '-q', '-b', 'main']);
+    final base = (await GitService.baseline(fresh))!;
+    File('$fresh/index.html').writeAsStringSync('<html></html>\n');
+    final changes = await GitService.changes(base.diffView);
+    expect(changes.single.path, 'index.html');
+    expect(changes.single.kind, ChangeKind.added);
+  });
 }

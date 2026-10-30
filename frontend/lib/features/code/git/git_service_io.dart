@@ -116,7 +116,9 @@ Future<T> _withSnapshot<T>(SessionWorktree w, Future<T> Function(Map<String, Str
   final tmp = await Directory.systemTemp.createTemp('everyai-index');
   final env = {'GIT_INDEX_FILE': '${tmp.path}/index'};
   try {
-    await _git(w.path, ['read-tree', 'HEAD'], env: env);
+    // A repository with no commit yet starts from nothing.
+    final head = await _git(w.path, ['rev-parse', '--verify', '-q', 'HEAD'], check: false);
+    await _git(w.path, head.exitCode == 0 ? ['read-tree', 'HEAD'] : ['read-tree', '--empty'], env: env);
     await _git(w.path, ['add', '-A'], env: env);
     return await run(env);
   } finally {
@@ -126,8 +128,9 @@ Future<T> _withSnapshot<T>(SessionWorktree w, Future<T> Function(Map<String, Str
 
 Future<GitBaseline?> baseline(String dir) async {
   final root = await repoRoot(dir);
-  if (root == null || !await hasCommits(root)) return null;
-  final commit = (await _out(root, ['rev-parse', 'HEAD'])).trim();
+  if (root == null) return null;
+  // No commit yet (a fresh `git init`): everything the session makes is new.
+  final commit = await hasCommits(root) ? (await _out(root, ['rev-parse', 'HEAD'])).trim() : _emptyTree;
   final branch = (await _git(root, ['symbolic-ref', '--short', '-q', 'HEAD'], check: false)).stdout.toString().trim();
   final view = SessionWorktree(repoRoot: root, path: dir, branch: branch, baseBranch: branch, baseCommit: commit);
   final tree = await _withSnapshot(view, (env) async => (await _out(dir, ['write-tree'], env: env)).trim());
@@ -410,3 +413,6 @@ Future<ForkMerge> mergeFork(ForkCopy copy, {required String slug, bool merge = t
   await _git(copy.repoRoot, ['worktree', 'remove', '--force', wt], check: false);
   return (merged: merged, conflicts: conflicts, ref: ref);
 }
+
+/// Git's empty tree, the base for a repository with no commit yet.
+const _emptyTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
