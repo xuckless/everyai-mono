@@ -100,6 +100,8 @@ const workingRules = '''
 - Keep output you expect to be long (full test logs, big searches, dumps) out of the conversation: whatever a
   command prints comes back to you in full. Filter it with `head`, `tail`, `grep` or `wc`, or, outside Plan mode,
   redirect it to a file under .everyai/spill/ and read that in parts with `sed -n 'A,Bp'` or `grep`.
+- When the work leaves files the user will want (a report, a build, a generated document), name them with
+  present_files just before your final message. It returns at once.
 - Before saying you are done, verify the change: run the tests, the build or the program, and report what you ran.
 </EVERYAI>''';
 

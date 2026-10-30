@@ -1,0 +1,61 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:flutter/widgets.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'domain/code_session.dart';
+
+/// What deserves an OS notification when a session goes from [from] to [to]:
+/// it started waiting for the user, or it finished what it was doing.
+/// Null for every other change (and for a first sighting, [from] null).
+({String title, String body})? notificationFor(SessionStatus? from, SessionStatus to, String session) {
+  if (from == null || from == to) return null;
+  if (to == SessionStatus.needsInput) return (title: 'Needs your input', body: session);
+  if (to == SessionStatus.done && (from == SessionStatus.running || from == SessionStatus.starting)) {
+    return (title: 'Finished', body: session);
+  }
+  if (to == SessionStatus.failed && from == SessionStatus.running) return (title: 'Stopped on an error', body: session);
+  return null;
+}
+
+/// Shows a notification outside the app.
+abstract interface class SystemNotifier {
+  Future<void> show(String title, String body);
+}
+
+/// Native commands (`osascript` on macOS, `notify-send` on Linux); other
+/// platforms show nothing.
+final class CommandNotifier implements SystemNotifier {
+  const CommandNotifier();
+
+  @override
+  Future<void> show(String title, String body) async {
+    try {
+      if (Platform.isMacOS) {
+        String q(String s) => '"${s.replaceAll(r'\', r'\\').replaceAll('"', r'\"')}"';
+        await Process.run('osascript', [
+          '-e',
+          'display notification ${q(body)} with title ${q('EveryAI')} subtitle ${q(title)}',
+        ]);
+      } else if (Platform.isLinux) {
+        await Process.run('notify-send', ['--app-name=EveryAI', title, body]);
+      }
+    } on Object {
+      // No notification service; the status dot still shows it.
+    }
+  }
+}
+
+final systemNotifierProvider = Provider<SystemNotifier>((ref) => const CommandNotifier());
+
+/// Whether the app is in front; tests replace it.
+final appFocusedProvider = Provider<bool>((ref) => WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed);
+
+/// Notifies about a status change of [session] unless the app is in front
+/// (then the status pill and the session list already show it).
+void notifyStatusChange(Ref ref, SessionStatus? from, SessionStatus to, String session) {
+  final n = notificationFor(from, to, session);
+  if (n == null || ref.read(appFocusedProvider)) return;
+  unawaited(ref.read(systemNotifierProvider).show(n.title, n.body));
+}

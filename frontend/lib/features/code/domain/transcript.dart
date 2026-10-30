@@ -103,6 +103,31 @@ final class QuestionItem extends TranscriptItem {
   final List<QuestionAnswer>? answers;
 }
 
+/// One file the agent presented.
+@immutable
+final class DeliveredFile {
+  const DeliveredFile(this.path, {this.title = '', this.description = ''});
+  final String path;
+  final String title;
+  final String description;
+
+  String get name => title.isNotEmpty ? title : path.split(RegExp(r'[\\/]')).last;
+}
+
+/// A `present_files` call: the files the agent finished with.
+final class FilesDelivered extends TranscriptItem {
+  FilesDelivered(this.call) : super(call.id);
+  final ActionCall call;
+
+  List<DeliveredFile> get files => [
+    for (final f in (call.action['files'] as List<Object?>? ?? const []))
+      if (f is Map<String, Object?> && '${f['path'] ?? ''}'.trim().isNotEmpty)
+        DeliveredFile('${f['path']}'.trim(), title: '${f['title'] ?? ''}', description: '${f['description'] ?? ''}')
+      else if (f is String && f.trim().isNotEmpty)
+        DeliveredFile(f.trim()),
+  ];
+}
+
 /// A `present_plan` proposal. [verdict] is null while it waits for the user.
 final class PlanProposal extends TranscriptItem {
   PlanProposal(this.call, {this.verdict}) : super(call.id);
@@ -266,7 +291,7 @@ final class TranscriptBuilder {
 
   /// Every action without a result yet, whatever item it renders as.
   List<ActionCall> _unanswered({required bool client}) =>
-      List.unmodifiable(_open.values.where((c) => isClientTool(c) == client));
+      List.unmodifiable(_open.values.where((c) => isHeldTool(c) == client));
 
   void add(HarnessEvent e) {
     if (e is! StreamDelta && e is! StateChange && e is! ConnectionChange) {
@@ -339,6 +364,10 @@ final class TranscriptBuilder {
     }
     if (call.toolName == presentPlanTool) {
       _push(call.id, PlanProposal(call));
+      return;
+    }
+    if (call.toolName == presentFilesTool) {
+      _push(call.id, FilesDelivered(call));
       return;
     }
     if (isTaskCall(call)) {

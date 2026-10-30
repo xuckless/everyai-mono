@@ -27,6 +27,7 @@ import '../harness/events.dart' show ExecutionStatus;
 import 'agent_menu.dart';
 import 'code_composer.dart';
 import 'code_slash_host.dart';
+import 'transcript/files_card.dart';
 import 'code_top_bar.dart';
 import '../panes/panes_providers.dart';
 import 'panes/session_panes.dart';
@@ -114,6 +115,8 @@ class CodeSessionScreen extends ConsumerWidget {
                 onApprovePlan: controller.startBuilding,
                 onRevisePlan: controller.send,
                 onRetry: controller.retry,
+                sessionId: sessionId,
+                workingDir: info.workingDir,
               ),
             ),
             if (state.error case final error?)
@@ -315,7 +318,13 @@ class TranscriptList extends StatelessWidget {
     required this.onApprovePlan,
     required this.onRevisePlan,
     required this.onRetry,
+    this.sessionId,
+    this.workingDir = '',
   });
+
+  /// For the presented-files card's shortcuts.
+  final String? sessionId;
+  final String workingDir;
 
   final Transcript transcript;
   final AgentMode mode;
@@ -407,6 +416,7 @@ class TranscriptList extends StatelessWidget {
       onApprove: onApprovePlan,
       onRevise: onRevisePlan,
     ),
+    FilesDelivered() => FilesCard(item: item, workingDir: workingDir, sessionId: sessionId),
     NoticeItem() => NoticeView(item: item),
   };
 }

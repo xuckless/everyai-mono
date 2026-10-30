@@ -198,8 +198,16 @@ const askUserQuestionSpec = <String, Object?>{
 /// Plan mode's hand-off: the agent proposes, the user approves or revises.
 const presentPlanTool = 'present_plan';
 
+/// The agent's list of finished files; the app shows them as cards and
+/// approves the call at once, so the agent never waits on it.
+const presentFilesTool = 'present_files';
+
+/// A client tool whose call waits for the user's answer (the others are
+/// approved at once and the agent carries on).
+bool isHeldTool(ActionCall call) => isClientTool(call) && call.toolName != presentFilesTool;
+
 /// The client tools registered with every session.
-const clientTools = {askUserQuestionTool, presentPlanTool, taskTool};
+const clientTools = {askUserQuestionTool, presentPlanTool, presentFilesTool, taskTool};
 
 /// A call to one of [clientTools]. An MCP server's tool with the same name
 /// is not one: it doesn't get a client tool's free pass.
@@ -241,8 +249,37 @@ List<Map<String, Object?>> clientToolSpecs({bool held = false}) => [
     }
   else
     presentPlanSpec,
+  presentFilesSpec,
   taskSpecFor(held: held),
 ];
+
+const presentFilesSpec = <String, Object?>{
+  'name': presentFilesTool,
+  'description':
+      'Tell the user which files are the result of your work, so the app can show them as cards to open. Call it '
+      'once, just before your final message, with only the files the user will want (not every file you touched). '
+      'It returns at once; carry on and finish your message.',
+  'parameters': {
+    'type': 'object',
+    'properties': {
+      'files': {
+        'type': 'array',
+        'minItems': 1,
+        'items': {
+          'type': 'object',
+          'properties': {
+            'path': {'type': 'string', 'description': 'Path relative to the working directory, or absolute'},
+            'title': {'type': 'string', 'description': 'A short name for the file'},
+            'description': {'type': 'string', 'description': 'One line on what it is'},
+          },
+          'required': ['path'],
+        },
+      },
+    },
+    'required': ['files'],
+  },
+  'annotations': {'readOnlyHint': true, 'destructiveHint': false},
+};
 
 const presentPlanSpec = <String, Object?>{
   'name': presentPlanTool,

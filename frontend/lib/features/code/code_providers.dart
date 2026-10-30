@@ -45,6 +45,7 @@ import 'mcp_providers.dart';
 import 'permissions_providers.dart';
 import 'settings/context_files.dart';
 import 'settings/settings.dart';
+import 'session_notifications.dart';
 import 'sidecar/sidecar.dart';
 import 'spill/spill.dart';
 import 'uploads/uploads.dart';
@@ -641,6 +642,11 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
       for (final s in _childSubs.values) {
         s.close();
       }
+    });
+    listenSelf((prev, next) {
+      if (prev?.status == next.status) return;
+      final title = ref.read(codeSessionsProvider.notifier).byId(sessionId)?.title ?? 'Code session';
+      notifyStatusChange(ref, prev?.status, next.status, title);
     });
     // After build returns, so the connected flag isn't overwritten.
     if (info != null) unawaited(Future.microtask(() => _connect(info)));
@@ -1438,10 +1444,16 @@ final class CodeStatuses extends Notifier<Map<String, SessionStatus>> {
         for (final s in sessions) s.conversationId,
       ]);
       if (!ref.mounted) return;
+      final before = state;
       state = {
         for (final s in sessions)
           if (byConversation[s.conversationId] case final status?) s.id: _sessionStatus(status),
       };
+      // Sessions whose view is closed still tell the user when they need them.
+      for (final s in sessions) {
+        final now = state[s.id];
+        if (now != null && !ref.exists(codeSessionProvider(s.id))) notifyStatusChange(ref, before[s.id], now, s.title);
+      }
     } on Object {
       // The server isn't up yet; try again on the next tick.
     }
