@@ -62,7 +62,7 @@ final class FakeSession implements HarnessSession {
       _emit({'kind': 'ConversationStateUpdateEvent', 'key': 'execution_status', 'value': s.wire});
 
   @override
-  Future<void> send(String text, {bool run = true}) async {
+  Future<void> send(String text, {bool run = true, List<String> images = const []}) async {
     _emit({
       'kind': 'MessageEvent',
       'source': 'user',

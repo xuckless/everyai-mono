@@ -1,3 +1,4 @@
+import 'package:file_selector/file_selector.dart' show XFile;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,6 +9,9 @@ import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/brand.dart';
 import '../../../core/ui/anchored_popover.dart';
 import '../../../core/ui/every_icons.dart';
+import '../../attachments/attachment.dart';
+import '../../attachments/attachment_input.dart';
+import '../../attachments/ui/attachment_tray.dart';
 import '../../models/domain/model_catalog.dart';
 import '../../models/models_providers.dart';
 import '../../models/ui/model_avatar.dart';
@@ -39,7 +43,7 @@ class Composer extends ConsumerStatefulWidget {
   final bool busy;
   final ModelSpec model;
   final ChatMode mode;
-  final ValueChanged<String> onSend;
+  final void Function(String text, List<Attachment> attachments) onSend;
   final VoidCallback onStop;
   final ValueChanged<ModelSpec> onModelChanged;
   final ValueChanged<ChatMode> onModeChanged;
@@ -63,6 +67,7 @@ class ComposerState extends ConsumerState<Composer> {
   final _controller = TextEditingController();
   late final FocusNode _focus = FocusNode(onKeyEvent: _onKey);
   ({int start, String query})? _mention;
+  final _attachments = <Attachment>[];
 
   @override
   void initState() {
@@ -86,13 +91,40 @@ class ComposerState extends ConsumerState<Composer> {
     _focus.requestFocus();
   }
 
-  bool get _canSend => !widget.busy && _controller.text.trim().isNotEmpty;
+  /// Attachments the selected model can't read; sending waits until they go.
+  List<Attachment> get _blocked => [
+    for (final a in _attachments)
+      if (a.unsupportedBy(widget.model) != null) a,
+  ];
+
+  bool get _canSend =>
+      !widget.busy && (_controller.text.trim().isNotEmpty || _attachments.isNotEmpty) && _blocked.isEmpty;
 
   void _send() {
     if (!_canSend) return;
-    widget.onSend(_controller.text);
+    widget.onSend(_controller.text, List.unmodifiable(_attachments));
     _controller.clear();
+    setState(_attachments.clear);
     _focus.requestFocus();
+  }
+
+  /// Adds picked or dropped files; ones over a size limit are reported, not added.
+  Future<void> addFiles(List<XFile> files) async {
+    final added = await readAttachments(
+      files,
+      alreadyBytes: _attachments.fold(0, (sum, a) => sum + a.size),
+      onError: (message) {
+        if (mounted) showAdaptiveToast(context, message);
+      },
+    );
+    if (!mounted || added.isEmpty) return;
+    setState(() => _attachments.addAll(added));
+    _focus.requestFocus();
+  }
+
+  Future<void> _pick() async {
+    final files = await pickAttachmentFiles(allowed: AttachmentKind.values.where(widget.model.accepts).toSet());
+    await addFiles(files);
   }
 
   void _onChanged() {
@@ -173,62 +205,76 @@ class ComposerState extends ConsumerState<Composer> {
               ),
             ),
           ),
-        GlassSurface(
-          radius: radius,
-          padding: const EdgeInsets.fromLTRB(16, 14, 10, 10),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Semantics(
-                label: 'Message',
-                textField: true,
-                child: AdaptiveTextField(
-                  controller: _controller,
-                  focusNode: _focus,
-                  placeholder: widget.placeholder,
-                  minLines: widget.minLines,
-                  maxLines: 10,
-                  borderless: true,
-                  keyboardType: TextInputType.multiline,
-                  textInputAction: Host.isMobile ? TextInputAction.newline : TextInputAction.send,
-                  autofocus: !Host.isMobile,
+        AttachmentDropZone(
+          onFiles: addFiles,
+          child: GlassSurface(
+            radius: radius,
+            padding: const EdgeInsets.fromLTRB(16, 14, 10, 10),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                AttachmentTray(
+                  attachments: _attachments,
+                  model: widget.model,
+                  suggestion: _blocked.isEmpty
+                      ? null
+                      : modelForAll(_attachments.map((a) => a.kind), ref.watch(libraryProvider).value ?? const []),
+                  onSwitchModel: widget.busy ? null : widget.onModelChanged,
+                  onRemove: (a) => setState(() => _attachments.remove(a)),
                 ),
-              ),
-              const SizedBox(height: 10),
-              LayoutBuilder(
-                // Narrow composers (beside the artifact panel, phones) fold the
-                // mode switcher into a menu.
-                builder: (context, constraints) => Row(
-                  children: [
-                    _ToolsButton(
-                      mode: widget.mode,
-                      onModeChanged: widget.onModeChanged,
-                      toolsEnabled: widget.toolsEnabled,
-                      onToolsChanged: widget.onToolsChanged,
-                    ),
-                    const SizedBox(width: 4),
-                    if (constraints.maxWidth < 560)
-                      _ModeMenu(mode: widget.mode, onChanged: widget.onModeChanged)
-                    else
-                      _ModeSelector(mode: widget.mode, onChanged: widget.onModeChanged),
-                    Expanded(
-                      child: Align(
-                        alignment: Alignment.centerRight,
-                        child: ModelChip(
-                          selected: widget.model,
-                          enabled: !widget.busy,
-                          onSelected: widget.onModelChanged,
+                Semantics(
+                  label: 'Message',
+                  textField: true,
+                  child: AdaptiveTextField(
+                    controller: _controller,
+                    focusNode: _focus,
+                    placeholder: widget.placeholder,
+                    minLines: widget.minLines,
+                    maxLines: 10,
+                    borderless: true,
+                    keyboardType: TextInputType.multiline,
+                    textInputAction: Host.isMobile ? TextInputAction.newline : TextInputAction.send,
+                    autofocus: !Host.isMobile,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                LayoutBuilder(
+                  // Narrow composers (beside the artifact panel, phones) fold the
+                  // mode switcher into a menu.
+                  builder: (context, constraints) => Row(
+                    children: [
+                      _ToolsButton(
+                        model: widget.model,
+                        onAttach: _pick,
+                        mode: widget.mode,
+                        onModeChanged: widget.onModeChanged,
+                        toolsEnabled: widget.toolsEnabled,
+                        onToolsChanged: widget.onToolsChanged,
+                      ),
+                      const SizedBox(width: 4),
+                      if (constraints.maxWidth < 560)
+                        _ModeMenu(mode: widget.mode, onChanged: widget.onModeChanged)
+                      else
+                        _ModeSelector(mode: widget.mode, onChanged: widget.onModeChanged),
+                      Expanded(
+                        child: Align(
+                          alignment: Alignment.centerRight,
+                          child: ModelChip(
+                            selected: widget.model,
+                            enabled: !widget.busy,
+                            onSelected: widget.onModelChanged,
+                          ),
                         ),
                       ),
-                    ),
-                    ?widget.meter,
-                    const SizedBox(width: 6),
-                    _SendButton(busy: widget.busy, enabled: _canSend, onSend: _send, onStop: widget.onStop),
-                  ],
+                      ?widget.meter,
+                      const SizedBox(width: 6),
+                      _SendButton(busy: widget.busy, enabled: _canSend, onSend: _send, onStop: widget.onStop),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ],
@@ -240,16 +286,32 @@ class ComposerState extends ConsumerState<Composer> {
 /// roadmap; entries are visible so the surface is in place.
 class _ToolsButton extends StatelessWidget {
   const _ToolsButton({
+    required this.model,
+    required this.onAttach,
     required this.mode,
     required this.onModeChanged,
     required this.toolsEnabled,
     required this.onToolsChanged,
   });
 
+  final ModelSpec model;
+  final VoidCallback onAttach;
   final ChatMode mode;
   final ValueChanged<ChatMode> onModeChanged;
   final bool toolsEnabled;
   final ValueChanged<bool>? onToolsChanged;
+
+  /// "Images, PDFs, text and code" for what [model] reads.
+  String get _attachHint {
+    final kinds = [
+      if (model.accepts(AttachmentKind.image)) 'images',
+      if (model.accepts(AttachmentKind.pdf)) 'PDFs',
+      if (model.accepts(AttachmentKind.audio)) 'audio',
+      'text and code',
+    ];
+    final list = kinds.length == 1 ? kinds.first : '${kinds.take(kinds.length - 1).join(', ')} and ${kinds.last}';
+    return '${list[0].toUpperCase()}${list.substring(1)}';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -263,7 +325,15 @@ class _ToolsButton extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            PopoverRow(leading: icon(EveryIcon.attach), title: 'Add files or photos', subtitle: 'Coming soon'),
+            PopoverRow(
+              leading: icon(EveryIcon.attach),
+              title: 'Add files or photos',
+              subtitle: _attachHint,
+              onTap: () {
+                close();
+                onAttach();
+              },
+            ),
             PopoverRow(
               leading: const BrandGlyph('search', size: 18),
               title: 'Web search',

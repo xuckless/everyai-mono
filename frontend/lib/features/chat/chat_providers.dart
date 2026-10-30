@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/net/api_error.dart';
 import '../../core/providers.dart';
+import '../attachments/attachment.dart';
 import '../models/domain/model_catalog.dart';
 import '../models/models_providers.dart';
 import '../usage/usage_totals.dart';
@@ -75,11 +76,16 @@ final class ChatController extends Notifier<ChatSessionState> {
   }
 
   /// Idle/Failed → Awaiting. Ignored while a turn is in flight.
-  Future<void> send(String input) async {
+  Future<void> send(String input, {List<Attachment> attachments = const []}) async {
     if (state.phase.busy || state.phase is Loading) return;
     final (:model, :prompt) = parseMention(input, _catalog);
-    if (prompt.isEmpty) return;
-    await _startTurn(prompt: prompt, model: model ?? state.model, userText: input.trim());
+    if (prompt.isEmpty && attachments.isEmpty) return;
+    await _startTurn(
+      prompt: prompt,
+      model: model ?? state.model,
+      userText: input.trim(),
+      attachments: [for (final a in attachments) AttachmentPart.of(a)],
+    );
   }
 
   void setMode(ChatMode mode) => state = state.copyWith(mode: mode);
@@ -102,13 +108,16 @@ final class ChatController extends Notifier<ChatSessionState> {
 
   /// Replaces a user message and everything after it, then answers the new text.
   Future<void> editAndResend(String userMessageId, String text) async {
-    if (state.phase.busy || state.phase is Loading || text.trim().isEmpty) return;
+    if (state.phase.busy || state.phase is Loading) return;
     final index = state.messages.indexWhere((m) => m.id == userMessageId);
     if (index == -1) return;
     final dropped = state.messages.sublist(index);
+    // The edited message keeps its attachments.
+    final attachments = dropped.first.attachments;
     state = state.copyWith(messages: List.unmodifiable(state.messages.take(index)), phase: const Idle());
     await _repo.deleteMessages(dropped.map((m) => m.id));
-    await send(text);
+    final (:model, :prompt) = parseMention(text, _catalog);
+    await _startTurn(prompt: prompt, model: model ?? state.model, userText: text.trim(), attachments: attachments);
   }
 
   /// Failed → Awaiting with the same prompt and model.
@@ -127,25 +136,39 @@ final class ChatController extends Notifier<ChatSessionState> {
     _cancel?.complete();
   }
 
-  Future<void> _startTurn({required String prompt, required ModelSpec model, required String? userText}) async {
+  /// [userText] null: answer the last user message again (retry, regenerate).
+  Future<void> _startTurn({
+    required String prompt,
+    required ModelSpec model,
+    required String? userText,
+    List<AttachmentPart> attachments = const [],
+  }) async {
     if (state.title == null) {
       final c = await _repo.createConversationWithId(
         id: conversationId,
-        title: titleFromPrompt(prompt),
+        title: titleFromPrompt(prompt.isNotEmpty ? prompt : attachments.firstOrNull?.name ?? 'Attachment'),
         model: state.model.id,
       );
       if (!ref.mounted) return;
       state = state.copyWith(title: c.title);
     }
 
-    final history = state.messages;
-    final messages = [...history];
+    var history = state.messages;
+    if (userText == null) {
+      // The last user message is the prompt; it isn't history too.
+      final last = history.lastIndexWhere((m) => m.isUser);
+      if (last != -1) {
+        attachments = history[last].attachments;
+        history = history.sublist(0, last);
+      }
+    }
+    final messages = [...state.messages];
     if (userText != null) {
       final user = Message(
         id: _repo.newId(),
         conversationId: conversationId,
         role: Role.user,
-        parts: [TextPart(userText)],
+        parts: [...attachments, if (userText.isNotEmpty) TextPart(userText)],
         createdAt: DateTime.now(),
       );
       messages.add(user);
@@ -207,6 +230,7 @@ final class ChatController extends Notifier<ChatSessionState> {
             mode: state.mode,
             conversationId: conversationId,
             toolsEnabled: state.toolsEnabled,
+            attachments: attachments,
           ),
           cancel: cancel.future,
         );

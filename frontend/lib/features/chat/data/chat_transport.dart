@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../../core/net/api_client.dart';
 import '../../../core/net/api_error.dart';
+import '../../attachments/attachment.dart';
 import '../../models/domain/model_catalog.dart';
 import '../domain/message.dart';
 
@@ -18,10 +19,14 @@ final class ChatRequest {
     this.mode = ChatMode.chat,
     this.conversationId,
     this.toolsEnabled = true,
+    this.attachments = const [],
   });
 
   final ModelSpec model;
   final String prompt;
+
+  /// Files sent with [prompt].
+  final List<AttachmentPart> attachments;
   final ChatMode mode;
 
   /// Prior turns, oldest first.
@@ -163,9 +168,9 @@ final class SseTransport implements ChatTransport {
       'session': ?request.conversationId,
       'messages': [
         for (final m in request.history)
-          if (m.status == MessageStatus.complete && m.plainText.isNotEmpty)
-            {'role': m.role.name, 'content': m.plainText},
-        {'role': 'user', 'content': request.prompt},
+          if (m.status == MessageStatus.complete && (m.plainText.isNotEmpty || m.attachments.isNotEmpty))
+            {'role': m.role.name, 'content': messageContent(m.plainText, m.attachments)},
+        {'role': 'user', 'content': messageContent(request.prompt, request.attachments)},
       ],
     };
 
@@ -219,6 +224,36 @@ final class SseTransport implements ChatTransport {
     }
     throw const ProtocolError('The stream ended before the response finished.');
   }
+}
+
+/// A message's `content`: the text alone, or (with attachments) OpenAI content
+/// parts, files first and the typed text last. Text files are inlined; files
+/// whose bytes are gone are skipped.
+Object messageContent(String text, List<AttachmentPart> attachments) {
+  if (attachments.isEmpty) return text;
+  return [
+    for (final a in attachments)
+      if (a.bytes case final bytes?)
+        switch (a.kind) {
+          AttachmentKind.image => {
+            'type': 'image_url',
+            'image_url': {'url': 'data:${a.mimeType};base64,${base64Encode(bytes)}'},
+          },
+          AttachmentKind.pdf => {
+            'type': 'file',
+            'file': {'filename': a.name, 'file_data': 'data:application/pdf;base64,${base64Encode(bytes)}'},
+          },
+          AttachmentKind.audio => {
+            'type': 'input_audio',
+            'input_audio': {'data': base64Encode(bytes), 'format': a.mimeType.contains('wav') ? 'wav' : 'mp3'},
+          },
+          AttachmentKind.text || AttachmentKind.other => {
+            'type': 'text',
+            'text': '<file name="${a.name}">\n${utf8.decode(bytes, allowMalformed: true)}\n</file>',
+          },
+        },
+    if (text.isNotEmpty) {'type': 'text', 'text': text},
+  ];
 }
 
 /// Picks the transport per model: image-output models go to `/v1/images`,

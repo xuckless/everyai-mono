@@ -1,3 +1,4 @@
+import 'package:file_selector/file_selector.dart' show XFile;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
@@ -6,7 +7,12 @@ import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/anchored_popover.dart';
 import '../../../core/ui/every_icons.dart';
+import '../../attachments/attachment.dart';
+import '../../attachments/attachment_input.dart';
+import '../../attachments/ui/attachment_tray.dart';
+import '../../models/domain/model_catalog.dart';
 import '../domain/agent_mode.dart';
+import '../uploads/uploads.dart';
 
 /// The Code composer. Enter sends (or queues while the agent works),
 /// ⌥Enter interrupts and sends now, Esc stops.
@@ -27,13 +33,14 @@ class CodeComposer extends StatefulWidget {
     this.meter,
     this.minLines = 1,
     this.autofocus = true,
+    this.model,
   });
 
   final bool busy;
   final AgentMode mode;
   final ValueChanged<AgentMode> onModeChanged;
-  final ValueChanged<String> onSend;
-  final ValueChanged<String>? onSteer;
+  final void Function(String text, List<Attachment> files) onSend;
+  final void Function(String text, List<Attachment> files)? onSteer;
   final VoidCallback? onStop;
   final List<String> queued;
   final ValueChanged<int>? onUnqueue;
@@ -48,6 +55,9 @@ class CodeComposer extends StatefulWidget {
   final int minLines;
   final bool autofocus;
 
+  /// The session's model: whether attached images reach it.
+  final ModelSpec? model;
+
   @override
   State<CodeComposer> createState() => _CodeComposerState();
 }
@@ -55,6 +65,7 @@ class CodeComposer extends StatefulWidget {
 class _CodeComposerState extends State<CodeComposer> {
   final _controller = TextEditingController();
   late final _focus = FocusNode(onKeyEvent: _onKey);
+  final _files = <Attachment>[];
 
   @override
   void initState() {
@@ -69,14 +80,36 @@ class _CodeComposerState extends State<CodeComposer> {
     super.dispose();
   }
 
-  bool get _hasText => _controller.text.trim().isNotEmpty;
+  bool get _hasText => _controller.text.trim().isNotEmpty || _files.isNotEmpty;
 
   void _submit({bool steer = false}) {
     if (!_hasText) return;
     final text = _controller.text;
-    (steer && widget.busy && widget.onSteer != null ? widget.onSteer! : widget.onSend)(text);
+    (steer && widget.busy && widget.onSteer != null ? widget.onSteer! : widget.onSend)(text, List.unmodifiable(_files));
     _controller.clear();
+    setState(_files.clear);
     _focus.requestFocus();
+  }
+
+  /// Any file can go to the agent: it is saved into the project.
+  Future<void> _add(List<XFile> picked) async {
+    final added = await readAttachments(
+      picked,
+      alreadyBytes: _files.fold(0, (sum, a) => sum + a.size),
+      onError: (message) {
+        if (mounted) showAdaptiveToast(context, message);
+      },
+    );
+    if (!mounted || added.isEmpty) return;
+    setState(() => _files.addAll(added));
+    _focus.requestFocus();
+  }
+
+  String get _filesNote {
+    final m = widget.model;
+    final images = _files.any((f) => f.kind == AttachmentKind.image);
+    final blind = images && m != null && !m.accepts(AttachmentKind.image);
+    return 'Saved to the project in $uploadsDir${blind ? ". ${m.name} can't see images; the agent can still open the files." : ''}';
   }
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
@@ -117,54 +150,68 @@ class _CodeComposerState extends State<CodeComposer> {
               ],
             ),
           ),
-        GlassSurface(
-          radius: radius,
-          padding: const EdgeInsets.fromLTRB(14, 12, 10, 8),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Semantics(
-                label: 'Message the agent',
-                textField: true,
-                child: AdaptiveTextField(
-                  controller: _controller,
-                  focusNode: _focus,
-                  placeholder: widget.busy ? 'Queue a message (⌥↩ to send now)' : widget.placeholder,
-                  minLines: widget.minLines,
-                  maxLines: 10,
-                  borderless: true,
-                  keyboardType: TextInputType.multiline,
-                  autofocus: widget.autofocus && !Host.isMobile,
+        AttachmentDropZone(
+          onFiles: _add,
+          child: GlassSurface(
+            radius: radius,
+            padding: const EdgeInsets.fromLTRB(14, 12, 10, 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                AttachmentTray(
+                  attachments: _files,
+                  note: _filesNote,
+                  onRemove: (a) => setState(() => _files.remove(a)),
                 ),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  ModeMenu(mode: widget.mode, onChanged: widget.onModeChanged),
-                  // Capped rather than flexible, so the free space all goes to the model label.
-                  if (widget.leading != null) ...[
-                    const SizedBox(width: 4),
-                    ConstrainedBox(constraints: const BoxConstraints(maxWidth: 240), child: widget.leading),
-                  ],
-                  // The model sits at the right, next to send.
-                  Expanded(
-                    child: Align(alignment: Alignment.centerRight, child: widget.trailing ?? const SizedBox()),
+                Semantics(
+                  label: 'Message the agent',
+                  textField: true,
+                  child: AdaptiveTextField(
+                    controller: _controller,
+                    focusNode: _focus,
+                    placeholder: widget.busy ? 'Queue a message (⌥↩ to send now)' : widget.placeholder,
+                    minLines: widget.minLines,
+                    maxLines: 10,
+                    borderless: true,
+                    keyboardType: TextInputType.multiline,
+                    autofocus: widget.autofocus && !Host.isMobile,
                   ),
-                  ?widget.meter,
-                  const SizedBox(width: 6),
-                  if (widget.busy && widget.onStop != null && !_hasText)
-                    AdaptiveIconButton(icon: EveryIcon.stop, tooltip: 'Stop (Esc)', onPressed: widget.onStop)
-                  else
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
                     AdaptiveIconButton(
-                      icon: EveryIcon.send,
-                      tooltip: widget.busy ? 'Queue' : 'Send',
-                      color: _hasText ? theme.accent : theme.textMuted,
-                      onPressed: _hasText ? _submit : null,
+                      icon: EveryIcon.attach,
+                      tooltip: 'Attach files',
+                      color: theme.textMuted,
+                      onPressed: () async => _add(await pickAttachmentFiles()),
                     ),
-                ],
-              ),
-            ],
+                    ModeMenu(mode: widget.mode, onChanged: widget.onModeChanged),
+                    // Capped rather than flexible, so the free space all goes to the model label.
+                    if (widget.leading != null) ...[
+                      const SizedBox(width: 4),
+                      ConstrainedBox(constraints: const BoxConstraints(maxWidth: 240), child: widget.leading),
+                    ],
+                    // The model sits at the right, next to send.
+                    Expanded(
+                      child: Align(alignment: Alignment.centerRight, child: widget.trailing ?? const SizedBox()),
+                    ),
+                    ?widget.meter,
+                    const SizedBox(width: 6),
+                    if (widget.busy && widget.onStop != null && !_hasText)
+                      AdaptiveIconButton(icon: EveryIcon.stop, tooltip: 'Stop (Esc)', onPressed: widget.onStop)
+                    else
+                      AdaptiveIconButton(
+                        icon: EveryIcon.send,
+                        tooltip: widget.busy ? 'Queue' : 'Send',
+                        color: _hasText ? theme.accent : theme.textMuted,
+                        onPressed: _hasText ? _submit : null,
+                      ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ],

@@ -41,6 +41,8 @@ final class OpenHandsHarness implements Harness {
           'usage_id': spec.sessionTag,
           'extra_headers': {'X-EveryAI-Session': spec.sessionTag},
           'max_input_tokens': ?spec.maxInputTokens,
+          // LiteLLM doesn't know our gateway's models; without this images are dropped.
+          if (spec.vision) 'capability_overrides': {'supports_vision': true},
         },
         'tools': [
           {'name': 'terminal'},
@@ -53,7 +55,9 @@ final class OpenHandsHarness implements Harness {
       'workspace': {'kind': 'LocalWorkspace', 'working_dir': spec.workingDir},
       'confirmation_policy': spec.mode.confirmationPolicy,
       'client_tools': [askUserQuestionSpec],
-      'initial_message': ?(first == null ? null : _message(_withMode(first, spec.mode), run: true)),
+      'initial_message': ?(first == null
+          ? null
+          : _message(_withMode(first, spec.mode), run: true, images: spec.initialImages)),
     });
     final id = (info as Map<String, Object?>?)?['id'] as String?;
     if (id == null) throw const HarnessError('The agent server returned no conversation id.');
@@ -67,10 +71,11 @@ final class OpenHandsHarness implements Harness {
     return session;
   }
 
-  static Map<String, Object?> _message(String text, {required bool run}) => {
+  static Map<String, Object?> _message(String text, {required bool run, List<String> images = const []}) => {
     'role': 'user',
     'content': [
       {'type': 'text', 'text': text},
+      if (images.isNotEmpty) {'type': 'image', 'image_urls': images},
     ],
     'run': run,
   };
@@ -126,8 +131,8 @@ final class _OpenHandsSession implements HarnessSession {
   String get _base => 'api/conversations/$id';
 
   @override
-  Future<void> send(String text, {bool run = true}) =>
-      _h._post('$_base/events', OpenHandsHarness._message(text, run: run));
+  Future<void> send(String text, {bool run = true, List<String> images = const []}) =>
+      _h._post('$_base/events', OpenHandsHarness._message(text, run: run, images: images));
 
   @override
   Future<void> interrupt() => _h._post('$_base/interrupt');

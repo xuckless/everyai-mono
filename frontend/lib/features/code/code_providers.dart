@@ -9,6 +9,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/preferences.dart';
 import '../../core/providers.dart';
+import '../attachments/attachment.dart';
 import '../models/domain/model_catalog.dart';
 import '../models/models_providers.dart';
 import '../usage/usage_totals.dart';
@@ -21,6 +22,7 @@ import 'harness/fake_harness.dart';
 import 'harness/harness.dart';
 import 'harness/openhands_harness.dart';
 import 'sidecar/sidecar.dart';
+import 'uploads/uploads.dart';
 
 /// Projects under this scheme run on the scripted [FakeHarness].
 const demoScheme = 'demo://';
@@ -71,6 +73,41 @@ Future<String> gatewayKey(Ref ref) async {
   final key = res['key']! as String;
   prefs[prefKey] = key;
   return key;
+}
+
+/// A user message on its way to the agent: text (with the attachments note)
+/// and the images the model can see.
+@immutable
+final class Outgoing {
+  const Outgoing(this.text, {this.images = const []});
+  final String text;
+  final List<String> images;
+}
+
+bool _sees(Ref ref, String model) =>
+    ref.read(modelCatalogProvider)[ModelId(model)]?.accepts(AttachmentKind.image) ?? false;
+
+/// Saves [files] into the project and builds the message that points the agent
+/// at them. Demo projects have no folder: the note alone.
+Future<Outgoing> prepareMessage(
+  Ref ref, {
+  required String text,
+  required String workingDir,
+  required String model,
+  List<Attachment> files = const [],
+}) async {
+  if (files.isEmpty) return Outgoing(text);
+  final paths = isDemoPath(workingDir) ? [for (final f in files) f.name] : await saveUploads(workingDir, files);
+  final note = attachedNote(paths);
+  return Outgoing(
+    text.isEmpty ? note : '$text\n\n$note',
+    images: _sees(ref, model)
+        ? [
+            for (final f in files)
+              if (f.kind == AttachmentKind.image) f.dataUrl,
+          ]
+        : const [],
+  );
 }
 
 /// Sessions started in this run of the app, by session id.
@@ -137,9 +174,11 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     required String prompt,
     required String model,
     required AgentMode mode,
+    List<Attachment> files = const [],
   }) async {
     final id = const Uuid().v7();
     final demo = isDemoPath(project.path);
+    final first = await prepareMessage(ref, text: prompt, workingDir: project.path, model: model, files: files);
     final harness = await harnessFor(ref, project.path);
     final live = await harness.start(
       SessionSpec(
@@ -149,7 +188,9 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         llmBaseUrl: demo ? '' : ref.read(appConfigProvider).apiBaseUrl.resolve('v1').toString(),
         llmApiKey: demo ? '' : await gatewayKey(ref),
         sessionTag: id,
-        initialMessage: prompt,
+        initialMessage: first.text,
+        initialImages: first.images,
+        vision: _sees(ref, model),
         maxInputTokens: ref.read(modelCatalogProvider)[ModelId(model)]?.contextLength,
       ),
     );
@@ -157,7 +198,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     final info = CodeSessionInfo(
       id: id,
       projectId: project.id,
-      title: titleFor(prompt),
+      title: titleFor(prompt.isEmpty ? files.first.name : prompt),
       conversationId: live.id,
       model: model,
       mode: mode,
@@ -203,7 +244,7 @@ final class CodeSessionState {
   final AgentMode mode;
 
   /// Messages typed while the agent was busy; sent when it stops.
-  final List<String> queued;
+  final List<Outgoing> queued;
   final bool connected;
   final String? error;
 
@@ -221,7 +262,7 @@ final class CodeSessionState {
   CodeSessionState copyWith({
     Transcript? transcript,
     AgentMode? mode,
-    List<String>? queued,
+    List<Outgoing>? queued,
     bool? connected,
     String? error,
   }) => CodeSessionState(
@@ -281,7 +322,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     if (!transcript.running && transcript.pending.isEmpty && state.queued.isNotEmpty) {
       final [next, ...rest] = state.queued;
       state = state.copyWith(queued: rest);
-      unawaited(_session?.send(next));
+      unawaited(_session?.send(next.text, images: next.images));
     }
   }
 
@@ -305,23 +346,36 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     }
   }
 
-  /// Sends [text], or queues it while the agent is busy.
-  Future<void> send(String text) async {
+  Future<Outgoing?> _outgoing(String text, List<Attachment> files) async {
     final t = text.trim();
-    if (t.isEmpty) return;
+    if (t.isEmpty && files.isEmpty) return null;
+    final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
+    if (info == null) return Outgoing(t);
+    try {
+      return await prepareMessage(ref, text: t, workingDir: info.workingDir, model: info.model, files: files);
+    } on Object catch (e) {
+      state = state.copyWith(error: "Couldn't save the attachments: $e");
+      return null;
+    }
+  }
+
+  /// Sends [text] (and [files], saved into the project), or queues it while the agent is busy.
+  Future<void> send(String text, {List<Attachment> files = const []}) async {
+    final out = await _outgoing(text, files);
+    if (out == null) return;
     if (state.transcript.running || state.transcript.pending.isNotEmpty) {
-      state = state.copyWith(queued: [...state.queued, t]);
+      state = state.copyWith(queued: [...state.queued, out]);
       return;
     }
-    await _session?.send(t);
+    await _session?.send(out.text, images: out.images);
   }
 
   /// Interrupts the agent and sends [text] right away.
-  Future<void> steer(String text) async {
-    final t = text.trim();
-    if (t.isEmpty) return;
+  Future<void> steer(String text, {List<Attachment> files = const []}) async {
+    final out = await _outgoing(text, files);
+    if (out == null) return;
     await _session?.interrupt();
-    await _session?.send(t);
+    await _session?.send(out.text, images: out.images);
   }
 
   void unqueue(int index) => state = state.copyWith(queued: [...state.queued]..removeAt(index));

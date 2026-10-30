@@ -11,6 +11,7 @@ import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/adaptive_page.dart';
 import '../../../core/ui/anchored_popover.dart';
 import '../../../core/ui/every_icons.dart';
+import '../../attachments/attachment.dart';
 import '../../models/models_providers.dart';
 import '../../../core/platform/platform_kind.dart';
 import '../code_providers.dart';
@@ -66,12 +67,18 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
     setState(() => _projectId = project.id);
   }
 
-  Future<void> _start(CodeProject project, String prompt) async {
+  Future<void> _start(CodeProject project, String prompt, List<Attachment> files) async {
     setState(() => _starting = true);
     try {
       final info = await ref
           .read(codeSessionsProvider.notifier)
-          .start(project: project, prompt: prompt, model: ref.read(defaultModelProvider).id.value, mode: _mode);
+          .start(
+            project: project,
+            prompt: prompt,
+            model: ref.read(defaultModelProvider).id.value,
+            mode: _mode,
+            files: files,
+          );
       if (mounted) context.go(Routes.codeSession(info.id));
     } on Object catch (e) {
       if (mounted) showAdaptiveToast(context, 'Couldn\'t start the session: $e');
@@ -124,7 +131,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                     minLines: 3,
                     placeholder: 'Describe a change, a bug to fix, or a feature to build',
                     onModeChanged: (m) => setState(() => _mode = m),
-                    onSend: (text) => _start(project, text),
+                    onSend: (text, files) => _start(project, text, files),
                     leading: _ProjectPicker(
                       project: project,
                       projects: projects,

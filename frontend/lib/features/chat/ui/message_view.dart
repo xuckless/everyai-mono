@@ -10,8 +10,10 @@ import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/anchored_popover.dart';
 import '../../../core/ui/every_icons.dart';
-import '../../models/models_providers.dart';
 import '../../artifacts/ui/visual_view.dart';
+import '../../attachments/attachment.dart';
+import '../../attachments/ui/attachment_tray.dart';
+import '../../models/models_providers.dart';
 import '../../models/ui/model_avatar.dart';
 import '../chat_providers.dart';
 import '../domain/message.dart';
@@ -142,19 +144,32 @@ class _UserMessageState extends ConsumerState<_UserMessage> {
         builder: (context, show) => Column(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            LayoutBuilder(
-              builder: (context, constraints) => ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: constraints.maxWidth * 0.8),
-                child: DecoratedBox(
-                  decoration: BoxDecoration(color: theme.userBubble, borderRadius: theme.userBubbleShape),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                    // Hug short messages instead of stretching to the max width.
-                    child: IntrinsicWidth(child: ChatMarkdown(widget.message.plainText, textColor: theme.onUserBubble)),
+            if (widget.message.attachments case final files when files.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Wrap(
+                  alignment: WrapAlignment.end,
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [for (final a in files) _SentAttachment(a)],
+                ),
+              ),
+            if (widget.message.plainText.isNotEmpty)
+              LayoutBuilder(
+                builder: (context, constraints) => ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: constraints.maxWidth * 0.8),
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(color: theme.userBubble, borderRadius: theme.userBubbleShape),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      // Hug short messages instead of stretching to the max width.
+                      child: IntrinsicWidth(
+                        child: ChatMarkdown(widget.message.plainText, textColor: theme.onUserBubble),
+                      ),
+                    ),
                   ),
                 ),
               ),
-            ),
             _Reveal(
               visible: show,
               child: Row(
@@ -169,6 +184,28 @@ class _UserMessageState extends ConsumerState<_UserMessage> {
         ),
       ),
     );
+  }
+}
+
+/// An attachment in a sent message: images as a thumbnail, other files as a chip.
+class _SentAttachment extends StatelessWidget {
+  const _SentAttachment(this.part);
+
+  final AttachmentPart part;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    if (part.kind == AttachmentKind.image && part.bytes != null) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(theme.radius),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 240, maxHeight: 240),
+          child: Image.memory(part.bytes!, fit: BoxFit.cover, semanticLabel: part.name),
+        ),
+      );
+    }
+    return AttachmentChip(name: part.name, kind: part.kind, size: part.size);
   }
 }
 
@@ -583,7 +620,7 @@ class _PartView extends StatelessWidget {
         isLatest ? _FollowUps(questions: questions, conversationId: conversationId) : const SizedBox.shrink(),
       final ToolCallPart call => InlineVisual(part: call, conversationId: conversationId),
       ArtifactPart(:final title) => Text(title, style: TextStyle(color: theme.accent)),
-      UsagePart() => const SizedBox.shrink(),
+      UsagePart() || AttachmentPart() => const SizedBox.shrink(),
     };
   }
 }

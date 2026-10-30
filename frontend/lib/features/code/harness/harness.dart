@@ -15,6 +15,8 @@ final class SessionSpec {
     required this.sessionTag,
     this.initialMessage,
     this.maxInputTokens,
+    this.vision = false,
+    this.initialImages = const [],
   });
 
   /// The session's worktree.
@@ -34,6 +36,12 @@ final class SessionSpec {
 
   /// The model's context window, so the agent condenses its history in time.
   final int? maxInputTokens;
+
+  /// The model reads images: OpenHands passes them on instead of dropping them.
+  final bool vision;
+
+  /// `data:` URLs sent with [initialMessage].
+  final List<String> initialImages;
 }
 
 /// A running agent conversation. Events arrive on [events] (history first,
@@ -42,8 +50,9 @@ abstract interface class HarnessSession {
   String get id;
   Stream<HarnessEvent> get events;
 
-  /// Sends a user message. [run] starts the agent if it is idle.
-  Future<void> send(String text, {bool run = true});
+  /// Sends a user message, with [images] as `data:` URLs. [run] starts the
+  /// agent if it is idle.
+  Future<void> send(String text, {bool run = true, List<String> images = const []});
 
   /// Stops the current step (the agent can continue with a new message).
   Future<void> interrupt();

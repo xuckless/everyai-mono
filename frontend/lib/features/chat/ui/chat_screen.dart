@@ -73,7 +73,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       mode: mode,
       minLines: home ? 2 : 1,
       placeholder: home ? 'How can I help you today?' : 'Reply to ${model.name}…',
-      onSend: controller.send,
+      onSend: (text, attachments) => controller.send(text, attachments: attachments),
       onStop: controller.cancel,
       onModelChanged: controller.selectModel,
       onModeChanged: controller.setMode,

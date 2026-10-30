@@ -91,6 +91,7 @@ final class ModelSpec {
     this.blurb = '',
     this.output = Modality.text,
     this.imageInput = false,
+    this.inputs = const {'text'},
     this.contextLength = 0,
     this.promptPrice,
     this.completionPrice,
@@ -114,6 +115,7 @@ final class ModelSpec {
         blurb: m['blurb'] as String? ?? '',
         output: outputs.contains('image') ? Modality.image : Modality.text,
         imageInput: inputs.contains('image'),
+        inputs: inputs.whereType<String>().toSet(),
         contextLength: (m['context_length'] as num?)?.toInt() ?? 0,
         promptPrice: (m['prompt_per_mtok'] as num?)?.toDouble(),
         completionPrice: (m['completion_per_mtok'] as num?)?.toDouble(),
@@ -142,6 +144,9 @@ final class ModelSpec {
   final String blurb;
   final Modality output;
   final bool imageInput;
+
+  /// The catalog's `input_modalities`: text, image, file (PDF), audio, video.
+  final Set<String> inputs;
   final int contextLength;
 
   /// USD per million tokens, markup included. Null when not known yet.

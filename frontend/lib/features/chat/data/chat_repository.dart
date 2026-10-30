@@ -4,6 +4,7 @@ import 'package:drift/drift.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/db/app_database.dart';
+import '../../attachments/attachment.dart';
 import '../../models/domain/model_catalog.dart';
 import '../../usage/usage_totals.dart';
 import '../domain/message.dart';
@@ -203,6 +204,20 @@ final class ChatRepository {
           kind: 'tool_call',
           body: Value(jsonEncode({'tool': toolName, 'args': argumentsJson, 'result': resultJson, 'id': callId})),
         );
+      case AttachmentPart(:final name, :final mimeType, :final kind, :final size, :final bytes, :final blobRef):
+        var ref = blobRef;
+        if (ref == null) {
+          ref = newId();
+          await _db.into(_db.blobs).insert(BlobsCompanion.insert(id: ref, bytes: bytes!, mimeType: mimeType));
+        }
+        return MessagePartsCompanion.insert(
+          messageId: messageId,
+          idx: idx,
+          kind: 'attachment',
+          blobId: Value(ref),
+          mimeType: Value(mimeType),
+          body: Value(jsonEncode({'name': name, 'kind': kind.name, 'size': size})),
+        );
       case UsagePart(:final totals):
         return MessagePartsCompanion.insert(
           messageId: messageId,
@@ -223,6 +238,7 @@ final class ChatRepository {
   static MessagePart _toPart(MessagePartRow p, Map<String, BlobRow> blobs) => switch (p.kind) {
     'image' => ImagePart(bytes: blobs[p.blobId]?.bytes, blobRef: p.blobId, mimeType: p.mimeType ?? 'image/webp'),
     'artifact' => _artifact(p.body ?? '{}'),
+    'attachment' => _attachment(p, blobs[p.blobId]),
     'tool_call' => _toolCall(p.body ?? '{}'),
     'reasoning' => ReasoningPart(p.body ?? ''),
     'usage' => UsagePart(UsageTotals.fromJson(jsonDecode(p.body ?? '{}') as Map<String, Object?>)),
@@ -243,6 +259,18 @@ final class ChatRepository {
     ),
     _ => const TextPart(''),
   };
+
+  static MessagePart _attachment(MessagePartRow p, BlobRow? blob) {
+    final meta = jsonDecode(p.body ?? '{}') as Map<String, Object?>;
+    return AttachmentPart(
+      name: meta['name'] as String? ?? 'file',
+      mimeType: p.mimeType ?? 'application/octet-stream',
+      kind: AttachmentKind.values.asNameMap()[meta['kind']] ?? AttachmentKind.other,
+      size: (meta['size'] as num?)?.toInt() ?? blob?.bytes.length ?? 0,
+      bytes: blob?.bytes,
+      blobRef: p.blobId,
+    );
+  }
 
   static MessagePart _toolCall(String body) => switch (jsonDecode(body)) {
     {'tool': final String tool, 'args': final String args, 'result': final String? result} &&

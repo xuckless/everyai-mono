@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import '../../attachments/attachment.dart';
 import '../../models/domain/model_catalog.dart';
 import '../../usage/usage_totals.dart';
 
@@ -102,6 +103,29 @@ final class ArtifactPart extends MessagePart {
   final String kind;
 }
 
+/// A file the user attached: bytes in memory, or a blob reference once
+/// stored. Sent to the model with its message.
+final class AttachmentPart extends MessagePart {
+  const AttachmentPart({
+    required this.name,
+    required this.mimeType,
+    required this.kind,
+    required this.size,
+    this.bytes,
+    this.blobRef,
+  });
+
+  factory AttachmentPart.of(Attachment a) =>
+      AttachmentPart(name: a.name, mimeType: a.mime, kind: a.kind, size: a.size, bytes: a.bytes);
+
+  final String name;
+  final String mimeType;
+  final AttachmentKind kind;
+  final int size;
+  final Uint8List? bytes;
+  final String? blobRef;
+}
+
 /// Tokens and charge for the turn that produced this message (not rendered;
 /// summed for the composer's meter).
 final class UsagePart extends MessagePart {
@@ -136,6 +160,8 @@ final class Message {
   bool get isUser => role == Role.user;
 
   UsageTotals get usage => parts.whereType<UsagePart>().fold(UsageTotals.zero, (sum, p) => sum + p.totals);
+
+  List<AttachmentPart> get attachments => parts.whereType<AttachmentPart>().toList(growable: false);
 
   List<Source> get sources => parts.whereType<SourcesPart>().expand((p) => p.sources).toList(growable: false);
 

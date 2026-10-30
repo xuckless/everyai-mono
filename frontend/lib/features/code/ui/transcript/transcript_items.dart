@@ -1,12 +1,16 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/every_icons.dart';
+import '../../../attachments/attachment.dart';
+import '../../../attachments/ui/attachment_tray.dart';
 import '../../../chat/ui/chat_markdown.dart';
 import '../../domain/line_diff.dart';
 import '../../domain/transcript.dart';
 import '../../harness/events.dart';
+import '../../uploads/uploads.dart';
 
 const _mono = TextStyle(fontFamily: 'SourceCodePro', fontSize: 12.5, height: 1.45);
 
@@ -18,19 +22,39 @@ class UserTurnView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
+    final (body, files) = splitAttachedNote(text);
     return Align(
       alignment: Alignment.centerRight,
-      child: LayoutBuilder(
-        builder: (context, constraints) => ConstrainedBox(
-          constraints: BoxConstraints(maxWidth: constraints.maxWidth * 0.85),
-          child: DecoratedBox(
-            decoration: BoxDecoration(color: theme.userBubble, borderRadius: theme.userBubbleShape),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-              child: IntrinsicWidth(child: ChatMarkdown(text, textColor: theme.onUserBubble)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          if (files.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final path in files)
+                    AttachmentChip(name: path.split('/').last, kind: kindOf(path, Uint8List(0))),
+                ],
+              ),
             ),
-          ),
-        ),
+          if (body.trim().isNotEmpty)
+            LayoutBuilder(
+              builder: (context, constraints) => ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: constraints.maxWidth * 0.85),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(color: theme.userBubble, borderRadius: theme.userBubbleShape),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                    child: IntrinsicWidth(child: ChatMarkdown(body, textColor: theme.onUserBubble)),
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
