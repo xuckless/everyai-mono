@@ -144,9 +144,19 @@ const quiz_turn =
     \\
     \\data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"toolu_1","type":"function","function":{"name":"make_quiz","arguments":""}}]}}]}
     \\
-    \\data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"title\": \"Zig\", \"questions\": []}"}}]}}]}
+    \\data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"title\": \"Zig\", \"questions\": [{\"question\": \"Who makes Zig?\", \"options\": [\"ZSF\", \"ACME\"], \"answer_index\": 0, \"explanation\": \"The Zig Software Foundation.\"}]}"}}]}}]}
     \\
     \\data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1000,"completion_tokens":50,"cost":0.0001,"prompt_tokens_details":{"cached_tokens":800,"cache_write_tokens":0}}}
+    \\
+    \\data: [DONE]
+    \\
+    \\
+;
+
+const bad_chart_turn =
+    \\data: {"model":"anthropic/claude-haiku-5.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"toolu_9","type":"function","function":{"name":"render_chart","arguments":"{\"type\": \"donut\", \"series\": []}"}}]}}]}
+    \\
+    \\data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":0.00001}}
     \\
     \\data: [DONE]
     \\
@@ -198,6 +208,7 @@ test "chat: UI tool, citations, usage with cache, follow-ups, billing" {
     // Second upstream call carried the tool result and cache breakpoints.
     const second = env.fake.bodies.items[1];
     try std.testing.expect(std.mem.indexOf(u8, second, "\"role\":\"tool\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, second, "Shown to the user: quiz \\\"Zig\\\" with 1 question(s).") != null);
     try std.testing.expect(std.mem.indexOf(u8, second, "cache_control") != null);
     try std.testing.expect(std.mem.indexOf(u8, second, "\"plugins\":[{\"id\":\"web\"") != null);
 
@@ -209,6 +220,23 @@ test "chat: UI tool, citations, usage with cache, follow-ups, billing" {
     try std.testing.expectEqual(@as(i64, 115 + 230 + 12), total);
     const cached = try env.state.db.one(i64, &c, "SELECT SUM(cached_tokens) FROM usage_events", .{});
     try std.testing.expectEqual(@as(i64, 800), cached);
+}
+
+test "chat: invalid UI tool arguments go back to the model, not the app" {
+    var env: Env = undefined;
+    try start(&env, &.{ bad_chart_turn, final_turn, followups_reply }, true);
+    defer env.deinit();
+
+    var res = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = "Chart it" }},
+    } });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "event: tool\n") == null);
+    const second = env.fake.bodies.items[1];
+    try std.testing.expect(std.mem.indexOf(u8, second, "render_chart arguments are invalid") != null);
+    try std.testing.expect(std.mem.indexOf(u8, second, "not one of") != null);
 }
 
 test "billing: paid models answer 402 when quota and wallet are spent; free models still work" {

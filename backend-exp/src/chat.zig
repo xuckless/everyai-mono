@@ -18,6 +18,7 @@ const openrouter = @import("openrouter.zig");
 const tools = @import("tools.zig");
 const util = @import("util.zig");
 const images = @import("images.zig");
+const tool_check = @import("tool_check.zig");
 
 const Events = @typeInfo(@typeInfo(@TypeOf(anole.Response.startEventStream)).@"fn".return_type.?).error_union.payload;
 
@@ -411,13 +412,17 @@ fn runTool(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const
     const args = std.json.parseFromSliceLeaky(std.json.Value, req.arena, args_text, .{}) catch {
         return "Error: the tool arguments were not valid JSON. Call the tool again with valid JSON.";
     };
-    switch (tools.kindOf(call.name) orelse return "Error: unknown tool.") {
+    const kind = tools.kindOf(call.name) orelse return "Error: unknown tool.";
+    // Arguments that break the schema never reach the app or the upstream;
+    // the model gets each problem by path and calls again.
+    if (try tool_check.check(req.arena, call.name, args)) |problem| return problem;
+    switch (kind) {
         .ui => {
             // An edit is checked here first, so the model learns about misses.
             const edited = try docs.track(req.arena, call.name, args);
             if (edited) |e| if (e.applied == 0) return e.message;
             try sink.send("tool", .{ .id = call.id, .name = call.name, .arguments = args });
-            return if (edited) |e| e.message else "Shown to the user.";
+            return if (edited) |e| e.message else try tool_check.shown(req.arena, call.name, args);
         },
         .server => {
             try sink.send("tool_status", .{ .id = call.id, .name = call.name, .status = "running", .detail = openrouter.jsonString(args, "url") orelse openrouter.jsonString(args, "prompt") });
@@ -535,6 +540,10 @@ fn followUps(app: *App, req: *anole.Request, who: auth.Identity, body: ChatReque
 
 pub fn routes(app: *anole.Server(App), state: *App) void {
     app.group("/v1", .{auth.Authenticate{ .app = state }}).post("/chat/stream", stream);
+}
+
+test {
+    _ = tool_check;
 }
 
 test buildBody {
