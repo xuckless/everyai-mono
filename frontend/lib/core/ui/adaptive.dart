@@ -562,7 +562,8 @@ class MenuAction {
   final bool destructive;
 }
 
-/// A button that opens a native menu: pull-down (macOS), context menu (iOS),
+/// A button that opens a native menu: a pull-down popover (macOS, and Cupertino
+/// on desktop and web), an action sheet (Cupertino on phones),
 /// flyout (Windows) or Material menu.
 class AdaptiveMenuButton extends StatelessWidget {
   const AdaptiveMenuButton({super.key, required this.actions, required this.child, this.tooltip});
@@ -590,30 +591,10 @@ class AdaptiveMenuButton extends StatelessWidget {
           ],
         );
       case DesignLanguage.macos:
-        return AnchoredPopover(
-          builder: (context, close) => Padding(
-            padding: const EdgeInsets.symmetric(vertical: 5),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                for (final a in actions)
-                  PopoverRow(
-                    title: a.label,
-                    destructive: a.destructive,
-                    trailing: a.checked ? Icon(EveryIcon.check.of(theme.design), size: 14, color: theme.accent) : null,
-                    onTap: () {
-                      close();
-                      a.onSelected();
-                    },
-                  ),
-              ],
-            ),
-          ),
-          child: child,
-        );
+        return _popover(theme);
+      // A pull-down popover wherever there's a pointer; the action sheet only on phones and tablets.
       case DesignLanguage.cupertino:
-        return _CupertinoMenuButton(actions: actions, child: child);
+        return Host.isMobile ? _CupertinoMenuButton(actions: actions, child: child) : _popover(theme);
       case DesignLanguage.material || DesignLanguage.adwaita:
         return m.MenuAnchor(
           menuChildren: [
@@ -634,6 +615,29 @@ class AdaptiveMenuButton extends StatelessWidget {
         );
     }
   }
+
+  Widget _popover(EveryTheme theme) => AnchoredPopover(
+    builder: (context, close) => Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final a in actions)
+            PopoverRow(
+              title: a.label,
+              destructive: a.destructive,
+              trailing: a.checked ? Icon(EveryIcon.check.of(theme.design), size: 14, color: theme.accent) : null,
+              onTap: () {
+                close();
+                a.onSelected();
+              },
+            ),
+        ],
+      ),
+    ),
+    child: child,
+  );
 }
 
 class _CupertinoMenuButton extends StatelessWidget {

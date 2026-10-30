@@ -15,6 +15,26 @@ import '../domain/goal.dart';
 import '../domain/session_commands.dart';
 import '../domain/transcript.dart';
 
+/// Moves session [sessionId] to [model] and/or [effort] live (`switch_llm`)
+/// and toasts the outcome: `/model`, `/effort` and the agent menu.
+Future<void> switchCodeAgent(
+  BuildContext context,
+  WidgetRef ref,
+  String sessionId, {
+  String? model,
+  String? effort,
+}) async {
+  void toast(String message) {
+    if (context.mounted && message.isNotEmpty) showAdaptiveToast(context, message);
+  }
+
+  try {
+    toast(await ref.read(codeSessionProvider(sessionId).notifier).switchModel(model: model, effort: effort));
+  } on Object catch (e) {
+    toast("Couldn't switch: $e");
+  }
+}
+
 /// Wires the Code session commands to session [sessionId]. Callbacks that
 /// need the screen ([context]) check it is still mounted after each await.
 CodeSlashHost codeSlashHost(BuildContext context, WidgetRef ref, String sessionId, {required bool busy}) {
@@ -24,13 +44,8 @@ CodeSlashHost codeSlashHost(BuildContext context, WidgetRef ref, String sessionI
     if (context.mounted && message.isNotEmpty) showAdaptiveToast(context, message);
   }
 
-  Future<void> switchTo({String? model, String? effort}) async {
-    try {
-      toast(await controller().switchModel(model: model, effort: effort));
-    } on Object catch (e) {
-      toast("Couldn't switch: $e");
-    }
-  }
+  Future<void> switchTo({String? model, String? effort}) =>
+      switchCodeAgent(context, ref, sessionId, model: model, effort: effort);
 
   return CodeSlashHost(
     setMode: (name) => controller().setMode(AgentMode.values.byName(name)),

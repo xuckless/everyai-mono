@@ -16,10 +16,12 @@ import '../../../core/platform/platform_kind.dart';
 import '../agent_models.dart';
 import '../code_providers.dart';
 import '../sidecar/sidecar.dart';
+import '../domain/agent_menu.dart' show CodeHarnessKind;
 import '../domain/agent_mode.dart';
 import '../domain/code_session.dart';
 import '../../slash/slash_command.dart' show CodeSlashHost;
 import '../morning_providers.dart';
+import 'agent_menu.dart';
 import 'code_composer.dart';
 import 'transcript/aside_card.dart';
 import 'session_view.dart';
@@ -154,7 +156,12 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                     placeholder: 'Describe a change, a bug to fix, or a feature to build',
                     onModeChanged: (m) => setState(() => _mode = m),
                     onSend: (text, files) => _start(project, text, files),
-                    trailing: const _AgentPicker(),
+                    trailing: AgentMenu(
+                      model: ref.watch(codeAgentProvider).model,
+                      effort: ref.watch(codeAgentProvider).effort,
+                      harness: isDemoPath(project.path) ? CodeHarnessKind.demo : CodeHarnessKind.openHands,
+                      onChanged: ref.read(codeAgentProvider.notifier).chooseModel,
+                    ),
                     leading: _ProjectPicker(
                       project: project,
                       projects: projects,
@@ -446,61 +453,5 @@ class _SessionTileState extends ConsumerState<SessionTile> {
     if (d.inHours < 1) return '${d.inMinutes}m';
     if (d.inDays < 1) return '${d.inHours}h';
     return '${d.inDays}d';
-  }
-}
-
-/// The agent for new sessions, grouped by tier ("Everyday · Opus 5.5 · medium").
-class _AgentPicker extends ConsumerWidget {
-  const _AgentPicker();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final theme = EveryTheme.of(context);
-    final catalog = ref.watch(agentCatalogProvider);
-    final current = ref.watch(codeAgentProvider);
-    String tierName(String id) => catalog.tiers.where((t) => t.id == id).firstOrNull?.name ?? id;
-    // A popover on every design language (the Cupertino menu is a bottom sheet).
-    return AnchoredPopover(
-      width: 300,
-      builder: (context, close) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 5),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            for (final tier in catalog.tiers) ...[
-              PopoverHeader(tier.name),
-              for (final m in catalog.models.where((m) => m.tier == tier.id))
-                PopoverRow(
-                  title: '${m.label}${m.candidate ? ' (candidate)' : ''}',
-                  selected: m.key == current.key,
-                  trailing: m.key == current.key ? AdaptiveIcon(EveryIcon.check, size: 14, color: theme.accent) : null,
-                  onTap: () {
-                    close();
-                    ref.read(codeAgentProvider.notifier).choose(m);
-                  },
-                ),
-            ],
-          ],
-        ),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Flexible(
-              child: Text(
-                '${tierName(current.tier)} · ${current.label}',
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: theme.textMuted, fontSize: 12.5),
-              ),
-            ),
-            const SizedBox(width: 4),
-            AdaptiveIcon(EveryIcon.chevronDown, size: 12, color: theme.textMuted),
-          ],
-        ),
-      ),
-    );
   }
 }

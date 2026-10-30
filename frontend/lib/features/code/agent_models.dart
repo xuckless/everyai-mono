@@ -100,6 +100,30 @@ final class AgentCatalog {
   }
 
   AgentChoice? byKey(String? key) => models.where((m) => m.key == key).firstOrNull;
+
+  /// [model] at [effort] ('' is the model's default): the curated entry when
+  /// there is one, else an uncurated choice named after the model.
+  AgentChoice choiceFor(String model, String effort) {
+    if (byKey('$model@$effort') case final hit?) return hit;
+    final known = models.where((m) => m.model == model).firstOrNull;
+    final dot = known?.label.indexOf(' · ') ?? -1;
+    final name = known == null ? model.split('/').last : (dot == -1 ? known.label : known.label.substring(0, dot));
+    return AgentChoice(
+      model: model,
+      effort: effort,
+      tier: known?.tier ?? '',
+      label: effort.isEmpty ? name : '$name · $effort',
+    );
+  }
+
+  /// The choice a saved `model@effort` key names; null when malformed.
+  AgentChoice? fromKey(String? key) {
+    if (key == null) return null;
+    if (byKey(key) case final hit?) return hit;
+    final at = key.lastIndexOf('@');
+    if (at <= 0) return null;
+    return choiceFor(key.substring(0, at), key.substring(at + 1));
+  }
 }
 
 const _catalogKey = 'code.agents';
@@ -146,8 +170,11 @@ final class CodeAgent extends Notifier<AgentChoice> {
   @override
   AgentChoice build() {
     final catalog = ref.watch(agentCatalogProvider);
-    return catalog.byKey(ref.read(preferencesProvider)[_choiceKey]) ?? catalog.fallback;
+    return catalog.fromKey(ref.read(preferencesProvider)[_choiceKey]) ?? catalog.fallback;
   }
+
+  /// Any [model] at any [effort], curated or not.
+  void chooseModel(String model, String effort) => choose(ref.read(agentCatalogProvider).choiceFor(model, effort));
 
   void choose(AgentChoice choice) {
     ref.read(preferencesProvider)[_choiceKey] = choice.key;

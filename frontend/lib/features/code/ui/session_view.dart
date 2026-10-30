@@ -17,12 +17,14 @@ import '../../usage/ui/usage_meter.dart';
 import '../../usage/usage_totals.dart';
 import '../code_providers.dart';
 import '../morning_providers.dart';
+import '../domain/agent_menu.dart' show CodeHarnessKind;
 import '../domain/agent_mode.dart';
 import '../domain/code_session.dart';
 import '../domain/permissions.dart';
 import '../domain/questions.dart';
 import '../domain/transcript.dart';
 import '../harness/events.dart' show ExecutionStatus;
+import 'agent_menu.dart';
 import 'code_composer.dart';
 import 'code_slash_host.dart';
 import 'panes/diff_pane.dart';
@@ -68,9 +70,25 @@ class CodeSessionScreen extends ConsumerWidget {
         t.items.lastOrNull is AgentText &&
         t.items.whereType<UserTurn>().isNotEmpty;
 
+    // The same live Harness → Model → Effort menu in the header and the composer.
+    Widget agentMenu({bool bordered = false}) => AgentMenu(
+      model: info.model,
+      effort: info.effort,
+      bordered: bordered,
+      harness: isDemoPath(info.workingDir) ? CodeHarnessKind.demo : CodeHarnessKind.openHands,
+      onChanged: (model, effort) => switchCodeAgent(
+        context,
+        ref,
+        sessionId,
+        model: model == info.model ? null : model,
+        effort: effort == info.effort ? null : effort,
+      ),
+    );
+
     return AdaptivePage(
       title: info.title,
       actions: [
+        ConstrainedBox(constraints: const BoxConstraints(maxWidth: 220), child: agentMenu(bordered: true)),
         if (info.worktree != null) _ChangesButton(sessionId: sessionId),
         StatusPill(status: state.status),
         AdaptiveIconButton(icon: EveryIcon.newChat, tooltip: 'New session', onPressed: () => context.go(Routes.code)),
@@ -194,13 +212,7 @@ class CodeSessionScreen extends ConsumerWidget {
                           placeholder: t.openQuestion != null
                               ? 'Answer the questions above, or reply in your own words'
                               : 'Ask for a change, or reply to the agent',
-                          trailing: Text(
-                            info.effort.isEmpty
-                                ? info.model.split('/').last
-                                : '${info.model.split('/').last} · ${info.effort}',
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(color: theme.textMuted, fontSize: 12.5),
-                          ),
+                          trailing: agentMenu(),
                           model: ref.watch(modelCatalogProvider)[ModelId(info.model)],
                           meter: UsageMeter(
                             totals: ref.watch(codeUsageProvider(sessionId)).value ?? UsageTotals.zero,
