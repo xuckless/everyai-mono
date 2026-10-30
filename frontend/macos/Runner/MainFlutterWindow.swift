@@ -7,6 +7,8 @@ class MainFlutterWindow: NSWindow {
     let windowFrame = self.frame
     self.contentViewController = flutterViewController
     self.setFrame(windowFrame, display: true)
+    // AppKit saves and restores the size and position under this name.
+    self.setFrameAutosaveName("EveryAIMainWindow")
 
     RegisterGeneratedPlugins(registry: flutterViewController)
 

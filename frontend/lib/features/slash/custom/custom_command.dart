@@ -1,3 +1,9 @@
+import 'dart:async';
+
+import 'package:crypto/crypto.dart';
+
+import 'dart:convert';
+
 import '../slash_command.dart';
 
 /// A prompt saved as a Markdown file: `.everyai/commands/<name>.md` in a
@@ -23,6 +29,7 @@ final class CustomCommand {
     this.path,
     this.project,
     this.projectDir,
+    this.digest = '',
   });
 
   /// The file name without `.md`.
@@ -49,7 +56,13 @@ final class CustomCommand {
   /// only offered in that project's sessions.
   final String? projectDir;
 
+  /// SHA-256 of the file text as read; a project command's trust is bound to it.
+  final String digest;
+
   bool get isGlobal => project == null;
+
+  /// What trust is filed under: the project folder and the name.
+  String get trustKey => '${projectDir ?? ''}::$name';
 
   static final validName = RegExp(r'^[a-z0-9][a-z0-9_-]{0,47}$');
 
@@ -87,6 +100,7 @@ final class CustomCommand {
       path: path,
       project: project,
       projectDir: projectDir,
+      digest: sha256.convert(utf8.encode(source)).toString(),
     );
   }
 
@@ -130,14 +144,23 @@ final class CustomCommand {
   }
 
   /// The `/` menu entry. Project commands only show in Code.
-  SlashCommand toSlash() => SlashCommand(
+  ///
+  /// With [review] set the command is locked (a project command not trusted
+  /// yet): it shows greyed and running it calls [review] instead.
+  SlashCommand toSlash({FutureOr<void> Function(SlashContext context)? review}) => SlashCommand(
     name: name,
-    description: description.isEmpty ? 'Custom command' : description,
+    description: review != null
+        ? 'Came with the project. Review… to turn it on'
+        : description.isEmpty
+        ? 'Custom command'
+        : description,
+    locked: review != null,
     argsHint: args,
     group: SlashGroup.custom,
     scope: isGlobal ? SlashScope.both : SlashScope.code,
     project: projectDir,
     run: (ctx, arguments) {
+      if (review != null) return review(ctx);
       final mode = modeFor(ctx.surface);
       if (mode != null) {
         ctx.chat?.setMode(mode);

@@ -24,6 +24,17 @@ class BrandMark extends StatelessWidget {
   );
 }
 
+/// The round EveryAI avatar: the "EveryAI · Auto" router and system notes.
+class BrandAvatar extends StatelessWidget {
+  const BrandAvatar({super.key, this.size = 20});
+
+  final double size;
+
+  @override
+  Widget build(BuildContext context) =>
+      SvgPicture.asset('assets/brand/logo/everyai-avatar.svg', width: size, height: size, semanticsLabel: 'EveryAI');
+}
+
 /// What the agent is doing, shown by animating the mark.
 enum MarkActivity {
   /// The arms fade in turn (top, middle, bottom).

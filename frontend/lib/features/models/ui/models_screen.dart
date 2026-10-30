@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/adaptive_page.dart';
+import '../../../core/ui/brand.dart';
 import '../../../core/ui/every_icons.dart';
 import '../domain/model_catalog.dart';
 import '../models_providers.dart';
@@ -126,9 +127,28 @@ class _ModelsScreenState extends ConsumerState<ModelsScreen> {
       title: 'Model shop',
       body: ListView.builder(
         padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
-        itemCount: header.length + models.length,
+        itemCount: header.length + (models.isEmpty ? 1 : models.length),
         itemBuilder: (context, i) {
           if (i < header.length) return header[i];
+          if (models.isEmpty) {
+            final filtered = q.isNotEmpty || _provider != null || _filter != _Filter.all;
+            return Padding(
+              padding: const EdgeInsets.only(top: 48),
+              child: BrandEmptyState(
+                kind: 'no-results',
+                title: _filter == _Filter.mine && q.isEmpty && _provider == null
+                    ? 'No models yet'
+                    : filtered
+                    ? 'No models match'
+                    : 'The catalog is empty',
+                message: _filter == _Filter.mine && q.isEmpty && _provider == null
+                    ? 'Add models from All to see them in the picker.'
+                    : filtered
+                    ? 'Try another search or clear the filters.'
+                    : 'It could not be loaded. Check the connection and reopen this page.',
+              ),
+            );
+          }
           final spec = models[i - header.length];
           return _ModelTile(
             spec: spec,

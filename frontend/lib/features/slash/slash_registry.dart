@@ -20,9 +20,15 @@ final slashCommandsProvider = Provider<List<SlashCommand>>(
 final builtInSlashCommandsProvider = Provider<List<SlashCommand>>((ref) => builtInSlashCommands);
 
 /// `.everyai/commands/*.md` (project and global); filled by the custom-commands step.
-final customSlashCommandsProvider = Provider<List<SlashCommand>>(
-  (ref) => [for (final c in ref.watch(customCommandsProvider).value ?? const <CustomCommand>[]) c.toSlash()],
-);
+final customSlashCommandsProvider = Provider<List<SlashCommand>>((ref) {
+  final trust = ref.watch(commandTrustProvider);
+  return [
+    for (final c in ref.watch(customCommandsProvider).value ?? const <CustomCommand>[])
+      trust.trustedNow(c)
+          ? c.toSlash()
+          : c.toSlash(review: (ctx) => ref.read(commandTrustProvider.notifier).review(ctx.context, c)),
+  ];
+});
 
 /// One `/skill-name` per enabled skill; filled by the skills step.
 final skillSlashCommandsProvider = Provider<List<SlashCommand>>((ref) => const []);

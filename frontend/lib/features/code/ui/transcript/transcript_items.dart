@@ -574,6 +574,7 @@ class NoticeView extends StatelessWidget {
       decoration: BoxDecoration(color: color.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(8)),
       child: Row(
         children: [
+          if (!item.error) ...[const BrandAvatar(size: 18), const SizedBox(width: 8)],
           Expanded(
             child: Text(item.message, style: TextStyle(color: color, fontSize: 13)),
           ),

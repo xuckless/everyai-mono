@@ -8,12 +8,16 @@ import 'package:window_manager/window_manager.dart';
 
 import 'app/app.dart';
 import 'core/db/app_database.dart';
+import 'core/platform/window_state.dart';
 import 'core/preferences.dart';
 import 'core/providers.dart';
 import 'features/chat/data/chat_cleanup.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  final db = AppDatabase();
+  final preferences = await Preferences.load(db);
 
   if (!kIsWeb) {
     switch (defaultTargetPlatform) {
@@ -22,9 +26,18 @@ Future<void> main() async {
         await const mac.MacosWindowUtilsConfig().apply();
       case TargetPlatform.windows || TargetPlatform.linux:
         await windowManager.ensureInitialized();
+        final saved = WindowBounds.decode(preferences[WindowBounds.key]);
         await windowManager.waitUntilReadyToShow(
-          const WindowOptions(title: 'EveryAI', minimumSize: Size(380, 520), size: Size(1200, 800), center: true),
+          WindowOptions(
+            title: 'EveryAI',
+            minimumSize: WindowBounds.minimum,
+            size: saved?.rect.size ?? const Size(1200, 800),
+            center: saved == null,
+          ),
           () async {
+            if (saved != null) await windowManager.setPosition(saved.rect.topLeft);
+            if (saved?.maximized ?? false) await windowManager.maximize();
+            WindowStateSaver(preferences).start();
             await windowManager.show();
             await windowManager.focus();
           },
@@ -34,8 +47,6 @@ Future<void> main() async {
     }
   }
 
-  final db = AppDatabase();
-  final preferences = await Preferences.load(db);
   // Per-chat settings of chats deleted since (or before) the last launch.
   unawaited(sweepChatPreferences(db, preferences));
   // Pictures of deleted chats; a moment after launch so it never competes with the first frames.

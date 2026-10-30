@@ -130,36 +130,39 @@ class _SlashRow extends StatelessWidget {
           button: true,
           selected: highlighted,
           label: '/${command.name}',
-          child: Container(
-            margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: highlighted ? theme.text.withValues(alpha: 0.08) : null,
-              borderRadius: BorderRadius.circular(theme.radius - 2),
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.baseline,
-              textBaseline: TextBaseline.alphabetic,
-              children: [
-                Text(
-                  '/${command.name}',
-                  style: TextStyle(color: theme.text, fontSize: 13.5, fontWeight: FontWeight.w600),
-                ),
-                if (command.takesArgs) ...[
-                  const SizedBox(width: 6),
-                  Text(command.argsHint!, style: TextStyle(color: theme.textMuted, fontSize: 12.5)),
-                ],
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    command.description,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.right,
-                    style: TextStyle(color: theme.textMuted, fontSize: 12.5),
+          child: Opacity(
+            opacity: command.locked ? 0.5 : 1,
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: highlighted ? theme.text.withValues(alpha: 0.08) : null,
+                borderRadius: BorderRadius.circular(theme.radius - 2),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.baseline,
+                textBaseline: TextBaseline.alphabetic,
+                children: [
+                  Text(
+                    '/${command.name}',
+                    style: TextStyle(color: theme.text, fontSize: 13.5, fontWeight: FontWeight.w600),
                   ),
-                ),
-              ],
+                  if (command.takesArgs) ...[
+                    const SizedBox(width: 6),
+                    Text(command.argsHint!, style: TextStyle(color: theme.textMuted, fontSize: 12.5)),
+                  ],
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      command.description,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.right,
+                      style: TextStyle(color: theme.textMuted, fontSize: 12.5),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),

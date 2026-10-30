@@ -7,7 +7,6 @@ import '../features/artifacts/ui/artifacts_screen.dart';
 import '../features/auth/auth_providers.dart';
 import '../features/auth/domain/auth_state.dart';
 import '../features/auth/ui/sign_in_screen.dart';
-import '../core/ui/every_icons.dart';
 import '../features/chat/ui/chat_screen.dart';
 import '../features/code/ui/code_home.dart';
 import '../features/code/ui/code_settings_screen.dart';
@@ -15,7 +14,7 @@ import '../features/code/code_settings_providers.dart' show SettingsScope;
 import '../features/code/ui/mcp_settings_screen.dart';
 import '../features/code/ui/session_view.dart';
 import '../features/history/ui/chats_screen.dart';
-import '../features/history/ui/coming_soon_screen.dart';
+import '../features/history/ui/projects_screen.dart';
 import '../features/models/ui/models_screen.dart';
 import '../features/settings/appearance.dart';
 import '../features/billing/ui/billing_screen.dart';
@@ -114,13 +113,7 @@ final routerProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: Routes.projects,
-            pageBuilder: (_, _) => const NoTransitionPage(
-              child: ComingSoonScreen(
-                title: 'Projects',
-                icon: EveryIcon.projects,
-                message: 'Group chats with shared files and instructions. Coming with the agentic tools.',
-              ),
-            ),
+            pageBuilder: (_, _) => const NoTransitionPage(child: ProjectsScreen()),
           ),
           GoRoute(
             path: Routes.artifacts,

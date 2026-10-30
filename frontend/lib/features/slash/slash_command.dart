@@ -175,7 +175,11 @@ class SlashCommand {
     this.group = SlashGroup.builtIn,
     this.scope = SlashScope.both,
     this.project,
+    this.locked = false,
   });
+
+  /// Shown greyed: running it asks for a review instead (a project command not trusted yet).
+  final bool locked;
 
   /// Without the slash: `search`, `plan`, a skill or custom command name.
   final String name;

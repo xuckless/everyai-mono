@@ -22,6 +22,7 @@ class CustomCommandsScreen extends ConsumerWidget {
     final commands = ref.watch(customCommandsProvider);
     final projects = ref.watch(codeProjectsProvider);
     final ctl = ref.read(customCommandsProvider.notifier);
+    final trust = ref.watch(commandTrustProvider);
     final all = commands.value ?? const <CustomCommand>[];
 
     Future<void> add(CodeProjectRef? project) async {
@@ -52,11 +53,27 @@ class CustomCommandsScreen extends ConsumerWidget {
         for (final c in items)
           AdaptiveListTile(
             title: Text('/${c.name}${c.args == null ? '' : ' ${c.args}'}'),
-            subtitle: c.description.isEmpty ? null : Text(c.description),
+            subtitle: trust.lockedNote(c) != null
+                ? Text(trust.lockedNote(c)!)
+                : c.description.isEmpty
+                ? null
+                : Text(c.description),
             onTap: () => _open(c),
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                if (!trust.trustedNow(c))
+                  AdaptiveButton(
+                    label: 'Review…',
+                    emphasis: ButtonEmphasis.secondary,
+                    onPressed: () => ref.read(commandTrustProvider.notifier).review(context, c),
+                  )
+                else if (!c.isGlobal)
+                  AdaptiveIconButton(
+                    icon: EveryIcon.close,
+                    tooltip: 'Stop trusting',
+                    onPressed: () => ref.read(commandTrustProvider.notifier).set(c, false),
+                  ),
                 AdaptiveIconButton(
                   icon: EveryIcon.edit,
                   tooltip: 'Edit in your text editor',
