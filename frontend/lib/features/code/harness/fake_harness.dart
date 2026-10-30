@@ -20,7 +20,7 @@ final class FakeHarness implements Harness {
   @override
   Future<HarnessSession> start(SessionSpec spec) async {
     final s = FakeSession(this, 'fake-${++_ids}', spec.mode);
-    if (spec.initialMessage case final text?) unawaited(s.send(text));
+    if (spec.initialMessage case final text?) unawaited(s.send(text, run: spec.runInitial));
     return s;
   }
 

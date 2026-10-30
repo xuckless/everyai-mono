@@ -15,6 +15,7 @@ import '../models/models_providers.dart';
 import '../usage/usage_totals.dart';
 import 'domain/agent_mode.dart';
 import 'domain/code_session.dart';
+import 'domain/compaction.dart';
 import 'domain/doom_loop.dart';
 import 'domain/spill.dart';
 import 'domain/questions.dart';
@@ -25,6 +26,7 @@ import 'harness/fake_harness.dart';
 import 'harness/harness.dart';
 import 'harness/openhands_harness.dart';
 import 'harness/session_processes.dart';
+import 'harness/summarizer.dart';
 import 'permissions_providers.dart';
 import 'settings/context_files.dart';
 import 'settings/settings.dart';
@@ -91,6 +93,9 @@ Future<String> gatewayKey(Ref ref) async {
   prefs[prefKey] = key;
   return key;
 }
+
+/// The backend's OpenAI-compatible gateway (`…/v1`), the agent's LLM provider.
+String gatewayBaseUrl(Ref ref) => ref.read(appConfigProvider).apiBaseUrl.resolve('v1').toString();
 
 /// A user message on its way to the agent: text (with the attachments note)
 /// and the images the model can see.
@@ -207,28 +212,19 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     final workingDir = worktree?.path ?? project.path;
     final first = await prepareMessage(ref, text: prompt, workingDir: workingDir, model: model, files: files);
     final harness = await harnessFor(ref, project.path);
-    // Settings and commit style come from the main checkout (local settings aren't in worktrees).
-    final agentPrompt = demo ? null : await agentPromptFor(project.path);
-    // AGENTS.md and friends from the project folder up to the repository root (OpenHands doesn't load them).
-    final context = demo ? const <ContextFile>[] : await _startContext(workingDir, project.path);
     // The scripted demo approves client tools like the old path does.
     final hold = heldAnswers && !demo;
     final live = await harness.start(
-      SessionSpec(
+      await specFor(
+        sessionId: id,
+        projectDir: project.path,
         workingDir: workingDir,
         model: model,
         mode: mode,
-        llmBaseUrl: demo ? '' : ref.read(appConfigProvider).apiBaseUrl.resolve('v1').toString(),
-        llmApiKey: demo ? '' : await gatewayKey(ref),
-        sessionTag: id,
-        initialMessage: modeNote(mode, first.text),
-        initialImages: first.images,
-        vision: _sees(ref, model),
-        maxInputTokens: ref.read(modelCatalogProvider)[ModelId(model)]?.contextLength,
-        persona: agentPrompt?.persona,
-        promptSuffix: agentPrompt == null ? null : withProjectContext(agentPrompt.suffix, context),
         effort: effort,
         holdClientTools: hold,
+        initialMessage: modeNote(mode, first.text),
+        initialImages: first.images,
       ),
     );
     ref.read(_liveProvider)[id] = live;
@@ -249,6 +245,45 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     state = [info, ...state];
     _save();
     return info;
+  }
+
+  /// What a conversation for session [sessionId] starts with. A session
+  /// that is compacted gets the same system prompt and tools again, so the
+  /// model's cached prefix still holds.
+  Future<SessionSpec> specFor({
+    required String sessionId,
+    required String projectDir,
+    required String workingDir,
+    required String model,
+    required AgentMode mode,
+    required bool holdClientTools,
+    String? effort,
+    String? initialMessage,
+    List<String> initialImages = const [],
+    bool runInitial = true,
+  }) async {
+    final demo = isDemoPath(projectDir);
+    // Settings and commit style come from the main checkout (local settings aren't in worktrees).
+    final agentPrompt = demo ? null : await agentPromptFor(projectDir);
+    // AGENTS.md and friends from the project folder up to the repository root (OpenHands doesn't load them).
+    final context = demo ? const <ContextFile>[] : await _startContext(workingDir, projectDir);
+    return SessionSpec(
+      workingDir: workingDir,
+      model: model,
+      mode: mode,
+      llmBaseUrl: demo ? '' : gatewayBaseUrl(ref),
+      llmApiKey: demo ? '' : await gatewayKey(ref),
+      sessionTag: sessionId,
+      initialMessage: initialMessage,
+      initialImages: initialImages,
+      runInitial: runInitial,
+      vision: _sees(ref, model),
+      maxInputTokens: ref.read(modelCatalogProvider)[ModelId(model)]?.contextLength,
+      persona: agentPrompt?.persona,
+      promptSuffix: agentPrompt == null ? null : withProjectContext(agentPrompt.suffix, context),
+      effort: effort == null || effort.isEmpty ? null : effort,
+      holdClientTools: holdClientTools,
+    );
   }
 
   static Future<List<ContextFile>> _startContext(String workingDir, String projectDir) async {
@@ -337,6 +372,32 @@ final class CodeSessionState {
   );
 }
 
+/// How [CodeSessionController.compact] went.
+@immutable
+final class CompactOutcome {
+  const CompactOutcome.compacted(this.summary) : kind = CompactKind.compacted, message = '';
+  const CompactOutcome.nothing() : kind = CompactKind.nothing, message = '', summary = '';
+  const CompactOutcome.busy() : kind = CompactKind.busy, message = '', summary = '';
+  const CompactOutcome.failed(this.message) : kind = CompactKind.failed, summary = '';
+
+  final CompactKind kind;
+
+  /// Why it failed.
+  final String message;
+  final String summary;
+}
+
+enum CompactKind {
+  compacted,
+
+  /// The conversation is too short to shorten.
+  nothing,
+
+  /// The agent is working or waiting for an answer; try again when it stops.
+  busy,
+  failed,
+}
+
 /// One session's live state; talks to the harness.
 final codeSessionProvider = NotifierProvider.family<CodeSessionController, CodeSessionState, String>(
   CodeSessionController.new,
@@ -369,6 +430,10 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
 
   /// Events before this are history being replayed, which never raise a loop card.
   bool _live = false;
+
+  /// What the current conversation has seen (no deltas), for [compact].
+  final _events = <HarnessEvent>[];
+  bool _compacting = false;
 
   @override
   CodeSessionState build() {
@@ -450,6 +515,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     }
     final looped = event is ActionCall && _doom.add(event) && _live;
     event = _spilled(event);
+    if (event is! StreamDelta) _events.add(event);
     // OpenHands reports `stats` after every model call; the cost lives in our ledger.
     if (event is StateChange) ref.read(codeUsageProvider(sessionId).notifier).refreshSoon();
     final wasRunning = state.transcript.running;
@@ -659,6 +725,71 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     await _session?.interrupt();
     await _checkpoint();
     await _sendNow(out);
+  }
+
+  /// Shortens the agent's context: old tool output is cleared, the older part
+  /// of the conversation is summarized by [compactionModel] (keeping what
+  /// [focus] asks for), and the session moves to a new conversation that
+  /// starts with the summary and the newest turns word for word. With
+  /// [resume] the agent carries on at once; otherwise it waits for the next
+  /// message. The transcript so far stays on screen.
+  ///
+  /// [summarizer] replaces the gateway call (tests).
+  Future<CompactOutcome> compact({String focus = '', bool resume = false, Summarizer? summarizer}) async {
+    final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
+    final old = _session;
+    if (info == null || old == null) return const CompactOutcome.failed('The session is not connected.');
+    if (isDemoPath(info.workingDir)) return const CompactOutcome.failed("The demo session can't be compacted.");
+    final t = state.transcript;
+    if (_compacting || t.running || t.pending.isNotEmpty || t.held.isNotEmpty) return const CompactOutcome.busy();
+    final plan = planCompaction(_events);
+    if (plan == null) return const CompactOutcome.nothing();
+    _compacting = true;
+    try {
+      final summarize =
+          summarizer ??
+          gatewaySummarizer(baseUrl: gatewayBaseUrl(ref), apiKey: await gatewayKey(ref), sessionTag: info.id);
+      final summary = cleanSummary(await summarize(summaryRequest(plan, focus: focus)));
+      if (summary == null) return const CompactOutcome.failed("The summary didn't come back in the expected form.");
+      final message = continuationMessage(summary: summary, recent: renderTail(plan), resume: resume);
+      final project = ref.read(codeProjectsProvider).where((p) => p.id == info.projectId).firstOrNull;
+      final sessions = ref.read(codeSessionsProvider.notifier);
+      final spec = await sessions.specFor(
+        sessionId: info.id,
+        projectDir: project?.path ?? info.workingDir,
+        workingDir: info.workingDir,
+        model: info.model,
+        mode: state.mode,
+        effort: info.effort,
+        holdClientTools: info.holdClientTools,
+        initialMessage: modeNote(state.mode, message),
+        runInitial: resume,
+      );
+      final live = await (await harnessFor(ref, info.workingDir)).start(spec);
+      if (!ref.mounted) {
+        unawaited(live.close());
+        return const CompactOutcome.failed('The session was closed.');
+      }
+      // Swap conversations; the transcript builder keeps what's on screen.
+      await _sub?.cancel();
+      unawaited(old.close());
+      ref.read(_liveProvider)[sessionId] = live;
+      _session = live;
+      _events.clear();
+      _answered = '';
+      _doom.reset();
+      sessions.update(
+        info.copyWith(conversationId: live.id, compactedFrom: [...info.compactedFrom, info.conversationId]),
+      );
+      // Nested instruction files were in the old context; they go out again when touched.
+      await _openContext(info);
+      _sub = live.events.listen(_onEvent);
+      return CompactOutcome.compacted(summary);
+    } on Object catch (e) {
+      return CompactOutcome.failed('$e');
+    } finally {
+      _compacting = false;
+    }
   }
 
   void unqueue(int index) => state = state.copyWith(queued: [...state.queued]..removeAt(index));

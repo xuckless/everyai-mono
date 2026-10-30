@@ -89,7 +89,7 @@ final class OpenHandsHarness implements Harness {
       'workspace': {'kind': 'LocalWorkspace', 'working_dir': spec.workingDir},
       'confirmation_policy': spec.mode.confirmationPolicy(holdClientTools: spec.holdClientTools),
       'client_tools': clientToolSpecs(held: spec.holdClientTools),
-      'initial_message': ?(first == null ? null : _message(first, run: true, images: spec.initialImages)),
+      'initial_message': ?(first == null ? null : _message(first, run: spec.runInitial, images: spec.initialImages)),
     });
     final id = (info as Map<String, Object?>?)?['id'] as String?;
     if (id == null) throw const HarnessError('The agent server returned no conversation id.');

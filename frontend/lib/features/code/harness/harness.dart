@@ -14,6 +14,7 @@ final class SessionSpec {
     required this.llmApiKey,
     required this.sessionTag,
     this.initialMessage,
+    this.runInitial = true,
     this.maxInputTokens,
     this.maxOutputTokens = 64000,
     this.vision = false,
@@ -38,6 +39,10 @@ final class SessionSpec {
   /// Sent as `X-EveryAI-Session` so usage is attributed to the session.
   final String sessionTag;
   final String? initialMessage;
+
+  /// Whether [initialMessage] starts the agent; off, it waits for the next
+  /// message (a compacted session's summary, say).
+  final bool runInitial;
 
   /// The model's context window, so the agent condenses its history in time.
   final int? maxInputTokens;

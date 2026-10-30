@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../harness/events.dart';
 import '../settings/context_files.dart' show splitContextNotes;
 import 'agent_mode.dart';
+import 'compaction.dart' show splitCompacted;
 import 'questions.dart';
 
 /// What the session view shows, folded from harness events by
@@ -148,10 +149,16 @@ const planApprovedReason =
 const planRevisionLead = 'Not an error: the user wants changes to this plan before building. Their reply:';
 
 final class NoticeItem extends TranscriptItem {
-  const NoticeItem(super.key, this.message, {this.error = false});
+  const NoticeItem(super.key, this.message, {this.error = false, this.detail = ''});
   final String message;
   final bool error;
+
+  /// More to show on request (a compaction's summary), or ''.
+  final String detail;
 }
+
+/// The notice a compacted session opens with.
+const contextCompactedNotice = 'Context compacted';
 
 @immutable
 final class Transcript {
@@ -257,6 +264,11 @@ final class TranscriptBuilder {
         final (_, text) = splitContextNotes(noted);
         final changed = mode != null && mode != _notedMode;
         if (mode != null) _notedMode = mode;
+        // A continuation conversation opens with the summary, not something the user typed.
+        if (splitCompacted(text) case final c?) {
+          _items.add(NoticeItem(e.id, contextCompactedNotice, detail: c.summary));
+          return;
+        }
         if (_answer(text)) return;
         _items.add(UserTurn(e.id, text, mode: changed ? mode : null));
         _settleOpenCards(text);

@@ -46,6 +46,7 @@ final class CodeSessionInfo {
     this.worktree,
     this.effort = '',
     this.holdClientTools = false,
+    this.compactedFrom = const [],
   });
 
   final String id;
@@ -71,13 +72,22 @@ final class CodeSessionInfo {
   /// Question cards and plans are answered inside the held tool call (see
   /// `SessionSpec.holdClientTools`). Off for sessions started before it.
   final bool holdClientTools;
+
+  /// Conversations this session ran in before it was compacted, oldest first.
+  final List<String> compactedFrom;
   final DateTime createdAt;
 
-  CodeSessionInfo copyWith({String? title, AgentMode? mode, String? branch}) => CodeSessionInfo(
+  CodeSessionInfo copyWith({
+    String? title,
+    AgentMode? mode,
+    String? branch,
+    String? conversationId,
+    List<String>? compactedFrom,
+  }) => CodeSessionInfo(
     id: id,
     projectId: projectId,
     title: title ?? this.title,
-    conversationId: conversationId,
+    conversationId: conversationId ?? this.conversationId,
     model: model,
     mode: mode ?? this.mode,
     workingDir: workingDir,
@@ -86,6 +96,7 @@ final class CodeSessionInfo {
     worktree: worktree,
     effort: effort,
     holdClientTools: holdClientTools,
+    compactedFrom: compactedFrom ?? this.compactedFrom,
   );
 
   factory CodeSessionInfo.fromJson(Map<String, Object?> json) => CodeSessionInfo(
@@ -99,6 +110,10 @@ final class CodeSessionInfo {
     branch: json['branch'] as String? ?? '',
     effort: json['effort'] as String? ?? '',
     holdClientTools: json['hold_client_tools'] == true,
+    compactedFrom: [
+      for (final id in json['compacted_from'] as List<Object?>? ?? const [])
+        if (id is String) id,
+    ],
     worktree: json['worktree'] is Map<String, Object?>
         ? SessionWorktree.fromJson(json['worktree']! as Map<String, Object?>)
         : null,
@@ -117,6 +132,7 @@ final class CodeSessionInfo {
     'worktree': ?worktree?.toJson(),
     'effort': effort,
     if (holdClientTools) 'hold_client_tools': true,
+    if (compactedFrom.isNotEmpty) 'compacted_from': compactedFrom,
     'created_at': createdAt.toIso8601String(),
   };
 }
