@@ -84,6 +84,11 @@ class SettingsScreen extends ConsumerWidget {
             ),
             onTap: () => context.go(Routes.memory),
           ),
+          AdaptiveListTile(
+            title: const Text('Custom commands'),
+            subtitle: const Text('Prompts saved as Markdown files, run with / in a composer'),
+            onTap: () => context.go(Routes.commands),
+          ),
           const AdaptiveSectionHeader('Account'),
           AdaptiveListTile(
             title: const Text('Plan & usage'),
