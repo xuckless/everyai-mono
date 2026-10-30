@@ -65,6 +65,9 @@ test "bucketStart: local midnight and Monday weeks" {
     // Monday 2026-10-26 00:00 UTC.
     try std.testing.expectEqual(@as(i64, 1_792_972_800), billing.bucketStart(t, true, 0));
     try std.testing.expectEqual(@as(i64, 1_792_972_800), billing.bucketStart(1_792_972_800, true, 0));
+    // Offsets past the real range are clamped rather than overflowing.
+    _ = billing.bucketStart(t, true, std.math.maxInt(i64));
+    _ = billing.bucketStart(t, false, std.math.minInt(i64));
 }
 
 test "usage: day and week aggregates by model, kind and provider with cache savings" {
@@ -132,6 +135,14 @@ test "usage: day and week aggregates by model, kind and provider with cache savi
     var bad = try env.t.get("/v1/usage?group=month", .{});
     defer bad.deinit();
     try std.testing.expect(@backingInt(bad.status) >= 400);
+
+    // Out-of-range offsets are refused instead of overflowing the bucket math.
+    var huge = try env.t.get("/v1/usage?group=week&tz_offset=9223372036854775807", .{});
+    defer huge.deinit();
+    try std.testing.expect(@backingInt(huge.status) >= 400);
+    var tiny = try env.t.get("/v1/usage?group=day&tz_offset=-9223372036854775808", .{});
+    defer tiny.deinit();
+    try std.testing.expect(@backingInt(tiny.status) >= 400);
 
     var rows = try env.t.get("/v1/usage", .{});
     defer rows.deinit();

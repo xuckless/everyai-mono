@@ -180,8 +180,13 @@ const UsageQuery = struct {
     pub const field_rules = .{
         .group = .{anole.validate.oneOf(.{ "", "day", "week" })},
         .by = .{anole.validate.oneOf(.{ "model", "kind", "provider" })},
+        // Real UTC offsets run from -12h to +14h; anything else is a bad request.
+        .tz_offset = .{anole.validate.range(-max_tz_offset, max_tz_offset)},
     };
 };
+
+/// The widest real UTC offset, in seconds (UTC+14).
+pub const max_tz_offset: i64 = 14 * 3600;
 
 /// `GET /v1/usage`: the raw rows, or with `group=day|week` the totals per
 /// bucket and key (`by=model|kind|provider`), per key and overall. Each
@@ -236,7 +241,8 @@ pub const Aggregate = struct {
 /// epoch was a Thursday, hence the 3-day shift).
 pub fn bucketStart(t: i64, week: bool, tz_offset: i64) i64 {
     const size: i64 = if (week) 7 * 86400 else 86400;
-    const shift: i64 = tz_offset + @as(i64, if (week) 3 * 86400 else 0);
+    // Clamped so no input can overflow below; `t` is a stored unix time.
+    const shift: i64 = std.math.clamp(tz_offset, -max_tz_offset, max_tz_offset) + @as(i64, if (week) 3 * 86400 else 0);
     return @divFloor(t + shift, size) * size - shift;
 }
 
