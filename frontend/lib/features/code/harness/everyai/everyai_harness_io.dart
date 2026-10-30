@@ -13,6 +13,7 @@ import '../events.dart';
 import '../harness.dart';
 import '../openhands_harness.dart' show HarnessError;
 import 'llm.dart';
+import 'mcp_io.dart';
 import 'prompt_io.dart';
 import 'shell_io.dart';
 import 'tools_io.dart';
@@ -109,6 +110,16 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
   final Directory _dir;
   GatewayClient _gateway;
   final SessionShell _shell;
+
+  /// The session's MCP servers (connected once, at start or first run).
+  McpTools _mcp = McpTools.empty;
+  Future<void>? _mcpReady;
+
+  Future<void> _ensureMcp() => _mcpReady ??= () async {
+    final config = _spec.mcpConfig;
+    if (config.isEmpty || !(_spec.tools?.contains('mcp') ?? true)) return;
+    _mcp = await McpTools.start(config, reserved: {...actionKinds.keys, ...clientTools});
+  }();
   late ToolRunner _tools;
 
   /// The model's history; each entry may carry `_eid`, the event it came
@@ -145,6 +156,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
 
   Future<void> _begin() async {
     _writeSpec();
+    await _ensureMcp();
     final system = await _systemPrompt();
     _append({'role': 'system', 'content': system});
     if (_spec.initialMessage case final first?) {
@@ -154,6 +166,8 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
 
   Future<void> _beginFork(EveryAISession parent) async {
     _forkTools = parent._toolSpecs;
+    // Its own connections to the same servers: forks run side by side.
+    await _ensureMcp();
     _writeSpec();
     _writeForkTools();
     // The parent's history as it stands, without a trailing assistant turn
@@ -235,6 +249,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
     'tools': s.tools,
     'client_tools': s.clientTools,
     'auto_compact_at': s.autoCompactAt,
+    'mcp_config': s.mcpConfig,
   };
 
   void _writeForkTools() {
@@ -256,6 +271,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
     tools: (j['tools'] as List<Object?>?)?.cast<String>(),
     clientTools: (j['client_tools'] as List<Object?>?)?.cast<Map<String, Object?>>(),
     autoCompactAt: (j['auto_compact_at'] as num?)?.toDouble() ?? 0.6,
+    mcpConfig: (j['mcp_config'] as Map<String, Object?>?) ?? const {},
   );
 
   Future<String> _systemPrompt() async {
@@ -268,6 +284,9 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
       if (spec.subagent) subagentRules,
       ?spec.rolePrompt,
       if (spec.skills.isNotEmpty) _skillsBlock(spec.skills),
+      if (_mcp.failures.isNotEmpty)
+        '<MCP>\nThese MCP servers could not start, so their tools are missing: '
+            '${_mcp.failures.entries.map((e) => '${e.key} (${e.value})').join('; ')}. Tell the user if the task needs them.\n</MCP>',
       await environmentBlock(spec.workingDir),
     ];
     return parts.join('\n\n');
@@ -289,6 +308,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
       _forkTools ??
       [
         ...builtInToolSpecs(only: _spec.tools),
+        ..._mcp.specs,
         for (final Map<String, Object?> t
             in _spec.clientTools ??
                 (_spec.subagent
@@ -569,6 +589,8 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
     if (_looping) return;
     _looping = true;
     _pauseRequested = false;
+    // A reopened session reconnects its servers before the first call.
+    await _ensureMcp();
     var steps = 0;
     try {
       while (true) {
@@ -703,7 +725,11 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
         'tool_name': call.name,
         'tool_call_id': call.id,
         'tool_call': {'name': call.name, 'arguments': call.arguments},
-        'action': args == null ? {'kind': actionKinds[call.name] ?? ''} : actionFor(call.name, args, _spec.workingDir),
+        'action': _mcp.has(call.name)
+            ? {'kind': 'MCPToolAction', ...?args}
+            : args == null
+            ? {'kind': actionKinds[call.name] ?? ''}
+            : actionFor(call.name, args, _spec.workingDir),
         'security_risk': 'UNKNOWN',
       });
       if (isFork && clientTools.contains(call.name)) {
@@ -803,6 +829,13 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
 
   Future<ToolOutput> _execute(LlmToolCall call, Future<void> cancel) async {
     if (actionKinds.containsKey(call.name)) return _tools.run(call.name, call.args!, cancel: cancel);
+    if (_mcp.has(call.name)) {
+      final out = await _mcp.call(call.name, call.args!);
+      if (out.images.isNotEmpty && !_spec.vision) {
+        return ToolOutput('${out.text}\n(${out.images.length} image(s) left out: this model can\'t view images.)');
+      }
+      return out;
+    }
     // A client tool the app approved without answering it (present_files).
     return const ToolOutput('Shown to the user.');
   }

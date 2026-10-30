@@ -435,6 +435,59 @@ void main() {
     await session.close();
   });
 
+  test('MCP servers over stdio give the agent their tools, images included', () async {
+    final server = File('$work/fake_mcp.py')
+      ..writeAsStringSync(r'''
+import json, sys
+PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+for line in sys.stdin:
+    m = json.loads(line)
+    if "id" not in m: continue
+    meth = m["method"]
+    if meth == "initialize": r = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "fake"}}
+    elif meth == "tools/list": r = {"tools": [{"name": "browser_take_screenshot", "description": "Screenshot the page", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}}}}]}
+    elif meth == "tools/call": r = {"content": [{"type": "text", "text": "shot of " + m["params"]["arguments"].get("url", "")}, {"type": "image", "data": PNG, "mimeType": "image/png"}]}
+    else: r = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": m["id"], "result": r}), flush=True)
+''');
+    gateway
+      ..reply(
+        calls: [
+          ('browser_take_screenshot', {'url': 'http://localhost:3000'}),
+        ],
+      )
+      ..reply(text: 'Looks right.');
+    final session = await harness.start(
+      SessionSpec(
+        workingDir: work,
+        model: 'anthropic/claude-sonnet-5.5',
+        mode: AgentMode.fullAuto,
+        llmBaseUrl: gateway.baseUrl,
+        llmApiKey: 'sk-test',
+        sessionTag: 'tag-1',
+        initialMessage: 'check the page',
+        vision: true,
+        mcpConfig: {
+          'fake': {
+            'command': 'python3',
+            'args': [server.path],
+          },
+        },
+      ),
+    );
+    final events = await drive(session);
+    final first = gateway.requests.first;
+    final names = [for (final t in first['tools']! as List<Object?>) ((t! as Map)['function']! as Map)['name']];
+    expect(names, contains('browser_take_screenshot'));
+    final call = events.whereType<ActionCall>().single;
+    expect(call.actionKind, 'MCPToolAction');
+    expect(events.whereType<ToolResult>().single.text, contains('shot of http://localhost:3000'));
+    final second = gateway.requests[1]['messages']! as List<Object?>;
+    final last = second.last! as Map;
+    expect(jsonEncode(last['content']), contains('data:image/png;base64,'));
+    await session.close();
+  });
+
   group('applyEdit', () {
     test('replaces an exact, unique match', () {
       final r = applyEdit('a\nb\nc\n', 'b\n', 'B\n');
