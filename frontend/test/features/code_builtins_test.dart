@@ -229,7 +229,15 @@ void main() {
       final dir = parseLearnArgs('~/notes release steps', isFolder: folder) as LearnFromFolder;
       expect((dir.path, dir.hint), ('~/notes', 'release steps'));
       expect((parseLearnArgs('"/My Docs"', isFolder: folder) as LearnFromFolder).path, '/My Docs');
-      expect(parseLearnArgs('/missing thing', isFolder: folder), isA<LearnFromConversation>());
+      expect(() => parseLearnArgs('/missing thing', isFolder: folder), throwsFormatException);
+      // Relative paths start from the session's folder, never the app's.
+      bool proj(String p) => p == '/work/app/docs' || p == '/work/shared';
+      final docs = parseLearnArgs('./docs deployment steps', isFolder: proj, base: '/work/app') as LearnFromFolder;
+      expect((docs.path, docs.hint), ('/work/app/docs', 'deployment steps'));
+      expect((parseLearnArgs('../shared', isFolder: proj, base: '/work/app') as LearnFromFolder).path, '/work/shared');
+      expect(() => parseLearnArgs('./nope x', isFolder: proj, base: '/work/app'), throwsFormatException);
+      expect(() => parseLearnArgs('./docs x', isFolder: proj), throwsFormatException);
+      expect(joinPath('/a/b/', './c/../d'), '/a/b/d');
       expect((parseLearnArgs('how we test', isFolder: folder) as LearnFromConversation).hint, 'how we test');
       expect(parseLearnArgs('', isFolder: folder), isA<LearnFromConversation>());
     });

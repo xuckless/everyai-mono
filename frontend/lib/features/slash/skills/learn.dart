@@ -31,18 +31,41 @@ final class LearnFromFolder extends LearnSource {
 }
 
 /// What `/learn [source] [what it is for]` names: a URL, a folder path
-/// (absolute, `~`, `./` or `../`, quoted when it has spaces) that
-/// [isFolder] confirms, else the conversation with all of [args] as the hint.
-LearnSource parseLearnArgs(String args, {required bool Function(String path) isFolder}) {
+/// (absolute, `~`, `./` or `../`, quoted when it has spaces), else the
+/// conversation with all of [args] as the hint. `./` and `../` paths resolve
+/// against [base] (the Code session's folder). A path that [isFolder] doesn't
+/// confirm throws a [FormatException] rather than quietly learning from the
+/// conversation.
+LearnSource parseLearnArgs(String args, {required bool Function(String path) isFolder, String? base}) {
   final text = args.trim();
   final m = RegExp(r'''^(?:"([^"]+)"|'([^']+)'|(\S+))\s*([\s\S]*)$''').firstMatch(text);
   if (m == null) return LearnFromConversation(text);
   final first = (m[1] ?? m[2] ?? m[3])!;
   final rest = m[4]!.trim();
   if (RegExp(r'^https?://\S+$', caseSensitive: false).hasMatch(first)) return LearnFromUrl(first, rest);
-  final pathLike = first.startsWith('/') || first.startsWith('~') || first.startsWith('./') || first.startsWith('../');
-  if (pathLike && isFolder(first)) return LearnFromFolder(first, rest);
-  return LearnFromConversation(text);
+  final relative = first == '.' || first == '..' || first.startsWith('./') || first.startsWith('../');
+  final pathLike = relative || first.startsWith('/') || first == '~' || first.startsWith('~/');
+  if (!pathLike) return LearnFromConversation(text);
+  if (relative && (base == null || base.isEmpty)) {
+    throw FormatException('Use a full path: there is no project folder for "$first" to start from.');
+  }
+  final path = relative ? joinPath(base!, first) : first;
+  if (!isFolder(path)) throw FormatException('No folder at $path.');
+  return LearnFromFolder(path, rest);
+}
+
+/// [relative] (`./x`, `../x`) resolved against the absolute folder [base].
+String joinPath(String base, String relative) {
+  final parts = <String>[...base.split('/').where((p) => p.isNotEmpty)];
+  for (final p in relative.split('/')) {
+    if (p.isEmpty || p == '.') continue;
+    if (p == '..') {
+      if (parts.isNotEmpty) parts.removeLast();
+    } else {
+      parts.add(p);
+    }
+  }
+  return '/${parts.join('/')}';
 }
 
 /// [skill] as an import candidate, run through the same strict check as an

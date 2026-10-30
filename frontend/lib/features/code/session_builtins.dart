@@ -300,7 +300,12 @@ mixin _SessionBuiltins on Notifier<CodeSessionState> {
   /// [parseLearnArgs]) and saves it to the skills library, checked like any
   /// import. A folder that already holds skills is imported as it is.
   Future<void> learn(String args) async {
-    final source = parseLearnArgs(args, isFolder: isFolder);
+    final LearnSource source;
+    try {
+      source = parseLearnArgs(args, isFolder: isFolder, base: _info?.workingDir);
+    } on FormatException catch (e) {
+      return _settle(_newAside(AsideKind.learn, args.trim()).failed(e.message));
+    }
     final aside = _newAside(AsideKind.learn, switch (source) {
       LearnFromUrl(:final url) => url,
       LearnFromFolder(:final path) => path,
