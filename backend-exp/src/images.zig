@@ -10,6 +10,7 @@ const App = @import("main.zig").App;
 const auth = @import("auth.zig");
 const billing = @import("billing.zig");
 const openrouter = @import("openrouter.zig");
+const util = @import("util.zig");
 
 pub const Image = struct {
     mime: []const u8,
@@ -39,6 +40,20 @@ pub fn isVectorModel(model: []const u8) bool {
 fn formatOf(o: Options) ?[]const u8 {
     if (o.output_format) |f| return f;
     return if (isVectorModel(o.model)) "svg" else null;
+}
+
+/// A ceiling on what one image costs upstream, in micro-dollars. The catalog
+/// lists no per-image output price, so this covers the dearer image models
+/// (high quality is several times the standard price).
+const image_ceiling_micros: i64 = 100_000;
+const image_ceiling_high_micros: i64 = 300_000;
+
+/// The most a request can cost after markup: `n` images at the ceiling.
+pub fn worstCaseMicros(o: Options, markup: f64) i64 {
+    const high = if (o.quality) |q| std.mem.eql(u8, q, "high") or std.mem.eql(u8, q, "hd") else false;
+    const each = if (high) image_ceiling_high_micros else image_ceiling_micros;
+    const n: i64 = @max(1, @min(o.n, 10));
+    return util.applyMarkup(n * each, markup);
 }
 
 /// The upstream request body.
@@ -124,7 +139,10 @@ fn mimeOf(format: ?[]const u8, b64: []const u8) []const u8 {
 /// `err_message` when given.
 pub fn generate(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, o: Options, err_message: ?*[]const u8) ![]const Image {
     app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
-    try billing.preflight(app, req, who.user_id, app.catalog.facts(req.io, o.model).free);
+    const free = app.catalog.facts(req.io, o.model).free;
+    try billing.preflight(app, req, who.user_id, free);
+    // Images are billed after the fact, so a request must fit what is left.
+    if (!free and try billing.available(app, req, who.user_id) < worstCaseMicros(o, app.cfg.markup)) return error.PaymentRequired;
     const body = try requestBody(req.arena, o);
     const s = try app.upstream.post(req, "/images", body, &.{});
     defer s.close();
@@ -207,6 +225,12 @@ test requestBody {
     try std.testing.expectEqualStrings(
         \\{"model":"recraft/recraft-v4.1-vector","prompt":"a fox","n":10,"output_format":"svg"}
     , vector);
+}
+
+test worstCaseMicros {
+    try std.testing.expectEqual(@as(i64, 115_000), worstCaseMicros(.{ .model = "m", .prompt = "p" }, 1.15));
+    try std.testing.expectEqual(@as(i64, 3_000_000), worstCaseMicros(.{ .model = "m", .prompt = "p", .n = 40, .quality = "high" }, 1.0));
+    try std.testing.expectEqual(@as(i64, 100_000), worstCaseMicros(.{ .model = "m", .prompt = "p", .n = 0 }, 1.0));
 }
 
 test parseImages {

@@ -62,7 +62,7 @@ const models_json =
     \\ "architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},
     \\ "pricing":{"prompt":"0.0000001","completion":"0.0000005","web_search":"0.01"},"supported_parameters":["tools","reasoning"]},
     \\{"id":"dots-studio/dots-3-note-preview:free","name":"dots: note","description":"Free.","context_length":512000,
-    \\ "architecture":{"input_modalities":["text"],"output_modalities":["text"]},"pricing":{"prompt":"0","completion":"0"},"supported_parameters":[]},
+    \\ "architecture":{"input_modalities":["text"],"output_modalities":["text"]},"pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools"]},
     \\{"id":"openai/gpt-6.1-sol:batch","name":"batch","pricing":{"prompt":"1","completion":"1"}}
     \\]}
 ;
@@ -846,6 +846,31 @@ test "chat: web_search numbers results in the source ledger, sends each source o
     try std.testing.expectEqual(@as(i64, 23_000), try env.state.db.one(i64, &c, "SELECT charged_micros FROM usage_events WHERE kind = 'search'", .{}));
 }
 
+test "chat: with no credit left, a free model's web_search and follow-ups are skipped, not charged" {
+    var env: Env = undefined;
+    try start(&env, &.{ search_turn, final_turn, followups_reply }, true);
+    defer env.deinit();
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = arena.allocator() };
+    _ = try env.state.db.exec(&c, "UPDATE quota_periods SET used_micros = included_micros", .{});
+    _ = try env.state.db.exec(&c, "DELETE FROM wallet_ledger", .{});
+    var models = try env.t.get("/v1/models", .{});
+    models.deinit();
+
+    var res = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "dots-studio/dots-3-note-preview:free",
+        .messages = .{.{ .role = "user", .content = "What's new in Zig?" }},
+    } });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "event: done") != null);
+    // The turn, then the model's next call: no search call, no follow-ups.
+    try std.testing.expectEqual(@as(usize, 2), env.fake.bodies.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[1], "out of credits, so web_search is unavailable") != null);
+    try std.testing.expectEqual(@as(i64, 0), try env.state.db.one(i64, &c, "SELECT COUNT(*) FROM usage_events WHERE kind = 'search'", .{}));
+}
+
 test "images: the vector engine asks a Recraft vector model for SVG" {
     var env: Env = undefined;
     try start(&env, &.{"{\"data\":[{\"b64_json\":\"PHN2ZyB2aWV3Qm94PSIwIDAgMSAxIi8+\"}],\"usage\":{\"cost\":0.08}}"}, true);
@@ -861,6 +886,22 @@ test "images: the vector engine asks a Recraft vector model for SVG" {
     const up = env.fake.bodies.items[0];
     try std.testing.expect(std.mem.indexOf(u8, up, "\"model\":\"recraft/recraft-v4.1-vector\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, up, "\"output_format\":\"svg\"") != null);
+}
+
+test "images: a request that could cost more than what is left answers 402 before calling upstream" {
+    var env: Env = undefined;
+    try start(&env, &.{"{\"data\":[{\"b64_json\":\"iVBORw0K\"}],\"usage\":{\"cost\":0.04}}"}, true);
+    defer env.deinit();
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = arena.allocator() };
+    _ = try env.state.db.exec(&c, "UPDATE quota_periods SET used_micros = included_micros - 50000", .{});
+    _ = try env.state.db.exec(&c, "DELETE FROM wallet_ledger", .{});
+
+    var res = try env.t.post("/v1/images", .{ .json = .{ .prompt = "ten cats", .n = 10, .quality = "high" } });
+    defer res.deinit();
+    try res.expectStatus(.payment_required);
+    try std.testing.expectEqual(@as(usize, 0), env.fake.bodies.items.len);
 }
 
 // ------------------------------------------------------------------ memory

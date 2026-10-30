@@ -741,6 +741,12 @@ fn webSearch(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]con
     const query = std.mem.trim(u8, openrouter.jsonString(args, "query") orelse "", " \t\r\n");
     if (query.len == 0) return "Error: query is empty.";
     const limit: usize = @intCast(std.math.clamp(intArg(args, "max_results") orelse web.default_results, 1, web.max_results));
+    // The web plugin bills per search even on a free model, so a search
+    // needs credit even when the chat model is free.
+    billing.preflight(app, req, who.user_id, false) catch |err| switch (err) {
+        error.PaymentRequired => return "Error: the user is out of credits, so web_search is unavailable. Answer without it and say so if it matters.",
+        else => return err,
+    };
     const body = try web.searchBody(arena, app.cfg.utility_model, app.cfg.search_engine, query, limit);
     const s = try app.upstream.post(req, "/chat/completions", body, &.{});
     defer s.close();
@@ -894,6 +900,7 @@ fn generateImage(app: *App, req: *anole.Request, who: auth.Identity, session: ?[
         .references = refs,
     }, &message) catch |err| switch (err) {
         error.UpstreamFailed, error.NoImage => return std.fmt.allocPrint(arena, "Error: {s}.", .{message}),
+        error.PaymentRequired => return "Error: the user does not have enough credit left to generate an image. Say so and carry on without it.",
         else => return err,
     };
     const img = list[0];
@@ -938,6 +945,11 @@ fn followUps(app: *App, req: *anole.Request, who: auth.Identity, body: ChatReque
         \\Reply with only a JSON array of 3 strings.
     , .{ question[0..@min(question.len, 2000)], answer[0..@min(answer.len, 3000)], try routing.languageNote(req.arena, question) });
     const model = routing.modelFor(app.cfg, .followups);
+    // Follow-ups are extra; a free-model turn with no credit left skips them.
+    billing.preflight(app, req, who.user_id, app.catalog.facts(req.io, model).free) catch |err| switch (err) {
+        error.PaymentRequired => return,
+        else => return err,
+    };
     const req_body = try std.json.Stringify.valueAlloc(req.arena, .{
         .model = model,
         .usage = .{ .include = true },
