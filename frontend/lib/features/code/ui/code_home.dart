@@ -102,6 +102,17 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
     setState(() => _projectId = project.id);
   }
 
+  /// The tier the new session runs on: the bar's pick, capped at Thorough
+  /// where the phased tiers can't run (another harness, a remote host).
+  HarnessTier _tierFor(CodeProject project) {
+    final tier = ref.read(codeSettingsProvider).tier;
+    final everyai =
+        !isDemoPath(project.path) &&
+        !isRemotePath(project.path) &&
+        ref.read(codeHarnessProvider) == CodeHarnessKind.everyai;
+    return tier.everyaiOnly && !everyai ? HarnessTier.thorough : tier;
+  }
+
   Future<void> _start(CodeProject project, String prompt, List<Attachment> files) async {
     final mode = _modeFor(project.id);
     ref.read(preferencesProvider)[lastModeKey(project.id)] = mode.name;
@@ -117,7 +128,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
             mode: mode,
             files: files,
             isolated: _isolated,
-            mainAgent: ref.read(codeMainAgentProvider),
+            tier: _tierFor(project),
           );
       if (_budget case final usd?) ref.read(codeSettingsProvider.notifier).setBudget(info.id, usd);
       if (mounted) context.go(Routes.codeSession(info.id));
@@ -203,6 +214,10 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                           ? null
                           : ref.read(codeHarnessProvider.notifier).choose,
                       onChanged: ref.read(codeAgentProvider.notifier).chooseModel,
+                      tier: ref.watch(codeSettingsProvider.select((s) => s.tier)),
+                      onTier: ref.read(codeSettingsProvider.notifier).setTier,
+                      budget: _budget,
+                      onBudget: (v) => setState(() => _budget = v),
                     ),
                     leading: _ProjectPicker(
                       project: project,
@@ -222,8 +237,6 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                     _SessionOptions(
                       isolated: _isolated,
                       onIsolated: (v) => setState(() => _isolated = v),
-                      budget: _budget,
-                      onBudget: (v) => setState(() => _budget = v),
                       projectId: project.id,
                     ),
                   const SizedBox(height: 8),
@@ -262,18 +275,10 @@ String lastModeKey(String projectId) => 'code.lastMode.$projectId';
 
 /// Below the composer: where the session works, and the project's settings.
 class _SessionOptions extends StatelessWidget {
-  const _SessionOptions({
-    required this.isolated,
-    required this.onIsolated,
-    required this.budget,
-    required this.onBudget,
-    required this.projectId,
-  });
+  const _SessionOptions({required this.isolated, required this.onIsolated, required this.projectId});
 
   final bool isolated;
   final ValueChanged<bool> onIsolated;
-  final double? budget;
-  final ValueChanged<double?> onBudget;
   final String projectId;
 
   @override
@@ -301,8 +306,8 @@ class _SessionOptions extends StatelessWidget {
       children: [
         option('In place', !isolated, () => onIsolated(false)),
         option('Isolated worktree', isolated, () => onIsolated(true)),
-        // The session's top-bar controls, for the session about to start.
-        CodeDraftBar(projectId: projectId, budget: budget, onBudget: onBudget),
+        // The settings popover for the session about to start.
+        CodeDraftBar(projectId: projectId),
       ],
     );
   }

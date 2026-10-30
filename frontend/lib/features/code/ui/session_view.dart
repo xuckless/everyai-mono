@@ -13,7 +13,6 @@ import '../../../core/ui/selection.dart';
 import '../../models/domain/model_catalog.dart';
 import '../../models/models_providers.dart';
 import '../../questions/ui/question_card.dart';
-import '../../usage/ui/usage_meter.dart';
 import '../../usage/usage_totals.dart';
 import '../code_providers.dart';
 import '../morning_providers.dart';
@@ -80,11 +79,13 @@ class CodeSessionScreen extends ConsumerWidget {
         t.items.lastOrNull is AgentText &&
         t.items.whereType<UserTurn>().isNotEmpty;
 
-    // The same live Harness → Model → Effort menu in the header and the composer.
-    Widget agentMenu({bool bordered = false}) => AgentMenu(
+    // The live Harness → mode → tier → Model → Effort menu, in the composer.
+    Widget agentMenu() => AgentMenu(
       model: info.model,
       effort: info.effort,
-      bordered: bordered,
+      tier: info.tier,
+      harnessMode: info.harnessMode,
+      onTier: controller.setTier,
       harness: isDemoPath(info.workingDir) ? CodeHarnessKind.demo : CodeHarnessKind.parse(info.harness),
       onChanged: (model, effort) => switchCodeAgent(
         context,
@@ -106,7 +107,7 @@ class CodeSessionScreen extends ConsumerWidget {
           onBack: info.parentId == null ? null : () => context.go(Routes.codeSession(info.parentId!)),
           backTooltip: 'Back to the parent session',
           actions: [
-            CodeTopBar(sessionId: sessionId, tier: tier, agentMenu: agentMenu(bordered: true)),
+            CodeTopBar(sessionId: sessionId),
             if (info.diffTarget != null && tier != TopBarTier.narrow) _ChangesButton(sessionId: sessionId),
             if (panesFor(info).contains(CodePane.terminal))
               AdaptiveIconButton(
@@ -257,11 +258,7 @@ class CodeSessionScreen extends ConsumerWidget {
                                   : 'Ask for a change, or reply to the agent',
                               trailing: agentMenu(),
                               model: ref.watch(modelCatalogProvider)[ModelId(info.model)],
-                              meter: UsageMeter(
-                                totals: ref.watch(codeUsageProvider(sessionId)).value ?? UsageTotals.zero,
-                                contextWindow: ref.watch(modelCatalogProvider)[ModelId(info.model)]?.contextLength ?? 0,
-                                modelName: ref.watch(modelCatalogProvider)[ModelId(info.model)]?.name,
-                              ),
+                              meter: SessionMeter(sessionId: sessionId, model: info.model),
                             ),
                           ],
                         ),

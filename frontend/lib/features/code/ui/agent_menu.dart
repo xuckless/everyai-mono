@@ -6,14 +6,19 @@ import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/anchored_popover.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../models/domain/model_catalog.dart';
+import '../../billing/billing_providers.dart' show formatMicros;
 import '../../models/models_providers.dart';
 import '../agent_models.dart';
 import '../domain/agent_menu.dart';
+import '../settings/agent_prompt.dart' show HarnessMode, HarnessTier;
+import '../settings/code_settings.dart' show budgetPresets;
+import '../ultra/ultra_ui_providers.dart' show ultraAccessProvider;
 
-/// The agent menu: Harness → Model (grouped by vendor, tiers as hints) →
-/// Effort, as submenus inside one popover on every design language (never a
-/// bottom sheet). [onChanged] gets the new model and effort ('' is the
-/// model's default); an open session applies it live.
+/// The agent menu: Harness, Harness mode, the tier bar (Efficient → Ultra),
+/// Model (the user's own models that can call tools) and Effort, in one
+/// popover on every design language (never a bottom sheet). [onChanged] gets
+/// the new model and effort ('' is the model's default); an open session
+/// applies it live, and [onTier] likewise.
 class AgentMenu extends ConsumerWidget {
   const AgentMenu({
     super.key,
@@ -23,12 +28,27 @@ class AgentMenu extends ConsumerWidget {
     this.harness = CodeHarnessKind.openHands,
     this.onHarness,
     this.bordered = false,
+    this.tier = HarnessTier.efficient,
+    this.onTier,
+    this.harnessMode = HarnessMode.build,
+    this.budget,
+    this.onBudget,
   });
 
   final String model;
   final String effort;
   final void Function(String model, String effort) onChanged;
   final CodeHarnessKind harness;
+  final HarnessTier tier;
+
+  /// Picks the tier; null hides the bar.
+  final ValueChanged<HarnessTier>? onTier;
+  final HarnessMode harnessMode;
+
+  /// The spending cap, on the New session page (a session sets it from the
+  /// usage meter instead); null [onBudget] hides the row.
+  final double? budget;
+  final ValueChanged<double?>? onBudget;
 
   /// Picks the harness (before a session starts); null: fixed for the session.
   final ValueChanged<CodeHarnessKind>? onHarness;
@@ -41,9 +61,14 @@ class AgentMenu extends ConsumerWidget {
     final theme = EveryTheme.of(context);
     final catalog = ref.watch(agentCatalogProvider);
     final specs = ref.watch(modelCatalogProvider);
-    final groups = agentMenuGroups(catalog, current: model, nameOf: (id) => specs[ModelId(id)]?.name);
+    final library = ref.watch(libraryProvider).value ?? const <ModelSpec>[];
+    final groups = libraryMenuGroups(library, catalog, current: model, nameOf: (id) => specs[ModelId(id)]?.name);
     final current = [for (final (_, ms) in groups) ...ms].where((m) => m.model == model).firstOrNull;
-    final label = agentMenuLabel(current?.name ?? model.split('/').last, effort);
+    final ultraAllowed = ref.watch(ultraAccessProvider).value != null;
+    final label = [
+      agentMenuLabel(current?.name ?? model.split('/').last, effort),
+      if (onTier != null) tier.label,
+    ].join(' · ');
     return AnchoredPopover(
       width: 320,
       builder: (context, close) => AgentMenuPanel(
@@ -55,6 +80,12 @@ class AgentMenu extends ConsumerWidget {
         reasons: specs[ModelId(model)]?.reasoning ?? true,
         onChanged: onChanged,
         close: close,
+        tier: tier,
+        onTier: onTier,
+        harnessMode: harnessMode,
+        ultraAllowed: ultraAllowed,
+        budget: budget,
+        onBudget: onBudget,
       ),
       child: Semantics(
         button: true,
@@ -88,7 +119,7 @@ class AgentMenu extends ConsumerWidget {
   }
 }
 
-enum _Page { root, harness, model, effort }
+enum _Page { root, harness, model, effort, budget }
 
 /// The popover's content: a root list whose rows open their submenu in place,
 /// with a back row to return.
@@ -103,7 +134,22 @@ class AgentMenuPanel extends StatefulWidget {
     required this.close,
     this.onHarness,
     this.reasons = true,
+    this.tier = HarnessTier.efficient,
+    this.onTier,
+    this.harnessMode = HarnessMode.build,
+    this.ultraAllowed = false,
+    this.budget,
+    this.onBudget,
   });
+
+  final HarnessTier tier;
+  final ValueChanged<HarnessTier>? onTier;
+  final HarnessMode harnessMode;
+
+  /// The plan allows Ultra (the Max plan).
+  final bool ultraAllowed;
+  final double? budget;
+  final ValueChanged<double?>? onBudget;
 
   final List<(ModelProvider, List<AgentMenuModel>)> groups;
   final String model;
@@ -126,13 +172,24 @@ class _AgentMenuPanelState extends State<AgentMenuPanel> {
   // Reflects a pick at once, before the parent rebuilds with it.
   late String _model = widget.model;
   late String _effort = widget.effort;
+  late HarnessTier _tier = widget.tier;
+  late double? _budget = widget.budget;
 
   @override
   void didUpdateWidget(AgentMenuPanel old) {
     super.didUpdateWidget(old);
     if (old.model != widget.model) _model = widget.model;
     if (old.effort != widget.effort) _effort = widget.effort;
+    if (old.tier != widget.tier) _tier = widget.tier;
+    if (old.budget != widget.budget) _budget = widget.budget;
   }
+
+  /// Why [t] can't be picked, or null.
+  String? _blocked(HarnessTier t) => t.everyaiOnly && widget.harness != CodeHarnessKind.everyai
+      ? 'EveryAI harness only'
+      : t == HarnessTier.ultra && !widget.ultraAllowed
+      ? 'On the Max plan'
+      : null;
 
   AgentMenuModel? get _current =>
       [for (final (_, ms) in widget.groups) ...ms].where((m) => m.model == _model).firstOrNull;
@@ -164,6 +221,21 @@ class _AgentMenuPanelState extends State<AgentMenuPanel> {
           onTap: () => setState(() => _page = _Page.harness),
         ),
         PopoverRow(
+          key: const ValueKey('agent-menu.harness-mode'),
+          title: 'Harness mode',
+          subtitle: '${widget.harnessMode.label} · Bug fix is coming',
+          trailing: _ModeSwitch(mode: widget.harnessMode),
+        ),
+        if (widget.onTier != null)
+          _TierBar(
+            tier: _tier,
+            blocked: _blocked,
+            onTier: (t) {
+              setState(() => _tier = t);
+              widget.onTier!(t);
+            },
+          ),
+        PopoverRow(
           key: const ValueKey('agent-menu.model'),
           title: 'Model',
           subtitle: [
@@ -180,6 +252,31 @@ class _AgentMenuPanelState extends State<AgentMenuPanel> {
           trailing: more,
           onTap: widget.harness == CodeHarnessKind.demo ? null : () => setState(() => _page = _Page.effort),
         ),
+        if (widget.onBudget != null)
+          PopoverRow(
+            key: const ValueKey('agent-menu.budget'),
+            title: 'Spending cap',
+            subtitle: _budget == null ? 'No cap' : formatMicros((_budget! * 1e6).round()),
+            trailing: more,
+            onTap: () => setState(() => _page = _Page.budget),
+          ),
+      ],
+      _Page.budget => [
+        _Back('Spending cap', onTap: () => setState(() => _page = _Page.root)),
+        for (final usd in [null, ...budgetPresets])
+          PopoverRow(
+            key: ValueKey('agent-menu.budget.${usd ?? 'none'}'),
+            title: usd == null ? 'No cap' : formatMicros((usd * 1e6).round()),
+            selected: usd == _budget,
+            trailing: check(usd == _budget),
+            onTap: () {
+              setState(() {
+                _budget = usd;
+                _page = _Page.root;
+              });
+              widget.onBudget!(usd);
+            },
+          ),
       ],
       _Page.harness => [
         _Back('Harness', onTap: () => setState(() => _page = _Page.root)),
@@ -264,6 +361,129 @@ class _Back extends StatelessWidget {
       title: title,
       leading: AdaptiveIcon(EveryIcon.chevronLeft, size: 12, color: theme.textMuted),
       onTap: onTap,
+    );
+  }
+}
+
+/// Build, with Bug fix shown but not yet pickable.
+class _ModeSwitch extends StatelessWidget {
+  const _ModeSwitch({required this.mode});
+
+  final HarnessMode mode;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    Widget segment(HarnessMode m) {
+      final on = m == mode;
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: on ? theme.accent.withValues(alpha: 0.18) : null,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Text(
+          m.label,
+          style: theme.type.caption.tint(
+            on
+                ? theme.accent
+                : m == HarnessMode.bugFix
+                ? theme.textMuted.withValues(alpha: 0.5)
+                : theme.textMuted,
+          ),
+        ),
+      );
+    }
+
+    return Semantics(
+      label: 'Harness mode: ${mode.label}',
+      child: Container(
+        padding: const EdgeInsets.all(2),
+        decoration: BoxDecoration(
+          border: Border.all(color: theme.border),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [for (final m in HarnessMode.values) segment(m)]),
+      ),
+    );
+  }
+}
+
+/// The progressive tier bar: Efficient · Thorough · Max · Ultra, filled up
+/// to the pick, with what the pick does underneath.
+class _TierBar extends StatelessWidget {
+  const _TierBar({required this.tier, required this.blocked, required this.onTier});
+
+  final HarnessTier tier;
+  final String? Function(HarnessTier) blocked;
+  final ValueChanged<HarnessTier> onTier;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final tiers = HarnessTier.offered;
+    final at = tiers.indexOf(tier);
+    final note = blocked(tier);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 6, 14, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('Tier', style: theme.type.callout),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              for (final (i, t) in tiers.indexed)
+                Expanded(
+                  child: Semantics(
+                    button: true,
+                    selected: t == tier,
+                    label: 'Tier ${t.label}${blocked(t) == null ? '' : ', ${blocked(t)}'}',
+                    child: GestureDetector(
+                      key: ValueKey('agent-menu.tier.${t.name}'),
+                      behavior: HitTestBehavior.opaque,
+                      onTap: blocked(t) == null && t != tier ? () => onTier(t) : null,
+                      child: Column(
+                        children: [
+                          Container(
+                            height: 6,
+                            margin: EdgeInsets.only(right: i == tiers.length - 1 ? 0 : 3),
+                            decoration: BoxDecoration(
+                              color: i <= at
+                                  ? theme.accent
+                                  : blocked(t) == null
+                                  ? theme.border
+                                  : theme.border.withValues(alpha: 0.4),
+                              borderRadius: BorderRadius.circular(3),
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            t.label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.type.caption.tint(
+                              t == tier
+                                  ? theme.accent
+                                  : blocked(t) == null
+                                  ? theme.textMuted
+                                  : theme.textMuted.withValues(alpha: 0.5),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            note == null ? tier.description : '${tier.description} · $note',
+            style: theme.type.caption.tint(theme.textMuted),
+          ),
+        ],
+      ),
     );
   }
 }

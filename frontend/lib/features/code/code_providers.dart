@@ -318,6 +318,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     bool isolated = false,
     CodeHarnessKind? harnessKind,
     String mainAgent = '',
+    HarnessTier? tier,
   }) async {
     final id = const Uuid().v7();
     final demo = isDemoPath(project.path);
@@ -355,6 +356,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         everyai: kind == CodeHarnessKind.everyai,
         tools: main?.tools,
         mainAgentPrompt: main == null ? null : mainAgentBlock(main.name, main.prompt),
+        tier: tier ?? ref.read(codeSettingsProvider).tier,
       ),
     );
     ref.read(_liveProvider)[id] = live;
@@ -374,6 +376,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       mainAgent: main?.name ?? '',
       effort: effort ?? '',
       holdClientTools: hold || kind == CodeHarnessKind.everyai,
+      tier: tier ?? ref.read(codeSettingsProvider).tier,
     );
     state = [info, ...state];
     _save();
@@ -403,8 +406,11 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     bool everyai = false,
     String? mainAgentPrompt,
     Map<String, String> pathMap = const {},
+    HarnessTier? tier,
   }) async {
     final demo = isDemoPath(projectDir);
+    // A session's own tier; a new one's comes from the caller, else the default.
+    tier ??= byId(sessionId)?.tier ?? ref.read(codeSettingsProvider).tier;
     // The demo and remote hosts have no local folder: the server's default prompt, no project files.
     final local = !noLocalFolder(projectDir);
     final projectId = ref.read(codeProjectsProvider).where((p) => p.path == projectDir).firstOrNull?.id;
@@ -418,7 +424,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
             agents: [for (final a in agents) (name: a.name, description: a.oneLine)],
             isolated: isolated,
             everyai: everyai,
-            workStyle: ref.read(codeSettingsProvider).workStyle,
+            tier: tier,
             // Only a main EveryAI session forks (forks are one level deep).
             forks: everyai && !subagent,
           );
@@ -605,6 +611,8 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         rolePrompt: rolePrompt,
         clientTools: clientTools,
         pathMap: forkCopy == null ? const {} : {parent.workingDir: forkCopy.path, forkCopy.repoRoot: forkCopy.root},
+        // The parent's, so a fork's prompt (and cache) matches it.
+        tier: parent.tier,
       ),
     );
     ref.read(_liveProvider)[id] = live;
@@ -624,6 +632,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       parentCallId: callId,
       ownTag: ownTag,
       forkCopy: forkCopy,
+      tier: parent.tier,
     );
     state = [...state, info];
     _save();
@@ -1210,11 +1219,24 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     }
   }
 
+  /// Moves the session to [tier] from the next message: the system prompt
+  /// keeps its first tier (the cache holds), and a note says what changed.
+  void setTier(HarnessTier tier) {
+    final sessions = ref.read(codeSessionsProvider.notifier);
+    final info = sessions.byId(sessionId);
+    if (info == null || info.tier == tier) return;
+    sessions.update(info.copyWith(tier: tier));
+    _tierNote = tierChangeNote(tier, forks: info.harness == CodeHarnessKind.everyai.name && !info.isSubagent);
+  }
+
+  String _tierNote = '';
+
   /// [text] with a mode note: the full one after a mode change, else a short reminder.
   /// Nested instruction files found since the last message go first, after the mode note.
   String _noted(String text) {
     final told = state.transcript.notedMode;
-    final context = _context?.takeNote() ?? '';
+    final context = [_context?.takeNote() ?? '', _tierNote].where((n) => n.isNotEmpty).join('\n\n');
+    _tierNote = '';
     final body = context.isEmpty ? text : (text.isEmpty ? context : '$context\n\n$text');
     final subagent = ref.read(codeSessionsProvider.notifier).byId(sessionId)?.isSubagent ?? false;
     return modeNote(state.mode, body, full: told != state.mode, from: told, subagent: subagent);

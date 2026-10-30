@@ -7,7 +7,6 @@ import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/anchored_popover.dart';
 import '../../../core/ui/every_icons.dart';
-import '../../agents/agents_providers.dart';
 import '../../billing/billing_providers.dart' show formatMicros;
 import '../../models/domain/model_catalog.dart';
 import '../../models/models_providers.dart';
@@ -16,7 +15,6 @@ import '../../usage/ui/usage_meter.dart' show ContextRing, UsageBreakdown;
 import '../../usage/usage_totals.dart';
 import '../code_providers.dart';
 import '../code_settings_providers.dart';
-import '../domain/agent_mode.dart';
 import '../mcp_providers.dart';
 import '../permissions_providers.dart';
 import 'code_settings_screen.dart' show CodeSettingsTab;
@@ -24,41 +22,27 @@ import 'code_settings_screen.dart' show CodeSettingsTab;
 /// How much of the session header fits, from the width the page really has
 /// (not the window: the sidebar and the panes take part of it).
 enum TopBarTier {
-  /// Everything: agent menu, mode, agents, settings, budget, Ultra.
+  /// Everything.
   wide,
 
-  /// Mode and agents go (the composer has the mode).
-  medium,
-
-  /// The agent menu and budget go too (both are in the composer).
+  /// The Changes button goes (the panes have it).
   narrow;
 
-  static TopBarTier forWidth(double width) => width >= 1080
-      ? wide
-      : width >= 820
-      ? medium
-      : narrow;
+  static TopBarTier forWidth(double width) => width >= 820 ? wide : narrow;
 }
 
-/// The session's top bar: session-level controls beside the title. [agentMenu]
-/// is the Harness → Model → Effort menu; the rest are popovers (never bottom
-/// sheets): mode, agents, settings shortcuts, usage against the budget, and
-/// the Ultra slot.
+/// The session's top bar: only what isn't in the composer, the session
+/// settings popover. Model, effort, tier and mode live in the composer, and
+/// the spend and its cap in the composer's usage meter.
 class CodeTopBar extends ConsumerWidget {
-  const CodeTopBar({super.key, required this.sessionId, required this.agentMenu, this.tier = TopBarTier.wide});
+  const CodeTopBar({super.key, required this.sessionId});
 
   final String sessionId;
-  final Widget agentMenu;
-  final TopBarTier tier;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final info = ref.watch(codeSessionsProvider.select((all) => all.where((s) => s.id == sessionId).firstOrNull));
     if (info == null) return const SizedBox.shrink();
-    // Only the mode: watching the whole state rebuilt the bar on every token.
-    final mode = ref.watch(codeSessionProvider(sessionId).select((s) => s.mode));
-    final controller = ref.read(codeSessionProvider(sessionId).notifier);
-    final ultra = ref.watch(codeUltraSlotProvider);
 
     // The session controller stops the run at the budget; this only says so.
     ref.listen(codeUsageProvider(sessionId), (before, after) {
@@ -71,137 +55,33 @@ class CodeTopBar extends ConsumerWidget {
       }
     });
 
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        if (tier != TopBarTier.narrow)
-          ConstrainedBox(constraints: const BoxConstraints(maxWidth: 200), child: agentMenu),
-        if (tier == TopBarTier.wide) ...[
-          _ModeChip(mode: mode, onChanged: controller.setMode),
-          _AgentsChip(projectId: info.projectId),
-        ],
-        _SettingsChip(projectId: info.projectId, sessionId: sessionId),
-        if (tier != TopBarTier.narrow) BudgetChip(sessionId: sessionId, model: info.model),
-        ?ultra?.call(context, sessionId),
-      ],
-    );
+    return _SettingsChip(projectId: info.projectId, sessionId: sessionId);
   }
 }
 
-/// The session controls on the New session page, before there is a session:
-/// subagents and main agent, the settings popover, the work style and the
-/// spending cap. What a chip changes applies to the session about to start.
-class CodeDraftBar extends ConsumerWidget {
-  const CodeDraftBar({super.key, required this.projectId, required this.budget, required this.onBudget});
+/// The settings popover on the New session page, for the session about to
+/// start (the Agent menu in the composer has the tier, model and cap).
+class CodeDraftBar extends StatelessWidget {
+  const CodeDraftBar({super.key, required this.projectId});
 
   final String projectId;
-  final double? budget;
-  final ValueChanged<double?> onBudget;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return Wrap(
-      alignment: WrapAlignment.center,
-      runSpacing: 6,
-      children: [
-        _AgentsChip(projectId: projectId),
-        const WorkStyleChip(),
-        _DraftBudgetChip(budget: budget, onBudget: onBudget),
-        _SettingsChip(projectId: projectId),
-      ],
-    );
-  }
-}
-
-/// Efficiency ↔ quality for the sessions started from now on.
-class WorkStyleChip extends ConsumerWidget {
-  const WorkStyleChip({super.key});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final theme = EveryTheme.of(context);
-    final style = ref.watch(codeSettingsProvider.select((s) => s.workStyle));
-    return AnchoredPopover(
-      width: 340,
-      builder: (context, close) => SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(vertical: 5),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const PopoverHeader('Efficiency ↔ quality'),
-            for (final s in WorkStyle.values)
-              PopoverRow(
-                key: ValueKey('work-style.${s.name}'),
-                title: s.label,
-                subtitle: s.description,
-                trailing: _check(theme, s == style),
-                onTap: () {
-                  close();
-                  ref.read(codeSettingsProvider.notifier).setWorkStyle(s);
-                },
-              ),
-          ],
-        ),
-      ),
-      child: _Chip(icon: EveryIcon.spark, label: style.label, semantics: 'Work style: ${style.label}'),
-    );
-  }
-}
-
-class _DraftBudgetChip extends StatelessWidget {
-  const _DraftBudgetChip({required this.budget, required this.onBudget});
-
-  final double? budget;
-  final ValueChanged<double?> onBudget;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    return AnchoredPopover(
-      width: 240,
-      builder: (context, close) => SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(vertical: 5),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const PopoverHeader('Spending cap'),
-            for (final usd in [null, ...budgetPresets])
-              PopoverRow(
-                title: usd == null ? 'No cap' : formatMicros((usd * 1e6).round()),
-                trailing: _check(theme, usd == budget),
-                onTap: () {
-                  close();
-                  onBudget(usd);
-                },
-              ),
-          ],
-        ),
-      ),
-      child: _Chip(
-        label: switch (budget) {
-          final usd? => 'Cap ${formatMicros((usd * 1e6).round())}',
-          null => 'No cap',
-        },
-      ),
-    );
-  }
+  Widget build(BuildContext context) => _SettingsChip(projectId: projectId);
 }
 
 /// A compact outlined chip that opens a popover.
 class _Chip extends StatelessWidget {
-  const _Chip({required this.label, this.icon, this.color, this.semantics});
+  const _Chip({required this.label, this.icon, this.semantics});
 
   final String label;
   final EveryIcon? icon;
-  final Color? color;
   final String? semantics;
 
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    final fg = color ?? theme.textMuted;
+    final fg = theme.textMuted;
     return Semantics(
       button: true,
       label: semantics ?? label,
@@ -209,7 +89,7 @@ class _Chip extends StatelessWidget {
         margin: const EdgeInsets.only(left: 4),
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
-          border: Border.all(color: color?.withValues(alpha: 0.6) ?? theme.border),
+          border: Border.all(color: theme.border),
           borderRadius: BorderRadius.circular(8),
         ),
         child: Row(
@@ -237,130 +117,6 @@ class _Chip extends StatelessWidget {
 
 Widget _check(EveryTheme theme, bool on) =>
     on ? AdaptiveIcon(EveryIcon.check, size: 14, color: theme.accent) : const SizedBox(width: 14);
-
-class _ModeChip extends StatelessWidget {
-  const _ModeChip({required this.mode, required this.onChanged});
-
-  final AgentMode mode;
-  final Future<void> Function(AgentMode) onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    return AnchoredPopover(
-      width: 300,
-      builder: (context, close) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 5),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const PopoverHeader('Mode'),
-            for (final m in AgentMode.values)
-              PopoverRow(
-                key: ValueKey('top-bar.mode.${m.name}'),
-                title: m.label,
-                subtitle: m.description,
-                selected: m == mode,
-                trailing: _check(theme, m == mode),
-                onTap: () {
-                  close();
-                  if (m != mode) onChanged(m).ignore();
-                },
-              ),
-          ],
-        ),
-      ),
-      child: _Chip(label: mode.label, semantics: 'Mode: ${mode.label}'),
-    );
-  }
-}
-
-/// The agent library's agents this project may hand work to, with switches.
-class _AgentsChip extends ConsumerWidget {
-  const _AgentsChip({required this.projectId});
-
-  final String projectId;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final library = ref.watch(agentLibraryProvider).value ?? const <AgentDefinition>[];
-    final settings = ref.watch(agentLibrarySettingsProvider);
-    final winners = agentWinners(library, projectId).values.toList()..sort((a, b) => a.name.compareTo(b.name));
-    final active = sessionAgents(library, settings, projectId).length;
-    return AnchoredPopover(
-      width: 340,
-      builder: (context, close) => _AgentsPanel(agents: winners, projectId: projectId, close: close),
-      child: _Chip(icon: EveryIcon.spark, label: '$active', semantics: 'Agents: $active on'),
-    );
-  }
-}
-
-class _AgentsPanel extends ConsumerWidget {
-  const _AgentsPanel({required this.agents, required this.projectId, required this.close});
-
-  final List<AgentDefinition> agents;
-  final String projectId;
-  final VoidCallback close;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final theme = EveryTheme.of(context);
-    final settings = ref.watch(agentLibrarySettingsProvider);
-    final store = ref.read(agentLibrarySettingsProvider.notifier);
-    final main = ref.watch(codeMainAgentProvider);
-    final mainStore = ref.read(codeMainAgentProvider.notifier);
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 5),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const PopoverHeader('Main agent · from the next session'),
-          PopoverRow(
-            key: const ValueKey('top-bar.main.everyai'),
-            title: 'EveryAI agent',
-            subtitle: 'The default: runs the session and hands work to the agents below',
-            trailing: _check(theme, main.isEmpty),
-            onTap: () => mainStore.choose(''),
-          ),
-          for (final a in agents)
-            if (settings.trustedNow(a))
-              PopoverRow(
-                key: ValueKey('top-bar.main.${a.name}'),
-                title: a.name,
-                subtitle: [
-                  'Runs the session with its instructions',
-                  if (a.model case final m?) m.split('/').last,
-                ].join(' · '),
-                trailing: _check(theme, main == a.name),
-                onTap: () => mainStore.choose(a.name),
-              ),
-          const PopoverHeader('Subagents · from the next session'),
-          if (agents.isEmpty) const PopoverRow(title: 'No agents yet', subtitle: 'Add some in Settings → Agents'),
-          for (final a in agents)
-            PopoverRow(
-              key: ValueKey('top-bar.agent.${a.name}'),
-              title: a.name,
-              subtitle: settings.trustedNow(a)
-                  ? [a.source.label, if (a.oneLine.isNotEmpty) a.oneLine].join(' · ')
-                  : 'Project agent: trust it in Settings → Agents first',
-              trailing: _check(theme, settings.active(a)),
-              onTap: settings.trustedNow(a) ? () => store.setEnabled(a, !settings.enabled(a)) : null,
-            ),
-          PopoverRow(
-            key: const ValueKey('top-bar.agents.manage'),
-            title: 'Manage agents…',
-            onTap: () {
-              close();
-              context.go(Routes.agents);
-            },
-          ),
-        ],
-      ),
-    );
-  }
-}
 
 /// Shortcuts to the settings a session runs with.
 class _SettingsChip extends ConsumerWidget {
@@ -452,36 +208,6 @@ class _SettingsChip extends ConsumerWidget {
                 ),
               ),
               PopoverRow(
-                key: const ValueKey('top-bar.settings.style'),
-                title: 'Work style: ${prompts.workStyle.label}',
-                subtitle: 'Efficiency ↔ quality · ${prompts.workStyle.description} · from the next session',
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    AdaptiveIconButton(
-                      icon: EveryIcon.chevronLeft,
-                      tooltip: 'More efficient',
-                      size: 13,
-                      onPressed: prompts.workStyle.index == 0
-                          ? null
-                          : () => ref
-                                .read(codeSettingsProvider.notifier)
-                                .setWorkStyle(WorkStyle.values[prompts.workStyle.index - 1]),
-                    ),
-                    AdaptiveIconButton(
-                      icon: EveryIcon.chevronRight,
-                      tooltip: 'Higher quality',
-                      size: 13,
-                      onPressed: prompts.workStyle.index == WorkStyle.values.length - 1
-                          ? null
-                          : () => ref
-                                .read(codeSettingsProvider.notifier)
-                                .setWorkStyle(WorkStyle.values[prompts.workStyle.index + 1]),
-                    ),
-                  ],
-                ),
-              ),
-              PopoverRow(
                 key: const ValueKey('top-bar.settings.forks'),
                 title: 'Forks',
                 subtitle: prompts.forksIsolated
@@ -505,10 +231,10 @@ class _SettingsChip extends ConsumerWidget {
   }
 }
 
-/// The session's spending, against its budget when it has one; the popover
-/// has the breakdown and sets the budget.
-class BudgetChip extends ConsumerWidget {
-  const BudgetChip({super.key, required this.sessionId, required this.model});
+/// The composer's usage meter: tokens and spend (against the cap when one is
+/// set) with the context ring; its popover has the breakdown and sets the cap.
+class SessionMeter extends ConsumerWidget {
+  const SessionMeter({super.key, required this.sessionId, required this.model});
 
   final String sessionId;
   final String model;
@@ -519,45 +245,59 @@ class BudgetChip extends ConsumerWidget {
     final totals = ref.watch(codeUsageProvider(sessionId)).value ?? UsageTotals.zero;
     final budget = ref.watch(codeSettingsProvider.select((s) => s.budgets[sessionId]));
     final spec = ref.watch(modelCatalogProvider)[ModelId(model)];
+    final window = spec?.contextLength ?? 0;
     final fill = budgetFill(totals.chargedMicros, budget);
     final spent = formatMicros(totals.chargedMicros);
-    final label = budget == null ? spent : '$spent / ${formatMicros((budget * 1e6).round())}';
+    final label = [
+      if (!totals.isEmpty) formatTokens(totals.totalTokens),
+      budget == null ? spent : '$spent / ${formatMicros((budget * 1e6).round())}',
+    ].join(' · ');
     final color = fill == null || fill < 0.8
-        ? null
+        ? theme.textMuted
         : fill >= 1
         ? theme.danger
         : theme.warning;
+    final context0 = window <= 0 ? 0.0 : (totals.contextTokens / window).clamp(0, 1).toDouble();
     return AnchoredPopover(
       width: 280,
-      builder: (context, close) => Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          UsageBreakdown(totals: totals, contextWindow: spec?.contextLength ?? 0, modelName: spec?.name),
-          const PopoverHeader('Budget for this session'),
-          for (final usd in [null, ...budgetPresets])
-            PopoverRow(
-              key: ValueKey('top-bar.budget.${usd ?? 'none'}'),
-              title: usd == null ? 'No cap' : formatMicros((usd * 1e6).round()),
-              subtitle: usd != null && totals.chargedMicros >= usd * 1e6 ? 'Already spent' : null,
-              selected: usd == budget,
-              trailing: _check(theme, usd == budget),
-              onTap: () {
-                close();
-                ref.read(codeSettingsProvider.notifier).setBudget(sessionId, usd);
-              },
-            ),
-          const SizedBox(height: 5),
-        ],
-      ),
-      child: Container(
-        margin: const EdgeInsets.only(left: 4),
-        child: Row(
+      builder: (context, close) => SingleChildScrollView(
+        child: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _Chip(label: label, color: color, semantics: 'Usage $label'),
-            if (fill != null) ...[const SizedBox(width: 5), ContextRing(fill: fill.clamp(0, 1).toDouble(), size: 14)],
+            if (!totals.isEmpty) UsageBreakdown(totals: totals, contextWindow: window, modelName: spec?.name),
+            const PopoverHeader('Spending cap for this session'),
+            for (final usd in [null, ...budgetPresets])
+              PopoverRow(
+                key: ValueKey('meter.budget.${usd ?? 'none'}'),
+                title: usd == null ? 'No cap' : formatMicros((usd * 1e6).round()),
+                subtitle: usd != null && totals.chargedMicros >= usd * 1e6 ? 'Already spent' : null,
+                selected: usd == budget,
+                trailing: _check(theme, usd == budget),
+                onTap: () {
+                  close();
+                  ref.read(codeSettingsProvider.notifier).setBudget(sessionId, usd);
+                },
+              ),
+            const SizedBox(height: 5),
           ],
+        ),
+      ),
+      child: Semantics(
+        button: true,
+        label: 'Usage $label${window > 0 ? ', context ${(context0 * 100).round()}% full' : ''}',
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                label,
+                style: theme.type.caption.copyWith(color: color, fontFeatures: const [FontFeature.tabularFigures()]),
+              ),
+              if (window > 0 && !totals.isEmpty) ...[const SizedBox(width: 6), ContextRing(fill: context0, size: 15)],
+            ],
+          ),
         ),
       ),
     );

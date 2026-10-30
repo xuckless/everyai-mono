@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../git/git_models.dart';
 
 import 'agent_mode.dart';
+import '../settings/agent_prompt.dart' show HarnessMode, HarnessTier;
 
 /// A folder the agent works in.
 @immutable
@@ -54,6 +55,8 @@ final class CodeSessionInfo {
     this.parentCallId = '',
     this.ownTag = false,
     this.forkCopy,
+    this.tier = HarnessTier.efficient,
+    this.harnessMode = HarnessMode.build,
   });
 
   final String id;
@@ -92,6 +95,10 @@ final class CodeSessionInfo {
   /// The model's reasoning effort ('' for the server default).
   final String effort;
 
+  /// How hard it works (the tier bar); a fork keeps its parent's.
+  final HarnessTier tier;
+  final HarnessMode harnessMode;
+
   /// Question cards and plans are answered inside the held tool call (see
   /// `SessionSpec.holdClientTools`). Off for sessions started before it.
   final bool holdClientTools;
@@ -127,6 +134,7 @@ final class CodeSessionInfo {
     List<String>? compactedFrom,
     String? model,
     String? effort,
+    HarnessTier? tier,
     bool merged = false,
   }) => CodeSessionInfo(
     id: id,
@@ -150,6 +158,8 @@ final class CodeSessionInfo {
     ownTag: ownTag,
     // Once merged back, the copy is gone.
     forkCopy: merged ? null : forkCopy,
+    tier: tier ?? this.tier,
+    harnessMode: harnessMode,
   );
 
   factory CodeSessionInfo.fromJson(Map<String, Object?> json) => CodeSessionInfo(
@@ -181,6 +191,8 @@ final class CodeSessionInfo {
     // Ultra children saved before the flag was kept billed under their own id too.
     ownTag: json['own_tag'] == true || (json['parent_call_id'] as String? ?? '').startsWith('ultra-'),
     forkCopy: ForkCopy.fromJson(json['fork_copy']),
+    tier: HarnessTier.parse(json['tier']),
+    harnessMode: HarnessMode.parse(json['harness_mode']),
   );
 
   Map<String, Object?> toJson() => {
@@ -204,5 +216,7 @@ final class CodeSessionInfo {
     if (parentCallId.isNotEmpty) 'parent_call_id': parentCallId,
     if (ownTag) 'own_tag': true,
     if (forkCopy case final f?) 'fork_copy': f.toJson(),
+    'tier': tier.name,
+    if (harnessMode != HarnessMode.build) 'harness_mode': harnessMode.name,
   };
 }

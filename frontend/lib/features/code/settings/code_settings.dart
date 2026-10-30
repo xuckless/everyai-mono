@@ -6,9 +6,9 @@ import '../../skills/domain/skill_catalog.dart' show SkillSettings;
 import '../domain/agent_mode.dart';
 import '../domain/mcp_servers.dart';
 import '../domain/permissions.dart';
-import 'agent_prompt.dart' show WorkStyle;
+import 'agent_prompt.dart' show HarnessTier;
 
-export 'agent_prompt.dart' show WorkStyle;
+export 'agent_prompt.dart' show HarnessMode, HarnessTier;
 import '../permissions_providers.dart' show StoredPermissions;
 
 /// Where a Code setting lives. Later layers win: global, then the project,
@@ -41,12 +41,13 @@ final class StoredCodeSettings {
     this.projectPrompts = const {},
     this.budgets = const {},
     this.autoCompactPercent = defaultAutoCompactPercent,
-    this.workStyle = WorkStyle.balanced,
+    this.tier = HarnessTier.efficient,
     this.forksIsolated = true,
   });
 
   /// Efficiency ↔ Quality, for sessions started from now on.
-  final WorkStyle workStyle;
+  /// The tier new sessions start on.
+  final HarnessTier tier;
 
   /// Writing forks work in a worktree of their own and merge back into the
   /// parent's folder when they finish (false: they share the parent's folder).
@@ -77,7 +78,7 @@ final class StoredCodeSettings {
 
   StoredCodeSettings withAutoCompact(int percent) => _copy(autoCompactPercent: percent.clamp(0, 95));
 
-  StoredCodeSettings withWorkStyle(WorkStyle style) => _copy(workStyle: style);
+  StoredCodeSettings withTier(HarnessTier tier) => _copy(tier: tier);
 
   StoredCodeSettings withForksIsolated(bool on) => _copy(forksIsolated: on);
 
@@ -86,10 +87,10 @@ final class StoredCodeSettings {
     Map<String, String>? projectPrompts,
     Map<String, double>? budgets,
     int? autoCompactPercent,
-    WorkStyle? workStyle,
+    HarnessTier? tier,
     bool? forksIsolated,
   }) => StoredCodeSettings(
-    workStyle: workStyle ?? this.workStyle,
+    tier: tier ?? this.tier,
     forksIsolated: forksIsolated ?? this.forksIsolated,
     globalPrompt: globalPrompt ?? this.globalPrompt,
     projectPrompts: projectPrompts ?? this.projectPrompts,
@@ -111,7 +112,11 @@ final class StoredCodeSettings {
     final sessions = json['sessions'];
     final global = json['global'];
     return StoredCodeSettings(
-      workStyle: WorkStyle.parse(global is Map<String, Object?> ? global['workStyle'] : null),
+      tier: switch (global) {
+        {'harnessTier': final Object t} => HarnessTier.parse(t),
+        {'workStyle': final Object w} => HarnessTier.fromWorkStyle(w),
+        _ => HarnessTier.efficient,
+      },
       forksIsolated: !(global is Map<String, Object?> && global['forksIsolated'] == false),
       autoCompactPercent: global is Map<String, Object?> && global['autoCompactPercent'] is num
           ? (global['autoCompactPercent']! as num).toInt()
@@ -134,7 +139,7 @@ final class StoredCodeSettings {
     'global': {
       if (globalPrompt.isNotEmpty) 'systemPrompt': globalPrompt,
       if (autoCompactPercent != defaultAutoCompactPercent) 'autoCompactPercent': autoCompactPercent,
-      if (workStyle != WorkStyle.balanced) 'workStyle': workStyle.name,
+      if (tier != HarnessTier.efficient) 'harnessTier': tier.name,
       if (!forksIsolated) 'forksIsolated': false,
     },
     'projects': {

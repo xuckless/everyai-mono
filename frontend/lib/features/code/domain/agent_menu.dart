@@ -99,6 +99,46 @@ List<(ModelProvider, List<AgentMenuModel>)> agentMenuGroups(
   return [for (final MapEntry(:key, :value) in groups.entries) (key, value)];
 }
 
+/// The user's own models ("My models", as in Chat) that can call tools, by
+/// vendor in list order; the curated catalog only adds its tiers and tested
+/// efforts as hints. [current] is added when the list lacks it.
+List<(ModelProvider, List<AgentMenuModel>)> libraryMenuGroups(
+  List<ModelSpec> library,
+  AgentCatalog catalog, {
+  String? current,
+  String? Function(String model)? nameOf,
+}) {
+  final hints = {
+    for (final (_, ms) in agentMenuGroups(catalog))
+      for (final m in ms) m.model: m,
+  };
+  final models = [
+    for (final s in library)
+      if (s.tools)
+        AgentMenuModel(
+          model: s.id.value,
+          name: s.name,
+          vendor: ModelProvider.ofModel(s.id),
+          tiers: hints[s.id.value]?.tiers ?? const [],
+          efforts: hints[s.id.value]?.efforts ?? const [],
+        ),
+  ];
+  if (current != null && current.isNotEmpty && !models.any((m) => m.model == current)) {
+    models.add(
+      AgentMenuModel(
+        model: current,
+        name: nameOf?.call(current) ?? current.split('/').last,
+        vendor: ModelProvider.ofModel(ModelId(current)),
+      ),
+    );
+  }
+  final groups = <ModelProvider, List<AgentMenuModel>>{};
+  for (final m in models) {
+    groups.putIfAbsent(m.vendor, () => []).add(m);
+  }
+  return [for (final MapEntry(:key, :value) in groups.entries) (key, value)];
+}
+
 /// "Opus 5.5" from "Opus 5.5 · medium".
 String choiceModelName(AgentChoice c) {
   final dot = c.label.indexOf(' · ');

@@ -41,7 +41,7 @@ final class CodeSettings extends Notifier<StoredCodeSettings> {
   /// Compact EveryAI sessions at [percent] of the context window (0: off).
   void setAutoCompact(int percent) => _set(state.withAutoCompact(percent));
 
-  void setWorkStyle(WorkStyle style) => _set(state.withWorkStyle(style));
+  void setTier(HarnessTier tier) => _set(state.withTier(tier));
 
   void setForksIsolated(bool on) => _set(state.withForksIsolated(on));
 

@@ -19,7 +19,7 @@ void main() {
 
   test('the header drops chips by the width it has', () {
     expect(TopBarTier.forWidth(1400), TopBarTier.wide);
-    expect(TopBarTier.forWidth(900), TopBarTier.medium);
+    expect(TopBarTier.forWidth(900), TopBarTier.wide);
     expect(TopBarTier.forWidth(700), TopBarTier.narrow);
   });
 }

@@ -8,6 +8,7 @@ import 'package:every_ai/features/code/ui/agent_menu.dart';
 import 'package:every_ai/features/models/domain/model_catalog.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
+import 'package:every_ai/features/code/settings/agent_prompt.dart' show HarnessTier;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart' as m;
 
@@ -197,5 +198,44 @@ void main() {
     expect(picked, 'delete');
     expect(find.text('Rename'), findsNothing);
     debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('the tier bar picks a tier; Max and Ultra need EveryAI, Ultra the Max plan', (tester) async {
+    final picks = <HarnessTier>[];
+    Future<void> show(CodeHarnessKind harness, {bool ultraAllowed = false}) => tester.pumpWidget(
+      _host(
+        SizedBox(
+          width: 320,
+          height: 700,
+          child: AgentMenuPanel(
+            key: ValueKey('$harness$ultraAllowed'),
+            groups: agentMenuGroups(_catalog),
+            model: 'anthropic/claude-opus-5.5',
+            effort: 'medium',
+            harness: harness,
+            onChanged: (_, _) {},
+            close: () {},
+            onTier: picks.add,
+            ultraAllowed: ultraAllowed,
+          ),
+        ),
+      ),
+    );
+    await show(CodeHarnessKind.openHands);
+    expect(find.text('Harness mode'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('agent-menu.tier.max')));
+    await tester.tap(find.byKey(const ValueKey('agent-menu.tier.thorough')));
+    await tester.pump();
+    expect(picks, [HarnessTier.thorough]);
+
+    await show(CodeHarnessKind.everyai);
+    await tester.tap(find.byKey(const ValueKey('agent-menu.tier.ultra')));
+    await tester.tap(find.byKey(const ValueKey('agent-menu.tier.max')));
+    await tester.pump();
+    expect(picks, [HarnessTier.thorough, HarnessTier.max]);
+
+    await show(CodeHarnessKind.everyai, ultraAllowed: true);
+    await tester.tap(find.byKey(const ValueKey('agent-menu.tier.ultra')));
+    expect(picks.last, HarnessTier.ultra);
   });
 }
