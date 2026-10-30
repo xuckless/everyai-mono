@@ -12,12 +12,20 @@ import '../../core/providers.dart';
 import '../attachments/attachment.dart';
 import '../models/domain/model_catalog.dart';
 import '../models/models_providers.dart';
-import '../skills/skills_providers.dart' show codeSkillsFor;
+import '../skills/data/skill_import.dart' show findImportCandidates;
+import '../skills/data/skill_store.dart' show folderFiles;
+import '../skills/skills_providers.dart' show codeSkillsFor, installedSkillsProvider;
+import '../slash/skills/learn.dart';
+import '../slash/skills/learn_sources.dart';
+import '../slash/skills/skill_draft.dart' show skillDrafterProvider;
 import '../usage/usage_totals.dart';
 import 'domain/agent_mode.dart';
 import 'domain/code_session.dart';
 import 'domain/compaction.dart';
 import 'domain/doom_loop.dart';
+import 'domain/git_commands.dart';
+import 'domain/goal.dart';
+import 'domain/review.dart';
 import 'domain/spill.dart';
 import 'domain/subagents.dart';
 import 'domain/questions.dart';
@@ -37,6 +45,8 @@ import 'settings/settings.dart';
 import 'sidecar/sidecar.dart';
 import 'spill/spill.dart';
 import 'uploads/uploads.dart';
+
+part 'session_builtins.dart';
 
 /// Projects under this scheme run on the scripted [FakeHarness].
 const demoScheme = 'demo://';
@@ -313,7 +323,6 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     required ActionCall call,
     required AgentMode mode,
   }) async {
-    final id = const Uuid().v7();
     final task = SubagentTask.of(call);
     final project = ref.read(codeProjectsProvider).where((p) => p.id == parent.projectId).firstOrNull;
     final projectDir = project?.path ?? parent.workingDir;
@@ -325,6 +334,31 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         // An unreadable settings file only loses the role's instructions.
       }
     }
+    return startChild(
+      parent: parent,
+      title: task.title,
+      brief: subagentBrief(task, role: role),
+      mode: mode,
+      callId: call.id,
+      projectDir: projectDir,
+    );
+  }
+
+  /// Starts a child conversation of [parent] working on [brief]: the
+  /// parent's folder, model and effort, [mode], billed to the parent. A
+  /// `run_subagent` child has the call's id as [callId]; one the app starts
+  /// itself (a `/review`) has its own.
+  Future<CodeSessionInfo> startChild({
+    required CodeSessionInfo parent,
+    required String title,
+    required String brief,
+    required AgentMode mode,
+    required String callId,
+    String? projectDir,
+  }) async {
+    final id = const Uuid().v7();
+    projectDir ??=
+        ref.read(codeProjectsProvider).where((p) => p.id == parent.projectId).firstOrNull?.path ?? parent.workingDir;
     final live = await (await harnessFor(ref, parent.workingDir)).start(
       await specFor(
         sessionId: id,
@@ -336,14 +370,14 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         effort: parent.effort,
         holdClientTools: false,
         subagent: true,
-        initialMessage: modeNote(mode, subagentBrief(task, role: role), subagent: true),
+        initialMessage: modeNote(mode, brief, subagent: true),
       ),
     );
     ref.read(_liveProvider)[id] = live;
     final info = CodeSessionInfo(
       id: id,
       projectId: parent.projectId,
-      title: task.title,
+      title: title,
       conversationId: live.id,
       model: parent.model,
       mode: mode,
@@ -352,7 +386,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       branch: parent.branch,
       effort: parent.effort,
       parentId: parent.id,
-      parentCallId: call.id,
+      parentCallId: callId,
     );
     state = [...state, info];
     _save();
@@ -419,9 +453,13 @@ final class CodeSessionState {
     this.error,
     this.subagentNeedsInput = false,
     this.asides = const [],
+    this.goal,
   });
 
   final Transcript transcript;
+
+  /// The standing objective set with `/goal`, if any.
+  final Goal? goal;
 
   /// `/btw` answers and `/cost` cards beside the session (never sent to the agent).
   final List<Aside> asides;
@@ -456,6 +494,8 @@ final class CodeSessionState {
     String? error,
     bool? subagentNeedsInput,
     List<Aside>? asides,
+    Goal? goal,
+    bool clearGoal = false,
   }) => CodeSessionState(
     transcript: transcript ?? this.transcript,
     mode: mode ?? this.mode,
@@ -464,6 +504,7 @@ final class CodeSessionState {
     error: error ?? this.error,
     subagentNeedsInput: subagentNeedsInput ?? this.subagentNeedsInput,
     asides: asides ?? this.asides,
+    goal: clearGoal ? null : goal ?? this.goal,
   );
 }
 
@@ -498,8 +539,9 @@ final codeSessionProvider = NotifierProvider.family<CodeSessionController, CodeS
   CodeSessionController.new,
 );
 
-final class CodeSessionController extends Notifier<CodeSessionState> {
+final class CodeSessionController extends Notifier<CodeSessionState> with _SessionBuiltins {
   CodeSessionController(this.sessionId);
+  @override
   final String sessionId;
 
   HarnessSession? _session;
@@ -527,6 +569,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
   bool _live = false;
 
   /// What the current conversation has seen (no deltas), for [compact].
+  @override
   final _events = <HarnessEvent>[];
   bool _compacting = false;
 
@@ -550,6 +593,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     ref.onDispose(() {
       _sub?.cancel();
       _gitTimer?.cancel();
+      _disposeBuiltins();
       for (final s in _childSubs.values) {
         s.close();
       }
@@ -652,6 +696,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     _autoRespond(transcript);
     _syncSubagents();
     _deliver();
+    _goalTick(turnEnded: wasRunning && !transcript.running);
     if (!transcript.running &&
         transcript.pending.isEmpty &&
         transcript.openSubagents.isEmpty &&
@@ -815,6 +860,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
   }
 
   /// Sends [text] (and [files], saved into the project), or queues it while the agent is busy.
+  @override
   Future<void> send(String text, {List<Attachment> files = const []}) async {
     final out = await _outgoing(text, files);
     if (out == null) return;
@@ -923,14 +969,17 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
 
   void unqueue(int index) => state = state.copyWith(queued: [...state.queued]..removeAt(index));
 
+  @override
   int _asideIds = 0;
 
   /// Shows [aside]: in place when it is already shown (an answer arriving), else at the end.
+  @override
   void _putAside(Aside aside) {
     final i = state.asides.indexWhere((a) => a.id == aside.id);
     state = state.copyWith(asides: i < 0 ? [...state.asides, aside] : ([...state.asides]..[i] = aside));
   }
 
+  @override
   void dismissAside(int id) => state = state.copyWith(
     asides: [
       for (final a in state.asides)
@@ -1015,6 +1064,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
 
   Future<void> stop() async {
     _doomOpen = false;
+    _pauseGoal('Stopped by you. Set the goal again to carry on.');
     state = state.copyWith(queued: const []);
     await _stopSubagents();
     final pending = state.transcript.pending;
@@ -1123,6 +1173,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
   /// A subagent of this session was stopped by the user: the agent gets what
   /// it had said so far and carries on.
   void subagentStopped(String childId, SubagentReport report) {
+    if (_reviewOf.containsKey(childId)) return _reviewDone(childId, report);
     final callId = _childOf.entries.where((e) => e.value == childId).firstOrNull?.key;
     if (callId != null) _ready(callId, report);
   }
@@ -1301,6 +1352,30 @@ final class CodeStatuses extends Notifier<Map<String, SessionStatus>> {
     ExecutionStatus.error || ExecutionStatus.stuck => SessionStatus.failed,
     _ => SessionStatus.idle,
   };
+}
+
+/// What every session is doing now, by session id: the live state of open
+/// sessions, else what the agent server reports (missing when it can't be reached).
+Future<Map<String, SessionStatus>> sessionStatusesNow(Ref ref, List<CodeSessionInfo> sessions) async {
+  final out = <String, SessionStatus>{};
+  final ask = <CodeSessionInfo>[];
+  for (final s in sessions) {
+    if (ref.exists(codeSessionProvider(s.id))) {
+      out[s.id] = ref.read(codeSessionProvider(s.id)).status;
+    } else if (!isDemoPath(s.workingDir)) {
+      ask.add(s);
+    }
+  }
+  if (ask.isEmpty) return out;
+  try {
+    final byConversation = await ref.read(_sidecarHarnessProvider).statuses([for (final s in ask) s.conversationId]);
+    for (final s in ask) {
+      if (byConversation[s.conversationId] case final status?) out[s.id] = CodeStatuses._sessionStatus(status);
+    }
+  } on Object {
+    // The agent server isn't up: those sessions go without a status.
+  }
+  return out;
 }
 
 /// Tools that can change the worktree (file edits, shell commands).

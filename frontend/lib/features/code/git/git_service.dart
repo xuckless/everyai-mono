@@ -36,6 +36,18 @@ abstract final class GitService {
   static Future<List<FileDiff>> diff(SessionWorktree w) => impl.diff(w);
 
   /// Undoes one hunk in the working tree.
+  /// Changes not committed yet (untracked files included), against HEAD.
+  static Future<List<FileDiff>> uncommittedDiff(SessionWorktree w) => impl.uncommittedDiff(w);
+
+  /// Subjects of the commits on the session branch since its base, newest first.
+  static Future<List<String>> commitSubjects(SessionWorktree w) => impl.commitSubjects(w);
+
+  /// The `origin` remote's URL, or '' without one.
+  static Future<String> remoteUrl(SessionWorktree w) => impl.remoteUrl(w);
+
+  /// Whether the GitHub CLI is installed and signed in.
+  static Future<bool> ghReady(String dir) => impl.ghReady(dir);
+
   static Future<void> revertHunk(SessionWorktree w, FileDiff file, int hunk) => impl.revertHunk(w, file, hunk);
 
   /// Commits everything; false when there was nothing to commit.

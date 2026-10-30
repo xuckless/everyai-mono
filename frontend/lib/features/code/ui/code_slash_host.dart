@@ -9,7 +9,9 @@ import '../../slash/chat_actions.dart' show modelForQuery;
 import '../../slash/slash_command.dart';
 import '../agent_models.dart';
 import '../code_providers.dart';
+import '../morning_providers.dart';
 import '../domain/agent_mode.dart';
+import '../domain/goal.dart';
 import '../domain/session_commands.dart';
 import '../domain/transcript.dart';
 
@@ -113,5 +115,25 @@ CodeSlashHost codeSlashHost(BuildContext context, WidgetRef ref, String sessionI
     },
     cost: () => controller().showCost(),
     btw: (question) => controller().askAside(question),
+    review: (focus) => controller().review(focus),
+    goal: (args) {
+      final current = ref.read(provider).goal;
+      final word = args.trim().toLowerCase();
+      if (word.isEmpty) {
+        return toast(current == null ? 'Set one: /goal make the tests pass --turns 10' : current.statusLabel);
+      }
+      if (const {'clear', 'stop', 'off', 'cancel', 'none'}.contains(word)) {
+        if (current == null) return toast('There is no goal to clear.');
+        controller().clearGoal();
+        return toast('Goal cleared');
+      }
+      final goal = parseGoalArgs(args);
+      if (goal == null) return toast('Say what the goal is: /goal make the tests pass');
+      controller().setGoal(goal.objective, budget: goal.budget);
+    },
+    commit: (hint) => controller().draftCommit(hint),
+    pr: (hint) => controller().draftPr(hint),
+    learn: (args) => controller().learn(args),
+    morning: () => ref.read(morningBriefProvider.notifier).refresh(),
   );
 }

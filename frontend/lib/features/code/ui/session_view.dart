@@ -16,6 +16,7 @@ import '../../questions/ui/question_card.dart';
 import '../../usage/ui/usage_meter.dart';
 import '../../usage/usage_totals.dart';
 import '../code_providers.dart';
+import '../morning_providers.dart';
 import '../domain/agent_mode.dart';
 import '../domain/code_session.dart';
 import '../domain/permissions.dart';
@@ -27,6 +28,7 @@ import 'code_slash_host.dart';
 import 'panes/diff_pane.dart';
 import 'transcript/approval_card.dart';
 import 'transcript/aside_card.dart';
+import 'transcript/goal_card.dart';
 import 'transcript/plan_card.dart';
 import 'transcript/subagent_card.dart';
 import 'transcript/transcript_items.dart';
@@ -140,6 +142,20 @@ class CodeSessionScreen extends ConsumerWidget {
                             padding: const EdgeInsets.only(bottom: 8),
                             child: _StartBuilding(onStart: controller.startBuilding),
                           ),
+                        if (ref.watch(morningBriefProvider) case final brief?)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: AsideCard(
+                              key: ValueKey(brief.id),
+                              aside: brief,
+                              onDismiss: ref.read(morningBriefProvider.notifier).dismiss,
+                            ),
+                          ),
+                        if (state.goal case final goal?)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: GoalCard(goal: goal, onClear: controller.clearGoal),
+                          ),
                         for (final aside in state.asides)
                           Padding(
                             padding: const EdgeInsets.only(bottom: 8),
@@ -150,6 +166,14 @@ class CodeSessionScreen extends ConsumerWidget {
                               usage: ref.watch(codeUsageProvider(sessionId)).value ?? UsageTotals.zero,
                               contextWindow: ref.watch(modelCatalogProvider)[ModelId(info.model)]?.contextLength ?? 0,
                               modelName: ref.watch(modelCatalogProvider)[ModelId(info.model)]?.name,
+                              onSendToAgent: () => controller.sendReview(aside.id),
+                              onOpenSession: (id) => context.go(Routes.codeSession(id)),
+                              onCommit: (message) =>
+                                  _gitAction(context, () => controller.commitDraft(aside.id, message)),
+                              onCreatePr: (title, body) => _gitAction(
+                                context,
+                                () async => 'Opened ${await controller.openPr(aside.id, title: title, body: body)}',
+                              ),
                             ),
                           ),
                         CodeComposer(
@@ -488,5 +512,16 @@ class StatusPill extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+/// Runs a git action from a card and tells the user how it went.
+Future<void> _gitAction(BuildContext context, Future<String> Function() action) async {
+  try {
+    final done = await action();
+    if (context.mounted) showAdaptiveToast(context, done);
+  } on Object catch (e) {
+    // GitError's text is the message itself.
+    if (context.mounted) showAdaptiveToast(context, '$e');
   }
 }

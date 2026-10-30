@@ -22,9 +22,33 @@ final class SkillDrafter {
           {'role': m.role.name, 'content': m.plainText},
     ];
     if (turns.isEmpty) throw const FormatException('There is nothing in this chat to learn from yet.');
+    return draftFrom(messages: turns, hint: hint, session: session);
+  }
+
+  /// A skill from one source: chat [messages] (`{role, content}`), a web page
+  /// at [url] (the backend fetches it through its safe fetcher, never the
+  /// app), or a folder's [documents] (`{path, text}`).
+  Future<SkillMd> draftFrom({
+    List<Map<String, String>> messages = const [],
+    String url = '',
+    List<({String path, String text})> documents = const [],
+    String hint = '',
+    String? session,
+  }) async {
     final json = await _api.postJson(
       'v1/aux/skill',
-      {'messages': turns, if (hint.isNotEmpty) 'hint': hint, 'session': ?session},
+      {
+        if (url.isNotEmpty)
+          'url': url
+        else if (documents.isNotEmpty)
+          'documents': [
+            for (final d in documents) {'path': d.path, 'text': d.text},
+          ]
+        else
+          'messages': messages,
+        if (hint.isNotEmpty) 'hint': hint,
+        'session': ?session,
+      },
       authenticated: authenticated,
       timeout: const Duration(seconds: 90),
     );

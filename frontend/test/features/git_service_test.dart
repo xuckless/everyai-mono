@@ -64,6 +64,22 @@ void main() {
     expect(File('${w.path}/lib/a.txt').readAsStringSync(), endsWith('nine\nten\n'));
   });
 
+  test('uncommitted changes, branch commits and the remote, for /commit and /pr', () async {
+    final w = await start();
+    expect(await GitService.uncommittedDiff(w), isEmpty);
+    expect(await GitService.commitSubjects(w), isEmpty);
+    expect(await GitService.remoteUrl(w), isEmpty);
+    File('${w.path}/lib/new.txt').writeAsStringSync('fresh\n');
+    expect([for (final f in await GitService.uncommittedDiff(w)) f.path], ['lib/new.txt']);
+    expect(await GitService.commitAll(w, 'Add new.txt'), isTrue);
+    expect(await GitService.uncommittedDiff(w), isEmpty);
+    expect(await GitService.commitSubjects(w), ['Add new.txt']);
+    // Still in the diff since the session's base.
+    expect([for (final f in await GitService.diff(w)) f.path], ['lib/new.txt']);
+    await _git(repo, ['remote', 'add', 'origin', 'git@github.com:acme/app.git']);
+    expect(await GitService.remoteUrl(w), 'git@github.com:acme/app.git');
+  });
+
   test('the commit hook strips AI credits and still runs the repo\'s own hook', () async {
     // The project's own commit-msg hook appends a marker.
     File('$repo/.git/hooks/commit-msg').writeAsStringSync('#!/bin/sh\necho "Reviewed-by: repo-hook" >> "\$1"\n');

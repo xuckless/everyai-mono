@@ -59,6 +59,21 @@ enum AsideKind {
 
   /// The session's usage breakdown (`/cost`).
   cost,
+
+  /// A reviewer subagent's findings on the session's changes (`/review`).
+  review,
+
+  /// A commit message for the user to check before committing (`/commit`).
+  commit,
+
+  /// A pull request title and body to check (`/pr`), or how to open one by hand.
+  pr,
+
+  /// A skill written by `/learn`.
+  learn,
+
+  /// The brief of every session (`/morning`).
+  morning,
 }
 
 /// A card shown beside the running session, never sent to the agent.
@@ -69,19 +84,39 @@ final class Aside {
     required this.kind,
     this.question = '',
     this.answer = '',
+    this.body = '',
+    this.childId,
     this.error,
     this.busy = false,
+    this.ready = false,
   });
 
   final int id;
   final AsideKind kind;
+
+  /// What was asked: the question, the review focus, the skill's source.
   final String question;
+
+  /// The result: an answer, a report, a commit message or a pull request title.
   final String answer;
+
+  /// A pull request's body.
+  final String body;
+
+  /// The session doing the work (a reviewer subagent), to open it.
+  final String? childId;
   final String? error;
   final bool busy;
 
-  Aside done(String answer) => Aside(id: id, kind: kind, question: question, answer: answer);
-  Aside failed(String error) => Aside(id: id, kind: kind, question: question, error: error);
+  /// A draft the user can act on (commit, open the pull request); false for
+  /// instructions or a result.
+  final bool ready;
+
+  Aside done(String answer, {String body = '', bool ready = false}) =>
+      Aside(id: id, kind: kind, question: question, answer: answer, body: body, childId: childId, ready: ready);
+  Aside failed(String error) => Aside(id: id, kind: kind, question: question, childId: childId, error: error);
+  Aside withChild(String childId) =>
+      Aside(id: id, kind: kind, question: question, childId: childId, busy: busy, answer: answer);
 }
 
 /// The side model's messages (OpenAI chat format): what it is for, the

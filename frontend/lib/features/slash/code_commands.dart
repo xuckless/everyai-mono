@@ -58,4 +58,28 @@ final codeBuiltIns = <SlashCommand>[
     if (args.isEmpty) return showAdaptiveToast(ctx.context, 'Add a question: /btw what is the agent testing?');
     _withSession(ctx, ctx.code?.btw, (f) => f(args));
   }),
+  // No args hint: each of these runs as picked; text after the name is optional.
+  _code('review', "Have a reviewer subagent check this session's changes", (ctx, args) {
+    _withSession(ctx, ctx.code?.review, (f) => f(args));
+  }),
+  _code('goal', 'Keep the agent at a goal until a check finds it met', argsHint: '<objective> [--turns N] | clear', (
+    ctx,
+    args,
+  ) {
+    _withSession(ctx, ctx.code?.goal, (f) => f(args));
+  }),
+  _code('commit', 'Commit the changes with a drafted message you can edit', (ctx, args) {
+    _withSession(ctx, ctx.code?.commit, (f) => f(args));
+  }),
+  _code('pr', 'Open a pull request for this session (GitHub CLI)', (ctx, args) {
+    _withSession(ctx, ctx.code?.pr, (f) => f(args));
+  }),
+  _code('learn', 'Turn a folder, a web page or this session into a skill', (ctx, args) {
+    _withSession(ctx, ctx.code?.learn, (f) => f(args));
+  }),
+  _code('morning', "A brief of your sessions: what's waiting on you, running and ready to merge", (ctx, _) {
+    final morning = ctx.code?.morning;
+    if (morning == null) return showAdaptiveToast(ctx.context, 'The brief is not available here.');
+    morning();
+  }),
 ];

@@ -18,7 +18,10 @@ import '../code_providers.dart';
 import '../sidecar/sidecar.dart';
 import '../domain/agent_mode.dart';
 import '../domain/code_session.dart';
+import '../../slash/slash_command.dart' show CodeSlashHost;
+import '../morning_providers.dart';
 import 'code_composer.dart';
+import 'transcript/aside_card.dart';
 import 'session_view.dart';
 
 /// Where demo sessions "run" (the mock harness ignores the folder).
@@ -130,7 +133,20 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                 if (project == null)
                   _NoProjects(onOpen: _openFolder, onSample: _addSample, onDemo: _addDemo)
                 else ...[
+                  if (ref.watch(morningBriefProvider) case final brief?)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: AsideCard(
+                        key: ValueKey(brief.id),
+                        aside: brief,
+                        onDismiss: ref.read(morningBriefProvider.notifier).dismiss,
+                      ),
+                    ),
                   CodeComposer(
+                    slashHost: CodeSlashHost(
+                      setMode: (name) => setState(() => _mode = AgentMode.values.byName(name)),
+                      morning: ref.read(morningBriefProvider.notifier).refresh,
+                    ),
                     busy: _starting,
                     mode: _mode,
                     minLines: 3,

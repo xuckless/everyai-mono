@@ -141,6 +141,33 @@ Future<List<FileDiff>> diff(SessionWorktree w) => _withSnapshot(w, (env) async {
   return parseUnifiedDiff('${res.stdout}');
 });
 
+Future<List<FileDiff>> uncommittedDiff(SessionWorktree w) => _withSnapshot(w, (env) async {
+  final res = await _git(w.path, ['diff', '--cached', '-M', '--no-color', 'HEAD'], env: env);
+  return parseUnifiedDiff('${res.stdout}');
+});
+
+Future<List<String>> commitSubjects(SessionWorktree w) async {
+  final out = await _out(w.path, ['log', '--format=%s', '${w.baseCommit}..HEAD']);
+  return [
+    for (final l in const LineSplitter().convert(out))
+      if (l.trim().isNotEmpty) l.trim(),
+  ];
+}
+
+Future<String> remoteUrl(SessionWorktree w) async {
+  final res = await _git(w.path, ['remote', 'get-url', 'origin'], check: false);
+  return res.exitCode == 0 ? '${res.stdout}'.trim() : '';
+}
+
+Future<bool> ghReady(String dir) async {
+  try {
+    final res = await Process.run('gh', ['auth', 'status'], workingDirectory: dir);
+    return res.exitCode == 0;
+  } on ProcessException {
+    return false;
+  }
+}
+
 Future<void> revertHunk(SessionWorktree w, FileDiff file, int hunk) async {
   final p = await Process.start('git', ['-C', w.path, 'apply', '-R', '--whitespace=nowarn', '-']);
   p.stdin.write(file.patchFor(hunk));

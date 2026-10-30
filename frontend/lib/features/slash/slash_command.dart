@@ -111,6 +111,12 @@ class CodeSlashHost {
     this.rewind,
     this.cost,
     this.btw,
+    this.review,
+    this.goal,
+    this.commit,
+    this.pr,
+    this.learn,
+    this.morning,
   });
 
   /// Takes an `AgentMode` name: ask, autoEdit, plan or fullAuto.
@@ -138,6 +144,25 @@ class CodeSlashHost {
 
   /// Asks a side question without disturbing the agent.
   final ValueChanged<String>? btw;
+
+  /// Runs a reviewer subagent on the session's changes; the text is what to focus on.
+  final ValueChanged<String>? review;
+
+  /// Sets (or with `clear`, drops) the session's standing objective; the text
+  /// is the objective and an optional `--turns N`.
+  final ValueChanged<String>? goal;
+
+  /// Drafts a commit message for the user to check; the text is a hint.
+  final ValueChanged<String>? commit;
+
+  /// Drafts a pull request, or says how to open one; the text is a hint.
+  final ValueChanged<String>? pr;
+
+  /// Writes a skill from a folder, a URL or the session.
+  final ValueChanged<String>? learn;
+
+  /// Shows the brief of every session (also on Code home).
+  final VoidCallback? morning;
 }
 
 /// One entry of the `/` menu.
