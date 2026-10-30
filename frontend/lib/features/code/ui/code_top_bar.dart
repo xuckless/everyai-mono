@@ -88,6 +88,107 @@ class CodeTopBar extends ConsumerWidget {
   }
 }
 
+/// The session controls on the New session page, before there is a session:
+/// subagents and main agent, the settings popover, the work style and the
+/// spending cap. What a chip changes applies to the session about to start.
+class CodeDraftBar extends ConsumerWidget {
+  const CodeDraftBar({super.key, required this.projectId, required this.budget, required this.onBudget});
+
+  final String projectId;
+  final double? budget;
+  final ValueChanged<double?> onBudget;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Wrap(
+      alignment: WrapAlignment.center,
+      runSpacing: 6,
+      children: [
+        _AgentsChip(projectId: projectId),
+        const WorkStyleChip(),
+        _DraftBudgetChip(budget: budget, onBudget: onBudget),
+        _SettingsChip(projectId: projectId),
+      ],
+    );
+  }
+}
+
+/// Efficiency ↔ quality for the sessions started from now on.
+class WorkStyleChip extends ConsumerWidget {
+  const WorkStyleChip({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = EveryTheme.of(context);
+    final style = ref.watch(codeSettingsProvider.select((s) => s.workStyle));
+    return AnchoredPopover(
+      width: 340,
+      builder: (context, close) => SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(vertical: 5),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const PopoverHeader('Efficiency ↔ quality'),
+            for (final s in WorkStyle.values)
+              PopoverRow(
+                key: ValueKey('work-style.${s.name}'),
+                title: s.label,
+                subtitle: s.description,
+                trailing: _check(theme, s == style),
+                onTap: () {
+                  close();
+                  ref.read(codeSettingsProvider.notifier).setWorkStyle(s);
+                },
+              ),
+          ],
+        ),
+      ),
+      child: _Chip(icon: EveryIcon.spark, label: style.label, semantics: 'Work style: ${style.label}'),
+    );
+  }
+}
+
+class _DraftBudgetChip extends StatelessWidget {
+  const _DraftBudgetChip({required this.budget, required this.onBudget});
+
+  final double? budget;
+  final ValueChanged<double?> onBudget;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return AnchoredPopover(
+      width: 240,
+      builder: (context, close) => SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(vertical: 5),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const PopoverHeader('Spending cap'),
+            for (final usd in [null, ...budgetPresets])
+              PopoverRow(
+                title: usd == null ? 'No cap' : formatMicros((usd * 1e6).round()),
+                trailing: _check(theme, usd == budget),
+                onTap: () {
+                  close();
+                  onBudget(usd);
+                },
+              ),
+          ],
+        ),
+      ),
+      child: _Chip(
+        label: switch (budget) {
+          final usd? => 'Cap ${formatMicros((usd * 1e6).round())}',
+          null => 'No cap',
+        },
+      ),
+    );
+  }
+}
+
 /// A compact outlined chip that opens a popover.
 class _Chip extends StatelessWidget {
   const _Chip({required this.label, this.icon, this.color, this.semantics});
@@ -263,10 +364,12 @@ class _AgentsPanel extends ConsumerWidget {
 
 /// Shortcuts to the settings a session runs with.
 class _SettingsChip extends ConsumerWidget {
-  const _SettingsChip({required this.projectId, required this.sessionId});
+  const _SettingsChip({required this.projectId, this.sessionId});
 
   final String projectId;
-  final String sessionId;
+
+  /// Null on the New session page: the settings the next session starts with.
+  final String? sessionId;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -290,13 +393,14 @@ class _SettingsChip extends ConsumerWidget {
         String settingsAt(SettingsScope scope, CodeSettingsTab tab) =>
             Routes.codeSettings(projectId: projectId, sessionId: sessionId, scope: scope.name, tab: tab.name);
 
-        return Padding(
+        // Scrolls: the rows outgrow the popover's height cap on short windows.
+        return SingleChildScrollView(
           padding: const EdgeInsets.symmetric(vertical: 5),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const PopoverHeader('Session settings'),
+              PopoverHeader(sessionId == null ? 'New session settings' : 'Session settings'),
               PopoverRow(
                 key: const ValueKey('top-bar.settings.permissions'),
                 title: 'Permissions',

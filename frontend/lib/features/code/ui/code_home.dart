@@ -31,7 +31,7 @@ import 'agent_menu.dart';
 import 'code_composer.dart';
 import 'transcript/aside_card.dart';
 import 'session_view.dart';
-import '../../billing/billing_providers.dart' show formatMicros;
+import 'code_top_bar.dart' show CodeDraftBar;
 import '../code_settings_providers.dart';
 
 /// Where demo sessions "run" (the mock harness ignores the folder).
@@ -224,7 +224,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                       onIsolated: (v) => setState(() => _isolated = v),
                       budget: _budget,
                       onBudget: (v) => setState(() => _budget = v),
-                      onSettings: () => context.go(Routes.codeSettings(projectId: project.id, scope: 'project')),
+                      projectId: project.id,
                     ),
                   const SizedBox(height: 8),
                   Text(
@@ -267,14 +267,14 @@ class _SessionOptions extends StatelessWidget {
     required this.onIsolated,
     required this.budget,
     required this.onBudget,
-    required this.onSettings,
+    required this.projectId,
   });
 
   final bool isolated;
   final ValueChanged<bool> onIsolated;
   final double? budget;
   final ValueChanged<double?> onBudget;
-  final VoidCallback onSettings;
+  final String projectId;
 
   @override
   Widget build(BuildContext context) {
@@ -301,43 +301,8 @@ class _SessionOptions extends StatelessWidget {
       children: [
         option('In place', !isolated, () => onIsolated(false)),
         option('Isolated worktree', isolated, () => onIsolated(true)),
-        AdaptiveMenuButton(
-          tooltip: 'Spending cap for this session',
-          actions: [
-            for (final usd in [null, ...budgetPresets])
-              MenuAction(
-                label: usd == null ? 'No cap' : formatMicros((usd * 1e6).round()),
-                onSelected: () => onBudget(usd),
-              ),
-          ],
-          child: IgnorePointer(
-            child: option(
-              switch (budget) {
-                final usd? => 'Cap ${formatMicros((usd * 1e6).round())}',
-                null => 'No cap',
-              },
-              budget != null,
-              () {},
-            ),
-          ),
-        ),
-        Consumer(
-          builder: (context, ref, _) {
-            final style = ref.watch(codeSettingsProvider.select((s) => s.workStyle));
-            return AdaptiveMenuButton(
-              tooltip: 'Efficiency ↔ quality',
-              actions: [
-                for (final s in WorkStyle.values)
-                  MenuAction(
-                    label: '${s.label} · ${s.description}',
-                    onSelected: () => ref.read(codeSettingsProvider.notifier).setWorkStyle(s),
-                  ),
-              ],
-              child: IgnorePointer(child: option(style.label, style != WorkStyle.balanced, () {})),
-            );
-          },
-        ),
-        option('Project settings…', false, onSettings),
+        // The session's top-bar controls, for the session about to start.
+        CodeDraftBar(projectId: projectId, budget: budget, onBudget: onBudget),
       ],
     );
   }
