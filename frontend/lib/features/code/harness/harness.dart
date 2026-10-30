@@ -17,6 +17,8 @@ final class SessionSpec {
     this.maxInputTokens,
     this.vision = false,
     this.initialImages = const [],
+    this.persona,
+    this.promptSuffix,
   });
 
   /// The session's worktree.
@@ -42,6 +44,13 @@ final class SessionSpec {
 
   /// `data:` URLs sent with [initialMessage].
   final List<String> initialImages;
+
+  /// Replaces the agent-server's persona and workflow sections (see
+  /// `agentPersona`); null keeps its defaults.
+  final String? persona;
+
+  /// Appended to the system prompt; defaults to `workingRules`.
+  final String? promptSuffix;
 }
 
 /// A running agent conversation. Events arrive on [events] (history first,

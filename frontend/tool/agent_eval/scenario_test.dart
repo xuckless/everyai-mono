@@ -9,6 +9,7 @@ import 'dart:io';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/harness/harness.dart';
 import 'package:every_ai/features/code/harness/openhands_harness.dart';
+import 'package:every_ai/features/code/settings/settings.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'driver.dart';
@@ -17,6 +18,7 @@ void main() {
   final env = Platform.environment;
   test('scenario', () async {
     final mode = AgentMode.values.byName(env['EVAL_MODE'] ?? 'plan');
+    final prompt = await agentPromptFor(env['EVAL_DIR']!);
     final run = EvalRun(
       OpenHandsHarness(baseUrl: Uri.parse('${env['AGENT_SERVER_URL']}/'), sessionApiKey: env['AGENT_SERVER_KEY']!),
       SessionSpec(
@@ -28,6 +30,8 @@ void main() {
         sessionTag: 'eval-${DateTime.now().millisecondsSinceEpoch}',
         initialMessage: modeNote(mode, env['EVAL_PROMPT']!),
         maxInputTokens: 200000,
+        persona: prompt.persona,
+        promptSuffix: prompt.suffix,
       ),
     );
     try {

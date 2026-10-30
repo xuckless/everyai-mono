@@ -21,6 +21,7 @@ import 'harness/events.dart';
 import 'harness/fake_harness.dart';
 import 'harness/harness.dart';
 import 'harness/openhands_harness.dart';
+import 'settings/settings.dart';
 import 'sidecar/sidecar.dart';
 import 'uploads/uploads.dart';
 
@@ -189,6 +190,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     final demo = isDemoPath(project.path);
     final first = await prepareMessage(ref, text: prompt, workingDir: project.path, model: model, files: files);
     final harness = await harnessFor(ref, project.path);
+    final agentPrompt = demo ? null : await agentPromptFor(project.path);
     final live = await harness.start(
       SessionSpec(
         workingDir: project.path,
@@ -201,6 +203,8 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         initialImages: first.images,
         vision: _sees(ref, model),
         maxInputTokens: ref.read(modelCatalogProvider)[ModelId(model)]?.contextLength,
+        persona: agentPrompt?.persona,
+        promptSuffix: agentPrompt?.suffix,
       ),
     );
     ref.read(_liveProvider)[id] = live;
