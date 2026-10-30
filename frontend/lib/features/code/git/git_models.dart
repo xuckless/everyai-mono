@@ -42,6 +42,49 @@ final class SessionWorktree {
   };
 }
 
+/// Where an in-place session started: the user's own checkout, its branch and
+/// commit, and a snapshot of the working tree (untracked files included) so
+/// Changes shows only what the session did, not edits that were already there.
+@immutable
+final class GitBaseline {
+  const GitBaseline({
+    required this.repoRoot,
+    required this.dir,
+    required this.branch,
+    required this.commit,
+    required this.tree,
+  });
+
+  final String repoRoot;
+
+  /// The folder the session works in (the project, maybe below the root).
+  final String dir;
+  final String branch;
+  final String commit;
+  final String tree;
+
+  /// A read-only view for diffing and reverting hunks against the snapshot.
+  /// Never pass it to anything that commits, merges or removes worktrees.
+  SessionWorktree get diffView =>
+      SessionWorktree(repoRoot: repoRoot, path: dir, branch: branch, baseBranch: branch, baseCommit: tree);
+
+  factory GitBaseline.fromJson(Map<String, Object?> json) => GitBaseline(
+    repoRoot: json['repo_root']! as String,
+    dir: json['dir']! as String,
+    branch: json['branch'] as String? ?? '',
+    commit: json['commit'] as String? ?? '',
+    tree: json['tree']! as String,
+  );
+
+  Map<String, Object?> toJson() => {
+    'repo_root': repoRoot,
+    'dir': dir,
+    'branch': branch,
+    'commit': commit,
+    'tree': tree,
+  };
+}
+
 /// What happened to a file since the session's base commit.
 enum ChangeKind {
   added('A'),

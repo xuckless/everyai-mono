@@ -1,3 +1,4 @@
+import '../../../core/preferences.dart';
 import '../../../core/ui/brand.dart';
 
 import 'package:file_selector/file_selector.dart';
@@ -41,8 +42,21 @@ class CodeHome extends ConsumerStatefulWidget {
 
 class _CodeHomeState extends ConsumerState<CodeHome> {
   String? _projectId;
-  AgentMode _mode = AgentMode.ask;
+  AgentMode? _picked;
+  bool _isolated = false;
   bool _starting = false;
+
+  /// The mode last used in [projectId]; Auto-edit the first time.
+  AgentMode _modeFor(String? projectId) {
+    if (_picked case final m?) return m;
+    final saved = projectId == null ? null : ref.read(preferencesProvider)[lastModeKey(projectId)];
+    return AgentMode.values.asNameMap()[saved] ?? AgentMode.autoEdit;
+  }
+
+  void _pickMode(AgentMode mode, String? projectId) {
+    setState(() => _picked = mode);
+    if (projectId != null) ref.read(preferencesProvider)[lastModeKey(projectId)] = mode.name;
+  }
 
   Future<CodeProject?> _openFolder() async {
     final path = await getDirectoryPath(confirmButtonText: 'Open');
@@ -81,6 +95,8 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
   }
 
   Future<void> _start(CodeProject project, String prompt, List<Attachment> files) async {
+    final mode = _modeFor(project.id);
+    ref.read(preferencesProvider)[lastModeKey(project.id)] = mode.name;
     setState(() => _starting = true);
     try {
       final info = await ref
@@ -90,8 +106,9 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
             prompt: prompt,
             model: ref.read(codeAgentProvider).model,
             effort: ref.read(codeAgentProvider).effort,
-            mode: _mode,
+            mode: mode,
             files: files,
+            isolated: _isolated,
           );
       if (mounted) context.go(Routes.codeSession(info.id));
     } on Object catch (e) {
@@ -106,6 +123,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
     final theme = EveryTheme.of(context);
     final projects = ref.watch(codeProjectsProvider);
     final project = projects.where((p) => p.id == _projectId).firstOrNull ?? projects.firstOrNull;
+    final mode = _modeFor(project?.id);
     final sessions = ref
         .watch(codeSessionsProvider)
         .where((s) => s.projectId == project?.id && !s.isSubagent)
@@ -150,14 +168,14 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                   CodeComposer(
                     project: project.path,
                     slashHost: CodeSlashHost(
-                      setMode: (name) => setState(() => _mode = AgentMode.values.byName(name)),
+                      setMode: (name) => _pickMode(AgentMode.values.byName(name), project.id),
                       morning: ref.read(morningBriefProvider.notifier).refresh,
                     ),
                     busy: _starting,
-                    mode: _mode,
+                    mode: mode,
                     minLines: 3,
                     placeholder: 'Describe a change, a bug to fix, or a feature to build',
-                    onModeChanged: (m) => setState(() => _mode = m),
+                    onModeChanged: (m) => _pickMode(m, project.id),
                     onSend: (text, files) => _start(project, text, files),
                     trailing: AgentMenu(
                       model: ref.watch(codeAgentProvider).model,
@@ -168,24 +186,35 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                     leading: _ProjectPicker(
                       project: project,
                       projects: projects,
-                      onPick: (p) => setState(() => _projectId = p.id),
+                      onPick: (p) => setState(() {
+                        _projectId = p.id;
+                        _picked = null;
+                      }),
                       onOpen: _openFolder,
                       onSample: _addSample,
                       onDemo: _addDemo,
                       onRemote: _addRemote,
                     ),
                   ),
+                  const SizedBox(height: 10),
+                  if (!isDemoPath(project.path) && !isRemotePath(project.path))
+                    _SessionOptions(
+                      isolated: _isolated,
+                      onIsolated: (v) => setState(() => _isolated = v),
+                      onSettings: () => context.go(Routes.codeSettings(projectId: project.id, scope: 'project')),
+                    ),
                   const SizedBox(height: 8),
                   Text(
                     _starting && !isDemoPath(project.path)
                         ? 'Starting the agent…'
                         : isDemoPath(project.path)
-                        ? 'A demo project with a scripted agent. ${_mode.description}.'
+                        ? 'A demo project with a scripted agent. ${mode.description}.'
                         : isRemotePath(project.path)
-                        ? 'Runs on your paired computer, in the project folder itself. ${_mode.description}.'
-                        // Folders without git still run in place.
-                        : 'Each session works on its own branch in a separate worktree, so your checkout stays as it is. '
-                              '${_mode.description}.',
+                        ? 'Runs on your paired computer, in the project folder itself. ${mode.description}.'
+                        : _isolated
+                        ? 'Works on its own branch in a separate worktree; merge or open a PR when it\'s done. '
+                              '${mode.description}.'
+                        : 'Works in the project folder, in your shell. Changes shows what it did. ${mode.description}.',
                     textAlign: TextAlign.center,
                     style: theme.type.callout.tint(theme.textMuted),
                   ),
@@ -201,6 +230,48 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// The prefs key for the mode last used in a project.
+String lastModeKey(String projectId) => 'code.lastMode.$projectId';
+
+/// Below the composer: where the session works, and the project's settings.
+class _SessionOptions extends StatelessWidget {
+  const _SessionOptions({required this.isolated, required this.onIsolated, required this.onSettings});
+
+  final bool isolated;
+  final ValueChanged<bool> onIsolated;
+  final VoidCallback onSettings;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    Widget option(String label, bool on, VoidCallback onTap) => GestureDetector(
+      onTap: onTap,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: on ? theme.accent.withValues(alpha: 0.12) : null,
+            border: Border.all(color: on ? theme.accent : theme.border),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(label, style: theme.type.callout.tint(on ? theme.accent : theme.textMuted)),
+        ),
+      ),
+    );
+    return Wrap(
+      alignment: WrapAlignment.center,
+      spacing: 6,
+      runSpacing: 6,
+      children: [
+        option('In place', !isolated, () => onIsolated(false)),
+        option('Isolated worktree', isolated, () => onIsolated(true)),
+        option('Project settings…', false, onSettings),
+      ],
     );
   }
 }

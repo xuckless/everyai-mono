@@ -24,6 +24,10 @@ abstract final class GitService {
   /// fresh `git init` has none).
   static Future<bool> hasCommits(String repoRoot) => impl.hasCommits(repoRoot);
 
+  /// Snapshots [dir]'s working tree for an in-place session; null outside git
+  /// or in a repository with no commit yet.
+  static Future<GitBaseline?> baseline(String dir) => impl.baseline(dir);
+
   /// A worktree for a new session on `everyai/<slug>`, branched from the main
   /// checkout's current commit, with EveryAI's commit hooks.
   static Future<SessionWorktree> createWorktree({

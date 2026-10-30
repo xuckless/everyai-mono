@@ -220,12 +220,17 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     required AgentMode mode,
     String? effort,
     List<Attachment> files = const [],
+    bool isolated = false,
   }) async {
     final id = const Uuid().v7();
     final demo = isDemoPath(project.path);
     final title = titleFor(prompt.isEmpty ? files.first.name : prompt);
-    // A remote host's folder can't be branched from here; the session runs in it.
-    final worktree = noLocalFolder(project.path) ? null : await _worktreeFor(project, title, id);
+    // Sessions work in the project folder itself, in a real shell, unless asked
+    // to be isolated (then a worktree on its own branch). A remote host's
+    // folder can't be branched or snapshotted from here.
+    final local = !noLocalFolder(project.path);
+    final worktree = local && isolated ? await _worktreeFor(project, title, id) : null;
+    final baseline = local && worktree == null ? await _baselineFor(project.path) : null;
     final workingDir = worktree?.path ?? project.path;
     final first = await prepareMessage(ref, text: prompt, workingDir: workingDir, model: model, files: files);
     final harness = await harnessFor(ref, project.path);
@@ -254,8 +259,9 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       mode: mode,
       workingDir: workingDir,
       createdAt: DateTime.now(),
-      branch: worktree?.branch ?? '',
+      branch: worktree?.branch ?? baseline?.branch ?? '',
       worktree: worktree,
+      baseline: baseline,
       effort: effort ?? '',
       holdClientTools: hold,
     );
@@ -483,6 +489,16 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       worktreesDir: '$data/worktrees/$repoName-${project.id.substring(project.id.length - 6)}',
       hooksDir: '$data/git-hooks',
     );
+  }
+
+  /// The in-place session's starting point; a snapshot that fails only costs
+  /// the Changes view.
+  static Future<GitBaseline?> _baselineFor(String dir) async {
+    try {
+      return await GitService.baseline(dir);
+    } on Object {
+      return null;
+    }
   }
 
   void update(CodeSessionInfo info) {
@@ -1806,10 +1822,14 @@ final class CodeGit extends AsyncNotifier<GitSnapshot> {
   Future<GitSnapshot> build() => _load();
 
   Future<GitSnapshot> _load() async {
-    final w = _info?.worktree;
-    if (w == null) return const GitSnapshot();
-    final (files, counts) = await (GitService.diff(w), GitService.aheadBehind(w)).wait;
-    return GitSnapshot(files: files, ahead: counts.ahead, behind: counts.behind);
+    final info = _info;
+    if (info?.worktree case final w?) {
+      final (files, counts) = await (GitService.diff(w), GitService.aheadBehind(w)).wait;
+      return GitSnapshot(files: files, ahead: counts.ahead, behind: counts.behind);
+    }
+    // In place: what changed since the session's snapshot of the checkout.
+    if (info?.baseline case final b?) return GitSnapshot(files: await GitService.diff(b.diffView));
+    return const GitSnapshot();
   }
 
   Future<void> refresh() async {
@@ -1818,7 +1838,8 @@ final class CodeGit extends AsyncNotifier<GitSnapshot> {
   }
 
   Future<void> revertHunk(FileDiff file, int hunk) async {
-    await GitService.revertHunk(_w, file, hunk);
+    final target = _info?.diffTarget ?? (throw const GitError('This session has no git history.'));
+    await GitService.revertHunk(target, file, hunk);
     await refresh();
   }
 

@@ -119,6 +119,7 @@ class _DiffPaneState extends ConsumerState<DiffPane> {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final w = widget.session.worktree;
+    final baseline = widget.session.baseline;
     final snapshot = ref.watch(codeGitProvider(widget.session.id));
     final git = snapshot.value;
     ref.watch(codePaneProvider(widget.session.id).select((p) => p.focusSeq));
@@ -148,6 +149,12 @@ class _DiffPaneState extends ConsumerState<DiffPane> {
                           '${git == null || git.behind == 0 ? '' : ' · ${w.baseBranch} moved ${git.behind} ahead'}',
                           overflow: TextOverflow.ellipsis,
                           style: theme.type.caption.tint(theme.textMuted),
+                        )
+                      else if (baseline != null)
+                        Text(
+                          'In place${baseline.branch.isEmpty ? '' : ' on ${baseline.branch}'} · since the session started',
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.type.caption.tint(theme.textMuted),
                         ),
                     ],
                   ),
@@ -158,7 +165,7 @@ class _DiffPaneState extends ConsumerState<DiffPane> {
             ),
           ),
           Expanded(
-            child: switch ((w, snapshot)) {
+            child: switch ((widget.session.diffTarget, snapshot)) {
               (null, _) => _Empty(
                 'This folder isn\'t a git repository, so the agent works in it directly and there is no diff to show.',
               ),

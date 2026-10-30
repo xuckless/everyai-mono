@@ -18,6 +18,20 @@ const _macTrafficLights = 70.0;
 /// puts on each side of the middle slot.
 const _macToolbarGutters = 8.0 * 2 + 8.0 * 2;
 
+/// Gives the [AdaptivePage]s below a back control when they don't set their
+/// own (Settings pages on narrow windows).
+class PageBackScope extends InheritedWidget {
+  const PageBackScope({super.key, required this.onBack, this.tooltip = 'Back', required super.child});
+
+  final VoidCallback? onBack;
+  final String tooltip;
+
+  static PageBackScope? maybeOf(BuildContext context) => context.dependOnInheritedWidgetOfExactType<PageBackScope>();
+
+  @override
+  bool updateShouldNotify(PageBackScope old) => onBack != old.onBack || tooltip != old.tooltip;
+}
+
 /// A top-level page with native chrome:
 /// - Cupertino: translucent navigation bar that content scrolls beneath (glass)
 /// - macOS: unified toolbar inside the window, sidebar toggle implied
@@ -57,9 +71,15 @@ class AdaptivePage extends StatelessWidget {
     final sidebarButton = shell.showSidebarButton && theme.design != DesignLanguage.macos
         ? AdaptiveIconButton(icon: EveryIcon.menu, tooltip: 'Show sidebar', onPressed: shell.toggleSidebar)
         : null;
-    final backButton = onBack == null
+    final scope = PageBackScope.maybeOf(context);
+    final back = onBack ?? scope?.onBack;
+    final backButton = back == null
         ? null
-        : AdaptiveIconButton(icon: EveryIcon.chevronLeft, tooltip: backTooltip, onPressed: onBack);
+        : AdaptiveIconButton(
+            icon: EveryIcon.chevronLeft,
+            tooltip: onBack != null ? backTooltip : scope!.tooltip,
+            onPressed: back,
+          );
     final leadingButtons = [?sidebarButton, ?backButton];
     final leading = leadingButtons.isEmpty
         ? null
@@ -91,7 +111,7 @@ class AdaptivePage extends StatelessWidget {
           builder: (context, constraints) {
             final lights = shell.compact ? _macTrafficLights : 0.0;
             final width = (constraints.maxWidth - lights - _macToolbarGutters).clamp(0.0, double.infinity);
-            final scope = mac.MacosWindowScope.maybeOf(context);
+            final window = mac.MacosWindowScope.maybeOf(context);
             final bar = mac.ToolBar(
               title: Row(
                 children: [
@@ -110,16 +130,16 @@ class AdaptivePage extends StatelessWidget {
               toolBar: bar,
               children: [mac.ContentArea(builder: (context, _) => body)],
             );
-            if (scope == null) return scaffold;
+            if (window == null) return scaffold;
             // The ToolBar reserves the traffic-light inset unless it thinks a
             // sidebar is showing; ours is always under the lights on wide
             // windows.
             return mac.MacosWindowScope(
-              constraints: scope.constraints,
+              constraints: window.constraints,
               isSidebarShown: !shell.compact,
-              isEndSidebarShown: scope.isEndSidebarShown,
-              sidebarToggler: scope.toggleSidebar,
-              endSidebarToggler: scope.toggleEndSidebar,
+              isEndSidebarShown: window.isEndSidebarShown,
+              sidebarToggler: window.toggleSidebar,
+              endSidebarToggler: window.toggleEndSidebar,
               child: scaffold,
             );
           },

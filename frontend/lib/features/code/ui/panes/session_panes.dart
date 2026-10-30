@@ -14,10 +14,10 @@ import 'preview_pane.dart';
 import 'processes_pane.dart';
 import 'terminal_pane.dart';
 
-/// The panes [session] can show: Changes with a worktree; Terminal,
+/// The panes [session] can show: Changes in a git repository; Terminal,
 /// Processes and Preview for a real folder on a desktop.
 List<CodePane> panesFor(CodeSessionInfo session) => [
-  if (session.worktree != null) CodePane.diff,
+  if (session.diffTarget != null) CodePane.diff,
   if (Host.isDesktop && shellSupported && !isDemoPath(session.workingDir)) ...[
     CodePane.terminal,
     CodePane.processes,

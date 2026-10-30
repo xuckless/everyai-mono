@@ -107,7 +107,7 @@ class CodeSessionScreen extends ConsumerWidget {
           backTooltip: 'Back to the parent session',
           actions: [
             CodeTopBar(sessionId: sessionId, tier: tier, agentMenu: agentMenu(bordered: true)),
-            if (info.worktree != null && tier != TopBarTier.narrow) _ChangesButton(sessionId: sessionId),
+            if (info.diffTarget != null && tier != TopBarTier.narrow) _ChangesButton(sessionId: sessionId),
             if (panesFor(info).contains(CodePane.terminal))
               AdaptiveIconButton(
                 icon: EveryIcon.openPanel,

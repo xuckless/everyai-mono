@@ -64,7 +64,7 @@ mixin _SessionBuiltins on Notifier<CodeSessionState> {
     if (info == null) return;
     final aside = _newAside(AsideKind.review, focus);
     try {
-      final w = info.worktree;
+      final w = info.diffTarget;
       final files = w == null ? const <FileDiff>[] : await GitService.diff(w);
       if (w != null && files.isEmpty) return _settle(aside.failed('There are no changes to review yet.'));
       final child = await ref

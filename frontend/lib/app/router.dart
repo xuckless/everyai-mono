@@ -24,6 +24,7 @@ import '../features/slash/custom/custom_commands_screen.dart';
 import '../features/remote/ui/remote_settings_screen.dart';
 import '../features/settings/ui/notices_screen.dart';
 import '../features/settings/ui/settings_screen.dart';
+import '../features/settings/ui/settings_shell.dart';
 import '../features/skills/ui/skills_settings_screen.dart';
 import '../features/usage/ui/usage_screen.dart';
 import 'shell.dart';
@@ -124,21 +125,6 @@ final routerProvider = Provider<GoRouter>((ref) {
             pageBuilder: (_, _) => const NoTransitionPage(child: CodeHome()),
           ),
           GoRoute(
-            path: Routes.codeSettingsPath,
-            pageBuilder: (_, state) {
-              final q = state.uri.queryParameters;
-              return NoTransitionPage(
-                key: ValueKey('code-settings-${state.uri.query}'),
-                child: CodeSettingsScreen(
-                  projectId: q['project'],
-                  sessionId: q['session'],
-                  scope: SettingsScope.parse(q['scope']),
-                  tab: CodeSettingsTab.parse(q['tab']),
-                ),
-              );
-            },
-          ),
-          GoRoute(
             path: '/code/s/:id',
             pageBuilder: (_, state) => NoTransitionPage(
               key: ValueKey('code-${state.pathParameters['id']}'),
@@ -149,51 +135,78 @@ final routerProvider = Provider<GoRouter>((ref) {
             path: Routes.models,
             pageBuilder: (_, _) => const NoTransitionPage(child: ModelsScreen()),
           ),
-          GoRoute(
-            path: Routes.settings,
-            pageBuilder: (_, _) => const NoTransitionPage(child: SettingsScreen()),
-          ),
-          GoRoute(
-            path: Routes.billing,
-            pageBuilder: (_, _) => const NoTransitionPage(child: BillingScreen()),
-          ),
-          GoRoute(
-            path: Routes.usage,
-            pageBuilder: (_, _) => const NoTransitionPage(child: UsageScreen()),
-          ),
-          GoRoute(
-            path: Routes.mcpServers,
-            pageBuilder: (_, _) => const NoTransitionPage(child: McpSettingsScreen()),
-          ),
-          GoRoute(
-            path: Routes.skills,
-            pageBuilder: (_, _) => const NoTransitionPage(child: SkillsSettingsScreen()),
-          ),
-          GoRoute(
-            path: Routes.remote,
-            pageBuilder: (_, _) => const NoTransitionPage(child: RemoteSettingsScreen()),
-          ),
-          GoRoute(
-            path: Routes.notices,
-            pageBuilder: (_, _) => const NoTransitionPage(child: NoticesScreen()),
-          ),
-          GoRoute(
-            path: Routes.agents,
-            pageBuilder: (_, _) => const NoTransitionPage(child: AgentsSettingsScreen()),
-          ),
-          GoRoute(
-            path: Routes.memory,
-            pageBuilder: (_, _) => const NoTransitionPage(child: MemoryScreen()),
-          ),
-          GoRoute(
-            path: Routes.commands,
-            pageBuilder: (_, _) => const NoTransitionPage(child: CustomCommandsScreen()),
+          // Every settings page sits in one shell: a section list beside it on
+          // wide windows, a back control on narrow ones.
+          ShellRoute(
+            builder: (context, state, child) => SettingsShell(location: state.uri.toString(), child: child),
+            routes: [
+              GoRoute(
+                path: Routes.codeSettingsPath,
+                pageBuilder: (_, state) {
+                  final q = state.uri.queryParameters;
+                  return NoTransitionPage(
+                    key: ValueKey('code-settings-${state.uri.query}'),
+                    child: CodeSettingsScreen(
+                      projectId: q['project'],
+                      sessionId: q['session'],
+                      scope: SettingsScope.parse(q['scope']),
+                      tab: CodeSettingsTab.parse(q['tab']),
+                    ),
+                  );
+                },
+              ),
+              GoRoute(
+                path: Routes.settings,
+                pageBuilder: (_, _) => const NoTransitionPage(child: SettingsScreen()),
+              ),
+              GoRoute(
+                path: Routes.billing,
+                pageBuilder: (_, _) => const NoTransitionPage(child: BillingScreen()),
+              ),
+              GoRoute(
+                path: Routes.usage,
+                pageBuilder: (_, _) => const NoTransitionPage(child: UsageScreen()),
+              ),
+              GoRoute(
+                path: Routes.mcpServers,
+                pageBuilder: (_, _) => const NoTransitionPage(child: McpSettingsScreen()),
+              ),
+              GoRoute(
+                path: Routes.skills,
+                pageBuilder: (_, _) => const NoTransitionPage(child: SkillsSettingsScreen()),
+              ),
+              GoRoute(
+                path: Routes.remote,
+                pageBuilder: (_, _) => const NoTransitionPage(child: RemoteSettingsScreen()),
+              ),
+              GoRoute(
+                path: Routes.notices,
+                pageBuilder: (_, _) => const NoTransitionPage(child: NoticesScreen()),
+              ),
+              GoRoute(
+                path: Routes.agents,
+                pageBuilder: (_, _) => const NoTransitionPage(child: AgentsSettingsScreen()),
+              ),
+              GoRoute(
+                path: Routes.memory,
+                pageBuilder: (_, _) => const NoTransitionPage(child: MemoryScreen()),
+              ),
+              GoRoute(
+                path: Routes.commands,
+                pageBuilder: (_, _) => const NoTransitionPage(child: CustomCommandsScreen()),
+              ),
+            ],
           ),
         ],
       ),
     ],
   );
-  void remember() => _lastLocation = router.routerDelegate.currentConfiguration.uri.toString();
+  void remember() {
+    final now = router.routerDelegate.currentConfiguration.uri.toString();
+    ref.read(settingsReturnProvider.notifier).moved(_lastLocation, now);
+    _lastLocation = now;
+  }
+
   router.routerDelegate.addListener(remember);
   ref.onDispose(() {
     router.routerDelegate.removeListener(remember);

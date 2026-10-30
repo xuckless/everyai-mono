@@ -118,6 +118,16 @@ Future<T> _withSnapshot<T>(SessionWorktree w, Future<T> Function(Map<String, Str
   }
 }
 
+Future<GitBaseline?> baseline(String dir) async {
+  final root = await repoRoot(dir);
+  if (root == null || !await hasCommits(root)) return null;
+  final commit = (await _out(root, ['rev-parse', 'HEAD'])).trim();
+  final branch = (await _git(root, ['symbolic-ref', '--short', '-q', 'HEAD'], check: false)).stdout.toString().trim();
+  final view = SessionWorktree(repoRoot: root, path: dir, branch: branch, baseBranch: branch, baseCommit: commit);
+  final tree = await _withSnapshot(view, (env) async => (await _out(dir, ['write-tree'], env: env)).trim());
+  return GitBaseline(repoRoot: root, dir: dir, branch: branch, commit: commit, tree: tree);
+}
+
 Future<List<FileChange>> changes(SessionWorktree w) => _withSnapshot(w, (env) async {
   final status = await _out(w.path, ['diff', '--cached', '-M', '--name-status', w.baseCommit], env: env);
   final numstat = await _out(w.path, ['diff', '--cached', '-M', '--numstat', w.baseCommit], env: env);

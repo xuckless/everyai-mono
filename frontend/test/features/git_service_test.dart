@@ -36,6 +36,24 @@ void main() {
     hooksDir: hooks,
   );
 
+  test('an in-place session diffs against its starting snapshot, not HEAD', () async {
+    // Work the user already had going: an edit and an untracked file.
+    File('$repo/README.md').writeAsStringSync('# App\n\nDraft notes\n');
+    File('$repo/notes.txt').writeAsStringSync('mine\n');
+    final base = (await GitService.baseline(repo))!;
+    expect(base.branch, 'main');
+    expect(await GitService.diff(base.diffView), isEmpty);
+
+    // What the session does.
+    File('$repo/lib/a.txt').writeAsStringSync('one\n');
+    File('$repo/lib/new.py').writeAsStringSync('print(1)\n');
+    final files = await GitService.diff(base.diffView);
+    expect(files.map((f) => f.path).toSet(), {'lib/a.txt', 'lib/new.py'});
+    // The checkout itself is untouched: no commit, the user's index as it was.
+    expect((await Process.run('git', ['-C', repo, 'rev-list', '--count', 'HEAD'])).stdout.toString().trim(), '1');
+    expect((await Process.run('git', ['-C', repo, 'diff', '--cached', '--name-only'])).stdout.toString().trim(), '');
+  });
+
   test('a repository with no commits yet is not branched from', () async {
     expect(await GitService.hasCommits(repo), isTrue);
     final fresh = '${tmp.path}/fresh';

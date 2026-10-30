@@ -44,6 +44,7 @@ final class CodeSessionInfo {
     required this.createdAt,
     this.branch = '',
     this.worktree,
+    this.baseline,
     this.effort = '',
     this.holdClientTools = false,
     this.compactedFrom = const [],
@@ -66,8 +67,17 @@ final class CodeSessionInfo {
   final String workingDir;
   final String branch;
 
-  /// The session's own checkout and branch; null for folders without git.
+  /// The session's own checkout and branch, for isolated sessions (forks,
+  /// subagents, Ultra steps, or when asked for); null when it works in place.
   final SessionWorktree? worktree;
+
+  /// For a session working in place in a git repository: where it started,
+  /// so Changes can show what it did.
+  final GitBaseline? baseline;
+
+  /// The snapshot Changes diffs against: the worktree, or the in-place
+  /// baseline's read-only view.
+  SessionWorktree? get diffTarget => worktree ?? baseline?.diffView;
 
   /// The model's reasoning effort ('' for the server default).
   final String effort;
@@ -114,6 +124,7 @@ final class CodeSessionInfo {
     createdAt: createdAt,
     branch: branch ?? this.branch,
     worktree: worktree,
+    baseline: baseline,
     effort: effort ?? this.effort,
     holdClientTools: holdClientTools,
     compactedFrom: compactedFrom ?? this.compactedFrom,
@@ -140,6 +151,9 @@ final class CodeSessionInfo {
     worktree: json['worktree'] is Map<String, Object?>
         ? SessionWorktree.fromJson(json['worktree']! as Map<String, Object?>)
         : null,
+    baseline: json['baseline'] is Map<String, Object?>
+        ? GitBaseline.fromJson(json['baseline']! as Map<String, Object?>)
+        : null,
     createdAt: DateTime.tryParse(json['created_at'] as String? ?? '') ?? DateTime.now(),
     parentId: json['parent_id'] as String?,
     parentCallId: json['parent_call_id'] as String? ?? '',
@@ -157,6 +171,7 @@ final class CodeSessionInfo {
     'working_dir': workingDir,
     'branch': branch,
     'worktree': ?worktree?.toJson(),
+    'baseline': ?baseline?.toJson(),
     'effort': effort,
     if (holdClientTools) 'hold_client_tools': true,
     if (compactedFrom.isNotEmpty) 'compacted_from': compactedFrom,
