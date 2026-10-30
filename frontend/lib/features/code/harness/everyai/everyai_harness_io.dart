@@ -89,7 +89,7 @@ const maxStepsPerRun = 400;
 
 /// One conversation: its history (OpenAI-style messages), its events, and the
 /// loop that calls the model and runs tools.
-final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundShells {
+final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundShells, CompactsInPlace {
   EveryAISession._(this.id, this._spec, this._dir, http.Client? client)
     : _gateway = GatewayClient(baseUrl: _spec.llmBaseUrl, apiKey: _spec.llmApiKey, client: client),
       _shell = SessionShell(root: _spec.workingDir, sessionTag: _spec.sessionTag, scratchDir: '${_dir.path}/shell') {
@@ -614,6 +614,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
 
   /// Compacts now (auto-compact, or `/compact` with [focus]). False when
   /// there was nothing to summarize or the summary came back unusable.
+  @override
   Future<bool> compact({String focus = ''}) async {
     final since = _history.lastIndexWhere((e) => e is ChatMessage && e.fromUser && splitCompacted(e.text) != null);
     final plan = planCompaction(_history.sublist(since < 0 ? 0 : since));

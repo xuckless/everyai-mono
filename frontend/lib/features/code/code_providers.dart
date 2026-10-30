@@ -1224,6 +1224,20 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     if (isDemoPath(info.workingDir)) return const CompactOutcome.failed("The demo session can't be compacted.");
     final t = state.transcript;
     if (_compacting || t.running || t.pending.isNotEmpty || t.held.isNotEmpty) return const CompactOutcome.busy();
+    if (old case final CompactsInPlace inPlace) {
+      // The EveryAI harness summarizes with the session's own model and keeps
+      // the conversation; the "Context compacted" notice arrives as an event.
+      _compacting = true;
+      try {
+        if (!await inPlace.compact(focus: focus)) return const CompactOutcome.nothing();
+        if (resume) await old.resume();
+        return const CompactOutcome.compacted('');
+      } on Object catch (e) {
+        return CompactOutcome.failed('$e');
+      } finally {
+        _compacting = false;
+      }
+    }
     final plan = planCompaction(_events);
     if (plan == null) return const CompactOutcome.nothing();
     _compacting = true;

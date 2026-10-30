@@ -151,6 +151,13 @@ abstract interface class AsksAside {
   Future<String> askAside(String question, {int maxTokens = 800});
 }
 
+/// A session that compacts its own history in place (the EveryAI harness):
+/// `/compact` asks it instead of starting a continuation conversation.
+abstract interface class CompactsInPlace {
+  /// False when there was nothing to summarize or the summary was unusable.
+  Future<bool> compact({String focus = ''});
+}
+
 /// A command a session left running in the background.
 typedef BackgroundTask = ({
   String id,
