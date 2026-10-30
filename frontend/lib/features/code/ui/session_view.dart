@@ -28,7 +28,8 @@ import 'agent_menu.dart';
 import 'code_composer.dart';
 import 'code_slash_host.dart';
 import 'code_top_bar.dart';
-import 'panes/diff_pane.dart';
+import '../panes/panes_providers.dart';
+import 'panes/session_panes.dart';
 import 'transcript/approval_card.dart';
 import 'transcript/aside_card.dart';
 import 'transcript/goal_card.dart';
@@ -91,10 +92,16 @@ class CodeSessionScreen extends ConsumerWidget {
       actions: [
         CodeTopBar(sessionId: sessionId, agentMenu: agentMenu(bordered: true)),
         if (info.worktree != null) _ChangesButton(sessionId: sessionId),
+        if (panesFor(info).contains(CodePane.terminal))
+          AdaptiveIconButton(
+            icon: EveryIcon.openPanel,
+            tooltip: 'Terminal, processes and preview',
+            onPressed: ref.read(codePaneProvider(sessionId).notifier).toggleLast,
+          ),
         StatusPill(status: state.status),
         AdaptiveIconButton(icon: EveryIcon.newChat, tooltip: 'New session', onPressed: () => context.go(Routes.code)),
       ],
-      body: _WithDiff(
+      body: SessionPanes(
         session: info,
         child: Column(
           children: [
@@ -251,19 +258,6 @@ class CodeSessionScreen extends ConsumerWidget {
   }
 }
 
-/// Whether the Diff pane is open, per session.
-final _diffOpenProvider = NotifierProvider.family<_PaneOpen, bool, String>(_PaneOpen.new);
-
-final class _PaneOpen extends Notifier<bool> {
-  _PaneOpen(this.sessionId);
-  final String sessionId;
-
-  @override
-  bool build() => false;
-
-  void toggle() => state = !state;
-}
-
 /// "3 files +40 −2": opens the Diff pane.
 class _ChangesButton extends ConsumerWidget {
   const _ChangesButton({required this.sessionId});
@@ -273,10 +267,10 @@ class _ChangesButton extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = EveryTheme.of(context);
     final git = ref.watch(codeGitProvider(sessionId)).value;
-    final open = ref.watch(_diffOpenProvider(sessionId));
+    final open = ref.watch(codePaneProvider(sessionId).select((p) => p.open == CodePane.diff));
     final files = git?.files.length ?? 0;
     return GestureDetector(
-      onTap: ref.read(_diffOpenProvider(sessionId).notifier).toggle,
+      onTap: () => ref.read(codePaneProvider(sessionId).notifier).toggle(CodePane.diff),
       child: MouseRegion(
         cursor: SystemMouseCursors.click,
         child: Container(
@@ -307,39 +301,6 @@ class _ChangesButton extends ConsumerWidget {
           ),
         ),
       ),
-    );
-  }
-}
-
-/// The session beside its Diff pane (over it when narrow).
-class _WithDiff extends ConsumerWidget {
-  const _WithDiff({required this.session, required this.child});
-
-  final CodeSessionInfo session;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    if (!ref.watch(_diffOpenProvider(session.id))) return child;
-    final pane = DiffPane(session: session, onClose: ref.read(_diffOpenProvider(session.id).notifier).toggle);
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        if (constraints.maxWidth < 900) {
-          return Stack(
-            children: [
-              child,
-              Positioned.fill(child: pane),
-            ],
-          );
-        }
-        final width = (constraints.maxWidth * 0.48).clamp(380.0, 760.0);
-        return Row(
-          children: [
-            Expanded(child: child),
-            SizedBox(width: width, child: pane),
-          ],
-        );
-      },
     );
   }
 }

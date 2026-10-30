@@ -23,10 +23,26 @@ Future<List<int>> killSessionProcesses({required String tag, required String wor
   }
 }
 
-Future<List<int>> _find(String tag, String dir, bool ownsDir) async {
+Future<List<int>> _find(String tag, String dir, bool ownsDir) async => (await _scan(tag, dir, ownsDir)).$2;
+
+Future<(ProcessTable, List<int>)> _scan(String tag, String dir, bool ownsDir) async {
   final table = Platform.isLinux ? _procTable() : await _psTable();
   final cwds = Platform.isLinux ? _procCwds(table.needsCwd()) : await _lsofCwds(table.needsCwd());
-  return table.sessionProcesses(tag: tag, workingDir: dir, ownsDir: ownsDir, cwds: cwds)..remove(pid);
+  return (table, table.sessionProcesses(tag: tag, workingDir: dir, ownsDir: ownsDir, cwds: cwds)..remove(pid));
+}
+
+Future<(ProcessTable, List<int>)?> findSessionProcesses({
+  required String tag,
+  required String workingDir,
+  required bool ownsDir,
+}) async {
+  if (!(Platform.isMacOS || Platform.isLinux)) return null;
+  try {
+    final dir = Directory(workingDir).absolute.resolveSymbolicLinksSync();
+    return await _scan(tag, dir, ownsDir);
+  } on Object {
+    return null;
+  }
 }
 
 /// The user's own processes (`-x`), with and without their environment.

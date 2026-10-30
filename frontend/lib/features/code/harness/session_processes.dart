@@ -23,6 +23,14 @@ const sessionEnvVar = 'EVERYAI_SESSION';
 Future<List<int>> killSessionProcesses({required String tag, required String workingDir, required bool ownsDir}) =>
     impl.killSessionProcesses(tag: tag, workingDir: workingDir, ownsDir: ownsDir);
 
+/// The process table and the pids [killSessionProcesses] would signal, for
+/// the Processes pane; null where processes can't be listed.
+Future<(ProcessTable, List<int>)?> findSessionProcesses({
+  required String tag,
+  required String workingDir,
+  required bool ownsDir,
+}) => impl.findSessionProcesses(tag: tag, workingDir: workingDir, ownsDir: ownsDir);
+
 /// One row of the process table.
 @immutable
 final class ProcessRow {
