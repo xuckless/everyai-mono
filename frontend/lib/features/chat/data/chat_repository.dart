@@ -168,7 +168,7 @@ final class ChatRepository {
     switch (part) {
       case TextPart(:final text):
         return MessagePartsCompanion.insert(messageId: messageId, idx: idx, kind: 'text', body: Value(text));
-      case ImagePart(:final bytes, :final blobRef, :final mimeType):
+      case ImagePart(:final bytes, :final blobRef, :final mimeType, :final imageId, :final prompt, :final revises):
         var ref = blobRef;
         if (ref == null) {
           ref = newId();
@@ -180,6 +180,7 @@ final class ChatRepository {
           kind: 'image',
           blobId: Value(ref),
           mimeType: Value(mimeType),
+          body: Value(imageId == null ? null : jsonEncode({'id': imageId, 'prompt': prompt, 'revises': revises})),
         );
       case SourcesPart(:final sources):
         return MessagePartsCompanion.insert(
@@ -236,7 +237,7 @@ final class ChatRepository {
   }
 
   static MessagePart _toPart(MessagePartRow p, Map<String, BlobRow> blobs) => switch (p.kind) {
-    'image' => ImagePart(bytes: blobs[p.blobId]?.bytes, blobRef: p.blobId, mimeType: p.mimeType ?? 'image/webp'),
+    'image' => _image(p, blobs[p.blobId]),
     'artifact' => _artifact(p.body ?? '{}'),
     'attachment' => _attachment(p, blobs[p.blobId]),
     'tool_call' => _toolCall(p.body ?? '{}'),
@@ -250,6 +251,22 @@ final class ChatRepository {
     ),
     _ => TextPart(p.body ?? ''),
   };
+
+  /// A generated image's id, prompt and lineage live in the row's body.
+  static MessagePart _image(MessagePartRow p, BlobRow? blob) {
+    final meta = switch (p.body == null ? null : jsonDecode(p.body!)) {
+      final Map<String, Object?> m => m,
+      _ => const <String, Object?>{},
+    };
+    return ImagePart(
+      bytes: blob?.bytes,
+      blobRef: p.blobId,
+      mimeType: p.mimeType ?? 'image/webp',
+      imageId: meta['id'] as String?,
+      prompt: meta['prompt'] as String?,
+      revises: meta['revises'] as String?,
+    );
+  }
 
   static MessagePart _artifact(String body) => switch (jsonDecode(body)) {
     {'kind': final String kind, 'id': final String id, 'title': final String title} => ArtifactPart(

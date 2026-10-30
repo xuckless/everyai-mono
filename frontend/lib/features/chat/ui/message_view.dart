@@ -10,6 +10,7 @@ import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/anchored_popover.dart';
 import '../../../core/ui/every_icons.dart';
+import '../../artifacts/ui/image_view.dart';
 import '../../artifacts/ui/visual_view.dart';
 import '../../attachments/attachment.dart';
 import '../../attachments/ui/attachment_tray.dart';
@@ -596,17 +597,7 @@ class _PartView extends StatelessWidget {
       SourcesPart(:final sources) => _SourcesRow(sources),
       TextPart(:final text) => ChatMarkdown(text, sources: sources),
       ReasoningPart(:final text) => _Reasoning(text),
-      ImagePart(:final bytes?) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 6),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(theme.radius),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 512, maxHeight: 512),
-            child: Image.memory(bytes, fit: BoxFit.contain, semanticLabel: 'Generated image'),
-          ),
-        ),
-      ),
-      ImagePart() => Text('[Image unavailable]', style: TextStyle(color: theme.textMuted)),
+      final ImagePart image => GeneratedImageView(image: image, conversationId: conversationId),
       FollowUpsPart(:final questions) =>
         isLatest ? _FollowUps(questions: questions, conversationId: conversationId) : const SizedBox.shrink(),
       final ToolCallPart call => InlineVisual(part: call, conversationId: conversationId),

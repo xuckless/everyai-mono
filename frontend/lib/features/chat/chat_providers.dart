@@ -272,9 +272,9 @@ final class ChatController extends Notifier<ChatSessionState> {
           case ReasoningDelta(:final text):
             _reasoning.write(text);
             state = state.copyWith(streamingReasoning: _reasoning.toString());
-          case ImageOutput(:final bytes, :final mimeType):
+          case ImageOutput(:final bytes, :final mimeType, :final imageId, :final prompt, :final revises):
             flushText();
-            parts.add(ImagePart(bytes: bytes, mimeType: mimeType));
+            parts.add(ImagePart(bytes: bytes, mimeType: mimeType, imageId: imageId, prompt: prompt, revises: revises));
             state = state.copyWith(
               phase: Streaming(assistant.id),
               liveParts: List.unmodifiable(parts),

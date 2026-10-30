@@ -40,6 +40,14 @@ List<DownloadOption> downloadsOf(Visual v) {
         DownloadOption('PowerPoint', 'pptx', () async => pptxOf(v)),
         DownloadOption('Markdown', 'md', () => utf8Of(export.text)),
       ];
+    case VisualKind.image:
+      final bytes = v.args['bytes'];
+      return [
+        DownloadOption(export.extension.toUpperCase(), export.extension, () async {
+          if (bytes is! Uint8List) throw StateError('This image is no longer stored.');
+          return bytes;
+        }),
+      ];
     case VisualKind.svg:
       return [
         DownloadOption('SVG', 'svg', () => utf8Of(export.text)),
@@ -154,6 +162,7 @@ Uint8List pptxOf(Visual v) {
       name: safe,
       extension: 'tsv',
     ),
+    VisualKind.image => (text: v.str('prompt'), name: safe, extension: imageExtension(v.str('mime'))),
     VisualKind.slides => (
       text: [
         for (final s in slidesOf(v))
@@ -164,6 +173,15 @@ Uint8List pptxOf(Visual v) {
     ),
   };
 }
+
+/// `image/jpeg` → `jpg`, and so on; png when unknown.
+String imageExtension(String mime) => switch (mime) {
+  'image/jpeg' || 'image/jpg' => 'jpg',
+  'image/webp' => 'webp',
+  'image/gif' => 'gif',
+  'image/svg+xml' => 'svg',
+  _ => 'png',
+};
 
 String _quizMarkdown(Visual v) {
   final b = StringBuffer('# ${v.title}\n');

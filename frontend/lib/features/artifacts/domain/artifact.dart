@@ -15,7 +15,10 @@ enum VisualKind {
   chart('Chart'),
   quiz('Quiz'),
   flashcards('Flashcards'),
-  slides('Slides');
+  slides('Slides'),
+
+  /// A generated raster image (`generate_image`); vector ones are [svg].
+  image('Image');
 
   const VisualKind(this.label);
   final String label;
@@ -95,15 +98,24 @@ final class Artifact {
 /// The tools that create or revise an artifact.
 const artifactTools = {'create_artifact', 'update_artifact', 'edit_artifact'};
 
-/// The artifacts in a conversation, in creation order. An update without a
+/// The artifacts in a conversation, in creation order. Generated images are
+/// artifacts too, keyed by the first image's id: an image that revises another
+/// (`ImagePart.revises`) is that artifact's next version. An update without a
 /// matching create starts its own artifact; an update without `kind` keeps the
 /// previous version's kind and language. An edit applies its find-and-replace
 /// edits to the previous version (`edit_missed` lists the ones that did not
 /// match); an edit of an unknown artifact is ignored.
 List<Artifact> artifactsIn(Iterable<Message> messages) {
   final byId = <String, List<Visual>>{};
+  final imageRoot = <String, String>{};
   for (final m in messages) {
-    for (final part in m.parts.whereType<ToolCallPart>()) {
+    for (final part in m.parts) {
+      if (part case ImagePart(:final imageId?)) {
+        final root = imageRoot[imageId] = imageRoot[part.revises] ?? imageId;
+        (byId[root] ??= []).add(imageVisual(part));
+        continue;
+      }
+      if (part is! ToolCallPart) continue;
       if (!artifactTools.contains(part.toolName)) continue;
       var visual = Visual.fromPart(part);
       if (visual == null) continue;
@@ -134,6 +146,27 @@ List<Artifact> artifactsIn(Iterable<Message> messages) {
     }
   }
   return [for (final e in byId.entries) Artifact(id: e.key, versions: List.unmodifiable(e.value))];
+}
+
+/// A generated image as a visual: an SVG one renders (and downloads) like
+/// `render_svg`; a raster one carries its bytes.
+Visual imageVisual(ImagePart image) {
+  final prompt = image.prompt ?? '';
+  final title = prompt.isEmpty
+      ? 'Image'
+      : prompt.length > 60
+      ? '${prompt.substring(0, 60).trimRight()}…'
+      : prompt;
+  final meta = {'image_id': image.imageId, 'prompt': prompt, 'mime': image.mimeType};
+  final bytes = image.bytes;
+  return Visual(
+    callId: image.imageId ?? image.blobRef ?? 'image:${identityHashCode(image)}',
+    kind: image.isSvg ? VisualKind.svg : VisualKind.image,
+    title: title,
+    args: image.isSvg
+        ? {...meta, 'svg': bytes == null ? '' : utf8.decode(bytes, allowMalformed: true)}
+        : {...meta, 'bytes': bytes},
+  );
 }
 
 /// Applies `edit_artifact` edits (`[{old_text, new_text}]`) in order. An

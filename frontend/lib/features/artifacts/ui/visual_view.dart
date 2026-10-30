@@ -10,6 +10,7 @@ import '../../chat/ui/chat_markdown.dart';
 import '../artifact_providers.dart';
 import '../domain/artifact.dart';
 import 'download_button.dart';
+import 'image_view.dart';
 import 'renderers/chart_view.dart';
 import 'renderers/flashcards_view.dart';
 import 'renderers/quiz_view.dart';
@@ -26,6 +27,7 @@ EveryIcon iconOf(VisualKind kind) => switch (kind) {
   VisualKind.quiz => EveryIcon.quiz,
   VisualKind.flashcards => EveryIcon.cards,
   VisualKind.slides => EveryIcon.slides,
+  VisualKind.image => EveryIcon.image,
 };
 
 /// The rendered content of a visual. [expanded] is the side panel's size.
@@ -57,6 +59,7 @@ class VisualBody extends ConsumerWidget {
       VisualKind.quiz => QuizView(visual: visual, conversationId: conversationId),
       VisualKind.flashcards => FlashcardsView(visual: visual, height: expanded ? 300 : 210),
       VisualKind.slides => SlidesView(visual: visual, showNotes: expanded),
+      VisualKind.image => RasterImageView(bytes: visual.args['bytes'] as Uint8List?, maxHeight: expanded ? 900 : 512),
     };
   }
 }

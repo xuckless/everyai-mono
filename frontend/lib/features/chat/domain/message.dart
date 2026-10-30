@@ -36,12 +36,20 @@ final class TextPart extends MessagePart {
   final String text;
 }
 
-/// Image bytes held in memory, or a reference to a blob in the store.
+/// Image bytes held in memory, or a reference to a blob in the store. A
+/// generated image has an [imageId] (`img_<n>`, stable in its conversation),
+/// the [prompt] that made it, and [revises]: the image it is a new version of.
 final class ImagePart extends MessagePart {
-  const ImagePart({this.bytes, this.blobRef, this.mimeType = 'image/webp'}) : assert(bytes != null || blobRef != null);
+  const ImagePart({this.bytes, this.blobRef, this.mimeType = 'image/webp', this.imageId, this.prompt, this.revises})
+    : assert(bytes != null || blobRef != null);
   final Uint8List? bytes;
   final String? blobRef;
   final String mimeType;
+  final String? imageId;
+  final String? prompt;
+  final String? revises;
+
+  bool get isSvg => mimeType == 'image/svg+xml';
 }
 
 /// A web source the answer drew on (search modes). Cited in text as `[n]`.

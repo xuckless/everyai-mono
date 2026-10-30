@@ -8,6 +8,7 @@ import '../../../core/net/api_error.dart';
 import '../../artifacts/domain/artifact.dart';
 import '../../attachments/attachment.dart';
 import '../../models/domain/model_catalog.dart';
+import '../domain/image_refs.dart';
 import '../domain/message.dart';
 
 /// What the client sends for one assistant turn.
@@ -61,10 +62,15 @@ final class ReasoningDelta extends ChatEvent {
   final String text;
 }
 
+/// A generated image. [imageId] is its id in the conversation (`img_<n>`);
+/// [revises] the image it is a new version of.
 final class ImageOutput extends ChatEvent {
-  const ImageOutput(this.bytes, this.mimeType);
+  const ImageOutput(this.bytes, this.mimeType, {this.imageId, this.prompt, this.revises});
   final Uint8List bytes;
   final String mimeType;
+  final String? imageId;
+  final String? prompt;
+  final String? revises;
 }
 
 /// New sources, to append after the ones already received.
@@ -152,13 +158,23 @@ final class ImageTransport implements ChatTransport {
   Stream<ChatEvent> send(ChatRequest request, {Future<void>? cancel}) async* {
     final json = await _api.postJson(
       'v1/images',
-      {'model': request.model.id.value, 'prompt': request.prompt},
+      {
+        'model': request.model.id.value,
+        'prompt': request.prompt,
+        // Attached images are what to edit or follow.
+        'input_references': [for (final r in imageRefsIn(const [], pending: request.attachments)) ?r.dataUrl],
+      },
       authenticated: authenticated,
       timeout: ApiClient.generationTimeout,
       cancel: cancel,
     );
     if (json case {'mime': final String mime, 'data': final String data}) {
-      yield ImageOutput(base64Decode(data), mime);
+      yield ImageOutput(
+        base64Decode(data),
+        mime,
+        imageId: nextImageId(imageRefsIn(request.history)),
+        prompt: request.prompt,
+      );
       yield const TurnDone();
     } else {
       throw const ProtocolError('The image response had no image.');
@@ -177,20 +193,32 @@ final class SseTransport implements ChatTransport {
 
   @override
   Stream<ChatEvent> send(ChatRequest request, {Future<void>? cancel}) async* {
-    final outputs = toolOutputsByMessage(request.history);
+    final images = imageRefsIn(request.history, pending: request.attachments);
+    final outputs = withImageNotes(toolOutputsByMessage(request.history), images);
+    final pendingNotes = [
+      for (final r in images)
+        if (r.messageId == null) r.note,
+    ].join('\n');
     final body = <String, Object?>{
       'model': request.model.id.value,
       'mode': request.mode.name,
       'tools_enabled': request.toolsEnabled,
       'session': ?request.conversationId,
       if (request.clientTools.isNotEmpty) 'client_tools': request.clientTools.toList(growable: false),
+      if (request.toolsEnabled && images.isNotEmpty) 'images': imageRefsJson(images),
       'messages': [
         for (final m in request.history)
           if (m.status == MessageStatus.complete)
             if ([m.plainText, ?outputs[m.id]].where((t) => t.isNotEmpty).join('\n\n') case final text
                 when text.isNotEmpty || m.attachments.isNotEmpty)
               {'role': m.role.name, 'content': messageContent(text, m.attachments)},
-        {'role': 'user', 'content': messageContent(request.prompt, request.attachments)},
+        {
+          'role': 'user',
+          'content': messageContent(
+            [request.prompt, pendingNotes].where((t) => t.isNotEmpty).join('\n\n'),
+            request.attachments,
+          ),
+        },
       ],
     };
 
@@ -220,7 +248,14 @@ final class SseTransport implements ChatTransport {
             detail: (data as Map)['detail'] as String?,
           );
         case ('image', {'mime': final String mime, 'data': final String b64}):
-          yield ImageOutput(base64Decode(b64), mime);
+          final image = data as Map;
+          yield ImageOutput(
+            base64Decode(b64),
+            mime,
+            imageId: image['image_id'] as String?,
+            prompt: image['prompt'] as String?,
+            revises: image['revises'] as String?,
+          );
         case ('usage', final Map<String, Object?> u):
           yield UsageReport(
             promptTokens: (u['prompt_tokens'] as num?)?.toInt() ?? 0,
