@@ -1,0 +1,64 @@
+import 'package:every_ai/features/code/domain/phases.dart';
+import 'package:every_ai/features/code/domain/subagents.dart';
+import 'package:every_ai/features/code/domain/transcript.dart' show planApprovedReason;
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  bool scratch(String p) => p.contains('.everyai/scratch/');
+
+  test('before the plan is approved only reading, research and notes run', () {
+    final f = PhaseFlow();
+    expect(f.gate('write', {'file_path': 'main.c'}, inScratch: scratch), contains('nothing in the project changes'));
+    expect(f.gate('write', {'file_path': '.everyai/scratch/notes.md'}, inScratch: scratch), isNull);
+    expect(f.gate('bash', {'command': 'ls -la'}, inScratch: scratch), isNull);
+    expect(f.gate('bash', {'command': 'gcc main.c'}, inScratch: scratch), contains('read-only'));
+    expect(f.gate('ask_user_question', {}, inScratch: scratch), contains('once research has reported'));
+    expect(f.gate('present_plan', {}, inScratch: scratch), contains('Next: start one or more forks'));
+    expect(f.gate('read', {'file_path': 'main.c'}, inScratch: scratch), isNull);
+  });
+
+  test('research, questions and an approved plan move the flow to build; then verify and done', () {
+    final f = PhaseFlow();
+    final args = {'role': 'researcher', 'description': 'HTTP servers in C'};
+    f.onCall(taskTool, args);
+    expect(f.onAnswer(taskTool, args, 'Started in the background as task x.'), isFalse);
+    expect(f.onTurnEnd(), isA<EndTurn>(), reason: 'waiting for a background researcher is fine');
+    expect(
+      f.onMessage(taskNotification('x', 'HTTP servers in C', const SubagentReport(SubagentStatus.completed, 'ok'))),
+      isTrue,
+    );
+    expect(f.phase, Phase.questions);
+    expect(f.onAnswer('ask_user_question', {}, 'They chose picohttpparser.'), isTrue);
+    expect(f.phase, Phase.plan);
+    expect(f.onAnswer('present_plan', {}, 'Please change step 2.'), isFalse);
+    expect(f.onAnswer('present_plan', {}, planApprovedReason), isTrue);
+    expect(f.phase, Phase.build);
+    expect(f.gate('write', {'file_path': 'main.c'}, inScratch: scratch), isNull);
+    expect(f.onTurnEnd(), isA<Nudge>());
+    expect(f.phase, Phase.verify);
+    expect(f.onTurnEnd(), isA<EndTurn>());
+    expect(f.phase, Phase.done);
+  });
+
+  test('ending turns early earns two nudges, then the flow is stuck', () {
+    final f = PhaseFlow();
+    expect(f.onTurnEnd(), isA<Nudge>());
+    expect(f.onTurnEnd(), isA<Nudge>());
+    final stuck = f.onTurnEnd();
+    expect(stuck, isA<Stuck>());
+    expect(parsePhaseNote((stuck as Stuck).note)?.stuck, isTrue);
+    f.skip();
+    expect(f.phase, Phase.questions);
+    expect(f.nudges, 0);
+  });
+
+  test('the flow survives a restart, and its notes parse back', () {
+    final f = PhaseFlow(ultra: true)..onCall(taskTool, {'role': 'researcher', 'description': 'X'});
+    final back = PhaseFlow.fromJson(f.toJson());
+    expect(back.ultra, isTrue);
+    expect(back.researchers, {'x'});
+    final note = parsePhaseNote(back.note());
+    expect(note?.flow, 'ultra');
+    expect(note?.phase, Phase.research);
+  });
+}

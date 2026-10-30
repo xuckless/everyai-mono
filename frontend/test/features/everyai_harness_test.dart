@@ -11,6 +11,8 @@ import 'package:every_ai/features/code/harness/openhands_harness.dart';
 import 'package:every_ai/features/code/harness/everyai/llm.dart';
 import 'package:every_ai/features/code/harness/everyai/prompt_io.dart';
 import 'package:every_ai/features/code/harness/everyai/shell_io.dart';
+import 'package:every_ai/features/code/domain/phases.dart';
+import 'package:every_ai/features/code/domain/transcript.dart' show planApprovedReason;
 import 'package:every_ai/features/code/harness/everyai/scrub.dart';
 import 'package:every_ai/features/code/harness/everyai/tools_io.dart';
 import 'package:every_ai/features/code/harness/harness.dart';
@@ -594,5 +596,80 @@ for line in sys.stdin:
     expect(hostAllowed('evilgithub.com', ['github.com']), isFalse);
     expect(secretPath('/Users/x/.ssh/id_ed25519'), isTrue);
     expect(secretPath('/p/.env.example'), isFalse);
+  });
+
+  test('a Max session runs research → questions → plan → build → verify, and the gate holds before the plan', () async {
+    gateway
+      ..reply(
+        calls: [
+          ('write', {'file_path': 'main.c', 'content': 'int main(){}'}),
+        ],
+      )
+      ..reply(
+        calls: [
+          ('run_subagent', {'description': 'HTTP servers in C', 'prompt': 'Find the best.', 'role': 'researcher'}),
+        ],
+      )
+      ..reply(
+        calls: [
+          ('present_plan', {'plan': 'x'}),
+        ],
+      )
+      ..reply(
+        calls: [
+          ('ask_user_question', {'questions': []}),
+        ],
+      )
+      ..reply(
+        calls: [
+          ('write', {'file_path': '.everyai/scratch/plan.md', 'content': '# Plan'}),
+        ],
+      )
+      ..reply(
+        calls: [
+          ('present_plan', {'plan': '# Plan'}),
+        ],
+      )
+      ..reply(
+        calls: [
+          ('write', {'file_path': 'main.c', 'content': 'int main(){return 0;}'}),
+        ],
+      )
+      ..reply(text: 'Built.')
+      ..reply(text: 'Verified: it compiles and serves.');
+    final session = await harness.start(
+      SessionSpec(
+        workingDir: work,
+        model: 'anthropic/claude-sonnet-5.5',
+        mode: AgentMode.fullAuto,
+        llmBaseUrl: gateway.baseUrl,
+        llmApiKey: 'sk-test',
+        sessionTag: 'tag-max',
+        initialMessage: 'Build an HTTP server in C',
+        holdClientTools: true,
+        phaseFlow: 'max',
+      ),
+    );
+    final events = await drive(
+      session,
+      answer: (c) => switch (c.toolName) {
+        'run_subagent' => 'Use picohttpparser; avoid fork-per-request.',
+        'ask_user_question' => 'The user answered: picohttpparser, epoll.',
+        'present_plan' => planApprovedReason,
+        _ => null,
+      },
+    );
+    final results = events.whereType<ToolResult>().map((r) => r.text).toList();
+    expect(results.first, contains('nothing in the project changes'));
+    expect(results.any((r) => r.contains('Error (Max flow, questions phase): not yet')), isTrue);
+    expect(File('$work/main.c').readAsStringSync(), 'int main(){return 0;}');
+    final notes = [
+      for (final m in events.whereType<ChatMessage>())
+        if (m.fromUser) ?parsePhaseNote(m.text)?.phase,
+    ];
+    expect(notes, [Phase.research, Phase.questions, Phase.plan, Phase.build, Phase.verify]);
+    // The first model call already had the research note after the task.
+    final first = gateway.requests.first['messages']! as List<Object?>;
+    expect((first.last! as Map)['content'], contains('phase="research"'));
   });
 }

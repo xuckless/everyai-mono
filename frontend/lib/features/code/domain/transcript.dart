@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import 'phases.dart';
 import '../harness/events.dart';
 import '../settings/context_files.dart' show splitContextNotes;
 import 'agent_mode.dart';
@@ -204,6 +205,7 @@ final class Transcript {
     this.streaming = '',
     this.streamingReasoning = '',
     this.streamingParts = const [],
+    this.phase,
     this.status = ExecutionStatus.idle,
     this.plan = const [],
     this.pending = const [],
@@ -226,6 +228,9 @@ final class Transcript {
   /// The reply being written.
   final String streaming;
   final String streamingReasoning;
+
+  /// Where a Max or Ultra flow is (its latest phase note), or null.
+  final ({String flow, Phase phase, bool stuck})? phase;
 
   /// The reply being written in order: text (String) and the tool calls
   /// being written between it ([StreamingTool]).
@@ -280,6 +285,7 @@ final class TranscriptBuilder {
   final _streaming = StringBuffer();
   final _reasoning = StringBuffer();
   final _parts = <Object>[];
+  ({String flow, Phase phase, bool stuck})? _phase;
   var _status = ExecutionStatus.idle;
   var _plan = const <PlanTask>[];
   AgentMode? _notedMode;
@@ -289,6 +295,7 @@ final class TranscriptBuilder {
     streaming: _streaming.toString(),
     streamingReasoning: _reasoning.toString(),
     streamingParts: List.unmodifiable(_parts),
+    phase: _phase,
     status: _status,
     plan: _plan,
     notedMode: _notedMode,
@@ -340,6 +347,19 @@ final class TranscriptBuilder {
           return;
         }
         if (_answer(text) || _reported(text)) return;
+        if (parsePhaseNote(text) case final p?) {
+          _phase = (flow: p.flow, phase: p.phase, stuck: p.stuck);
+          final flow = p.flow == 'ultra' ? 'Ultra' : 'Max';
+          _items.add(
+            NoticeItem(
+              e.id,
+              p.stuck ? '$flow flow stuck at ${p.phase.label.toLowerCase()}' : '$flow · ${p.phase.label}',
+              error: p.stuck,
+              detail: p.body,
+            ),
+          );
+          return;
+        }
         if (parseTaskNotification(text) case final n?) {
           _items.add(
             NoticeItem(

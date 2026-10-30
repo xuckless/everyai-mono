@@ -110,6 +110,7 @@ class CodeSlashHost {
     this.compact,
     this.rewind,
     this.cost,
+    this.skipPhase,
     this.btw,
     this.review,
     this.goal,
@@ -141,6 +142,9 @@ class CodeSlashHost {
   /// Restores the files from before the latest turn(s); the text is a count.
   final ValueChanged<String>? rewind;
   final VoidCallback? cost;
+
+  /// Moves a Max or Ultra flow past its phase.
+  final VoidCallback? skipPhase;
 
   /// Asks a side question without disturbing the agent.
   final ValueChanged<String>? btw;

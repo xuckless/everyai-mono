@@ -31,6 +31,7 @@ import 'domain/goal.dart';
 import 'domain/review.dart';
 import 'domain/rewind.dart';
 import 'domain/spill.dart';
+import 'domain/phases.dart' show Phase;
 import 'domain/subagents.dart';
 import 'domain/questions.dart';
 import 'domain/session_commands.dart';
@@ -432,6 +433,8 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       tools: tools,
       rolePrompt: rolePrompt,
       researchSites: researchSites,
+      // Only a main EveryAI session runs the Max or Ultra flow.
+      phaseFlow: everyai && !subagent && tier.phased ? tier.name : null,
       clientTools: clientTools,
       autoCompactAt: ref.read(codeSettingsProvider).autoCompactPercent / 100,
       pathMap: pathMap,
@@ -1168,9 +1171,20 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
   /// Whether this session answers cards and plans inside the held call.
   bool get _holds => ref.read(codeSessionsProvider.notifier).byId(sessionId)?.holdClientTools ?? false;
 
+  /// The plan last approved on the user's behalf (Full auto, Max flow).
+  String _autoPlanned = '';
+
   /// Approves or refuses pending actions the mode decides on its own.
   void _autoRespond(Transcript t) {
     if (_doomOpen) return;
+    // In Full auto a Max or Ultra plan goes ahead once the user has answered
+    // the flow's questions; in other modes it waits for them.
+    final plan = t.openPlan?.call;
+    if (state.mode == AgentMode.fullAuto && t.phase?.phase == Phase.plan && plan != null && _autoPlanned != plan.id) {
+      _autoPlanned = plan.id;
+      unawaited(startBuilding());
+      return;
+    }
     // A held card or plan waits for the user (one answer covers every
     // pending action, so the rest wait with it); sessions that don't hold
     // them approve them at once, as the agent ends its turn after the call.
@@ -1219,9 +1233,16 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     if (info == null || info.tier == tier) return;
     sessions.update(info.copyWith(tier: tier));
     _tierNote = tierChangeNote(tier, forks: info.harness == CodeHarnessKind.everyai.name && !info.isSubagent);
+    // Max and Ultra start their flow at research; the other tiers stop it.
+    if (_session case final PhasedSession phased) unawaited(phased.setPhaseFlow(tier.phased ? tier.name : null));
   }
 
   String _tierNote = '';
+
+  /// `/skip-phase`: moves the Max or Ultra flow past where it is stuck.
+  void skipPhase() {
+    if (_session case final PhasedSession phased) unawaited(phased.skipPhase());
+  }
 
   /// [text] with a mode note: the full one after a mode change, else a short reminder.
   /// Nested instruction files found since the last message go first, after the mode note.

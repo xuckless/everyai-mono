@@ -125,6 +125,7 @@ CodeSlashHost codeSlashHost(BuildContext context, WidgetRef ref, String sessionI
       toast((await controller().rewind(turn)).label);
     },
     cost: () => controller().showCost(),
+    skipPhase: () => controller().skipPhase(),
     btw: (question) => controller().askAside(question),
     review: (focus) => controller().review(focus),
     goal: (args) {

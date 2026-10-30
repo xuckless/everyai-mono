@@ -7,6 +7,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../domain/agent_mode.dart';
 import '../../domain/compaction.dart';
+import '../../domain/phases.dart';
 import '../../domain/subagents.dart' show forkingTaskSpec, subagentRules, taskTool;
 import '../../settings/agent_prompt.dart' show forHeldClientTools;
 import '../events.dart';
@@ -91,7 +92,7 @@ const maxStepsPerRun = 400;
 
 /// One conversation: its history (OpenAI-style messages), its events, and the
 /// loop that calls the model and runs tools.
-final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundShells, CompactsInPlace {
+final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundShells, CompactsInPlace, PhasedSession {
   EveryAISession._(this.id, this._spec, this._dir, http.Client? client)
     : _gateway = GatewayClient(baseUrl: _spec.llmBaseUrl, apiKey: _spec.llmApiKey, client: client),
       _shell = SessionShell(root: _spec.workingDir, sessionTag: _spec.sessionTag, scratchDir: '${_dir.path}/shell') {
@@ -152,6 +153,77 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
   /// Of [lastPromptTokens], how many came from the prompt cache (live checks).
   int lastCachedTokens = 0;
 
+  /// The Max or Ultra flow this session runs, or null.
+  late PhaseFlow? _flow = _loadFlow();
+
+  PhaseFlow? _loadFlow() {
+    final file = File('${_dir.path}/phases.json');
+    if (file.existsSync()) {
+      try {
+        final j = jsonDecode(file.readAsStringSync());
+        if (j is Map<String, Object?>) return PhaseFlow.fromJson(j);
+      } on Object {
+        // A broken file starts the flow over.
+      }
+    }
+    return switch (_spec.phaseFlow) {
+      'max' => PhaseFlow(),
+      'ultra' => PhaseFlow(ultra: true),
+      _ => null,
+    };
+  }
+
+  void _saveFlow() {
+    final file = File('${_dir.path}/phases.json');
+    if (_flow case final f?) {
+      file.writeAsStringSync(jsonEncode(f.toJson()));
+    } else if (file.existsSync()) {
+      file.deleteSync();
+    }
+  }
+
+  /// Puts the flow's note for the current phase in the conversation.
+  void _notePhase({bool stuck = false}) {
+    final f = _flow;
+    if (f == null) return;
+    _saveFlow();
+    final eid = _newId();
+    final text = f.note(stuck: stuck);
+    _emit({
+      'kind': 'MessageEvent',
+      'id': eid,
+      'source': 'user',
+      'llm_message': {'role': 'user', 'content': text},
+    });
+    _append({'role': 'user', 'content': text, '_eid': eid});
+  }
+
+  @override
+  Future<void> skipPhase() async {
+    final f = _flow;
+    if (f == null || f.phase == Phase.done) return;
+    f.skip();
+    _notePhase();
+    if (!_looping) unawaited(_run());
+  }
+
+  @override
+  Future<void> setPhaseFlow(String? flow) async {
+    final had = _flow;
+    _flow = switch (flow) {
+      'max' => had != null && !had.ultra ? had : PhaseFlow(),
+      'ultra' => had != null && had.ultra ? had : PhaseFlow(ultra: true),
+      _ => null,
+    };
+    _spec = _withSpec(phaseFlow: flow ?? '');
+    _writeSpec();
+    if (_flow != null && _flow != had) {
+      _notePhase();
+    } else {
+      _saveFlow();
+    }
+  }
+
   /// For a fork: the parent's tool list, kept as it was so the cached prefix
   /// (tools, system prompt, history) matches.
   List<Map<String, Object?>>? _forkTools;
@@ -165,7 +237,14 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
     final system = await _systemPrompt();
     _append({'role': 'system', 'content': system});
     if (_spec.initialMessage case final first?) {
-      await send(first, run: _spec.runInitial, images: _spec.initialImages);
+      // The flow's first note follows the task, before the first model call.
+      if (_flow != null) await send(first, run: false, images: _spec.initialImages);
+      if (_flow != null) {
+        _notePhase();
+        if (_spec.runInitial) unawaited(_run());
+      } else {
+        await send(first, run: _spec.runInitial, images: _spec.initialImages);
+      }
     }
   }
 
@@ -257,6 +336,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
     'mcp_config': s.mcpConfig,
     'path_map': s.pathMap,
     'research_sites': ?s.researchSites,
+    'phase_flow': ?s.phaseFlow,
   };
 
   void _writeForkTools() {
@@ -281,6 +361,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
     mcpConfig: (j['mcp_config'] as Map<String, Object?>?) ?? const {},
     pathMap: {for (final e in (j['path_map'] as Map<String, Object?>? ?? const {}).entries) e.key: '${e.value}'},
     researchSites: (j['research_sites'] as List<Object?>?)?.cast<String>(),
+    phaseFlow: j['phase_flow'] as String?,
   );
 
   Future<String> _systemPrompt() async {
@@ -407,13 +488,17 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
       'llm_message': {'role': 'user', 'content': content},
     });
     final message = {'role': 'user', 'content': images.isEmpty ? text : content, '_eid': eid};
+    final moved = _flow?.onMessage(text) ?? false;
     if (_looping) {
       // Steering: read before the next model call.
       _inbox.add(message);
+      if (moved) _inbox.add({'role': 'user', 'content': _flow!.note(), '_eid': _newId()});
+      if (moved) _saveFlow();
       if (!_arrived.isCompleted) _arrived.complete();
       return;
     }
     _append(message);
+    if (moved) _notePhase();
     if (run) unawaited(_run());
   }
 
@@ -481,6 +566,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
     String? llmApiKey,
     int? maxInputTokens,
     bool? vision,
+    String? phaseFlow,
   }) {
     final s = _spec;
     return SessionSpec(
@@ -502,6 +588,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
       mcpConfig: s.mcpConfig,
       pathMap: s.pathMap,
       researchSites: s.researchSites,
+      phaseFlow: phaseFlow == null ? s.phaseFlow : (phaseFlow.isEmpty ? null : phaseFlow),
     );
   }
 
@@ -673,6 +760,20 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
         });
         if (reply.toolCalls.isEmpty || wrapUp) {
           if (_inbox.isNotEmpty) continue;
+          // The flow decides whether this turn may end.
+          if (!wrapUp && _flow != null) {
+            switch (_flow!.onTurnEnd()) {
+              case Nudge():
+                _notePhase();
+                continue;
+              case Stuck():
+                _notePhase(stuck: true);
+                _setStatus(ExecutionStatus.paused);
+                return;
+              case EndTurn():
+                _saveFlow();
+            }
+          }
           _setStatus(ExecutionStatus.finished);
           return;
         }
@@ -811,6 +912,18 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
         );
         continue;
       }
+      if (args != null && _flow != null) {
+        _flow!.onCall(call.name, args);
+        final refusal = _flow!.gate(
+          call.name,
+          args,
+          inScratch: (p) => resolvePath(_spec.workingDir, p).startsWith('${_spec.workingDir}/.everyai/scratch/'),
+        );
+        if (refusal != null) {
+          _result(call, actionId, ToolOutput(refusal, isError: true));
+          continue;
+        }
+      }
       if (args == null) {
         // A call cut off or garbled: never run, the model is told why.
         _result(
@@ -834,7 +947,9 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
     _decision = null;
     if (!verdict.accept) {
       final reason = verdict.reason ?? '';
+      var moved = false;
       for (final w in waiting) {
+        if (_flow?.onAnswer(w.call.name, w.call.args ?? const {}, reason) ?? false) moved = true;
         _emit({
           'kind': 'UserRejectObservation',
           'id': _newId(),
@@ -850,6 +965,8 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
         });
         File('${_dir.path}/messages.jsonl').writeAsStringSync('${jsonEncode(_messages.last)}\n', mode: FileMode.append);
       }
+      if (moved) _notePhase();
+      if (_flow != null) _saveFlow();
       // Parked like the agent-server: a refusal the app decided is followed
       // by resume(); the user's own "No" leaves it waiting for them.
       _setStatus(ExecutionStatus.paused);

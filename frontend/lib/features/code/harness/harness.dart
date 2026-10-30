@@ -32,7 +32,12 @@ final class SessionSpec {
     this.autoCompactAt = 0.6,
     this.pathMap = const {},
     this.researchSites,
+    this.phaseFlow,
   });
+
+  /// 'max' or 'ultra': the session runs the phase flow (research → questions
+  /// → plan → build → verify) the harness enforces. Null: it doesn't.
+  final String? phaseFlow;
 
   /// A research job's sandbox: no shell, MCP or writes outside its scratch
   /// folder, no secret files, and the web only on these sites. Null: not one.
@@ -164,6 +169,15 @@ abstract interface class AsksAside {
 
 /// A session that compacts its own history in place (the EveryAI harness):
 /// `/compact` asks it instead of starting a continuation conversation.
+/// A session running the Max or Ultra phase flow (the EveryAI harness).
+abstract interface class PhasedSession {
+  /// Moves the flow past the phase it is stuck in.
+  Future<void> skipPhase();
+
+  /// Starts ('max' or 'ultra', at research) or stops (null) the flow.
+  Future<void> setPhaseFlow(String? flow);
+}
+
 abstract interface class CompactsInPlace {
   /// False when there was nothing to summarize or the summary was unusable.
   Future<bool> compact({String focus = ''});
