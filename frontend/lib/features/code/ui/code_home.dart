@@ -147,7 +147,10 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                   Text(
                     _starting && !isDemoPath(project.path)
                         ? 'Starting the agent…'
-                        : 'The agent works in ${isDemoPath(project.path) ? 'a demo project with a scripted agent' : project.path}. '
+                        : isDemoPath(project.path)
+                        ? 'A demo project with a scripted agent. ${_mode.description}.'
+                        // Folders without git still run in place.
+                        : 'Each session works on its own branch in a separate worktree, so your checkout stays as it is. '
                               '${_mode.description}.',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: theme.textMuted, fontSize: 12.5),
@@ -226,7 +229,8 @@ class _ProjectPicker extends StatelessWidget {
     final theme = EveryTheme.of(context);
     return AnchoredPopover(
       width: 300,
-      builder: (context, close) => Padding(
+      // Many projects with long paths outgrow the popover's height cap.
+      builder: (context, close) => SingleChildScrollView(
         padding: const EdgeInsets.symmetric(vertical: 6),
         child: Column(
           mainAxisSize: MainAxisSize.min,

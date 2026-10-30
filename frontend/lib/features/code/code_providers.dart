@@ -380,7 +380,11 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     final mode = state.mode;
     if (t.pending.any(mode.rejects)) {
       _answered = key;
-      unawaited(_session?.respond(accept: false, reason: AgentMode.planRefusal));
+      // The server parks the conversation after a rejection; run it again so
+      // the agent reads the refusal and keeps exploring (a user's own "No"
+      // still stops it).
+      final session = _session;
+      unawaited(session?.respond(accept: false, reason: AgentMode.planRefusal).then((_) => session.resume()));
     } else if (t.pending.every(mode.autoApproves)) {
       _answered = key;
       unawaited(_session?.respond(accept: true));

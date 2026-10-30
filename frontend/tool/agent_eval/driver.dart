@@ -64,7 +64,7 @@ final class EvalRun {
       _respondedTo = key;
       if (t.pending.any(mode.rejects)) {
         refusals++;
-        unawaited(session.respond(accept: false, reason: AgentMode.planRefusal));
+        unawaited(session.respond(accept: false, reason: AgentMode.planRefusal).then((_) => session.resume()));
       } else {
         t.pending.every(mode.autoApproves) ? autoApprovals++ : userApprovals++;
         unawaited(session.respond(accept: true));
