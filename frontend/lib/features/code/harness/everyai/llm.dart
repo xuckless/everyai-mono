@@ -12,6 +12,7 @@ final class LlmReply {
     required this.toolCalls,
     required this.finishReason,
     this.promptTokens = 0,
+    this.cachedTokens = 0,
   });
 
   final String text;
@@ -25,6 +26,9 @@ final class LlmReply {
 
   /// Input tokens of this call: how full the context is.
   final int promptTokens;
+
+  /// Of [promptTokens], how many were read from the prompt cache.
+  final int cachedTokens;
 
   /// The assistant message to keep in the history.
   Map<String, Object?> toMessage() => {
@@ -124,6 +128,7 @@ final class GatewayClient {
     final calls = <int, ({StringBuffer id, StringBuffer name, StringBuffer args})>{};
     var finish = '';
     var promptTokens = 0;
+    var cachedTokens = 0;
     var cancelled = false;
     final lines = res.stream.transform(utf8.decoder).transform(const LineSplitter());
     final done = Completer<void>();
@@ -152,6 +157,7 @@ final class GatewayClient {
           return;
         }
         if (json['usage'] case {'prompt_tokens': final num p}) promptTokens = p.toInt();
+        if (json['usage'] case {'prompt_tokens_details': {'cached_tokens': final num c}}) cachedTokens = c.toInt();
         final choices = json['choices'];
         if (choices is! List || choices.isEmpty || choices.first is! Map) return;
         final choice = choices.first as Map<String, Object?>;
@@ -218,6 +224,7 @@ final class GatewayClient {
       ],
       finishReason: finish,
       promptTokens: promptTokens,
+      cachedTokens: cachedTokens,
     );
   }
 

@@ -127,6 +127,9 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
   /// Input tokens of the last model call: how full the context is.
   int lastPromptTokens = 0;
 
+  /// Of [lastPromptTokens], how many came from the prompt cache (live checks).
+  int lastCachedTokens = 0;
+
   /// For a fork: the parent's tool list, kept as it was so the cached prefix
   /// (tools, system prompt, history) matches.
   List<Map<String, Object?>>? _forkTools;
@@ -573,6 +576,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
           return;
         }
         lastPromptTokens = reply.promptTokens;
+        lastCachedTokens = reply.cachedTokens;
         final textId = _newId();
         _append({...reply.toMessage(), '_eid': textId});
         // Always emitted (an empty one shows nothing): rewinds keep the
