@@ -7,12 +7,16 @@ import 'doc_model.dart';
 import 'svg_raster.dart';
 
 /// A Word document (.docx) of [blocks]: headings, paragraphs, lists, tables,
-/// code, quotes, and figures (pre-rasterized in [figures], keyed by SVG
-/// source). Mermaid diagrams and display math are written as their source.
+/// code, quotes, and figures, pre-rasterized: SVG in [figures] (keyed by SVG
+/// source), Mermaid in [diagrams] (keyed by source) and display math in
+/// [equations] (keyed by TeX). A diagram or equation without an image is
+/// written as its source.
 Uint8List buildDocx({
   required String title,
   required List<DocBlock> blocks,
   Map<String, RasterFigure> figures = const {},
+  Map<String, RasterFigure> diagrams = const {},
+  Map<String, RasterFigure> equations = const {},
 }) {
   final body = StringBuffer();
   final rels = <String>[]; // extra relationships of document.xml
@@ -118,10 +122,18 @@ Uint8List buildDocx({
             paragraph(run(const DocRun('[Figure could not be drawn]', italic: true)));
           }
         case DiagramBlock(:final source):
-          paragraph(run(const DocRun('Diagram (Mermaid source)', italic: true)), indent: indent);
-          code(source, indent: indent);
+          if (diagrams[source] case final f?) {
+            figure(f);
+          } else {
+            paragraph(run(const DocRun('Diagram (Mermaid source)', italic: true)), indent: indent);
+            code(source, indent: indent);
+          }
         case MathBlock(:final tex):
-          paragraph(run(DocRun(tex, code: true)), extra: '<w:jc w:val="center"/>');
+          if (equations[tex] case final f?) {
+            figure(f);
+          } else {
+            paragraph(run(DocRun(tex, code: true)), extra: '<w:jc w:val="center"/>');
+          }
         case TableBlock(:final header, :final rows):
           String cell(List<DocRun> runs, {bool head = false}) =>
               '<w:tc><w:p>${(head ? runs.map((r) => DocRun(r.text, bold: true, code: r.code)) : runs).map(run).join()}</w:p></w:tc>';

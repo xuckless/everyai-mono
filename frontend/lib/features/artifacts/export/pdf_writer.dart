@@ -15,14 +15,17 @@ const _rule = PdfColor.fromInt(0xFFDDDDE5);
 const _codeFill = PdfColor.fromInt(0xFFF4F4F8);
 const _link = PdfColor.fromInt(0xFF5B3FD9);
 
-/// A paginated A4 PDF of [blocks]. Figures come pre-rasterized in [figures]
-/// (keyed by SVG source); Mermaid diagrams and display math are printed as
-/// their source.
+/// A paginated A4 PDF of [blocks]. Figures come pre-rasterized: SVG in
+/// [figures] (keyed by SVG source), Mermaid in [diagrams] (keyed by source)
+/// and display math in [equations] (keyed by TeX). A diagram or equation
+/// without an image is printed as its source.
 Future<Uint8List> buildPdf({
   required String title,
   required List<DocBlock> blocks,
   required PdfFonts fonts,
   Map<String, RasterFigure> figures = const {},
+  Map<String, RasterFigure> diagrams = const {},
+  Map<String, RasterFigure> equations = const {},
 }) {
   final mono = pw.Font.ttf(fonts.mono);
   final doc = pw.Document(
@@ -78,18 +81,19 @@ Future<Uint8List> buildPdf({
     );
   }
 
-  pw.Widget figure(RasterFigure? f) {
-    if (f != null) {
-      try {
-        return pw.Center(
-          child: pw.Image(pw.MemoryImage(f.png), width: f.width, height: f.height, fit: pw.BoxFit.contain),
-        );
-      } on Object {
-        // Falls through to the placeholder.
-      }
+  pw.Widget? image(RasterFigure? f) {
+    if (f == null) return null;
+    try {
+      return pw.Center(
+        child: pw.Image(pw.MemoryImage(f.png), width: f.width, height: f.height, fit: pw.BoxFit.contain),
+      );
+    } on Object {
+      return null;
     }
-    return pw.Text('[Figure could not be drawn]', style: const pw.TextStyle(color: _muted));
   }
+
+  pw.Widget figure(RasterFigure? f) =>
+      image(f) ?? pw.Text('[Figure could not be drawn]', style: const pw.TextStyle(color: _muted));
 
   // Every block becomes its own top-level widget (nested ones indented), so
   // MultiPage can break between any two of them.
@@ -132,10 +136,12 @@ Future<Uint8List> buildPdf({
         ParagraphBlock(:final runs) => text(runs, style: quoted ? const pw.TextStyle(color: _muted) : null),
         CodeBlock(:final language, text: final code) => codeBox(code, caption: language.isEmpty ? null : language),
         FigureBlock(:final svg) => figure(figures[svg]),
-        DiagramBlock(:final source) => codeBox(source, caption: 'Diagram (Mermaid source)'),
-        MathBlock(:final tex) => pw.Center(
-          child: pw.Text(tex, style: pw.TextStyle(font: mono, fontSize: 9.5)),
-        ),
+        DiagramBlock(:final source) => image(diagrams[source]) ?? codeBox(source, caption: 'Diagram (Mermaid source)'),
+        MathBlock(:final tex) =>
+          image(equations[tex]) ??
+              pw.Center(
+                child: pw.Text(tex, style: pw.TextStyle(font: mono, fontSize: 9.5)),
+              ),
         TableBlock(:final header, :final rows) => pw.Table(
           border: pw.TableBorder.all(color: _rule, width: 0.6),
           children: [

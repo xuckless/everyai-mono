@@ -54,6 +54,7 @@ dependencies:
   desktop_drop: ^0.8.4
   pdf: ^3.13.1
   markdown: ^7.3.1
+  flutter_math_fork: ^0.7.4
 
 dev_dependencies:
   flutter_test:
@@ -73,6 +74,7 @@ flutter:
     - assets/brand/empty/
     - assets/brand/fields/
     - assets/brand/textures/
+    - assets/web/
   fonts:
     - family: SourceCodePro
       fonts:

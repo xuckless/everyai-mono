@@ -117,19 +117,32 @@ String fenceRawSvg(String markdown) {
 
 /// The `<svg>` sources of the ```svg blocks in [markdown], in order.
 List<String> svgFiguresIn(String markdown) => [
-  for (final b in parseDoc(markdown).expand(_flatten))
+  for (final b in parseDoc(markdown).expand(flattenDoc))
     if (b is FigureBlock) b.svg,
 ];
 
-Iterable<DocBlock> _flatten(DocBlock b) sync* {
+/// The sources of the ```mermaid blocks in [markdown], in order.
+List<String> diagramSourcesIn(String markdown) => [
+  for (final b in parseDoc(markdown).expand(flattenDoc))
+    if (b is DiagramBlock) b.source,
+];
+
+/// The TeX of the display-math blocks in [markdown], in order.
+List<String> displayMathIn(String markdown) => [
+  for (final b in parseDoc(markdown).expand(flattenDoc))
+    if (b is MathBlock) b.tex,
+];
+
+/// [b] and every block nested in it (list items, quotes).
+Iterable<DocBlock> flattenDoc(DocBlock b) sync* {
   yield b;
   switch (b) {
     case ListBlock(:final items):
       for (final item in items) {
-        yield* item.expand(_flatten);
+        yield* item.expand(flattenDoc);
       }
     case QuoteBlock(:final blocks):
-      yield* blocks.expand(_flatten);
+      yield* blocks.expand(flattenDoc);
     default:
   }
 }
