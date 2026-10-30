@@ -5,8 +5,14 @@
 //! acknowledged to the model; server tools (web_fetch, generate_image) run
 //! here. Every upstream call is metered (billing.charge).
 //!
+//! Client-executed tools: a UI tool the app names in `client_tools` is sent as
+//! `tool_wait` instead of `tool`, and the loop waits until the app POSTs
+//! `/v1/chat/tool_result {call_id, result, is_error?}` (or the wait times out);
+//! the result, not an acknowledgement, goes back to the model. A `tool_status`
+//! (done, or failed with detail "timed out") then closes the wait.
+//!
 //! Events: delta {text}, reasoning {text}, sources {sources} (new ones, appended), tool {id, name,
-//! arguments}, tool_status {id, name, status, detail?}, image {id, mime, data},
+//! arguments}, tool_wait {id, name, arguments}, tool_status {id, name, status, detail?}, image {id, mime, data},
 //! usage {kind: chat|followups, model, tokens..., charged_micros}, followups {questions}, done {},
 //! error {message, retryable}.
 const std = @import("std");
@@ -19,6 +25,7 @@ const tools = @import("tools.zig");
 const util = @import("util.zig");
 const images = @import("images.zig");
 const tool_check = @import("tool_check.zig");
+const tool_wait = @import("tool_wait.zig");
 
 const Events = @typeInfo(@typeInfo(@TypeOf(anole.Response.startEventStream)).@"fn".return_type.?).error_union.payload;
 
@@ -38,6 +45,8 @@ pub const ChatRequest = struct {
     tools_enabled: bool = true,
     /// Client conversation id, for usage attribution.
     session: ?[]const u8 = null,
+    /// UI tools the app runs itself and answers via `/v1/chat/tool_result`.
+    client_tools: []const []const u8 = &.{},
 };
 
 /// A message in the upstream conversation. `raw_tool_calls` is the assistant's
@@ -178,6 +187,11 @@ const Sink = struct {
             .sources => |list| try self.send("sources", .{ .sources = list }),
         }
     }
+
+    /// Keeps the stream alive while a tool waits for the app.
+    pub fn heartbeat(self: Sink) !void {
+        try self.ev.comment("waiting for the app");
+    }
 };
 
 fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
@@ -272,7 +286,7 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
         // The assistant turn with its tool calls, then one result per call.
         try messages.append(arena, .{ .role = "assistant", .content = result.text, .raw_tool_calls = try toolCallsJson(arena, result.tool_calls) });
         for (result.tool_calls) |call| {
-            const output = try runTool(app, req, who, body.session, call, sink, &docs);
+            const output = try runTool(app, req, who, body, call, sink, &docs);
             try messages.append(arena, .{ .role = "tool", .tool_call_id = call.id, .content = output });
         }
         // A model that stopped for another reason than tools is done.
@@ -407,7 +421,8 @@ fn toolCallsJson(arena: std.mem.Allocator, calls: []const openrouter.ToolCall) !
 }
 
 /// Runs or forwards one tool call; returns the text the model sees.
-fn runTool(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, call: openrouter.ToolCall, sink: Sink, docs: *Artifacts) ![]const u8 {
+fn runTool(app: *App, req: *anole.Request, who: auth.Identity, body: ChatRequest, call: openrouter.ToolCall, sink: Sink, docs: *Artifacts) ![]const u8 {
+    const session = body.session;
     const args_text = if (call.arguments.len == 0) "{}" else call.arguments;
     const args = std.json.parseFromSliceLeaky(std.json.Value, req.arena, args_text, .{}) catch {
         return "Error: the tool arguments were not valid JSON. Call the tool again with valid JSON.";
@@ -421,6 +436,7 @@ fn runTool(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const
             // An edit is checked here first, so the model learns about misses.
             const edited = try docs.track(req.arena, call.name, args);
             if (edited) |e| if (e.applied == 0) return e.message;
+            if (declared(body.client_tools, call.name)) return waitForApp(app, req, who, call, args, sink);
             try sink.send("tool", .{ .id = call.id, .name = call.name, .arguments = args });
             return if (edited) |e| e.message else try tool_check.shown(req.arena, call.name, args);
         },
@@ -436,6 +452,68 @@ fn runTool(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const
             return output;
         },
     }
+}
+
+fn declared(names: []const []const u8, name: []const u8) bool {
+    for (names) |n| if (std.mem.eql(u8, n, name)) return true;
+    return false;
+}
+
+/// The most of an app's answer the model sees.
+const app_result_max = 100_000;
+
+/// Hands a call to the app (`tool_wait`) and returns its answer for the model:
+/// the result, an "Error: …" the app reported, or a typed timeout.
+fn waitForApp(app: *App, req: *anole.Request, who: auth.Identity, call: openrouter.ToolCall, args: std.json.Value, sink: Sink) ![]const u8 {
+    var w: tool_wait.Waiter = .{ .user_id = who.user_id, .call_id = call.id };
+    // Linked before the app hears of it, so a quick answer finds it.
+    app.waits.add(req.io, &w);
+    sink.send("tool_wait", .{ .id = call.id, .name = call.name, .arguments = args }) catch |err| {
+        app.waits.drop(req.io, app.gpa, &w);
+        return err;
+    };
+    const timeout_ms = app.cfg.client_tool_timeout_ms;
+    const outcome = try app.waits.wait(req.io, app.gpa, req.arena, &w, .fromMilliseconds(timeout_ms), .fromSeconds(15), sink);
+    switch (outcome) {
+        .timeout => {
+            try sink.send("tool_status", .{ .id = call.id, .name = call.name, .status = "failed", .detail = "timed out" });
+            return std.fmt.allocPrint(req.arena, "Error (timeout): the app did not answer this {s} call within {d} s. Carry on without its result.", .{ call.name, timeout_ms / 1000 });
+        },
+        .answered => |a| {
+            try sink.send("tool_status", .{ .id = call.id, .name = call.name, .status = if (a.is_error) "failed" else "done" });
+            const text = if (a.text.len > app_result_max)
+                try std.mem.concat(req.arena, u8, &.{ a.text[0..app_result_max], "\n[truncated]" })
+            else
+                a.text;
+            if (!a.is_error) return if (text.len == 0) "Done." else text;
+            if (std.mem.startsWith(u8, text, "Error")) return text;
+            return std.mem.concat(req.arena, u8, &.{ "Error: ", if (text.len == 0) "the app could not run this tool." else text });
+        },
+    }
+}
+
+const ToolResultBody = struct {
+    call_id: []const u8,
+    /// A string, or any JSON (sent to the model as JSON text).
+    result: std.json.Value = .null,
+    /// The app could not run the tool; `result` says why.
+    is_error: bool = false,
+};
+
+/// POST /v1/chat/tool_result: the app's answer to a `tool_wait`.
+fn toolResult(app: *App, req: *anole.Request, res: *anole.Response) !void {
+    const who = try auth.identity(req);
+    const raw = (try req.body()) orelse return res.fail(.bad_request, "missing body");
+    const body = std.json.parseFromSliceLeaky(ToolResultBody, req.arena, raw, .{ .ignore_unknown_fields = true }) catch
+        return res.fail(.unprocessable_entity, "body must be {call_id, result, is_error?}");
+    const text = switch (body.result) {
+        .string => |t| t,
+        .null => "",
+        else => try std.json.Stringify.valueAlloc(req.arena, body.result, .{}),
+    };
+    if (!try app.waits.resolve(req.io, app.gpa, who.user_id, body.call_id, text, body.is_error))
+        return res.fail(.not_found, "no chat turn is waiting for this call (it finished or timed out)");
+    return res.json(.{ .ok = true });
 }
 
 /// The page's readable text: tags, scripts and styles removed, whitespace
@@ -539,7 +617,9 @@ fn followUps(app: *App, req: *anole.Request, who: auth.Identity, body: ChatReque
 }
 
 pub fn routes(app: *anole.Server(App), state: *App) void {
-    app.group("/v1", .{auth.Authenticate{ .app = state }}).post("/chat/stream", stream);
+    const v1 = app.group("/v1", .{auth.Authenticate{ .app = state }});
+    v1.post("/chat/stream", stream);
+    v1.post("/chat/tool_result", toolResult);
 }
 
 test {

@@ -23,6 +23,7 @@ pub const images = @import("images.zig");
 pub const anthropic = @import("anthropic.zig");
 pub const devtools = @import("devtools.zig");
 pub const sse_client = @import("net/sse_client.zig");
+pub const tool_wait = @import("tool_wait.zig");
 
 pub const std_options = anole.std_options;
 
@@ -46,6 +47,8 @@ pub const App = struct {
     anthropic: ?openrouter.Upstream = null,
     native_anthropic: std.atomic.Value(bool) = .init(false),
     catalog: models.Catalog,
+    /// Chat turns parked on a tool the app runs (`POST /v1/chat/tool_result`).
+    waits: tool_wait.Waits = .{},
 
     pub const Route = struct { up: openrouter.Upstream, provider: []const u8 };
 
@@ -153,4 +156,5 @@ test {
     _ = models;
     _ = anthropic;
     _ = agents;
+    _ = tool_wait;
 }

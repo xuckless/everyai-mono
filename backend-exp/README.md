@@ -21,18 +21,19 @@ Anole is a path dependency (`../../../PersonalProjects/anole` in
 | Auth | `POST /v1/auth/signup\|login\|google\|refresh\|logout`, `DELETE /v1/auth/account`, `GET /v1/me` | `auth.zig` |
 | Gateway keys | `POST/GET /v1/keys`, `DELETE /v1/keys/:id` (`sk-eai-…`) | `auth.zig` |
 | Models | `GET /v1/models` (OpenRouter catalog, hourly, marked-up prices), `GET /v1/models/defaults` | `models.zig` |
-| Chat | `POST /v1/chat/stream` (SSE) | `chat.zig`, `tools.zig` |
+| Chat | `POST /v1/chat/stream` (SSE), `POST /v1/chat/tool_result` | `chat.zig`, `tools.zig`, `tool_wait.zig` |
 | Gateway | `POST /v1/chat/completions` (OpenAI-compatible, streaming) | `gateway.zig` |
 | Images | `POST /v1/images` | `images.zig` |
 | Billing | `GET /v1/plans`, `GET /v1/billing`, `GET /v1/usage`, `POST /v1/billing/checkout`, `POST /v1/billing/webhook` | `billing.zig` |
 
 ## Chat stream
 
-Request: `{model?, mode: chat|search|research, messages: [{role, content}], tools_enabled?, session?}`.
+Request: `{model?, mode: chat|search|research, messages: [{role, content}], tools_enabled?, session?, client_tools?}`.
 
 Events: `delta {text}`, `reasoning {text}`, `sources {sources}` (new sources,
 appended in citation order), `tool {id, name, arguments}` (a UI tool for the
-app to render), `tool_status {id, name, status, detail?}` (a server tool),
+app to render), `tool_wait {id, name, arguments}` (a client-executed tool the
+turn waits on), `tool_status {id, name, status, detail?}` (a server tool),
 `image {id, mime, data}`, `usage {model, prompt_tokens, completion_tokens,
 cached_tokens, cache_write_tokens, charged_micros}` (one per upstream call),
 `followups {questions}`, `done {}`, `error {message, retryable, status?}`.
@@ -42,6 +43,12 @@ cached_tokens, cache_write_tokens, charged_micros}` (one per upstream call),
 - UI tools (artifacts, SVG, Mermaid, charts, quizzes, flashcards, slides) are
   sent to the app and acknowledged to the model; `web_fetch` and
   `generate_image` run on the server. At most `MAX_TOOL_STEPS` model calls a turn.
+- Client-executed tools: UI tools named in `client_tools` come as `tool_wait`,
+  and the turn waits for `POST /v1/chat/tool_result {call_id, result, is_error?}`
+  (404 when nothing waits for that call). The model gets the app's result, or
+  `Error (timeout): …` after `CLIENT_TOOL_TIMEOUT_MS` (default 300 s). A
+  `tool_status` (done, or failed with detail `timed out`) closes each wait; SSE
+  comments keep the stream alive every 15 s.
 
 ## Prompt caching
 

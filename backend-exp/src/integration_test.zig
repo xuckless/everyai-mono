@@ -428,3 +428,89 @@ test "dev switch: Claude on Anthropic's API, attachments, provider billed, sessi
     try std.testing.expectEqualStrings("anthropic", gw_row.provider);
     try std.testing.expectEqualStrings("code-9", gw_row.session);
 }
+
+const diagram_turn =
+    \\data: {"model":"anthropic/claude-haiku-5.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"toolu_d1","type":"function","function":{"name":"render_diagram","arguments":"{\"title\": \"Flow\", \"mermaid\": \"graph TD; A-->B\"}"}}]}}]}
+    \\
+    \\data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":0.00001}}
+    \\
+    \\data: [DONE]
+    \\
+    \\
+;
+
+/// Reads events until one named `name`; its data.
+fn untilEvent(s: *anole.testing.Stream, name: []const u8) ![]const u8 {
+    while (try s.nextEvent()) |e| {
+        if (std.mem.eql(u8, e.event orelse "", name)) return e.data;
+    }
+    std.debug.print("stream ended before event {s}\n", .{name});
+    return error.TestUnexpectedResult;
+}
+
+test "chat: a client-executed tool waits for the app's result" {
+    var env: Env = undefined;
+    try start(&env, &.{ diagram_turn, final_turn, followups_reply }, true);
+    defer env.deinit();
+
+    var s = try env.t.open(.post, "/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = "Draw it" }},
+        .client_tools = .{"render_diagram"},
+    } });
+    defer s.deinit();
+    try std.testing.expect(s.status == .ok);
+    const wait = try untilEvent(s, "tool_wait");
+    try std.testing.expect(std.mem.indexOf(u8, wait, "\"id\":\"toolu_d1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wait, "graph TD") != null);
+    try std.testing.expectEqual(@as(usize, 1), env.state.waits.count(env.server.io()));
+
+    // Unknown calls are refused; the real one resumes the turn.
+    var miss = try env.t.post("/v1/chat/tool_result", .{ .json = .{ .call_id = "toolu_nope", .result = "x" } });
+    defer miss.deinit();
+    try miss.expectStatus(.not_found);
+    var ok = try env.t.post("/v1/chat/tool_result", .{ .json = .{ .call_id = "toolu_d1", .result = "Parse error on line 1: expected arrow", .is_error = true } });
+    defer ok.deinit();
+    try ok.expectStatus(.ok);
+
+    const status = try untilEvent(s, "tool_status");
+    try std.testing.expect(std.mem.indexOf(u8, status, "\"status\":\"failed\"") != null);
+    _ = try untilEvent(s, "done");
+    try std.testing.expectEqual(@as(usize, 0), env.state.waits.count(env.server.io()));
+    // The model saw the app's answer, not an acknowledgement.
+    const second = env.fake.bodies.items[1];
+    try std.testing.expect(std.mem.indexOf(u8, second, "Error: Parse error on line 1: expected arrow") != null);
+    try std.testing.expect(std.mem.indexOf(u8, second, "Shown to the user") == null);
+}
+
+test "chat: an unanswered client tool times out with a typed error; undeclared tools don't wait" {
+    var env: Env = undefined;
+    try start(&env, &.{ diagram_turn, final_turn, followups_reply, diagram_turn, final_turn, followups_reply }, true);
+    defer env.deinit();
+    env.state.cfg.client_tool_timeout_ms = 50;
+
+    var res = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = "Draw it" }},
+        .client_tools = .{"render_diagram"},
+    } });
+    defer res.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "event: tool_wait") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "\"detail\":\"timed out\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "event: done") != null);
+    try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[1], "Error (timeout): the app did not answer this render_diagram call") != null);
+    try std.testing.expectEqual(@as(usize, 0), env.state.waits.count(env.server.io()));
+
+    var late = try env.t.post("/v1/chat/tool_result", .{ .json = .{ .call_id = "toolu_d1", .result = "ok" } });
+    defer late.deinit();
+    try late.expectStatus(.not_found);
+
+    // Without client_tools the same call is a plain UI tool.
+    var plain = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = "Draw it" }},
+    } });
+    defer plain.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, plain.body, "event: tool_wait") == null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.body, "event: tool\n") != null);
+}

@@ -34,6 +34,18 @@ class FakeTransport implements ChatTransport {
   }
 }
 
+/// Records answers to client-executed tools; [delivered] is what the server says.
+class FakeToolResults implements ToolResults {
+  final answers = <(String, Object?, bool)>[];
+  bool delivered = true;
+
+  @override
+  Future<bool> resolve(String callId, Object? result, {bool isError = false}) async {
+    answers.add((callId, result, isError));
+    return delivered;
+  }
+}
+
 /// The built-in catalog, without the network refresh.
 class FixedCatalog extends CatalogController {
   @override
@@ -43,18 +55,22 @@ class FixedCatalog extends CatalogController {
 void main() {
   late AppDatabase db;
   late FakeTransport transport;
+  late FakeToolResults results;
   late ProviderContainer container;
   const id = 'conv-1';
 
   setUp(() async {
     db = AppDatabase(NativeDatabase.memory());
     transport = FakeTransport();
+    results = FakeToolResults();
     final prefs = await Preferences.load(db);
     container = ProviderContainer(
       overrides: [
         databaseProvider.overrideWithValue(db),
         preferencesProvider.overrideWithValue(prefs),
         chatTransportProvider.overrideWithValue(transport),
+        toolResultsProvider.overrideWithValue(results),
+        chatClientToolsProvider.overrideWithValue(const {'render_diagram'}),
         modelCatalogProvider.overrideWith(FixedCatalog.new),
       ],
     );
@@ -340,5 +356,48 @@ void main() {
     final reloaded = state().messages.last;
     expect(reloaded.sources.single.url, source.url);
     expect((reloaded.parts.last as FollowUpsPart).questions, ['And then?']);
+  });
+
+  test('client-executed tools: declared, rendered, pending until resolved or the server gives up', () async {
+    await settle();
+    await ctl().send('draw it');
+    expect(transport.requests.single.clientTools, {'render_diagram'});
+
+    const args = '{"mermaid":"graph TD; A-->B"}';
+    transport.turns.single
+      ..add(const ToolWait(id: 'call_1', name: 'render_diagram', argumentsJson: args))
+      ..add(const ToolWait(id: 'call_2', name: 'render_diagram', argumentsJson: args));
+    await settle();
+    expect(state().pendingTools.map((t) => t.id), ['call_1', 'call_2']);
+    expect(state().liveParts.whereType<ToolCallPart>().map((p) => p.callId), ['call_1', 'call_2']);
+
+    expect(await ctl().resolveTool('call_1', 'Rendered.'), isTrue);
+    expect(results.answers.single, ('call_1', 'Rendered.', false));
+    expect(state().pendingTools.map((t) => t.id), ['call_2']);
+    // Not pending (any more): nothing is sent.
+    expect(await ctl().resolveTool('call_1', 'again'), isFalse);
+    expect(results.answers, hasLength(1));
+
+    // The server timed out the other one: it is no longer pending, and not a server-tool row.
+    transport.turns.single.add(
+      const ToolProgress(id: 'call_2', name: 'render_diagram', status: ToolRunStatus.failed, detail: 'timed out'),
+    );
+    await settle();
+    expect(state().pendingTools, isEmpty);
+    expect(state().liveTools, isEmpty);
+
+    transport.turns.single
+      ..add(const TextDelta('Done'))
+      ..add(const TurnDone());
+    unawaited(transport.turns.single.close());
+    await settle();
+    expect(state().messages.last.parts.whereType<ToolCallPart>(), hasLength(2));
+  });
+
+  test('without tools, no client tools are declared', () async {
+    await settle();
+    ctl().setToolsEnabled(false);
+    await ctl().send('hi');
+    expect(transport.requests.single.clientTools, isEmpty);
   });
 }

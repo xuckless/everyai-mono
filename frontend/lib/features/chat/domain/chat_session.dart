@@ -3,7 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../../../core/net/api_error.dart';
 import '../../models/domain/model_catalog.dart';
 import '../../usage/usage_totals.dart';
-import '../data/chat_transport.dart' show ToolRunStatus;
+import '../data/chat_transport.dart' show ToolRunStatus, ToolWait;
 import 'message.dart';
 
 /// Where a chat session is in its lifecycle. Transitions:
@@ -69,6 +69,7 @@ final class ChatSessionState {
     this.streamingReasoning = '',
     this.toolStatus = '',
     this.liveTools = const [],
+    this.pendingTools = const [],
     this.toolsEnabled = true,
     this.liveUsage = UsageTotals.zero,
   });
@@ -108,6 +109,10 @@ final class ChatSessionState {
   /// Every server tool the turn in flight has run, in order, with progress.
   final List<LiveToolStep> liveTools;
 
+  /// Client-executed tool calls the turn in flight waits on, until the app
+  /// answers them (`ChatController.resolveTool`) or the server gives up.
+  final List<ToolWait> pendingTools;
+
   /// Whether the model may use tools (the composer's tools menu).
   final bool toolsEnabled;
 
@@ -131,6 +136,7 @@ final class ChatSessionState {
     String? streamingReasoning,
     String? toolStatus,
     List<LiveToolStep>? liveTools,
+    List<ToolWait>? pendingTools,
     bool? toolsEnabled,
     UsageTotals? liveUsage,
   }) => ChatSessionState(
@@ -146,6 +152,7 @@ final class ChatSessionState {
     streamingReasoning: streamingReasoning ?? this.streamingReasoning,
     toolStatus: toolStatus ?? this.toolStatus,
     liveTools: liveTools ?? this.liveTools,
+    pendingTools: pendingTools ?? this.pendingTools,
     toolsEnabled: toolsEnabled ?? this.toolsEnabled,
     liveUsage: liveUsage ?? this.liveUsage,
   );

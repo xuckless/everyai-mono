@@ -38,6 +38,9 @@ pub const Config = struct {
     image_model: []const u8 = "google/gemini-3.1-flash-image",
     /// Tool-loop rounds per chat turn before the server stops calling the model.
     max_tool_steps: u8 = 6,
+    /// How long a chat turn waits for the app to answer a client-executed
+    /// tool (`client_tools`) before the model gets a timeout error instead.
+    client_tool_timeout_ms: u32 = 300_000,
     /// Prompt-cache lifetime for explicit breakpoints (Anthropic/Gemini): "5m" or "1h".
     cache_ttl: []const u8 = "5m",
     /// OpenRouter web plugin engine for Search mode. "exa" injects results and

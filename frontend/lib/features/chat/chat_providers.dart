@@ -25,6 +25,16 @@ final chatTransportProvider = Provider<ChatTransport>((ref) {
   );
 });
 
+/// Answers client-executed tool calls (`POST /v1/chat/tool_result`).
+final toolResultsProvider = Provider<ToolResults>((ref) {
+  return HttpToolResults(ref.watch(apiClientProvider), authenticated: !ref.watch(appConfigProvider).devSkipAuth);
+});
+
+/// UI tools the app runs itself and answers with [ChatController.resolveTool]
+/// (sent as `client_tools`). Empty until a feature (the chat question card,
+/// diagram checks) handles one.
+final chatClientToolsProvider = Provider<Set<String>>((ref) => const {});
+
 final conversationsProvider = StreamProvider<List<Conversation>>(
   (ref) => ref.watch(chatRepositoryProvider).watchConversations(),
 );
@@ -130,6 +140,21 @@ final class ChatController extends Notifier<ChatSessionState> {
     }
   }
 
+  /// Answers a client-executed tool call of the turn in flight ([ToolWait] in
+  /// [ChatSessionState.pendingTools]). [result] is a string or any JSON;
+  /// [isError] says the app could not run it. False when the call isn't
+  /// pending or the server no longer waits for it (timed out, turn over).
+  Future<bool> resolveTool(String callId, Object? result, {bool isError = false}) async {
+    if (!state.pendingTools.any((t) => t.id == callId)) return false;
+    _settleTool(callId);
+    return ref.read(toolResultsProvider).resolve(callId, result, isError: isError);
+  }
+
+  void _settleTool(String callId) {
+    if (!ref.mounted) return;
+    state = state.copyWith(pendingTools: List.unmodifiable(state.pendingTools.where((t) => t.id != callId)));
+  }
+
   /// Awaiting/Streaming → Idle, keeping whatever text arrived.
   void cancel() {
     if (!state.phase.busy) return;
@@ -197,6 +222,7 @@ final class ChatController extends Notifier<ChatSessionState> {
       streamingReasoning: '',
       toolStatus: '',
       liveTools: const [],
+      pendingTools: const [],
     );
 
     // Segments in arrival order: text before a tool call, the call, more text…
@@ -232,6 +258,7 @@ final class ChatController extends Notifier<ChatSessionState> {
             conversationId: conversationId,
             toolsEnabled: state.toolsEnabled,
             attachments: attachments,
+            clientTools: state.toolsEnabled ? ref.read(chatClientToolsProvider) : const {},
           ),
           cancel: cancel.future,
         );
@@ -261,6 +288,18 @@ final class ChatController extends Notifier<ChatSessionState> {
               liveParts: List.unmodifiable(parts),
               streamingText: '',
             );
+          case final ToolWait wait:
+            flushText();
+            parts.add(ToolCallPart(toolName: wait.name, argumentsJson: wait.argumentsJson, callId: wait.id));
+            state = state.copyWith(
+              phase: Streaming(assistant.id),
+              liveParts: List.unmodifiable(parts),
+              streamingText: '',
+              pendingTools: List.unmodifiable([...state.pendingTools, wait]),
+            );
+          // The server stopped waiting (answered elsewhere, or timed out).
+          case ToolProgress(:final id) when state.pendingTools.any((t) => t.id == id):
+            _settleTool(id);
           case ToolProgress(:final id, :final name, :final status, :final detail):
             final step = LiveToolStep(id: id, name: name, status: status, detail: detail);
             final tools = [...state.liveTools];
@@ -339,6 +378,7 @@ final class ChatController extends Notifier<ChatSessionState> {
       streamingReasoning: '',
       toolStatus: '',
       liveTools: const [],
+      pendingTools: const [],
       liveUsage: UsageTotals.zero,
     );
     _turn = null;

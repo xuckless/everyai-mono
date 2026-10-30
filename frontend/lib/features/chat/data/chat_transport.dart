@@ -21,6 +21,7 @@ final class ChatRequest {
     this.conversationId,
     this.toolsEnabled = true,
     this.attachments = const [],
+    this.clientTools = const {},
   });
 
   final ModelSpec model;
@@ -38,6 +39,10 @@ final class ChatRequest {
 
   /// Lets the model use tools (artifacts, charts, quizzes, web fetch, images).
   final bool toolsEnabled;
+
+  /// UI tools the app runs itself: the server sends them as [ToolWait] and
+  /// holds the turn until [ToolResults.resolve] answers (or it times out).
+  final Set<String> clientTools;
 }
 
 /// Incremental output of one assistant turn.
@@ -71,6 +76,16 @@ final class SourcesFound extends ChatEvent {
 /// A UI tool call (quiz, chart, artifact, …) for the app to render.
 final class UiToolCall extends ChatEvent {
   const UiToolCall({required this.id, required this.name, required this.argumentsJson});
+  final String id;
+  final String name;
+  final String argumentsJson;
+}
+
+/// A client-executed tool call: the turn waits until the app answers it with
+/// [ToolResults.resolve]. A [ToolProgress] with the same id (done, or failed
+/// with detail "timed out") ends the wait.
+final class ToolWait extends ChatEvent {
+  const ToolWait({required this.id, required this.name, required this.argumentsJson});
   final String id;
   final String name;
   final String argumentsJson;
@@ -168,6 +183,7 @@ final class SseTransport implements ChatTransport {
       'mode': request.mode.name,
       'tools_enabled': request.toolsEnabled,
       'session': ?request.conversationId,
+      if (request.clientTools.isNotEmpty) 'client_tools': request.clientTools.toList(growable: false),
       'messages': [
         for (final m in request.history)
           if (m.status == MessageStatus.complete)
@@ -194,6 +210,8 @@ final class SseTransport implements ChatTransport {
           yield SourcesFound(list.map(Source.fromJson).nonNulls.toList(growable: false));
         case ('tool', {'id': final String id, 'name': final String name}):
           yield UiToolCall(id: id, name: name, argumentsJson: jsonEncode((data as Map)['arguments'] ?? const {}));
+        case ('tool_wait', {'id': final String id, 'name': final String name}):
+          yield ToolWait(id: id, name: name, argumentsJson: jsonEncode((data as Map)['arguments'] ?? const {}));
         case ('tool_status', {'id': final String id, 'name': final String name, 'status': final String status}):
           yield ToolProgress(
             id: id,
@@ -227,6 +245,37 @@ final class SseTransport implements ChatTransport {
       }
     }
     throw const ProtocolError('The stream ended before the response finished.');
+  }
+}
+
+/// Answers client-executed tool calls ([ToolWait]) of a turn in flight.
+abstract interface class ToolResults {
+  /// Sends [result] (a string, or any JSON) for [callId]; [isError] says the
+  /// app could not run the tool and [result] tells why. False when no turn
+  /// waits for the call any more (it timed out or finished).
+  Future<bool> resolve(String callId, Object? result, {bool isError = false});
+}
+
+/// `POST /v1/chat/tool_result {call_id, result, is_error}`.
+final class HttpToolResults implements ToolResults {
+  const HttpToolResults(this._api, {this.authenticated = false});
+
+  final ApiClient _api;
+  final bool authenticated;
+
+  @override
+  Future<bool> resolve(String callId, Object? result, {bool isError = false}) async {
+    try {
+      await _api.postJson('v1/chat/tool_result', {
+        'call_id': callId,
+        'result': result,
+        'is_error': isError,
+      }, authenticated: authenticated);
+      return true;
+    } on HttpStatusError catch (e) {
+      if (e.statusCode == 404) return false;
+      rethrow;
+    }
   }
 }
 
