@@ -320,7 +320,8 @@ class _TranscriptList extends StatelessWidget {
           ),
           onRetry: onRetry,
         ),
-      for (final item in t.items.reversed) _itemView(item),
+      for (final entry in groupSteps(t.items).reversed)
+        if (entry is StepRun) StepRunView(key: ValueKey(entry.key), run: entry) else _itemView(entry as TranscriptItem),
     ];
     return AdaptiveSelectionArea(
       child: ListView.builder(

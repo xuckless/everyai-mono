@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../../../core/net/api_error.dart';
 import '../../models/domain/model_catalog.dart';
 import '../../usage/usage_totals.dart';
+import '../data/chat_transport.dart' show ToolRunStatus;
 import 'message.dart';
 
 /// Where a chat session is in its lifecycle. Transitions:
@@ -67,6 +68,7 @@ final class ChatSessionState {
     this.liveParts = const [],
     this.streamingReasoning = '',
     this.toolStatus = '',
+    this.liveTools = const [],
     this.toolsEnabled = true,
     this.liveUsage = UsageTotals.zero,
   });
@@ -103,6 +105,9 @@ final class ChatSessionState {
   /// What a server tool is doing right now ("Reading example.com"), or empty.
   final String toolStatus;
 
+  /// Every server tool the turn in flight has run, in order, with progress.
+  final List<LiveToolStep> liveTools;
+
   /// Whether the model may use tools (the composer's tools menu).
   final bool toolsEnabled;
 
@@ -125,6 +130,7 @@ final class ChatSessionState {
     List<MessagePart>? liveParts,
     String? streamingReasoning,
     String? toolStatus,
+    List<LiveToolStep>? liveTools,
     bool? toolsEnabled,
     UsageTotals? liveUsage,
   }) => ChatSessionState(
@@ -139,6 +145,7 @@ final class ChatSessionState {
     liveParts: liveParts ?? this.liveParts,
     streamingReasoning: streamingReasoning ?? this.streamingReasoning,
     toolStatus: toolStatus ?? this.toolStatus,
+    liveTools: liveTools ?? this.liveTools,
     toolsEnabled: toolsEnabled ?? this.toolsEnabled,
     liveUsage: liveUsage ?? this.liveUsage,
   );
@@ -168,4 +175,17 @@ final class ChatSessionState {
 String titleFromPrompt(String prompt) {
   final line = prompt.trim().split('\n').first;
   return line.length <= 60 ? line : '${line.substring(0, 57).trimRight()}…';
+}
+
+/// A server tool (web_fetch, generate_image) the turn in flight has run.
+final class LiveToolStep {
+  const LiveToolStep({required this.id, required this.name, required this.status, this.detail});
+  final String id;
+  final String name;
+  final ToolRunStatus status;
+
+  /// What it works on (a URL, a prompt), when the server says.
+  final String? detail;
+
+  bool get running => status == ToolRunStatus.running;
 }

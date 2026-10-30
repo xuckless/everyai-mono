@@ -1,9 +1,11 @@
+import 'package:everyai_markdown/everyai_markdown.dart' show languageForPath;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/every_icons.dart';
+import '../../../../core/ui/syntax_spans.dart';
 import '../../code_providers.dart';
 import '../../domain/code_session.dart';
 import '../../git/git_service.dart';
@@ -280,7 +282,11 @@ class _FileView extends StatelessWidget {
             ),
           if (!collapsed)
             for (final (i, hunk) in file.hunks.indexed)
-              _HunkView(hunk: hunk, onRevert: onRevert == null ? null : () => onRevert!(i)),
+              _HunkView(
+                hunk: hunk,
+                language: languageForPath(file.path),
+                onRevert: onRevert == null ? null : () => onRevert!(i),
+              ),
         ],
       ),
     );
@@ -288,9 +294,32 @@ class _FileView extends StatelessWidget {
 }
 
 class _HunkView extends StatelessWidget {
-  const _HunkView({required this.hunk, required this.onRevert});
+  const _HunkView({required this.hunk, required this.onRevert, this.language});
 
   final DiffHunk hunk;
+
+  /// The file's grammar, or null for plain text.
+  final String? language;
+
+  /// The +/-/space marker stays plain; the code after it is colored.
+  Widget _line(EveryTheme theme, String line, Color fg) {
+    final marker = line.isEmpty ? '' : line[0];
+    if (language == null || line.length < 2 || !const {'+', '-', ' '}.contains(marker)) {
+      return Text(line, softWrap: true, style: _mono.copyWith(color: fg));
+    }
+    final base = _mono.copyWith(color: fg);
+    return Text.rich(
+      TextSpan(
+        style: base,
+        children: [
+          TextSpan(text: marker),
+          codeSpan(line.substring(1), language, base: base, brightness: theme.brightness),
+        ],
+      ),
+      softWrap: true,
+    );
+  }
+
   final VoidCallback? onRevert;
 
   @override
@@ -333,9 +362,7 @@ class _HunkView extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 8),
-              Expanded(
-                child: Text(line, softWrap: true, style: _mono.copyWith(color: fg)),
-              ),
+              Expanded(child: _line(theme, line, fg)),
             ],
           ),
         ),

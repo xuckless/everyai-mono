@@ -196,6 +196,7 @@ final class ChatController extends Notifier<ChatSessionState> {
       liveParts: const [],
       streamingReasoning: '',
       toolStatus: '',
+      liveTools: const [],
     );
 
     // Segments in arrival order: text before a tool call, the call, more text…
@@ -260,8 +261,20 @@ final class ChatController extends Notifier<ChatSessionState> {
               liveParts: List.unmodifiable(parts),
               streamingText: '',
             );
-          case ToolProgress(:final name, :final status, :final detail):
-            state = state.copyWith(toolStatus: status == ToolRunStatus.running ? toolStatusLabel(name, detail) : '');
+          case ToolProgress(:final id, :final name, :final status, :final detail):
+            final step = LiveToolStep(id: id, name: name, status: status, detail: detail);
+            final tools = [...state.liveTools];
+            final at = tools.indexWhere((t) => t.id == id);
+            if (at < 0) {
+              tools.add(step);
+            } else {
+              // Done events may omit the detail the running one carried.
+              tools[at] = LiveToolStep(id: id, name: name, status: status, detail: detail ?? tools[at].detail);
+            }
+            state = state.copyWith(
+              toolStatus: status == ToolRunStatus.running ? toolStatusLabel(name, detail) : '',
+              liveTools: List.unmodifiable(tools),
+            );
           case SourcesFound(sources: final found):
             sources = List.unmodifiable([...sources, ...found]);
             state = state.copyWith(liveSources: sources);
@@ -325,6 +338,7 @@ final class ChatController extends Notifier<ChatSessionState> {
       liveParts: const [],
       streamingReasoning: '',
       toolStatus: '',
+      liveTools: const [],
       liveUsage: UsageTotals.zero,
     );
     _turn = null;

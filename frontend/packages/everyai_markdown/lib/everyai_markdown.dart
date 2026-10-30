@@ -3,6 +3,8 @@
 /// `package:flutter/widgets.dart`.
 library;
 
+export 'src/code/highlighter.dart' show CodeHighlighter;
+export 'src/code/language_for_path.dart' show languageForPath;
 export 'src/code/code_block_view.dart' show CodeBlockBuilder, CodeBlockView, defaultCodeBlockBuilder;
 export 'src/parser/document.dart' show MarkdownBlock, MarkdownDocument, MarkdownFootnote;
 export 'src/render/chips.dart' show CitationBuilder, CitationChip, defaultCitationBuilder;

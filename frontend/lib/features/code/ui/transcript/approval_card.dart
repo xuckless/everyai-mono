@@ -1,9 +1,11 @@
+import 'package:everyai_markdown/everyai_markdown.dart' show languageForPath;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/every_icons.dart';
+import '../../../../core/ui/syntax_spans.dart';
 import '../../domain/agent_mode.dart';
 import '../../domain/line_diff.dart';
 import '../../domain/transcript.dart';
@@ -135,11 +137,27 @@ class _Preview extends StatelessWidget {
         width: double.infinity,
         padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(color: theme.codeBackground, borderRadius: BorderRadius.circular(8)),
-        child: Text('\$ ${call.str('command')}', style: mono.copyWith(color: theme.text)),
+        child: Text.rich(
+          TextSpan(
+            style: mono.copyWith(color: theme.text),
+            children: [
+              TextSpan(
+                text: '\$ ',
+                style: TextStyle(color: theme.textMuted),
+              ),
+              shellSpan(
+                call.str('command'),
+                base: mono.copyWith(color: theme.text),
+                brightness: theme.brightness,
+              ),
+            ],
+          ),
+        ),
       ),
       'FileEditorAction' when call.str('command') != 'view' => DiffBlock(
         lines: lineDiff(call.str('old_str'), call.str('new_str').isEmpty ? call.str('file_text') : call.str('new_str')),
         maxLines: 24,
+        language: languageForPath(call.str('path')),
       ),
       _ => Text(stepTitle(call), style: TextStyle(color: theme.textMuted, fontSize: 13)),
     };

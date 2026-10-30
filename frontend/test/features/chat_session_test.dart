@@ -175,6 +175,7 @@ void main() {
     expect(state().liveParts, hasLength(2)); // the text before the call, then the call
     expect(state().streamingText, isEmpty);
     expect(state().toolStatus, 'Reading b.dev…');
+    expect(state().liveTools.single.detail, 'https://b.dev/x');
     turn
       ..add(SourcesFound([Source(url: Uri.parse('https://b.dev'), title: 'B')]))
       ..add(const TextDelta('Good luck [2]'))
@@ -195,6 +196,7 @@ void main() {
     expect(state().messages.last.sources.map((s) => s.title), ['A', 'B']);
     expect((parts[3] as ToolCallPart).callId, 't1');
     expect(state().toolStatus, isEmpty);
+    expect(state().liveTools, isEmpty);
 
     // Round-trips through the database.
     container.invalidate(chatSessionProvider(id));

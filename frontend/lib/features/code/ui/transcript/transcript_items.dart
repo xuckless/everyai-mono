@@ -2,8 +2,13 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
 import '../../../../core/theme/every_theme.dart';
+
+import 'package:everyai_markdown/everyai_markdown.dart' show languageForPath;
+
 import '../../../../core/ui/adaptive.dart';
+import '../../../../core/ui/brand.dart';
 import '../../../../core/ui/every_icons.dart';
+import '../../../../core/ui/syntax_spans.dart';
 import '../../../attachments/attachment.dart';
 import '../../../attachments/ui/attachment_tray.dart';
 import '../../../chat/ui/chat_markdown.dart';
@@ -119,10 +124,12 @@ class ExploreGroupView extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final running = group.steps.any((s) => !s.done);
+    final current = running ? group.steps.lastWhere((s) => !s.done) : null;
     return _Disclosure(
       icon: EveryIcon.search,
       title: '${running ? 'Exploring' : 'Explored'} ${exploreSummary(group.steps)}',
       busy: running,
+      preview: current == null ? null : stepTitleSpan(context, current.call, _mono),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -134,11 +141,10 @@ class ExploreGroupView extends StatelessWidget {
                   _StatusDot(step: s),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text(
-                      stepTitle(s.call),
+                    child: Text.rich(
+                      stepTitleSpan(context, s.call, _mono.copyWith(color: theme.textMuted)),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: _mono.copyWith(color: theme.textMuted),
                     ),
                   ),
                 ],
@@ -159,13 +165,84 @@ class StepView extends StatelessWidget {
   Widget build(BuildContext context) => switch (step.call.actionKind) {
     'TerminalAction' => _CommandView(step: step),
     'FileEditorAction' || 'EditAction' || 'WriteFileAction' => _EditView(step: step),
-    _ => _Disclosure(
+    _ => _ToolView(step: step),
+  };
+}
+
+/// Any other tool: its name, a preview of the result, and the arguments
+/// and output (JSON colored) when opened.
+class _ToolView extends StatelessWidget {
+  const _ToolView({required this.step});
+  final ToolStep step;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final args = Map.of(step.call.action)..remove('kind');
+    final output = step.result?.text ?? '';
+    return _Disclosure(
       icon: EveryIcon.code,
       title: stepTitle(step.call),
+      titleSpan: stepTitleSpan(context, step.call, TextStyle(color: theme.textMuted, fontSize: 13)),
+      busy: !step.done,
+      preview: step.done && output.trim().isNotEmpty ? TextSpan(text: lastLine(output)) : null,
       trailing: _StatusDot(step: step),
-      child: _Output(step.result?.text ?? ''),
-    ),
-  };
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (args.isNotEmpty) ...[
+            _CodeBox(
+              argumentsSpan(
+                args,
+                base: _mono.copyWith(color: theme.text),
+                brightness: theme.brightness,
+              ),
+            ),
+            const SizedBox(height: 6),
+          ],
+          if (step.done) _Output(output),
+        ],
+      ),
+    );
+  }
+}
+
+/// A row's title with its path or command colored: "Edited lib/**main.dart**",
+/// "\$ git status".
+TextSpan stepTitleSpan(BuildContext context, ActionCall call, TextStyle base) {
+  final theme = EveryTheme.of(context);
+  final title = stepTitle(call);
+  if (call.actionKind == 'TerminalAction') {
+    return TextSpan(
+      style: base,
+      children: [shellSpan(call.str('command'), base: base, brightness: theme.brightness)],
+    );
+  }
+  final path = stepPath(call);
+  if (path.isEmpty || !title.endsWith(path)) return TextSpan(text: title, style: base);
+  final mono = base.fontFamily == null
+      ? _mono.copyWith(color: base.color, fontSize: (base.fontSize ?? 13) - 0.5)
+      : base;
+  return TextSpan(
+    style: base,
+    children: [
+      TextSpan(text: title.substring(0, title.length - path.length)),
+      pathSpan(
+        path,
+        base: mono.copyWith(color: theme.text),
+        muted: theme.textMuted,
+      ),
+    ],
+  );
+}
+
+/// The file or folder a step works on, or empty.
+String stepPath(ActionCall call) {
+  for (final key in const ['file_path', 'dir_path', 'path']) {
+    final v = call.str(key);
+    if (v.isNotEmpty) return v;
+  }
+  return '';
 }
 
 class _CommandView extends StatelessWidget {
@@ -178,10 +255,22 @@ class _CommandView extends StatelessWidget {
     final obs = step.result?.observation ?? const {};
     final exit = obs['exit_code'] as int? ?? (obs['metadata'] as Map<String, Object?>?)?['exit_code'] as int?;
     final output = step.result?.text ?? (step.rejected ? 'Not run: ${step.result!.observation['reason'] ?? ''}' : '');
+    final command = step.call.str('command');
+    final base = _mono.copyWith(color: theme.text);
     return _Disclosure(
-      title: '\$ ${step.call.str('command')}',
-      titleStyle: _mono.copyWith(color: theme.text),
+      title: '\$ $command',
+      titleSpan: TextSpan(
+        style: base,
+        children: [
+          TextSpan(
+            text: '\$ ',
+            style: TextStyle(color: theme.textMuted),
+          ),
+          shellSpan(command, base: base, brightness: theme.brightness),
+        ],
+      ),
       busy: !step.done,
+      preview: step.done && output.trim().isNotEmpty ? TextSpan(text: lastLine(output)) : null,
       initiallyOpen: false,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
@@ -215,6 +304,7 @@ class _EditView extends StatelessWidget {
       key: ValueKey(step.done),
       icon: EveryIcon.edit,
       title: stepTitle(call),
+      titleSpan: stepTitleSpan(context, call, TextStyle(color: theme.textMuted, fontSize: 13)),
       busy: !step.done,
       initiallyOpen: step.done && !step.rejected,
       trailing: Row(
@@ -227,16 +317,20 @@ class _EditView extends StatelessWidget {
           _StatusDot(step: step),
         ],
       ),
-      child: step.rejected ? _Output('Not applied: ${obs['reason'] ?? 'rejected'}') : DiffBlock(lines: lines),
+      child: step.rejected
+          ? _Output('Not applied: ${obs['reason'] ?? 'rejected'}')
+          : DiffBlock(lines: lines, language: languageForPath(stepPath(call))),
     );
   }
 }
 
-/// A unified diff with line numbers.
+/// A unified diff with line numbers, colored as [language] (from
+/// `languageForPath`) when given.
 class DiffBlock extends StatelessWidget {
-  const DiffBlock({super.key, required this.lines, this.maxLines = 60});
+  const DiffBlock({super.key, required this.lines, this.maxLines = 60, this.language});
   final List<DiffLine> lines;
   final int maxLines;
+  final String? language;
 
   @override
   Widget build(BuildContext context) {
@@ -293,7 +387,14 @@ class DiffBlock extends StatelessWidget {
                         _ => '',
                       }, style: _mono.copyWith(color: l.kind == DiffKind.added ? theme.success : theme.danger)),
                     ),
-                    Text(l.text, style: _mono.copyWith(color: theme.text)),
+                    Text.rich(
+                      codeSpan(
+                        l.text,
+                        language,
+                        base: _mono.copyWith(color: theme.text),
+                        brightness: theme.brightness,
+                      ),
+                    ),
                   ],
                 ),
         ),
@@ -488,7 +589,7 @@ class _StatusDot extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    if (!step.done) return const SizedBox.square(dimension: 12, child: AdaptiveProgress());
+    if (!step.done) return const EveryMarkActivity(activity: MarkActivity.tool, size: 13);
     if (step.rejected) return AdaptiveIcon(EveryIcon.close, size: 13, color: theme.textMuted);
     if (step.failed) return AdaptiveIcon(EveryIcon.close, size: 13, color: theme.danger);
     return AdaptiveIcon(EveryIcon.check, size: 13, color: theme.success);
@@ -509,7 +610,30 @@ class _Output extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(color: theme.codeBackground, borderRadius: BorderRadius.circular(8)),
-      child: Text(clipped, style: _mono.copyWith(color: theme.text)),
+      child: Text.rich(
+        outputSpan(
+          clipped,
+          base: _mono.copyWith(color: theme.text),
+          brightness: theme.brightness,
+        ),
+      ),
+    );
+  }
+}
+
+/// Colored code in a tinted box.
+class _CodeBox extends StatelessWidget {
+  const _CodeBox(this.span);
+  final TextSpan span;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(color: theme.codeBackground, borderRadius: BorderRadius.circular(8)),
+      child: Text.rich(span),
     );
   }
 }
@@ -522,16 +646,23 @@ class _Disclosure extends StatefulWidget {
     required this.child,
     this.icon,
     this.trailing,
-    this.titleStyle,
+    this.titleSpan,
+    this.preview,
     this.busy = false,
     this.initiallyOpen = false,
   });
 
   final String title;
+
+  /// A colored title, shown instead of [title] (which stays for semantics).
+  final InlineSpan? titleSpan;
+
+  /// One muted line under the title while folded: the latest output, or
+  /// what a running group is on.
+  final InlineSpan? preview;
   final Widget child;
   final EveryIcon? icon;
   final Widget? trailing;
-  final TextStyle? titleStyle;
   final bool busy;
   final bool initiallyOpen;
 
@@ -568,7 +699,11 @@ class _DisclosureState extends State<_Disclosure> {
                 child: Row(
                   children: [
                     if (widget.icon != null) ...[
-                      AdaptiveIcon(widget.icon!, size: 13, color: theme.textMuted),
+                      // The mark works while the step runs.
+                      if (widget.busy)
+                        const EveryMarkActivity(activity: MarkActivity.tool, size: 13)
+                      else
+                        AdaptiveIcon(widget.icon!, size: 13, color: theme.textMuted),
                       const SizedBox(width: 8),
                     ],
                     // Title and chevron hug the left; trailing sits at the right edge.
@@ -576,12 +711,19 @@ class _DisclosureState extends State<_Disclosure> {
                       child: Row(
                         children: [
                           Flexible(
-                            child: Text(
-                              widget.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: widget.titleStyle ?? TextStyle(color: theme.textMuted, fontSize: 13),
-                            ),
+                            child: widget.titleSpan == null
+                                ? Text(
+                                    widget.title,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(color: theme.textMuted, fontSize: 13),
+                                  )
+                                : Text.rich(
+                                    widget.titleSpan!,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    semanticsLabel: widget.title,
+                                  ),
                           ),
                           const SizedBox(width: 4),
                           AnimatedRotation(
@@ -599,6 +741,16 @@ class _DisclosureState extends State<_Disclosure> {
             ),
           ),
         ),
+        if (!_open && widget.preview != null)
+          Padding(
+            padding: EdgeInsets.fromLTRB(widget.icon == null ? 6 : 27, 0, 6, 3),
+            child: Text.rich(
+              widget.preview!,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: _mono.copyWith(color: theme.textMuted, fontSize: 11.5),
+            ),
+          ),
         if (_open) Padding(padding: const EdgeInsets.fromLTRB(6, 4, 0, 4), child: widget.child),
       ],
     );
@@ -614,3 +766,75 @@ String approvalTitle(ActionCall call) => switch (call.actionKind) {
   'DelegateAction' || 'TaskAction' => 'Start a subagent?',
   _ => 'Allow ${call.toolName}?',
 };
+
+/// Three or more consecutive finished commands or tool calls, shown as one
+/// row ("Ran 3 commands") that opens to each step.
+final class StepRun {
+  StepRun(this.steps);
+  final List<ToolStep> steps;
+  String get key => 'run:${steps.first.call.id}';
+}
+
+/// Folds runs of finished, non-edit steps in [items] into [StepRun]s; every
+/// other item passes through. Edits, running steps and refused steps stay
+/// on their own rows so their diffs and approvals stay in view.
+List<Object> groupSteps(List<TranscriptItem> items, {int minRun = 3}) {
+  final out = <Object>[];
+  final run = <StepItem>[];
+  void flush() {
+    if (run.length >= minRun) {
+      out.add(StepRun([for (final s in run) s.step]));
+    } else {
+      out.addAll(run);
+    }
+    run.clear();
+  }
+
+  for (final item in items) {
+    if (item is StepItem && _groupable(item.step)) {
+      run.add(item);
+    } else {
+      flush();
+      out.add(item);
+    }
+  }
+  flush();
+  return out;
+}
+
+bool _groupable(ToolStep s) =>
+    s.done && !s.rejected && !const {'FileEditorAction', 'EditAction', 'WriteFileAction'}.contains(s.call.actionKind);
+
+/// "Ran 2 commands, used 1 tool".
+String stepRunSummary(List<ToolStep> steps) {
+  final commands = steps.where((s) => s.call.actionKind == 'TerminalAction').length;
+  final tools = steps.length - commands;
+  String n(int count, String one, String many) => '$count ${count == 1 ? one : many}';
+  return [
+    if (commands > 0) 'Ran ${n(commands, 'command', 'commands')}',
+    if (tools > 0) '${commands > 0 ? 'used' : 'Used'} ${n(tools, 'tool', 'tools')}',
+  ].join(', ');
+}
+
+class StepRunView extends StatelessWidget {
+  const StepRunView({super.key, required this.run});
+  final StepRun run;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final failed = run.steps.where((s) => s.failed).length;
+    return _Disclosure(
+      icon: EveryIcon.code,
+      title: stepRunSummary(run.steps),
+      preview: stepTitleSpan(context, run.steps.last.call, _mono),
+      trailing: failed > 0
+          ? Text('$failed failed', style: TextStyle(color: theme.danger, fontSize: 11.5))
+          : AdaptiveIcon(EveryIcon.check, size: 13, color: theme.success),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [for (final s in run.steps) StepView(step: s)],
+      ),
+    );
+  }
+}

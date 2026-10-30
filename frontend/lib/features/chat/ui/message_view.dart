@@ -18,6 +18,7 @@ import '../../models/ui/model_avatar.dart';
 import '../chat_providers.dart';
 import '../domain/message.dart';
 import 'chat_markdown.dart';
+import 'tool_steps.dart';
 
 /// One message. User turns are right-aligned bubbles with edit and copy on
 /// hover; assistant turns are full-width documents with sources, follow-ups and
@@ -282,8 +283,8 @@ class _LiveBody extends ConsumerWidget {
     final sources = ref.watch(provider.select((s) => s.liveSources));
     final parts = ref.watch(provider.select((s) => s.liveParts));
     final reasoning = ref.watch(provider.select((s) => s.streamingReasoning));
-    final status = ref.watch(provider.select((s) => s.toolStatus));
-    final theme = EveryTheme.of(context);
+    final tools = ref.watch(provider.select((s) => s.liveTools));
+    final toolRunning = tools.any((t) => t.running);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -291,21 +292,11 @@ class _LiveBody extends ConsumerWidget {
         if (sources.isNotEmpty) _SourcesRow(sources),
         for (final part in parts)
           _PartView(part: part, sources: sources, conversationId: conversationId, isLatest: false),
+        if (tools.isNotEmpty) LiveToolSteps(steps: tools),
         if (text.isNotEmpty)
           ChatMarkdown(text, streaming: true, sources: sources)
-        else if (status.isEmpty && reasoning.isEmpty)
+        else if (!toolRunning && reasoning.isEmpty)
           const _TypingIndicator(),
-        if (status.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 6),
-            child: Row(
-              children: [
-                const EveryMarkActivity(activity: MarkActivity.tool, size: 14),
-                const SizedBox(width: 8),
-                Text(status, style: TextStyle(color: theme.textMuted, fontSize: 13)),
-              ],
-            ),
-          ),
       ],
     );
   }
