@@ -306,6 +306,32 @@ class _SettingsChip extends ConsumerWidget {
                 onTap: () => open(settingsAt(SettingsScope.project, CodeSettingsTab.prompt)),
               ),
               PopoverRow(
+                key: const ValueKey('top-bar.settings.compact'),
+                title: 'Auto-compact',
+                subtitle: prompts.autoCompactPercent == 0
+                    ? 'Off · EveryAI sessions'
+                    : 'At ${prompts.autoCompactPercent}% of the context · EveryAI sessions',
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    AdaptiveIconButton(
+                      icon: EveryIcon.chevronLeft,
+                      tooltip: 'Earlier',
+                      size: 13,
+                      onPressed: () =>
+                          ref.read(codeSettingsProvider.notifier).setAutoCompact(prompts.autoCompactPercent - 10),
+                    ),
+                    AdaptiveIconButton(
+                      icon: EveryIcon.chevronRight,
+                      tooltip: 'Later',
+                      size: 13,
+                      onPressed: () =>
+                          ref.read(codeSettingsProvider.notifier).setAutoCompact(prompts.autoCompactPercent + 10),
+                    ),
+                  ],
+                ),
+              ),
+              PopoverRow(
                 key: const ValueKey('top-bar.settings.json'),
                 title: 'settings.json…',
                 subtitle: 'Global, project and session layers as JSON',

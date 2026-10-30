@@ -374,6 +374,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       tools: tools,
       rolePrompt: rolePrompt,
       clientTools: clientTools,
+      autoCompactAt: ref.read(codeSettingsProvider).autoCompactPercent / 100,
     );
   }
 
@@ -427,10 +428,14 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         return catalog.length == 0 || catalog[ModelId(m)] != null;
       },
     );
+    // On the EveryAI harness a subagent without a named agent is a fork: it
+    // starts from the parent's whole conversation (and its cached prefix).
+    final fork = agent == null && role == null && parent.harness == CodeHarnessKind.everyai.name;
     return startChild(
       parent: parent,
       title: task.title,
-      brief: subagentBrief(task, role: role),
+      brief: fork ? forkBrief(task) : subagentBrief(task, role: role),
+      fork: fork,
       mode: setup.mode,
       callId: call.id,
       projectDir: projectDir,
@@ -463,6 +468,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     String? workingDir,
     bool ownTag = false,
     List<Map<String, Object?>>? clientTools,
+    bool fork = false,
   }) async {
     model ??= parent.model;
     effort ??= parent.effort;
@@ -471,7 +477,10 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         ref.read(codeProjectsProvider).where((p) => p.id == parent.projectId).firstOrNull?.path ?? parent.workingDir;
     workingDir ??= parent.workingDir;
     final everyai = parent.harness == CodeHarnessKind.everyai.name;
-    final live = await (await harnessFor(ref, parent.workingDir, harness: parent.harness)).start(
+    final harness = await harnessFor(ref, parent.workingDir, harness: parent.harness);
+    Future<HarnessSession> begin(SessionSpec spec) =>
+        (fork ? forkSession(harness, parent.conversationId, spec) : null) ?? harness.start(spec);
+    final live = await begin(
       await specFor(
         isolated: workingDir != parent.workingDir || parent.worktree != null,
         everyai: everyai,

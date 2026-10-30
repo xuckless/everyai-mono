@@ -29,6 +29,7 @@ final class SessionSpec {
     this.tools,
     this.rolePrompt,
     this.clientTools,
+    this.autoCompactAt = 0.6,
   });
 
   /// The session's worktree.
@@ -104,6 +105,10 @@ final class SessionSpec {
   /// The client tools it gets instead of the usual ones (an Ultra
   /// orchestrator's `ultra_plan`); null keeps the defaults.
   final List<Map<String, Object?>>? clientTools;
+
+  /// The share of [maxInputTokens] at which the EveryAI harness compacts the
+  /// history in place (0 turns it off).
+  final double autoCompactAt;
 }
 
 /// A running agent conversation. Events arrive on [events] (history first,

@@ -100,6 +100,32 @@ const taskSpec = <String, Object?>{
   'annotations': {'readOnlyHint': false, 'destructiveHint': false},
 };
 
+/// [taskSpec] for the EveryAI harness, where leaving out `agent` forks this
+/// agent: the child starts from this whole conversation.
+Map<String, Object?> forkingTaskSpec() => {
+  ...taskSpecFor(held: true),
+  'description':
+      'Hand a piece of work to a subagent and get its final report back as this call\'s result. Two kinds:\n'
+      '- Leave out agent to fork yourself: the fork starts with this whole conversation (it knows everything you '
+      'know, and starting it is cheap) and works only on the prompt you give it. Use forks to split independent work '
+      'you would otherwise do in sequence: investigating several areas, trying alternatives, writing separate files. '
+      'The prompt can be short, since the fork has your context; say exactly what to do and what to report.\n'
+      '- Give agent (one of AGENT_TYPES) to start a fresh specialist with its own instructions and an empty context; '
+      'then the prompt must stand alone.\n'
+      'Subagents work in the same folder, in this session\'s mode, cannot ask the user, and cannot start subagents. '
+      'Several calls in one reply run in parallel, up to $maxConcurrentSubagents at a time; give parallel ones '
+      'separate files to change. Not worth it for one read or one search. The user does not see the reports, so '
+      'pass on what matters.',
+};
+
+/// The directive a fork starts with: the task, and what being a fork means.
+String forkBrief(SubagentTask task) =>
+    '<fork>\nYou are now a fork of the agent above, started to do one task. The conversation so far is your context; '
+    'the user is not reading along and you cannot ask them or the other agent anything, start subagents, or present a '
+    'plan. Do only this task, then end with one final message that is your report: what you found or changed (paths '
+    'and line numbers), how you checked it, and anything left open. That message is all the other agent gets back.\n'
+    '</fork>\n\nTask: ${task.title}\n\n${task.prompt.isEmpty ? task.description : task.prompt}';
+
 /// [taskSpec] for a session: with [held], the report is the call's result.
 Map<String, Object?> taskSpecFor({required bool held}) => held
     ? {...taskSpec, 'description': (taskSpec['description']! as String).replaceAll(_taskEndsTurn, _taskHeld)}

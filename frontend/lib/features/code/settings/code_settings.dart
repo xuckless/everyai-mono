@@ -33,9 +33,21 @@ enum SettingsScope {
 /// ```
 @immutable
 final class StoredCodeSettings {
-  const StoredCodeSettings({this.globalPrompt = '', this.projectPrompts = const {}, this.budgets = const {}});
+  const StoredCodeSettings({
+    this.globalPrompt = '',
+    this.projectPrompts = const {},
+    this.budgets = const {},
+    this.autoCompactPercent = defaultAutoCompactPercent,
+  });
+
+  /// Where most models still work well with a long history.
+  static const defaultAutoCompactPercent = 60;
 
   final String globalPrompt;
+
+  /// The share of the context window at which EveryAI-harness sessions
+  /// compact their history (0: never on their own).
+  final int autoCompactPercent;
   final Map<String, String> projectPrompts;
 
   /// Session id → spending cap in dollars.
@@ -45,16 +57,30 @@ final class StoredCodeSettings {
 
   StoredCodeSettings withPrompt(String? projectId, String prompt) {
     final p = prompt.trim();
-    if (projectId == null) return StoredCodeSettings(globalPrompt: p, projectPrompts: projectPrompts, budgets: budgets);
+    if (projectId == null) return _copy(globalPrompt: p);
     final next = {...projectPrompts}..remove(projectId);
     if (p.isNotEmpty) next[projectId] = p;
-    return StoredCodeSettings(globalPrompt: globalPrompt, projectPrompts: next, budgets: budgets);
+    return _copy(projectPrompts: next);
   }
+
+  StoredCodeSettings withAutoCompact(int percent) => _copy(autoCompactPercent: percent.clamp(0, 95));
+
+  StoredCodeSettings _copy({
+    String? globalPrompt,
+    Map<String, String>? projectPrompts,
+    Map<String, double>? budgets,
+    int? autoCompactPercent,
+  }) => StoredCodeSettings(
+    globalPrompt: globalPrompt ?? this.globalPrompt,
+    projectPrompts: projectPrompts ?? this.projectPrompts,
+    budgets: budgets ?? this.budgets,
+    autoCompactPercent: autoCompactPercent ?? this.autoCompactPercent,
+  );
 
   StoredCodeSettings withBudget(String sessionId, double? usd) {
     final next = {...budgets}..remove(sessionId);
     if (usd != null && usd > 0) next[sessionId] = usd;
-    return StoredCodeSettings(globalPrompt: globalPrompt, projectPrompts: projectPrompts, budgets: next);
+    return _copy(budgets: next);
   }
 
   factory StoredCodeSettings.fromJson(Object? json) {
@@ -63,7 +89,11 @@ final class StoredCodeSettings {
         v is Map<String, Object?> && v['systemPrompt'] is String ? v['systemPrompt']! as String : '';
     final projects = json['projects'];
     final sessions = json['sessions'];
+    final global = json['global'];
     return StoredCodeSettings(
+      autoCompactPercent: global is Map<String, Object?> && global['autoCompactPercent'] is num
+          ? (global['autoCompactPercent']! as num).toInt()
+          : defaultAutoCompactPercent,
       globalPrompt: prompt(json['global']),
       projectPrompts: {
         if (projects is Map<String, Object?>)
@@ -79,7 +109,10 @@ final class StoredCodeSettings {
   }
 
   Map<String, Object?> toJson() => {
-    'global': {if (globalPrompt.isNotEmpty) 'systemPrompt': globalPrompt},
+    'global': {
+      if (globalPrompt.isNotEmpty) 'systemPrompt': globalPrompt,
+      if (autoCompactPercent != defaultAutoCompactPercent) 'autoCompactPercent': autoCompactPercent,
+    },
     'projects': {
       for (final e in projectPrompts.entries) e.key: {'systemPrompt': e.value},
     },

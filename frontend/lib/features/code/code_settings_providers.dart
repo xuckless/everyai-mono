@@ -38,6 +38,9 @@ final class CodeSettings extends Notifier<StoredCodeSettings> {
   /// The prompt for [projectId] (null: every project).
   void setPrompt(String? projectId, String prompt) => _set(state.withPrompt(projectId, prompt));
 
+  /// Compact EveryAI sessions at [percent] of the context window (0: off).
+  void setAutoCompact(int percent) => _set(state.withAutoCompact(percent));
+
   /// Caps session [sessionId]'s spending at [usd] dollars (null: no cap).
   void setBudget(String sessionId, double? usd) => _set(state.withBudget(sessionId, usd));
 

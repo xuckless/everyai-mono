@@ -6,7 +6,8 @@ import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 
 import '../../domain/agent_mode.dart';
-import '../../domain/subagents.dart' show subagentRules;
+import '../../domain/compaction.dart';
+import '../../domain/subagents.dart' show forkingTaskSpec, subagentRules, taskTool;
 import '../../settings/agent_prompt.dart' show forHeldClientTools;
 import '../events.dart';
 import '../harness.dart';
@@ -125,6 +126,11 @@ final class EveryAISession implements HarnessSession {
   /// Input tokens of the last model call: how full the context is.
   int lastPromptTokens = 0;
 
+  /// For a fork: the parent's tool list, kept as it was so the cached prefix
+  /// (tools, system prompt, history) matches.
+  List<Map<String, Object?>>? _forkTools;
+  bool get isFork => _forkTools != null;
+
   // ------------------------------------------------------------------ setup
 
   Future<void> _begin() async {
@@ -137,7 +143,9 @@ final class EveryAISession implements HarnessSession {
   }
 
   Future<void> _beginFork(EveryAISession parent) async {
+    _forkTools = parent._toolSpecs;
     _writeSpec();
+    _writeForkTools();
     // The parent's history as it stands, without a trailing assistant turn
     // whose tool calls have no results yet (the call that started the fork).
     final copy = [for (final m in parent._messages) Map.of(m)..remove('_eid')];
@@ -174,6 +182,10 @@ final class EveryAISession implements HarnessSession {
     final specJson = jsonDecode(File('${dir.path}/spec.json').readAsStringSync()) as Map<String, Object?>;
     final spec = _specFromJson(specJson, key);
     final s = EveryAISession._(id, spec, dir, client);
+    final forkTools = File('${dir.path}/fork_tools.json');
+    if (forkTools.existsSync()) {
+      s._forkTools = (jsonDecode(forkTools.readAsStringSync()) as List<Object?>).cast<Map<String, Object?>>();
+    }
     final messages = File('${dir.path}/messages.jsonl');
     if (messages.existsSync()) {
       for (final line in messages.readAsLinesSync()) {
@@ -212,7 +224,12 @@ final class EveryAISession implements HarnessSession {
     'subagent': s.subagent,
     'tools': s.tools,
     'client_tools': s.clientTools,
+    'auto_compact_at': s.autoCompactAt,
   };
+
+  void _writeForkTools() {
+    if (_forkTools case final t?) File('${_dir.path}/fork_tools.json').writeAsStringSync(jsonEncode(t));
+  }
 
   static SessionSpec _specFromJson(Map<String, Object?> j, String key) => SessionSpec(
     workingDir: j['working_dir']! as String,
@@ -228,6 +245,7 @@ final class EveryAISession implements HarnessSession {
     subagent: j['subagent'] == true,
     tools: (j['tools'] as List<Object?>?)?.cast<String>(),
     clientTools: (j['client_tools'] as List<Object?>?)?.cast<Map<String, Object?>>(),
+    autoCompactAt: (j['auto_compact_at'] as num?)?.toDouble() ?? 0.6,
   );
 
   Future<String> _systemPrompt() async {
@@ -257,15 +275,20 @@ final class EveryAISession implements HarnessSession {
     return out.toString();
   }
 
-  List<Map<String, Object?>> get _toolSpecs => [
-    ...builtInToolSpecs(only: _spec.tools),
-    for (final Map<String, Object?> t
-        in _spec.clientTools ?? (_spec.subagent ? const <Map<String, Object?>>[] : clientToolSpecs(held: true)))
-      {
-        'type': 'function',
-        'function': {'name': t['name'], 'description': t['description'], 'parameters': t['parameters']},
-      },
-  ];
+  List<Map<String, Object?>> get _toolSpecs =>
+      _forkTools ??
+      [
+        ...builtInToolSpecs(only: _spec.tools),
+        for (final Map<String, Object?> t
+            in _spec.clientTools ??
+                (_spec.subagent
+                    ? const <Map<String, Object?>>[]
+                    : [for (final t in clientToolSpecs(held: true)) t['name'] == taskTool ? forkingTaskSpec() : t]))
+          {
+            'type': 'function',
+            'function': {'name': t['name'], 'description': t['description'], 'parameters': t['parameters']},
+          },
+      ];
 
   // ------------------------------------------------------------ persistence
 
@@ -426,6 +449,7 @@ final class EveryAISession implements HarnessSession {
       subagent: s.subagent,
       tools: s.tools,
       clientTools: s.clientTools,
+      autoCompactAt: s.autoCompactAt,
     );
   }
 
@@ -481,6 +505,7 @@ final class EveryAISession implements HarnessSession {
           return;
         }
         _setStatus(ExecutionStatus.running);
+        await _maybeCompact();
         steps++;
         final wrapUp = steps > maxStepsPerRun;
         final cancel = _cancel = Completer<void>();
@@ -542,6 +567,51 @@ final class EveryAISession implements HarnessSession {
     }
   }
 
+  /// Compacts the history in place once the last call's input passed
+  /// [SessionSpec.autoCompactAt] of the window: old tool output is pruned and
+  /// the older span summarized by the session's own model; the newest turns
+  /// stay word for word. The transcript shows it as "Context compacted".
+  Future<void> _maybeCompact() async {
+    final window = _spec.maxInputTokens ?? 0;
+    if (window <= 0 || _spec.autoCompactAt <= 0 || lastPromptTokens < window * _spec.autoCompactAt) return;
+    await compact();
+  }
+
+  /// Compacts now (auto-compact, or `/compact` with [focus]). False when
+  /// there was nothing to summarize or the summary came back unusable.
+  Future<bool> compact({String focus = ''}) async {
+    final since = _history.lastIndexWhere((e) => e is ChatMessage && e.fromUser && splitCompacted(e.text) != null);
+    final plan = planCompaction(_history.sublist(since < 0 ? 0 : since));
+    if (plan == null) return false;
+    final reply = await _gateway.raw({
+      'model': _spec.model,
+      'messages': summaryRequest(plan, focus: focus),
+      'max_tokens': 6000,
+    }, sessionTag: _spec.sessionTag);
+    final text = switch (reply['choices']) {
+      [{'message': {'content': final String c}}, ...] => c,
+      _ => '',
+    };
+    final summary = cleanSummary(text);
+    if (summary == null) return false;
+    final message = continuationMessage(summary: summary, recent: renderTail(plan), resume: _looping);
+    final eid = _newId();
+    _emit({
+      'kind': 'MessageEvent',
+      'id': eid,
+      'source': 'user',
+      'llm_message': {'role': 'user', 'content': message},
+    });
+    final system = _messages.first;
+    _messages
+      ..clear()
+      ..add(system)
+      ..add({'role': 'user', 'content': message, '_eid': eid});
+    _rewriteMessages();
+    lastPromptTokens = 0;
+    return true;
+  }
+
   /// Shows [calls], waits for approval, runs them, and records the results.
   /// True when the run should stop (refused or interrupted).
   Future<bool> _handleCalls(List<LlmToolCall> calls, Completer<void> cancel) async {
@@ -558,6 +628,19 @@ final class EveryAISession implements HarnessSession {
         'action': args == null ? {'kind': actionKinds[call.name] ?? ''} : actionFor(call.name, args, _spec.workingDir),
         'security_risk': 'UNKNOWN',
       });
+      if (isFork && clientTools.contains(call.name)) {
+        // A fork keeps the parent's tools (for the cache) but can't use these.
+        _result(
+          call,
+          actionId,
+          ToolOutput(
+            'Error: a fork cannot use ${call.name}. Finish the task with your other tools and put everything in your '
+            'final message.',
+            isError: true,
+          ),
+        );
+        continue;
+      }
       if (args == null) {
         // A call cut off or garbled: never run, the model is told why.
         _result(

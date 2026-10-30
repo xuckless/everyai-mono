@@ -36,6 +36,25 @@ final class FakeGateway {
   Future<void> _handle(HttpRequest req) async {
     final body = jsonDecode(await utf8.decoder.bind(req).join()) as Map<String, Object?>;
     requests.add(body);
+    if (body['stream'] != true) {
+      // A plain call: the compaction summary.
+      req.response.headers.contentType = ContentType.json;
+      req.response.write(
+        jsonEncode({
+          'choices': [
+            {
+              'message': {
+                'content':
+                    '## Objective\nMake hello.py\n## Important details\nnone\n## Work state\nwrote it\n'
+                    '## Next move\n1. Run it\n## Relevant files\n- hello.py',
+              },
+            },
+          ],
+        }),
+      );
+      await req.response.close();
+      return;
+    }
     final next = replies.isEmpty ? {'text': 'Done.', 'calls': const <(String, String)>[]} : replies.removeAt(0);
     req.response.headers.contentType = ContentType('text', 'event-stream');
     void chunk(Map<String, Object?> delta, {String? finish}) => req.response.write(
@@ -232,6 +251,55 @@ void main() {
     // Everything the parent sent last, then its reply and the fork's directive.
     expect(jsonEncode(forked.take(parentLast.length).toList()), jsonEncode(parentLast));
     expect((forked.last! as Map)['content'], 'Now count the lines.');
+  });
+
+  test('a fork keeps the parent\'s tools but cannot ask the user or start subagents', () async {
+    gateway.reply(text: 'Parent done.');
+    final parent = await harness.start(spec('hi'));
+    await drive(parent);
+    gateway
+      ..reply(
+        calls: [
+          (askUserQuestionTool, {'questions': <Object?>[]}),
+        ],
+      )
+      ..reply(text: 'Report.');
+    final child = await harness.fork(parent.id, spec('do a thing'));
+    final events = await drive(child);
+    final refused = events.whereType<ToolResult>().single;
+    expect(refused.text, contains('a fork cannot use ask_user_question'));
+    // Same tool list as the parent, so the cached prefix holds.
+    expect(jsonEncode(gateway.requests.last['tools']), jsonEncode(gateway.requests.first['tools']));
+  });
+
+  test('past the threshold the history is compacted in place and the run carries on', () async {
+    gateway
+      ..reply(
+        calls: [
+          ('write', {'file_path': 'hello.py', 'content': 'print(1)\n'}),
+        ],
+      )
+      ..reply(text: 'All done.');
+    final session = await harness.start(
+      SessionSpec(
+        workingDir: work,
+        model: 'm',
+        mode: AgentMode.fullAuto,
+        llmBaseUrl: gateway.baseUrl,
+        llmApiKey: 'k',
+        sessionTag: 't',
+        initialMessage: 'make hello.py',
+        // The fake reports 1234 input tokens per call: past 60% of 1000.
+        maxInputTokens: 1000,
+      ),
+    );
+    final events = await drive(session);
+    final notice = events.whereType<ChatMessage>().where((m) => m.fromUser && m.text.contains('<everyai-compacted>'));
+    expect(notice, hasLength(1));
+    final last = gateway.requests.last['messages']! as List<Object?>;
+    // System prompt, then the continuation message: the old turns are gone.
+    expect(last, hasLength(2));
+    expect((last[1]! as Map)['content'], contains('## Objective'));
   });
 
   test('monitor wakes when a background shell prints the line', () async {
