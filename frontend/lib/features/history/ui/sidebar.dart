@@ -16,7 +16,7 @@ import '../../chat/data/chat_repository.dart';
 import '../../chat/domain/message.dart';
 
 /// Width of the collapsed rail. macOS needs room for the traffic lights above it.
-double sidebarRailWidth(DesignLanguage design) => design == DesignLanguage.macos ? 76 : 60;
+double sidebarRailWidth(DesignLanguage design) => design == DesignLanguage.macos ? 92 : 60;
 
 /// The app sidebar, Claude-desktop style. Expanded: destinations, then recent
 /// chats, then the account. Collapsed: an icon rail with the same destinations.
