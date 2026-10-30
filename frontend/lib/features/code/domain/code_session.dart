@@ -45,6 +45,7 @@ final class CodeSessionInfo {
     this.branch = '',
     this.worktree,
     this.effort = '',
+    this.holdClientTools = false,
   });
 
   final String id;
@@ -66,6 +67,10 @@ final class CodeSessionInfo {
 
   /// The model's reasoning effort ('' for the server default).
   final String effort;
+
+  /// Question cards and plans are answered inside the held tool call (see
+  /// `SessionSpec.holdClientTools`). Off for sessions started before it.
+  final bool holdClientTools;
   final DateTime createdAt;
 
   CodeSessionInfo copyWith({String? title, AgentMode? mode, String? branch}) => CodeSessionInfo(
@@ -80,6 +85,7 @@ final class CodeSessionInfo {
     branch: branch ?? this.branch,
     worktree: worktree,
     effort: effort,
+    holdClientTools: holdClientTools,
   );
 
   factory CodeSessionInfo.fromJson(Map<String, Object?> json) => CodeSessionInfo(
@@ -92,6 +98,7 @@ final class CodeSessionInfo {
     workingDir: json['working_dir'] as String? ?? '',
     branch: json['branch'] as String? ?? '',
     effort: json['effort'] as String? ?? '',
+    holdClientTools: json['hold_client_tools'] == true,
     worktree: json['worktree'] is Map<String, Object?>
         ? SessionWorktree.fromJson(json['worktree']! as Map<String, Object?>)
         : null,
@@ -109,6 +116,7 @@ final class CodeSessionInfo {
     'branch': branch,
     'worktree': ?worktree?.toJson(),
     'effort': effort,
+    if (holdClientTools) 'hold_client_tools': true,
     'created_at': createdAt.toIso8601String(),
   };
 }

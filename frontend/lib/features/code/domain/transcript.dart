@@ -138,6 +138,14 @@ final class PlanStep {
 /// The message "Start building" sends after a plan is approved.
 const planApprovedMessage = 'The plan is approved. Build it now, then verify it works.';
 
+/// The same approval as the result of the held `present_plan` call.
+const planApprovedReason =
+    'Not an error and not a refusal: the user approved this plan in the app, and Plan mode has ended. You may '
+    'now edit files and run commands. $planApprovedMessage';
+
+/// Opens the result of a held `present_plan` call when the user wants changes.
+const planRevisionLead = 'Not an error: the user wants changes to this plan before building. Their reply:';
+
 final class NoticeItem extends TranscriptItem {
   const NoticeItem(super.key, this.message, {this.error = false});
   final String message;
@@ -153,6 +161,7 @@ final class Transcript {
     this.status = ExecutionStatus.idle,
     this.plan = const [],
     this.pending = const [],
+    this.held = const [],
     this.notedMode,
   });
 
@@ -166,8 +175,13 @@ final class Transcript {
   /// The latest task list, for the sticky plan card.
   final List<PlanTask> plan;
 
-  /// Actions waiting for approval.
+  /// Actions waiting for approval (not client tools: see [held]).
   final List<ActionCall> pending;
+
+  /// Client tool calls (question cards, plans) the server is holding for the
+  /// user's reply. Sessions that answer inside the call reject them with the
+  /// reply as the reason; others approve them at once.
+  final List<ActionCall> held;
 
   /// The mode the agent was last told about (see `modeNote`).
   final AgentMode? notedMode;
@@ -216,11 +230,13 @@ final class TranscriptBuilder {
     status: _status,
     plan: _plan,
     notedMode: _notedMode,
-    pending: _status == ExecutionStatus.waitingForConfirmation ? _unanswered() : const [],
+    pending: _status == ExecutionStatus.waitingForConfirmation ? _unanswered(client: false) : const [],
+    held: _status == ExecutionStatus.waitingForConfirmation ? _unanswered(client: true) : const [],
   );
 
   /// Every action without a result yet, whatever item it renders as.
-  List<ActionCall> _unanswered() => List.unmodifiable(_open.values);
+  List<ActionCall> _unanswered({required bool client}) =>
+      List.unmodifiable(_open.values.where((c) => isClientTool(c) == client));
 
   void add(HarnessEvent e) {
     if (e is! StreamDelta && e is! StateChange && e is! ConnectionChange) {
@@ -318,11 +334,18 @@ final class TranscriptBuilder {
       ExploreGroup(:final key, :final steps) => ExploreGroup(key, [
         for (final s in steps) s.call.id == actionId ? s.withResult(r) : s,
       ]),
+      // A held card is answered by rejecting the call with the answers as the reason.
       QuestionItem(:final call, :final questions, :final answers) when r.outcome == ToolOutcome.rejected =>
-        QuestionItem(call, questions, answers ?? const []),
+        QuestionItem(call, questions, answers ?? parseAnswers(_reason(r), questions) ?? const []),
+      PlanProposal(:final call, verdict: null) when r.outcome == ToolOutcome.rejected => PlanProposal(
+        call,
+        verdict: _reason(r).startsWith(planApprovedReason) ? PlanVerdict.approved : PlanVerdict.revised,
+      ),
       final other => other,
     };
   }
+
+  static String _reason(ToolResult r) => '${r.observation['reason'] ?? ''}';
 
   /// A reply in the user's own words settles any card still open: a
   /// question counts as answered in chat, a plan as approved or revised.

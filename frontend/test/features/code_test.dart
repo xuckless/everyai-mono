@@ -2,11 +2,13 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:every_ai/features/code/domain/agent_mode.dart';
+import 'package:every_ai/features/code/domain/code_session.dart';
 import 'package:every_ai/features/code/domain/questions.dart';
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/harness/events.dart';
 import 'package:every_ai/features/code/harness/fake_harness.dart';
 import 'package:every_ai/features/code/harness/harness.dart';
+import 'package:every_ai/features/code/settings/agent_prompt.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 ActionCall _call(Map<String, Object?> action, {String tool = 'terminal'}) =>
@@ -398,6 +400,118 @@ void main() {
       expect(t.openQuestion, isNull);
       expect(t.items.whereType<QuestionItem>().single.answers, isEmpty);
       expect(t.items.last, isA<UserTurn>());
+    });
+
+    group('held in the call', () {
+      HarnessEvent reject(String actionId, String reason) => HarnessEvent.decode({
+        'kind': 'UserRejectObservation',
+        'id': 'r-$actionId',
+        'action_id': actionId,
+        'tool_name': askUserQuestionTool,
+        'rejection_reason': reason,
+      });
+      TranscriptBuilder held() => TranscriptBuilder()
+        ..add(msg('u1', 'user', 'Plan a signup form and ask me questions'))
+        ..add(state('s1', 'running'))
+        ..add(ask())
+        ..add(state('s2', 'waiting_for_confirmation'));
+
+      test('a held card is not an approval: it waits as held, not pending', () {
+        final t = held().snapshot;
+        expect(t.pending, isEmpty);
+        expect(t.held.single.toolName, askUserQuestionTool);
+        expect(t.openQuestion, isNotNull);
+      });
+
+      test('answers given as the rejection reason attach to the card', () {
+        final b = held();
+        final card = b.snapshot.openQuestion!;
+        b
+          ..add(
+            reject(
+              'q1',
+              answersReason(card.questions, [
+                for (final _ in card.questions) const QuestionAnswer(selected: {1}),
+              ]),
+            ),
+          )
+          ..add(state('s3', 'running'));
+        final t = b.snapshot;
+        expect(t.held, isEmpty);
+        expect(t.openQuestion, isNull);
+        expect(t.items.whereType<UserTurn>(), hasLength(1));
+        expect(t.items.whereType<QuestionItem>().single.answers!.map((a) => a.selected), everyElement({1}));
+      });
+
+      test('replying in chat closes the card with no answers', () {
+        final b = held()..add(reject('q1', repliedInChat));
+        expect(b.snapshot.items.whereType<QuestionItem>().single.answers, isEmpty);
+      });
+
+      test('a held plan is approved or revised by the reason', () {
+        HarnessEvent plan(String id) => HarnessEvent.decode({
+          'kind': 'ActionEvent',
+          'id': id,
+          'tool_name': presentPlanTool,
+          'action': {
+            'title': 'Form',
+            'steps': ['Build it'],
+          },
+        });
+        final b = TranscriptBuilder()
+          ..add(plan('p1'))
+          ..add(state('s1', 'waiting_for_confirmation'));
+        expect(b.snapshot.held.single.id, 'p1');
+        expect(b.snapshot.pending, isEmpty);
+        b
+          ..add(reject('p1', '$planRevisionLead use a stepper'))
+          ..add(plan('p2'))
+          ..add(reject('p2', planApprovedReason));
+        expect(b.snapshot.items.whereType<PlanProposal>().map((p) => p.verdict), [
+          PlanVerdict.revised,
+          PlanVerdict.approved,
+        ]);
+      });
+
+      test('held sessions register tools and rules that wait in the call', () {
+        String desc(List<Map<String, Object?>> specs, String name) =>
+            specs.firstWhere((s) => s['name'] == name)['description']! as String;
+        for (final name in [askUserQuestionTool, presentPlanTool]) {
+          expect(desc(clientToolSpecs(), name), contains('end your turn'));
+          expect(desc(clientToolSpecs(held: true), name), isNot(contains('end your turn')));
+          expect(desc(clientToolSpecs(held: true), name), contains('result'));
+        }
+        expect(forHeldClientTools(workingRules), isNot(contains('end your turn')));
+        expect(forHeldClientTools(workingRules), contains('come back as its result'));
+        expect(AgentMode.fullAuto.confirmationPolicy()['kind'], 'NeverConfirm');
+        expect(AgentMode.fullAuto.confirmationPolicy(holdClientTools: true)['kind'], 'AlwaysConfirm');
+        expect(
+          parseAnswers(
+            answersReason([
+              Question.listFrom({'questions': questions}).first,
+            ], const []),
+            const [],
+          ),
+          isNotNull,
+        );
+      });
+
+      test('the session remembers whether it holds client tools', () {
+        final info = CodeSessionInfo(
+          id: 's',
+          projectId: 'p',
+          title: 't',
+          conversationId: 'c',
+          model: 'm',
+          mode: AgentMode.plan,
+          workingDir: '/w',
+          createdAt: DateTime(2026),
+          holdClientTools: true,
+        );
+        expect(CodeSessionInfo.fromJson(info.toJson()).holdClientTools, isTrue);
+        expect(CodeSessionInfo.fromJson({...info.toJson()}..remove('hold_client_tools')).holdClientTools, isFalse);
+        expect(info.copyWith(title: 'x').holdClientTools, isTrue);
+      });
     });
   });
 }

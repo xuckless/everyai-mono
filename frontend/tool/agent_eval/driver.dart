@@ -58,15 +58,18 @@ final class EvalRun {
     builder.add(e);
     final t = builder.snapshot;
     if (t.running) _awaitingRun = false;
-    if (t.pending.isNotEmpty) {
-      final key = t.pending.map((c) => c.id).join(',');
+    final waiting = [...t.pending, ...t.held];
+    if (waiting.isNotEmpty) {
+      final key = waiting.map((c) => c.id).join(',');
       if (key == _respondedTo) return;
       _respondedTo = key;
-      if (t.pending.any(mode.rejects)) {
+      if (spec.holdClientTools && t.held.isNotEmpty) {
+        _replyInCall(t.held.first);
+      } else if (waiting.any(mode.rejects)) {
         refusals++;
         unawaited(session.respond(accept: false, reason: AgentMode.planRefusal).then((_) => session.resume()));
       } else {
-        t.pending.every(mode.autoApproves) ? autoApprovals++ : userApprovals++;
+        waiting.every(mode.autoApproves) ? autoApprovals++ : userApprovals++;
         unawaited(session.respond(accept: true));
       }
       return;
@@ -94,6 +97,29 @@ final class EvalRun {
     if (t.status == ExecutionStatus.error || t.status == ExecutionStatus.stuck) {
       if (!_done.isCompleted) _done.complete(t);
     }
+  }
+
+  /// Answers a held card or plan inside the call, as the app does.
+  void _replyInCall(ActionCall call) {
+    final String reason;
+    if (call.toolName == askUserQuestionTool) {
+      answered++;
+      final qs = Question.listFrom(call.action);
+      reason = answersReason(qs, [
+        for (final _ in qs) const QuestionAnswer(selected: {0}),
+      ]);
+    } else {
+      plansApproved++;
+      if (mode == AgentMode.plan) mode = AgentMode.autoEdit;
+      reason = planApprovedReason;
+    }
+    _awaitingRun = true;
+    unawaited(
+      session
+          .setMode(mode, holdClientTools: true)
+          .then((_) => session.respond(accept: false, reason: reason))
+          .then((_) => session.resume()),
+    );
   }
 
   Future<void> _checkBudget() async {

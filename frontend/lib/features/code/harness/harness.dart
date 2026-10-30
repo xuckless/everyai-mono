@@ -21,6 +21,7 @@ final class SessionSpec {
     this.persona,
     this.promptSuffix,
     this.effort,
+    this.holdClientTools = false,
   });
 
   /// The session's worktree.
@@ -59,6 +60,12 @@ final class SessionSpec {
 
   /// Reasoning effort: low, medium, high, xhigh or max (null: the server's).
   final String? effort;
+
+  /// Question cards and plans are held for confirmation and answered inside
+  /// the call (a rejection whose reason carries the reply, then a run), so
+  /// the agent keeps its turn. Off: the agent ends its turn and the reply is
+  /// a new user message.
+  final bool holdClientTools;
 }
 
 /// A running agent conversation. Events arrive on [events] (history first,
@@ -79,7 +86,8 @@ abstract interface class HarnessSession {
   /// Answers the pending action that needs approval.
   Future<void> respond({required bool accept, String? reason});
 
-  Future<void> setMode(AgentMode mode);
+  /// Changes the confirmation policy; [holdClientTools] as in [SessionSpec].
+  Future<void> setMode(AgentMode mode, {bool holdClientTools = false});
   Future<void> close();
 }
 

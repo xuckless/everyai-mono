@@ -95,6 +95,17 @@ const workingRules = '''
 - Before saying you are done, verify the change: run the tests, the build or the program, and report what you ran.
 </EVERYAI>''';
 
+/// The ask_user_question rule in [workingRules], and its wording for
+/// sessions whose cards are answered inside the call (see [forHeldClientTools]).
+const _askRuleEndsTurn = '''After calling it, end your turn; when the
+  answers arrive, carry on with the task.''';
+const _askRuleHeld = '''The call waits for the
+  user; their answers come back as its result, so read them and carry on with the task.''';
+
+/// [suffix] (from [agentPromptSuffix] or [workingRules]) worded for a session
+/// that answers question cards and plans inside the call.
+String forHeldClientTools(String suffix) => suffix.replaceFirst(_askRuleEndsTurn, _askRuleHeld);
+
 /// The system-prompt suffix: [workingRules], then what the settings add.
 String agentPromptSuffix(AgentSettings settings) {
   final out = StringBuffer(workingRules);

@@ -71,11 +71,15 @@ final class OpenHandsHarness implements Harness {
           // TaskTool.create() got an unexpected keyword argument 'conv_state'.
         ],
         'persona': ?spec.persona,
-        'agent_context': {'system_message_suffix': spec.promptSuffix ?? workingRules},
+        'agent_context': {
+          'system_message_suffix': spec.holdClientTools
+              ? forHeldClientTools(spec.promptSuffix ?? workingRules)
+              : spec.promptSuffix ?? workingRules,
+        },
       },
       'workspace': {'kind': 'LocalWorkspace', 'working_dir': spec.workingDir},
-      'confirmation_policy': spec.mode.confirmationPolicy,
-      'client_tools': [askUserQuestionSpec, presentPlanSpec],
+      'confirmation_policy': spec.mode.confirmationPolicy(holdClientTools: spec.holdClientTools),
+      'client_tools': clientToolSpecs(held: spec.holdClientTools),
       'initial_message': ?(first == null ? null : _message(first, run: true, images: spec.initialImages)),
     });
     final id = (info as Map<String, Object?>?)?['id'] as String?;
@@ -236,7 +240,8 @@ final class _OpenHandsSession implements HarnessSession {
       _h._post('$_base/events/respond_to_confirmation', {'accept': accept, 'reason': ?reason});
 
   @override
-  Future<void> setMode(AgentMode mode) => _h._post('$_base/confirmation_policy', {'policy': mode.confirmationPolicy});
+  Future<void> setMode(AgentMode mode, {bool holdClientTools = false}) =>
+      _h._post('$_base/confirmation_policy', {'policy': mode.confirmationPolicy(holdClientTools: holdClientTools)});
 
   @override
   Future<void> close() async {

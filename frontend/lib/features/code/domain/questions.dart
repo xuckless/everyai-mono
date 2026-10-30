@@ -88,9 +88,27 @@ String answersMessage(List<Question> questions, List<QuestionAnswer> answers) {
   return '${lines.join('\n')}\n\n```json\n${jsonEncode({'answers': json})}\n```';
 }
 
-/// Reads [answersMessage] back (for transcript history). Null when [text]
-/// isn't an answers message.
+/// Opens the answers when they go back inside the held `ask_user_question`
+/// call (a rejection with a reason, see [answersReason]): OpenHands shows the
+/// model a rejection, so say up front that it is a reply.
+const answersReasonLead =
+    'Not an error and not a refusal: the user answered your questions in the app. Carry on with the task, '
+    'keeping these answers in mind.';
+
+/// The answers as the result of the held tool call: [answersReasonLead],
+/// then the same [answersMessage].
+String answersReason(List<Question> questions, List<QuestionAnswer> answers) =>
+    '$answersReasonLead\n\n${answersMessage(questions, answers)}';
+
+/// The held card's result when the user replies in chat instead (their
+/// message follows it).
+const repliedInChat =
+    'Not an error: the user chose to reply in chat instead of answering these questions; see their next message.';
+
+/// Reads [answersMessage] (or [answersReason]) back, for transcript history.
+/// Null when [text] isn't an answers message.
 List<QuestionAnswer>? parseAnswers(String text, List<Question> questions) {
+  if (text.startsWith(answersReasonLead)) text = text.substring(answersReasonLead.length).trimLeft();
   if (!text.startsWith(answersHeading)) return null;
   final match = RegExp(r'```json\n([\s\S]*?)\n```').firstMatch(text);
   if (match == null) return null;

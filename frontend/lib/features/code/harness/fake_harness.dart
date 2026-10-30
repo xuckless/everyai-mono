@@ -174,7 +174,7 @@ final class FakeSession implements HarnessSession {
   }
 
   @override
-  Future<void> setMode(AgentMode mode) async => _mode = mode;
+  Future<void> setMode(AgentMode mode, {bool holdClientTools = false}) async => _mode = mode;
 
   @override
   Future<void> close() => _events.close();

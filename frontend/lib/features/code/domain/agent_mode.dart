@@ -20,8 +20,12 @@ enum AgentMode {
   final String description;
 
   /// The agent-server confirmation policy. Auto-edit and plan confirm
-  /// everything server-side and approve the safe parts in the app.
-  Map<String, Object?> get confirmationPolicy => {'kind': this == fullAuto ? 'NeverConfirm' : 'AlwaysConfirm'};
+  /// everything server-side and approve the safe parts in the app. With
+  /// [holdClientTools] Full auto confirms everything too, so question cards
+  /// and plans are held for the user (the app approves the rest at once).
+  Map<String, Object?> confirmationPolicy({bool holdClientTools = false}) => {
+    'kind': this == fullAuto && !holdClientTools ? 'NeverConfirm' : 'AlwaysConfirm',
+  };
 
   /// Whether the app approves [call] on its own in this mode.
   bool autoApproves(ActionCall call) {
@@ -37,7 +41,7 @@ enum AgentMode {
   /// Plan mode refuses anything that changes the workspace.
   bool rejects(ActionCall call) => this == plan && !isReadOnly(call) && !_isClientTool(call);
 
-  static bool _isClientTool(ActionCall call) => clientTools.contains(call.toolName);
+  static bool _isClientTool(ActionCall call) => isClientTool(call);
 
   /// Actions that only look: viewing files, listing, searching, planning.
   static bool isReadOnly(ActionCall call) => switch (call.actionKind) {
@@ -127,7 +131,7 @@ const askUserQuestionSpec = <String, Object?>{
       'Ask the user 1-4 multiple-choice questions when a decision is genuinely theirs (scope, design, '
       'trade-offs) and you cannot resolve it from the code. Each question has 2-4 options with a short label '
       'and a description; set multi_select when several answers can apply. The user can also write their own '
-      'answer. After calling this tool, stop and end your turn: the answers arrive as the next user message.',
+      'answer. $_askEndsTurn',
   'parameters': {
     'type': 'object',
     'properties': {
@@ -170,12 +174,45 @@ const presentPlanTool = 'present_plan';
 /// The client tools registered with every session.
 const clientTools = {askUserQuestionTool, presentPlanTool};
 
+bool isClientTool(ActionCall call) => clientTools.contains(call.toolName);
+
+/// What the client tools say happens after the call, by answer path.
+const _askEndsTurn = 'After calling this tool, stop and end your turn: the answers arrive as the next user message.';
+const _askHeld =
+    'The call waits while the user answers in the app; their answers come back as the result of this call. '
+    'Read them and carry on with the task.';
+const _planEndsTurn =
+    'After calling this tool, stop and end your turn: the user either approves (you will be told to build it) or '
+    'replies with changes.';
+const _planHeld =
+    'The call waits while the user reviews the plan in the app. Its result says whether they approved it (then '
+    'build it) or what they want changed (then revise the plan and present it again).';
+
+/// The client tools to register with a session. With [held] (see
+/// `SessionSpec.holdClientTools`) the user's reply comes back as the call's
+/// result; otherwise the agent ends its turn and the reply is a new message.
+List<Map<String, Object?>> clientToolSpecs({bool held = false}) => [
+  if (held)
+    {
+      ...askUserQuestionSpec,
+      'description': (askUserQuestionSpec['description']! as String).replaceAll(_askEndsTurn, _askHeld),
+    }
+  else
+    askUserQuestionSpec,
+  if (held)
+    {
+      ...presentPlanSpec,
+      'description': (presentPlanSpec['description']! as String).replaceAll(_planEndsTurn, _planHeld),
+    }
+  else
+    presentPlanSpec,
+];
+
 const presentPlanSpec = <String, Object?>{
   'name': presentPlanTool,
   'description':
       'Present your implementation plan to the user for approval. Use it in Plan mode once you have read enough '
-      'of the code to be specific. Each step says what changes and in which files. After calling this tool, stop '
-      'and end your turn: the user either approves (you will be told to build it) or replies with changes.',
+      'of the code to be specific. Each step says what changes and in which files. $_planEndsTurn',
   'parameters': {
     'type': 'object',
     'properties': {
