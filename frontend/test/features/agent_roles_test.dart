@@ -2,6 +2,8 @@ import 'package:every_ai/features/agents/agents_providers.dart';
 import 'package:every_ai/features/agents/domain/agent_definition.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/subagents.dart';
+import 'package:every_ai/features/code/settings/agent_prompt.dart';
+import 'package:every_ai/features/code/settings/settings.dart' show AgentSettings;
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -59,5 +61,14 @@ void main() {
     final props = (forkingTaskSpec()['parameters']! as Map)['properties']! as Map;
     expect(props.containsKey('role'), isTrue);
     expect(props.containsKey('agent'), isFalse);
+  });
+
+  test('a forking session is offered other models for its children; others are not', () {
+    final models = {'google/gemini-argon': 'Gemini Argon'};
+    final suffix = agentPromptSuffix(AgentSettings.defaults, everyai: true, forks: true, models: models);
+    expect(suffix, allOf(contains('<MODELS>'), contains('google/gemini-argon: Gemini Argon')));
+    expect(agentPromptSuffix(AgentSettings.defaults, everyai: true, models: models), isNot(contains('<MODELS>')));
+    final props = (forkingTaskSpec()['parameters']! as Map)['properties']! as Map;
+    expect(props.containsKey('model'), isTrue);
   });
 }

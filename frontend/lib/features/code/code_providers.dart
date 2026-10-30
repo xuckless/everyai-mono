@@ -399,6 +399,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
             tier: tier,
             // Only a main EveryAI session forks (forks are one level deep).
             forks: everyai && !subagent,
+            models: everyai && !subagent ? _childModels(model) : const {},
           );
     // AGENTS.md and friends from the project folder up to the repository root (OpenHands doesn't load them).
     final context = !local ? const <ContextFile>[] : await _startContext(workingDir, projectDir);
@@ -471,6 +472,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     mode: mode,
     isolation: call.str('isolation'),
     onParentModel: onParentModel,
+    model: call.str('model').trim(),
   );
 
   /// [startSubagent] for a task the app starts itself (an Ultra research
@@ -501,7 +503,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         role = AgentType(name: agent.name, description: agent.oneLine);
       }
     }
-    final setup = childSetup(
+    var setup = childSetup(
       agent,
       parentMode: mode,
       parentModel: parent.model,
@@ -522,10 +524,19 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       },
     );
     final everyai = parent.harness == CodeHarnessKind.everyai.name;
+    // The orchestrator asked for another model without a role: a fresh
+    // general child on it, when the model can call tools.
+    final known = ref.read(modelCatalogProvider);
+    final asked = !onParentModel && agent == null && role == null && model.isNotEmpty && model != parent.model
+        ? (known.length == 0 || (known[ModelId(model)]?.tools ?? false) ? model : null)
+        : null;
+    if (asked != null) {
+      setup = (mode: setup.mode, model: asked, effort: null, tools: null, rolePrompt: null);
+    }
     // On the EveryAI harness a subagent is a fork, starting from the parent's
     // whole conversation (and its cached prefix), unless its role runs on
     // another model: then it is a fresh child with the role's instructions.
-    final fork = everyai && (agent == null ? role == null : setup.model == parent.model);
+    final fork = everyai && (agent == null ? role == null && asked == null : setup.model == parent.model);
     // A researcher is sandboxed: the research sites only, no shell, no secrets.
     final research = agent?.name == 'researcher' || task.agent == 'researcher';
     final sites = research ? ref.read(codeSettingsProvider).researchSites : null;
@@ -655,6 +666,12 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     _save();
     return info;
   }
+
+  /// The user's models a child may run on besides [own]: those that can call tools, a few.
+  Map<String, String> _childModels(String own) => {
+    for (final m in (ref.read(libraryProvider).value ?? const <ModelSpec>[]).where((m) => m.tools).take(8))
+      if (m.id.value != own) m.id.value: m.name,
+  };
 
   static Future<List<ContextFile>> _startContext(String workingDir, String projectDir) async {
     try {

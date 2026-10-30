@@ -33,11 +33,12 @@ Future<({String persona, String suffix})> agentPromptFor(
   bool everyai = false,
   HarnessTier tier = HarnessTier.efficient,
   bool forks = false,
+  Map<String, String> models = const {},
 }) async {
   final settings = await loadAgentSettings(projectDir);
   final style = await resolveCommitStyle(projectDir, settings.commitStyle);
   return (
     persona: agentPersona(style: style, attribution: settings.attribution, isolated: isolated, everyai: everyai),
-    suffix: agentPromptSuffix(settings, agents: agents, everyai: everyai, tier: tier, forks: forks),
+    suffix: agentPromptSuffix(settings, agents: agents, everyai: everyai, tier: tier, forks: forks, models: models),
   );
 }

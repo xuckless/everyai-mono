@@ -279,6 +279,7 @@ String agentPromptSuffix(
   bool everyai = false,
   HarnessTier tier = HarnessTier.efficient,
   bool forks = false,
+  Map<String, String> models = const {},
 }) {
   final out = StringBuffer(everyai ? everyaiWorkingRules : workingRules)
     ..write('\n\n')
@@ -316,6 +317,17 @@ String agentPromptSuffix(
       out.write('- ${a.name}: ${a.description}\n');
     }
     out.write(everyai ? '</ROLES>' : '</AGENT_TYPES>');
+  }
+  if (forks && models.isNotEmpty) {
+    out.write(
+      '\n\n<MODELS>\nModels you can run a child on with run_subagent\'s model (leave it out to fork yourself, which '
+      'shares your context and cache). Another model starts fresh, so its prompt must stand alone; pick one when it '
+      'is a better fit for the job or cheaper for simple work:\n',
+    );
+    for (final MapEntry(:key, :value) in models.entries) {
+      out.write('- $key: $value\n');
+    }
+    out.write('</MODELS>');
   }
   return out.toString();
 }

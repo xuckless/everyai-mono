@@ -120,6 +120,12 @@ Map<String, Object?> forkingTaskSpec() => {
             'instructions; a role the user put on another model starts fresh instead of as a fork, so then the '
             'prompt must stand alone. A researcher is sandboxed to the research sites, with no shell.',
       },
+      'model': {
+        'type': 'string',
+        'description':
+            'Optional: a model id from MODELS to run the child on. Leave it out to fork yourself on your own model '
+            '(cheapest, shares your context). Another model starts fresh, so the prompt must stand alone.',
+      },
       'isolation': {
         'type': 'string',
         'enum': ['worktree', 'shared'],
