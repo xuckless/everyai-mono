@@ -65,3 +65,18 @@ final class QuizAnswers extends Notifier<Map<int, int>> {
 
   void reset() => state = const {};
 }
+
+/// Whether a web page artifact runs its scripts (the panel's
+/// static/interactive toggle). Keyed by artifact id, so it holds across
+/// versions; on by default.
+final webInteractiveProvider = NotifierProvider.family<WebInteractive, bool, String>(WebInteractive.new);
+
+final class WebInteractive extends Notifier<bool> {
+  WebInteractive(this.artifactId);
+  final String artifactId;
+
+  @override
+  bool build() => true;
+
+  void toggle() => state = !state;
+}

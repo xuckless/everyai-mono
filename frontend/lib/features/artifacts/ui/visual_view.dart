@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/every_icons.dart';
+import '../../chat/chat_providers.dart';
 import '../../chat/domain/message.dart';
 import '../../chat/ui/chat_markdown.dart';
 import '../artifact_providers.dart';
@@ -20,7 +21,7 @@ import 'renderers/web_view.dart';
 
 EveryIcon iconOf(VisualKind kind) => switch (kind) {
   VisualKind.document => EveryIcon.document,
-  VisualKind.code || VisualKind.html => EveryIcon.code,
+  VisualKind.code || VisualKind.html || VisualKind.widget => EveryIcon.code,
   VisualKind.svg => EveryIcon.image,
   VisualKind.diagram => EveryIcon.diagram,
   VisualKind.chart => EveryIcon.chart,
@@ -45,7 +46,19 @@ class VisualBody extends ConsumerWidget {
     return switch (visual.kind) {
       VisualKind.document => ChatMarkdown(content),
       VisualKind.code => ChatMarkdown('```${visual.str('language')}\n$content\n```'),
-      VisualKind.html => WebContentView(html: content, fallbackSource: content, height: expanded ? null : 360),
+      VisualKind.html => WebContentView(
+        html: content,
+        fallbackSource: content,
+        height: expanded ? null : 360,
+        interactive: ref.watch(webInteractiveProvider(webArtifactKey(visual))),
+      ),
+      VisualKind.widget => WebContentView(
+        html: visual.str('html'),
+        fallbackSource: visual.str('html'),
+        height: null,
+        surface: WebSurface.widget,
+        onSend: (text) => ref.read(chatSessionProvider(conversationId).notifier).send(text),
+      ),
       VisualKind.svg => SvgView(svg: visual.args['svg'] as String? ?? content, maxHeight: expanded ? 900 : 420),
       VisualKind.diagram => () {
         final source = visual.args['mermaid'] as String? ?? content;
@@ -53,6 +66,7 @@ class VisualBody extends ConsumerWidget {
           html: mermaidPage(source, dark: dark),
           fallbackSource: source,
           height: expanded ? null : 340,
+          surface: WebSurface.diagram,
         );
       }(),
       VisualKind.chart => ChartView(visual: visual, height: expanded ? 380 : 260),
@@ -63,6 +77,9 @@ class VisualBody extends ConsumerWidget {
     };
   }
 }
+
+/// The key of a web page's static/interactive switch: its artifact id.
+String webArtifactKey(Visual v) => v.str('id').isEmpty ? v.callId : v.str('id');
 
 /// A UI tool call in the chat: interactive inline for quizzes, flashcards,
 /// charts, illustrations and diagrams; a card that opens the side panel for
@@ -98,6 +115,14 @@ class InlineVisual extends ConsumerWidget {
       );
     }
     final visual = made ?? call;
+    // A widget is part of the answer: drawn in the message, without a card.
+    if (visual.kind == VisualKind.widget) {
+      return Container(
+        margin: const EdgeInsets.symmetric(vertical: 8),
+        constraints: const BoxConstraints(maxWidth: 680),
+        child: VisualBody(visual: visual, conversationId: conversationId),
+      );
+    }
     final missed = (visual.args['edit_missed'] as List?)?.length ?? 0;
     void open() {
       if (isArtifact) {

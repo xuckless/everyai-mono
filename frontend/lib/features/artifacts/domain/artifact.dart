@@ -18,7 +18,10 @@ enum VisualKind {
   slides('Slides'),
 
   /// A generated raster image (`generate_image`); vector ones are [svg].
-  image('Image');
+  image('Image'),
+
+  /// A small interactive HTML widget drawn inside the message (`render_widget`).
+  widget('Widget');
 
   const VisualKind(this.label);
   final String label;
@@ -62,6 +65,7 @@ final class Visual {
       'make_quiz' => VisualKind.quiz,
       'make_flashcards' => VisualKind.flashcards,
       'make_slides' => VisualKind.slides,
+      'render_widget' => VisualKind.widget,
       _ => null,
     };
     if (kind == null) return null;

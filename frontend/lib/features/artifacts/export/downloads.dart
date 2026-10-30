@@ -195,6 +195,7 @@ Uint8List pptxOf(Visual v) {
     VisualKind.document => (text: v.str('content'), name: safe, extension: 'md'),
     VisualKind.code => (text: v.str('content'), name: safe, extension: _extensionFor(v.str('language'))),
     VisualKind.html => (text: v.str('content'), name: safe, extension: 'html'),
+    VisualKind.widget => (text: v.str('html'), name: safe, extension: 'html'),
     VisualKind.svg => (text: v.args['svg'] as String? ?? v.str('content'), name: safe, extension: 'svg'),
     VisualKind.diagram => (text: v.args['mermaid'] as String? ?? v.str('content'), name: safe, extension: 'mmd'),
     VisualKind.chart => (text: const JsonEncoder.withIndent('  ').convert(v.args), name: safe, extension: 'json'),

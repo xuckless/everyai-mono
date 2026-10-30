@@ -45,6 +45,7 @@ class ArtifactPanel extends ConsumerWidget {
     if (visual == null) return const SizedBox.shrink();
     final v = visual;
     final export = exportOf(v);
+    final interactive = v.kind == VisualKind.html && ref.watch(webInteractiveProvider(webArtifactKey(v)));
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -78,6 +79,7 @@ class ArtifactPanel extends ConsumerWidget {
                       Text(
                         [
                           v.kind == VisualKind.code && v.str('language').isNotEmpty ? v.str('language') : v.kind.label,
+                          if (v.kind == VisualKind.html) interactive ? 'Interactive' : 'Static',
                           if (artifact != null && artifact.versions.length > 1)
                             'Version ${version + 1} of ${artifact.versions.length}',
                         ].join(' · '),
@@ -100,15 +102,22 @@ class ArtifactPanel extends ConsumerWidget {
                         : () => panel.openArtifact(artifact!.id, version: version + 1),
                   ),
                 ],
+                if (v.kind == VisualKind.html)
+                  AdaptiveIconButton(
+                    icon: interactive ? EveryIcon.pause : EveryIcon.play,
+                    tooltip: interactive ? 'Show without scripts' : 'Run scripts',
+                    onPressed: ref.read(webInteractiveProvider(webArtifactKey(v)).notifier).toggle,
+                  ),
                 if (v.kind == VisualKind.html || v.kind == VisualKind.diagram)
                   AdaptiveIconButton(
                     icon: EveryIcon.external,
                     tooltip: 'Open in browser',
-                    onPressed: () => openHtmlInBrowser(
-                      v.kind == VisualKind.html
-                          ? v.str('content')
-                          : mermaidPage(v.args['mermaid'] as String? ?? v.str('content'), dark: false),
-                    ),
+                    onPressed: () => v.kind == VisualKind.html
+                        ? openHtmlInBrowser(v.str('content'), interactive: interactive)
+                        : openHtmlInBrowser(
+                            mermaidPage(v.args['mermaid'] as String? ?? v.str('content'), dark: false),
+                            surface: WebSurface.diagram,
+                          ),
                   ),
                 AdaptiveIconButton(
                   icon: EveryIcon.copy,
