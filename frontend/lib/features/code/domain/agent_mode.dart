@@ -12,20 +12,20 @@ enum AgentMode {
   /// Reads and plans only, then waits for "Start building".
   plan('Plan', 'Read the code and propose a plan first'),
 
-  /// Nothing waits (the worktree keeps the main checkout safe).
+  /// Nothing waits (the worktree keeps the main checkout safe), but the
+  /// safety floor and deny rules still hold.
   fullAuto('Full auto', 'Runs commands and edits without asking');
 
   const AgentMode(this.label, this.description);
   final String label;
   final String description;
 
-  /// The agent-server confirmation policy. Auto-edit and plan confirm
-  /// everything server-side and approve the safe parts in the app. With
-  /// [holdClientTools] Full auto confirms everything too, so question cards
-  /// and plans are held for the user (the app approves the rest at once).
-  Map<String, Object?> confirmationPolicy({bool holdClientTools = false}) => {
-    'kind': this == fullAuto && !holdClientTools ? 'NeverConfirm' : 'AlwaysConfirm',
-  };
+  /// The agent-server confirmation policy: every mode, Full auto included,
+  /// has the server confirm every action, and the app's permission policy
+  /// (`permissions.dart`) answers. That keeps the safety floor and the
+  /// user's deny rules in force when nothing asks the user.
+  /// [holdClientTools] is kept for callers; it no longer changes anything.
+  Map<String, Object?> confirmationPolicy({bool holdClientTools = false}) => const {'kind': 'AlwaysConfirm'};
 
   /// Whether the app approves [call] on its own in this mode.
   bool autoApproves(ActionCall call) {

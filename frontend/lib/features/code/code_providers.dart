@@ -22,6 +22,7 @@ import 'harness/events.dart';
 import 'harness/fake_harness.dart';
 import 'harness/harness.dart';
 import 'harness/openhands_harness.dart';
+import 'permissions_providers.dart';
 import 'settings/settings.dart';
 import 'sidecar/sidecar.dart';
 import 'uploads/uploads.dart';
@@ -337,6 +338,12 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
   /// The approval set we already answered (so one prompt gets one answer).
   String _answered = '';
 
+  /// Patterns approved "for this session" on the approval card.
+  final _sessionAllowed = <String>{};
+
+  /// Permission rules from the project's `settings.json` files.
+  PermissionRules _settingsRules = PermissionRules.none;
+
   @override
   CodeSessionState build() {
     final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
@@ -357,9 +364,35 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
       live[sessionId] = session;
       _sub = session.events.listen(_onEvent);
       state = state.copyWith(connected: true);
+      await _loadSettingsRules(info);
     } on Object catch (e) {
       state = state.copyWith(error: '$e');
     }
+  }
+
+  Future<void> _loadSettingsRules(CodeSessionInfo info) async {
+    if (isDemoPath(info.workingDir)) return;
+    final project = ref.read(codeProjectsProvider).where((p) => p.id == info.projectId).firstOrNull;
+    try {
+      final s = await loadAgentSettings(project?.path ?? info.workingDir);
+      _settingsRules = PermissionRules(allow: s.allow, deny: s.deny);
+    } on Object {
+      return;
+    }
+    if (!ref.mounted) return;
+    _answered = '';
+    _autoRespond(state.transcript);
+  }
+
+  /// What decides this session's actions: stored rules (global, project),
+  /// then `settings.json` rules, plus approvals remembered for the session.
+  PermissionPolicy get policy {
+    final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
+    return PermissionPolicy(
+      rules: ref.read(codePermissionsProvider).rulesFor(info?.projectId) + _settingsRules,
+      session: {..._sessionAllowed},
+      workingDir: info == null || isDemoPath(info.workingDir) ? null : info.workingDir,
+    );
   }
 
   void _onEvent(HarnessEvent event) {
@@ -415,17 +448,17 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     if (waiting.isEmpty) return;
     final key = waiting.map((c) => c.id).join(',');
     if (key == _answered) return;
-    final mode = state.mode;
-    if (waiting.any(mode.rejects)) {
-      _answered = key;
+    final verdict = policy.decideAll(waiting, state.mode);
+    if (verdict == null) return;
+    _answered = key;
+    final session = _session;
+    if (verdict.accept) {
+      unawaited(session?.respond(accept: true));
+    } else {
       // The server parks the conversation after a rejection; run it again so
-      // the agent reads the refusal and keeps exploring (a user's own "No"
-      // still stops it).
-      final session = _session;
-      unawaited(session?.respond(accept: false, reason: AgentMode.planRefusal).then((_) => session.resume()));
-    } else if (waiting.every(mode.autoApproves)) {
-      _answered = key;
-      unawaited(_session?.respond(accept: true));
+      // the agent reads the refusal (Plan mode, the safety floor, a deny
+      // rule) and carries on (a user's own "No" still stops it).
+      unawaited(session?.respond(accept: false, reason: verdict.reason).then((_) => session.resume()));
     }
   }
 
@@ -509,17 +542,50 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
 
   Future<void> stop() async {
     state = state.copyWith(queued: const []);
+    final pending = state.transcript.pending;
+    if (pending.isNotEmpty) {
+      _answered = [...pending, ...state.transcript.held].map((c) => c.id).join(',');
+      await _session?.respond(accept: false, reason: denialMessage(DenialKind.cancelled));
+    }
     await _session?.interrupt();
   }
 
-  Future<void> approve() async {
+  /// The rules "allow for this session" / "always allow" would store for
+  /// the pending actions, or null when any of them can't be remembered
+  /// (compound commands, dangerous actions).
+  List<String>? rememberable() {
+    final pending = state.transcript.pending;
+    if (pending.isEmpty) return null;
+    final dir = policy.workingDir;
+    final patterns = [for (final c in pending) rememberPattern(c, workingDir: dir)];
+    if (patterns.any((p) => p == null)) return null;
+    return {for (final p in patterns) p!}.toList();
+  }
+
+  /// Approves the pending actions; with [scope] session or always, also
+  /// what [rememberable] gives, so the same commands run without asking.
+  Future<void> approve([ApprovalScope scope = ApprovalScope.once]) async {
+    if (scope != ApprovalScope.once) {
+      final patterns = rememberable() ?? const <String>[];
+      if (scope == ApprovalScope.session) {
+        _sessionAllowed.addAll(patterns);
+      } else {
+        final projectId = ref.read(codeSessionsProvider.notifier).byId(sessionId)?.projectId;
+        final store = ref.read(codePermissionsProvider.notifier);
+        for (final p in patterns) {
+          store.allow(p, projectId: projectId);
+        }
+      }
+    }
     _answered = state.transcript.pending.map((c) => c.id).join(',');
     await _session?.respond(accept: true);
   }
 
+  /// Refuses the pending actions; the agent reads the fixed denial text
+  /// with [reason] word for word.
   Future<void> deny([String? reason]) async {
     _answered = state.transcript.pending.map((c) => c.id).join(',');
-    await _session?.respond(accept: false, reason: reason?.trim().isEmpty ?? true ? null : reason);
+    await _session?.respond(accept: false, reason: denialMessage(DenialKind.denied, reason: reason));
   }
 
   /// Sends the card's answers: as the held call's result when the server is

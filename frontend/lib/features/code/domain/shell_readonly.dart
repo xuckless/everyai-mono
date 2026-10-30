@@ -14,6 +14,12 @@ bool isReadOnlyShell(String command) {
   return segments.every(_segmentReadOnly);
 }
 
+/// The words of each simple command in [command] (split at `&&`, `||`, `;`,
+/// `|` and newlines, quotes removed), or null when it does something a
+/// word list can't describe: command substitution, subshells, heredocs,
+/// backgrounding, or output redirected to a file.
+List<List<String>>? shellSegments(String command) => command.trim().isEmpty ? null : _parse(command);
+
 /// The words of each simple command, or null when the command does something
 /// the classifier won't reason about.
 List<List<String>>? _parse(String s) {

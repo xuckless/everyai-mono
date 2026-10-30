@@ -483,8 +483,10 @@ void main() {
         }
         expect(forHeldClientTools(workingRules), isNot(contains('end your turn')));
         expect(forHeldClientTools(workingRules), contains('come back as its result'));
-        expect(AgentMode.fullAuto.confirmationPolicy()['kind'], 'NeverConfirm');
-        expect(AgentMode.fullAuto.confirmationPolicy(holdClientTools: true)['kind'], 'AlwaysConfirm');
+        // The app answers every action itself, so the floor holds in Full auto too.
+        for (final m in AgentMode.values) {
+          expect(m.confirmationPolicy()['kind'], 'AlwaysConfirm');
+        }
         expect(
           parseAnswers(
             answersReason([

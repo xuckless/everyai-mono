@@ -17,6 +17,7 @@ import '../../usage/usage_totals.dart';
 import '../code_providers.dart';
 import '../domain/agent_mode.dart';
 import '../domain/code_session.dart';
+import '../domain/permissions.dart';
 import '../domain/questions.dart';
 import '../domain/transcript.dart';
 import '../harness/events.dart' show ExecutionStatus;
@@ -115,6 +116,15 @@ class CodeSessionScreen extends ConsumerWidget {
                               onAllow: controller.approve,
                               onDeny: controller.deny,
                               onMode: controller.setMode,
+                              remember: controller.rememberable(),
+                              flags: {
+                                for (final c in t.pending)
+                                  if (controller.policy.decide(c, state.mode) case Decision(
+                                    source: DecisionSource.dangerous,
+                                    :final why,
+                                  ))
+                                    c.id: why,
+                              },
                             ),
                           )
                         else if (t.plan.isNotEmpty && t.running)

@@ -16,6 +16,7 @@ import '../../../attachments/ui/attachment_tray.dart';
 import '../../../chat/ui/chat_markdown.dart';
 import '../../domain/agent_mode.dart';
 import '../../domain/line_diff.dart';
+import '../../domain/permissions.dart' show denialSummary;
 import '../../domain/transcript.dart';
 import '../../harness/events.dart';
 import '../../uploads/uploads.dart';
@@ -256,7 +257,9 @@ class _CommandView extends StatelessWidget {
     final theme = EveryTheme.of(context);
     final obs = step.result?.observation ?? const {};
     final exit = obs['exit_code'] as int? ?? (obs['metadata'] as Map<String, Object?>?)?['exit_code'] as int?;
-    final output = step.result?.text ?? (step.rejected ? 'Not run: ${step.result!.observation['reason'] ?? ''}' : '');
+    final output =
+        step.result?.text ??
+        (step.rejected ? 'Not run: ${denialSummary('${step.result!.observation['reason'] ?? ''}')}' : '');
     final command = step.call.str('command');
     final base = _mono.copyWith(color: theme.text);
     return _Disclosure(
@@ -321,7 +324,7 @@ class _EditView extends StatelessWidget {
         ],
       ),
       child: step.rejected
-          ? _Output('Not applied: ${obs['reason'] ?? 'rejected'}')
+          ? _Output('Not applied: ${denialSummary('${obs['reason'] ?? 'rejected'}')}')
           : DiffBlock(lines: lines, language: languageForPath(stepPath(call))),
     );
   }

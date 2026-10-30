@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:every_ai/features/code/domain/agent_mode.dart';
+import 'package:every_ai/features/code/domain/permissions.dart';
 import 'package:every_ai/features/code/domain/questions.dart';
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/harness/events.dart';
@@ -65,12 +66,17 @@ final class EvalRun {
       _respondedTo = key;
       if (spec.holdClientTools && t.held.isNotEmpty) {
         _replyInCall(t.held.first);
-      } else if (waiting.any(mode.rejects)) {
-        refusals++;
-        unawaited(session.respond(accept: false, reason: AgentMode.planRefusal).then((_) => session.resume()));
       } else {
-        waiting.every(mode.autoApproves) ? autoApprovals++ : userApprovals++;
-        unawaited(session.respond(accept: true));
+        // Plan mode and the safety floor refuse the way the app does; the
+        // driver plays the user and approves whatever would ask.
+        final verdict = PermissionPolicy(workingDir: spec.workingDir).decideAll(waiting, mode);
+        if (verdict != null && !verdict.accept) {
+          refusals++;
+          unawaited(session.respond(accept: false, reason: verdict.reason).then((_) => session.resume()));
+        } else {
+          verdict == null ? userApprovals++ : autoApprovals++;
+          unawaited(session.respond(accept: true));
+        }
       }
       return;
     }
