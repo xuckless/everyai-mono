@@ -2,7 +2,10 @@
     .name = .backend_exp,
     .version = "0.0.1",
     .dependencies = .{
-        .anole = .{ .path = "../../../PersonalProjects/anole" },
+        .anole = .{
+            .url = "git+https://github.com/xuckless/anole?ref=v0.4.1#c36cca065f4784c00f3c4fc6f6979a51fad6fd16",
+            .hash = "anole-0.4.1-WO_-F9VE4QDgcb894W7TOy8oogZ5tNAtGJjHlFb8idlo",
+        },
     },
     .minimum_zig_version = "0.17.0",
     .paths = .{""},
