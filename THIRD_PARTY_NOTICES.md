@@ -33,6 +33,89 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+### Libraries bundled inside `mermaid.min.js`
+
+The Mermaid build bundles its dependencies into the same file, so the app
+ships them too. The first three carry their notices inside the bundle (kept
+there, unmodified); the rest are Mermaid 11.17.2's runtime dependencies.
+Where a license below says "MIT", its text is the MIT license above with the
+copyright line given here.
+
+- **DOMPurify 3.4.12** — (c) Cure53 and other contributors. Dual-licensed
+  under the Apache License 2.0 or the Mozilla Public License 2.0; EveryAI
+  uses it under the Apache License 2.0
+  (https://www.apache.org/licenses/LICENSE-2.0). Source:
+  https://github.com/cure53/DOMPurify/tree/3.4.12
+- **lodash-es 4.18** — Copyright OpenJS Foundation and other contributors
+  <https://openjsf.org/>. Based on Underscore.js 1.8.3, Copyright Jeremy
+  Ashkenas, DocumentCloud and Investigative Reporters & Editors. MIT.
+- **Cytoscape.js** — Copyright (c) 2016-2024, The Cytoscape Consortium. MIT.
+  It includes: Embeddable Minimum Strictly-Compliant Promises/A+ 1.1.1
+  Thenable, Copyright (c) 2013-2014 Ralf S. Engelschall (MIT); an event object
+  based on jQuery events (MIT, https://jquery.org/license/); a Bezier curve
+  function generator, Copyright Gaetan Renaudeau (MIT); a Runge-Kutta spring
+  physics function generator adapted from Framer.js, copyright Koen Bok (MIT).
+- **cytoscape-cose-bilkent** and **cytoscape-fcose** — Copyright (c) 2016-present,
+  iVis@Bilkent. MIT.
+- **D3** (d3 and its modules) — Copyright 2010-2023 Mike Bostock. ISC:
+
+  ```
+  Permission to use, copy, modify, and/or distribute this software for any
+  purpose with or without fee is hereby granted, provided that the above
+  copyright notice and this permission notice appear in all copies.
+
+  THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+  WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+  MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+  ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+  WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+  ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+  OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+  ```
+- **d3-sankey** — Copyright 2015, Mike Bostock. BSD-3-Clause:
+
+  ```
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions are met:
+
+  * Redistributions of source code must retain the above copyright notice,
+    this list of conditions and the following disclaimer.
+  * Redistributions in binary form must reproduce the above copyright notice,
+    this list of conditions and the following disclaimer in the documentation
+    and/or other materials provided with the distribution.
+  * Neither the name of the author nor the names of contributors may be used
+    to endorse or promote products derived from this software without
+    specific prior written permission.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+  ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+  LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+  CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+  SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+  CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+  POSSIBILITY OF SUCH DAMAGE.
+  ```
+- **dagre-d3-es** — Copyright (c) 2013 Chris Pettitt. MIT.
+- **khroma** — Copyright (c) 2019-present Fabio Spampinato, Andrew Maney. MIT.
+- **roughjs** — Copyright (c) 2019 Preet Shihn. MIT.
+- **KaTeX** — Copyright (c) 2013-2020 Khan Academy and other contributors. MIT.
+- **marked** — Copyright (c) 2018+, MarkedJS; Copyright (c) 2011-2018,
+  Christopher Jeffrey. MIT.
+- **Day.js** — Copyright (c) 2018-present, iamkun. MIT.
+- **stylis** — Copyright (c) 2016-present Sultan Tarimo. MIT.
+- **@braintree/sanitize-url** — Copyright (c) 2017 Braintree. MIT.
+- **@iconify/utils** — Copyright (c) 2021-PRESENT Vjacheslav Trushkin. MIT.
+- **@mermaid-js/parser** (Mermaid, MIT, as above), built on **Langium**
+  (Copyright 2021 TypeFox GmbH, MIT) and **Chevrotain** (Copyright (c) 2021
+  the Chevrotain authors, Apache License 2.0,
+  https://www.apache.org/licenses/LICENSE-2.0).
+- **uuid** — Copyright (c) 2010-2020 Robert Kieffer and other contributors. MIT.
+- **ts-dedent** — Copyright (c) 2018 Tamino Martinius. MIT.
+
 ## LibreChat v0.8.8
 
 - **What:** the Mermaid SVG fix-up (`processMermaidSvg`, `applyMermaidBackground`,
