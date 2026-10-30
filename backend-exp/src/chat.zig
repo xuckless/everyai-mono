@@ -382,8 +382,10 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
     var out_of_steps = false;
     while (true) {
         // The first call may be forced to one tool (see ChatRequest.force_tool).
-        const forced: ?[]const u8 = if (with_tools and steps == 0 and continuations == 0) body.force_tool else null;
-        const sent = try withToolNudge(arena, messages.items, forced, route.provider);
+        const wanted: ?[]const u8 = if (with_tools and steps == 0 and continuations == 0) body.force_tool else null;
+        const nudge = wanted != null and nudgesTool(model, route.provider, effort);
+        const sent = try withToolNudge(arena, messages.items, if (nudge) wanted else null);
+        const forced: ?[]const u8 = if (nudge) null else wanted;
         var result = try turn.call(sent, .{ .max_tokens = cap, .force_tool = forced }, sink);
 
         // A cut-off tool call never runs. Ask again once with room for the
@@ -457,12 +459,19 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
     try sink.send("done", .{});
 }
 
-/// The native Anthropic adapter drops forced tool choices (they clash with
-/// thinking), so for that route the request is asked in words instead: a
-/// final user note, sent for this call only and never stored in the history.
-fn withToolNudge(arena: std.mem.Allocator, messages: []const Msg, force: ?[]const u8, provider: []const u8) ![]const Msg {
+/// Whether a forced tool is asked for in words instead of `tool_choice`.
+/// Claude's extended thinking refuses a forced tool choice: the native
+/// Anthropic adapter drops it, and through OpenRouter it fails whenever an
+/// effort turns thinking on.
+fn nudgesTool(model: []const u8, provider: []const u8, effort: ?[]const u8) bool {
+    if (std.mem.eql(u8, provider, "anthropic")) return true;
+    return effort != null and std.mem.startsWith(u8, model, "anthropic/");
+}
+
+/// The tool request in words: a final user note naming the tool, sent for
+/// this call only and never stored in the history (see `nudgesTool`).
+fn withToolNudge(arena: std.mem.Allocator, messages: []const Msg, force: ?[]const u8) ![]const Msg {
     const name = force orelse return messages;
-    if (!std.mem.eql(u8, provider, "anthropic")) return messages;
     const out = try arena.alloc(Msg, messages.len + 1);
     @memcpy(out[0..messages.len], messages);
     out[messages.len] = .{ .role = "user", .content = try std.fmt.allocPrint(arena, "(For this request, answer by calling the {s} tool.)", .{name}) };
@@ -1130,9 +1139,12 @@ test "knownTool and the Anthropic nudge" {
     defer arena.deinit();
     const a = arena.allocator();
     const msgs = [_]Msg{.{ .role = "user", .content = "hi" }};
-    try std.testing.expectEqual(@as(usize, 1), (try withToolNudge(a, &msgs, "make_quiz", "openrouter")).len);
-    try std.testing.expectEqual(@as(usize, 1), (try withToolNudge(a, &msgs, null, "anthropic")).len);
-    const nudged = try withToolNudge(a, &msgs, "make_quiz", "anthropic");
+    try std.testing.expect(nudgesTool("anthropic/claude-sonnet-5.5", "anthropic", null));
+    try std.testing.expect(nudgesTool("anthropic/claude-sonnet-5.5", "openrouter", "high"));
+    try std.testing.expect(!nudgesTool("anthropic/claude-sonnet-5.5", "openrouter", null));
+    try std.testing.expect(!nudgesTool("openai/gpt-6.1-sol", "openrouter", "high"));
+    try std.testing.expectEqual(@as(usize, 1), (try withToolNudge(a, &msgs, null)).len);
+    const nudged = try withToolNudge(a, &msgs, "make_quiz");
     try std.testing.expectEqual(@as(usize, 2), nudged.len);
     try std.testing.expect(std.mem.indexOf(u8, nudged[1].content, "make_quiz") != null);
 }
