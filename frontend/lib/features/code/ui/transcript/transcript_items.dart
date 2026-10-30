@@ -454,8 +454,9 @@ class _TaskMark extends StatelessWidget {
 }
 
 class NoticeView extends StatelessWidget {
-  const NoticeView({super.key, required this.item});
+  const NoticeView({super.key, required this.item, this.onRetry});
   final NoticeItem item;
+  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -464,7 +465,17 @@ class NoticeView extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(color: color.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(8)),
-      child: Text(item.message, style: TextStyle(color: color, fontSize: 13)),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(item.message, style: TextStyle(color: color, fontSize: 13)),
+          ),
+          if (onRetry != null) ...[
+            const SizedBox(width: 8),
+            AdaptiveButton(label: 'Retry', emphasis: ButtonEmphasis.secondary, onPressed: onRetry),
+          ],
+        ],
+      ),
     );
   }
 }

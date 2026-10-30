@@ -19,6 +19,7 @@ import '../domain/agent_mode.dart';
 import '../domain/code_session.dart';
 import '../domain/questions.dart';
 import '../domain/transcript.dart';
+import '../harness/events.dart' show ExecutionStatus;
 import 'code_composer.dart';
 import 'panes/diff_pane.dart';
 import 'transcript/approval_card.dart';
@@ -80,6 +81,7 @@ class CodeSessionScreen extends ConsumerWidget {
                 mode: state.mode,
                 onApprovePlan: controller.startBuilding,
                 onRevisePlan: controller.send,
+                onRetry: controller.retry,
               ),
             ),
             if (state.error case final error?)
@@ -282,6 +284,7 @@ class _TranscriptList extends StatelessWidget {
     required this.onAnswer,
     required this.onApprovePlan,
     required this.onRevisePlan,
+    required this.onRetry,
   });
 
   final Transcript transcript;
@@ -292,6 +295,9 @@ class _TranscriptList extends StatelessWidget {
   final void Function(int turn)? onRewind;
   final VoidCallback onApprovePlan;
   final ValueChanged<String> onRevisePlan;
+
+  /// Offered on the last error while the session is failed.
+  final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -350,7 +356,12 @@ class _TranscriptList extends StatelessWidget {
       onApprove: onApprovePlan,
       onRevise: onRevisePlan,
     ),
-    NoticeItem() => NoticeView(item: item),
+    NoticeItem() => NoticeView(
+      item: item,
+      onRetry: item.error && transcript.status == ExecutionStatus.error && identical(item, transcript.items.last)
+          ? onRetry
+          : null,
+    ),
   };
 }
 

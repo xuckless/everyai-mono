@@ -443,6 +443,10 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
 
   void unqueue(int index) => state = state.copyWith(queued: [...state.queued]..removeAt(index));
 
+  /// Runs the agent again after a failed turn (a dropped connection, an
+  /// upstream error); the conversation keeps everything so far.
+  Future<void> retry() async => _session?.resume();
+
   Future<void> stop() async {
     state = state.copyWith(queued: const []);
     await _session?.interrupt();
