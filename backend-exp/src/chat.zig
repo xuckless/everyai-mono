@@ -61,6 +61,10 @@ pub const ChatRequest = struct {
     /// How hard a reasoning model thinks; ignored for models without
     /// reasoning, and null leaves the provider's default.
     effort: ?Effort = null,
+    /// A tool the model must call first (the `/quiz`, `/slides`... commands).
+    /// Only the first upstream call of the turn is forced, so the loop goes
+    /// on normally after the tool ran. Must name a tool in `tools.definitions`.
+    force_tool: ?[]const u8 = null,
 };
 
 pub const Effort = enum {
@@ -173,7 +177,17 @@ const CallOpts = struct {
     no_tool_calls: bool = false,
     /// `reasoning.effort`, already mapped for the route (`Effort.wire`).
     effort: ?[]const u8 = null,
+    /// Makes the call use this tool (`tool_choice` names it). Sits after the
+    /// tools and system prompt in the body, so the cached prefix is unchanged.
+    force_tool: ?[]const u8 = null,
 };
+
+/// True when `name` is one of the tools every chat request defines.
+pub fn knownTool(name: []const u8) bool {
+    var buf: [96]u8 = undefined;
+    const needle = std.fmt.bufPrint(&buf, "\"name\":\"{s}\"", .{name}) catch return false;
+    return name.len > 0 and std.mem.indexOf(u8, tools.definitions, needle) != null;
+}
 
 /// The upstream request body. Prefix order (tools, system, history) never
 /// varies, so caches hit; breakpoints go on the system prompt and the last
@@ -204,6 +218,9 @@ fn buildBody(arena: std.mem.Allocator, model: []const u8, mode: Mode, with_tools
         if (opts.no_tool_calls) {
             try s.objectField("tool_choice");
             try s.write("none");
+        } else if (opts.force_tool) |name| {
+            try s.objectField("tool_choice");
+            try s.print("{{\"type\":\"function\",\"function\":{{\"name\":\"{s}\"}}}}", .{name});
         }
     }
     if (mode == .search) {
@@ -291,6 +308,7 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
         return res.fail(.unprocessable_entity, "body must be {model?, mode, messages: [{role, content}], tools_enabled, session?}");
     if (body.messages.len == 0) return res.fail(.unprocessable_entity, "messages must not be empty");
     if (body.memory) |m| if (m.len > memory_max) return res.fail(.unprocessable_entity, "memory is too long");
+    if (body.force_tool) |t| if (!knownTool(t)) return res.fail(.unprocessable_entity, "force_tool is not a known tool");
     for (body.messages) |m| if (m.content != .string and m.content != .array)
         return res.fail(.unprocessable_entity, "content must be a string or an array of parts");
 
@@ -351,7 +369,10 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
     var cap: ?i64 = null;
     var out_of_steps = false;
     while (true) {
-        var result = try turn.call(messages.items, .{ .max_tokens = cap }, sink);
+        // The first call may be forced to one tool (see ChatRequest.force_tool).
+        const forced: ?[]const u8 = if (with_tools and steps == 0 and continuations == 0) body.force_tool else null;
+        const sent = try withToolNudge(arena, messages.items, forced, route.provider);
+        var result = try turn.call(sent, .{ .max_tokens = cap, .force_tool = forced }, sink);
 
         // A cut-off tool call never runs. Ask again once with room for the
         // whole call; the app keeps what it already got of the reply.
@@ -359,7 +380,7 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
             if (truncation.boostedCap(cap orelse result.usage.completion_tokens, facts.max_output)) |bigger| {
                 cap = bigger;
                 var replay = truncation.Replay(Sink).init(arena, sink, result);
-                result = try turn.call(messages.items, .{ .max_tokens = cap }, &replay);
+                result = try turn.call(sent, .{ .max_tokens = cap, .force_tool = forced }, &replay);
             }
         }
         const cut_off = truncation.isLength(result.finish_reason);
@@ -422,6 +443,18 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
         followUps(app, req, who, body, final_text.written(), sink) catch |err| std.log.warn("follow-ups failed: {t}", .{err});
     }
     try sink.send("done", .{});
+}
+
+/// The native Anthropic adapter drops forced tool choices (they clash with
+/// thinking), so for that route the request is asked in words instead: a
+/// final user note, sent for this call only and never stored in the history.
+fn withToolNudge(arena: std.mem.Allocator, messages: []const Msg, force: ?[]const u8, provider: []const u8) ![]const Msg {
+    const name = force orelse return messages;
+    if (!std.mem.eql(u8, provider, "anthropic")) return messages;
+    const out = try arena.alloc(Msg, messages.len + 1);
+    @memcpy(out[0..messages.len], messages);
+    out[messages.len] = .{ .role = "user", .content = try std.fmt.allocPrint(arena, "(For this request, answer by calling the {s} tool.)", .{name}) };
+    return out;
 }
 
 /// What every upstream call of one chat turn shares.
@@ -1053,6 +1086,43 @@ test "buildBody: effort and reasoning passback on assistant steps" {
     // No effort: no reasoning object.
     const plain = try buildBody(a, "deepseek/deepseek-v4-pro", .chat, true, msgs[0..1], "5m", "exa", .{});
     try std.testing.expect(std.mem.indexOf(u8, plain, "effort") == null);
+}
+
+test "buildBody: a forced tool names it and leaves the rest of the body alone" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const msgs = [_]Msg{.{ .role = "user", .content = "quiz me on rivers" }};
+    const plain = try buildBody(a, "openai/gpt-6.1-sol", .chat, true, &msgs, "5m", "exa", .{});
+    const forced = try buildBody(a, "openai/gpt-6.1-sol", .chat, true, &msgs, "5m", "exa", .{ .force_tool = "make_quiz" });
+    try std.testing.expect(std.mem.indexOf(u8, plain, "tool_choice") == null);
+    try std.testing.expect(std.mem.indexOf(u8, forced, "\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":\"make_quiz\"}}") != null);
+    // Tools and the system prompt come before the choice, byte for byte.
+    const cut = std.mem.indexOf(u8, plain, "\"messages\"").?;
+    const tools_end = std.mem.indexOf(u8, forced, ",\"tool_choice\"").?;
+    try std.testing.expectEqualStrings(plain[0..tools_end], forced[0..tools_end]);
+    try std.testing.expect(tools_end < cut);
+    // No tools, no choice; and "none" wins over a forced tool.
+    const bare = try buildBody(a, "openai/gpt-6.1-sol", .chat, false, &msgs, "5m", "exa", .{ .force_tool = "make_quiz" });
+    try std.testing.expect(std.mem.indexOf(u8, bare, "tool_choice") == null);
+    const none = try buildBody(a, "openai/gpt-6.1-sol", .chat, true, &msgs, "5m", "exa", .{ .force_tool = "make_quiz", .no_tool_calls = true });
+    try std.testing.expect(std.mem.indexOf(u8, none, "\"tool_choice\":\"none\"") != null);
+}
+
+test "knownTool and the Anthropic nudge" {
+    try std.testing.expect(knownTool("make_slides"));
+    try std.testing.expect(knownTool("render_svg"));
+    try std.testing.expect(!knownTool("rm_rf"));
+    try std.testing.expect(!knownTool(""));
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const msgs = [_]Msg{.{ .role = "user", .content = "hi" }};
+    try std.testing.expectEqual(@as(usize, 1), (try withToolNudge(a, &msgs, "make_quiz", "openrouter")).len);
+    try std.testing.expectEqual(@as(usize, 1), (try withToolNudge(a, &msgs, null, "anthropic")).len);
+    const nudged = try withToolNudge(a, &msgs, "make_quiz", "anthropic");
+    try std.testing.expectEqual(@as(usize, 2), nudged.len);
+    try std.testing.expect(std.mem.indexOf(u8, nudged[1].content, "make_quiz") != null);
 }
 
 test readableText {

@@ -1073,3 +1073,53 @@ test "polish: one look at the render returns defects and a checked revision; 402
     defer no_png.deinit();
     try no_png.expectStatus(.unprocessable_entity);
 }
+
+test "chat: force_tool forces the first call only; unknown names are refused" {
+    var env: Env = undefined;
+    try start(&env, &.{ quiz_turn, final_turn, followups_reply }, true);
+    defer env.deinit();
+
+    var bad = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = "hi" }},
+        .force_tool = "format_disk",
+    } });
+    defer bad.deinit();
+    try bad.expectStatus(.unprocessable_entity);
+
+    var res = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = "rivers" }},
+        .force_tool = "make_quiz",
+    } });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "event: tool\n") != null);
+    const first = env.fake.bodies.items[0];
+    try std.testing.expect(std.mem.indexOf(u8, first, "\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":\"make_quiz\"}}") != null);
+    // After the tool ran the model is free again (a forced choice would loop).
+    try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[1], "tool_choice") == null);
+}
+
+test "aux: a conversation becomes a skill file; code fences are stripped" {
+    var env: Env = undefined;
+    try start(&env, &.{
+        \\{"choices":[{"message":{"role":"assistant","content":"```markdown\n---\nname: weekly-report\ndescription: Writes the weekly report.\n---\n# Weekly report\n1. Gather items.\n```"}}],"usage":{"prompt_tokens":300,"completion_tokens":60,"cost":0.0002}}
+    }, true);
+    defer env.deinit();
+    var res = try env.t.post("/v1/aux/skill", .{ .json = .{
+        .messages = .{ .{ .role = "user", .content = "Write my weekly report" }, .{ .role = "assistant", .content = "Done: ..." } },
+        .hint = "reports",
+    } });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "\"content\":\"---\\nname: weekly-report") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "```") == null);
+    const sent = env.fake.bodies.items[0];
+    try std.testing.expect(std.mem.indexOf(u8, sent, "User: Write my weekly report") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sent, "for: reports") != null);
+
+    var empty = try env.t.post("/v1/aux/skill", .{ .json = .{ .messages = .{.{ .role = "user", .content = "  " }} } });
+    defer empty.deinit();
+    try empty.expectStatus(.unprocessable_entity);
+}

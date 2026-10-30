@@ -177,8 +177,116 @@ fn title(app: *App, req: *anole.Request, res: *anole.Response) !void {
     return res.json(.{ .title = t, .model = model, .charged_micros = charged });
 }
 
+/// The prompt that turns a conversation into a SKILL.md: a reusable
+/// procedure, not a retelling. `transcript` is the chat as plain text.
+pub fn skillPrompt(arena: std.mem.Allocator, transcript: []const u8, hint: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena,
+        \\Below is a conversation between a user and an assistant. Write a reusable skill from it: a short instruction file that lets an assistant do this kind of task well next time, without the conversation.
+        \\
+        \\Reply with only the file, in this exact shape:
+        \\---
+        \\name: lowercase-hyphenated-name
+        \\description: One sentence saying what the skill does and when to use it.
+        \\---
+        \\# Title
+        \\
+        \\Then the steps, the user's preferences and corrections that held up, formats or templates to follow, and pitfalls to avoid. Keep what generalizes; drop one-off details, names and secrets. Use short sections and lists. Stay under 400 words.
+        \\{s}
+        \\<conversation>
+        \\{s}
+        \\</conversation>
+    , .{ hint, transcript });
+}
+
+/// Drops a code fence a model wrapped the file in, and any lead-in before
+/// the opening `---`. Returns the file as is when there is no front matter.
+pub fn cleanSkill(raw: []const u8) []const u8 {
+    var t = std.mem.trim(u8, raw, " \t\r\n");
+    if (std.mem.startsWith(u8, t, "```")) {
+        const nl = std.mem.indexOfScalar(u8, t, '\n') orelse return t;
+        t = std.mem.trim(u8, t[nl + 1 ..], " \t\r\n");
+        if (std.mem.endsWith(u8, t, "```")) t = std.mem.trim(u8, t[0 .. t.len - 3], " \t\r\n");
+    }
+    if (!std.mem.startsWith(u8, t, "---")) {
+        if (std.mem.indexOf(u8, t, "\n---\n")) |i| t = t[i + 1 ..];
+    }
+    return t;
+}
+
+const SkillRequest = struct { messages: []const Message, hint: []const u8 = "", session: ?[]const u8 = null };
+
+/// The most conversation text sent to the model, so one long chat stays cheap.
+const skill_transcript_max = 24 * 1024;
+
+fn skillDraft(app: *App, req: *anole.Request, res: *anole.Response) !void {
+    const who = try auth.identity(req);
+    const raw_body = (try req.body()) orelse return res.fail(.bad_request, "missing body");
+    const body = std.json.parseFromSliceLeaky(SkillRequest, req.arena, raw_body, .{ .ignore_unknown_fields = true }) catch
+        return res.fail(.unprocessable_entity, "body must be {messages: [{role, content}], hint?}");
+    var transcript: std.Io.Writer.Allocating = .init(req.arena);
+    for (body.messages) |m| {
+        const text = std.mem.trim(u8, textOf(m.content), " \t\r\n");
+        if (text.len == 0) continue;
+        const who_said = if (std.mem.eql(u8, m.role, "assistant")) "Assistant" else "User";
+        try transcript.writer.print("{s}: {s}\n\n", .{ who_said, text });
+    }
+    var text = transcript.written();
+    if (std.mem.trim(u8, text, " \n\t").len == 0) return res.fail(.unprocessable_entity, "messages need some text");
+    // Keep the tail: the final, corrected form of the work is what matters.
+    if (text.len > skill_transcript_max) text = text[text.len - skill_transcript_max ..];
+    const hint = if (body.hint.len > 0) try std.fmt.allocPrint(req.arena, "The user says it is for: {s}\n", .{body.hint[0..@min(body.hint.len, 500)]}) else "";
+    const model = modelFor(app.cfg, .compaction);
+    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
+    billing.preflight(app, req, who.user_id, app.catalog.facts(req.io, model).free) catch |err| switch (err) {
+        error.PaymentRequired => {
+            res.status = .payment_required;
+            return res.json(.{ .message = "You're out of credits.", .code = "out_of_credits" });
+        },
+        else => return err,
+    };
+    const req_body = try std.json.Stringify.valueAlloc(req.arena, .{
+        .model = model,
+        .usage = .{ .include = true },
+        .max_tokens = 1500,
+        .messages = .{.{ .role = "user", .content = try skillPrompt(req.arena, text, hint) }},
+    }, .{});
+    const s = try app.upstream.post(req, "/chat/completions", req_body, &.{});
+    defer s.close();
+    const raw = try s.reader.allocRemaining(req.arena, .limited(1024 * 1024));
+    if (s.status >= 300) return res.fail(.bad_gateway, "the skill model failed");
+    const v = std.json.parseFromSliceLeaky(std.json.Value, req.arena, raw, .{}) catch return res.fail(.bad_gateway, "the skill model failed");
+    var charged: i64 = 0;
+    if (v.object.get("usage")) |u| if (u == .object) {
+        const usage = openrouter.parseUsage(u.object);
+        const c = try billing.charge(app, req, who.user_id, .{ .kind = "skill", .model = model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cost_usd = usage.cost_usd, .session = body.session });
+        charged = c.charged_micros;
+    };
+    const choices = (v.object.get("choices") orelse return res.fail(.bad_gateway, "the skill model failed")).array.items;
+    if (choices.len == 0) return res.fail(.bad_gateway, "the skill model failed");
+    const content = openrouter.jsonString(choices[0].object.get("message") orelse return res.fail(.bad_gateway, "the skill model failed"), "content") orelse "";
+    const file = cleanSkill(content);
+    if (file.len == 0) return res.fail(.bad_gateway, "the skill model returned nothing");
+    return res.json(.{ .content = file, .model = model, .charged_micros = charged });
+}
+
 pub fn routes(app: *anole.Server(App), state: *App) void {
-    app.group("/v1", .{auth.Authenticate{ .app = state }}).post("/aux/title", title);
+    const v1 = app.group("/v1", .{auth.Authenticate{ .app = state }});
+    v1.post("/aux/title", title);
+    v1.post("/aux/skill", skillDraft);
+}
+
+test cleanSkill {
+    try std.testing.expectEqualStrings("---\nname: a\n---\n# A", cleanSkill("```markdown\n---\nname: a\n---\n# A\n```\n"));
+    try std.testing.expectEqualStrings("---\nname: a\n---\nbody", cleanSkill("Here you go:\n---\nname: a\n---\nbody"));
+    try std.testing.expectEqualStrings("plain", cleanSkill("  plain \n"));
+}
+
+test skillPrompt {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const p = try skillPrompt(arena.allocator(), "User: hi", "");
+    try std.testing.expect(std.mem.indexOf(u8, p, "<conversation>\nUser: hi") != null);
+    try std.testing.expect(std.mem.indexOf(u8, p, "name: lowercase-hyphenated-name") != null);
 }
 
 test modelFor {
