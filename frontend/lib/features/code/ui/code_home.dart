@@ -21,6 +21,8 @@ import '../domain/agent_mode.dart';
 import '../domain/code_session.dart';
 import '../../slash/slash_command.dart' show CodeSlashHost;
 import '../morning_providers.dart';
+import '../../remote/domain/remote_protocol.dart' show isRemotePath;
+import '../../remote/ui/remote_projects.dart';
 import 'agent_menu.dart';
 import 'code_composer.dart';
 import 'transcript/aside_card.dart';
@@ -65,6 +67,12 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
     } on Object catch (e) {
       if (mounted) showAdaptiveToast(context, 'Couldn\'t create the sample project: $e');
     }
+  }
+
+  /// A project on a paired host (remote mode).
+  void _addRemote(String path, String name) {
+    final project = ref.read(codeProjectsProvider.notifier).add(path, name: name);
+    setState(() => _projectId = project.id);
   }
 
   void _addDemo() {
@@ -133,7 +141,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                 ),
                 const SizedBox(height: 24),
                 if (project == null)
-                  _NoProjects(onOpen: _openFolder, onSample: _addSample, onDemo: _addDemo)
+                  _NoProjects(onOpen: _openFolder, onSample: _addSample, onDemo: _addDemo, onRemote: _addRemote)
                 else ...[
                   if (ref.watch(morningBriefProvider) case final brief?)
                     Padding(
@@ -169,6 +177,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                       onOpen: _openFolder,
                       onSample: _addSample,
                       onDemo: _addDemo,
+                      onRemote: _addRemote,
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -177,6 +186,8 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                         ? 'Starting the agent…'
                         : isDemoPath(project.path)
                         ? 'A demo project with a scripted agent. ${_mode.description}.'
+                        : isRemotePath(project.path)
+                        ? 'Runs on your paired computer, in the project folder itself. ${_mode.description}.'
                         // Folders without git still run in place.
                         : 'Each session works on its own branch in a separate worktree, so your checkout stays as it is. '
                               '${_mode.description}.',
@@ -203,14 +214,30 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
 }
 
 class _NoProjects extends StatelessWidget {
-  const _NoProjects({required this.onOpen, required this.onSample, required this.onDemo});
+  const _NoProjects({required this.onOpen, required this.onSample, required this.onDemo, required this.onRemote});
   final VoidCallback onOpen;
   final VoidCallback onSample;
   final VoidCallback onDemo;
+  final void Function(String path, String name) onRemote;
 
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
+    // Phones, tablets and the web have no agent of their own: a paired computer's projects.
+    if (!Host.isDesktop) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Pick a project on your paired computer and describe what you want. The agent runs there.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: theme.textMuted, fontSize: 14, height: 1.45),
+          ),
+          const SizedBox(height: 12),
+          RemoteProjectRows(onAdd: onRemote),
+        ],
+      );
+    }
     return Column(
       children: [
         Text(
@@ -243,6 +270,7 @@ class _ProjectPicker extends StatelessWidget {
     required this.onOpen,
     required this.onSample,
     required this.onDemo,
+    required this.onRemote,
   });
 
   final CodeProject project;
@@ -251,6 +279,7 @@ class _ProjectPicker extends StatelessWidget {
   final VoidCallback onOpen;
   final VoidCallback onSample;
   final VoidCallback onDemo;
+  final void Function(String path, String name) onRemote;
 
   @override
   Widget build(BuildContext context) {
@@ -268,28 +297,41 @@ class _ProjectPicker extends StatelessWidget {
             for (final p in projects)
               PopoverRow(
                 title: p.name,
-                subtitle: isDemoPath(p.path) ? 'Scripted demo' : p.path,
+                subtitle: isDemoPath(p.path)
+                    ? 'Scripted demo'
+                    : isRemotePath(p.path)
+                    ? 'On a paired computer'
+                    : p.path,
                 selected: p.id == project.id,
                 onTap: () {
                   close();
                   onPick(p);
                 },
               ),
-            PopoverRow(
-              leading: AdaptiveIcon(EveryIcon.add, size: 15, color: theme.textMuted),
-              title: 'Open folder…',
-              onTap: () {
+            if (Host.isDesktop) ...[
+              PopoverRow(
+                leading: AdaptiveIcon(EveryIcon.add, size: 15, color: theme.textMuted),
+                title: 'Open folder…',
+                onTap: () {
+                  close();
+                  onOpen();
+                },
+              ),
+              PopoverRow(
+                leading: AdaptiveIcon(EveryIcon.add, size: 15, color: theme.textMuted),
+                title: 'New sample project',
+                subtitle: 'A small Dart repo for the real agent',
+                onTap: () {
+                  close();
+                  onSample();
+                },
+              ),
+            ],
+            RemoteProjectRows(
+              added: {for (final p in projects) p.path},
+              onAdd: (path, name) {
                 close();
-                onOpen();
-              },
-            ),
-            PopoverRow(
-              leading: AdaptiveIcon(EveryIcon.add, size: 15, color: theme.textMuted),
-              title: 'New sample project',
-              subtitle: 'A small Dart repo for the real agent',
-              onTap: () {
-                close();
-                onSample();
+                onRemote(path, name);
               },
             ),
             if (!projects.any((p) => isDemoPath(p.path)))

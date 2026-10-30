@@ -13,6 +13,8 @@ import '../agents/agents_providers.dart' show AgentDefinition, childSetup, codeA
 import '../attachments/attachment.dart';
 import '../models/domain/model_catalog.dart';
 import '../models/models_providers.dart';
+import '../remote/domain/remote_protocol.dart' show isRemotePath, parseRemotePath;
+import '../remote/remote_providers.dart' show remoteLinksProvider;
 import '../skills/data/skill_import.dart' show findImportCandidates;
 import '../skills/data/skill_store.dart' show folderFiles;
 import '../skills/skills_providers.dart' show codeSkillsFor, installedSkillsProvider;
@@ -58,6 +60,11 @@ const demoScheme = 'demo://';
 
 bool isDemoPath(String path) => path.startsWith(demoScheme);
 
+/// Sessions whose folder isn't on this machine: the scripted demo, and
+/// projects on a paired remote host (`remote://…`). Local files, git and
+/// processes are skipped for them.
+bool noLocalFolder(String path) => isDemoPath(path) || isRemotePath(path);
+
 /// The scripted harness for demo projects.
 final harnessProvider = Provider<Harness>((ref) => FakeHarness());
 
@@ -84,6 +91,8 @@ final sidecarProvider = Provider<Sidecar>((ref) {
 /// projects, else the sidecar (started, or restarted after a crash, on demand).
 Future<Harness> harnessFor(Ref ref, String workingDir) async {
   if (isDemoPath(workingDir)) return ref.read(harnessProvider);
+  // A paired host's agent-server, through the encrypted relay.
+  if (parseRemotePath(workingDir) case (:final hostId, path: _)) return ref.read(remoteLinksProvider).harness(hostId);
   return ref.read(_sidecarHarnessProvider);
 }
 
@@ -126,7 +135,7 @@ Future<Outgoing> prepareMessage(
   List<Attachment> files = const [],
 }) async {
   if (files.isEmpty) return Outgoing(text);
-  final paths = isDemoPath(workingDir) ? [for (final f in files) f.name] : await saveUploads(workingDir, files);
+  final paths = noLocalFolder(workingDir) ? [for (final f in files) f.name] : await saveUploads(workingDir, files);
   final note = attachedNote(paths);
   return Outgoing(
     text.isEmpty ? note : '$text\n\n$note',
@@ -215,7 +224,8 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     final id = const Uuid().v7();
     final demo = isDemoPath(project.path);
     final title = titleFor(prompt.isEmpty ? files.first.name : prompt);
-    final worktree = demo ? null : await _worktreeFor(project, title, id);
+    // A remote host's folder can't be branched from here; the session runs in it.
+    final worktree = noLocalFolder(project.path) ? null : await _worktreeFor(project, title, id);
     final workingDir = worktree?.path ?? project.path;
     final first = await prepareMessage(ref, text: prompt, workingDir: workingDir, model: model, files: files);
     final harness = await harnessFor(ref, project.path);
@@ -275,19 +285,21 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     List<Map<String, Object?>>? clientTools,
   }) async {
     final demo = isDemoPath(projectDir);
+    // The demo and remote hosts have no local folder: the server's default prompt, no project files.
+    final local = !noLocalFolder(projectDir);
     final projectId = ref.read(codeProjectsProvider).where((p) => p.path == projectDir).firstOrNull?.id;
     // The agents it may start (a subagent can't start any): built-in, global, and trusted project ones.
-    final agents = demo || subagent ? const <AgentDefinition>[] : await _agentsFor(projectId);
+    final agents = !local || subagent ? const <AgentDefinition>[] : await _agentsFor(projectId);
     // Settings and commit style come from the main checkout (local settings aren't in worktrees).
-    final agentPrompt = demo
+    final agentPrompt = !local
         ? null
         : await agentPromptFor(projectDir, agents: [for (final a in agents) (name: a.name, description: a.oneLine)]);
     // AGENTS.md and friends from the project folder up to the repository root (OpenHands doesn't load them).
-    final context = demo ? const <ContextFile>[] : await _startContext(workingDir, projectDir);
+    final context = !local ? const <ContextFile>[] : await _startContext(workingDir, projectDir);
     // MCP servers come from the app's list (global plus this project's), never from repository files.
-    final mcpConfig = demo ? const <String, Object?>{} : ref.read(codeMcpServersProvider).mcpConfigFor(projectId);
+    final mcpConfig = !local ? const <String, Object?>{} : ref.read(codeMcpServersProvider).mcpConfigFor(projectId);
     // Skills likewise: the app's enabled ones, and project skills only once trusted.
-    final skills = demo ? const <Map<String, Object?>>[] : await codeSkillsFor(ref, projectId);
+    final skills = !local ? const <Map<String, Object?>>[] : await codeSkillsFor(ref, projectId);
     return SessionSpec(
       workingDir: workingDir,
       model: model,
@@ -346,7 +358,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     final projectDir = project?.path ?? parent.workingDir;
     AgentType? role;
     AgentDefinition? agent;
-    if (task.agent.isNotEmpty && !isDemoPath(projectDir)) {
+    if (task.agent.isNotEmpty && !noLocalFolder(projectDir)) {
       // A library agent first (checked and trusted now), then a settings.json role.
       agent = (await _agentsFor(parent.projectId)).where((a) => a.name == task.agent).firstOrNull;
       if (agent == null) {
@@ -690,7 +702,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
 
   /// Before the history replays, so files it shows delivered aren't sent again.
   Future<void> _openContext(CodeSessionInfo info) async {
-    if (isDemoPath(info.workingDir)) return;
+    if (noLocalFolder(info.workingDir)) return;
     final project = ref.read(codeProjectsProvider).where((p) => p.id == info.projectId).firstOrNull;
     try {
       final c = await ProjectContext.forSession(
@@ -705,7 +717,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
   }
 
   Future<void> _loadSettingsRules(CodeSessionInfo info) async {
-    if (isDemoPath(info.workingDir)) return;
+    if (noLocalFolder(info.workingDir)) return;
     final project = ref.read(codeProjectsProvider).where((p) => p.id == info.projectId).firstOrNull;
     try {
       final s = await loadAgentSettings(project?.path ?? info.workingDir);
@@ -782,7 +794,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     if (event is! ToolResult) return event;
     final spill = spillOf(event);
     final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
-    if (spill == null || info == null || isDemoPath(info.workingDir)) return event;
+    if (spill == null || info == null || noLocalFolder(info.workingDir)) return event;
     final id = event.toolCallId.isNotEmpty ? event.toolCallId : event.id;
     final path = saveSpill(info.workingDir, Spill.fileName(id), spill.text);
     return path == null ? event : withPreview(event, spillPreview(spill, path));
@@ -1294,7 +1306,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     // subagent shares its parent's tag, so only the parent's Stop does this.
     await Future.wait([
       ?_session?.interrupt(),
-      if (info != null && !isDemoPath(info.workingDir) && !info.isSubagent)
+      if (info != null && !noLocalFolder(info.workingDir) && !info.isSubagent)
         killSessionProcesses(tag: info.id, workingDir: info.workingDir, ownsDir: info.worktree != null),
     ]);
   }

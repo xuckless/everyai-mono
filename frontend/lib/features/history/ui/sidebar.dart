@@ -18,6 +18,7 @@ import '../../chat/data/chat_repository.dart';
 import '../../chat/domain/message.dart';
 import '../../code/code_providers.dart';
 import '../../code/ui/code_home.dart';
+import '../../remote/remote_providers.dart' show hasRemoteHostProvider;
 
 /// Width of the collapsed rail. macOS needs room for the traffic lights above it.
 double sidebarRailWidth(DesignLanguage design) => Host.hasTrafficLights ? 92 : 60;
@@ -179,8 +180,9 @@ class _SidebarState extends ConsumerState<Sidebar> {
       children: [
         header,
         if (collapsed && lights) Center(child: _toggleButton()),
-        // The coding agent runs on desktop hosts only (remote hosts: TODO.md).
-        if (!collapsed && Host.isDesktop)
+        // The coding agent runs on desktop hosts, and on other devices once
+        // they are paired with one (remote mode).
+        if (!collapsed && (Host.isDesktop || ref.watch(hasRemoteHostProvider)))
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
             child: _SpaceSwitch(

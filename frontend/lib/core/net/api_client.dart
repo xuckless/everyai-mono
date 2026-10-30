@@ -49,6 +49,18 @@ final class ApiClient {
     return _decodeObject(await _readBody(res));
   }
 
+  /// GET and decode a JSON array response.
+  Future<List<Object?>> getJsonList(String path, {bool authenticated = false, Duration timeout = jsonTimeout}) async {
+    final res = await _send('GET', path, authenticated: authenticated, timeout: timeout);
+    try {
+      final decoded = jsonDecode(utf8.decode(await _readBody(res)));
+      if (decoded is List<Object?>) return decoded;
+      throw const ProtocolError('Expected a JSON array.');
+    } on FormatException {
+      throw const ProtocolError('The server returned malformed JSON.');
+    }
+  }
+
   /// DELETE, ignoring any body.
   Future<void> delete(String path, {bool authenticated = false}) async {
     final res = await _send('DELETE', path, authenticated: authenticated, timeout: jsonTimeout);
@@ -62,8 +74,17 @@ final class ApiClient {
     bool authenticated = false,
     Duration timeout = jsonTimeout,
     Future<void>? cancel,
+    Map<String, String> headers = const {},
   }) async {
-    final res = await _send('POST', path, json: body, authenticated: authenticated, timeout: timeout, cancel: cancel);
+    final res = await _send(
+      'POST',
+      path,
+      json: body,
+      authenticated: authenticated,
+      timeout: timeout,
+      cancel: cancel,
+      headers: headers,
+    );
     return _decodeObject(await _readBody(res, cancel: cancel));
   }
 

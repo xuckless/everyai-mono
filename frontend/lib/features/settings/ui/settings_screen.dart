@@ -108,6 +108,16 @@ class SettingsScreen extends ConsumerWidget {
               onTap: () => context.go(Routes.agents),
             ),
           ],
+          const AdaptiveSectionHeader('Remote'),
+          AdaptiveListTile(
+            title: const Text('Remote coding'),
+            subtitle: Text(
+              Host.isDesktop
+                  ? 'Run Code sessions here from your phone, tablet or browser, end-to-end encrypted'
+                  : 'Pair with a computer to use Code from this device',
+            ),
+            onTap: () => context.go(Routes.remote),
+          ),
           const AdaptiveSectionHeader('Account'),
           AdaptiveListTile(
             title: const Text('Plan & usage'),

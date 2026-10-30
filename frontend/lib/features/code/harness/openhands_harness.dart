@@ -25,14 +25,21 @@ final class OpenHandsHarness implements Harness {
     : this.located(() async => (baseUrl, sessionApiKey), client: client);
 
   /// [restarts] fires when the server came back after a crash; sessions
-  /// waiting to reconnect do so at once.
-  OpenHandsHarness.located(this._locate, {http.Client? client, Stream<void>? restarts})
-    : _http = client ?? http.Client(),
-      _restarts = restarts ?? const Stream.empty();
+  /// waiting to reconnect do so at once. [connectSocket] opens the event
+  /// sockets (a remote host tunnels them; see `RelayHarness`).
+  OpenHandsHarness.located(
+    this._locate, {
+    http.Client? client,
+    Stream<void>? restarts,
+    WebSocketChannel Function(Uri url)? connectSocket,
+  }) : _http = client ?? http.Client(),
+       _restarts = restarts ?? const Stream.empty(),
+       _connectSocket = connectSocket ?? WebSocketChannel.connect;
 
   final AgentServerLocator _locate;
   final http.Client _http;
   final Stream<void> _restarts;
+  final WebSocketChannel Function(Uri url) _connectSocket;
 
   Future<Object?> _request(String method, String path, [Object? body]) async {
     final (base, key) = await _locate();
@@ -214,7 +221,7 @@ final class _OpenHandsSession implements HarnessSession {
         path: '${base.path.replaceAll(RegExp(r'/$'), '')}/sockets/events/$id',
         queryParameters: {'resend_mode': 'all'},
       );
-      socket = _socket = WebSocketChannel.connect(ws);
+      socket = _socket = _h._connectSocket(ws);
       await socket.ready;
       socket.sink.add(jsonEncode({'type': 'auth', 'session_api_key': key}));
     } on Object {
