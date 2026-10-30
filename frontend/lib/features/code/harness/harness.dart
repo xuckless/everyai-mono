@@ -23,6 +23,7 @@ final class SessionSpec {
     this.promptSuffix,
     this.effort,
     this.holdClientTools = false,
+    this.subagent = false,
   });
 
   /// The session's worktree.
@@ -71,6 +72,11 @@ final class SessionSpec {
   /// the agent keeps its turn. Off: the agent ends its turn and the reply is
   /// a new user message.
   final bool holdClientTools;
+
+  /// A child conversation started by another session's `run_subagent` call: no
+  /// client tools (so it can't ask the user or start subagents of its own),
+  /// and `subagentRules` after the prompt suffix.
+  final bool subagent;
 }
 
 /// A running agent conversation. Events arrive on [events] (history first,

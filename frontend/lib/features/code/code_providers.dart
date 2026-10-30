@@ -18,6 +18,7 @@ import 'domain/code_session.dart';
 import 'domain/compaction.dart';
 import 'domain/doom_loop.dart';
 import 'domain/spill.dart';
+import 'domain/subagents.dart';
 import 'domain/questions.dart';
 import 'domain/transcript.dart';
 import 'git/git_service.dart';
@@ -261,6 +262,8 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     String? initialMessage,
     List<String> initialImages = const [],
     bool runInitial = true,
+    bool subagent = false,
+    String? sessionTag,
   }) async {
     final demo = isDemoPath(projectDir);
     // Settings and commit style come from the main checkout (local settings aren't in worktrees).
@@ -273,7 +276,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       mode: mode,
       llmBaseUrl: demo ? '' : gatewayBaseUrl(ref),
       llmApiKey: demo ? '' : await gatewayKey(ref),
-      sessionTag: sessionId,
+      sessionTag: sessionTag ?? sessionId,
       initialMessage: initialMessage,
       initialImages: initialImages,
       runInitial: runInitial,
@@ -283,7 +286,67 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       promptSuffix: agentPrompt == null ? null : withProjectContext(agentPrompt.suffix, context),
       effort: effort == null || effort.isEmpty ? null : effort,
       holdClientTools: holdClientTools,
+      subagent: subagent,
     );
+  }
+
+  /// The subagent session started for [parentId]'s `run_subagent` call [callId].
+  CodeSessionInfo? subagentFor(String parentId, String callId) =>
+      state.where((s) => s.parentId == parentId && s.parentCallId == callId).firstOrNull;
+
+  /// Starts a child conversation for [parent]'s `run_subagent` [call]: the parent's
+  /// folder, model and effort, [mode], and the task as its first message.
+  /// Its model calls are billed to the parent, and the parent's Stop ends
+  /// the processes it leaves running (they share the session tag).
+  Future<CodeSessionInfo> startSubagent({
+    required CodeSessionInfo parent,
+    required ActionCall call,
+    required AgentMode mode,
+  }) async {
+    final id = const Uuid().v7();
+    final task = SubagentTask.of(call);
+    final project = ref.read(codeProjectsProvider).where((p) => p.id == parent.projectId).firstOrNull;
+    final projectDir = project?.path ?? parent.workingDir;
+    AgentType? role;
+    if (task.agent.isNotEmpty && !isDemoPath(projectDir)) {
+      try {
+        role = (await loadAgentSettings(projectDir)).agents[task.agent];
+      } on Object {
+        // An unreadable settings file only loses the role's instructions.
+      }
+    }
+    final live = await (await harnessFor(ref, parent.workingDir)).start(
+      await specFor(
+        sessionId: id,
+        sessionTag: parent.id,
+        projectDir: projectDir,
+        workingDir: parent.workingDir,
+        model: parent.model,
+        mode: mode,
+        effort: parent.effort,
+        holdClientTools: false,
+        subagent: true,
+        initialMessage: modeNote(mode, subagentBrief(task, role: role), subagent: true),
+      ),
+    );
+    ref.read(_liveProvider)[id] = live;
+    final info = CodeSessionInfo(
+      id: id,
+      projectId: parent.projectId,
+      title: task.title,
+      conversationId: live.id,
+      model: parent.model,
+      mode: mode,
+      workingDir: parent.workingDir,
+      createdAt: DateTime.now(),
+      branch: parent.branch,
+      effort: parent.effort,
+      parentId: parent.id,
+      parentCallId: call.id,
+    );
+    state = [...state, info];
+    _save();
+    return info;
   }
 
   static Future<List<ContextFile>> _startContext(String workingDir, String projectDir) async {
@@ -313,11 +376,19 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     _save();
   }
 
+  /// Removes session [id] and the subagents it started.
   void remove(String id) {
-    unawaited(ref.read(_liveProvider).remove(id)?.close());
+    final gone = {
+      id,
+      for (final s in state)
+        if (s.parentId == id) s.id,
+    };
+    for (final g in gone) {
+      unawaited(ref.read(_liveProvider).remove(g)?.close());
+    }
     state = [
       for (final s in state)
-        if (s.id != id) s,
+        if (!gone.contains(s.id)) s,
     ];
     _save();
   }
@@ -336,9 +407,13 @@ final class CodeSessionState {
     this.queued = const [],
     this.connected = false,
     this.error,
+    this.subagentNeedsInput = false,
   });
 
   final Transcript transcript;
+
+  /// A subagent this session is waiting on needs the user (an approval).
+  final bool subagentNeedsInput;
   final AgentMode mode;
 
   /// Messages typed while the agent was busy; sent when it stops.
@@ -350,6 +425,8 @@ final class CodeSessionState {
     _ when error != null => SessionStatus.failed,
     Transcript(pending: [_, ...]) => SessionStatus.needsInput,
     final t when t.openQuestion != null || t.openPlan != null => SessionStatus.needsInput,
+    // The call (or the turn) waits on subagents; the session is still at work.
+    Transcript(openSubagents: [_, ...]) => subagentNeedsInput ? SessionStatus.needsInput : SessionStatus.running,
     Transcript(status: ExecutionStatus.running) => SessionStatus.running,
     Transcript(status: ExecutionStatus.error || ExecutionStatus.stuck) => SessionStatus.failed,
     Transcript(status: ExecutionStatus.finished) => SessionStatus.done,
@@ -363,12 +440,14 @@ final class CodeSessionState {
     List<Outgoing>? queued,
     bool? connected,
     String? error,
+    bool? subagentNeedsInput,
   }) => CodeSessionState(
     transcript: transcript ?? this.transcript,
     mode: mode ?? this.mode,
     queued: queued ?? this.queued,
     connected: connected ?? this.connected,
     error: error ?? this.error,
+    subagentNeedsInput: subagentNeedsInput ?? this.subagentNeedsInput,
   );
 }
 
@@ -435,12 +514,29 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
   final _events = <HarnessEvent>[];
   bool _compacting = false;
 
+  /// Subagents this session waits on, by `run_subagent` call id: the child session,
+  /// and the subscription that watches it finish.
+  final _childOf = <String, String>{};
+  final _childSubs = <String, ProviderSubscription<CodeSessionState>>{};
+  final _spawning = <String>{};
+
+  /// Calls stopped while their subagent was still starting.
+  final _abandoned = <String>{};
+
+  /// Reports not yet handed to the agent, by call id.
+  final _reports = <String, SubagentReport>{};
+  final _childWaiting = <String>{};
+  bool _delivering = false;
+
   @override
   CodeSessionState build() {
     final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
     ref.onDispose(() {
       _sub?.cancel();
       _gitTimer?.cancel();
+      for (final s in _childSubs.values) {
+        s.close();
+      }
     });
     // After build returns, so the connected flag isn't overwritten.
     if (info != null) unawaited(Future.microtask(() => _connect(info)));
@@ -455,7 +551,11 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
       live[sessionId] = session;
       await _openContext(info);
       _sub = session.events.listen(_onEvent);
-      Timer(const Duration(milliseconds: 1500), () => _live = true);
+      Timer(const Duration(milliseconds: 1500), () {
+        _live = true;
+        // Calls still waiting after the history replayed (an app restart).
+        if (ref.mounted) _syncSubagents();
+      });
       state = state.copyWith(connected: true);
       await _loadSettingsRules(info);
     } on Object catch (e) {
@@ -534,7 +634,12 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     }
     if (looped) _raiseDoomLoop(_doom.looped!);
     _autoRespond(transcript);
-    if (!transcript.running && transcript.pending.isEmpty && state.queued.isNotEmpty) {
+    _syncSubagents();
+    _deliver();
+    if (!transcript.running &&
+        transcript.pending.isEmpty &&
+        transcript.openSubagents.isEmpty &&
+        state.queued.isNotEmpty) {
       final [next, ...rest] = state.queued;
       state = state.copyWith(queued: rest);
       unawaited(_checkpoint().then((_) => _sendNow(next)));
@@ -676,7 +781,8 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     final told = state.transcript.notedMode;
     final context = _context?.takeNote() ?? '';
     final body = context.isEmpty ? text : (text.isEmpty ? context : '$context\n\n$text');
-    return modeNote(state.mode, body, full: told != state.mode, from: told);
+    final subagent = ref.read(codeSessionsProvider.notifier).byId(sessionId)?.isSubagent ?? false;
+    return modeNote(state.mode, body, full: told != state.mode, from: told, subagent: subagent);
   }
 
   Future<Outgoing?> _outgoing(String text, List<Attachment> files) async {
@@ -696,7 +802,8 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
   Future<void> send(String text, {List<Attachment> files = const []}) async {
     final out = await _outgoing(text, files);
     if (out == null) return;
-    if (state.transcript.running || state.transcript.pending.isNotEmpty) {
+    final t = state.transcript;
+    if (t.running || t.pending.isNotEmpty || t.openSubagents.isNotEmpty) {
       state = state.copyWith(queued: [...state.queued, out]);
       return;
     }
@@ -713,7 +820,12 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     if (held.isNotEmpty) {
       _answered = [...state.transcript.pending, ...held].map((c) => c.id).join(',');
       final plan = held.any((c) => c.toolName == presentPlanTool);
-      await session.respond(accept: false, reason: plan ? '$planRevisionLead see their next message.' : repliedInChat);
+      final reason = plan
+          ? '$planRevisionLead see their next message.'
+          : held.every(isTaskCall)
+          ? subagentInterrupted
+          : repliedInChat;
+      await session.respond(accept: false, reason: reason);
     }
     await session.send(_noted(out.text), images: out.images);
   }
@@ -723,6 +835,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     final out = await _outgoing(text, files);
     if (out == null) return;
     await _session?.interrupt();
+    await _stopSubagents();
     await _checkpoint();
     await _sendNow(out);
   }
@@ -806,19 +919,164 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
   Future<void> stop() async {
     _doomOpen = false;
     state = state.copyWith(queued: const []);
+    await _stopSubagents();
     final pending = state.transcript.pending;
-    if (pending.isNotEmpty) {
+    final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
+    // A subagent tells the session that started it, which carries on without it.
+    if (info?.parentId case final parent?) {
+      if (ref.exists(codeSessionProvider(parent))) {
+        ref.read(codeSessionProvider(parent).notifier).subagentStopped(sessionId, stoppedReport(state.transcript));
+      }
+    }
+    if (pending.isNotEmpty || state.transcript.held.any(isTaskCall)) {
       _answered = [...pending, ...state.transcript.held].map((c) => c.id).join(',');
       await _session?.respond(accept: false, reason: denialMessage(DenialKind.cancelled));
     }
     // Ctrl-C reaches only the terminal's foreground command; background jobs,
-    // servers and commands left running after a timeout are ended here.
-    final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
+    // servers and commands left running after a timeout are ended here. A
+    // subagent shares its parent's tag, so only the parent's Stop does this.
     await Future.wait([
       ?_session?.interrupt(),
-      if (info != null && !isDemoPath(info.workingDir))
+      if (info != null && !isDemoPath(info.workingDir) && !info.isSubagent)
         killSessionProcesses(tag: info.id, workingDir: info.workingDir, ownsDir: info.worktree != null),
     ]);
+  }
+
+  /// Starts a child conversation for each new `run_subagent` call, or picks up the
+  /// one already running for it (after a restart). Replayed history never
+  /// starts one: only calls still open once the session is live.
+  void _syncSubagents() {
+    if (!_live || !ref.mounted) return;
+    final sessions = ref.read(codeSessionsProvider.notifier);
+    final info = sessions.byId(sessionId);
+    if (info == null || info.isSubagent) return;
+    final t = state.transcript;
+    for (final item in t.openSubagents) {
+      final id = item.step.call.id;
+      if (_childOf.containsKey(id) || _reports.containsKey(id) || _spawning.contains(id)) continue;
+      // A held call runs its subagent while the server waits for the result.
+      if (_holds && !t.held.any((c) => c.id == id)) continue;
+      if (sessions.subagentFor(sessionId, id) case final child?) {
+        _watch(id, child.id);
+      } else if (_childOf.length + _spawning.length >= maxConcurrentSubagents) {
+        _ready(
+          id,
+          const SubagentReport(
+            SubagentStatus.notStarted,
+            'Not started: at most $maxConcurrentSubagents subagents run at once. Start it again once the others '
+            'have reported.',
+          ),
+        );
+      } else {
+        unawaited(_spawn(id, item.step.call, info));
+      }
+    }
+  }
+
+  Future<void> _spawn(String callId, ActionCall call, CodeSessionInfo parent) async {
+    _spawning.add(callId);
+    try {
+      final child = await ref
+          .read(codeSessionsProvider.notifier)
+          .startSubagent(parent: parent, call: call, mode: subagentMode(state.mode));
+      if (!ref.mounted || _abandoned.remove(callId)) {
+        unawaited(ref.read(_liveProvider)[child.id]?.interrupt());
+        return;
+      }
+      _spawning.remove(callId);
+      _watch(callId, child.id);
+    } on Object catch (e) {
+      _spawning.remove(callId);
+      if (ref.mounted && !_abandoned.remove(callId)) {
+        _ready(callId, SubagentReport(SubagentStatus.notStarted, "The subagent couldn't start: $e"));
+      }
+    }
+  }
+
+  void _watch(String callId, String childId) {
+    _childOf[callId] = childId;
+    final sub = ref.listen(codeSessionProvider(childId), (_, next) => _onSubagent(callId, next), fireImmediately: true);
+    // It may have finished already (fireImmediately).
+    if (_childOf.containsKey(callId)) {
+      _childSubs[callId] = sub;
+    } else {
+      sub.close();
+    }
+  }
+
+  void _onSubagent(String callId, CodeSessionState child) {
+    if (!_childOf.containsKey(callId)) return;
+    final outcome = subagentOutcome(child.transcript, error: child.error);
+    if (outcome != null) return _ready(callId, outcome);
+    final waiting = child.status == SessionStatus.needsInput;
+    if (waiting ? _childWaiting.add(callId) : _childWaiting.remove(callId)) {
+      state = state.copyWith(subagentNeedsInput: _childWaiting.isNotEmpty);
+    }
+  }
+
+  void _ready(String callId, SubagentReport report) {
+    _reports[callId] = report;
+    _childOf.remove(callId);
+    _childSubs.remove(callId)?.close();
+    _childWaiting.remove(callId);
+    state = state.copyWith(subagentNeedsInput: _childWaiting.isNotEmpty);
+    _deliver();
+  }
+
+  /// A subagent of this session was stopped by the user: the agent gets what
+  /// it had said so far and carries on.
+  void subagentStopped(String childId, SubagentReport report) {
+    final callId = _childOf.entries.where((e) => e.value == childId).firstOrNull?.key;
+    if (callId != null) _ready(callId, report);
+  }
+
+  /// Gives the agent its subagents' reports once every subagent it waits on
+  /// has one: as the held calls' result, else as one message when it's idle.
+  void _deliver() {
+    final session = _session;
+    if (_reports.isEmpty || _delivering || session == null) return;
+    final t = state.transcript;
+    final open = [for (final s in t.openSubagents) s.step.call.id];
+    // Calls closed some other way (a reply in chat) no longer want a report.
+    _reports.removeWhere((id, _) => !open.contains(id));
+    if (_reports.isEmpty || !open.every(_reports.containsKey)) return;
+    final reports = {for (final id in open) id: _reports[id]!};
+    final Future<void> sent;
+    if (_holds) {
+      if (!t.held.any((c) => reports.containsKey(c.id))) return;
+      sent = _replyInCall(session, subagentReason(reports));
+    } else {
+      if (t.running || t.pending.isNotEmpty) return;
+      sent = session.send(_noted(subagentMessage(reports)));
+    }
+    _delivering = true;
+    unawaited(
+      sent
+          .then((_) => reports.keys.forEach(_reports.remove), onError: (Object _) {})
+          .whenComplete(() => _delivering = false),
+    );
+  }
+
+  /// Stops every subagent this session waits on. Held calls are answered by
+  /// the caller; the cards of calls that ended the turn close here.
+  Future<void> _stopSubagents() async {
+    final open = [for (final s in state.transcript.openSubagents) s.step.call.id];
+    if (open.isEmpty) return;
+    final children = [..._childOf.values];
+    _abandoned.addAll(_spawning);
+    for (final s in _childSubs.values) {
+      s.close();
+    }
+    _childSubs.clear();
+    _childOf.clear();
+    _reports.clear();
+    _childWaiting.clear();
+    state = state.copyWith(subagentNeedsInput: false);
+    await Future.wait([for (final c in children) ref.read(codeSessionProvider(c).notifier).stop()]);
+    if (!_holds) {
+      _builder.settleSubagents(open, const SubagentReport(SubagentStatus.stopped, 'Stopped by the user.'));
+      state = state.copyWith(transcript: _builder.snapshot);
+    }
   }
 
   /// The rules "allow for this session" / "always allow" would store for

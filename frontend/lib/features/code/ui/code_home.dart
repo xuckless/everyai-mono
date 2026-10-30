@@ -93,7 +93,11 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
     final theme = EveryTheme.of(context);
     final projects = ref.watch(codeProjectsProvider);
     final project = projects.where((p) => p.id == _projectId).firstOrNull ?? projects.firstOrNull;
-    final sessions = ref.watch(codeSessionsProvider).where((s) => s.projectId == project?.id).take(8).toList();
+    final sessions = ref
+        .watch(codeSessionsProvider)
+        .where((s) => s.projectId == project?.id && !s.isSubagent)
+        .take(8)
+        .toList();
 
     return AdaptivePage(
       title: '',

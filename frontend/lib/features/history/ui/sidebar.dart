@@ -322,7 +322,8 @@ class _CodeRecents extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = EveryTheme.of(context);
     final projects = ref.watch(codeProjectsProvider);
-    final sessions = ref.watch(codeSessionsProvider);
+    // Subagents open from their parent's transcript.
+    final sessions = ref.watch(codeSessionsProvider).where((s) => !s.isSubagent).toList();
     final active = location.startsWith('/code/s/') ? location.substring('/code/s/'.length) : null;
     if (projects.isEmpty) {
       return Padding(

@@ -47,6 +47,8 @@ final class CodeSessionInfo {
     this.effort = '',
     this.holdClientTools = false,
     this.compactedFrom = const [],
+    this.parentId,
+    this.parentCallId = '',
   });
 
   final String id;
@@ -77,6 +79,13 @@ final class CodeSessionInfo {
   final List<String> compactedFrom;
   final DateTime createdAt;
 
+  /// For a subagent: the session that started it, and the id of its `run_subagent`
+  /// call there. Subagents are left out of session lists.
+  final String? parentId;
+  final String parentCallId;
+
+  bool get isSubagent => parentId != null;
+
   CodeSessionInfo copyWith({
     String? title,
     AgentMode? mode,
@@ -97,6 +106,8 @@ final class CodeSessionInfo {
     effort: effort,
     holdClientTools: holdClientTools,
     compactedFrom: compactedFrom ?? this.compactedFrom,
+    parentId: parentId,
+    parentCallId: parentCallId,
   );
 
   factory CodeSessionInfo.fromJson(Map<String, Object?> json) => CodeSessionInfo(
@@ -118,6 +129,8 @@ final class CodeSessionInfo {
         ? SessionWorktree.fromJson(json['worktree']! as Map<String, Object?>)
         : null,
     createdAt: DateTime.tryParse(json['created_at'] as String? ?? '') ?? DateTime.now(),
+    parentId: json['parent_id'] as String?,
+    parentCallId: json['parent_call_id'] as String? ?? '',
   );
 
   Map<String, Object?> toJson() => {
@@ -134,5 +147,7 @@ final class CodeSessionInfo {
     if (holdClientTools) 'hold_client_tools': true,
     if (compactedFrom.isNotEmpty) 'compacted_from': compactedFrom,
     'created_at': createdAt.toIso8601String(),
+    'parent_id': ?parentId,
+    if (parentCallId.isNotEmpty) 'parent_call_id': parentCallId,
   };
 }

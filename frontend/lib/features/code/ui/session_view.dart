@@ -26,6 +26,7 @@ import 'panes/diff_pane.dart';
 import 'transcript/approval_card.dart';
 import 'transcript/plan_card.dart';
 import 'transcript/question_card.dart';
+import 'transcript/subagent_card.dart';
 import 'transcript/transcript_items.dart';
 
 const _maxWidth = 780.0;
@@ -371,7 +372,7 @@ class TranscriptList extends StatelessWidget {
     AgentText(:final text, :final reasoning) => AgentTextView(text: text, reasoning: reasoning),
     ExploreGroup() => ExploreGroupView(group: item),
     StepItem(:final step) => StepView(step: step),
-    SubagentItem() => SubagentView(item: item),
+    SubagentItem() => SubagentCard(item: item),
     PlanItem(:final tasks) => PlanView(tasks: tasks),
     QuestionItem() => QuestionCard(
       key: ValueKey(item.key),

@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
 import 'package:every_ai/features/code/domain/questions.dart';
+import 'package:every_ai/features/code/domain/subagents.dart';
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/harness/events.dart';
 import 'package:every_ai/features/code/harness/fake_harness.dart';
@@ -243,6 +244,13 @@ void main() {
           QuestionAnswer(selected: {0, 2}),
         ]),
       );
+      // The turn ends at the subagent call; the app brings the report back.
+      t = await feed.until((Transcript x) => x.openSubagents.isNotEmpty && x.status == ExecutionStatus.idle);
+      final sub = t.openSubagents.single;
+      expect(sub.task.description, 'Write Counter tests');
+      await s.send(
+        subagentMessage({sub.step.call.id: const SubagentReport(SubagentStatus.completed, 'Added 3 tests.')}),
+      );
       t = await feed.until((Transcript x) => x.status == ExecutionStatus.finished);
 
       // The answers attach to the card instead of showing as a user turn.
@@ -252,7 +260,7 @@ void main() {
       final edit = t.items.whereType<StepItem>().first.step;
       expect(stepTitle(edit.call), 'Edited lib/counter.dart');
       expect(edit.result!.observation['new_content'], contains('decrement'));
-      expect(t.items.whereType<SubagentItem>().single.tasks.keys, ['test-writer']);
+      expect(t.items.whereType<SubagentItem>().single.report!.text, 'Added 3 tests.');
       expect(t.plan.every((p) => p.status == 'done'), isTrue);
       expect((t.items.last as AgentText).text, contains('passes'));
       // Consecutive plan updates don't pile up.

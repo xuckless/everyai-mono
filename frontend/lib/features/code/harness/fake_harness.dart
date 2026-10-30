@@ -2,39 +2,47 @@ import 'dart:async';
 import 'dart:convert';
 
 import '../domain/agent_mode.dart';
+import '../domain/subagents.dart';
 import 'events.dart';
 import 'harness.dart';
 
 /// Replays scripted agent turns, for building and testing the Code UI without
 /// the agent server. Each user message plays the next turn; actions wait for
 /// [respond] the way the server's AlwaysConfirm policy does; the
-/// `ask_user_question` client tool ends the turn until the answer arrives.
+/// `ask_user_question` and `run_subagent` client tools end the turn until the answer
+/// or the reports arrive. Subagent conversations play [subagentTurns].
 final class FakeHarness implements Harness {
-  FakeHarness({List<List<Map<String, Object?>>>? turns, this.step = const Duration(milliseconds: 350)})
-    : turns = turns ?? demoTurns;
+  FakeHarness({
+    List<List<Map<String, Object?>>>? turns,
+    List<List<Map<String, Object?>>>? subagentTurns,
+    this.step = const Duration(milliseconds: 350),
+  }) : turns = turns ?? demoTurns,
+       subagentTurns = subagentTurns ?? demoSubagentTurns;
 
   final List<List<Map<String, Object?>>> turns;
+  final List<List<Map<String, Object?>>> subagentTurns;
   final Duration step;
   int _ids = 0;
 
   @override
   Future<HarnessSession> start(SessionSpec spec) async {
-    final s = FakeSession(this, 'fake-${++_ids}', spec.mode);
+    final s = FakeSession(this, 'fake-${++_ids}', spec.mode, spec.subagent ? subagentTurns : turns);
     if (spec.initialMessage case final text?) unawaited(s.send(text, run: spec.runInitial));
     return s;
   }
 
   @override
-  Future<HarnessSession> attach(String conversationId) async => FakeSession(this, conversationId, AgentMode.ask);
+  Future<HarnessSession> attach(String conversationId) async => FakeSession(this, conversationId, AgentMode.ask, turns);
 
   @override
   Future<Map<String, ExecutionStatus>> statuses(List<String> conversationIds) async => const {};
 }
 
 final class FakeSession implements HarnessSession {
-  FakeSession(this._h, this.id, this._mode);
+  FakeSession(this._h, this.id, this._mode, this._turns);
 
   final FakeHarness _h;
+  final List<List<Map<String, Object?>>> _turns;
   @override
   final String id;
   AgentMode _mode;
@@ -84,7 +92,7 @@ final class FakeSession implements HarnessSession {
   }
 
   Future<void> _play() async {
-    if (_turn >= _h.turns.length) {
+    if (_turn >= _turns.length) {
       _emit(_agentSays('That is everything in this demo session.'));
       _status(ExecutionStatus.finished);
       return;
@@ -92,7 +100,7 @@ final class FakeSession implements HarnessSession {
     _running = true;
     _interrupted = false;
     _status(ExecutionStatus.running);
-    final script = _h.turns[_turn++];
+    final script = _turns[_turn++];
     var endedByQuestion = false;
     for (final raw in script) {
       if (_interrupted) break;
@@ -119,7 +127,7 @@ final class FakeSession implements HarnessSession {
           }
           _status(ExecutionStatus.running);
         }
-        if (call.toolName == askUserQuestionTool) {
+        if (call.toolName == askUserQuestionTool || call.toolName == taskTool) {
           _emit({
             'kind': 'ObservationEvent',
             'action_id': call.id,
@@ -291,16 +299,20 @@ final demoTurns = <List<Map<String, Object?>>>[
       'old_content': 'class Counter {\n  int value = 0;\n  void increment() => value++;\n}\n',
       'new_content': 'class Counter {\n  int value = 0;\n  void increment() => value++;\n\n  /// Decreases [value], never below zero.\n  void decrement() {\n    if (value > 0) value--;\n  }\n\n  void reset() => value = 0;\n}\n',
     }),
-    _action('task', {
-      'kind': 'DelegateAction',
-      'command': 'delegate',
-      'tasks': {'test-writer': 'Write tests for Counter.decrement and Counter.reset in test/counter_test.dart'},
-    }, thought: 'A subagent can write the tests while I check the call sites.'),
-    _observation({
-      'kind': 'DelegateObservation',
-      'command': 'delegate',
-      'content': [_text('test-writer: added 3 tests (decrement, floor at zero, reset).')],
-    }),
+    _action(
+      taskTool,
+      {},
+      thought: 'A subagent can write the tests while I review the change.',
+      args: jsonEncode({
+        'description': 'Write Counter tests',
+        'prompt':
+            'Add tests for Counter.decrement() and Counter.reset() to test/counter_test.dart: decrement lowers the '
+            'value, stops at zero, and reset() sets it back to zero. Run the file with flutter test and report the '
+            'tests you added and the result.',
+      }),
+    ),
+  ],
+  [
     _action('terminal', {'kind': 'TerminalAction', 'command': 'flutter test test/counter_test.dart'}),
     _observation({
       'kind': 'TerminalObservation',
@@ -325,6 +337,58 @@ final demoTurns = <List<Map<String, Object?>>>[
       '`Counter` now has `decrement()`, which stops at zero, and `reset()`. A subagent added three tests, '
       'and `flutter test` passes (4 tests).',
       stream: true,
+    ),
+  ],
+];
+
+/// The demo's subagent: reads the test file, adds tests, runs them, reports.
+final demoSubagentTurns = <List<Map<String, Object?>>>[
+  [
+    _action('file_editor', {
+      'kind': 'FileEditorAction',
+      'command': 'view',
+      'path': 'test/counter_test.dart',
+    }, thought: 'Reading the existing tests first.'),
+    _observation({
+      'kind': 'FileEditorObservation',
+      'command': 'view',
+      'path': 'test/counter_test.dart',
+      'content': [
+        _text("test('increments', () {\n  final c = Counter();\n  c.increment();\n  expect(c.value, 1);\n});"),
+      ],
+    }),
+    _action('file_editor', {
+      'kind': 'FileEditorAction',
+      'command': 'str_replace',
+      'path': 'test/counter_test.dart',
+      'old_str': '  expect(c.value, 1);\n});',
+      'new_str':
+          "  expect(c.value, 1);\n});\n\ntest('decrements', () {\n  final c = Counter()..increment()..decrement();\n  "
+          "expect(c.value, 0);\n});\n\ntest('stops at zero', () {\n  final c = Counter()..decrement();\n  "
+          "expect(c.value, 0);\n});\n\ntest('resets', () {\n  final c = Counter()..increment()..reset();\n  "
+          'expect(c.value, 0);\n});',
+    }),
+    _observation({
+      'kind': 'FileEditorObservation',
+      'command': 'str_replace',
+      'path': 'test/counter_test.dart',
+      'old_content': "test('increments', () {\n  final c = Counter();\n  c.increment();\n  expect(c.value, 1);\n});\n",
+      'new_content':
+          "test('increments', () {\n  final c = Counter();\n  c.increment();\n  expect(c.value, 1);\n});\n\n"
+          "test('decrements', () {\n  final c = Counter()..increment()..decrement();\n  expect(c.value, 0);\n});\n\n"
+          "test('stops at zero', () {\n  final c = Counter()..decrement();\n  expect(c.value, 0);\n});\n\n"
+          "test('resets', () {\n  final c = Counter()..increment()..reset();\n  expect(c.value, 0);\n});\n",
+    }),
+    _action('terminal', {'kind': 'TerminalAction', 'command': 'flutter test test/counter_test.dart'}),
+    _observation({
+      'kind': 'TerminalObservation',
+      'command': 'flutter test test/counter_test.dart',
+      'exit_code': 0,
+      'content': [_text('00:01 +4: All tests passed!')],
+    }),
+    _agentSays(
+      'Added three tests to test/counter_test.dart: decrements, stops at zero, and resets. '
+      '`flutter test test/counter_test.dart` passes (4 tests).',
     ),
   ],
 ];

@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../domain/agent_mode.dart';
+import '../domain/subagents.dart' show subagentRules;
 import '../settings/agent_prompt.dart';
 import 'events.dart';
 import 'harness.dart';
@@ -76,19 +77,19 @@ final class OpenHandsHarness implements Harness {
           },
           {'name': 'file_editor'},
           {'name': 'task_tracker'},
-          // `task` (subagents) fails to start in agent-server 1.59.0:
-          // TaskTool.create() got an unexpected keyword argument 'conv_state'.
+          // OpenHands' own `task` (subagents) fails to start in agent-server
+          // 1.59.0 (TaskTool.create() got an unexpected keyword argument
+          // 'conv_state'). Our `run_subagent` client tool runs child
+          // conversations instead; a client tool can't be called `task`
+          // (the server rejects names that collide with its built-ins).
         ],
         'persona': ?spec.persona,
-        'agent_context': {
-          'system_message_suffix': spec.holdClientTools
-              ? forHeldClientTools(spec.promptSuffix ?? workingRules)
-              : spec.promptSuffix ?? workingRules,
-        },
+        'agent_context': {'system_message_suffix': _suffix(spec)},
       },
       'workspace': {'kind': 'LocalWorkspace', 'working_dir': spec.workingDir},
       'confirmation_policy': spec.mode.confirmationPolicy(holdClientTools: spec.holdClientTools),
-      'client_tools': clientToolSpecs(held: spec.holdClientTools),
+      // Subagents get none: they can't ask the user, and depth stays at 1.
+      'client_tools': spec.subagent ? const <Object?>[] : clientToolSpecs(held: spec.holdClientTools),
       'initial_message': ?(first == null ? null : _message(first, run: spec.runInitial, images: spec.initialImages)),
     });
     final id = (info as Map<String, Object?>?)?['id'] as String?;
@@ -124,6 +125,12 @@ final class OpenHandsHarness implements Harness {
       for (final c in (list as List<Object?>? ?? const []))
         if (c case {'id': final String id, 'execution_status': final String status}) id: ExecutionStatus.parse(status),
     };
+  }
+
+  static String _suffix(SessionSpec spec) {
+    final suffix = spec.promptSuffix ?? workingRules;
+    if (spec.subagent) return '$suffix\n\n$subagentRules';
+    return spec.holdClientTools ? forHeldClientTools(suffix) : suffix;
   }
 
   static Map<String, Object?> _message(String text, {required bool run, List<String> images = const []}) => {

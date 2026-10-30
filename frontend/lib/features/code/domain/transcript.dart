@@ -5,6 +5,7 @@ import '../settings/context_files.dart' show splitContextNotes;
 import 'agent_mode.dart';
 import 'compaction.dart' show splitCompacted;
 import 'questions.dart';
+import 'subagents.dart';
 
 /// What the session view shows, folded from harness events by
 /// [TranscriptBuilder].
@@ -56,10 +57,21 @@ final class StepItem extends TranscriptItem {
   final ToolStep step;
 }
 
-/// A delegated subagent task.
+/// A delegated subagent task: a `run_subagent` call the app runs as a child
+/// conversation (or OpenHands' own delegate action, in old sessions).
 final class SubagentItem extends TranscriptItem {
-  SubagentItem(this.step) : super(step.call.id);
+  SubagentItem(this.step, {this.report}) : super(step.call.id);
   final ToolStep step;
+
+  /// What the child handed back; null while it works.
+  final SubagentReport? report;
+
+  /// A call the app runs (not OpenHands' own delegation).
+  bool get ours => isTaskCall(step.call);
+
+  bool get done => ours ? report != null : step.done;
+
+  SubagentTask get task => SubagentTask.of(step.call);
 
   /// name → task.
   Map<String, String> get tasks => {
@@ -175,6 +187,16 @@ final class Transcript {
 
   final List<TranscriptItem> items;
 
+  /// Subagents started since the user last spoke that haven't reported yet.
+  List<SubagentItem> get openSubagents {
+    final open = <SubagentItem>[];
+    for (final item in items.reversed) {
+      if (item is UserTurn) break;
+      if (item is SubagentItem && item.ours && item.report == null) open.add(item);
+    }
+    return open.reversed.toList();
+  }
+
   /// The reply being written.
   final String streaming;
   final String streamingReasoning;
@@ -269,7 +291,7 @@ final class TranscriptBuilder {
           _items.add(NoticeItem(e.id, contextCompactedNotice, detail: c.summary));
           return;
         }
-        if (_answer(text)) return;
+        if (_answer(text) || _reported(text)) return;
         _items.add(UserTurn(e.id, text, mode: changed ? mode : null));
         _settleOpenCards(text);
       case ChatMessage(:final text, :final reasoning):
@@ -292,6 +314,16 @@ final class TranscriptBuilder {
     _push(call.id, QuestionItem(call, questions));
   }
 
+  /// Closes subagent cards the app settled itself (stopped without a reply
+  /// the agent would read).
+  void settleSubagents(Iterable<String> ids, SubagentReport report) {
+    for (final id in ids) {
+      final i = _byAction[id];
+      if (i == null) continue;
+      if (_items[i] case SubagentItem(:final step, report: null)) _items[i] = SubagentItem(step, report: report);
+    }
+  }
+
   void settleLocal(String id, List<QuestionAnswer> answers) {
     final i = _byAction[id];
     if (i == null) return;
@@ -307,6 +339,11 @@ final class TranscriptBuilder {
     }
     if (call.toolName == presentPlanTool) {
       _push(call.id, PlanProposal(call));
+      return;
+    }
+    if (isTaskCall(call)) {
+      if (call.thought.isNotEmpty) _items.add(AgentText('${call.id}-t', call.thought));
+      _push(call.id, SubagentItem(ToolStep(call)));
       return;
     }
     switch (call.actionKind) {
@@ -356,6 +393,15 @@ final class TranscriptBuilder {
     if (i == null) return;
     _items[i] = switch (_items[i]) {
       StepItem(:final step) => StepItem(step.withResult(r)),
+      // A held call's result is the report, or the reason it was cut short.
+      SubagentItem(:final step, :final report) when step.call.toolName == taskTool => SubagentItem(
+        step.withResult(r),
+        report:
+            report ??
+            (r.outcome != ToolOutcome.rejected
+                ? null
+                : parseSubagentReports(_reason(r))[step.call.id] ?? SubagentReport(SubagentStatus.stopped, _reason(r))),
+      ),
       SubagentItem(:final step) => SubagentItem(step.withResult(r)),
       ExploreGroup(:final key, :final steps) => ExploreGroup(key, [
         for (final s in steps) s.call.id == actionId ? s.withResult(r) : s,
@@ -386,6 +432,18 @@ final class TranscriptBuilder {
         _items[i] = PlanProposal(item.call, verdict: approved ? PlanVerdict.approved : PlanVerdict.revised);
       }
     }
+  }
+
+  /// Attaches the reports in a subagent results message to their cards.
+  bool _reported(String text) {
+    final reports = parseSubagentReports(text);
+    if (reports.isEmpty) return false;
+    for (final e in reports.entries) {
+      final i = _byAction[e.key];
+      if (i == null) continue;
+      if (_items[i] case SubagentItem(:final step)) _items[i] = SubagentItem(step, report: e.value);
+    }
+    return true;
   }
 
   /// Attaches an answers message to the open question card.

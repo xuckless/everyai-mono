@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/permissions.dart';
 import 'package:every_ai/features/code/domain/questions.dart';
+import 'package:every_ai/features/code/domain/subagents.dart';
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/harness/events.dart';
 import 'package:every_ai/features/code/harness/harness.dart';
@@ -34,6 +35,13 @@ final class EvalRun {
   int refusals = 0;
   int answered = 0;
   int plansApproved = 0;
+
+  /// `task` calls answered with "not available" (the driver runs no children).
+  int subagentsRefused = 0;
+  static const _noSubagents = SubagentReport(
+    SubagentStatus.notStarted,
+    'Subagents are not available in this run. Do this part of the work yourself.',
+  );
 
   String _respondedTo = '';
   final _handled = <String>{};
@@ -90,6 +98,11 @@ final class EvalRun {
       );
       return;
     }
+    if (t.openSubagents case [final first, ...] when _handled.add(first.key)) {
+      subagentsRefused++;
+      _send(subagentMessage({for (final s in t.openSubagents) s.step.call.id: _noSubagents}));
+      return;
+    }
     if (t.openPlan case final p? when _handled.add(p.key)) {
       plansApproved++;
       if (mode == AgentMode.plan) mode = AgentMode.autoEdit;
@@ -108,7 +121,10 @@ final class EvalRun {
   /// Answers a held card or plan inside the call, as the app does.
   void _replyInCall(ActionCall call) {
     final String reason;
-    if (call.toolName == askUserQuestionTool) {
+    if (isTaskCall(call)) {
+      subagentsRefused++;
+      reason = subagentReason({for (final c in snapshot.held.where(isTaskCall)) c.id: _noSubagents});
+    } else if (call.toolName == askUserQuestionTool) {
       answered++;
       final qs = Question.listFrom(call.action);
       reason = answersReason(qs, [

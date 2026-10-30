@@ -1,5 +1,6 @@
 import '../harness/events.dart';
 import 'shell_readonly.dart';
+import 'subagents.dart';
 
 /// How much the agent may do without asking.
 enum AgentMode {
@@ -90,6 +91,22 @@ enum AgentMode {
           'make the change, run the tests or build, and fix what fails. Restrictions from earlier mode notes no '
           'longer apply.',
   };
+
+  /// The mode note for a subagent's conversation: the same limits, without
+  /// the tools only the session's own agent has (questions, plans).
+  String get subagentInstructions => switch (this) {
+    ask =>
+      'Mode: Ask. Viewing files and read-only commands run at once; edits and other commands wait for the user to '
+          'approve them in the app. Use your tools.',
+    autoEdit =>
+      'Mode: Auto-edit. File edits apply at once and read-only commands run freely; other commands wait for the '
+          "user's approval. Use your tools.",
+    plan =>
+      'Mode: Plan (read-only). View files and run read-only commands (cat, ls, rg, grep, find, sed -n, git '
+          'status/log/diff/show); do not edit files or run anything that changes the workspace. Put what you find '
+          'in your final report.',
+    fullAuto => 'Mode: Full auto. Commands and edits run without approval. Use your tools and finish the task.',
+  };
 }
 
 /// The tag a user message starts with to tell the agent its mode.
@@ -99,13 +116,20 @@ const _noteClose = '</everyai-mode>';
 /// [text] prefixed with a note on [mode]. With [full] (the first message, or
 /// after a mode change) the note carries the whole [AgentMode.instructions];
 /// otherwise it is the one-line [AgentMode.reminder]. [from] is the mode the
-/// agent was last told, so leaving Plan can say so outright.
-String modeNote(AgentMode mode, String text, {bool full = true, AgentMode? from}) {
+/// agent was last told, so leaving Plan can say so outright. A [subagent]
+/// conversation always gets [AgentMode.subagentInstructions].
+String modeNote(AgentMode mode, String text, {bool full = true, AgentMode? from, bool subagent = false}) {
   final body = StringBuffer();
   if (from == AgentMode.plan && mode != AgentMode.plan) {
     body.write('You have left Plan mode: it no longer limits you, and you may edit files and run commands now. ');
   }
-  body.write(full ? mode.instructions : mode.reminder);
+  body.write(
+    subagent
+        ? mode.subagentInstructions
+        : full
+        ? mode.instructions
+        : mode.reminder,
+  );
   return '$_noteOpen${mode.name}">$body$_noteClose${text.isEmpty ? '' : '\n\n$text'}';
 }
 
@@ -172,7 +196,7 @@ const askUserQuestionSpec = <String, Object?>{
 const presentPlanTool = 'present_plan';
 
 /// The client tools registered with every session.
-const clientTools = {askUserQuestionTool, presentPlanTool};
+const clientTools = {askUserQuestionTool, presentPlanTool, taskTool};
 
 bool isClientTool(ActionCall call) => clientTools.contains(call.toolName);
 
@@ -206,6 +230,7 @@ List<Map<String, Object?>> clientToolSpecs({bool held = false}) => [
     }
   else
     presentPlanSpec,
+  taskSpecFor(held: held),
 ];
 
 const presentPlanSpec = <String, Object?>{
