@@ -424,20 +424,36 @@ class _ProjectPicker extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const PopoverHeader('Projects'),
-            for (final p in projects)
-              PopoverRow(
-                title: p.name,
-                subtitle: isDemoPath(p.path)
-                    ? 'Scripted demo'
-                    : isRemotePath(p.path)
-                    ? 'On a paired computer'
-                    : p.path,
-                selected: p.id == project.id,
-                onTap: () {
-                  close();
-                  onPick(p);
-                },
+            // Live, so removing one updates the open list.
+            Consumer(
+              builder: (context, ref, _) => Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (final p in ref.watch(codeProjectsProvider))
+                    PopoverRow(
+                      key: ValueKey('project.${p.id}'),
+                      title: p.name,
+                      trailing: AdaptiveIconButton(
+                        icon: EveryIcon.close,
+                        tooltip: 'Remove from the list (the folder stays)',
+                        size: 12,
+                        onPressed: () => ref.read(codeProjectsProvider.notifier).remove(p.id),
+                      ),
+                      subtitle: isDemoPath(p.path)
+                          ? 'Scripted demo'
+                          : isRemotePath(p.path)
+                          ? 'On a paired computer'
+                          : p.path,
+                      selected: p.id == project.id,
+                      onTap: () {
+                        close();
+                        onPick(p);
+                      },
+                    ),
+                ],
               ),
+            ),
             if (Host.isDesktop) ...[
               PopoverRow(
                 leading: AdaptiveIcon(EveryIcon.add, size: 15, color: theme.textMuted),
