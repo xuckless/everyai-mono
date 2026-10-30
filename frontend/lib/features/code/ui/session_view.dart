@@ -296,7 +296,7 @@ class _TranscriptList extends StatelessWidget {
   final VoidCallback onApprovePlan;
   final ValueChanged<String> onRevisePlan;
 
-  /// Offered on the last error while the session is failed.
+  /// Offered at the end while the session is failed or stuck.
   final VoidCallback onRetry;
 
   @override
@@ -308,7 +308,18 @@ class _TranscriptList extends StatelessWidget {
       if (live)
         AgentTextView(text: t.streaming, reasoning: t.streamingReasoning, streaming: true)
       else if (t.running)
-        const _Working(),
+        const _Working()
+      else if (t.status == ExecutionStatus.error || t.status == ExecutionStatus.stuck)
+        NoticeView(
+          item: NoticeItem(
+            'stopped',
+            t.status == ExecutionStatus.stuck
+                ? 'The agent got stuck and stopped. Retry to let it carry on, or reply with directions.'
+                : 'The agent stopped on an error. Retry to carry on from here.',
+            error: true,
+          ),
+          onRetry: onRetry,
+        ),
       for (final item in t.items.reversed) _itemView(item),
     ];
     return AdaptiveSelectionArea(
@@ -356,12 +367,7 @@ class _TranscriptList extends StatelessWidget {
       onApprove: onApprovePlan,
       onRevise: onRevisePlan,
     ),
-    NoticeItem() => NoticeView(
-      item: item,
-      onRetry: item.error && transcript.status == ExecutionStatus.error && identical(item, transcript.items.last)
-          ? onRetry
-          : null,
-    ),
+    NoticeItem() => NoticeView(item: item),
   };
 }
 

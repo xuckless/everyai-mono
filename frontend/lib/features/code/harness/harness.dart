@@ -15,6 +15,7 @@ final class SessionSpec {
     required this.sessionTag,
     this.initialMessage,
     this.maxInputTokens,
+    this.maxOutputTokens = 64000,
     this.vision = false,
     this.initialImages = const [],
     this.persona,
@@ -39,6 +40,9 @@ final class SessionSpec {
 
   /// The model's context window, so the agent condenses its history in time.
   final int? maxInputTokens;
+
+  /// Room for thinking plus a whole-file edit in one reply.
+  final int maxOutputTokens;
 
   /// The model reads images: OpenHands passes them on instead of dropping them.
   final bool vision;

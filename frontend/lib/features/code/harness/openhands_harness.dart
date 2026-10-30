@@ -56,6 +56,10 @@ final class OpenHandsHarness implements Harness {
           'extra_headers': {'X-EveryAI-Session': spec.sessionTag, 'X-EveryAI-Effort': ?spec.effort},
           'reasoning_effort': ?spec.effort,
           'max_input_tokens': ?spec.maxInputTokens,
+          // OpenHands caps models it doesn't know at 16,384 output tokens;
+          // thinking plus one whole-file edit runs past that and the tool
+          // call gets cut off.
+          'max_output_tokens': spec.maxOutputTokens,
           // LiteLLM doesn't know our gateway's models; without this images are dropped.
           if (spec.vision) 'capability_overrides': {'supports_vision': true},
         },

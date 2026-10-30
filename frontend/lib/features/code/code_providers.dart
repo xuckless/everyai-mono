@@ -444,8 +444,13 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
   void unqueue(int index) => state = state.copyWith(queued: [...state.queued]..removeAt(index));
 
   /// Runs the agent again after a failed turn (a dropped connection, an
-  /// upstream error); the conversation keeps everything so far.
-  Future<void> retry() async => _session?.resume();
+  /// upstream error); the conversation keeps everything so far. A stuck
+  /// agent needs a new message: the server's stuck check reads the history
+  /// and would stop a plain re-run at once.
+  Future<void> retry() async {
+    if (state.transcript.status == ExecutionStatus.stuck) return send('Carry on from where you stopped.');
+    await _session?.resume();
+  }
 
   Future<void> stop() async {
     state = state.copyWith(queued: const []);
