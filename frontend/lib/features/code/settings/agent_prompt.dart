@@ -92,6 +92,11 @@ const workingRules = '''
   continue within it. Never say a tool or file is unavailable without trying it first.
 - Use ask_user_question only for decisions that are genuinely the user's. After calling it, end your turn; when the
   answers arrive, carry on with the task.
+- Keep every command bounded. Give slow commands (installs, builds, test suites) the terminal's timeout parameter,
+  and never run something that doesn't end by itself (a server, a watcher, a generator) in the foreground: start it
+  in the background with its output in a log file (`cmd > /tmp/name.log 2>&1 &`), then check on it with short
+  commands such as `tail` of the log or `curl --max-time 5`. Stop the background processes you started once you no
+  longer need them, unless the user wants them left running.
 - Before saying you are done, verify the change: run the tests, the build or the program, and report what you ran.
 </EVERYAI>''';
 

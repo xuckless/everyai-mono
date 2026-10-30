@@ -8,6 +8,7 @@ import '../domain/agent_mode.dart';
 import '../settings/agent_prompt.dart';
 import 'events.dart';
 import 'harness.dart';
+import 'session_processes.dart';
 
 /// Where the agent-server listens and its session key. Asked again before
 /// every request and reconnect, so a restarted sidecar (new port, new key)
@@ -64,7 +65,15 @@ final class OpenHandsHarness implements Harness {
           if (spec.vision) 'capability_overrides': {'supports_vision': true},
         },
         'tools': [
-          {'name': 'terminal'},
+          {
+            'name': 'terminal',
+            // Tags what the terminal starts, so Stop can end the session's
+            // leftover processes (see killSessionProcesses). The protocol has
+            // no hard time limit: a command past its timeout keeps running.
+            'params': {
+              'env': {sessionEnvVar: spec.sessionTag},
+            },
+          },
           {'name': 'file_editor'},
           {'name': 'task_tracker'},
           // `task` (subagents) fails to start in agent-server 1.59.0:

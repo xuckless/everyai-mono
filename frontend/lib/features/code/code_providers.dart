@@ -22,6 +22,7 @@ import 'harness/events.dart';
 import 'harness/fake_harness.dart';
 import 'harness/harness.dart';
 import 'harness/openhands_harness.dart';
+import 'harness/session_processes.dart';
 import 'permissions_providers.dart';
 import 'settings/context_files.dart';
 import 'settings/settings.dart';
@@ -596,7 +597,14 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
       _answered = [...pending, ...state.transcript.held].map((c) => c.id).join(',');
       await _session?.respond(accept: false, reason: denialMessage(DenialKind.cancelled));
     }
-    await _session?.interrupt();
+    // Ctrl-C reaches only the terminal's foreground command; background jobs,
+    // servers and commands left running after a timeout are ended here.
+    final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
+    await Future.wait([
+      ?_session?.interrupt(),
+      if (info != null && !isDemoPath(info.workingDir))
+        killSessionProcesses(tag: info.id, workingDir: info.workingDir, ownsDir: info.worktree != null),
+    ]);
   }
 
   /// The rules "allow for this session" / "always allow" would store for
