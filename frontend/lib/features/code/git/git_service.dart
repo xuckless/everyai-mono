@@ -1,0 +1,62 @@
+import 'git_models.dart';
+import 'git_service_stub.dart' if (dart.library.io) 'git_service_io.dart' as impl;
+
+export 'git_models.dart';
+
+/// A git or gh command failed; [message] is meant for the user.
+final class GitError implements Exception {
+  const GitError(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
+/// Session worktrees and what the app does with them, on top of the `git`
+/// and `gh` command-line tools. See `git_service_io.dart`.
+abstract final class GitService {
+  /// The top of the repository [dir] is in, or null outside one.
+  static Future<String?> repoRoot(String dir) => impl.repoRoot(dir);
+
+  /// A worktree for a new session on `everyai/<slug>`, branched from the main
+  /// checkout's current commit, with EveryAI's commit hooks.
+  static Future<SessionWorktree> createWorktree({
+    required String repoRoot,
+    required String slug,
+    required String worktreesDir,
+    required String hooksDir,
+  }) => impl.createWorktree(repoRoot: repoRoot, slug: slug, worktreesDir: worktreesDir, hooksDir: hooksDir);
+
+  /// Files changed since the base commit, committed or not.
+  static Future<List<FileChange>> changes(SessionWorktree w) => impl.changes(w);
+
+  /// The whole diff since the base commit, by file.
+  static Future<List<FileDiff>> diff(SessionWorktree w) => impl.diff(w);
+
+  /// Undoes one hunk in the working tree.
+  static Future<void> revertHunk(SessionWorktree w, FileDiff file, int hunk) => impl.revertHunk(w, file, hunk);
+
+  /// Commits everything; false when there was nothing to commit.
+  static Future<bool> commitAll(SessionWorktree w, String message) => impl.commitAll(w, message);
+
+  /// Snapshots the working tree under `refs/everyai/<slug>/turn-<turn>`.
+  static Future<String> checkpoint(SessionWorktree w, int turn) => impl.checkpoint(w, turn);
+
+  /// Puts the working tree back to a [checkpoint].
+  static Future<void> restoreCheckpoint(SessionWorktree w, String ref) => impl.restoreCheckpoint(w, ref);
+
+  static Future<({int ahead, int behind})> aheadBehind(SessionWorktree w) => impl.aheadBehind(w);
+
+  /// Commits pending work, then squashes the session branch onto the base
+  /// branch in the main checkout. Returns the new commit.
+  static Future<String> squashMerge(SessionWorktree w, String message) => impl.squashMerge(w, message);
+
+  static Future<void> push(SessionWorktree w) => impl.push(w);
+
+  /// Opens a pull request with `gh`; returns its URL.
+  static Future<String> createPr(SessionWorktree w, {required String title, required String body}) =>
+      impl.createPr(w, title: title, body: body);
+
+  /// Deletes the worktree, its branch, checkpoints and hooks.
+  static Future<void> removeWorktree(SessionWorktree w, {required String hooksDir, bool deleteBranch = true}) =>
+      impl.removeWorktree(w, hooksDir: hooksDir, deleteBranch: deleteBranch);
+}
