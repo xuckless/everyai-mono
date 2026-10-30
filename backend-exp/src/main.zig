@@ -27,6 +27,7 @@ pub const devtools = @import("devtools.zig");
 pub const sse_client = @import("net/sse_client.zig");
 pub const safe_fetch = @import("net/safe_fetch.zig");
 pub const tool_wait = @import("tool_wait.zig");
+pub const remote = @import("remote.zig");
 
 pub const std_options = anole.std_options;
 
@@ -55,6 +56,8 @@ pub const App = struct {
     /// Fetches URLs from model tool calls (`web_fetch`), refusing local and
     /// private addresses; null (tests) fails every such fetch.
     web: ?*const safe_fetch.Fetcher = null,
+    /// Live remote-host and client sockets (remote.zig).
+    relay: remote.Relay = .{},
 
     pub const Route = struct { up: openrouter.Upstream, provider: []const u8 };
 
@@ -87,6 +90,7 @@ pub fn routes(app: *anole.Server(App), state: *App) !void {
     polish.routes(app, state);
     devtools.routes(app, state);
     agents.routes(app, state);
+    remote.routes(app, state);
 }
 
 /// Schema and seed data; run before serving.
@@ -109,6 +113,8 @@ pub fn main(init: std.process.Init) !void {
         .catalog = .init(init.gpa),
     };
     defer state.catalog.deinit();
+    // After the server (defers run last first): rooms outlive their sockets.
+    defer state.relay.deinit();
 
     var app = try anole.Server(App).init(init.gpa, .{
         .http = .{ .address = cfg.host, .port = cfg.port, .h2c = true },
@@ -173,4 +179,5 @@ test {
     _ = agents;
     _ = tool_wait;
     _ = polish;
+    _ = remote;
 }
