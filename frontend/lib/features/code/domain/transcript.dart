@@ -237,9 +237,10 @@ final class TranscriptBuilder {
         break;
       case ChatMessage(fromUser: true, text: final raw):
         final (mode, text) = splitModeNote(raw);
+        final changed = mode != null && mode != _notedMode;
         if (mode != null) _notedMode = mode;
         if (_answer(text)) return;
-        _items.add(UserTurn(e.id, text, mode: mode));
+        _items.add(UserTurn(e.id, text, mode: changed ? mode : null));
         _settleOpenCards(text);
       case ChatMessage(:final text, :final reasoning):
         if (text.trim().isEmpty && reasoning.trim().isEmpty) return;

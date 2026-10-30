@@ -404,8 +404,11 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     }
   }
 
-  /// [text] with a mode note when the agent hasn't been told the current mode.
-  String _noted(String text) => state.transcript.notedMode == state.mode ? text : modeNote(state.mode, text);
+  /// [text] with a mode note: the full one after a mode change, else a short reminder.
+  String _noted(String text) {
+    final told = state.transcript.notedMode;
+    return modeNote(state.mode, text, full: told != state.mode, from: told);
+  }
 
   Future<Outgoing?> _outgoing(String text, List<Attachment> files) async {
     final t = text.trim();

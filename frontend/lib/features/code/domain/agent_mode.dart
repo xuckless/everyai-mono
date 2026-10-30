@@ -56,6 +56,15 @@ enum AgentMode {
       'git status/log/diff/show) still run without approval, so keep exploring with those. When you know what to '
       'change, call present_plan and stop.';
 
+  /// One line sent with every message in this mode, so the mode survives the
+  /// agent's context being condensed.
+  String get reminder => switch (this) {
+    ask => 'Mode: Ask. Edits and non-read-only commands wait for the user to approve them; use your tools.',
+    autoEdit => 'Mode: Auto-edit. Edits apply at once; other commands wait for approval. Use your tools.',
+    plan => 'Mode: Plan. Read-only: do not edit files or change anything. Explore, then call present_plan and stop.',
+    fullAuto => 'Mode: Full auto. Everything runs without approval. Use your tools and finish the task.',
+  };
+
   /// What the agent is told when a message is sent in this mode (see
   /// [modeNote]). Each note stands alone; the latest one wins.
   String get instructions => switch (this) {
@@ -83,10 +92,18 @@ enum AgentMode {
 const _noteOpen = '<everyai-mode name="';
 const _noteClose = '</everyai-mode>';
 
-/// [text] prefixed with [mode]'s instructions. The app sends one with the
-/// first message and with the first message after every mode change.
-String modeNote(AgentMode mode, String text) =>
-    '$_noteOpen${mode.name}">${mode.instructions}$_noteClose${text.isEmpty ? '' : '\n\n$text'}';
+/// [text] prefixed with a note on [mode]. With [full] (the first message, or
+/// after a mode change) the note carries the whole [AgentMode.instructions];
+/// otherwise it is the one-line [AgentMode.reminder]. [from] is the mode the
+/// agent was last told, so leaving Plan can say so outright.
+String modeNote(AgentMode mode, String text, {bool full = true, AgentMode? from}) {
+  final body = StringBuffer();
+  if (from == AgentMode.plan && mode != AgentMode.plan) {
+    body.write('You have left Plan mode: it no longer limits you, and you may edit files and run commands now. ');
+  }
+  body.write(full ? mode.instructions : mode.reminder);
+  return '$_noteOpen${mode.name}">$body$_noteClose${text.isEmpty ? '' : '\n\n$text'}';
+}
 
 /// Splits a mode note off a user message: the mode (null without a note) and
 /// the text the user wrote.

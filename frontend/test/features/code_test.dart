@@ -139,6 +139,15 @@ void main() {
       expect(sent, startsWith('<everyai-mode name="plan">Mode: Plan.'));
       expect(splitModeNote(sent), (AgentMode.plan, 'Add a signup form'));
       expect(splitModeNote('plain'), (null, 'plain'));
+      // Later messages carry a one-line reminder that is hidden the same way.
+      final short = modeNote(AgentMode.plan, 'more', full: false, from: AgentMode.plan);
+      expect(short, contains(AgentMode.plan.reminder));
+      expect(short.length, lessThan(sent.length));
+      expect(splitModeNote(short), (AgentMode.plan, 'more'));
+      // Leaving Plan says so.
+      final left = modeNote(AgentMode.autoEdit, 'go', from: AgentMode.plan);
+      expect(left, contains('You have left Plan mode'));
+      expect(modeNote(AgentMode.ask, 'x', from: AgentMode.autoEdit), isNot(contains('left Plan')));
       // Every note releases the restrictions of the ones before it.
       for (final m in AgentMode.values.where((m) => m != AgentMode.plan)) {
         expect(m.instructions, contains('no longer apply'));
@@ -182,6 +191,10 @@ void main() {
       expect(b.snapshot.notedMode, AgentMode.plan);
       b.add(user('u2', 'more detail'));
       expect(b.snapshot.notedMode, AgentMode.plan);
+      // A reminder of the same mode is hidden and adds no mode chip.
+      b.add(user('u3', modeNote(AgentMode.plan, 'again', full: false)));
+      final again = b.snapshot.items.whereType<UserTurn>().last;
+      expect((again.text, again.mode), ('again', null));
     });
 
     test('a plan proposal waits, then Start building approves it', () {
