@@ -102,6 +102,11 @@ class SettingsScreen extends ConsumerWidget {
               subtitle: const Text('SKILL.md folders the agent loads when a task needs them'),
               onTap: () => context.go(Routes.skills),
             ),
+            AdaptiveListTile(
+              title: const Text('Agents'),
+              subtitle: const Text('Reviewers, explorers and other subagents the Code agent can hand work to'),
+              onTap: () => context.go(Routes.agents),
+            ),
           ],
           const AdaptiveSectionHeader('Account'),
           AdaptiveListTile(

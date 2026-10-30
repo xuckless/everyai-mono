@@ -76,6 +76,7 @@ flutter:
     - assets/brand/fields/
     - assets/brand/textures/
     - assets/web/
+    - assets/agents/
     - assets/skills/draw-diagram/
     - assets/skills/make-deck/
     - assets/skills/vector-art/

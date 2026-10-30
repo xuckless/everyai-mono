@@ -29,7 +29,8 @@ final class SubagentTask {
   final String description;
   final String prompt;
 
-  /// A project-defined role (`settings.json` "agents"), or ''.
+  /// A library agent (`.everyai/agents/<name>.md`) or a `settings.json`
+  /// "agents" role, or ''.
   final String agent;
 
   String get title => description.isNotEmpty ? description : 'Subagent';
@@ -89,7 +90,9 @@ const taskSpec = <String, Object?>{
       'prompt': {'type': 'string', 'description': 'The complete, self-contained instructions'},
       'agent': {
         'type': 'string',
-        'description': 'Optional: a subagent role the project defines (see AGENT_TYPES, if present)',
+        'description':
+            'Optional: the name of an agent from AGENT_TYPES whose description fits the task. The subagent then '
+            "follows that agent's instructions, model and permissions; the prompt still has to stand alone",
       },
     },
     'required': ['description', 'prompt'],

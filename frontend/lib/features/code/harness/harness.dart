@@ -26,6 +26,8 @@ final class SessionSpec {
     this.subagent = false,
     this.mcpConfig = const {},
     this.skills = const [],
+    this.tools,
+    this.rolePrompt,
   });
 
   /// The session's worktree.
@@ -89,6 +91,14 @@ final class SessionSpec {
   /// them (enabled, and trusted for project skills); the server's own
   /// `load_*_skills` scans stay off.
   final List<Map<String, Object?>> skills;
+
+  /// The tools the agent keeps (`terminal`, `file_editor`, `task_tracker`,
+  /// `mcp`); null keeps all. Set by a library agent (see `childSetup`).
+  final List<String>? tools;
+
+  /// A library agent's instructions, after `subagentRules` in a child's
+  /// system prompt.
+  final String? rolePrompt;
 }
 
 /// A running agent conversation. Events arrive on [events] (history first,

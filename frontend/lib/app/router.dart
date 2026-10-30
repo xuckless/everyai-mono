@@ -17,6 +17,7 @@ import '../features/history/ui/coming_soon_screen.dart';
 import '../features/models/ui/models_screen.dart';
 import '../features/settings/appearance.dart';
 import '../features/billing/ui/billing_screen.dart';
+import '../features/agents/ui/agents_settings_screen.dart';
 import '../features/memory/ui/memory_screen.dart';
 import '../features/slash/custom/custom_commands_screen.dart';
 import '../features/settings/ui/settings_screen.dart';
@@ -33,6 +34,7 @@ abstract final class Routes {
   static const commands = '/settings/commands';
   static const mcpServers = '/settings/mcp';
   static const skills = '/settings/skills';
+  static const agents = '/settings/agents';
   static const newChat = '/chat/new';
   static const chats = '/chats';
   static const projects = '/projects';
@@ -138,6 +140,10 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: Routes.skills,
             pageBuilder: (_, _) => const NoTransitionPage(child: SkillsSettingsScreen()),
+          ),
+          GoRoute(
+            path: Routes.agents,
+            pageBuilder: (_, _) => const NoTransitionPage(child: AgentsSettingsScreen()),
           ),
           GoRoute(
             path: Routes.memory,

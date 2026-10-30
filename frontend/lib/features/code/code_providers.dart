@@ -9,6 +9,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/preferences.dart';
 import '../../core/providers.dart';
+import '../agents/agents_providers.dart' show AgentDefinition, childSetup, codeAgentsFor;
 import '../attachments/attachment.dart';
 import '../models/domain/model_catalog.dart';
 import '../models/models_providers.dart';
@@ -277,14 +278,20 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     bool runInitial = true,
     bool subagent = false,
     String? sessionTag,
+    List<String>? tools,
+    String? rolePrompt,
   }) async {
     final demo = isDemoPath(projectDir);
+    final projectId = ref.read(codeProjectsProvider).where((p) => p.path == projectDir).firstOrNull?.id;
+    // The agents it may start (a subagent can't start any): built-in, global, and trusted project ones.
+    final agents = demo || subagent ? const <AgentDefinition>[] : await _agentsFor(projectId);
     // Settings and commit style come from the main checkout (local settings aren't in worktrees).
-    final agentPrompt = demo ? null : await agentPromptFor(projectDir);
+    final agentPrompt = demo
+        ? null
+        : await agentPromptFor(projectDir, agents: [for (final a in agents) (name: a.name, description: a.oneLine)]);
     // AGENTS.md and friends from the project folder up to the repository root (OpenHands doesn't load them).
     final context = demo ? const <ContextFile>[] : await _startContext(workingDir, projectDir);
     // MCP servers come from the app's list (global plus this project's), never from repository files.
-    final projectId = ref.read(codeProjectsProvider).where((p) => p.path == projectDir).firstOrNull?.id;
     final mcpConfig = demo ? const <String, Object?>{} : ref.read(codeMcpServersProvider).mcpConfigFor(projectId);
     // Skills likewise: the app's enabled ones, and project skills only once trusted.
     final skills = demo ? const <Map<String, Object?>>[] : await codeSkillsFor(ref, projectId);
@@ -307,7 +314,18 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       subagent: subagent,
       mcpConfig: mcpConfig,
       skills: skills,
+      tools: tools,
+      rolePrompt: rolePrompt,
     );
+  }
+
+  Future<List<AgentDefinition>> _agentsFor(String? projectId) async {
+    try {
+      return await codeAgentsFor(ref, projectId);
+    } on Object {
+      // Unreadable agent folders only lose the agent list.
+      return const [];
+    }
   }
 
   /// The subagent session started for [parentId]'s `run_subagent` call [callId].
@@ -327,27 +345,49 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     final project = ref.read(codeProjectsProvider).where((p) => p.id == parent.projectId).firstOrNull;
     final projectDir = project?.path ?? parent.workingDir;
     AgentType? role;
+    AgentDefinition? agent;
     if (task.agent.isNotEmpty && !isDemoPath(projectDir)) {
-      try {
-        role = (await loadAgentSettings(projectDir)).agents[task.agent];
-      } on Object {
-        // An unreadable settings file only loses the role's instructions.
+      // A library agent first (checked and trusted now), then a settings.json role.
+      agent = (await _agentsFor(parent.projectId)).where((a) => a.name == task.agent).firstOrNull;
+      if (agent == null) {
+        try {
+          role = (await loadAgentSettings(projectDir)).agents[task.agent];
+        } on Object {
+          // An unreadable settings file only loses the role's instructions.
+        }
+      } else {
+        role = AgentType(name: agent.name, description: agent.oneLine);
       }
     }
+    final setup = childSetup(
+      agent,
+      parentMode: mode,
+      parentModel: parent.model,
+      parentEffort: parent.effort,
+      modelKnown: (m) {
+        final catalog = ref.read(modelCatalogProvider);
+        return catalog.length == 0 || catalog[ModelId(m)] != null;
+      },
+    );
     return startChild(
       parent: parent,
       title: task.title,
       brief: subagentBrief(task, role: role),
-      mode: mode,
+      mode: setup.mode,
       callId: call.id,
       projectDir: projectDir,
+      model: setup.model,
+      effort: setup.effort,
+      tools: setup.tools,
+      rolePrompt: setup.rolePrompt,
     );
   }
 
   /// Starts a child conversation of [parent] working on [brief]: the
-  /// parent's folder, model and effort, [mode], billed to the parent. A
-  /// `run_subagent` child has the call's id as [callId]; one the app starts
-  /// itself (a `/review`) has its own.
+  /// parent's folder, model and effort (unless [model] or [effort] say
+  /// otherwise), [mode], billed to the parent. A `run_subagent` child has the
+  /// call's id as [callId]; one the app starts itself (a `/review`) has its
+  /// own. [tools] and [rolePrompt] come from a library agent.
   Future<CodeSessionInfo> startChild({
     required CodeSessionInfo parent,
     required String title,
@@ -355,7 +395,13 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     required AgentMode mode,
     required String callId,
     String? projectDir,
+    String? model,
+    String? effort,
+    List<String>? tools,
+    String? rolePrompt,
   }) async {
+    model ??= parent.model;
+    effort ??= parent.effort;
     final id = const Uuid().v7();
     projectDir ??=
         ref.read(codeProjectsProvider).where((p) => p.id == parent.projectId).firstOrNull?.path ?? parent.workingDir;
@@ -365,12 +411,14 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         sessionTag: parent.id,
         projectDir: projectDir,
         workingDir: parent.workingDir,
-        model: parent.model,
+        model: model,
         mode: mode,
-        effort: parent.effort,
+        effort: effort,
         holdClientTools: false,
         subagent: true,
         initialMessage: modeNote(mode, brief, subagent: true),
+        tools: tools,
+        rolePrompt: rolePrompt,
       ),
     );
     ref.read(_liveProvider)[id] = live;
@@ -379,12 +427,12 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       projectId: parent.projectId,
       title: title,
       conversationId: live.id,
-      model: parent.model,
+      model: model,
       mode: mode,
       workingDir: parent.workingDir,
       createdAt: DateTime.now(),
       branch: parent.branch,
-      effort: parent.effort,
+      effort: effort,
       parentId: parent.id,
       parentCallId: callId,
     );

@@ -115,7 +115,10 @@ const _askRuleHeld = '''The call waits for the
 String forHeldClientTools(String suffix) => suffix.replaceFirst(_askRuleEndsTurn, _askRuleHeld);
 
 /// The system-prompt suffix: [workingRules], then what the settings add.
-String agentPromptSuffix(AgentSettings settings) {
+/// [agents] are the library agents the session may start (name, one-line
+/// description, sorted); the settings' own `agents` roles follow unless a
+/// library agent has the same name.
+String agentPromptSuffix(AgentSettings settings, {List<({String name, String description})> agents = const []}) {
   final out = StringBuffer(workingRules);
   if (!settings.attribution) {
     out.write(
@@ -130,9 +133,19 @@ String agentPromptSuffix(AgentSettings settings) {
     }
     out.write('</PROJECT_RULES>');
   }
-  if (settings.agents.isNotEmpty) {
-    out.write('\n\n<AGENT_TYPES>\nSubagent roles defined for this project, for delegated work:\n');
-    for (final a in settings.agents.values) {
+  final names = {for (final a in agents) a.name};
+  final roles = [
+    ...agents,
+    for (final a in settings.agents.values)
+      if (!names.contains(a.name)) (name: a.name, description: a.description),
+  ];
+  if (roles.isNotEmpty) {
+    out.write(
+      '\n\n<AGENT_TYPES>\nAgents you can hand work to with run_subagent: pass the name as its agent. Each brings its '
+      'own instructions and may run on another model or with stricter permissions. Pick the one whose description '
+      'fits the task; leave agent out for a general-purpose subagent.\n',
+    );
+    for (final a in roles) {
       out.write('- ${a.name}: ${a.description}\n');
     }
     out.write('</AGENT_TYPES>');

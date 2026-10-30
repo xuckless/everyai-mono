@@ -23,9 +23,15 @@ Future<CommitStyle> resolveCommitStyle(String projectDir, CommitStyle style) =>
 Future<void> excludeFromGit(String workingDir, List<String> patterns) => impl.excludeFromGit(workingDir, patterns);
 
 /// The persona and system-prompt suffix for a session in [projectDir], from
-/// its settings and commit history.
-Future<({String persona, String suffix})> agentPromptFor(String projectDir) async {
+/// its settings and commit history; [agents] as in [agentPromptSuffix].
+Future<({String persona, String suffix})> agentPromptFor(
+  String projectDir, {
+  List<({String name, String description})> agents = const [],
+}) async {
   final settings = await loadAgentSettings(projectDir);
   final style = await resolveCommitStyle(projectDir, settings.commitStyle);
-  return (persona: agentPersona(style: style, attribution: settings.attribution), suffix: agentPromptSuffix(settings));
+  return (
+    persona: agentPersona(style: style, attribution: settings.attribution),
+    suffix: agentPromptSuffix(settings, agents: agents),
+  );
 }

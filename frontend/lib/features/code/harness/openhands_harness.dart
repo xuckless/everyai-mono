@@ -64,10 +64,10 @@ final class OpenHandsHarness implements Harness {
           // 'conv_state'). Our `run_subagent` client tool runs child
           // conversations instead; a client tool can't be called `task`
           // (the server rejects names that collide with its built-ins).
-        ],
+        ].where((t) => spec.tools?.contains(t['name']) ?? true).toList(),
         // MCP servers the user set up and approved; the agent-server starts
         // and talks to them, and their tools arrive as MCPToolAction.
-        if (spec.mcpConfig.isNotEmpty) 'mcp_config': spec.mcpConfig,
+        if (spec.mcpConfig.isNotEmpty && (spec.tools?.contains('mcp') ?? true)) 'mcp_config': spec.mcpConfig,
         'persona': ?spec.persona,
         'agent_context': {'system_message_suffix': _suffix(spec), if (spec.skills.isNotEmpty) 'skills': spec.skills},
       },
@@ -135,7 +135,7 @@ final class OpenHandsHarness implements Harness {
 
   static String _suffix(SessionSpec spec) {
     final suffix = spec.promptSuffix ?? workingRules;
-    if (spec.subagent) return '$suffix\n\n$subagentRules';
+    if (spec.subagent) return '$suffix\n\n$subagentRules${spec.rolePrompt == null ? '' : '\n\n${spec.rolePrompt}'}';
     return spec.holdClientTools ? forHeldClientTools(suffix) : suffix;
   }
 
