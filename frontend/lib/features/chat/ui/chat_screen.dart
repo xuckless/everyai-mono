@@ -15,6 +15,7 @@ import '../../artifacts/artifact_providers.dart';
 import '../../artifacts/domain/artifact.dart';
 import '../../artifacts/ui/artifact_panel.dart';
 import '../../artifacts/ui/panel_split.dart';
+import '../../slash/chat_actions.dart';
 import '../../usage/ui/usage_meter.dart';
 import '../chat_providers.dart';
 import '../domain/ask_user.dart';
@@ -89,6 +90,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       onToolsChanged: controller.setToolsEnabled,
       effort: ref.watch(provider.select((s) => s.effort)),
       onEffortChanged: controller.setEffort,
+      slash: chatSlashHost(context, ref, widget.conversationId),
       meter: UsageMeter(totals: usage, contextWindow: model.contextLength, modelName: model.name),
     );
 
@@ -398,6 +400,21 @@ class _ChatMenu extends ConsumerWidget {
             );
             if (title != null && title.trim().isNotEmpty) await repo.rename(c.id, title.trim());
           },
+        ),
+        MenuAction(
+          label: 'Export as Markdown',
+          icon: EveryIcon.download,
+          onSelected: () => exportChat(context, ref, c.id, 'md'),
+        ),
+        MenuAction(
+          label: 'Export as PDF',
+          icon: EveryIcon.download,
+          onSelected: () => exportChat(context, ref, c.id, 'pdf'),
+        ),
+        MenuAction(
+          label: 'Save as skill',
+          icon: EveryIcon.spark,
+          onSelected: () => saveChatAsSkill(context, ref, c.id, ''),
         ),
         MenuAction(
           label: 'Delete',

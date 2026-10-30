@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'chat_commands.dart';
 import 'custom/custom_command.dart';
 import 'custom/custom_commands_provider.dart';
 import 'slash_command.dart';
@@ -28,24 +29,9 @@ final skillSlashCommandsProvider = Provider<List<SlashCommand>>((ref) => const [
 /// MCP prompts as commands; empty until connectors exist.
 final connectorSlashCommandsProvider = Provider<List<SlashCommand>>((ref) => const []);
 
-/// Switches the chat mode, then sends any text after the command in it.
-SlashCommand _chatMode(String name, String description) => SlashCommand(
-  name: name,
-  description: description,
-  argsHint: '[message]',
-  scope: SlashScope.chat,
-  run: (ctx, args) {
-    ctx.chat?.setMode(name);
-    if (args.isNotEmpty) ctx.send(args);
-  },
-);
-
-/// The first built-ins: mode switches. The full Chat and Code sets come with
-/// their own steps.
+/// The built-ins: the chat set (`chat_commands.dart`) and the first Code ones.
 final builtInSlashCommands = <SlashCommand>[
-  _chatMode('chat', 'Answer from the model alone'),
-  _chatMode('search', 'Search the web and cite sources'),
-  _chatMode('research', 'Multi-step research with a report'),
+  ...chatBuiltIns,
   SlashCommand(
     name: 'plan',
     description: 'Switch to Plan mode: read and propose before editing',

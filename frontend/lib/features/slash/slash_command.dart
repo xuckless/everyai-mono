@@ -53,12 +53,47 @@ class SlashContext {
   final CodeSlashHost? code;
 }
 
-/// Chat composer controls a command may drive.
+/// Chat composer controls a command may drive. Only [setMode] is always there;
+/// a host that lacks a control leaves it null and the command says so.
 class ChatSlashHost {
-  const ChatSlashHost({required this.setMode});
+  const ChatSlashHost({
+    required this.setMode,
+    this.setModel,
+    this.setEffort,
+    this.sendWith,
+    this.stage,
+    this.newChat,
+    this.retry,
+    this.openMemory,
+    this.exportChat,
+    this.saveAsSkill,
+  });
 
   /// Takes a `ChatMode` name: chat, search or research.
   final ValueChanged<String> setMode;
+
+  /// Picks the model best matching a name; returns a message to show, or null.
+  final String? Function(String query)? setModel;
+
+  /// Sets the thinking effort by name (auto, low, medium, high, max); returns a message.
+  final String? Function(String name)? setEffort;
+
+  /// Sends [text] as a message, forcing [forceTool] on its first model call
+  /// and giving the model [context] (skill instructions) with it.
+  final void Function(String text, {String? forceTool, String? context})? sendWith;
+
+  /// Holds [context] for the next message the user sends; [label] names it.
+  final void Function(String label, String context)? stage;
+
+  final VoidCallback? newChat;
+  final VoidCallback? retry;
+  final VoidCallback? openMemory;
+
+  /// Saves the chat; [format] is md, pdf or docx (empty: Markdown).
+  final ValueChanged<String>? exportChat;
+
+  /// Summarizes the chat into a skill and saves it; the text is a hint for what it is for.
+  final ValueChanged<String>? saveAsSkill;
 }
 
 /// Code composer controls a command may drive.

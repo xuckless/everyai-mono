@@ -107,7 +107,11 @@ final class ChatController extends Notifier<ChatSessionState> {
 
   /// Idle/Failed → Awaiting. Ignored while a turn is in flight.
   /// While the turn waits on a question card, the text is the user's reply to it.
-  Future<void> send(String input, {List<Attachment> attachments = const []}) async {
+  ///
+  /// [forceTool] makes the model's first call use that tool (the `/quiz`,
+  /// `/slides`… commands); [context] is extra instructions (a loaded skill)
+  /// sent with the prompt but not shown or saved with the message.
+  Future<void> send(String input, {List<Attachment> attachments = const [], String? forceTool, String? context}) async {
     if (state.phase.busy) {
       final asked = state.pendingTools.where((t) => t.name == askUserTool).firstOrNull;
       if (asked != null && input.trim().isNotEmpty) {
@@ -118,13 +122,25 @@ final class ChatController extends Notifier<ChatSessionState> {
     if (state.phase is Loading) return;
     final (:model, :prompt) = parseMention(input, _catalog);
     if (prompt.isEmpty && attachments.isEmpty) return;
+    // A forced tool needs tools on, and Research runs without any.
+    if (forceTool != null) {
+      state = state.copyWith(toolsEnabled: true, mode: state.mode == ChatMode.research ? ChatMode.chat : state.mode);
+    }
+    final staged = _stagedContext;
+    _stagedContext = null;
     await _startTurn(
       prompt: prompt,
       model: model ?? state.model,
       userText: input.trim(),
       attachments: [for (final a in attachments) AttachmentPart.of(a)],
+      forceTool: forceTool,
+      context: [?staged, ?context].join('\n\n'),
     );
   }
+
+  /// Instructions held for the next message the user sends (`/<skill>`).
+  String? _stagedContext;
+  void stageContext(String context) => _stagedContext = context;
 
   void setMode(ChatMode mode) => state = state.copyWith(mode: mode);
 
@@ -273,6 +289,8 @@ final class ChatController extends Notifier<ChatSessionState> {
     required ModelSpec model,
     required String? userText,
     List<AttachmentPart> attachments = const [],
+    String? forceTool,
+    String context = '',
   }) async {
     if (state.title == null) {
       final c = await _repo.createConversationWithId(
@@ -371,7 +389,7 @@ final class ChatController extends Notifier<ChatSessionState> {
         .send(
           ChatRequest(
             model: model,
-            prompt: prompt,
+            prompt: context.isEmpty ? prompt : '$context\n\n$prompt',
             history: history,
             mode: state.mode,
             conversationId: conversationId,
@@ -380,6 +398,7 @@ final class ChatController extends Notifier<ChatSessionState> {
             clientTools: state.toolsEnabled ? ref.read(chatClientToolsProvider) : const {},
             memory: ref.read(memoryProvider.notifier).snapshotFor(conversationId),
             effort: state.effort.wireFor(model),
+            forceTool: state.toolsEnabled ? forceTool : null,
           ),
           cancel: cancel.future,
         );

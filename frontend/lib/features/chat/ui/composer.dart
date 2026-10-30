@@ -46,6 +46,7 @@ class Composer extends ConsumerStatefulWidget {
     this.replying = false,
     this.effort = ReasoningEffort.auto,
     this.onEffortChanged,
+    this.slash,
   });
 
   final bool busy;
@@ -75,6 +76,9 @@ class Composer extends ConsumerStatefulWidget {
   /// [onEffortChanged] is set.
   final ReasoningEffort effort;
   final ValueChanged<ReasoningEffort>? onEffortChanged;
+
+  /// What the `/` commands may drive in this chat; null keeps just mode switches.
+  final ChatSlashHost? slash;
 
   @override
   ConsumerState<Composer> createState() => ComposerState();
@@ -109,7 +113,7 @@ class ComposerState extends ConsumerState<Composer> {
       selection: TextSelection.collapsed(offset: text.length),
     ),
     send: (text) => widget.onSend(text, const []),
-    chat: ChatSlashHost(setMode: (name) => widget.onModeChanged(ChatMode.values.byName(name))),
+    chat: widget.slash ?? ChatSlashHost(setMode: (name) => widget.onModeChanged(ChatMode.values.byName(name))),
   );
 
   void _pickSlash(SlashCommand command) {

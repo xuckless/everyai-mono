@@ -27,6 +27,7 @@ final class ChatRequest {
     this.clientTools = const {},
     this.memory,
     this.effort,
+    this.forceTool,
   });
 
   final ModelSpec model;
@@ -54,6 +55,9 @@ final class ChatRequest {
 
   /// Thinking effort (`low|medium|high|max`); null leaves the model's default.
   final String? effort;
+
+  /// A tool the model must call first (`make_quiz`…); later calls of the turn are free.
+  final String? forceTool;
 }
 
 /// Incremental output of one assistant turn.
@@ -216,6 +220,7 @@ final class SseTransport implements ChatTransport {
       'session': ?request.conversationId,
       'memory': ?request.memory,
       'effort': ?request.effort,
+      'force_tool': ?request.forceTool,
       if (request.clientTools.isNotEmpty) 'client_tools': request.clientTools.toList(growable: false),
       if (request.toolsEnabled && images.isNotEmpty)
         'images': imageRefsJson(images, inMessages: uploadsInMessages(request.history, pending: request.attachments)),
