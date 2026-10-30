@@ -78,7 +78,13 @@ void main() {
         ]),
       ];
       final note = toolOutputsByMessage(history)['m']!;
-      expect(note, contains('<artifact id="d" kind="drawing" title="Flow" edited_by="user">\n{"elements":[]}\n</artifact>'));
+      expect(
+        note,
+        contains(
+          '<artifact id="d" kind="drawing" title="Flow" edited_by="user">\n'
+          '{"type":"excalidraw","elements":[]}\n</artifact>',
+        ),
+      );
       expect(note, contains('an earlier version, superseded'));
     });
 
@@ -116,6 +122,63 @@ void main() {
     });
   });
 
+  test('the model reads a slim copy of a saved scene: no files, app state or volatile fields', () {
+    final scene = jsonEncode({
+      'type': 'excalidraw',
+      'version': 2,
+      'appState': {'viewBackgroundColor': '#fff', 'zoom': 1},
+      'files': {
+        'f1': {'dataURL': 'data:image/png;base64,${'A' * 5000}'},
+      },
+      'elements': [
+        {
+          'id': 'box',
+          'type': 'rectangle',
+          'x': 10,
+          'y': 20,
+          'width': 100,
+          'height': 50,
+          'angle': 0,
+          'strokeColor': '#e03131',
+          'backgroundColor': 'transparent',
+          'seed': 123,
+          'version': 7,
+          'versionNonce': 99,
+          'updated': 1730000000000,
+          'boundElements': [
+            {'id': 't', 'type': 'text'},
+          ],
+          'groupIds': <String>[],
+          'isDeleted': false,
+        },
+        {'id': 'gone', 'type': 'ellipse', 'x': 0, 'y': 0, 'isDeleted': true},
+      ],
+    });
+    final slim = drawingForPrompt(scene);
+    expect(slim, isNot(contains('dataURL')));
+    expect(slim, isNot(contains('appState')));
+    expect(slim, isNot(contains('seed')));
+    expect(slim, isNot(contains('gone')));
+    final box = (drawingElements(slim)!.single as Map<String, Object?>);
+    expect(box, {
+      'id': 'box',
+      'type': 'rectangle',
+      'x': 10,
+      'y': 20,
+      'width': 100,
+      'height': 50,
+      'strokeColor': '#e03131',
+    });
+
+    final many = jsonEncode([
+      for (var i = 0; i < 100; i++) {'id': 'e$i', 'type': 'text', 'x': i, 'y': 0, 'text': 'x' * 50},
+    ]);
+    final capped = jsonDecode(drawingForPrompt(many, maxChars: 1000)) as Map<String, Object?>;
+    expect((capped['elements']! as List).length, lessThan(20));
+    expect((capped['elements']! as List).length + (capped['omitted_elements']! as int), 100);
+    expect(drawingForPrompt('not json'), 'not json');
+  });
+
   group('drawingPage', () {
     test('loads pinned Excalidraw and React from jsDelivr', () {
       final page = drawingPage(scene: _scene, dark: false);
@@ -129,15 +192,24 @@ void main() {
       }
     });
 
-    test('scene data cannot close its script element', () {
-      final page = drawingPage(scene: '[{"type":"text","text":"</script><script>alert(1)</script>"}]', dark: true);
+    test('scene data cannot close its script element and stays valid JSON', () {
+      const text = '</script><script>alert(1)</script> <!-- note --> a\u2028b\u2029c';
+      final page = drawingPage(
+        scene: jsonEncode([
+          {'type': 'text', 'text': text},
+        ]),
+        dark: true,
+      );
       final data = RegExp(
         r'<script type="application/json" id="everyai-drawing">(.*?)</script>',
         dotAll: true,
       ).firstMatch(page)![1]!;
-      expect(data, isNot(contains('</')));
+      expect(data, isNot(contains('<')));
+      expect(data, isNot(contains('\u2028')));
       final decoded = jsonDecode(data) as Map<String, Object?>;
-      expect(decoded['scene'], contains('</script>'));
+      expect(decoded['scene'], contains(text));
+      // The page reads the data inside its try, so a bad scene shows an error.
+      expect(page.indexOf('JSON.parse(document'), greaterThan(page.indexOf('try {\n  const data')));
       expect(decoded['dark'], isTrue);
       expect(decoded['mermaid'], isNull);
     });

@@ -29,10 +29,11 @@ String get _importMap => jsonEncode({
 /// The longest scene the page reports back (bigger edits are not saved).
 const maxSceneLength = 8 * 1024 * 1024;
 
-/// JSON inside a `<script type="application/json">`: `</` and `<!--` must not
-/// appear raw, or the element ends early.
+/// JSON inside a `<script type="application/json">`: no raw `<` (so neither
+/// `</script` nor `<!--` can end or change the element) and no raw line or
+/// paragraph separators, using JSON's own `\u` escapes.
 String _scriptJson(Object? value) =>
-    jsonEncode(value).replaceAll('</', r'<\/').replaceAll('<!--', r'<\!--').replaceAll(' ', r' ');
+    jsonEncode(value).replaceAll('<', r'\u003c').replaceAll('\u2028', r'\u2028').replaceAll('\u2029', r'\u2029');
 
 /// The Excalidraw editor page for a drawing: [scene] is the artifact's
 /// content (scene JSON or a bare element list, either may use skeleton
@@ -71,9 +72,9 @@ try { window.localStorage.getItem("x"); } catch (_) {
   try { Object.defineProperty(window, "localStorage", { value: s, configurable: true }); } catch (_) {}
 }
 window.EXCALIDRAW_ASSET_PATH = CDN + "@excalidraw/excalidraw@$excalidrawVersion/dist/prod/";
-const data = JSON.parse(document.getElementById("everyai-drawing").textContent);
-const post = (scene) => { if (scene.length <= data.max) parent.postMessage({ everyai: "scene", scene }, "*"); };
 try {
+  const data = JSON.parse(document.getElementById("everyai-drawing").textContent);
+  const post = (scene) => { if (scene.length <= data.max) parent.postMessage({ everyai: "scene", scene }, "*"); };
   const [React, { createRoot }, X] = await Promise.all([
     import(CDN + "react@$excalidrawReactVersion/+esm"),
     import(CDN + "react-dom@$excalidrawReactVersion/client/+esm"),

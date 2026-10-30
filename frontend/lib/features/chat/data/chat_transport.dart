@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import '../../../core/net/api_client.dart';
 import '../../../core/net/api_error.dart';
 import '../../artifacts/domain/artifact.dart';
+import '../../artifacts/domain/drawing.dart';
 import '../../attachments/attachment.dart';
 import '../../models/domain/model_catalog.dart';
 import '../domain/ask_user.dart';
@@ -346,10 +347,12 @@ Map<String, String> toolOutputsByMessage(List<Message> history) {
         if (latest[call.callId ?? visual.callId] case final artifact?) {
           final v = artifact.latest;
           final kind = call.toolName == 'create_artifact' ? visual.str('kind') : artifact.versions.first.str('kind');
+          // Drawings saved from the editor are full scenes: send the model a slim copy.
+          final content = kind == 'drawing' ? drawingForPrompt(v.str('content')) : v.str('content');
           notes.add(
             '<artifact id="$id" kind="${kind.isEmpty ? 'markdown' : kind}" title="${artifact.title}"'
             '${v.editedByUser ? ' edited_by="user"' : ''}>\n'
-            '${v.str('content')}\n</artifact>',
+            '$content\n</artifact>',
           );
         } else {
           notes.add('[${call.toolName} $id: an earlier version, superseded below]');
