@@ -790,6 +790,59 @@ test "chat: generate_image with an unknown id tells the model which ids exist" {
     try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[1], "there is no image \\\"img_1\\\" in this chat. Known images: upload_1.") != null);
 }
 
+const search_turn =
+    \\data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_s","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"zig release\",\"max_results\":3}"}}]}}]}
+    \\
+    \\data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":900,"completion_tokens":20,"cost":0.0001}}
+    \\
+    \\data: [DONE]
+    \\
+    \\
+;
+
+const search_reply =
+    \\{"choices":[{"message":{"role":"assistant","content":"ok","annotations":[
+    \\{"type":"url_citation","url_citation":{"url":"https://ziglang.org/","title":"Zig","content":"Zig is a language"}},
+    \\{"type":"url_citation","url_citation":{"url":"https://ziglang.org/download","title":"Download","content":"0.17.0 released"}}]}}],
+    \\"usage":{"prompt_tokens":400,"completion_tokens":3,"cost":0.02}}
+;
+
+test "chat: web_search numbers results in the source ledger, sends each source once, and is metered" {
+    var env: Env = undefined;
+    try start(&env, &.{ search_turn, search_reply, final_turn, followups_reply }, true);
+    defer env.deinit();
+
+    var res = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = "What's new in Zig?" }},
+        .session = "conv-s",
+    } });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    const body = res.body;
+    // One sources event with both results; the final reply's annotation for
+    // the same page (no trailing slash) is not sent again.
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, body, "event: sources"));
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"url\":\"https://ziglang.org/download\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"kind\":\"search\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"detail\":\"zig release\"") != null);
+
+    // The search call: the web plugin on the utility model.
+    const search = env.fake.bodies.items[1];
+    try std.testing.expect(std.mem.indexOf(u8, search, "\"plugins\":[{\"id\":\"web\",\"engine\":\"exa\",\"max_results\":3}]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, search, "\"model\":\"google/gemini-3.5-flash-lite\"") != null);
+    // The model reads numbered, fenced results.
+    const next = env.fake.bodies.items[2];
+    try std.testing.expect(std.mem.indexOf(u8, next, "2 result(s) for \\\"zig release\\\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, next, "[2] Download\\nhttps://ziglang.org/download") != null);
+    try std.testing.expect(std.mem.indexOf(u8, next, "untrusted_tool_result source=\\\"web_search\\\"") != null);
+
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = arena.allocator() };
+    try std.testing.expectEqual(@as(i64, 23_000), try env.state.db.one(i64, &c, "SELECT charged_micros FROM usage_events WHERE kind = 'search'", .{}));
+}
+
 test "images: the vector engine asks a Recraft vector model for SVG" {
     var env: Env = undefined;
     try start(&env, &.{"{\"data\":[{\"b64_json\":\"PHN2ZyB2aWV3Qm94PSIwIDAgMSAxIi8+\"}],\"usage\":{\"cost\":0.08}}"}, true);

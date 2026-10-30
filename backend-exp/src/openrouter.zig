@@ -302,7 +302,7 @@ pub fn parseUsage(u: std.json.ObjectMap) Usage {
     return out;
 }
 
-fn errorMessage(arena: std.mem.Allocator, raw: []const u8) []const u8 {
+pub fn errorMessage(arena: std.mem.Allocator, raw: []const u8) []const u8 {
     const v = std.json.parseFromSliceLeaky(std.json.Value, arena, raw, .{}) catch return if (raw.len > 0) raw else "upstream error";
     if (v == .object) if (v.object.get("error")) |e| if (jsonString(e, "message")) |m| return m;
     return if (raw.len > 0) raw else "upstream error";

@@ -126,7 +126,7 @@ final class UsageReport extends ChatEvent {
   final int cacheWriteTokens;
   final String? model;
 
-  /// The follow-up suggestions call: costs money, doesn't fill the context.
+  /// A side call (follow-up suggestions, a web search): costs money, doesn't fill the context.
   final bool followUps;
 
   /// What the user was charged, in millionths of a dollar.
@@ -265,7 +265,7 @@ final class SseTransport implements ChatTransport {
             cacheWriteTokens: (u['cache_write_tokens'] as num?)?.toInt() ?? 0,
             chargedMicros: (u['charged_micros'] as num?)?.toInt() ?? 0,
             model: u['model'] as String?,
-            followUps: u['kind'] == 'followups',
+            followUps: u['kind'] == 'followups' || u['kind'] == 'search',
           );
         case ('followups', {'questions': final List<Object?> list}):
           yield FollowUpsSuggested(list.whereType<String>().toList(growable: false));

@@ -2,7 +2,7 @@
 //!
 //! The server runs the tool loop. UI tools (artifacts, SVG, diagrams, charts,
 //! quizzes, flashcards, slides) are streamed to the app as `tool` events and
-//! acknowledged to the model; server tools (web_fetch, generate_image) run
+//! acknowledged to the model; server tools (web_fetch, web_search, generate_image) run
 //! here. Every upstream call is metered (billing.charge).
 //!
 //! Client-executed tools: a UI tool the app names in `client_tools` is sent as
@@ -28,6 +28,7 @@ const tool_check = @import("tool_check.zig");
 const tool_wait = @import("tool_wait.zig");
 const truncation = @import("truncation.zig");
 const safe_fetch = @import("net/safe_fetch.zig");
+const web = @import("web.zig");
 
 const Events = @typeInfo(@typeInfo(@TypeOf(anole.Response.startEventStream)).@"fn".return_type.?).error_union.payload;
 
@@ -201,6 +202,9 @@ fn buildBody(arena: std.mem.Allocator, model: []const u8, mode: Mode, with_tools
 const Sink = struct {
     ev: *Events,
     scratch: *std.Io.Writer.Allocating,
+    /// The turn's web sources: numbers citations, and lets only new ones out.
+    ledger: *web.Ledger,
+    arena: std.mem.Allocator,
 
     fn send(self: Sink, name: []const u8, value: anytype) !void {
         self.scratch.clearRetainingCapacity();
@@ -212,8 +216,18 @@ const Sink = struct {
         switch (d) {
             .text => |t| try self.send("delta", .{ .text = t }),
             .reasoning => |t| try self.send("reasoning", .{ .text = t }),
-            .sources => |list| try self.send("sources", .{ .sources = list }),
+            .sources => |list| {
+                const fresh = try self.ledger.addAll(self.arena, list);
+                if (fresh.len > 0) try self.send("sources", .{ .sources = fresh });
+            },
         }
+    }
+
+    /// The citation number of `source`; the app hears of it the first time.
+    fn cite(self: Sink, source: openrouter.Source) !usize {
+        const e = try self.ledger.add(self.arena, source);
+        if (e.new) try self.send("sources", .{ .sources = self.ledger.list.items[e.n - 1 ..][0..1] });
+        return e.n;
     }
 
     /// Keeps the stream alive while a tool waits for the app.
@@ -246,7 +260,8 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
     var buf: [16 * 1024]u8 = undefined;
     var ev = try res.startEventStream(&buf);
     var scratch: std.Io.Writer.Allocating = .init(req.arena);
-    const sink: Sink = .{ .ev = &ev, .scratch = &scratch };
+    var ledger: web.Ledger = .{};
+    const sink: Sink = .{ .ev = &ev, .scratch = &scratch, .ledger = &ledger, .arena = req.arena };
 
     run(app, req, who, model, body, facts, sink) catch |err| switch (err) {
         error.Upstream, error.OutOfCredits => {}, // already reported
@@ -543,9 +558,11 @@ fn runTool(app: *App, req: *anole.Request, who: auth.Identity, body: ChatRequest
             return if (edited) |e| e.message else try tool_check.shown(req.arena, call.name, args);
         },
         .server => {
-            try sink.send("tool_status", .{ .id = call.id, .name = call.name, .status = "running", .detail = openrouter.jsonString(args, "url") orelse openrouter.jsonString(args, "prompt") });
+            try sink.send("tool_status", .{ .id = call.id, .name = call.name, .status = "running", .detail = openrouter.jsonString(args, "url") orelse openrouter.jsonString(args, "query") orelse openrouter.jsonString(args, "prompt") });
             const output = (if (std.mem.eql(u8, call.name, "web_fetch"))
-                webFetch(app, req, openrouter.jsonString(args, "url") orelse "")
+                webFetch(app, req, args, sink)
+            else if (std.mem.eql(u8, call.name, "web_search"))
+                webSearch(app, req, who, session, args, sink)
             else
                 generateImage(app, req, who, session, call.id, args, sink, pictures)) catch |err| blk: {
                 break :blk try std.fmt.allocPrint(req.arena, "Error: {t}", .{err});
@@ -618,17 +635,68 @@ fn toolResult(app: *App, req: *anole.Request, res: *anole.Response) !void {
     return res.json(.{ .ok = true });
 }
 
-/// The page's readable text (tags, scripts and styles removed, whitespace
-/// collapsed, at most 20k characters), fenced as untrusted. The fetch goes
-/// through `safe_fetch`: no local or private addresses, every redirect hop
-/// checked again, the body capped.
-fn webFetch(app: *App, req: *anole.Request, url: []const u8) ![]const u8 {
+/// One window of the page's readable text (tags, scripts and styles removed,
+/// whitespace collapsed), fenced as untrusted, then the page's citation number
+/// and, when the text goes on, `next_offset` for the next window. The fetch
+/// goes through `safe_fetch`: no local or private addresses, every redirect
+/// hop checked again, the body capped.
+fn webFetch(app: *App, req: *anole.Request, args: std.json.Value, sink: Sink) ![]const u8 {
     const fetcher = app.web orelse return "Error: web_fetch is not available here.";
-    const page = fetcher.get(req.io, req.arena, std.mem.trim(u8, url, " \t\r\n"), "text/html,text/plain,application/xhtml+xml,*/*;q=0.5") catch |err|
+    const url = std.mem.trim(u8, openrouter.jsonString(args, "url") orelse "", " \t\r\n");
+    const offset: usize = @intCast(@max(0, intArg(args, "offset") orelse 0));
+    const limit: usize = @intCast(std.math.clamp(intArg(args, "max_chars") orelse web.default_chars, web.min_chars, web.max_chars));
+    const page = fetcher.get(req.io, req.arena, url, "text/html,text/plain,application/xhtml+xml,*/*;q=0.5") catch |err|
         return std.fmt.allocPrint(req.arena, "Error: {s}.", .{safe_fetch.describe(err)});
     if (page.status >= 400) return std.fmt.allocPrint(req.arena, "Error: HTTP {d}", .{page.status});
     if (!textual(page.content_type)) return std.fmt.allocPrint(req.arena, "Error: the URL is not a web page ({s}); web_fetch reads text only.", .{page.content_type});
-    return safe_fetch.wrapUntrusted(req.arena, page.url, try readableText(req.arena, page.body, 20_000));
+    const text = try readableText(req.arena, page.body, page.body.len);
+    if (offset > 0 and offset >= text.len)
+        return std.fmt.allocPrint(req.arena, "Error: offset {d} is past the end of the page ({d} characters).", .{ offset, text.len });
+    const n = try sink.cite(.{
+        .url = page.url,
+        .title = (try web.titleOf(req.arena, page.body)) orelse page.url,
+        .snippet = if (text.len > 0) web.clip(text, 300) else null,
+    });
+    const w = web.window(text, offset, limit);
+    const fenced = try safe_fetch.wrapUntrusted(req.arena, page.url, w.text);
+    return std.mem.concat(req.arena, u8, &.{ fenced, "\n", try web.pagingNote(req.arena, n, w) });
+}
+
+fn intArg(args: std.json.Value, key: []const u8) ?i64 {
+    if (args != .object) return null;
+    const v = args.object.get(key) orelse return null;
+    return switch (v) {
+        .integer => |i| i,
+        .float => |f| if (std.math.isFinite(f) and @abs(f) < 1e15) @intFromFloat(f) else null,
+        else => null,
+    };
+}
+
+/// `web_search`: OpenRouter's web plugin (the Search mode's engine) on the
+/// utility model, metered like any call. The results join the turn's source
+/// ledger, so the model cites the numbers it is given and the app gets them
+/// as `sources`.
+fn webSearch(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, args: std.json.Value, sink: Sink) ![]const u8 {
+    const arena = req.arena;
+    const query = std.mem.trim(u8, openrouter.jsonString(args, "query") orelse "", " \t\r\n");
+    if (query.len == 0) return "Error: query is empty.";
+    const limit: usize = @intCast(std.math.clamp(intArg(args, "max_results") orelse web.default_results, 1, web.max_results));
+    const body = try web.searchBody(arena, app.cfg.utility_model, app.cfg.search_engine, query, limit);
+    const s = try app.upstream.post(req, "/chat/completions", body, &.{});
+    defer s.close();
+    const raw = try s.reader.allocRemaining(arena, .limited(1024 * 1024));
+    if (s.status >= 300) return std.fmt.allocPrint(arena, "Error: the search failed ({s}). Try again or carry on without it.", .{openrouter.errorMessage(arena, raw)});
+    const reply = web.parseSearch(arena, raw) catch return "Error: the search service sent an unreadable reply. Try again or carry on without it.";
+    if (reply.usage) |u| {
+        const c = try billing.charge(app, req, who.user_id, .{ .kind = "search", .model = app.cfg.utility_model, .prompt_tokens = u.prompt_tokens, .completion_tokens = u.completion_tokens, .cost_usd = u.cost_usd, .session = session });
+        // Costs money; does not fill the conversation's context.
+        try sink.send("usage", .{ .kind = "search", .model = app.cfg.utility_model, .prompt_tokens = u.prompt_tokens, .completion_tokens = u.completion_tokens, .cached_tokens = 0, .cache_write_tokens = 0, .charged_micros = c.charged_micros });
+    }
+    // One `sources` event for the new results, then each one's number.
+    try sink.onDelta(.{ .sources = reply.sources });
+    const numbered = try arena.alloc(web.Numbered, reply.sources.len);
+    for (reply.sources, numbered) |src, *out| out.* = .{ .n = (try sink.ledger.add(arena, src)).n, .source = src };
+    return web.formatResults(arena, query, numbered);
 }
 
 /// Content types `readableText` makes sense of; an absent one is tried.
@@ -843,6 +911,7 @@ pub fn routes(app: *anole.Server(App), state: *App) void {
 test {
     _ = tool_check;
     _ = truncation;
+    _ = web;
 }
 
 test buildBody {
