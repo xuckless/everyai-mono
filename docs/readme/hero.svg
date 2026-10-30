@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 420" width="1280" height="420" role="img" aria-label="EveryAI: every AI model, one app">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#14082D"/>
+      <stop offset="0.55" stop-color="#1B0F3E"/>
+      <stop offset="1" stop-color="#06121A"/>
+    </linearGradient>
+    <radialGradient id="violet" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#7756E4" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#7756E4" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="cyan" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#2CCCEB" stop-opacity="0.7"/>
+      <stop offset="1" stop-color="#2CCCEB" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="pink" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#C084FC" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#C084FC" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="title" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.6" stop-color="#D7CCFF"/>
+      <stop offset="1" stop-color="#9CE9FC"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="40"/></filter>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#FFFFFF" stroke-opacity="0.045" stroke-width="1"/>
+    </pattern>
+    <clipPath id="frame"><rect width="1280" height="420" rx="28"/></clipPath>
+    <style>
+      .orb { transform-box: fill-box; transform-origin: center; }
+      .o1 { animation: drift1 14s ease-in-out infinite alternate; }
+      .o2 { animation: drift2 18s ease-in-out infinite alternate; }
+      .o3 { animation: drift3 22s ease-in-out infinite alternate; }
+      @keyframes drift1 { from { transform: translate(-40px, -10px) scale(1); } to { transform: translate(90px, 40px) scale(1.25); } }
+      @keyframes drift2 { from { transform: translate(30px, 20px) scale(1.1); } to { transform: translate(-110px, -30px) scale(0.9); } }
+      @keyframes drift3 { from { transform: translate(0, 30px) scale(0.9); } to { transform: translate(60px, -40px) scale(1.2); } }
+      .dot { transform-box: fill-box; transform-origin: center; animation: pulse 2.4s ease-in-out infinite; }
+      @keyframes pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.35); opacity: 0.75; } }
+      .ring { transform-box: fill-box; transform-origin: center; animation: ring 2.4s ease-out infinite; }
+      @keyframes ring { from { transform: scale(1); opacity: 0.8; } to { transform: scale(3.2); opacity: 0; } }
+      .sheen { animation: sweep 6s ease-in-out infinite; }
+      @keyframes sweep { 0% { transform: translateX(-700px); } 60%, 100% { transform: translateX(1400px); } }
+      .pill { animation: float 6s ease-in-out infinite; }
+      .p2 { animation-delay: -1.5s; } .p3 { animation-delay: -3s; } .p4 { animation-delay: -4.5s; } .p5 { animation-delay: -2.2s; } .p6 { animation-delay: -5.1s; }
+      @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+      .caret { animation: blink 1.1s steps(1) infinite; }
+      @keyframes blink { 50% { opacity: 0; } }
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif; }
+    </style>
+  </defs>
+
+  <g clip-path="url(#frame)">
+    <rect width="1280" height="420" fill="url(#bg)"/>
+    <g filter="url(#blur)">
+      <circle class="orb o1" cx="300" cy="140" r="210" fill="url(#violet)"/>
+      <circle class="orb o2" cx="1010" cy="300" r="230" fill="url(#cyan)"/>
+      <circle class="orb o3" cx="760" cy="60" r="170" fill="url(#pink)"/>
+    </g>
+    <rect width="1280" height="420" fill="url(#grid)"/>
+    <rect class="sheen" x="0" y="0" width="420" height="420" fill="url(#sheen)" transform="skewX(-18)"/>
+
+    <!-- Mark -->
+    <g transform="translate(118 108) scale(2.6)" filter="url(#glow)">
+      <path fill="#9C85FC" d="M26 12H79A9 9 0 0 1 79 30H39A5 5 0 0 0 34 35V36A5 5 0 0 0 39 41H52A9 9 0 0 1 52 59H39A5 5 0 0 0 34 64V65A5 5 0 0 0 39 70H79A9 9 0 0 1 79 88H26A14 14 0 0 1 12 74V26A14 14 0 0 1 26 12Z" transform="translate(-12 -12)"/>
+      <circle class="ring" cx="67" cy="38" r="9" fill="none" stroke="#2CCCEB" stroke-width="1.5"/>
+      <circle class="dot" cx="67" cy="38" r="9" fill="#2CCCEB"/>
+    </g>
+
+    <!-- Title -->
+    <text x="380" y="190" font-size="92" font-weight="800" letter-spacing="-2" fill="url(#title)">EveryAI</text>
+    <text x="384" y="238" font-size="27" font-weight="500" fill="#ECE5FE" fill-opacity="0.9">Every AI model. One native app. A coding agent built in.</text>
+    <text x="384" y="276" font-size="17" fill="#BCADFF" fill-opacity="0.85" font-family="SFMono-Regular, Menlo, Consolas, monospace">$ everyai --chat --code --artifacts --6-platforms<tspan class="caret" fill="#2CCCEB">▍</tspan></text>
+
+    <!-- Pills -->
+    <g font-size="15" font-weight="600">
+      <g class="pill p1"><rect x="384" y="314" width="96" height="32" rx="16" fill="#FFFFFF" fill-opacity="0.08" stroke="#9C85FC" stroke-opacity="0.55"/><text x="432" y="335" text-anchor="middle" fill="#ECE5FE">Claude</text></g>
+      <g class="pill p2"><rect x="492" y="314" width="84" height="32" rx="16" fill="#FFFFFF" fill-opacity="0.08" stroke="#9C85FC" stroke-opacity="0.55"/><text x="534" y="335" text-anchor="middle" fill="#ECE5FE">GPT</text></g>
+      <g class="pill p3"><rect x="588" y="314" width="100" height="32" rx="16" fill="#FFFFFF" fill-opacity="0.08" stroke="#9C85FC" stroke-opacity="0.55"/><text x="638" y="335" text-anchor="middle" fill="#ECE5FE">Gemini</text></g>
+      <g class="pill p4"><rect x="700" y="314" width="112" height="32" rx="16" fill="#FFFFFF" fill-opacity="0.08" stroke="#9C85FC" stroke-opacity="0.55"/><text x="756" y="335" text-anchor="middle" fill="#ECE5FE">DeepSeek</text></g>
+      <g class="pill p5"><rect x="824" y="314" width="96" height="32" rx="16" fill="#FFFFFF" fill-opacity="0.08" stroke="#9C85FC" stroke-opacity="0.55"/><text x="872" y="335" text-anchor="middle" fill="#ECE5FE">Qwen</text></g>
+      <g class="pill p6"><rect x="932" y="314" width="170" height="32" rx="16" fill="#2CCCEB" fill-opacity="0.16" stroke="#2CCCEB" stroke-opacity="0.7"/><text x="1017" y="335" text-anchor="middle" fill="#CAF4FE">+ 380 more models</text></g>
+    </g>
+    <rect x="0.5" y="0.5" width="1279" height="419" rx="27.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.08"/>
+  </g>
+</svg>
