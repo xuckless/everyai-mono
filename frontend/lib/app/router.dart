@@ -10,6 +10,8 @@ import '../features/auth/ui/sign_in_screen.dart';
 import '../core/ui/every_icons.dart';
 import '../features/chat/ui/chat_screen.dart';
 import '../features/code/ui/code_home.dart';
+import '../features/code/ui/code_settings_screen.dart';
+import '../features/code/code_settings_providers.dart' show SettingsScope;
 import '../features/code/ui/mcp_settings_screen.dart';
 import '../features/code/ui/session_view.dart';
 import '../features/history/ui/chats_screen.dart';
@@ -44,6 +46,14 @@ abstract final class Routes {
   static const code = '/code';
   static String chat(String id) => '/chat/$id';
   static String codeSession(String id) => '/code/s/$id';
+  static const codeSettingsPath = '/code/settings';
+
+  /// Code settings at [scope] (global, project, session) and [tab] (prompt,
+  /// json, effective).
+  static String codeSettings({String? projectId, String? sessionId, String? scope, String? tab}) => Uri(
+    path: codeSettingsPath,
+    queryParameters: {'project': ?projectId, 'session': ?sessionId, 'scope': ?scope, 'tab': ?tab},
+  ).toString();
 }
 
 /// Survives router rebuilds (switching design language swaps the app root and
@@ -115,6 +125,21 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: Routes.code,
             pageBuilder: (_, _) => const NoTransitionPage(child: CodeHome()),
+          ),
+          GoRoute(
+            path: Routes.codeSettingsPath,
+            pageBuilder: (_, state) {
+              final q = state.uri.queryParameters;
+              return NoTransitionPage(
+                key: ValueKey('code-settings-${state.uri.query}'),
+                child: CodeSettingsScreen(
+                  projectId: q['project'],
+                  sessionId: q['session'],
+                  scope: SettingsScope.parse(q['scope']),
+                  tab: CodeSettingsTab.parse(q['tab']),
+                ),
+              );
+            },
           ),
           GoRoute(
             path: '/code/s/:id',

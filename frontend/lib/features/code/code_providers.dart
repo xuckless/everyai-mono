@@ -40,6 +40,7 @@ import 'harness/harness.dart';
 import 'harness/openhands_harness.dart';
 import 'harness/session_processes.dart';
 import 'harness/summarizer.dart';
+import 'code_settings_providers.dart' show codeSettingsProvider, withSystemPrompts;
 import 'mcp_providers.dart';
 import 'permissions_providers.dart';
 import 'settings/context_files.dart';
@@ -297,7 +298,13 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       vision: _sees(ref, model),
       maxInputTokens: ref.read(modelCatalogProvider)[ModelId(model)]?.contextLength,
       persona: agentPrompt?.persona,
-      promptSuffix: agentPrompt == null ? null : withProjectContext(agentPrompt.suffix, context),
+      promptSuffix: agentPrompt == null
+          ? null
+          : withSystemPrompts(
+              withProjectContext(agentPrompt.suffix, context),
+              global: ref.read(codeSettingsProvider).globalPrompt,
+              project: projectId == null ? '' : ref.read(codeSettingsProvider).promptFor(projectId),
+            ),
       effort: effort == null || effort.isEmpty ? null : effort,
       holdClientTools: holdClientTools,
       subagent: subagent,

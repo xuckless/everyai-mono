@@ -27,6 +27,7 @@ import '../harness/events.dart' show ExecutionStatus;
 import 'agent_menu.dart';
 import 'code_composer.dart';
 import 'code_slash_host.dart';
+import 'code_top_bar.dart';
 import 'panes/diff_pane.dart';
 import 'transcript/approval_card.dart';
 import 'transcript/aside_card.dart';
@@ -88,7 +89,7 @@ class CodeSessionScreen extends ConsumerWidget {
     return AdaptivePage(
       title: info.title,
       actions: [
-        ConstrainedBox(constraints: const BoxConstraints(maxWidth: 220), child: agentMenu(bordered: true)),
+        CodeTopBar(sessionId: sessionId, agentMenu: agentMenu(bordered: true)),
         if (info.worktree != null) _ChangesButton(sessionId: sessionId),
         StatusPill(status: state.status),
         AdaptiveIconButton(icon: EveryIcon.newChat, tooltip: 'New session', onPressed: () => context.go(Routes.code)),
