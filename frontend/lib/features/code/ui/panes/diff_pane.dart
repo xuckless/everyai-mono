@@ -1,6 +1,7 @@
 import 'package:everyai_markdown/everyai_markdown.dart' show languageForPath;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
@@ -83,11 +84,33 @@ class _DiffPaneState extends ConsumerState<DiffPane> {
       initialValue: widget.session.title,
     );
     if (message == null || message.trim().isEmpty) return;
+    var merged = false;
     await _run(() async {
       final sha = await _git.squashMerge(message.trim());
+      merged = true;
       return 'Merged into ${w.baseBranch} as ${sha.substring(0, 7)}';
     });
+    if (!merged || !mounted) return;
+    final remove = await showAdaptiveConfirm(
+      context,
+      title: 'Remove the worktree?',
+      message:
+          'The work is on ${w.baseBranch} now. Removing deletes the worktree at ${w.path} and branch ${w.branch}; '
+          'cancel to keep it and go on working there.',
+      confirmLabel: 'Remove',
+    );
+    if (remove && mounted) {
+      await _run(() async {
+        await _git.discard();
+        return null;
+      });
+    }
   }
+
+  Future<void> _push(SessionWorktree w) => _run(() async {
+    await _git.push();
+    return 'Pushed ${w.branch}';
+  });
 
   Future<void> _pr() async {
     final title = await showAdaptivePrompt(
@@ -202,6 +225,27 @@ class _DiffPaneState extends ConsumerState<DiffPane> {
                 runSpacing: 8,
                 alignment: WrapAlignment.end,
                 children: [
+                  AdaptiveMenuButton(
+                    tooltip: 'More',
+                    actions: [
+                      MenuAction(label: 'Push ${w.branch}', icon: EveryIcon.external, onSelected: () => _push(w)),
+                      MenuAction(
+                        label: 'Open folder',
+                        icon: EveryIcon.projects,
+                        onSelected: () => launchUrl(Uri.file(w.path)),
+                      ),
+                      MenuAction(
+                        label: 'Open terminal',
+                        icon: EveryIcon.code,
+                        onSelected: () =>
+                            ref.read(codePaneProvider(widget.session.id).notifier).show(CodePane.terminal),
+                      ),
+                    ],
+                    child: Padding(
+                      padding: const EdgeInsets.all(6),
+                      child: AdaptiveIcon(EveryIcon.more, size: 16, color: theme.textMuted),
+                    ),
+                  ),
                   AdaptiveButton(
                     label: 'Discard',
                     emphasis: ButtonEmphasis.destructive,
