@@ -272,7 +272,9 @@ pub fn translateRequest(arena: std.mem.Allocator, in: ObjectMap) !Translated {
         var tools: std.json.Array = .init(arena);
         for (tv.array.items) |t| {
             if (t != .object) continue;
-            // Anthropic's own server tools (web search/fetch, code execution) go as they are.
+            // Anthropic's web search and fetch tools go as they are; other
+            // server tools (code execution, ...) carry fees we don't meter, so
+            // they are dropped like any other non-function tool.
             if (isServerTool(t.object)) {
                 try tools.append(t);
                 continue;
@@ -384,11 +386,13 @@ pub fn translateRequest(arena: std.mem.Allocator, in: ObjectMap) !Translated {
     };
 }
 
-/// A server tool definition (`{"type":"web_search_20250305","name":…}`).
+/// A server tool definition we pass through (`{"type":"web_search_20250305",
+/// "name":…}`). Only the ones whose cost is metered: searches are billed per
+/// request (`Bill`), fetched pages arrive as input tokens.
 fn isServerTool(t: ObjectMap) bool {
     if (t.contains("function")) return false;
     const kind = jsonStr(t.get("type")) orelse return false;
-    for ([_][]const u8{ "web_search_", "web_fetch_", "code_execution_" }) |p| if (std.mem.startsWith(u8, kind, p)) return true;
+    for ([_][]const u8{ "web_search_", "web_fetch_" }) |p| if (std.mem.startsWith(u8, kind, p)) return true;
     return false;
 }
 
@@ -1248,10 +1252,13 @@ test "server tools pass through; a fallback is priced as the model that served; 
 
     const in = try std.json.parseFromSliceLeaky(Value, a,
         \\{"model":"anthropic/claude-sonnet-5.5","stream":true,"messages":[{"role":"user","content":"news?"}],
-        \\ "tools":[{"type":"web_search_20250305","name":"web_search","max_uses":3}]}
+        \\ "tools":[{"type":"web_search_20250305","name":"web_search","max_uses":3},
+        \\  {"type":"code_execution_20250825","name":"code_execution"}]}
     , .{});
     const t = try translateRequest(a, in.object);
     const tools = (try std.json.parseFromSliceLeaky(Value, a, t.body, .{})).object.get("tools").?.array.items;
+    // Code execution bills container time we don't meter, so it never reaches Anthropic.
+    try testing.expectEqual(@as(usize, 1), tools.len);
     try testing.expectEqualStrings("web_search_20250305", tools[0].object.get("type").?.string);
     try testing.expectEqual(@as(i64, 3), tools[0].object.get("max_uses").?.integer);
 
