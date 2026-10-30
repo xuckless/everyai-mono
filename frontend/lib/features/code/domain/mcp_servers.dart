@@ -218,7 +218,9 @@ final class StoredMcpServers {
 
   /// The agent-server's `mcp_config` for a session in [projectId]: active
   /// servers only, sorted by name so the agent's tool list stays the same
-  /// between sessions (and the model's prompt cache holds).
+  /// between sessions (and the model's prompt cache holds). The map is flat,
+  /// `{name: server}`: OpenHands 1.59 types `Agent.mcp_config` as
+  /// `dict[str, MCPServer]` (it also unwraps a fastmcp `{"mcpServers": …}`).
   Map<String, Object?> mcpConfigFor(String? projectId) {
     final active = serversFor(projectId).where((s) => s.active).toList()..sort((a, b) => a.name.compareTo(b.name));
     return {for (final s in active) s.name: s.toAgentConfig()};
