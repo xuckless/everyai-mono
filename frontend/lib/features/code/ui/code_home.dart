@@ -31,6 +31,8 @@ import 'agent_menu.dart';
 import 'code_composer.dart';
 import 'transcript/aside_card.dart';
 import 'session_view.dart';
+import '../../billing/billing_providers.dart' show formatMicros;
+import '../code_settings_providers.dart';
 
 /// Where demo sessions "run" (the mock harness ignores the folder).
 const demoProjectPath = '${demoScheme}counter-app';
@@ -47,6 +49,9 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
   String? _projectId;
   AgentMode? _picked;
   bool _isolated = false;
+
+  /// A spending cap for the new session (dollars), or null for none.
+  double? _budget;
   bool _starting = false;
 
   /// The mode last used in [projectId]; Auto-edit the first time.
@@ -114,6 +119,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
             isolated: _isolated,
             mainAgent: ref.read(codeMainAgentProvider),
           );
+      if (_budget case final usd?) ref.read(codeSettingsProvider.notifier).setBudget(info.id, usd);
       if (mounted) context.go(Routes.codeSession(info.id));
     } on Object catch (e) {
       if (mounted) showAdaptiveToast(context, 'Couldn\'t start the session: $e');
@@ -216,6 +222,8 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                     _SessionOptions(
                       isolated: _isolated,
                       onIsolated: (v) => setState(() => _isolated = v),
+                      budget: _budget,
+                      onBudget: (v) => setState(() => _budget = v),
                       onSettings: () => context.go(Routes.codeSettings(projectId: project.id, scope: 'project')),
                     ),
                   const SizedBox(height: 8),
@@ -254,10 +262,18 @@ String lastModeKey(String projectId) => 'code.lastMode.$projectId';
 
 /// Below the composer: where the session works, and the project's settings.
 class _SessionOptions extends StatelessWidget {
-  const _SessionOptions({required this.isolated, required this.onIsolated, required this.onSettings});
+  const _SessionOptions({
+    required this.isolated,
+    required this.onIsolated,
+    required this.budget,
+    required this.onBudget,
+    required this.onSettings,
+  });
 
   final bool isolated;
   final ValueChanged<bool> onIsolated;
+  final double? budget;
+  final ValueChanged<double?> onBudget;
   final VoidCallback onSettings;
 
   @override
@@ -285,6 +301,26 @@ class _SessionOptions extends StatelessWidget {
       children: [
         option('In place', !isolated, () => onIsolated(false)),
         option('Isolated worktree', isolated, () => onIsolated(true)),
+        AdaptiveMenuButton(
+          tooltip: 'Spending cap for this session',
+          actions: [
+            for (final usd in [null, ...budgetPresets])
+              MenuAction(
+                label: usd == null ? 'No cap' : formatMicros((usd * 1e6).round()),
+                onSelected: () => onBudget(usd),
+              ),
+          ],
+          child: IgnorePointer(
+            child: option(
+              switch (budget) {
+                final usd? => 'Cap ${formatMicros((usd * 1e6).round())}',
+                null => 'No cap',
+              },
+              budget != null,
+              () {},
+            ),
+          ),
+        ),
         option('Project settings…', false, onSettings),
       ],
     );
