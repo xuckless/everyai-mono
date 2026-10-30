@@ -264,6 +264,37 @@ fn checkSvg(issues: *Issues, field: []const u8, svg: []const u8) !void {
     if (blank(svg)) return;
     if (std.mem.indexOf(u8, svg, "<svg") == null) return issues.add("{s} must be a complete <svg> element", .{field});
     if (!hasViewBox(svg)) try issues.add("{s}: the root <svg> needs a viewBox attribute", .{field});
+    // Figures with many shapes need ids so edit_artifact can target parts.
+    if (shapeCount(svg) >= min_shapes_for_ids and !hasId(svg))
+        try issues.add("{s}: give the layers and key shapes stable ids (e.g. <g id=\"sky\">, <circle id=\"sun\">) so later edits can find them", .{field});
+}
+
+const min_shapes_for_ids = 6;
+
+fn shapeCount(svg: []const u8) usize {
+    const tags = [_][]const u8{ "<rect", "<circle", "<ellipse", "<line", "<polygon", "<polyline", "<path" };
+    var n: usize = 0;
+    for (tags) |t| n += std.mem.count(u8, svg, t);
+    return n;
+}
+
+fn hasId(svg: []const u8) bool {
+    return std.mem.indexOf(u8, svg, " id=\"") != null or std.mem.indexOf(u8, svg, " id='") != null;
+}
+
+/// Look rules for a render_svg `style`, appended to the tool result (after
+/// the cached prefix) so they guide revisions without touching the prompt.
+fn styleRules(style: []const u8) ?[]const u8 {
+    const table = [_]struct { []const u8, []const u8 }{
+        .{ "flat", "no outlines, at most 4 colors, bold simple shapes, no gradients except a subtle background" },
+        .{ "line_icon", "a 24 or 48 unit grid, 2 unit round-capped strokes, no fills except one accent color" },
+        .{ "isometric", "30 degree axes, three face shades per solid (light top, mid left, dark right), consistent scale" },
+        .{ "geometric_logo", "built on a simple grid from circles and straight lines, 2 colors, must still work in one color" },
+        .{ "hand_drawn", "slightly irregular strokes, round caps and joins, a warm paper-toned palette, no perfect symmetry" },
+        .{ "poster", "one strong focal shape, large type-free composition, depth from light gradients and layered shapes" },
+    };
+    for (table) |e| if (eql(e[0], style)) return e[1];
+    return null;
 }
 
 /// The tool result for a UI call that passed the checks: what the user sees.
@@ -274,7 +305,11 @@ pub fn shown(arena: std.mem.Allocator, name: []const u8, args: Value) ![]const u
         return std.fmt.allocPrint(arena, "Shown to the user: {s} artifact{s} (id \"{s}\") in the side panel.", .{ str(args, "kind") orelse "", titled, str(args, "id") orelse "" });
     if (eql(name, "update_artifact"))
         return std.fmt.allocPrint(arena, "Shown to the user: a new version of artifact \"{s}\" in the side panel.", .{str(args, "id") orelse ""});
-    if (eql(name, "render_svg")) return std.fmt.allocPrint(arena, "Shown to the user: SVG illustration{s}.", .{titled});
+    if (eql(name, "render_svg")) {
+        const rules = if (str(args, "style")) |st| styleRules(st) else null;
+        if (rules) |r| return std.fmt.allocPrint(arena, "Shown to the user: SVG illustration{s}. Style rules for any revision ({s}): {s}. Keep existing ids.", .{ titled, str(args, "style").?, r });
+        return std.fmt.allocPrint(arena, "Shown to the user: SVG illustration{s}.", .{titled});
+    }
     if (eql(name, "render_diagram")) return std.fmt.allocPrint(arena, "Shown to the user: Mermaid diagram{s}.", .{titled});
     if (eql(name, "render_chart"))
         return std.fmt.allocPrint(arena, "Shown to the user: {s} chart{s} with {d} series.", .{ str(args, "type") orelse "", titled, arr(args, "series").len });
@@ -325,6 +360,29 @@ test "valid calls pass and get a named confirmation" {
     );
     try std.testing.expect((try check(a, "create_artifact", art)) == null);
     try std.testing.expectEqualStrings("Shown to the user: markdown artifact \"Notes\" (id \"notes\") in the side panel.", try shown(a, "create_artifact", art));
+}
+
+test "svg style rules and stable ids" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const many = try parse(a,
+        \\{"svg":"<svg viewBox=\"0 0 9 9\"><rect/><rect/><rect/><circle/><circle/><path d=\"M0 0\"/></svg>"}
+    );
+    const msg = (try check(a, "render_svg", many)).?;
+    try std.testing.expect(std.mem.indexOf(u8, msg, "stable ids") != null);
+
+    const ok = try parse(a,
+        \\{"style":"flat","svg":"<svg viewBox=\"0 0 9 9\"><g id=\"bg\"><rect/><rect/><rect/><circle/><circle/><path d=\"M0 0\"/></g></svg>"}
+    );
+    try std.testing.expect((try check(a, "render_svg", ok)) == null);
+    const res = try shown(a, "render_svg", ok);
+    try std.testing.expect(std.mem.indexOf(u8, res, "Style rules") != null);
+
+    const bad = try parse(a,
+        \\{"style":"neon","svg":"<svg viewBox=\"0 0 9 9\"/>"}
+    );
+    try std.testing.expect((try check(a, "render_svg", bad)) != null);
 }
 
 test "schema problems are named by path" {
