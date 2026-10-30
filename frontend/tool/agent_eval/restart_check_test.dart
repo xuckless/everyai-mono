@@ -3,6 +3,8 @@
 //
 //   AGENT_SERVER_BIN=… AGENT_SERVER_HOME=… CONVERSATION=… \
 //   flutter test tool/agent_eval/restart_check_test.dart
+// ignore_for_file: avoid_print
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
@@ -19,8 +21,8 @@ Future<(Process, Uri, String)> _serve(String bin, String home) async {
     workingDirectory: home,
     environment: {'OH_SESSION_API_KEYS_0': key, 'OH_SECRET_KEY': File('$home/secret').readAsStringSync().trim()},
   );
-  p.stdout.drain<void>();
-  p.stderr.drain<void>();
+  unawaited(p.stdout.drain<void>());
+  unawaited(p.stderr.drain<void>());
   final url = Uri.parse('http://127.0.0.1:$port/');
   final client = HttpClient();
   for (var i = 0; i < 120; i++) {
@@ -54,7 +56,10 @@ void main() {
     }
 
     await settle();
-    final before = [for (final e in got) if (e.id.isNotEmpty) e.id];
+    final before = [
+      for (final e in got)
+        if (e.id.isNotEmpty) e.id,
+    ];
     print('before restart: ${before.length} events, status ${await harness.statuses([conv])}');
 
     proc.kill();
@@ -68,8 +73,13 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 200));
     }
     await settle();
-    final after = [for (final e in got) if (e.id.isNotEmpty) e.id];
-    print('after: ${after.length} events, connection ${got.whereType<ConnectionChange>().map((c) => c.connected).toList()}');
+    final after = [
+      for (final e in got)
+        if (e.id.isNotEmpty) e.id,
+    ];
+    print(
+      'after: ${after.length} events, connection ${got.whereType<ConnectionChange>().map((c) => c.connected).toList()}',
+    );
     print('status ${await harness.statuses([conv])}');
     final extra = [
       for (final e in got.skip(before.length))
