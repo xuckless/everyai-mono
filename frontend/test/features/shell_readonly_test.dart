@@ -30,7 +30,7 @@ void main() {
       'npm ls --depth=0',
       "awk '{print \$1}' data.csv | sort | uniq -c",
       'ls lib/{a,b}.dart',
-      r'FOO=1 printenv FOO',
+      r'LC_ALL=C printenv FOO',
       'cd lib && ls',
     ]) {
       expect(isReadOnlyShell(c), isTrue, reason: c);
@@ -79,6 +79,43 @@ void main() {
       '',
     ]) {
       expect(isReadOnlyShell(c), isFalse, reason: c);
+    }
+  });
+
+  test('environment prefixes, git pagers and in-place writers are not read-only', () {
+    for (final c in [
+      '''GIT_EXTERNAL_DIFF='sh -c "rm -rf src"' git diff''',
+      "GIT_PAGER='touch pwned' git log",
+      'PAGER=less git log',
+      'LD_PRELOAD=/tmp/x.so cat a',
+      "git grep -O'touch pwned' x",
+      'git grep -nOvim x',
+      'git grep --open-files-in-pager=vim x',
+      'git log --ext-diff -p',
+      'git diff --textconv',
+      'git show --ext-diff HEAD',
+      'git cat-file --textconv HEAD:a',
+      "yq -i '.a=1' f.yaml",
+      "yq --inplace '.a=1' f.yaml",
+      "yq -Pi '.a=1' f.yaml",
+      'xxd in out',
+      'xxd -r hex bin',
+      'sort -uo out in',
+    ]) {
+      expect(isReadOnlyShell(c), isFalse, reason: c);
+    }
+    for (final c in [
+      'GIT_PAGER=cat git log -3',
+      'LC_ALL=C sort a',
+      'NO_COLOR=1 git diff',
+      'git grep -n foo',
+      "yq '.a' f.yaml",
+      'xxd a.bin',
+      'xxd -l 16 a.bin',
+      'xxd -s 0x10 -l 32 a.bin',
+      'git log -p --stat',
+    ]) {
+      expect(isReadOnlyShell(c), isTrue, reason: c);
     }
   });
 }

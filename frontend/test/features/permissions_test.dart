@@ -59,6 +59,34 @@ void main() {
       }
     });
 
+    test('sees through wrapper options, escapes, xargs and option-led scripts', () {
+      for (final c in [
+        'nice -n 10 rm -rf ~',
+        'nice --adjustment 5 rm -rf ~',
+        'timeout -s KILL 5 rm -rf ~',
+        'timeout --kill-after 3 5 rm -rf /',
+        'env -u X rm -rf ~',
+        'env -S "rm -rf ~"',
+        'sudo -u root rm -rf /',
+        'sudo --user root rm -rf /',
+        r'r\m -rf ~',
+        r'\rm -rf ~',
+        'echo ~ | xargs rm -rf',
+        'echo / | xargs -n 1 rm -rf',
+        "sh -c -- 'rm -rf ~'",
+        "bash -c -x 'rm -rf /'",
+        'time -p rm -rf ~',
+        'caffeinate -t 100 rm -rf ~',
+        // An unknown wrapper option leaves a number first: read every command it may be.
+        'nice -q 10 rm -rf ~',
+      ]) {
+        expect(floorReason(c), isNotNull, reason: c);
+      }
+      for (final c in ['nice -n 10 make', 'find . -name node_modules | xargs rm -rf', 'timeout -s KILL 5 npm test']) {
+        expect(floorReason(c), isNull, reason: c);
+      }
+    });
+
     test('leaves ordinary commands alone, including look-alikes in text', () {
       for (final c in [
         'git commit -m "rm -rf /"',
@@ -171,6 +199,49 @@ void main() {
       expect(verdicts(AgentMode.autoEdit), [Verdict.allow, Verdict.allow, Verdict.ask, Verdict.allow]);
       expect(verdicts(AgentMode.plan), [Verdict.allow, Verdict.deny, Verdict.deny, Verdict.allow]);
       expect(verdicts(AgentMode.fullAuto), everyElement(Verdict.allow));
+    });
+
+    test('the floor and deny rules also check keys typed into a running shell', () {
+      ActionCall typed(String keys) => _call({'kind': 'TerminalAction', 'command': keys, 'is_input': true});
+      final d = policy.decide(typed('rm -rf ~'), AgentMode.fullAuto);
+      expect(d.source, DecisionSource.floor);
+      const p = PermissionPolicy(rules: PermissionRules(deny: ['git push *']));
+      expect(p.decide(typed('git push origin x'), AgentMode.fullAuto).verdict, Verdict.deny);
+      expect(p.decide(typed('y'), AgentMode.fullAuto).verdict, Verdict.allow);
+    });
+
+    test('Read and Edit deny rules hold for terminal commands too', () {
+      const p = PermissionPolicy(
+        rules: PermissionRules(deny: ['Read(.env*)', 'Edit(.github/**)']),
+        workingDir: _dir,
+      );
+      for (final c in [
+        'cat .env',
+        'cat ./.env.local',
+        'grep KEY config/.env',
+        'head -5 "$_dir/.env"',
+        'cat<.env',
+        'ls && cat .env | base64',
+      ]) {
+        for (final m in AgentMode.values) {
+          final d = p.decide(_sh(c), m);
+          expect(d.verdict, Verdict.deny, reason: '$c in $m');
+          expect(d.rule, 'Read(.env*)', reason: c);
+        }
+      }
+      for (final c in [
+        'echo x > .github/workflows/x.yml',
+        'echo x>.github/a.yml',
+        'cp a .github/b',
+        'rm -f .github/x',
+      ]) {
+        expect(p.decide(_sh(c), AgentMode.fullAuto).rule, 'Edit(.github/**)', reason: c);
+      }
+      // Reading what an Edit rule protects is fine; other files are untouched.
+      expect(p.decide(_sh('cat .github/workflows/x.yml'), AgentMode.ask).verdict, Verdict.allow);
+      expect(p.decide(_sh('cat .env.example.md lib/a.dart'), AgentMode.ask).verdict, Verdict.deny);
+      expect(p.decide(_sh('cat lib/a.dart 2>&1'), AgentMode.ask).verdict, Verdict.allow);
+      expect(p.decide(_sh('echo x > lib/a.txt'), AgentMode.fullAuto).verdict, Verdict.allow);
     });
 
     test('deny rules block commands anywhere in a chain, and paths', () {

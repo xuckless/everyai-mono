@@ -183,12 +183,41 @@ const _readers = {
 };
 
 /// Flags that make an otherwise read-only program write or run something.
+/// One-letter flags also count inside a group (`-uo`).
 const _writingFlags = {
   'sort': {'-o', '--output'},
   'tree': {'-o'},
   'rg': {'--pre'},
   'fd': {'-x', '--exec', '-X', '--exec-batch'},
+  'yq': {'-i', '--inplace'},
 };
+
+bool _hasWritingFlag(List<String> args, Set<String> flags) => args.any(
+  (a) => flags.any(
+    (f) =>
+        a == f ||
+        a.startsWith('$f=') ||
+        (f.length == 2 && !a.startsWith('--') && RegExp('^-[a-zA-Z]*${f[1]}').hasMatch(a)),
+  ),
+);
+
+/// `xxd` options that take a value.
+const _xxdValued = {'-c', '-cols', '-g', '-groupsize', '-l', '-len', '-o', '-offset', '-s', '-seek', '-n', '-name'};
+
+/// Environment assignments that can't make a reader run anything: locale,
+/// colour and terminal size, and a pager that is `cat` or nothing. Anything
+/// else (`GIT_EXTERNAL_DIFF`, `GIT_PAGER`, `LD_PRELOAD`, ...) may run code.
+bool _safeAssignment(String word) {
+  final eq = word.indexOf('=');
+  final name = word.substring(0, eq);
+  final value = word.substring(eq + 1);
+  if (const {'GIT_PAGER', 'PAGER', 'MANPAGER'}.contains(name)) return value.isEmpty || value == 'cat';
+  return const {
+        'LANG', 'LANGUAGE', 'TZ', 'NO_COLOR', 'FORCE_COLOR', 'CLICOLOR', 'CLICOLOR_FORCE', 'COLUMNS', 'LINES', //
+        'TERM', 'GREP_COLOR', 'GREP_COLORS', 'LS_COLORS', 'LSCOLORS',
+      }.contains(name) ||
+      name.startsWith('LC_');
+}
 
 /// Toolchains whose `--version` is harmless.
 const _versioned = {
@@ -198,8 +227,9 @@ const _versioned = {
 
 bool _segmentReadOnly(List<String> words) {
   var w = words;
-  // FOO=bar prefixes.
+  // FOO=bar prefixes, only harmless ones.
   while (w.isNotEmpty && RegExp(r'^[A-Za-z_][A-Za-z0-9_]*=').hasMatch(w.first)) {
+    if (!_safeAssignment(w.first)) return false;
     w = w.sublist(1);
   }
   if (w.isEmpty) return true;
@@ -214,9 +244,21 @@ bool _segmentReadOnly(List<String> words) {
   }
   if (_readers.contains(cmd)) {
     final bad = _writingFlags[cmd];
-    if (bad != null && args.any((a) => bad.any((f) => a == f || a.startsWith('$f=')))) return false;
+    if (bad != null && _hasWritingFlag(args, bad)) return false;
     // `uniq in out` writes out.
     if (cmd == 'uniq' && args.where((a) => !a.startsWith('-')).length > 1) return false;
+    // So do `xxd in out` and `xxd -r hex out`.
+    if (cmd == 'xxd') {
+      var positionals = 0;
+      for (var i = 0; i < args.length; i++) {
+        if (_xxdValued.contains(args[i])) {
+          i++;
+        } else if (args[i] == '-' || !args[i].startsWith('-')) {
+          positionals++;
+        }
+      }
+      if (positionals > 1) return false;
+    }
     // `command foo` runs foo; only `command -v`/`-V` look it up.
     if (cmd == 'command' && !(args.isNotEmpty && (args[0] == '-v' || args[0] == '-V'))) return false;
     return true;
@@ -301,17 +343,17 @@ bool _gitReadOnly(List<String> args) {
   final rest = args.sublist(i + 1);
   bool has(Set<String> flags) => rest.any((a) => flags.any((f) => a == f || a.startsWith('$f=')));
   final positionals = rest.where((a) => !a.startsWith('-')).toList();
+  // Options that write a file or run a program.
+  const runs = {'--output', '--ext-diff', '--textconv'};
   return switch (sub) {
-    'status' ||
-    'show' ||
-    'ls-files' ||
-    'ls-tree' ||
-    'blame' ||
-    'shortlog' ||
-    'describe' ||
-    'grep' => !has({'--output'}),
-    'log' || 'diff' || 'rev-list' || 'whatchanged' || 'range-diff' => !has({'--output'}),
-    'rev-parse' || 'cat-file' || 'merge-base' || 'name-rev' || 'show-ref' || 'for-each-ref' => true,
+    // `-O<cmd>` opens the matches with any program.
+    'grep' =>
+      !has({...runs, '--open-files-in-pager'}) &&
+          !rest.any((a) => !a.startsWith('--') && RegExp(r'^-[a-zA-Z]*O').hasMatch(a)),
+    'status' || 'show' || 'ls-files' || 'ls-tree' || 'blame' || 'shortlog' || 'describe' => !has(runs),
+    'log' || 'diff' || 'rev-list' || 'whatchanged' || 'range-diff' => !has(runs),
+    'cat-file' => !has({...runs, '--filters'}),
+    'rev-parse' || 'merge-base' || 'name-rev' || 'show-ref' || 'for-each-ref' => true,
     'count-objects' || 'check-ignore' || 'var' || 'help' || 'version' => true,
     'branch' =>
       !has({

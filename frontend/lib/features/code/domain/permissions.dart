@@ -100,8 +100,9 @@ final class PermissionPolicy {
   Decision decide(ActionCall call, AgentMode mode) {
     if (isClientTool(call)) return const Decision(Verdict.allow, DecisionSource.clientTool);
     final command = _command(call);
-    if (command != null) {
-      if (floorReason(command) case final why?) return Decision(Verdict.deny, DecisionSource.floor, why: why);
+    // Keys typed into a running shell are checked like a command.
+    if (command ?? _typed(call) case final text?) {
+      if (floorReason(text) case final why?) return Decision(Verdict.deny, DecisionSource.floor, why: why);
     }
     if (_matching(call, rules.deny, allowing: false) case final rule?) {
       return Decision(Verdict.deny, DecisionSource.rule, rule: rule);
@@ -151,10 +152,13 @@ final class PermissionPolicy {
 
   /// The first rule in [patterns] that matches [call]. Allow rules only
   /// match a simple command: a chain (`a && b`, pipes, `;`) or anything the
-  /// parser can't vouch for is never approved by a rule.
+  /// parser can't vouch for is never approved by a rule. Deny rules also
+  /// match keys typed into a running process, and `Read(…)`/`Edit(…)` deny
+  /// rules match terminal commands by their path arguments (see
+  /// [_commandReads], [_commandWrites]).
   String? _matching(ActionCall call, List<String> patterns, {required bool allowing}) {
     if (patterns.isEmpty) return null;
-    final command = _command(call);
+    final command = _command(call) ?? (allowing ? null : _typed(call));
     final edit = _editPath(call);
     final read = _readPath(call);
     for (final raw in patterns) {
@@ -165,6 +169,12 @@ final class PermissionPolicy {
           allowing ? _allowsCommand(rule.glob, command) : _deniesCommand(rule.glob, command),
         _RuleKind.edit when edit != null => _pathMatches(rule.glob, _relative(edit)),
         _RuleKind.read when read != null => _pathMatches(rule.glob, _relative(read)),
+        _RuleKind.read when !allowing && command != null => _commandReads(
+          command,
+        ).any((p) => _pathMatches(rule.glob, _relative(p))),
+        _RuleKind.edit when !allowing && command != null => _commandWrites(
+          command,
+        ).any((p) => _pathMatches(rule.glob, _relative(p))),
         _ => false,
       };
       if (hit) return raw;
@@ -185,6 +195,42 @@ String relativeTo(String path, String? dir) {
 /// The shell command of a terminal action (not keystrokes to a running process).
 String? _command(ActionCall call) =>
     call.actionKind == 'TerminalAction' && call.action['is_input'] != true ? call.str('command') : null;
+
+/// Keys sent to a running process (`is_input`), which may be a shell.
+String? _typed(ActionCall call) =>
+    call.actionKind == 'TerminalAction' && call.action['is_input'] == true ? call.str('command') : null;
+
+/// Arguments of [command] that may name files: every word after the program
+/// in every part, redirect targets included, `--flag=value` values, with
+/// `./` dropped. A best effort: globs (`cat .e*`) and recursive searches
+/// (`grep -r KEY .`) are not expanded.
+List<String> commandPaths(String command) {
+  final out = <String>[];
+  for (final part in commandParts(command)) {
+    // Redirects become word breaks: `echo x>out` names `out`.
+    final words = _words(_collapse(part.replaceAll(RegExp(r'\d*&?[<>]+&?'), ' ')));
+    for (var w in words.skip(1)) {
+      if (w.startsWith('-')) {
+        final eq = w.indexOf('=');
+        if (eq < 0) continue;
+        w = w.substring(eq + 1);
+      }
+      while (w.startsWith('./')) {
+        w = w.substring(2);
+      }
+      if (w.isEmpty || w.contains('://') || RegExp(r'^\d+$').hasMatch(w)) continue;
+      out.add(w);
+    }
+  }
+  return out;
+}
+
+/// Files a terminal command may read: any path argument.
+List<String> _commandReads(String command) => commandPaths(command);
+
+/// Files a terminal command may change: any path argument of a command that
+/// isn't read-only.
+List<String> _commandWrites(String command) => isReadOnlyShell(command) ? const [] : commandPaths(command);
 
 /// The file a write would change.
 String? _editPath(ActionCall call) => switch (call.actionKind) {
@@ -292,15 +338,31 @@ bool _allowsCommand(String glob, String command) {
 /// runs (`sudo`, `env X=1`, `nohup`, `timeout 5`, `/bin/`) stripped off the
 /// front. Unlike [shellSegments] this never gives up: it also looks inside
 /// `$(…)`, backticks and `sh -c "…"`/`eval` arguments.
-List<String> commandParts(String raw) => _parts(raw, 0);
+List<String> commandParts(String raw) => [for (final p in _parts(raw, 0)) p.text];
 
-List<String> _parts(String raw, int depth) {
-  final pieces = <String>[];
+/// One simple command found by [_parts].
+final class _Part {
+  const _Part(this.text, {this.viaXargs = false, this.input});
+
+  /// Normalized (see [commandParts]).
+  final String text;
+
+  /// Whether `xargs` runs it, so its arguments also come from [input].
+  final bool viaXargs;
+
+  /// The command piped into it (`a | b` gives `a` for `b`), normalized.
+  final String? input;
+}
+
+List<_Part> _parts(String raw, int depth) {
+  final pieces = <(String, bool)>[];
   final b = StringBuffer();
   String? quote;
-  void flush() {
+  var piped = false;
+  void flush({bool pipe = false}) {
     final t = b.toString().trim();
-    if (t.isNotEmpty) pieces.add(t);
+    if (t.isNotEmpty) pieces.add((t, piped));
+    piped = pipe && t.isNotEmpty;
     b.clear();
   }
 
@@ -336,23 +398,44 @@ List<String> _parts(String raw, int depth) {
       continue;
     }
     if (';&|\n()'.contains(c)) {
-      flush();
+      // A single `|` (not `||`, not `|&`) pipes into the next command.
+      final pipe =
+          c == '|' &&
+          (i + 1 >= raw.length || (raw[i + 1] != '|' && raw[i + 1] != '&')) &&
+          (i == 0 || raw[i - 1] != '|');
+      flush(pipe: pipe);
       continue;
     }
     b.write(c);
   }
   flush();
-  final out = <String>[];
-  for (final p in pieces) {
-    final stripped = _stripWrappers(p);
-    final normalized = _collapse(_unquote(stripped));
-    if (normalized.isNotEmpty) out.add(normalized);
+  final out = <_Part>[];
+  String? previous;
+  for (final (p, pipedIn) in pieces) {
+    final (stripped, xargs) = _stripWrappers(p);
+    // Escapes and quotes removed, wrappers that only showed up then stripped too.
+    final (normalized, xargs2) = _stripWrappers(_collapse(_unescape(_unquote(stripped))));
+    if (normalized.isNotEmpty) {
+      out.add(_Part(normalized, viaXargs: xargs || xargs2, input: pipedIn ? previous : null));
+    }
+    previous = normalized;
     if (depth < 3) {
       if (_innerScript(stripped) case final inner?) out.addAll(_parts(inner, depth + 1));
     }
   }
   return out;
 }
+
+/// A wrapper program and its options. Options in [valued] (one letter) and
+/// [long] take a value, which is skipped too: `nice -n 10 rm` is `rm`.
+RegExp _wrapper(String names, {String valued = '', String long = '', String after = ''}) => RegExp(
+  '^($names)'
+  r'(\s+('
+  '${valued.isEmpty ? '' : r'-[' + valued + r']\s+\S+|'}'
+  '${long.isEmpty ? '' : r'--(' + long + r')\s+\S+|'}'
+  r'-\S+))*\s+'
+  '$after',
+);
 
 final _wrappers = [
   RegExp(r'^\\'),
@@ -361,34 +444,67 @@ final _wrappers = [
     "'[^']*'"
     r'|\S*)\s+',
   ),
-  RegExp(r'^(sudo|doas)(\s+-\S+)*\s+'),
-  RegExp(r'^(command|builtin|exec|nohup|time|nice|caffeinate|stdbuf)(\s+-\S+)*\s+'),
-  RegExp(r'^env(\s+-\S+|\s+[A-Za-z_][A-Za-z0-9_]*=\S*)*\s+'),
-  RegExp(r'^(timeout|gtimeout)(\s+-\S+)*\s+\S+\s+'),
-  RegExp(r'^xargs(\s+-[IdLnPsEJ]\s+\S+|\s+-\S+)*\s+'),
+  _wrapper(
+    'sudo',
+    valued: 'ugCDhpRrTtU',
+    long: 'user|group|close-from|chdir|host|prompt|chroot|role|type|command-timeout|other-user',
+  ),
+  _wrapper('doas', valued: 'uC'),
+  _wrapper('nice', valued: 'n', long: 'adjustment'),
+  _wrapper('time', valued: 'fo', long: 'format|output'),
+  _wrapper('exec', valued: 'a'),
+  _wrapper('caffeinate', valued: 'tw'),
+  _wrapper('stdbuf', valued: 'ioe', long: 'input|output|error'),
+  _wrapper('ionice', valued: 'cnp', long: 'class|classdata|pid'),
+  _wrapper('command|builtin|nohup'),
+  // `-S` is left alone: its value is the command (`env -S 'rm -rf ~'`).
+  RegExp(r'^env(\s+(-[uCP]\s+\S+|--(unset|chdir)\s+\S+|-\S+)|\s+[A-Za-z_][A-Za-z0-9_]*=\S*)*\s+'),
+  _wrapper('timeout|gtimeout', valued: 'sk', long: 'signal|kill-after', after: r'\S+\s+'),
   RegExp(r'^/(?:[\w.+-]+/)+(?=[\w.+-]+(\s|$))'),
 ];
 
-String _stripWrappers(String s) {
+final _xargs = _wrapper(
+  'xargs',
+  valued: 'IdLnPsEJRSa',
+  long: 'max-args|max-lines|replace|delimiter|max-procs|arg-file|eof|max-chars',
+);
+
+/// [s] without the wrappers in front, and whether one was `xargs`.
+(String, bool) _stripWrappers(String s) {
   var out = s.trim();
+  var xargs = false;
   for (var changed = true; changed;) {
     changed = false;
-    for (final w in _wrappers) {
+    for (final w in [..._wrappers, _xargs]) {
       final next = out.replaceFirst(w, '');
       if (next != out) {
         out = next.trimLeft();
         changed = true;
+        if (identical(w, _xargs)) xargs = true;
       }
     }
   }
-  return out;
+  return (out, xargs);
 }
 
 String _unquote(String s) => s.replaceAll(RegExp(r'''["']'''), '');
 
+/// Backslash escapes removed: `r\m` runs `rm`.
+String _unescape(String s) => s.replaceAllMapped(RegExp(r'\\(.)'), (m) => m[1]!);
+
+/// Words a part should not start with after its wrappers are stripped: an
+/// option, a number (`nice -n 10 …` misread), or a wrapper left over.
+bool _unparsed(String first) =>
+    first.startsWith('-') ||
+    RegExp(r'^\d+$').hasMatch(first) ||
+    const {
+      'sudo', 'doas', 'env', 'nice', 'time', 'exec', 'caffeinate', 'stdbuf', 'ionice', 'command', 'builtin', //
+      'nohup', 'timeout', 'gtimeout', 'xargs',
+    }.contains(first);
+
 String _collapse(String s) => s.trim().replaceAll(RegExp(r'\s+'), ' ');
 
-final _shellC = RegExp(r'^(?:\S*/)?(?:ba|z|da|k|fi)?sh\s+(?:-\w+\s+)*-\w*c\s+(.+)$', dotAll: true);
+final _shellC = RegExp(r'^(?:\S*/)?(?:ba|z|da|k|fi)?sh\s+(?:-\w+\s+)*-\w*c\s+(?:-\S*\s+)*(.+)$', dotAll: true);
 final _evalArg = RegExp(r'^eval\s+(.+)$', dotAll: true);
 
 /// The script `sh -c '…'` or `eval '…'` runs, quotes removed.
@@ -476,49 +592,71 @@ String? floorReason(String command) {
   final squeezed = command.replaceAll(RegExp(r'\s+'), '');
   if (_forkBomb.hasMatch(squeezed)) return 'a fork bomb';
   if (_toRootShell.hasMatch(command)) return 'pipes a download into a root shell';
-  for (final part in commandParts(command)) {
-    final w = _words(part);
-    final args = w.sublist(1);
-    final targets = args.where((a) => !a.startsWith('-'));
-    switch (w.first) {
-      case 'rm' when args.contains('--no-preserve-root'):
-        return 'deletes the whole file system';
-      case 'rm' when _recursive(args) && targets.any(_isRootTarget):
-        return 'deletes the file system, a home folder or a system folder';
-      case 'chmod' || 'chown' || 'chgrp' when _recursive(args, lowerR: false) && targets.any(_isRootTarget):
-        return 'changes ownership or permissions of a system or home folder';
-      case 'find'
-          when args.isNotEmpty &&
-              _isRootTarget(args.firstWhere((a) => !a.startsWith('-'), orElse: () => '')) &&
-              (args.contains('-delete') || RegExp(r'-exec(dir)? (\S*/)?rm ').hasMatch(part)):
-        return 'deletes files across a system or home folder';
-      case 'dd' when args.any((a) => a.startsWith('of=/dev/')):
-        return 'writes raw data to a device';
-      case 'diskutil'
-          when args.isNotEmpty &&
-              const {
-                'eraseDisk', 'eraseVolume', 'partitionDisk', 'zeroDisk', 'randomDisk', 'secureErase', 'reformat', //
-                'splitPartition', 'mergePartitions', 'deleteVolume',
-              }.contains(args.first):
-        return 'erases or repartitions a disk';
-      case 'shutdown' || 'reboot' || 'halt' || 'poweroff':
-        return 'shuts down or restarts the computer';
-      case 'init' when args.length == 1 && (args.first == '0' || args.first == '6'):
-        return 'shuts down or restarts the computer';
-      case 'systemctl' || 'launchctl'
-          when args.any((a) => const {'poweroff', 'reboot', 'halt', 'kexec', 'userspace'}.contains(a)):
-        return 'shuts down or restarts the computer';
-      case 'kill' when args.length >= 2 && args.skip(1).contains('-1'):
-        return 'kills every process you own';
+  for (final part in _parts(command, 0)) {
+    final words = _words(part.text);
+    // `echo ~ | xargs rm -rf` deletes what was piped in.
+    final piped = [
+      if (part.viaXargs && part.input != null)
+        for (final a in _words(part.input!).skip(1))
+          if (!a.startsWith('-')) a,
+    ];
+    // A part whose program can't be told reads as every command it might be.
+    final starts = _unparsed(words.first)
+        ? [
+            for (var i = 1; i < words.length; i++)
+              if (!_unparsed(words[i])) i,
+          ]
+        : [0];
+    for (final i in starts) {
+      final w = words.sublist(i);
+      if (_floorOf(w, [...w.skip(1), ...piped], w.join(' ')) case final why?) return why;
     }
-    if (RegExp(r'^(mkfs(\.\w+)?|newfs(_\w+)?|wipefs|fdisk|sfdisk|gdisk|cfdisk|parted)$').hasMatch(w.first)) {
-      return 'formats or repartitions a disk';
-    }
-    if (RegExp(r'>\s*' + _diskDevice.pattern).hasMatch(part)) return 'writes raw data to a disk device';
-    final push = _push(w);
-    if (push != null && push.main && (push.force || push.delete)) {
-      return 'force-pushes or deletes main/master on the remote';
-    }
+  }
+  return null;
+}
+
+/// The floor for one command: its words [w], arguments [args] (piped
+/// ones included) and text [part].
+String? _floorOf(List<String> w, List<String> args, String part) {
+  final targets = args.where((a) => !a.startsWith('-'));
+  switch (w.first) {
+    case 'rm' when args.contains('--no-preserve-root'):
+      return 'deletes the whole file system';
+    case 'rm' when _recursive(args) && targets.any(_isRootTarget):
+      return 'deletes the file system, a home folder or a system folder';
+    case 'chmod' || 'chown' || 'chgrp' when _recursive(args, lowerR: false) && targets.any(_isRootTarget):
+      return 'changes ownership or permissions of a system or home folder';
+    case 'find'
+        when args.isNotEmpty &&
+            _isRootTarget(args.firstWhere((a) => !a.startsWith('-'), orElse: () => '')) &&
+            (args.contains('-delete') || RegExp(r'-exec(dir)? (\S*/)?rm ').hasMatch(part)):
+      return 'deletes files across a system or home folder';
+    case 'dd' when args.any((a) => a.startsWith('of=/dev/')):
+      return 'writes raw data to a device';
+    case 'diskutil'
+        when args.isNotEmpty &&
+            const {
+              'eraseDisk', 'eraseVolume', 'partitionDisk', 'zeroDisk', 'randomDisk', 'secureErase', 'reformat', //
+              'splitPartition', 'mergePartitions', 'deleteVolume',
+            }.contains(args.first):
+      return 'erases or repartitions a disk';
+    case 'shutdown' || 'reboot' || 'halt' || 'poweroff':
+      return 'shuts down or restarts the computer';
+    case 'init' when args.length == 1 && (args.first == '0' || args.first == '6'):
+      return 'shuts down or restarts the computer';
+    case 'systemctl' || 'launchctl'
+        when args.any((a) => const {'poweroff', 'reboot', 'halt', 'kexec', 'userspace'}.contains(a)):
+      return 'shuts down or restarts the computer';
+    case 'kill' when args.length >= 2 && args.skip(1).contains('-1'):
+      return 'kills every process you own';
+  }
+  if (RegExp(r'^(mkfs(\.\w+)?|newfs(_\w+)?|wipefs|fdisk|sfdisk|gdisk|cfdisk|parted)$').hasMatch(w.first)) {
+    return 'formats or repartitions a disk';
+  }
+  if (RegExp(r'>\s*' + _diskDevice.pattern).hasMatch(part)) return 'writes raw data to a disk device';
+  final push = _push(w);
+  if (push != null && push.main && (push.force || push.delete)) {
+    return 'force-pushes or deletes main/master on the remote';
   }
   return null;
 }
