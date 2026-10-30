@@ -95,163 +95,185 @@ class CodeSessionScreen extends ConsumerWidget {
       ),
     );
 
-    return AdaptivePage(
-      title: info.title,
-      actions: [
-        CodeTopBar(sessionId: sessionId, agentMenu: agentMenu(bordered: true)),
-        if (info.worktree != null) _ChangesButton(sessionId: sessionId),
-        if (panesFor(info).contains(CodePane.terminal))
-          AdaptiveIconButton(
-            icon: EveryIcon.openPanel,
-            tooltip: 'Terminal, processes and preview',
-            onPressed: ref.read(codePaneProvider(sessionId).notifier).toggleLast,
-          ),
-        StatusPill(status: state.status),
-        AdaptiveIconButton(icon: EveryIcon.newChat, tooltip: 'New session', onPressed: () => context.go(Routes.code)),
-      ],
-      body: SessionPanes(
-        session: info,
-        child: Column(
-          children: [
-            Expanded(
-              child: TranscriptList(
-                onRewind: (turn) => _rewind(context, ref, turn),
-                transcript: t,
-                onAnswer: controller.answer,
-                mode: state.mode,
-                onApprovePlan: controller.startBuilding,
-                onRevisePlan: controller.send,
-                onRetry: controller.retry,
-                sessionId: sessionId,
-                workingDir: info.workingDir,
-                trailing: ultraRunCards(ref, sessionId),
+    // The header drops chips by the width it really has (the sidebar and the
+    // panes take some), so the title keeps room and nothing jumps into an
+    // overflow menu.
+    return LayoutBuilder(
+      builder: (context, box) {
+        final tier = TopBarTier.forWidth(box.maxWidth);
+        return AdaptivePage(
+          title: info.title,
+          onBack: info.parentId == null ? null : () => context.go(Routes.codeSession(info.parentId!)),
+          backTooltip: 'Back to the parent session',
+          actions: [
+            CodeTopBar(sessionId: sessionId, tier: tier, agentMenu: agentMenu(bordered: true)),
+            if (info.worktree != null && tier != TopBarTier.narrow) _ChangesButton(sessionId: sessionId),
+            if (panesFor(info).contains(CodePane.terminal))
+              AdaptiveIconButton(
+                icon: EveryIcon.openPanel,
+                tooltip: 'Terminal, processes and preview',
+                onPressed: ref.read(codePaneProvider(sessionId).notifier).toggleLast,
               ),
+            StatusPill(status: state.status, dense: tier == TopBarTier.narrow, minWidth: 92),
+            AdaptiveIconButton(
+              icon: EveryIcon.newChat,
+              tooltip: 'New session',
+              onPressed: () => context.go(Routes.code),
             ),
-            if (state.error case final error?)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: NoticeView(item: NoticeItem('error', error, error: true)),
-              )
-            else if (!state.connected && t.items.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: NoticeView(item: const NoticeItem('reconnecting', 'Reconnecting to the agent server…')),
-              ),
-            SafeArea(
-              top: false,
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: _maxWidth),
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        if (t.pending.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: ApprovalCard(
-                              key: ValueKey(t.pending.map((c) => c.id).join()),
-                              pending: t.pending,
-                              mode: state.mode,
-                              onAllow: controller.approve,
-                              onDeny: controller.deny,
-                              onMode: controller.setMode,
-                              remember: controller.rememberable(),
-                              flags: {
-                                for (final c in t.pending)
-                                  if (controller.policy.decide(c, state.mode) case Decision(
-                                    source: DecisionSource.dangerous,
-                                    :final why,
-                                  ))
-                                    c.id: why,
-                              },
-                            ),
-                          )
-                        else if (t.plan.isNotEmpty && t.running)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: PlanView(tasks: t.plan, compact: true),
-                          ),
-                        if (showStartBuilding)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: _StartBuilding(onStart: controller.startBuilding),
-                          ),
-                        if (ref.watch(morningBriefProvider) case final brief?)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: AsideCard(
-                              key: ValueKey(brief.id),
-                              aside: brief,
-                              onDismiss: ref.read(morningBriefProvider.notifier).dismiss,
-                            ),
-                          ),
-                        if (state.goal case final goal?)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: GoalCard(goal: goal, onClear: controller.clearGoal),
-                          ),
-                        for (final aside in state.asides)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: AsideCard(
-                              key: ValueKey(aside.id),
-                              aside: aside,
-                              onDismiss: () => controller.dismissAside(aside.id),
-                              usage: ref.watch(codeUsageProvider(sessionId)).value ?? UsageTotals.zero,
-                              contextWindow: ref.watch(modelCatalogProvider)[ModelId(info.model)]?.contextLength ?? 0,
-                              modelName: ref.watch(modelCatalogProvider)[ModelId(info.model)]?.name,
-                              onSendToAgent: () => controller.sendReview(aside.id),
-                              onOpenSession: (id) => context.go(Routes.codeSession(id)),
-                              onCommit: (message) =>
-                                  _gitAction(context, () => controller.commitDraft(aside.id, message)),
-                              onCreatePr: (title, body) => _gitAction(
-                                context,
-                                () async => 'Opened ${await controller.openPr(aside.id, title: title, body: body)}',
-                              ),
-                            ),
-                          ),
-                        UltraComposerBanner(sessionId: sessionId),
-                        CodeComposer(
-                          slashHost: codeSlashHost(context, ref, sessionId, busy: busy),
-                          project: ref
-                              .watch(codeProjectsProvider)
-                              .where((p) => p.id == info.projectId)
-                              .firstOrNull
-                              ?.path,
-                          busy: busy,
-                          mode: state.mode,
-                          onModeChanged: controller.setMode,
-                          onSend: (text, files) =>
-                              ultraArmed ? _startUltra(context, ref, text, files) : controller.send(text, files: files),
-                          onSteer: (text, files) => controller.steer(text, files: files),
-                          onStop: controller.stop,
-                          queued: [for (final q in state.queued) q.text],
-                          onUnqueue: controller.unqueue,
-                          placeholder: ultraArmed
-                              ? 'Describe the goal for an Ultra run'
-                              : t.openQuestion != null
-                              ? 'Answer the questions above, or reply in your own words'
-                              : 'Ask for a change, or reply to the agent',
-                          trailing: agentMenu(),
-                          model: ref.watch(modelCatalogProvider)[ModelId(info.model)],
-                          meter: UsageMeter(
-                            totals: ref.watch(codeUsageProvider(sessionId)).value ?? UsageTotals.zero,
-                            contextWindow: ref.watch(modelCatalogProvider)[ModelId(info.model)]?.contextLength ?? 0,
-                            modelName: ref.watch(modelCatalogProvider)[ModelId(info.model)]?.name,
-                          ),
-                        ),
-                      ],
+          ],
+          body: SessionPanes(
+            session: info,
+            child: Column(
+              children: [
+                Expanded(
+                  child: TranscriptScope(
+                    root: info.workingDir,
+                    openDiff: panesFor(info).contains(CodePane.diff)
+                        ? ref.read(codePaneProvider(sessionId).notifier).showFile
+                        : null,
+                    child: TranscriptList(
+                      onRewind: (turn) => _rewind(context, ref, turn),
+                      transcript: t,
+                      onAnswer: controller.answer,
+                      mode: state.mode,
+                      onApprovePlan: controller.startBuilding,
+                      onRevisePlan: controller.send,
+                      onRetry: controller.retry,
+                      sessionId: sessionId,
+                      workingDir: info.workingDir,
+                      trailing: ultraRunCards(ref, sessionId),
                     ),
                   ),
                 ),
-              ),
+                if (state.error case final error?)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: NoticeView(item: NoticeItem('error', error, error: true)),
+                  )
+                else if (!state.connected && t.items.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: NoticeView(item: const NoticeItem('reconnecting', 'Reconnecting to the agent server…')),
+                  ),
+                SafeArea(
+                  top: false,
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: _maxWidth),
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            if (t.pending.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: ApprovalCard(
+                                  key: ValueKey(t.pending.map((c) => c.id).join()),
+                                  pending: t.pending,
+                                  mode: state.mode,
+                                  onAllow: controller.approve,
+                                  onDeny: controller.deny,
+                                  onMode: controller.setMode,
+                                  remember: controller.rememberable(),
+                                  flags: {
+                                    for (final c in t.pending)
+                                      if (controller.policy.decide(c, state.mode) case Decision(
+                                        source: DecisionSource.dangerous,
+                                        :final why,
+                                      ))
+                                        c.id: why,
+                                  },
+                                ),
+                              )
+                            else if (t.plan.isNotEmpty && t.running)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: PlanView(tasks: t.plan, compact: true),
+                              ),
+                            if (showStartBuilding)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: _StartBuilding(onStart: controller.startBuilding),
+                              ),
+                            if (ref.watch(morningBriefProvider) case final brief?)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: AsideCard(
+                                  key: ValueKey(brief.id),
+                                  aside: brief,
+                                  onDismiss: ref.read(morningBriefProvider.notifier).dismiss,
+                                ),
+                              ),
+                            if (state.goal case final goal?)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: GoalCard(goal: goal, onClear: controller.clearGoal),
+                              ),
+                            for (final aside in state.asides)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: AsideCard(
+                                  key: ValueKey(aside.id),
+                                  aside: aside,
+                                  onDismiss: () => controller.dismissAside(aside.id),
+                                  usage: ref.watch(codeUsageProvider(sessionId)).value ?? UsageTotals.zero,
+                                  contextWindow:
+                                      ref.watch(modelCatalogProvider)[ModelId(info.model)]?.contextLength ?? 0,
+                                  modelName: ref.watch(modelCatalogProvider)[ModelId(info.model)]?.name,
+                                  onSendToAgent: () => controller.sendReview(aside.id),
+                                  onOpenSession: (id) => context.go(Routes.codeSession(id)),
+                                  onCommit: (message) =>
+                                      _gitAction(context, () => controller.commitDraft(aside.id, message)),
+                                  onCreatePr: (title, body) => _gitAction(
+                                    context,
+                                    () async => 'Opened ${await controller.openPr(aside.id, title: title, body: body)}',
+                                  ),
+                                ),
+                              ),
+                            UltraComposerBanner(sessionId: sessionId),
+                            CodeComposer(
+                              slashHost: codeSlashHost(context, ref, sessionId, busy: busy),
+                              project: ref
+                                  .watch(codeProjectsProvider)
+                                  .where((p) => p.id == info.projectId)
+                                  .firstOrNull
+                                  ?.path,
+                              busy: busy,
+                              mode: state.mode,
+                              onModeChanged: controller.setMode,
+                              onSend: (text, files) => ultraArmed
+                                  ? _startUltra(context, ref, text, files)
+                                  : controller.send(text, files: files),
+                              onSteer: (text, files) => controller.steer(text, files: files),
+                              onStop: controller.stop,
+                              queued: [for (final q in state.queued) q.text],
+                              onUnqueue: controller.unqueue,
+                              placeholder: ultraArmed
+                                  ? 'Describe the goal for an Ultra run'
+                                  : t.openQuestion != null
+                                  ? 'Answer the questions above, or reply in your own words'
+                                  : 'Ask for a change, or reply to the agent',
+                              trailing: agentMenu(),
+                              model: ref.watch(modelCatalogProvider)[ModelId(info.model)],
+                              meter: UsageMeter(
+                                totals: ref.watch(codeUsageProvider(sessionId)).value ?? UsageTotals.zero,
+                                contextWindow: ref.watch(modelCatalogProvider)[ModelId(info.model)]?.contextLength ?? 0,
+                                modelName: ref.watch(modelCatalogProvider)[ModelId(info.model)]?.name,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 
@@ -372,10 +394,15 @@ class TranscriptList extends StatelessWidget {
     // Newest at the bottom; a reversed list keeps the view pinned there.
     final children = <Widget>[
       ...trailing.reversed,
+      // One keyed tail slot: streaming text and the working row swap in place
+      // instead of shifting every row's index.
       if (live)
-        AgentTextView(text: t.streaming, reasoning: t.streamingReasoning, streaming: true)
+        KeyedSubtree(
+          key: const ValueKey('transcript-tail'),
+          child: AgentTextView(text: t.streaming, reasoning: t.streamingReasoning, streaming: true),
+        )
       else if (t.running)
-        const _Working()
+        const KeyedSubtree(key: ValueKey('transcript-tail'), child: _Working())
       else if (t.status == ExecutionStatus.error || t.status == ExecutionStatus.stuck)
         NoticeView(
           item: NoticeItem(
@@ -388,7 +415,12 @@ class TranscriptList extends StatelessWidget {
           onRetry: onRetry,
         ),
       for (final entry in groupSteps(t.items).reversed)
-        if (entry is StepRun) StepRunView(key: ValueKey(entry.key), run: entry) else _itemView(entry as TranscriptItem),
+        if (entry is StepRun)
+          StepRunView(key: ValueKey(entry.key), run: entry)
+        else
+          // Every row is keyed: unkeyed rows handed their expanded state to
+          // whichever row of the same type slid into their index.
+          KeyedSubtree(key: ValueKey((entry as TranscriptItem).key), child: _itemView(entry)),
     ];
     return AdaptiveSelectionArea(
       child: ListView.builder(
@@ -496,9 +528,12 @@ class _StartBuilding extends StatelessWidget {
 
 /// A coloured dot and label for a session's status.
 class StatusPill extends StatelessWidget {
-  const StatusPill({super.key, required this.status, this.dense = false});
+  const StatusPill({super.key, required this.status, this.dense = false, this.minWidth = 0});
   final SessionStatus status;
   final bool dense;
+
+  /// Keeps the pill one width as the label changes, so the bar doesn't shift.
+  final double minWidth;
 
   static Color colorOf(SessionStatus s, EveryTheme theme) => switch (s) {
     SessionStatus.running || SessionStatus.starting => theme.accent,
@@ -520,13 +555,16 @@ class StatusPill extends StatelessWidget {
     if (dense) return Semantics(label: status.label, child: dot);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 6),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          dot,
-          const SizedBox(width: 6),
-          Text(status.label, style: theme.type.callout.tint(theme.textMuted)),
-        ],
+      child: ConstrainedBox(
+        constraints: BoxConstraints(minWidth: minWidth),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            dot,
+            const SizedBox(width: 6),
+            Text(status.label, maxLines: 1, style: theme.type.callout.tint(theme.textMuted)),
+          ],
+        ),
       ),
     );
   }

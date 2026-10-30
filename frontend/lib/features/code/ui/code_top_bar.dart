@@ -21,24 +21,44 @@ import '../mcp_providers.dart';
 import '../permissions_providers.dart';
 import 'code_settings_screen.dart' show CodeSettingsTab;
 
+/// How much of the session header fits, from the width the page really has
+/// (not the window: the sidebar and the panes take part of it).
+enum TopBarTier {
+  /// Everything: agent menu, mode, agents, settings, budget, Ultra.
+  wide,
+
+  /// Mode and agents go (the composer has the mode).
+  medium,
+
+  /// The agent menu and budget go too (both are in the composer).
+  narrow;
+
+  static TopBarTier forWidth(double width) => width >= 1080
+      ? wide
+      : width >= 820
+      ? medium
+      : narrow;
+}
+
 /// The session's top bar: session-level controls beside the title. [agentMenu]
 /// is the Harness → Model → Effort menu; the rest are popovers (never bottom
 /// sheets): mode, agents, settings shortcuts, usage against the budget, and
 /// the Ultra slot.
 class CodeTopBar extends ConsumerWidget {
-  const CodeTopBar({super.key, required this.sessionId, required this.agentMenu});
+  const CodeTopBar({super.key, required this.sessionId, required this.agentMenu, this.tier = TopBarTier.wide});
 
   final String sessionId;
   final Widget agentMenu;
+  final TopBarTier tier;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final info = ref.watch(codeSessionsProvider.select((all) => all.where((s) => s.id == sessionId).firstOrNull));
     if (info == null) return const SizedBox.shrink();
-    final state = ref.watch(codeSessionProvider(sessionId));
+    // Only the mode: watching the whole state rebuilt the bar on every token.
+    final mode = ref.watch(codeSessionProvider(sessionId).select((s) => s.mode));
     final controller = ref.read(codeSessionProvider(sessionId).notifier);
     final ultra = ref.watch(codeUltraSlotProvider);
-    final wide = MediaQuery.sizeOf(context).width >= 1000;
 
     // The session controller stops the run at the budget; this only says so.
     ref.listen(codeUsageProvider(sessionId), (before, after) {
@@ -54,14 +74,14 @@ class CodeTopBar extends ConsumerWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        ConstrainedBox(constraints: const BoxConstraints(maxWidth: 200), child: agentMenu),
-        // Mode is in the composer too, so narrow windows drop it (and agents) here.
-        if (wide) ...[
-          _ModeChip(mode: state.mode, onChanged: controller.setMode),
+        if (tier != TopBarTier.narrow)
+          ConstrainedBox(constraints: const BoxConstraints(maxWidth: 200), child: agentMenu),
+        if (tier == TopBarTier.wide) ...[
+          _ModeChip(mode: mode, onChanged: controller.setMode),
           _AgentsChip(projectId: info.projectId),
         ],
         _SettingsChip(projectId: info.projectId, sessionId: sessionId),
-        BudgetChip(sessionId: sessionId, model: info.model),
+        if (tier != TopBarTier.narrow) BudgetChip(sessionId: sessionId, model: info.model),
         ?ultra?.call(context, sessionId),
       ],
     );
@@ -102,6 +122,7 @@ class _Chip extends StatelessWidget {
               Text(
                 label,
                 maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: theme.type.callout.copyWith(color: fg, fontFeatures: const [FontFeature.tabularFigures()]),
               ),
             const SizedBox(width: 4),

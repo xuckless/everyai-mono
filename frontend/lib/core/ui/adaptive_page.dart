@@ -10,9 +10,13 @@ import '../theme/every_theme.dart';
 import 'adaptive.dart';
 import 'every_icons.dart';
 
-/// The leading space macos_ui's ToolBar reserves for the traffic lights, less
-/// a normal content inset.
-const _macTrafficLightInset = 62.0;
+/// The width macos_ui's ToolBar keeps free for the traffic lights when no
+/// sidebar sits under them (our compact layout, where the sidebar is a drawer).
+const _macTrafficLights = 70.0;
+
+/// macos_ui ToolBar's horizontal padding plus the spacing NavigationToolbar
+/// puts on each side of the middle slot.
+const _macToolbarGutters = 8.0 * 2 + 8.0 * 2;
 
 /// A top-level page with native chrome:
 /// - Cupertino: translucent navigation bar that content scrolls beneath (glass)
@@ -23,30 +27,52 @@ const _macTrafficLightInset = 62.0;
 /// [body] should let its scroll views consume `MediaQuery.padding` (the default
 /// for ListView), so content can slide under translucent bars.
 class AdaptivePage extends StatelessWidget {
-  const AdaptivePage({super.key, required this.title, this.titleWidget, this.actions = const [], required this.body});
+  const AdaptivePage({
+    super.key,
+    required this.title,
+    this.titleWidget,
+    this.actions = const [],
+    this.onBack,
+    this.backTooltip = 'Back',
+    required this.body,
+  });
 
   final String title;
 
   /// Replaces the plain title (the chat screen's model picker).
   final Widget? titleWidget;
   final List<Widget> actions;
+
+  /// Shows a back control before the title (settings pages opened from
+  /// elsewhere, child sessions).
+  final VoidCallback? onBack;
+  final String backTooltip;
   final Widget body;
 
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final shell = ShellScope.of(context);
-    final titleView = titleWidget ?? Text(title, overflow: TextOverflow.ellipsis);
+    final titleView = titleWidget ?? Text(title, overflow: TextOverflow.ellipsis, maxLines: 1);
     final sidebarButton = shell.showSidebarButton && theme.design != DesignLanguage.macos
         ? AdaptiveIconButton(icon: EveryIcon.menu, tooltip: 'Show sidebar', onPressed: shell.toggleSidebar)
         : null;
+    final backButton = onBack == null
+        ? null
+        : AdaptiveIconButton(icon: EveryIcon.chevronLeft, tooltip: backTooltip, onPressed: onBack);
+    final leadingButtons = [?sidebarButton, ?backButton];
+    final leading = leadingButtons.isEmpty
+        ? null
+        : leadingButtons.length == 1
+        ? leadingButtons.single
+        : Row(mainAxisSize: MainAxisSize.min, children: leadingButtons);
 
     switch (theme.design) {
       case DesignLanguage.cupertino:
         return c.CupertinoPageScaffold(
           backgroundColor: theme.background,
           navigationBar: c.CupertinoNavigationBar(
-            leading: sidebarButton,
+            leading: leading,
             middle: titleView,
             trailing: actions.isEmpty ? null : Row(mainAxisSize: MainAxisSize.min, children: actions),
             backgroundColor: theme.surface.withValues(alpha: 0.55),
@@ -57,17 +83,46 @@ class AdaptivePage extends StatelessWidget {
           child: body,
         );
       case DesignLanguage.macos:
-        return mac.MacosScaffold(
-          toolBar: mac.ToolBar(
-            // ToolBar keeps 70pt free for the traffic lights unless macos_ui's
-            // own sidebar is showing; ours draws its own, so pull the title
-            // back to the content edge.
-            title: Transform.translate(offset: const Offset(-_macTrafficLightInset, 0), child: titleView),
-            titleWidth: 480,
-            enableBlur: true,
-            actions: [for (final a in actions) mac.CustomToolbarItem(inToolbarBuilder: (_) => a)],
-          ),
-          children: [mac.ContentArea(builder: (context, _) => body)],
+        // macos_ui's ToolBar gives the title a fixed width and moves actions
+        // into an overflow menu wholesale. Instead the whole bar is one row
+        // in the title slot, sized to the real width: the title takes what
+        // the actions leave and ellipsizes first.
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final lights = shell.compact ? _macTrafficLights : 0.0;
+            final width = (constraints.maxWidth - lights - _macToolbarGutters).clamp(0.0, double.infinity);
+            final scope = mac.MacosWindowScope.maybeOf(context);
+            final bar = mac.ToolBar(
+              title: Row(
+                children: [
+                  ?backButton,
+                  if (backButton != null) const SizedBox(width: 4),
+                  Expanded(
+                    child: Align(alignment: Alignment.centerLeft, child: titleView),
+                  ),
+                  for (final a in actions) ...[const SizedBox(width: 6), a],
+                ],
+              ),
+              titleWidth: width,
+              enableBlur: true,
+            );
+            final scaffold = mac.MacosScaffold(
+              toolBar: bar,
+              children: [mac.ContentArea(builder: (context, _) => body)],
+            );
+            if (scope == null) return scaffold;
+            // The ToolBar reserves the traffic-light inset unless it thinks a
+            // sidebar is showing; ours is always under the lights on wide
+            // windows.
+            return mac.MacosWindowScope(
+              constraints: scope.constraints,
+              isSidebarShown: !shell.compact,
+              isEndSidebarShown: scope.isEndSidebarShown,
+              sidebarToggler: scope.toggleSidebar,
+              endSidebarToggler: scope.toggleEndSidebar,
+              child: scaffold,
+            );
+          },
         );
       case DesignLanguage.fluent:
         return f.ScaffoldPage(
@@ -75,9 +130,7 @@ class AdaptivePage extends StatelessWidget {
           header: Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
             child: f.PageHeader(
-              leading: sidebarButton == null
-                  ? null
-                  : Padding(padding: const EdgeInsets.only(right: 8), child: sidebarButton),
+              leading: leading == null ? null : Padding(padding: const EdgeInsets.only(right: 8), child: leading),
               title: DefaultTextStyle.merge(style: theme.type.title, child: titleView),
               commandBar: Row(mainAxisAlignment: MainAxisAlignment.end, children: actions),
             ),
@@ -89,7 +142,8 @@ class AdaptivePage extends StatelessWidget {
           backgroundColor: theme.background,
           appBar: m.AppBar(
             automaticallyImplyLeading: false,
-            leading: sidebarButton,
+            leading: leading,
+            leadingWidth: leadingButtons.length > 1 ? 96 : null,
             title: titleView,
             actions: [...actions, const SizedBox(width: 8)],
           ),

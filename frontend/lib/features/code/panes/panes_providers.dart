@@ -24,9 +24,14 @@ enum CodePane {
 /// Which pane is open beside a session (null: none), and the last one open.
 @immutable
 final class PaneState {
-  const PaneState({this.open, this.last = CodePane.terminal});
+  const PaneState({this.open, this.last = CodePane.terminal, this.focus, this.focusSeq = 0});
   final CodePane? open;
   final CodePane last;
+
+  /// A file the Changes pane should scroll to (absolute or repo-relative);
+  /// [focusSeq] changes on every request, so asking twice scrolls twice.
+  final String? focus;
+  final int focusSeq;
 }
 
 final codePaneProvider = NotifierProvider.family<CodePanes, PaneState, String>(CodePanes.new);
@@ -39,6 +44,10 @@ final class CodePanes extends Notifier<PaneState> {
   PaneState build() => const PaneState();
 
   void show(CodePane pane) => state = PaneState(open: pane, last: pane);
+
+  /// Opens Changes scrolled to [path].
+  void showFile(String path) =>
+      state = PaneState(open: CodePane.diff, last: CodePane.diff, focus: path, focusSeq: state.focusSeq + 1);
 
   /// Opens [pane], or closes it when it is the one open.
   void toggle(CodePane pane) => state.open == pane ? close() : show(pane);

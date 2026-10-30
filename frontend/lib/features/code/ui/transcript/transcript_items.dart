@@ -19,6 +19,7 @@ import '../../domain/line_diff.dart';
 import '../../domain/permissions.dart' show denialSummary;
 import '../../domain/transcript.dart';
 import '../../harness/events.dart';
+import '../../settings/context_files_stub.dart' if (dart.library.io) '../../settings/context_files_io.dart' as impl;
 import '../../uploads/uploads.dart';
 
 final _mono = EveryType.resolve().callout.mono.copyWith(height: 1.45);
@@ -222,15 +223,18 @@ TextSpan stepTitleSpan(BuildContext context, ActionCall call, TextStyle base) {
       children: [shellSpan(call.str('command'), base: base, brightness: theme.brightness)],
     );
   }
-  final path = stepPath(call);
-  if (path.isEmpty || !title.endsWith(path)) return TextSpan(text: title, style: base);
+  final full = stepPath(call);
+  if (full.isEmpty || !title.endsWith(full)) return TextSpan(text: title, style: base);
+  // Long absolute paths cut off the file name; show them from the session.
+  final path = displayPath(full, TranscriptScope.rootOf(context), home: impl.homeDir());
+  final lead = title.substring(0, title.length - full.length);
   final mono = base.fontFamily == null
       ? _mono.copyWith(color: base.color, fontSize: base.fontSize == null ? null : base.fontSize! - 0.5)
       : base;
   return TextSpan(
     style: base,
     children: [
-      TextSpan(text: title.substring(0, title.length - path.length)),
+      TextSpan(text: lead),
       pathSpan(
         path,
         base: mono.copyWith(color: theme.text),
@@ -292,6 +296,37 @@ class _CommandView extends StatelessWidget {
   }
 }
 
+/// What transcript rows know about their session: the folder paths are shown
+/// relative to, and how to open a file in the Changes pane ([openDiff] null
+/// where there is no diff to show).
+class TranscriptScope extends InheritedWidget {
+  const TranscriptScope({super.key, this.root = '', this.openDiff, required super.child});
+
+  final String root;
+  final void Function(String path)? openDiff;
+
+  static TranscriptScope? _of(BuildContext context) => context.dependOnInheritedWidgetOfExactType<TranscriptScope>();
+
+  static void Function(String path)? diffOf(BuildContext context) => _of(context)?.openDiff;
+
+  static String rootOf(BuildContext context) => _of(context)?.root ?? '';
+
+  @override
+  bool updateShouldNotify(TranscriptScope old) => root != old.root || (openDiff == null) != (old.openDiff == null);
+}
+
+/// [path] as the user reads it: relative inside [root], `~/…` under the home
+/// folder, otherwise as given.
+String displayPath(String path, String root, {String? home}) {
+  if (root.isNotEmpty) {
+    final r = root.endsWith('/') ? root : '$root/';
+    if (path == root || path == r) return '.';
+    if (path.startsWith(r)) return path.substring(r.length);
+  }
+  if (home != null && home.isNotEmpty && path.startsWith('$home/')) return '~${path.substring(home.length)}';
+  return path;
+}
+
 class _EditView extends StatelessWidget {
   const _EditView({required this.step});
   final ToolStep step;
@@ -306,27 +341,40 @@ class _EditView extends StatelessWidget {
         obs['new_content'] as String? ?? (call.str('new_str').isNotEmpty ? call.str('new_str') : call.str('file_text'));
     final lines = lineDiff(before, after);
     final stats = diffStats(lines);
+    final path = stepPath(call);
+    final openDiff = TranscriptScope.diffOf(context);
+    // Folded by default, and it stays as the user left it: opening the diff
+    // when the edit landed made the rows above jump.
     return _Disclosure(
-      // Folded while waiting (the approval card shows the diff); opens once applied.
-      key: ValueKey(step.done),
       icon: EveryIcon.edit,
       title: stepTitle(call),
       titleSpan: stepTitleSpan(context, call, theme.type.callout.tint(theme.textMuted)),
       busy: !step.done,
-      initiallyOpen: step.done && !step.rejected,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           if (stats.added > 0) Text('+${stats.added}', style: theme.type.caption.tint(theme.success)),
           const SizedBox(width: 4),
           if (stats.removed > 0) Text('−${stats.removed}', style: theme.type.caption.tint(theme.danger)),
+          if (openDiff != null && step.done && !step.rejected && path.isNotEmpty)
+            AdaptiveIconButton(
+              icon: EveryIcon.openPanel,
+              tooltip: 'Show in Changes',
+              size: 13,
+              onPressed: () => openDiff(path),
+            ),
           const SizedBox(width: 6),
           _StatusDot(step: step),
         ],
       ),
       child: step.rejected
           ? _Output('Not applied: ${denialSummary('${obs['reason'] ?? 'rejected'}')}')
-          : DiffBlock(lines: lines, language: languageForPath(stepPath(call))),
+          : DiffBlock(
+              lines: lines,
+              maxLines: 12,
+              language: languageForPath(path),
+              onOpenMore: openDiff == null || path.isEmpty ? null : () => openDiff(path),
+            ),
     );
   }
 }
@@ -334,10 +382,13 @@ class _EditView extends StatelessWidget {
 /// A unified diff with line numbers, colored as [language] (from
 /// `languageForPath`) when given.
 class DiffBlock extends StatelessWidget {
-  const DiffBlock({super.key, required this.lines, this.maxLines = 60, this.language});
+  const DiffBlock({super.key, required this.lines, this.maxLines = 60, this.language, this.onOpenMore});
   final List<DiffLine> lines;
   final int maxLines;
   final String? language;
+
+  /// Opens the whole file in the Changes pane, from the "more lines" note.
+  final VoidCallback? onOpenMore;
 
   @override
   Widget build(BuildContext context) {
@@ -408,10 +459,18 @@ class DiffBlock extends StatelessWidget {
       if (lines.length > maxLines)
         Padding(
           padding: const EdgeInsets.all(8),
-          child: Text(
-            '${lines.length - maxLines} more lines in the Diff pane',
-            style: theme.type.caption.tint(theme.textMuted),
-          ),
+          child: onOpenMore == null
+              ? Text('${lines.length - maxLines} more lines', style: theme.type.caption.tint(theme.textMuted))
+              : GestureDetector(
+                  onTap: onOpenMore,
+                  child: MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: Text(
+                      '${lines.length - maxLines} more lines · Show in Changes',
+                      style: theme.type.caption.tint(theme.accent),
+                    ),
+                  ),
+                ),
         ),
     ],
   );
@@ -643,7 +702,6 @@ class _CodeBox extends StatelessWidget {
 /// A one-line header that expands to [child].
 class _Disclosure extends StatefulWidget {
   const _Disclosure({
-    super.key,
     required this.title,
     required this.child,
     this.icon,

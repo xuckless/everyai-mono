@@ -9,6 +9,7 @@ import '../../../../core/ui/syntax_spans.dart';
 import '../../code_providers.dart';
 import '../../domain/code_session.dart';
 import '../../git/git_service.dart';
+import '../../panes/panes_providers.dart';
 
 final _mono = EveryType.resolve().caption.mono.copyWith(height: 1.45);
 
@@ -26,7 +27,25 @@ class DiffPane extends ConsumerStatefulWidget {
 
 class _DiffPaneState extends ConsumerState<DiffPane> {
   final _collapsed = <String>{};
+  final _fileKeys = <String, GlobalKey>{};
+  int _focusedSeq = 0;
   bool _busy = false;
+
+  /// Scrolls to the file the transcript asked for (an edit row's link), once
+  /// per request. Transcript paths are absolute; the diff's are repo-relative.
+  void _scrollToFocus(GitSnapshot snapshot) {
+    final pane = ref.read(codePaneProvider(widget.session.id));
+    final focus = pane.focus;
+    if (focus == null || pane.focusSeq == _focusedSeq) return;
+    final file = snapshot.files.where((f) => focus == f.path || focus.endsWith('/${f.path}')).firstOrNull;
+    if (file == null) return;
+    _focusedSeq = pane.focusSeq;
+    _collapsed.remove(file.path);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final target = _fileKeys[file.path]?.currentContext;
+      if (target != null) Scrollable.ensureVisible(target, duration: const Duration(milliseconds: 200));
+    });
+  }
 
   CodeGit get _git => ref.read(codeGitProvider(widget.session.id).notifier);
 
@@ -102,6 +121,8 @@ class _DiffPaneState extends ConsumerState<DiffPane> {
     final w = widget.session.worktree;
     final snapshot = ref.watch(codeGitProvider(widget.session.id));
     final git = snapshot.value;
+    ref.watch(codePaneProvider(widget.session.id).select((p) => p.focusSeq));
+    if (git != null) _scrollToFocus(git);
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -150,6 +171,7 @@ class _DiffPaneState extends ConsumerState<DiffPane> {
                 children: [
                   for (final f in g.files)
                     _FileView(
+                      key: _fileKeys.putIfAbsent(f.path, GlobalKey.new),
                       file: f,
                       collapsed: _collapsed.contains(f.path),
                       onToggle: () => setState(
@@ -215,7 +237,13 @@ class _Empty extends StatelessWidget {
 }
 
 class _FileView extends StatelessWidget {
-  const _FileView({required this.file, required this.collapsed, required this.onToggle, required this.onRevert});
+  const _FileView({
+    super.key,
+    required this.file,
+    required this.collapsed,
+    required this.onToggle,
+    required this.onRevert,
+  });
 
   final FileDiff file;
   final bool collapsed;
