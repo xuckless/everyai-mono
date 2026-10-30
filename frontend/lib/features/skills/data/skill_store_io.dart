@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../domain/builtin_skills.dart';
 import '../domain/skill_catalog.dart';
 import '../domain/skill_format.dart';
 import 'skill_import.dart';
@@ -231,5 +232,44 @@ Future<List<int>?> readFile(String dir, String rel, int maxBytes) async {
     return await file.readAsBytes();
   } on FileSystemException {
     return null;
+  }
+}
+
+/// Which version of each bundled skill was installed: `<library>/.builtin.json`.
+Future<void> seedBuiltins(String libraryDir, List<BuiltinSkill> skills) async {
+  try {
+    await Directory(libraryDir).create(recursive: true);
+    final record = File('$libraryDir/.builtin.json');
+    var seeded = <String, String>{};
+    if (record.existsSync()) {
+      try {
+        final json = jsonDecode(await record.readAsString());
+        if (json is Map) seeded = {for (final e in json.entries) '${e.key}': '${e.value}'};
+      } on FormatException {
+        seeded = {};
+      }
+    }
+    var changed = false;
+    for (final s in skills) {
+      if (seeded[s.name] == s.digest) continue;
+      final target = Directory('$libraryDir/${s.name}');
+      final exists = target.existsSync() || Link(target.path).existsSync();
+      // A folder we never installed is the user's own.
+      if (exists && !seeded.containsKey(s.name)) continue;
+      final staging = Directory('$libraryDir/.seeding-${s.name}');
+      if (staging.existsSync()) await staging.delete(recursive: true);
+      for (final e in s.files.entries) {
+        final f = File('${staging.path}/${e.key}');
+        await f.parent.create(recursive: true);
+        await f.writeAsBytes(e.value, flush: true);
+      }
+      if (exists) await delete(target.path);
+      await staging.rename(target.path);
+      seeded[s.name] = s.digest;
+      changed = true;
+    }
+    if (changed) await record.writeAsString(jsonEncode(seeded));
+  } on FileSystemException {
+    // Read-only or missing library: the bundled skills just don't appear.
   }
 }

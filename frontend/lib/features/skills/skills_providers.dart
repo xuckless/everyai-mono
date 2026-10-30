@@ -6,6 +6,7 @@ import '../../core/preferences.dart';
 import '../code/code_providers.dart' show codeProjectsProvider;
 import 'data/skill_import.dart';
 import 'data/skill_store.dart';
+import 'domain/builtin_skills.dart';
 import 'domain/chat_skills.dart';
 import 'domain/skill_catalog.dart';
 
@@ -50,7 +51,17 @@ final installedSkillsProvider = AsyncNotifierProvider<InstalledSkills, List<Inst
 
 final class InstalledSkills extends AsyncNotifier<List<InstalledSkill>> {
   @override
-  Future<List<InstalledSkill>> build() async => scanSkills(await _roots());
+  Future<List<InstalledSkill>> build() async {
+    final roots = await _roots();
+    if (roots.library case final dir?) {
+      try {
+        await seedBuiltinSkills(dir, await loadBuiltinSkills());
+      } on Object {
+        // Without the bundled skills the rest still works.
+      }
+    }
+    return scanSkills(roots);
+  }
 
   Future<SkillRoots> _roots() =>
       skillRoots([for (final p in ref.watch(codeProjectsProvider)) (id: p.id, path: p.path)]);

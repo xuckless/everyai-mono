@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import '../domain/builtin_skills.dart';
 import '../domain/skill_catalog.dart';
 import 'skill_import.dart';
 import 'skill_store_stub.dart' if (dart.library.io) 'skill_store_io.dart' as impl;
@@ -34,3 +35,9 @@ Future<void> deleteSkill(InstalledSkill skill) => impl.delete(skill.dir);
 /// [dir]; null when it is missing, a link, over [maxBytes] or outside [dir].
 Future<List<int>?> readSkillFileBytes(String dir, String rel, {int maxBytes = 512 * 1024}) =>
     impl.readFile(dir, rel, maxBytes);
+
+/// Copies the bundled skills into the library folder [libraryDir]. A skill is
+/// written when new or when the app ships a newer copy than the one it
+/// installed; one the user removed stays removed, and a folder of the same
+/// name the user made is left alone.
+Future<void> seedBuiltinSkills(String libraryDir, List<BuiltinSkill> skills) => impl.seedBuiltins(libraryDir, skills);

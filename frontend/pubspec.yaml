@@ -76,6 +76,10 @@ flutter:
     - assets/brand/fields/
     - assets/brand/textures/
     - assets/web/
+    - assets/skills/draw-diagram/
+    - assets/skills/make-deck/
+    - assets/skills/vector-art/
+    - assets/skills/write-artifact/
   fonts:
     - family: SourceCodePro
       fonts:

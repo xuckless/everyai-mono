@@ -1,3 +1,4 @@
+import '../domain/builtin_skills.dart';
 import '../domain/skill_catalog.dart';
 import 'skill_import.dart';
 import 'skill_store.dart' show SkillRoots;
@@ -14,3 +15,5 @@ Future<String> install(ImportCandidate candidate, String destDir) => throw State
 Future<void> delete(String dir) async {}
 
 Future<List<int>?> readFile(String dir, String rel, int maxBytes) async => null;
+
+Future<void> seedBuiltins(String libraryDir, List<BuiltinSkill> skills) async {}
