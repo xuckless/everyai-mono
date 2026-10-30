@@ -207,18 +207,34 @@ class _AgentsPanel extends ConsumerWidget {
     final theme = EveryTheme.of(context);
     final settings = ref.watch(agentLibrarySettingsProvider);
     final store = ref.read(agentLibrarySettingsProvider.notifier);
+    final main = ref.watch(codeMainAgentProvider);
+    final mainStore = ref.read(codeMainAgentProvider.notifier);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 5),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const PopoverHeader('Main agent'),
-          const PopoverRow(
+          const PopoverHeader('Main agent · from the next session'),
+          PopoverRow(
+            key: const ValueKey('top-bar.main.everyai'),
             title: 'EveryAI agent',
-            subtitle: 'Runs the session; the agents below take the work it hands off',
-            selected: true,
+            subtitle: 'The default: runs the session and hands work to the agents below',
+            trailing: _check(theme, main.isEmpty),
+            onTap: () => mainStore.choose(''),
           ),
+          for (final a in agents)
+            if (settings.trustedNow(a))
+              PopoverRow(
+                key: ValueKey('top-bar.main.${a.name}'),
+                title: a.name,
+                subtitle: [
+                  'Runs the session with its instructions',
+                  if (a.model case final m?) m.split('/').last,
+                ].join(' · '),
+                trailing: _check(theme, main == a.name),
+                onTap: () => mainStore.choose(a.name),
+              ),
           const PopoverHeader('Subagents · from the next session'),
           if (agents.isEmpty) const PopoverRow(title: 'No agents yet', subtitle: 'Add some in Settings → Agents'),
           for (final a in agents)

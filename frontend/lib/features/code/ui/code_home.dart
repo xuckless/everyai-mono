@@ -112,6 +112,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
             mode: mode,
             files: files,
             isolated: _isolated,
+            mainAgent: ref.read(codeMainAgentProvider),
           );
       if (mounted) context.go(Routes.codeSession(info.id));
     } on Object catch (e) {

@@ -152,6 +152,26 @@ final everyaiAgentServerProvider = FutureProvider<({Uri baseUrl, String key})>((
   );
 });
 
+/// A library agent's instructions as the main agent's role.
+String mainAgentBlock(String name, String prompt) =>
+    '<MAIN_AGENT name="$name">\nIn this session you work as the "$name" agent. Follow these instructions on top of '
+    'the rules above:\n${prompt.trim()}\n</MAIN_AGENT>';
+
+/// The library agent new Code sessions run as ('' for the EveryAI agent).
+final codeMainAgentProvider = NotifierProvider<CodeMainAgent, String>(CodeMainAgent.new);
+
+final class CodeMainAgent extends Notifier<String> {
+  static const _key = 'code.mainAgent';
+
+  @override
+  String build() => ref.read(preferencesProvider)[_key] ?? '';
+
+  void choose(String name) {
+    ref.read(preferencesProvider)[_key] = name;
+    state = name;
+  }
+}
+
 /// The harness new Code sessions start on (the agent menu's Harness page).
 final codeHarnessProvider = NotifierProvider<CodeHarnessChoice, CodeHarnessKind>(CodeHarnessChoice.new);
 
@@ -297,6 +317,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     List<Attachment> files = const [],
     bool isolated = false,
     CodeHarnessKind? harnessKind,
+    String mainAgent = '',
   }) async {
     final id = const Uuid().v7();
     final demo = isDemoPath(project.path);
@@ -310,6 +331,12 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     final workingDir = worktree?.path ?? project.path;
     final first = await prepareMessage(ref, text: prompt, workingDir: workingDir, model: model, files: files);
     final CodeHarnessKind kind = harnessKind ?? ref.read(codeHarnessProvider);
+    // A library agent as the main agent: its instructions, tools and model.
+    final main = mainAgent.isEmpty || !local
+        ? null
+        : (await _agentsFor(project.id)).where((a) => a.name == mainAgent).firstOrNull;
+    if (main?.model case final m? when ref.read(modelCatalogProvider)[ModelId(m)] != null) model = m;
+    if (main?.effort case final e? when e.isNotEmpty) effort = e;
     final harness = await harnessFor(ref, project.path, harness: kind.name);
     // The scripted demo approves client tools like the old path does.
     final hold = heldAnswers && !demo;
@@ -326,6 +353,8 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         initialImages: first.images,
         isolated: worktree != null,
         everyai: kind == CodeHarnessKind.everyai,
+        tools: main?.tools,
+        mainAgentPrompt: main == null ? null : mainAgentBlock(main.name, main.prompt),
       ),
     );
     ref.read(_liveProvider)[id] = live;
@@ -342,6 +371,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       worktree: worktree,
       baseline: baseline,
       harness: kind.name,
+      mainAgent: main?.name ?? '',
       effort: effort ?? '',
       holdClientTools: hold || kind == CodeHarnessKind.everyai,
     );
@@ -371,6 +401,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     List<Map<String, Object?>>? clientTools,
     bool isolated = false,
     bool everyai = false,
+    String? mainAgentPrompt,
   }) async {
     final demo = isDemoPath(projectDir);
     // The demo and remote hosts have no local folder: the server's default prompt, no project files.
@@ -409,7 +440,10 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       promptSuffix: agentPrompt == null
           ? null
           : withSystemPrompts(
-              withProjectContext(agentPrompt.suffix, context),
+              withProjectContext(
+                mainAgentPrompt == null ? agentPrompt.suffix : '${agentPrompt.suffix}\n\n$mainAgentPrompt',
+                context,
+              ),
               global: ref.read(codeSettingsProvider).globalPrompt,
               project: projectId == null ? '' : ref.read(codeSettingsProvider).promptFor(projectId),
             ),

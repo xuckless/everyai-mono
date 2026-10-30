@@ -46,6 +46,7 @@ final class CodeSessionInfo {
     this.worktree,
     this.baseline,
     this.harness = 'openHands',
+    this.mainAgent = '',
     this.effort = '',
     this.holdClientTools = false,
     this.compactedFrom = const [],
@@ -79,6 +80,9 @@ final class CodeSessionInfo {
   /// The harness it runs on (`CodeHarnessKind` name); sessions from before
   /// there was a choice ran on OpenHands.
   final String harness;
+
+  /// The library agent running the session ('' for the EveryAI agent).
+  final String mainAgent;
 
   /// The snapshot Changes diffs against: the worktree, or the in-place
   /// baseline's read-only view.
@@ -131,6 +135,7 @@ final class CodeSessionInfo {
     worktree: worktree,
     baseline: baseline,
     harness: harness,
+    mainAgent: mainAgent,
     effort: effort ?? this.effort,
     holdClientTools: holdClientTools,
     compactedFrom: compactedFrom ?? this.compactedFrom,
@@ -158,6 +163,7 @@ final class CodeSessionInfo {
         ? SessionWorktree.fromJson(json['worktree']! as Map<String, Object?>)
         : null,
     harness: json['harness'] as String? ?? 'openHands',
+    mainAgent: json['main_agent'] as String? ?? '',
     baseline: json['baseline'] is Map<String, Object?>
         ? GitBaseline.fromJson(json['baseline']! as Map<String, Object?>)
         : null,
@@ -180,6 +186,7 @@ final class CodeSessionInfo {
     'worktree': ?worktree?.toJson(),
     'baseline': ?baseline?.toJson(),
     'harness': harness,
+    if (mainAgent.isNotEmpty) 'main_agent': mainAgent,
     'effort': effort,
     if (holdClientTools) 'hold_client_tools': true,
     if (compactedFrom.isNotEmpty) 'compacted_from': compactedFrom,
