@@ -29,6 +29,33 @@ abstract final class Tunnel {
 
   static Uint8List encode(Map<String, Object?> message) => utf8.encode(jsonEncode(message));
 
+  /// The most plaintext one sealed frame carries. The relay drops a socket
+  /// whose frame passes 4 MiB, so bigger messages (a long event, an
+  /// attached photo) go out in parts.
+  static const maxPart = 1 << 20;
+
+  static const _more = 0x00;
+  static const _last = 0x01;
+
+  /// [message] as the plaintexts to seal, in order: the JSON itself when it
+  /// fits in [maxPart], else parts marked `00` (more follows) and `01`
+  /// (the last). Seal them back to back, so no other message comes between.
+  static List<Uint8List> split(Map<String, Object?> message, {int maxPart = maxPart}) {
+    final bytes = encode(message);
+    if (bytes.length <= maxPart) return [bytes];
+    final step = maxPart - 1;
+    final parts = <Uint8List>[];
+    for (var at = 0; at < bytes.length; at += step) {
+      final end = at + step < bytes.length ? at + step : bytes.length;
+      parts.add(
+        Uint8List(1 + end - at)
+          ..[0] = end == bytes.length ? _last : _more
+          ..setRange(1, 1 + end - at, bytes, at),
+      );
+    }
+    return parts;
+  }
+
   /// The message in [bytes], or null if it isn't one.
   static Map<String, Object?>? decode(List<int> bytes) {
     try {
@@ -38,6 +65,91 @@ abstract final class Tunnel {
       return null;
     }
   }
+}
+
+/// Puts [Tunnel.split] parts back together, one direction of one channel.
+final class TunnelAssembler {
+  TunnelAssembler({this.maxMessage = 64 << 20});
+
+  /// A message longer than this is dropped (its parts are skipped).
+  final int maxMessage;
+  final _parts = BytesBuilder(copy: false);
+  bool _tooLong = false;
+
+  /// The message [plaintext] completes, or null (a part, junk, or too long).
+  Map<String, Object?>? add(Uint8List plaintext) {
+    if (plaintext.isEmpty) return null;
+    final marker = plaintext[0];
+    if (marker != Tunnel._more && marker != Tunnel._last) {
+      // A whole message; a half-built one before it is gone.
+      reset();
+      return Tunnel.decode(plaintext);
+    }
+    if (!_tooLong) {
+      if (_parts.length + plaintext.length - 1 > maxMessage) {
+        _tooLong = true;
+        _parts.clear();
+      } else {
+        _parts.add(Uint8List.sublistView(plaintext, 1));
+      }
+    }
+    if (marker == Tunnel._more) return null;
+    final whole = _tooLong ? null : _parts.takeBytes();
+    reset();
+    return whole == null ? null : Tunnel.decode(whole);
+  }
+
+  void reset() {
+    _parts.clear();
+    _tooLong = false;
+  }
+}
+
+/// [path] as an absolute path with `.` and `..` worked out and `/`
+/// separators (`\` too, for Windows); null when it is relative or climbs
+/// above its root.
+String? normalizeHostPath(String path) {
+  final unified = path.replaceAll(r'\', '/');
+  final drive = RegExp(r'^[A-Za-z]:/').firstMatch(unified);
+  final String root;
+  final String rest;
+  if (drive != null) {
+    root = unified.substring(0, 3);
+    rest = unified.substring(3);
+  } else if (unified.startsWith('/')) {
+    root = '/';
+    rest = unified.substring(1);
+  } else {
+    return null;
+  }
+  final out = <String>[];
+  for (final segment in rest.split('/')) {
+    if (segment.isEmpty || segment == '.') continue;
+    if (segment == '..') {
+      if (out.isEmpty) return null;
+      out.removeLast();
+    } else {
+      out.add(segment);
+    }
+  }
+  return root + out.join('/');
+}
+
+/// Whether [dir] is [root] or inside it, both normalized first; false when
+/// either isn't an absolute path.
+bool pathWithin(String dir, String root) {
+  final d = normalizeHostPath(dir);
+  final r = normalizeHostPath(root);
+  if (d == null || r == null) return false;
+  return d == r || d.startsWith(r.endsWith('/') ? r : '$r/');
+}
+
+/// The conversation a host route or event socket path is about, or null
+/// for the routes that aren't about one (`api/conversations` itself).
+String? conversationInPath(String path) {
+  final p = Uri.parse(path).path;
+  final m = RegExp(r'^(?:api/conversations|sockets/events)/([A-Za-z0-9_-]+)').firstMatch(p);
+  return m?.group(1);
 }
 
 /// Host routes a device may call: the agent-server's conversations API, its

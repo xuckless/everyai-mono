@@ -34,6 +34,24 @@ final class _FakeRelay {
   int _next = 7;
   final relayed = <Uint8List>[];
 
+  /// Frames over the backend's 4 MiB cap (it would drop the socket).
+  final oversized = <int>[];
+
+  /// Client frames to lose on the way (an init that reached a host not ready yet).
+  int dropClientFrames = 0;
+
+  void _record(Uint8List data, {int prefix = 0}) {
+    relayed.add(data);
+    if (data.length - prefix > 4 << 20) oversized.add(data.length);
+  }
+
+  /// Tells every client again that the host is online (a quick host reconnect).
+  void announceHost() {
+    for (final c in _clients.values) {
+      _quietly(() => c.$1.sendText('{"type":"host_online"}'));
+    }
+  }
+
   Future<WebSocket> connectHost(Uri url, String token) async {
     expect(token, 'rh_token');
     final (mine, theirs) = fakes();
@@ -41,7 +59,7 @@ final class _FakeRelay {
     mine.events.listen((e) {
       switch (e) {
         case BinaryDataReceived(:final data):
-          relayed.add(data);
+          _record(data, prefix: 4);
           final channel = ByteData.sublistView(data, 0, 4).getUint32(0);
           _quietly(() => _clients[channel]?.$1.sendBytes(Uint8List.sublistView(data, 4)));
         case TextDataReceived(:final text):
@@ -73,7 +91,11 @@ final class _FakeRelay {
     _clients[channel] = (mine, info);
     mine.events.listen((e) {
       if (e case BinaryDataReceived(:final data)) {
-        relayed.add(data);
+        _record(data);
+        if (dropClientFrames > 0) {
+          dropClientFrames--;
+          return;
+        }
         final frame = Uint8List(4 + data.length);
         ByteData.sublistView(frame, 0, 4).setUint32(0, channel);
         frame.setRange(4, frame.length, data);
@@ -142,21 +164,38 @@ final class _AgentServer {
     if (req.method == 'POST' && path == '/api/conversations') {
       req.response.write(jsonEncode({'id': 'conv-1'}));
     } else if (path == '/api/conversations/conv-1') {
-      req.response.write(jsonEncode({'id': 'conv-1', 'execution_status': 'idle'}));
+      req.response.write(
+        jsonEncode({'id': 'conv-1', 'execution_status': 'idle', 'workspace': _workspace('/work/app')}),
+      );
+    } else if (path == '/api/conversations/conv-2') {
+      // The host's own session in a folder it doesn't offer.
+      req.response.write(jsonEncode({'id': 'conv-2', 'execution_status': 'idle', 'workspace': _workspace('/home/me')}));
     } else if (path == '/api/conversations') {
       req.response.write(
         jsonEncode([
           {'id': 'conv-1', 'execution_status': 'running'},
+          {'id': 'conv-2', 'execution_status': 'running'},
         ]),
       );
     } else if (path == '/api/conversations/conv-1/events') {
       req.response.write('{}');
+    } else if (path == '/api/conversations/conv-1/events/search') {
+      // A long history: an attached photo's base64 alone passes the relay's cap.
+      req.response.write(
+        jsonEncode({
+          'items': [
+            {'id': 'big', 'data': 'x' * (6 << 20)},
+          ],
+        }),
+      );
     } else {
       req.response.statusCode = 404;
       req.response.write('{"detail":"Not Found"}');
     }
     await req.response.close();
   }
+
+  static Map<String, Object?> _workspace(String dir) => {'kind': 'LocalWorkspace', 'working_dir': dir};
 
   Future<void> close() async {
     for (final s in sockets) {
@@ -218,6 +257,7 @@ void main() {
       relayUrl: Uri.parse('ws://backend/v1/remote/client/host-1'),
       connect: relay.connectClient(deviceId: 'dev-1', publicKey: deviceKey.publicKeyBase64),
       readyTimeout: const Duration(seconds: 3),
+      handshakeRetry: const Duration(milliseconds: 100),
     );
     harness = RelayHarness(client);
   });
@@ -255,7 +295,8 @@ void main() {
       jsonEncode({'type': 'auth', 'session_api_key': 'server-key'}),
     ]);
 
-    expect(await harness.statuses(['conv-1']), {'conv-1': ExecutionStatus.running});
+    // The host's own session elsewhere isn't listed.
+    expect(await harness.statuses(['conv-1', 'conv-2']), {'conv-1': ExecutionStatus.running});
     await session.close();
   });
 
@@ -316,6 +357,50 @@ void main() {
     await expectLater(client.projects(), throwsA(isA<RemoteUnavailable>()));
     await startHost();
     expect(await client.projects(), hasLength(1));
+  });
+
+  test("messages past the relay's frame cap go across in parts", () async {
+    final session = await harness.start(_spec(remotePath('host-1', '/work/app')));
+    final res = await client.request('GET', 'api/conversations/conv-1/events/search');
+    expect(res.status, 200);
+    expect(((jsonDecode(res.body) as Map)['items'] as List).single['data'], hasLength(6 << 20));
+    // The device's side splits too.
+    await session.send('y' * (5 << 20));
+    final sent = server.requests.lastWhere((r) => r.$2 == '/api/conversations/conv-1/events');
+    expect(sent.$4.length, greaterThan(5 << 20));
+    expect(relay.oversized, isEmpty);
+    await session.close();
+  });
+
+  test("the host's sessions outside its projects can't be reached", () async {
+    final res = await client.request('POST', 'api/conversations/conv-2/events', body: '{"role":"user"}');
+    expect(res.status, 403);
+    await expectLater(harness.attach('conv-2'), throwsA(isA<HarnessError>()));
+    expect(server.requests.where((r) => r.$1 == 'POST'), isEmpty);
+  });
+
+  test('a working folder with .. segments is checked where it lands', () async {
+    await expectLater(
+      harness.start(_spec(remotePath('host-1', '/work/app/../../etc'))),
+      throwsA(isA<HarnessError>().having((e) => e.status, 'status', 403)),
+    );
+    final session = await harness.start(_spec(remotePath('host-1', '/work/app/./lib/..')));
+    final create = server.requests.firstWhere((r) => r.$1 == 'POST' && r.$2 == '/api/conversations');
+    expect((jsonDecode(create.$4) as Map)['workspace']['working_dir'], '/work/app');
+    await session.close();
+  });
+
+  test('a second host_online while the handshake runs still connects', () async {
+    relay.announceHost();
+    relay.announceHost();
+    expect(await client.projects(), hasLength(1));
+    expect(client.status, RemoteLinkStatus.ready);
+  });
+
+  test('a lost handshake is sent again', () async {
+    relay.dropClientFrames = 1;
+    expect(await client.projects(), hasLength(1));
+    expect(client.status, RemoteLinkStatus.ready);
   });
 
   test('the host forwards only allowed paths', () async {

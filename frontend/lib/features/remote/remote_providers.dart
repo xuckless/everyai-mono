@@ -176,12 +176,12 @@ final class RemoteHosting extends Notifier<RemoteHostingState> {
   ];
 
   /// A device may start sessions in the host's projects and in the worktrees
-  /// of its sessions.
-  bool _allowedDir(String dir) {
-    bool within(String root) => dir == root || dir.startsWith(root.endsWith('/') ? root : '$root/');
-    return _projects().any((p) => within(p.path)) ||
-        ref.read(codeSessionsProvider).any((s) => s.workingDir.isNotEmpty && within(s.workingDir));
-  }
+  /// of its sessions (paths compared normalized, so `..` can't climb out).
+  bool _allowedDir(String dir) => hostOffers(dir, [
+    for (final p in _projects()) p.path,
+    for (final s in ref.read(codeSessionsProvider))
+      if (s.workingDir.isNotEmpty && !isDemoPath(s.workingDir) && !isRemotePath(s.workingDir)) s.workingDir,
+  ]);
 
   /// A fresh single-use code (5 minutes) and the QR payload for it.
   Future<({PairingCode code, String qr})> newCode() async {
@@ -228,6 +228,9 @@ final class RemoteHosting extends Notifier<RemoteHostingState> {
     state = state.copyWith(host: updated);
   }
 }
+
+/// Whether [dir] is in one of [roots], all normalized first.
+bool hostOffers(String dir, Iterable<String> roots) => roots.any((root) => pathWithin(dir, root));
 
 // ------------------------------------------------------------------ device side
 

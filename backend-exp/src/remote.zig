@@ -466,13 +466,26 @@ fn serveHost(app: *App, ws: *websocket.Socket, req: *anole.Request, host: HostRo
 
     const ClientNote = struct { channel: u32, device_id: []const u8, device_name: []const u8, public_key: []const u8 };
     var clients: std.ArrayList(ClientNote) = .empty;
+
+    // Read before the host is registered: its `hello` has to be queued
+    // before any client hears `host_online`, and the mutex isn't held
+    // across database calls.
+    _ = try app.db.exec(req, "UPDATE remote_hosts SET last_seen_at = ? WHERE id = ?", .{ util.now(io), host.id });
+    const Pending = struct { pairing_id: []const u8, decide_by: i64, device_id: []const u8, device_name: []const u8, public_key: []const u8 };
+    const pending = try app.db.all(Pending, req,
+        \\SELECT p.id AS pairing_id, p.decide_by, d.id AS device_id, d.name AS device_name, d.public_key
+        \\FROM remote_pairings p JOIN remote_devices d ON d.id = p.device_id
+        \\WHERE p.host_id = ? AND p.status = 'pending' AND p.decide_by > ?
+    , .{ host.id, util.now(io) });
+
     const gen = blk: {
         relay.mutex.lockUncancelable(io);
         defer relay.mutex.unlock(io);
         const gen = relay.next_gen;
         relay.next_gen += 1;
         // Joined before it is registered, so no notice is lost.
-        try relay.rooms.join(hostRoom(&room_buf, host.id, gen), ws);
+        const room = hostRoom(&room_buf, host.id, gen);
+        try relay.rooms.join(room, ws);
         const entry = try relay.hosts.getOrPut(Relay.gpa, host.id);
         if (entry.found_existing) {
             // A reconnect while the old socket lingers: the new one wins.
@@ -494,8 +507,17 @@ fn serveHost(app: *App, ws: *websocket.Socket, req: *anole.Request, host: HostRo
                 .device_name = try req.arena.dupe(u8, c.device_name),
                 .public_key = try req.arena.dupe(u8, c.public_key),
             });
-            relay.toClient(e.key_ptr.*, .text, "{\"type\":\"host_online\"}");
         };
+        // The hello goes through the room, ahead of anything a client sends
+        // once it hears `host_online` (a handshake that arrived before the
+        // host opened its channels would be dropped).
+        _ = relay.rooms.broadcast(room, .text, try std.json.Stringify.valueAlloc(req.arena, .{
+            .type = "hello",
+            .host_id = host.id,
+            .clients = clients.items,
+            .pending_pairings = pending,
+        }, .{}), null);
+        for (clients.items) |c| relay.toClient(c.channel, .text, "{\"type\":\"host_online\"}");
         break :blk gen;
     };
     defer {
@@ -510,20 +532,6 @@ fn serveHost(app: *App, ws: *websocket.Socket, req: *anole.Request, host: HostRo
         relay.mutex.unlock(io);
         _ = app.db.exec(req, "UPDATE remote_hosts SET last_seen_at = ? WHERE id = ?", .{ util.now(io), host.id }) catch {};
     }
-    _ = try app.db.exec(req, "UPDATE remote_hosts SET last_seen_at = ? WHERE id = ?", .{ util.now(io), host.id });
-
-    const Pending = struct { pairing_id: []const u8, decide_by: i64, device_id: []const u8, device_name: []const u8, public_key: []const u8 };
-    const pending = try app.db.all(Pending, req,
-        \\SELECT p.id AS pairing_id, p.decide_by, d.id AS device_id, d.name AS device_name, d.public_key
-        \\FROM remote_pairings p JOIN remote_devices d ON d.id = p.device_id
-        \\WHERE p.host_id = ? AND p.status = 'pending' AND p.decide_by > ?
-    , .{ host.id, util.now(io) });
-    try ws.send(.text, try std.json.Stringify.valueAlloc(req.arena, .{
-        .type = "hello",
-        .host_id = host.id,
-        .clients = clients.items,
-        .pending_pairings = pending,
-    }, .{}));
 
     while (try ws.next()) |msg| {
         switch (msg.type) {

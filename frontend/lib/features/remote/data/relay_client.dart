@@ -58,6 +58,7 @@ final class RemoteClient {
     required RelayConnector connect,
     this.readyTimeout = const Duration(seconds: 20),
     this.requestTimeout = const Duration(minutes: 2),
+    this.handshakeRetry = const Duration(seconds: 4),
   }) : _hostKey = Uint8List.fromList(hostPublicKey),
        _connector = connect;
 
@@ -72,8 +73,25 @@ final class RemoteClient {
   final Duration readyTimeout;
   final Duration requestTimeout;
 
+  /// How long to wait for the host's accept before sending the handshake
+  /// again (doubling, up to 30 s): an init the host never saw is not lost for good.
+  final Duration handshakeRetry;
+
   WebSocket? _ws;
-  ClientHandshake? _handshake;
+
+  /// Puts the host's long messages back together.
+  final _incoming = TunnelAssembler();
+
+  /// Handshakes sent on this socket and not yet answered, newest last. The
+  /// host answers each init it gets, so an accept may be for an older one.
+  final _handshakes = <ClientHandshake>[];
+
+  /// Some sent handshakes were dropped from [_handshakes], so an accept that
+  /// matches none of them may be for one of those (not a key mismatch).
+  bool _forgotSome = false;
+  Timer? _handshakeTimer;
+  int _handshakeTries = 0;
+  static const _maxHandshakes = 8;
   SecureChannel? _secure;
   var _ready = Completer<void>();
   final _pending = <int, Completer<({int status, String body})>>{};
@@ -143,6 +161,7 @@ final class RemoteClient {
   void _relayClosed(WebSocket ws, int? code) {
     if (_ws != ws) return;
     _ws = null;
+    _forgetHandshakes();
     _dropChannel(const RemoteUnavailable('The connection to the host dropped.'));
     // 4003: the device was revoked; 401/403 before the upgrade arrive as errors.
     if (code == 4003) {
@@ -179,45 +198,97 @@ final class RemoteClient {
       case 'host_online':
         unawaited(_startHandshake());
       case 'host_offline':
+        _forgetHandshakes();
         _dropChannel(const RemoteUnavailable('The host went offline.'));
         _setStatus(RemoteLinkStatus.hostOffline);
       case 'closed':
+        _forgetHandshakes();
         _dropChannel(const RemoteUnavailable('The host closed the connection.'));
         _setStatus(RemoteLinkStatus.hostOffline);
       case 'revoked':
+        _forgetHandshakes();
         _dropChannel(const RemoteUnavailable('This device was unpaired.'));
         _setStatus(RemoteLinkStatus.revoked);
     }
   }
 
+  /// Sends a fresh handshake init. Earlier ones stay open: the host answers
+  /// each, and only the newest one's accept makes the link ready.
   Future<void> _startHandshake() async {
     _dropChannel(const RemoteUnavailable('The host reconnected.'));
     _setStatus(RemoteLinkStatus.connecting);
-    final hs = _handshake = await ClientHandshake.start(identity, _hostKey);
-    _ws?.sendBytes(hs.init);
+    final ws = _ws;
+    if (ws == null || _closed) return;
+    final hs = await ClientHandshake.start(identity, _hostKey);
+    if (_ws != ws || _closed || _secure != null) return;
+    _handshakes.add(hs);
+    if (_handshakes.length > _maxHandshakes) {
+      _handshakes.removeAt(0);
+      _forgotSome = true;
+    }
+    ws.sendBytes(hs.init);
+    _handshakeTimer?.cancel();
+    final wait = handshakeRetry * (1 << _handshakeTries.clamp(0, 3));
+    _handshakeTries++;
+    _handshakeTimer = Timer(wait > const Duration(seconds: 30) ? const Duration(seconds: 30) : wait, () {
+      if (_ws == ws && _secure == null && _status == RemoteLinkStatus.connecting) unawaited(_startHandshake());
+    });
+  }
+
+  void _forgetHandshakes() {
+    _handshakes.clear();
+    _forgotSome = false;
+    _handshakeTries = 0;
+    _handshakeTimer?.cancel();
+    _handshakeTimer = null;
+  }
+
+  /// The host's accept: ready when it answers the newest init; an answer to
+  /// an older one is passed over (the newer answer follows). Keys only
+  /// mismatch when it answers none of the inits this socket sent.
+  Future<void> _accept(Uint8List data) async {
+    final sent = [..._handshakes];
+    if (sent.isEmpty) return;
+    SecureChannel? channel;
+    var matched = -1;
+    for (var i = sent.length - 1; i >= 0 && channel == null; i--) {
+      try {
+        channel = await sent[i].finish(data);
+        matched = i;
+      } on RemoteCryptoError {
+        continue;
+      }
+    }
+    if (channel == null) {
+      // Answers to forgotten inits can't be told from a key change.
+      if (_forgotSome || !_handshakes.contains(sent.last)) return;
+      _forgetHandshakes();
+      _setStatus(RemoteLinkStatus.keyMismatch);
+      await _ws?.close().catchError((Object _) {});
+      return;
+    }
+    final hs = sent[matched];
+    final at = _handshakes.indexOf(hs);
+    if (at < 0) return;
+    if (at < _handshakes.length - 1) {
+      // A newer init is out: the host now uses its keys.
+      _handshakes.removeRange(0, at + 1);
+      _forgotSome = true;
+      return;
+    }
+    _forgetHandshakes();
+    _secure = channel;
+    _setStatus(RemoteLinkStatus.ready);
+    if (!_ready.isCompleted) _ready.complete();
   }
 
   Future<void> _frame(Uint8List data) async {
-    if (isHandshakeAccept(data)) {
-      final hs = _handshake;
-      if (hs == null) return;
-      _handshake = null;
-      try {
-        _secure = await hs.finish(data);
-      } on RemoteCryptoError {
-        _setStatus(RemoteLinkStatus.keyMismatch);
-        await _ws?.close().catchError((Object _) {});
-        return;
-      }
-      _setStatus(RemoteLinkStatus.ready);
-      if (!_ready.isCompleted) _ready.complete();
-      return;
-    }
+    if (isHandshakeAccept(data)) return _accept(data);
     final secure = _secure;
     if (secure == null) return;
     try {
       await secure.open(data, (clear) {
-        if (Tunnel.decode(clear) case final m?) _dispatch(m);
+        if (_incoming.add(clear) case final m?) _dispatch(m);
       });
     } on RemoteCryptoError {
       // Tampered or replayed: dropped.
@@ -246,7 +317,7 @@ final class RemoteClient {
   /// Ends the encrypted channel: requests fail with [error], sockets close.
   void _dropChannel(RemoteUnavailable error) {
     _secure = null;
-    _handshake = null;
+    _incoming.reset();
     if (_ready.isCompleted) _ready = Completer<void>();
     for (final c in _pending.values) {
       c.completeError(error);
@@ -284,7 +355,10 @@ final class RemoteClient {
     final secure = _secure;
     final ws = _ws;
     if (secure == null || ws == null) throw const RemoteUnavailable('The host is not connected.');
-    unawaited(secure.seal(Tunnel.encode(message), ws.sendBytes).then((_) {}, onError: (_) {}));
+    // Back to back, so a long message's parts are never split up by another.
+    for (final part in Tunnel.split(message)) {
+      unawaited(secure.seal(part, ws.sendBytes).then((_) {}, onError: (_) {}));
+    }
   }
 
   /// A REST call on the host ([path] relative, such as `api/conversations`).
@@ -329,6 +403,7 @@ final class RemoteClient {
   Future<void> close() async {
     _closed = true;
     _retry?.cancel();
+    _forgetHandshakes();
     _dropChannel(const RemoteUnavailable('The remote link is closed.'));
     final ws = _ws;
     _ws = null;
