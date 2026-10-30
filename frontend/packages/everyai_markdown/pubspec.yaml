@@ -1,0 +1,22 @@
+name: everyai_markdown
+description: Streaming-friendly GitHub-flavored Markdown renderer for EveryAI, with math and code highlighting.
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: ^3.13.0
+  flutter: ">=3.47.0"
+
+resolution: workspace
+
+dependencies:
+  flutter:
+    sdk: flutter
+  markdown: ^7.3.1
+  re_highlight: ^0.0.3
+  flutter_math_fork: ^0.7.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

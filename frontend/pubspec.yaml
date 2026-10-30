@@ -1,101 +1,67 @@
 name: every_ai
-description: "EveryAI in your pocket"
-
-# Prevent accidental publication to pub.dev
+description: "EveryAI: every AI model in one app."
 publish_to: 'none'
+version: 0.1.0+1
 
-# Application version
-version: 0.0.1+1
-
-# Dart SDK version
 environment:
-  sdk: ">=3.0.0 <4.0.0"
+  sdk: ^3.13.0
+  flutter: ">=3.47.0"
 
-# Application dependencies
+# Pub workspace: the app is the root, reusable libraries live in packages/.
+workspace:
+  - packages/everyai_markdown
+
 dependencies:
   flutter:
     sdk: flutter
-  http: ^1.2.2  # HTTP package for making network requests
-  provider: ^6.0.5 # State management package
-  flutter_secure_storage: ^9.2.2 # Updated version for secure storage
-  cupertino_icons: ^1.0.8 # Icons for iOS
-  google_sign_in: ^6.2.2 # Google Sign-In package
-  flutter_markdown: ^0.7.4+3 # markdown parser
-  flutter_tex: ^4.0.9 # flutter tex
-  sqflite: ^2.4.1 #sqite support
-  path: ^1.9.0 # idk why, the sql thing wants this
+
+  # Design systems (decoupled from the framework since Flutter 3.47)
+  material_ui: ^1.9.0
+  cupertino_ui: ^1.1.5
+  cupertino_icons: ^1.0.8 # glyph font used by cupertino_ui's CupertinoIcons
+  material_new_shapes: ^1.0.0
+  fluent_ui: ^4.17.0
+  macos_ui: ^2.2.2
+  window_manager: ^0.5.2
+
+  # State, routing, data
+  flutter_riverpod: ^3.4.3
+  go_router: ^18.1.2
+  drift: ^2.35.3
+  drift_flutter: ^0.3.1
+  path_provider: ^2.1.6
+  uuid: ^4.6.0
+
+  # Networking: per-platform HTTP clients (HTTP/2 + HTTP/3 where the OS stack supports it)
+  http: ^1.6.0
+  cupertino_http: ^3.1.0
+  cronet_http: ^1.10.1
+  fetch_client: ^1.2.1
+
+  # Auth / platform services
+  flutter_secure_storage: ^11.2.0
+  google_sign_in: ^7.2.0
+  url_launcher: ^6.3.3
+
+  everyai_markdown:
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^5.0.0 # Recommended linting rules
+  flutter_lints: ^6.0.0
+  build_runner: ^2.17.1
+  drift_dev: ^2.35.2
 
 flutter:
   uses-material-design: true
   assets:
     - assets/
     - assets/models/
-
-
   fonts:
-    # NotoSans Font Family
-    - family: NotoSans
-      fonts:
-        - asset: lib/fonts/Noto_Sans/static/NotoSans-Regular.ttf
-        - asset: lib/fonts/Noto_Sans/static/NotoSans-Bold.ttf
-          weight: 700
-        - asset: lib/fonts/Noto_Sans/static/NotoSans-Italic.ttf
-          style: italic
-        - asset: lib/fonts/Noto_Sans/static/NotoSans-BoldItalic.ttf
-          weight: 700
-          style: italic
-
-    # EB Garamond Font Family
-    - family: EBGaramond
-      fonts:
-        - asset: lib/fonts/EB_Garamond/static/EBGaramond-Regular.ttf
-        - asset: lib/fonts/EB_Garamond/static/EBGaramond-Bold.ttf
-          weight: 700
-        - asset: lib/fonts/EB_Garamond/static/EBGaramond-Italic.ttf
-          style: italic
-        - asset: lib/fonts/EB_Garamond/static/EBGaramond-BoldItalic.ttf
-          weight: 700
-          style: italic
-
-    # Source Code Pro Font Family (Monospace)
     - family: SourceCodePro
       fonts:
-        - asset: lib/fonts/Source_Code_Pro/static/SourceCodePro-Regular.ttf
-        - asset: lib/fonts/Source_Code_Pro/static/SourceCodePro-Bold.ttf
+        - asset: assets/fonts/SourceCodePro/SourceCodePro-Regular.ttf
+        - asset: assets/fonts/SourceCodePro/SourceCodePro-Bold.ttf
           weight: 700
-        - asset: lib/fonts/Source_Code_Pro/static/SourceCodePro-Italic.ttf
+        - asset: assets/fonts/SourceCodePro/SourceCodePro-Italic.ttf
           style: italic
-        - asset: lib/fonts/Source_Code_Pro/static/SourceCodePro-BoldItalic.ttf
-          weight: 700
-          style: italic
-
-    # Philosopher Font Family
-    - family: Philosopher
-      fonts:
-        - asset: lib/fonts/Philosopher/Philosopher-Regular.ttf
-        - asset: lib/fonts/Philosopher/Philosopher-Bold.ttf
-          weight: 700
-        - asset: lib/fonts/Philosopher/Philosopher-Italic.ttf
-          style: italic
-        - asset: lib/fonts/Philosopher/Philosopher-BoldItalic.ttf
-          weight: 700
-          style: italic
-
-  # Uncomment and add assets as needed
-  # assets:
-  #   - images/
-  #   - assets/
-
-#   Uncomment to define custom fonts
-#   fonts:
-#     - family: YourFontFamily
-#       fonts:
-#         - asset: fonts/YourFont-Regular.ttf
-#         - asset: fonts/YourFont-Bold.ttf
-#           weight: 700
-

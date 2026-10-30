@@ -93,7 +93,7 @@ BEGIN
             VALUE "FileDescription", "EveryAI" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "EveryAI" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2024 alidirect.dev. All rights reserved." "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 alidirect.dev. All rights reserved." "\0"
             VALUE "OriginalFilename", "EveryAI.exe" "\0"
             VALUE "ProductName", "EveryAI" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"

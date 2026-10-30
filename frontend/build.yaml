@@ -1,0 +1,9 @@
+targets:
+  $default:
+    builders:
+      drift_dev:
+        generate_for:
+          - lib/core/db/**.dart
+        options:
+          store_date_time_values_as_text: true
+          named_parameters: true
