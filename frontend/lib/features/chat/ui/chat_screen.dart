@@ -85,8 +85,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     return AdaptivePage(
       title: home ? '' : (title ?? 'New chat'),
       actions: [
-        if (!home)
+        if (!home) ...[
+          _ChatMenu(conversationId: widget.conversationId),
           AdaptiveIconButton(icon: EveryIcon.newChat, tooltip: 'New chat', onPressed: () => context.go(Routes.newChat)),
+        ],
       ],
       body: _WithPanel(
         conversationId: widget.conversationId,
@@ -355,6 +357,66 @@ class _WithPanel extends ConsumerWidget {
           ],
         );
       },
+    );
+  }
+}
+
+/// The open chat's "…" menu: star, rename, delete.
+class _ChatMenu extends ConsumerWidget {
+  const _ChatMenu({required this.conversationId});
+  final String conversationId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = EveryTheme.of(context);
+    final c = ref.watch(
+      conversationsProvider.select((all) => all.value?.where((c) => c.id == conversationId).firstOrNull),
+    );
+    if (c == null) return const SizedBox.shrink();
+    final repo = ref.read(chatRepositoryProvider);
+    return AdaptiveMenuButton(
+      tooltip: 'Chat options',
+      actions: [
+        MenuAction(
+          label: c.pinned ? 'Unstar' : 'Star',
+          icon: EveryIcon.pin,
+          onSelected: () => repo.setPinned(c.id, pinned: !c.pinned),
+        ),
+        MenuAction(
+          label: 'Rename',
+          icon: EveryIcon.edit,
+          onSelected: () async {
+            final title = await showAdaptivePrompt(
+              context,
+              title: 'Rename chat',
+              initialValue: c.title,
+              confirmLabel: 'Rename',
+            );
+            if (title != null && title.trim().isNotEmpty) await repo.rename(c.id, title.trim());
+          },
+        ),
+        MenuAction(
+          label: 'Delete',
+          icon: EveryIcon.delete,
+          destructive: true,
+          onSelected: () async {
+            final ok = await showAdaptiveConfirm(
+              context,
+              title: 'Delete chat?',
+              message: '"${c.title}" will be permanently deleted from this device.',
+              confirmLabel: 'Delete',
+              destructive: true,
+            );
+            if (!ok) return;
+            await repo.delete(c.id);
+            if (context.mounted) context.go(Routes.newChat);
+          },
+        ),
+      ],
+      child: Padding(
+        padding: const EdgeInsets.all(6),
+        child: AdaptiveIcon(EveryIcon.more, size: 18, color: theme.text.withValues(alpha: 0.85)),
+      ),
     );
   }
 }

@@ -358,12 +358,64 @@ class _SessionTileState extends ConsumerState<SessionTile> {
                 ),
                 if (!widget.dense)
                   Text(_age(widget.info.createdAt), style: TextStyle(color: theme.textMuted, fontSize: 12)),
+                Opacity(
+                  opacity: _hover || widget.selected || Host.isMobile ? 1 : 0,
+                  child: AdaptiveMenuButton(
+                    tooltip: 'Session options',
+                    actions: [
+                      MenuAction(label: 'Rename', icon: EveryIcon.edit, onSelected: _rename),
+                      MenuAction(label: 'Delete', icon: EveryIcon.delete, destructive: true, onSelected: _delete),
+                    ],
+                    child: Padding(
+                      padding: const EdgeInsets.only(left: 6),
+                      child: AdaptiveIcon(EveryIcon.more, size: 14, color: theme.textMuted),
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
         ),
       ),
     );
+  }
+
+  Future<void> _rename() async {
+    final title = await showAdaptivePrompt(
+      context,
+      title: 'Rename session',
+      initialValue: widget.info.title,
+      confirmLabel: 'Rename',
+    );
+    if (title == null || title.trim().isEmpty) return;
+    ref.read(codeSessionsProvider.notifier).update(widget.info.copyWith(title: title.trim()));
+  }
+
+  Future<void> _delete() async {
+    final w = widget.info.worktree;
+    final ok = await showAdaptiveConfirm(
+      context,
+      title: 'Delete session?',
+      message: w == null
+          ? '"${widget.info.title}" will be removed from your sessions.'
+          : '"${widget.info.title}" will be removed with its worktree, branch ${w.branch} and checkpoints. '
+                'Work already merged stays merged.',
+      confirmLabel: 'Delete',
+      destructive: true,
+    );
+    if (!ok || !mounted) return;
+    final selected = widget.selected;
+    try {
+      if (w == null) {
+        ref.read(codeSessionsProvider.notifier).remove(widget.info.id);
+      } else {
+        await ref.read(codeGitProvider(widget.info.id).notifier).discard();
+      }
+    } on Object catch (e) {
+      if (mounted) showAdaptiveToast(context, "Couldn't delete the session: $e");
+      return;
+    }
+    if (selected && mounted) context.go(Routes.code);
   }
 
   static String _age(DateTime t) {
