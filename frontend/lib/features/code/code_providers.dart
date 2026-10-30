@@ -185,6 +185,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     required String prompt,
     required String model,
     required AgentMode mode,
+    String? effort,
     List<Attachment> files = const [],
   }) async {
     final id = const Uuid().v7();
@@ -210,6 +211,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         maxInputTokens: ref.read(modelCatalogProvider)[ModelId(model)]?.contextLength,
         persona: agentPrompt?.persona,
         promptSuffix: agentPrompt?.suffix,
+        effort: effort,
       ),
     );
     ref.read(_liveProvider)[id] = live;
@@ -224,6 +226,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       createdAt: DateTime.now(),
       branch: worktree?.branch ?? '',
       worktree: worktree,
+      effort: effort ?? '',
     );
     state = [info, ...state];
     _save();

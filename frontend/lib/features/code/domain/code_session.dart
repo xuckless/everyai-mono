@@ -44,6 +44,7 @@ final class CodeSessionInfo {
     required this.createdAt,
     this.branch = '',
     this.worktree,
+    this.effort = '',
   });
 
   final String id;
@@ -62,6 +63,9 @@ final class CodeSessionInfo {
 
   /// The session's own checkout and branch; null for folders without git.
   final SessionWorktree? worktree;
+
+  /// The model's reasoning effort ('' for the server default).
+  final String effort;
   final DateTime createdAt;
 
   CodeSessionInfo copyWith({String? title, AgentMode? mode, String? branch}) => CodeSessionInfo(
@@ -75,6 +79,7 @@ final class CodeSessionInfo {
     createdAt: createdAt,
     branch: branch ?? this.branch,
     worktree: worktree,
+    effort: effort,
   );
 
   factory CodeSessionInfo.fromJson(Map<String, Object?> json) => CodeSessionInfo(
@@ -86,6 +91,7 @@ final class CodeSessionInfo {
     mode: AgentMode.values.asNameMap()[json['mode']] ?? AgentMode.ask,
     workingDir: json['working_dir'] as String? ?? '',
     branch: json['branch'] as String? ?? '',
+    effort: json['effort'] as String? ?? '',
     worktree: json['worktree'] is Map<String, Object?>
         ? SessionWorktree.fromJson(json['worktree']! as Map<String, Object?>)
         : null,
@@ -102,6 +108,7 @@ final class CodeSessionInfo {
     'working_dir': workingDir,
     'branch': branch,
     'worktree': ?worktree?.toJson(),
+    'effort': effort,
     'created_at': createdAt.toIso8601String(),
   };
 }

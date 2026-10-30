@@ -19,6 +19,7 @@ final class SessionSpec {
     this.initialImages = const [],
     this.persona,
     this.promptSuffix,
+    this.effort,
   });
 
   /// The session's worktree.
@@ -51,6 +52,9 @@ final class SessionSpec {
 
   /// Appended to the system prompt; defaults to `workingRules`.
   final String? promptSuffix;
+
+  /// Reasoning effort: low, medium, high, xhigh or max (null: the server's).
+  final String? effort;
 }
 
 /// A running agent conversation. Events arrive on [events] (history first,

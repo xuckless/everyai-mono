@@ -17,6 +17,7 @@ pub const chat = @import("chat.zig");
 pub const gateway = @import("gateway.zig");
 pub const util = @import("util.zig");
 pub const openrouter = @import("openrouter.zig");
+const agents = @import("agents.zig");
 pub const tools = @import("tools.zig");
 pub const images = @import("images.zig");
 pub const anthropic = @import("anthropic.zig");
@@ -74,6 +75,7 @@ pub fn routes(app: *anole.Server(App), state: *App) !void {
     gateway.routes(app, state);
     images.routes(app, state);
     devtools.routes(app, state);
+    agents.routes(app, state);
 }
 
 /// Schema and seed data; run before serving.
@@ -147,4 +149,5 @@ test {
     _ = sse_client;
     _ = models;
     _ = anthropic;
+    _ = agents;
 }

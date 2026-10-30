@@ -51,7 +51,10 @@ final class OpenHandsHarness implements Harness {
           'base_url': spec.llmBaseUrl,
           'api_key': spec.llmApiKey,
           'usage_id': spec.sessionTag,
-          'extra_headers': {'X-EveryAI-Session': spec.sessionTag},
+          // LiteLLM drops reasoning_effort for models it doesn't know; the
+          // gateway applies the header instead.
+          'extra_headers': {'X-EveryAI-Session': spec.sessionTag, 'X-EveryAI-Effort': ?spec.effort},
+          'reasoning_effort': ?spec.effort,
           'max_input_tokens': ?spec.maxInputTokens,
           // LiteLLM doesn't know our gateway's models; without this images are dropped.
           if (spec.vision) 'capability_overrides': {'supports_vision': true},

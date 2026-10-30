@@ -138,7 +138,9 @@ class CodeSessionScreen extends ConsumerWidget {
                               ? 'Answer the questions above, or reply in your own words'
                               : 'Ask for a change, or reply to the agent',
                           trailing: Text(
-                            info.model.split('/').last,
+                            info.effort.isEmpty
+                                ? info.model.split('/').last
+                                : '${info.model.split('/').last} · ${info.effort}',
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(color: theme.textMuted, fontSize: 12.5),
                           ),

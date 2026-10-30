@@ -12,8 +12,8 @@ import '../../../core/ui/adaptive_page.dart';
 import '../../../core/ui/anchored_popover.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../attachments/attachment.dart';
-import '../../models/models_providers.dart';
 import '../../../core/platform/platform_kind.dart';
+import '../agent_models.dart';
 import '../code_providers.dart';
 import '../sidecar/sidecar.dart';
 import '../domain/agent_mode.dart';
@@ -75,7 +75,8 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
           .start(
             project: project,
             prompt: prompt,
-            model: ref.read(defaultModelProvider).id.value,
+            model: ref.read(codeAgentProvider).model,
+            effort: ref.read(codeAgentProvider).effort,
             mode: _mode,
             files: files,
           );
@@ -132,6 +133,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                     placeholder: 'Describe a change, a bug to fix, or a feature to build',
                     onModeChanged: (m) => setState(() => _mode = m),
                     onSend: (text, files) => _start(project, text, files),
+                    trailing: const _AgentPicker(),
                     leading: _ProjectPicker(
                       project: project,
                       projects: projects,
@@ -139,11 +141,6 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                       onOpen: _openFolder,
                       onSample: _addSample,
                       onDemo: _addDemo,
-                    ),
-                    trailing: Text(
-                      ref.watch(defaultModelProvider).name,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: theme.textMuted, fontSize: 12.5),
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -424,5 +421,47 @@ class _SessionTileState extends ConsumerState<SessionTile> {
     if (d.inHours < 1) return '${d.inMinutes}m';
     if (d.inDays < 1) return '${d.inHours}h';
     return '${d.inDays}d';
+  }
+}
+
+/// The agent for new sessions, grouped by tier ("Everyday · Opus 5.5 · medium").
+class _AgentPicker extends ConsumerWidget {
+  const _AgentPicker();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = EveryTheme.of(context);
+    final catalog = ref.watch(agentCatalogProvider);
+    final current = ref.watch(codeAgentProvider);
+    String tierName(String id) => catalog.tiers.where((t) => t.id == id).firstOrNull?.name ?? id;
+    return AdaptiveMenuButton(
+      tooltip: 'Agent model',
+      actions: [
+        for (final tier in catalog.tiers)
+          for (final m in catalog.models.where((m) => m.tier == tier.id))
+            MenuAction(
+              label: '${tier.name} · ${m.label}${m.candidate ? ' (candidate)' : ''}',
+              checked: m.key == current.key,
+              onSelected: () => ref.read(codeAgentProvider.notifier).choose(m),
+            ),
+      ],
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: Text(
+                '${tierName(current.tier)} · ${current.label}',
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: theme.textMuted, fontSize: 12.5),
+              ),
+            ),
+            const SizedBox(width: 4),
+            AdaptiveIcon(EveryIcon.chevronDown, size: 12, color: theme.textMuted),
+          ],
+        ),
+      ),
+    );
   }
 }

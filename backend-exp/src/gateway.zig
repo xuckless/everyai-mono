@@ -38,6 +38,7 @@ fn completions(app: *App, req: *anole.Request, res: *anole.Response) !void {
     if (chat.wantsBreakpoints(model) and !std.mem.containsAtLeast(u8, raw, 1, "cache_control")) {
         try addBreakpoints(req.arena, o, app.cfg.gateway_cache_ttl);
     }
+    try applyEffort(req.arena, o, req.headers.get("X-EveryAI-Effort"));
     const streaming = if (o.get("stream")) |s| s == .bool and s.bool else false;
     const body = try std.json.Stringify.valueAlloc(req.arena, root, .{});
     const session = req.headers.get("X-EveryAI-Session");
@@ -99,6 +100,21 @@ fn meter(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u
         .api_key_id = who.key_id,
         .provider = provider,
     });
+}
+
+/// LiteLLM drops `reasoning_effort` for models it doesn't know, so the app
+/// sends the effort as `X-EveryAI-Effort`. It becomes OpenRouter's
+/// `reasoning.effort` (the Anthropic adapter reads it too) unless the body
+/// already sets one.
+pub fn applyEffort(arena: std.mem.Allocator, o: *std.json.ObjectMap, header: ?[]const u8) !void {
+    const effort = header orelse return;
+    if (o.get("reasoning_effort") != null or o.get("reasoning") != null) return;
+    for ([_][]const u8{ "low", "medium", "high", "xhigh", "max" }) |ok| {
+        if (std.mem.eql(u8, effort, ok)) {
+            try o.put(arena, "reasoning", try jsonObject(arena, &.{.{ "effort", .{ .string = ok } }}));
+            return;
+        }
+    }
 }
 
 fn jsonObject(arena: std.mem.Allocator, fields: []const struct { []const u8, std.json.Value }) !std.json.Value {
@@ -173,4 +189,21 @@ test addBreakpoints {
     const out = try std.json.Stringify.valueAlloc(a, v, .{});
     try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, out, "cache_control"));
     try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, out, "\"ttl\":\"1h\""));
+}
+
+test "the effort header fills in reasoning.effort when the body has none" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var v = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"model\":\"m\"}", .{});
+    try applyEffort(a, &v.object, "medium");
+    try std.testing.expectEqualStrings("medium", v.object.get("reasoning").?.object.get("effort").?.string);
+
+    var kept = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"reasoning_effort\":\"low\"}", .{});
+    try applyEffort(a, &kept.object, "high");
+    try std.testing.expect(kept.object.get("reasoning") == null);
+
+    var bogus = try std.json.parseFromSliceLeaky(std.json.Value, a, "{}", .{});
+    try applyEffort(a, &bogus.object, "turbo");
+    try std.testing.expect(bogus.object.get("reasoning") == null);
 }

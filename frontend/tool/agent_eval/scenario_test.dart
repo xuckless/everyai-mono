@@ -32,6 +32,7 @@ void main() {
         maxInputTokens: 200000,
         persona: prompt.persona,
         promptSuffix: prompt.suffix,
+        effort: env['EVAL_EFFORT'],
       ),
     );
     try {
