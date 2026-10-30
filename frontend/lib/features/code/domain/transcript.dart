@@ -223,7 +223,7 @@ final class TranscriptBuilder {
   List<ActionCall> _unanswered() => List.unmodifiable(_open.values);
 
   void add(HarnessEvent e) {
-    if (e is! StreamDelta && e is! StateChange) {
+    if (e is! StreamDelta && e is! StateChange && e is! ConnectionChange) {
       _streaming.clear();
       _reasoning.clear();
     }
@@ -250,7 +250,7 @@ final class TranscriptBuilder {
         _result(e);
       case ConversationFailure(:final message):
         _items.add(NoticeItem(e.id, message, error: true));
-      case UnknownEvent():
+      case UnknownEvent() || ConnectionChange():
         break;
     }
   }

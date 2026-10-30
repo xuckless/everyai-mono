@@ -81,6 +81,11 @@ class CodeSessionScreen extends ConsumerWidget {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: NoticeView(item: NoticeItem('error', error, error: true)),
+            )
+          else if (!state.connected && t.items.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: NoticeView(item: const NoticeItem('reconnecting', 'Reconnecting to the agent server…')),
             ),
           SafeArea(
             top: false,

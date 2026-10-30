@@ -318,10 +318,10 @@ class _SessionTileState extends ConsumerState<SessionTile> {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    // Only sessions already open have a live status.
+    // Open sessions have a live status; the rest come from the agent server.
     final status = ref.exists(codeSessionProvider(widget.info.id))
         ? ref.watch(codeSessionProvider(widget.info.id).select((s) => s.status))
-        : SessionStatus.idle;
+        : ref.watch(codeStatusesProvider.select((all) => all[widget.info.id])) ?? SessionStatus.idle;
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hover = true),

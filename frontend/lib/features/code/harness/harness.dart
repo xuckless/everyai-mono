@@ -70,4 +70,8 @@ abstract interface class HarnessSession {
 abstract interface class Harness {
   Future<HarnessSession> start(SessionSpec spec);
   Future<HarnessSession> attach(String conversationId);
+
+  /// The execution status of each of [conversationIds] the server knows,
+  /// without opening their event streams (for session lists).
+  Future<Map<String, ExecutionStatus>> statuses(List<String> conversationIds);
 }

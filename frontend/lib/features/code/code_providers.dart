@@ -55,9 +55,18 @@ final sidecarProvider = Provider<Sidecar>((ref) {
 /// projects, else the sidecar (started, or restarted after a crash, on demand).
 Future<Harness> harnessFor(Ref ref, String workingDir) async {
   if (isDemoPath(workingDir)) return ref.read(harnessProvider);
-  final endpoint = await ref.read(sidecarProvider).endpoint();
-  return OpenHandsHarness(baseUrl: endpoint.baseUrl, sessionApiKey: endpoint.sessionApiKey);
+  return ref.read(_sidecarHarnessProvider);
 }
+
+/// One harness for the sidecar; it asks the sidecar where it is on every
+/// call, which also restarts a server that died.
+final _sidecarHarnessProvider = Provider<Harness>((ref) {
+  final sidecar = ref.read(sidecarProvider);
+  return OpenHandsHarness.located(() async {
+    final e = await sidecar.endpoint();
+    return (e.baseUrl, e.sessionApiKey);
+  });
+});
 
 /// The user's `sk-eai-` key for the backend's OpenAI-compatible gateway; the
 /// agent-server sends its LLM calls there. Minted once, then kept.
@@ -313,6 +322,10 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
   }
 
   void _onEvent(HarnessEvent event) {
+    if (event is ConnectionChange) {
+      state = state.copyWith(connected: event.connected);
+      return;
+    }
     // OpenHands reports `stats` after every model call; the cost lives in our ledger.
     if (event is StateChange) ref.read(codeUsageProvider(sessionId).notifier).refreshSoon();
     _builder.add(event);
@@ -410,6 +423,50 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
     if (state.mode == AgentMode.plan) await setMode(AgentMode.autoEdit);
     await send(planApprovedMessage);
   }
+}
+
+/// What the agent server reports for sessions whose view isn't open (they
+/// have no live controller), refreshed every 10 s while a list shows them.
+final codeStatusesProvider = NotifierProvider.autoDispose<CodeStatuses, Map<String, SessionStatus>>(CodeStatuses.new);
+
+final class CodeStatuses extends Notifier<Map<String, SessionStatus>> {
+  Timer? _timer;
+
+  @override
+  Map<String, SessionStatus> build() {
+    _timer = Timer.periodic(const Duration(seconds: 10), (_) => unawaited(_refresh()));
+    ref.onDispose(() => _timer?.cancel());
+    unawaited(Future.microtask(_refresh));
+    return const {};
+  }
+
+  Future<void> _refresh() async {
+    final sessions = [
+      for (final s in ref.read(codeSessionsProvider))
+        if (!isDemoPath(s.workingDir)) s,
+    ];
+    if (sessions.isEmpty) return;
+    try {
+      final byConversation = await ref.read(_sidecarHarnessProvider).statuses([
+        for (final s in sessions) s.conversationId,
+      ]);
+      if (!ref.mounted) return;
+      state = {
+        for (final s in sessions)
+          if (byConversation[s.conversationId] case final status?) s.id: _sessionStatus(status),
+      };
+    } on Object {
+      // The server isn't up yet; try again on the next tick.
+    }
+  }
+
+  static SessionStatus _sessionStatus(ExecutionStatus s) => switch (s) {
+    ExecutionStatus.running => SessionStatus.running,
+    ExecutionStatus.waitingForConfirmation => SessionStatus.needsInput,
+    ExecutionStatus.finished => SessionStatus.done,
+    ExecutionStatus.error || ExecutionStatus.stuck => SessionStatus.failed,
+    _ => SessionStatus.idle,
+  };
 }
 
 /// Tokens and spend of a Code session, from the backend's ledger (the gateway

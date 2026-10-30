@@ -230,6 +230,13 @@ final class ConversationFailure extends HarnessEvent {
   final String message;
 }
 
+/// Not from the server: the session's event socket connected or dropped
+/// (it reconnects on its own).
+final class ConnectionChange extends HarnessEvent {
+  const ConnectionChange({required this.connected}) : super(id: '', raw: const {});
+  final bool connected;
+}
+
 final class UnknownEvent extends HarnessEvent {
   const UnknownEvent({required super.id, required super.raw, required this.kind});
   final String kind;

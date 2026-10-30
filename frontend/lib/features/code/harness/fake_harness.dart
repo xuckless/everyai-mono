@@ -26,6 +26,9 @@ final class FakeHarness implements Harness {
 
   @override
   Future<HarnessSession> attach(String conversationId) async => FakeSession(this, conversationId, AgentMode.ask);
+
+  @override
+  Future<Map<String, ExecutionStatus>> statuses(List<String> conversationIds) async => const {};
 }
 
 final class FakeSession implements HarnessSession {
