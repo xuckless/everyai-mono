@@ -38,16 +38,23 @@ pub const system_prompt =
     \\- make_slides: a presentation deck the user can present and export to PowerPoint.
     \\- web_fetch: read a specific URL the user gives you.
     \\- generate_image: create a raster image (photos, paintings, logos). Use render_svg for diagrams instead.
+    \\Artifact rules:
+    \\- Never paste an artifact's content into the chat; the app already shows it. Say in a sentence or two what you made.
+    \\- Check the conversation for an existing artifact before making one. If it exists, change it with edit_artifact.
+    \\- HTML artifacts are single self-contained files. Load scripts only from cdn.jsdelivr.net, cdnjs.cloudflare.com or unpkg.com, and never use placeholder URLs (example.com, via.placeholder.com, "#"); draw images as inline SVG or CSS instead.
+    \\- Every SVG needs a viewBox.
+    \\
+    \\Act with your tools instead of describing what you would do. When a request fits one of them, call it in this turn. Never claim a tool is unavailable or that you cannot render something without calling it first; if a call fails, read the error, fix the arguments and try again.
     \\Keep talking normally around tool calls: introduce what you made and add the explanation in text.
 ;
 
 /// OpenAI tool schema list, serialized once. Order and bytes are fixed.
 pub const definitions =
     \\[
-    \\{"type":"function","function":{"name":"create_artifact","description":"Create a standalone artifact shown in the side panel, which the user can view, edit, copy and download.","parameters":{"type":"object","properties":{"id":{"type":"string","description":"Short kebab-case id, unique in this chat"},"title":{"type":"string"},"kind":{"type":"string","enum":["markdown","code","html","svg","mermaid"]},"language":{"type":"string","description":"For kind=code: the language"},"content":{"type":"string"}},"required":["id","title","kind","content"]}}},
-    \\{"type":"function","function":{"name":"update_artifact","description":"Replace an existing artifact's content with a new version.","parameters":{"type":"object","properties":{"id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"}},"required":["id","content"]}}},
-    \\{"type":"function","function":{"name":"edit_artifact","description":"Edit an existing artifact in place with exact find-and-replace edits, applied in order to its latest version. Each old_text must appear exactly once; include enough surrounding text to make it unique.","parameters":{"type":"object","properties":{"id":{"type":"string"},"edits":{"type":"array","items":{"type":"object","properties":{"old_text":{"type":"string"},"new_text":{"type":"string"}},"required":["old_text","new_text"]},"minItems":1}},"required":["id","edits"]}}},
-    \\{"type":"function","function":{"name":"render_svg","description":"Show an inline SVG illustration in the conversation.","parameters":{"type":"object","properties":{"title":{"type":"string"},"svg":{"type":"string","description":"A complete <svg> element with a viewBox; no scripts, no external references"}},"required":["svg"]}}},
+    \\{"type":"function","function":{"name":"create_artifact","description":"Create a standalone artifact shown in the side panel, which the user can view, edit, copy and download. Use it for substantial content only, and only when no artifact with this id exists yet (otherwise use edit_artifact). Do not repeat the content in chat. For kind=html, write one self-contained page: scripts only from cdn.jsdelivr.net, cdnjs.cloudflare.com or unpkg.com, and no placeholder URLs. For kind=svg the root <svg> must have a viewBox.","parameters":{"type":"object","properties":{"id":{"type":"string","description":"Short kebab-case id, unique in this chat"},"title":{"type":"string"},"kind":{"type":"string","enum":["markdown","code","html","svg","mermaid"]},"language":{"type":"string","description":"For kind=code: the language"},"content":{"type":"string"}},"required":["id","title","kind","content"]}}},
+    \\{"type":"function","function":{"name":"update_artifact","description":"Replace an existing artifact's whole content with a new version. Only when most of it changes; prefer edit_artifact for smaller revisions. Do not repeat the content in chat.","parameters":{"type":"object","properties":{"id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"}},"required":["id","content"]}}},
+    \\{"type":"function","function":{"name":"edit_artifact","description":"Change an existing artifact in place with exact find-and-replace edits, applied in order to its latest version. This is the default way to revise an artifact: use it instead of re-creating it. Each old_text must appear exactly once; include enough surrounding text to make it unique. Do not repeat the new content in chat.","parameters":{"type":"object","properties":{"id":{"type":"string"},"edits":{"type":"array","items":{"type":"object","properties":{"old_text":{"type":"string"},"new_text":{"type":"string"}},"required":["old_text","new_text"]},"minItems":1}},"required":["id","edits"]}}},
+    \\{"type":"function","function":{"name":"render_svg","description":"Show an inline SVG illustration in the conversation. The root <svg> must have a viewBox (width and height are optional). Keep it self-contained: no scripts, no external images or fonts, no placeholder URLs.","parameters":{"type":"object","properties":{"title":{"type":"string"},"svg":{"type":"string","description":"A complete <svg> element that includes a viewBox attribute; no scripts, no external references"}},"required":["svg"]}}},
     \\{"type":"function","function":{"name":"render_diagram","description":"Show a Mermaid diagram in the conversation.","parameters":{"type":"object","properties":{"title":{"type":"string"},"mermaid":{"type":"string","description":"Mermaid source"}},"required":["mermaid"]}}},
     \\{"type":"function","function":{"name":"render_chart","description":"Show a data chart in the conversation.","parameters":{"type":"object","properties":{"title":{"type":"string"},"type":{"type":"string","enum":["line","bar","pie","scatter","area"]},"x_label":{"type":"string"},"y_label":{"type":"string"},"series":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"points":{"type":"array","items":{"type":"object","properties":{"x":{"type":["string","number"]},"y":{"type":"number"}},"required":["x","y"]}}},"required":["name","points"]}}},"required":["type","series"]}}},
     \\{"type":"function","function":{"name":"make_quiz","description":"Show an interactive multiple-choice quiz.","parameters":{"type":"object","properties":{"title":{"type":"string"},"questions":{"type":"array","items":{"type":"object","properties":{"question":{"type":"string"},"options":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":6},"answer_index":{"type":"integer","description":"0-based index of the correct option (single-answer questions)"},"answer_indices":{"type":"array","items":{"type":"integer"},"description":"0-based indices of every correct option, for select-all-that-apply questions"},"explanation":{"type":"string"}},"required":["question","options","explanation"]}}},"required":["title","questions"]}}},
@@ -67,4 +74,12 @@ test "definitions are valid JSON and every tool has a kind" {
         const name = t.object.get("function").?.object.get("name").?.string;
         try std.testing.expect(kindOf(name) != null);
     }
+}
+
+test "prompt carries the tool-use and artifact rules" {
+    try std.testing.expect(std.mem.indexOf(u8, system_prompt, "Never claim a tool is unavailable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, system_prompt, "Never paste an artifact's content") != null);
+    try std.testing.expect(std.mem.indexOf(u8, definitions, "must have a viewBox") != null);
+    // Cache stability: no stray interpolation markers.
+    try std.testing.expect(std.mem.indexOf(u8, system_prompt, "{s}") == null);
 }
