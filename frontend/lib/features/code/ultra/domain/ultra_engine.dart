@@ -75,8 +75,13 @@ abstract interface class UltraChild {
 abstract interface class UltraChildRunner {
   Future<UltraChild> start(UltraChildRequest request);
 
-  /// Stops a child a lost run left behind (best effort).
-  Future<void> abandon(String childId);
+  /// Stops a child a lost run left behind (best effort) and returns
+  /// everything it cost, or null when that can't be read.
+  Future<int?> abandon(String childId);
+
+  /// A child's turns are over: ends the background processes it left
+  /// running (dev servers, watchers), best effort.
+  Future<void> release(String childId);
 }
 
 final class WalletReading {
@@ -124,6 +129,7 @@ final class UltraEngine {
     this.checkEvery = const Duration(seconds: 5),
     this.walletEvery = const Duration(seconds: 60),
     this.onChange,
+    this.orchestratorCost,
   }) : _clock = clock ?? DateTime.now,
        _slots = _Slots(journal.limits.maxConcurrent);
 
@@ -140,6 +146,10 @@ final class UltraEngine {
 
   /// Called after every journal change, for the UI.
   final void Function(UltraJournal journal)? onChange;
+
+  /// What the orchestrator (planning, rejected plans) has cost so far, read
+  /// at the start and with the wallet; it counts against the run's cap.
+  final Future<int?> Function()? orchestratorCost;
   final DateTime Function() _clock;
 
   final _Slots _slots;
@@ -170,12 +180,20 @@ final class UltraEngine {
     if (journal.status.over) return journal;
     _startedAt = _clock();
     _before = journal.elapsed;
-    // A resumed run: what was cut off runs again, from a fresh child.
+    // A resumed run: what was cut off runs again, from a fresh child. What
+    // the cut-off children spent still counts: each child's ledger total
+    // (settled ones included) replaces the step's sum when it is higher.
     for (final s in journal.steps.values) {
       if (s.status == StepStatus.running) {
-        for (final id in s.childIds) {
-          unawaited(runner.abandon(id).catchError((Object _) {}));
-        }
+        final costs = await Future.wait([
+          for (final id in s.childIds) runner.abandon(id).then((c) => c, onError: (Object _) => null),
+        ]);
+        final known = costs.every((c) => c != null);
+        s
+          ..costMicros = known
+              ? math.max(s.costMicros, costs.fold<int>(0, (n, c) => n + c!))
+              : s.costMicros + s.liveCostMicros
+          ..liveCostMicros = 0;
       }
       if (s.status == StepStatus.running || s.status == StepStatus.skipped || s.status == StepStatus.stopped) {
         s
@@ -198,8 +216,20 @@ final class UltraEngine {
     return _finish();
   }
 
+  Future<void> _readOrchestrator() async {
+    final read = orchestratorCost;
+    if (read == null) return;
+    try {
+      final cost = await read();
+      if (cost != null && cost > journal.orchestratorMicros) journal.orchestratorMicros = cost;
+    } on Object {
+      // The last reading stands.
+    }
+  }
+
   /// The Max plan gate and the wallet check before anything starts.
   Future<bool> _admit() async {
+    await _readOrchestrator();
     final WalletReading w;
     try {
       w = await wallet.read();
@@ -269,6 +299,7 @@ final class UltraEngine {
               if (w.availableMicros <= 0) _haltWith(UltraRunStatus.capped, 'The wallet ran out during the run.');
             })
             .catchError((Object _) {})
+            .then((_) => _readOrchestrator())
             .whenComplete(() => _checkingWallet = false),
       );
     }
@@ -596,6 +627,7 @@ final class UltraEngine {
     } finally {
       if (child != null) {
         _active.remove(child.id);
+        unawaited(runner.release(child.id).catchError((Object _) {}));
         final cost = child.costMicros;
         rec
           ..costMicros += cost

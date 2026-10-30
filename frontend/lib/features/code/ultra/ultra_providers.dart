@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -17,6 +18,7 @@ import '../domain/subagents.dart';
 import '../domain/transcript.dart';
 import '../git/git_service.dart';
 import '../harness/events.dart';
+import '../harness/session_processes.dart';
 import 'data/ultra_store.dart';
 import 'domain/ultra_engine.dart';
 import 'domain/ultra_journal.dart';
@@ -116,11 +118,25 @@ final class UltraRuns extends Notifier<Map<String, UltraRunView>> {
   /// `ultra_plan` calls already taken, by run.
   final _handled = <String, Set<String>>{};
 
+  /// Plans sent back for fixes, by run.
+  final _rejections = <String, int>{};
+
+  /// When each run started planning, and when its synthesis started.
+  final _plannedFrom = <String, DateTime>{};
+  final _synthesisFrom = <String, DateTime>{};
+
+  /// Checks the caps while the orchestrator plans or writes the answer
+  /// (the engine checks them in between).
+  final _guards = <String, Timer>{};
+
   @override
   Map<String, UltraRunView> build() {
     ref.onDispose(() {
       for (final e in _engines.values) {
         e.stop();
+      }
+      for (final g in _guards.values) {
+        g.cancel();
       }
       for (final s in _subs.values) {
         s.close();
@@ -167,8 +183,54 @@ final class UltraRuns extends Notifier<Map<String, UltraRunView>> {
     );
     _put(UltraRunView(runId: runId, sessionId: sessionId, orchestratorId: orchestrator.id, goal: goal));
     _limits[runId] = limits;
+    _plannedFrom[runId] = DateTime.now();
     _watch(runId, orchestrator.id);
+    _guard(runId);
     return runId;
+  }
+
+  /// What session [id] has cost so far, from the ledger; null when it can't be read.
+  Future<int?> _sessionCost(String id) async {
+    try {
+      final json = await ref
+          .read(apiClientProvider)
+          .getJson('v1/usage/session/$id', authenticated: !ref.read(appConfigProvider).devSkipAuth);
+      return UsageTotals.fromJson(json).chargedMicros;
+    } on Object {
+      return null;
+    }
+  }
+
+  /// Every [ultraGuardEvery], while the orchestrator plans or synthesizes:
+  /// stops the run once the orchestrator's spend (with the steps') or the
+  /// time passes the run's caps. Synthesis gets a little room past them
+  /// ([ultraSynthesisGrace]), so a capped run still gets its write-up.
+  void _guard(String runId) {
+    _guards.remove(runId)?.cancel();
+    _guards[runId] = Timer.periodic(ultraGuardEvery, (_) async {
+      final v = state[runId];
+      if (v == null || (v.stage != UltraStage.planning && v.stage != UltraStage.synthesizing)) {
+        _guards.remove(runId)?.cancel();
+        return;
+      }
+      final cost = await _sessionCost(v.orchestratorId);
+      final now = state[runId];
+      if (!ref.mounted || now == null || now.stage != v.stage) return;
+      final limits = _limits[runId] ?? now.journal?.limits ?? const UltraLimits();
+      final over = ultraGuardOver(
+        stage: now.stage,
+        limits: limits,
+        journal: now.journal,
+        orchestratorMicros: cost,
+        planningFor: DateTime.now().difference(_plannedFrom[runId] ?? DateTime.now()),
+        synthesizingFor: DateTime.now().difference(_synthesisFrom[runId] ?? DateTime.now()),
+      );
+      if (over == null) return;
+      _guards.remove(runId)?.cancel();
+      _subs.remove(runId)?.close();
+      unawaited(ref.read(codeSessionProvider(now.orchestratorId).notifier).stop());
+      _put(now.copyWith(stage: UltraStage.failed, error: over));
+    });
   }
 
   final _limits = <String, UltraLimits>{};
@@ -197,6 +259,7 @@ final class UltraRuns extends Notifier<Map<String, UltraRunView>> {
       ),
     );
     _handled.putIfAbsent(runId, () => {}).add(journal.planCallId);
+    _limits[runId] = journal.limits;
     _watch(runId, journal.orchestratorId);
     unawaited(_run(runId, journal));
   }
@@ -210,6 +273,7 @@ final class UltraRuns extends Notifier<Map<String, UltraRunView>> {
     unawaited(ref.read(codeSessionProvider(v.orchestratorId).notifier).stop());
     _put(v.copyWith(stage: UltraStage.failed, error: 'Stopped.'));
     _subs.remove(runId)?.close();
+    _guards.remove(runId)?.cancel();
   }
 
   void _watch(String runId, String orchestratorId) {
@@ -250,6 +314,7 @@ final class UltraRuns extends Notifier<Map<String, UltraRunView>> {
   void _settle(String runId, SubagentReport outcome) {
     final v = state[runId]!;
     _subs.remove(runId)?.close();
+    _guards.remove(runId)?.cancel();
     _put(
       outcome.status == SubagentStatus.completed
           ? v.copyWith(stage: UltraStage.done, answer: outcome.text)
@@ -265,6 +330,18 @@ final class UltraRuns extends Notifier<Map<String, UltraRunView>> {
     final parsed = parseUltraPlan(call.action, limits: limits, allowWrites: _allowWrites(parent));
     final orchestrator = ref.read(codeSessionProvider(v.orchestratorId).notifier);
     if (parsed.plan == null) {
+      final tries = _rejections[runId] = (_rejections[runId] ?? 0) + 1;
+      if (tries > ultraMaxPlanRejections) {
+        _subs.remove(runId)?.close();
+        _guards.remove(runId)?.cancel();
+        unawaited(orchestrator.stop());
+        return _put(
+          v.copyWith(
+            stage: UltraStage.failed,
+            error: 'The orchestrator did not produce a plan that could run after $ultraMaxPlanRejections tries.',
+          ),
+        );
+      }
       // Sent once its turn ends (it ends the turn after the call).
       unawaited(orchestrator.send(ultraPlanRejected(parsed.errors)));
       return;
@@ -277,6 +354,8 @@ final class UltraRuns extends Notifier<Map<String, UltraRunView>> {
       plan: parsed.plan!,
       limits: limits,
       createdAt: DateTime.now(),
+      // Planning counts toward the run's time.
+      elapsed: DateTime.now().difference(_plannedFrom[runId] ?? DateTime.now()),
     );
     _put(v.copyWith(stage: UltraStage.running, journal: journal));
     unawaited(_run(runId, journal));
@@ -300,6 +379,7 @@ final class UltraRuns extends Notifier<Map<String, UltraRunView>> {
         workspace: ultraWorkspace(base: base, dataDir: data),
         store: ultraJournalStore(data),
         allowWrites: _allowWrites(parent),
+        orchestratorCost: () => _sessionCost(journal.orchestratorId),
         onChange: (j) {
           if (!ref.mounted) return;
           if (state[runId] case final v?) _put(v.copyWith(journal: j));
@@ -313,7 +393,9 @@ final class UltraRuns extends Notifier<Map<String, UltraRunView>> {
       final orchestrator = ref.read(codeSessionProvider(v.orchestratorId));
       _reportTurns[runId] = orchestrator.transcript.items.whereType<UserTurn>().length;
       _sawRunning.remove(runId);
+      _synthesisFrom[runId] = DateTime.now();
       _put(v.copyWith(stage: UltraStage.synthesizing, journal: done));
+      _guard(runId);
       await ref.read(codeSessionProvider(v.orchestratorId).notifier).send(ultraReport(done));
     } on Object catch (e) {
       _engines.remove(runId);
@@ -326,6 +408,54 @@ final class UltraRuns extends Notifier<Map<String, UltraRunView>> {
     final line = goal.trim().split('\n').first;
     return line.length <= 48 ? line : '${line.substring(0, 47)}…';
   }
+}
+
+/// Plans sent back to the orchestrator before the run gives up.
+const ultraMaxPlanRejections = 3;
+
+/// How often the caps are checked while the orchestrator works.
+const ultraGuardEvery = Duration(seconds: 15);
+
+/// How far past its caps a run's synthesis may go: a share of the budget and some time.
+const ultraSynthesisGrace = (budgetShare: 0.1, time: Duration(minutes: 10));
+
+/// Why the orchestrator has to stop in [stage], or null while it is within
+/// the caps. Planning counts the orchestrator's spend ([orchestratorMicros],
+/// null when unread) and time; synthesis adds the steps' spend and the
+/// journal's time, with [ultraSynthesisGrace] of room.
+String? ultraGuardOver({
+  required UltraStage stage,
+  required UltraLimits limits,
+  required UltraJournal? journal,
+  required int? orchestratorMicros,
+  required Duration planningFor,
+  required Duration synthesizingFor,
+}) {
+  String money(int micros) => '\$${(micros / 1e6).toStringAsFixed(2)}';
+  switch (stage) {
+    case UltraStage.planning:
+      if ((orchestratorMicros ?? 0) >= limits.budgetMicros) {
+        return "Planning reached the run's ${money(limits.budgetMicros)} cap.";
+      }
+      if (planningFor >= limits.wallTime) {
+        return "Planning reached the run's ${limits.wallTime.inMinutes}-minute limit.";
+      }
+    case UltraStage.synthesizing:
+      final j = journal;
+      if (j == null) return null;
+      final budget = j.budgetMicros > 0 ? j.budgetMicros : limits.budgetMicros;
+      final steps = j.spentMicros - j.orchestratorMicros;
+      final spent = steps + math.max(j.orchestratorMicros, orchestratorMicros ?? 0);
+      if (spent >= budget + (budget * ultraSynthesisGrace.budgetShare).round()) {
+        return "The write-up went past the run's ${money(budget)} cap.";
+      }
+      if (j.elapsed + synthesizingFor >= limits.wallTime + ultraSynthesisGrace.time) {
+        return "The write-up went past the run's ${limits.wallTime.inMinutes}-minute limit.";
+      }
+    case UltraStage.running || UltraStage.done || UltraStage.failed:
+      return null;
+  }
+  return null;
 }
 
 /// The `ultra_plan` calls in an orchestrator's transcript, oldest first.
@@ -389,9 +519,30 @@ final class SessionUltraRunner implements UltraChildRunner {
   }
 
   @override
-  Future<void> abandon(String childId) async {
-    if (ref.read(codeSessionsProvider.notifier).byId(childId) == null) return;
-    await ref.read(codeSessionProvider(childId).notifier).stop();
+  Future<int?> abandon(String childId) async {
+    if (ref.read(codeSessionsProvider.notifier).byId(childId) != null) {
+      await ref.read(codeSessionProvider(childId).notifier).stop();
+    }
+    try {
+      final json = await ref
+          .read(apiClientProvider)
+          .getJson('v1/usage/session/$childId', authenticated: !ref.read(appConfigProvider).devSkipAuth);
+      return UsageTotals.fromJson(json).chargedMicros;
+    } on Object {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> release(String childId) async {
+    final sessions = ref.read(codeSessionsProvider.notifier);
+    final info = sessions.byId(childId);
+    if (info == null || !killsOwnProcesses(info)) return;
+    await killSessionProcesses(
+      tag: info.id,
+      workingDir: info.workingDir,
+      ownsDir: ownsWorkingDir(info, parent: sessions.byId(info.parentId ?? '')),
+    );
   }
 }
 

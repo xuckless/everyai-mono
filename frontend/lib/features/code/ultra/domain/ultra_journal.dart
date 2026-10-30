@@ -138,8 +138,8 @@ final class StepRecord {
   DateTime? startedAt;
   DateTime? endedAt;
 
-  /// What its running children have cost so far; not saved (settled into
-  /// [costMicros] once they finish).
+  /// What its running children have cost so far (settled into [costMicros]
+  /// once they finish). Saved, so a run cut off mid-step still counts it.
   int liveCostMicros = 0;
 
   /// Settled plus live cost, for the progress tree.
@@ -172,6 +172,7 @@ final class StepRecord {
     if (verifyNotes.isNotEmpty) 'verify_notes': verifyNotes,
     'merge': ?merge?.toJson(),
     'cost_micros': costMicros,
+    if (liveCostMicros > 0) 'live_cost_micros': liveCostMicros,
     if (note.isNotEmpty) 'note': note,
     'started_at': ?startedAt?.toUtc().toIso8601String(),
     'ended_at': ?endedAt?.toUtc().toIso8601String(),
@@ -197,7 +198,7 @@ final class StepRecord {
     note: j['note'] as String? ?? '',
     startedAt: DateTime.tryParse(j['started_at'] as String? ?? '')?.toLocal(),
     endedAt: DateTime.tryParse(j['ended_at'] as String? ?? '')?.toLocal(),
-  );
+  )..liveCostMicros = (j['live_cost_micros'] as num?)?.toInt() ?? 0;
 }
 
 /// The persisted state of one Ultra run.
@@ -214,6 +215,7 @@ final class UltraJournal {
     this.elapsed = Duration.zero,
     this.budgetMicros = 0,
     this.agentsStarted = 0,
+    this.orchestratorMicros = 0,
     Map<String, StepRecord>? steps,
     this.gaps,
     this.criticDone = false,
@@ -243,6 +245,10 @@ final class UltraJournal {
   int budgetMicros;
   int agentsStarted;
 
+  /// What the orchestrator has cost (planning, plans sent back); it counts
+  /// against [budgetMicros] with the steps.
+  int orchestratorMicros;
+
   /// By [StepRecord.key], plus `_critic` for the critic.
   final Map<String, StepRecord> steps;
 
@@ -257,7 +263,7 @@ final class UltraJournal {
   /// Why the run ended, when it ended early.
   String note;
 
-  int get spentMicros => steps.values.fold(0, (n, s) => n + s.costMicros);
+  int get spentMicros => orchestratorMicros + steps.values.fold(0, (n, s) => n + s.costMicros);
 
   /// The phases to run, the critic's extra one last.
   List<UltraPhase> get phases => [...plan.phases, ?gaps];
@@ -275,6 +281,7 @@ final class UltraJournal {
     'elapsed_ms': elapsed.inMilliseconds,
     'budget_micros': budgetMicros,
     'agents_started': agentsStarted,
+    if (orchestratorMicros > 0) 'orchestrator_micros': orchestratorMicros,
     'steps': [for (final s in steps.values) s.toJson()],
     'gaps': ?gaps?.toJson(),
     'critic_done': criticDone,
@@ -307,6 +314,7 @@ final class UltraJournal {
       elapsed: Duration(milliseconds: (j['elapsed_ms'] as num?)?.toInt() ?? 0),
       budgetMicros: (j['budget_micros'] as num?)?.toInt() ?? 0,
       agentsStarted: (j['agents_started'] as num?)?.toInt() ?? 0,
+      orchestratorMicros: (j['orchestrator_micros'] as num?)?.toInt() ?? 0,
       steps: {
         for (final s in (j['steps'] as List?) ?? const [])
           if (s is Map<String, Object?> && s['key'] is String) s['key']! as String: StepRecord.fromJson(s),

@@ -77,8 +77,18 @@ final class FakeRunner implements UltraChildRunner {
     return child;
   }
 
+  /// What abandoned children cost in all (null: unreadable).
+  Map<String, int?> abandonedCosts = const {};
+  final released = <String>[];
+
   @override
-  Future<void> abandon(String childId) async => abandoned.add(childId);
+  Future<int?> abandon(String childId) async {
+    abandoned.add(childId);
+    return abandonedCosts[childId];
+  }
+
+  @override
+  Future<void> release(String childId) async => released.add(childId);
 
   List<UltraChildRequest> byRole(ChildRole role) => [
     for (final c in started)
@@ -139,6 +149,19 @@ final class MemoryStore implements UltraJournalStore {
       saved[runId] == null ? null : UltraJournal.fromJson(jsonDecode(saved[runId]!) as Map<String, Object?>);
 }
 
+UltraPlan _twoSteps() => _plan({
+  'goal': 'Two steps',
+  'phases': [
+    {
+      'id': 'a',
+      'steps': [
+        {'id': 's', 'prompt': 'x'},
+        {'id': 't', 'prompt': 'x'},
+      ],
+    },
+  ],
+});
+
 const _criticDone = '```json\n{"complete": true, "notes": "all there", "gaps": []}\n```';
 
 Answer _default(UltraChildRequest r) => switch (r.role) {
@@ -164,7 +187,9 @@ UltraEngine _engine(
   MemoryStore? store,
   DateTime Function()? clock,
   bool allowWrites = true,
+  Future<int?> Function()? orchestratorCost,
 }) => UltraEngine(
+  orchestratorCost: orchestratorCost,
   journal: j,
   runner: runner,
   wallet: wallet ?? FakeWallet(),
@@ -757,6 +782,63 @@ void main() {
       expect(j.elapsed, greaterThanOrEqualTo(const Duration(minutes: 30)));
       expect(j.status, UltraRunStatus.done);
       expect(ultraReport(j), contains('old result'));
+    });
+
+    test('a resumed run counts what the cut-off children spent', () async {
+      final old = _journal(_twoSteps())
+        ..budgetMicros = 25000000
+        ..steps['a.s'] = StepRecord(
+          key: 'a.s',
+          phaseId: 'a',
+          stepId: 's',
+          title: 's',
+          status: StepStatus.running,
+          costMicros: 100,
+          childIds: ['old-1', 'old-2'],
+        );
+      final reloaded = UltraJournal.fromJson(jsonDecode(jsonEncode(old.toJson())) as Map<String, Object?>)!;
+      final runner = FakeRunner(_default)..abandonedCosts = {'old-1': 100, 'old-2': 4000};
+      final j = await _engine(reloaded, runner).run();
+      // 4,100 from the ledger, then 1,000 for each fresh child (two steps and the critic).
+      expect(j.steps['a.s']!.costMicros, 4100 + 1000);
+      expect(j.spentMicros, 4100 + 3000);
+    });
+
+    test('unreadable ledgers fall back to the saved live cost', () async {
+      final old = _journal(_twoSteps())
+        ..budgetMicros = 25000000
+        ..steps['a.s'] = (StepRecord(
+          key: 'a.s',
+          phaseId: 'a',
+          stepId: 's',
+          title: 's',
+          status: StepStatus.running,
+          costMicros: 100,
+          childIds: ['old-1'],
+        )..liveCostMicros = 900);
+      final reloaded = UltraJournal.fromJson(jsonDecode(jsonEncode(old.toJson())) as Map<String, Object?>)!;
+      expect(reloaded.steps['a.s']!.liveCostMicros, 900);
+      final j = await _engine(reloaded, FakeRunner(_default)).run();
+      expect(j.steps['a.s']!.costMicros, 1000 + 1000);
+    });
+
+    test("the orchestrator's spend counts against the cap", () async {
+      final j = await _engine(
+        _journal(_twoSteps(), limits: const UltraLimits(budgetMicros: 5000)),
+        FakeRunner(_default),
+        orchestratorCost: () async => 5000,
+      ).run();
+      expect(j.orchestratorMicros, 5000);
+      expect(j.status, UltraRunStatus.capped);
+      expect(j.steps.values.where((s) => s.status == StepStatus.done), isEmpty);
+      final again = UltraJournal.fromJson(jsonDecode(jsonEncode(j.toJson())) as Map<String, Object?>)!;
+      expect(again.spentMicros, 5000);
+    });
+
+    test('releases each child once its turns are over', () async {
+      final runner = FakeRunner(_default);
+      await _engine(_journal(_twoSteps()), runner).run();
+      expect(runner.released, unorderedEquals([for (final c in runner.started) c.id]));
     });
   });
 
