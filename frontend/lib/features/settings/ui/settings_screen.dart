@@ -97,6 +97,11 @@ class SettingsScreen extends ConsumerWidget {
               subtitle: Text(_mcpSummary(ref.watch(codeMcpServersProvider))),
               onTap: () => context.go(Routes.mcpServers),
             ),
+            AdaptiveListTile(
+              title: const Text('Skills'),
+              subtitle: const Text('SKILL.md folders the agent loads when a task needs them'),
+              onTap: () => context.go(Routes.skills),
+            ),
           ],
           const AdaptiveSectionHeader('Account'),
           AdaptiveListTile(

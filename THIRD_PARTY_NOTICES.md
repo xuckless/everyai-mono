@@ -187,3 +187,14 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Agent Skills `skills-ref` (agentskills/agentskills @ 69ef37e)
+
+- **What:** the validation rules of the reference validator
+  (`skills-ref/src/skills_ref/validator.py`, `parser.py`): the allowed front
+  matter fields, the name rules (lowercase letters, digits and single hyphens,
+  at most 64 characters, matching the folder), and the description (1024) and
+  compatibility (500) limits. Re-implemented in Dart; no code was copied.
+- **Where:** `frontend/lib/features/skills/domain/skill_format.dart`
+- **License:** Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0),
+  from https://github.com/agentskills/agentskills.

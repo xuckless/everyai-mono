@@ -1,0 +1,213 @@
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:crypto/crypto.dart';
+import 'package:path_provider/path_provider.dart';
+
+import '../domain/skill_catalog.dart';
+import '../domain/skill_format.dart';
+import 'skill_import.dart';
+import 'skill_store.dart' show SkillRoots;
+
+const _projectDir = '.agents/skills';
+
+Future<SkillRoots> roots(List<({String id, String path})> projects) async {
+  String? library;
+  try {
+    library = '${(await getApplicationSupportDirectory()).path}/skills';
+  } on Object {
+    library = null;
+  }
+  final home = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
+  return (library: library, shared: home == null ? null : '$home/.agents/skills', projects: projects);
+}
+
+Future<List<InstalledSkill>> scan(SkillRoots roots) async {
+  final out = <InstalledSkill>[];
+  if (roots.library case final dir?) out.addAll(await _scanRoot(dir, SkillSource.library));
+  if (roots.shared case final dir?) out.addAll(await _scanRoot(dir, SkillSource.shared));
+  for (final p in roots.projects) {
+    out.addAll(await _scanRoot('${p.path}/$_projectDir', SkillSource.project, projectId: p.id));
+  }
+  return out;
+}
+
+Future<List<InstalledSkill>> _scanRoot(String root, SkillSource source, {String? projectId}) async {
+  final dir = Directory(root);
+  if (!dir.existsSync()) return const [];
+  final out = <InstalledSkill>[];
+  try {
+    final children = await dir.list(followLinks: false).toList();
+    children.sort((a, b) => a.path.compareTo(b.path));
+    for (final e in children) {
+      final name = e.uri.pathSegments.where((s) => s.isNotEmpty).last;
+      if (name.startsWith('.')) continue;
+      final skillDir = e.path;
+      if (e is Link) {
+        // The user's own folders may link a skill in (removing it removes
+        // the link only); a repository may not.
+        if (source == SkillSource.project) continue;
+        if (!FileSystemEntity.isDirectorySync(await e.resolveSymbolicLinks())) continue;
+      } else if (e is! Directory) {
+        continue;
+      }
+      if (!File('$skillDir/SKILL.md').existsSync()) continue;
+      out.add(await _load(skillDir, name, source, projectId));
+    }
+  } on FileSystemException {
+    return out;
+  }
+  return out;
+}
+
+Future<InstalledSkill> _load(String dir, String dirName, SkillSource source, String? projectId) async {
+  final entries = <SkillEntry>[];
+  final files = <(String, File)>[];
+  var total = 0;
+  try {
+    await for (final e in Directory(dir).list(recursive: true, followLinks: false)) {
+      if (entries.length > SkillRules.maxFiles * 2) break;
+      final rel = e.path.substring(dir.length + 1).replaceAll('\\', '/');
+      if (SkillRules.ignored(rel)) continue;
+      final stat = await e.stat();
+      final kind = switch (e) {
+        Link() => SkillEntryKind.link,
+        Directory() => SkillEntryKind.directory,
+        File() => SkillEntryKind.file,
+        _ => SkillEntryKind.other,
+      };
+      var head = const <int>[];
+      if (e is File) {
+        total += stat.size;
+        files.add((rel, e));
+        if (stat.size >= 2 && stat.size <= SkillRules.maxFileBytes) head = await _head(e);
+      }
+      entries.add(SkillEntry(rel, size: e is File ? stat.size : 0, kind: kind, head: head));
+    }
+  } on FileSystemException {
+    // Whatever was listed is checked.
+  }
+  String? text;
+  final md = File('$dir/SKILL.md');
+  try {
+    text = await md.length() > SkillRules.maxSkillMdBytes
+        ? 'x' * (SkillRules.maxSkillMdBytes + 1)
+        : utf8.decode(await md.readAsBytes(), allowMalformed: true);
+  } on FileSystemException {
+    text = null;
+  }
+  final check = checkSkill(dirName: dirName, skillMd: text, entries: entries, strict: false);
+  return InstalledSkill(
+    dirName: dirName,
+    dir: dir,
+    source: source,
+    projectId: projectId,
+    manifest: check.manifest,
+    report: check.report,
+    digest: total > SkillRules.maxTotalBytes ? '' : await _digest(files),
+  );
+}
+
+Future<List<int>> _head(File f) async {
+  final raf = await f.open();
+  try {
+    return await raf.read(4);
+  } finally {
+    await raf.close();
+  }
+}
+
+/// SHA-256 over every file's path and bytes, in path order.
+Future<String> _digest(List<(String, File)> files) async {
+  final sink = _DigestSink();
+  final input = sha256.startChunkedConversion(sink);
+  final sorted = [...files]..sort((a, b) => a.$1.compareTo(b.$1));
+  for (final (rel, f) in sorted) {
+    input.add(utf8.encode('$rel\u0000'));
+    try {
+      await for (final chunk in f.openRead()) {
+        input.add(chunk);
+      }
+    } on FileSystemException {
+      input.add(utf8.encode('<unreadable>'));
+    }
+    input.add(const [0]);
+  }
+  input.close();
+  return sink.value.toString();
+}
+
+final class _DigestSink implements Sink<Digest> {
+  late Digest value;
+  @override
+  void add(Digest data) => value = data;
+  @override
+  void close() {}
+}
+
+Future<List<SkillFile>> folderFiles(String path) async {
+  final root = Directory(path);
+  final name = root.uri.pathSegments.where((s) => s.isNotEmpty).last;
+  final out = <SkillFile>[];
+  // The chosen folder may be one skill or hold several: list it as if its
+  // parent were the import root, so a SKILL.md at its top keeps its name.
+  await for (final e in root.list(recursive: true, followLinks: false)) {
+    if (out.length > SkillRules.maxFiles * 4) break;
+    final rel = '$name/${e.path.substring(root.path.length).replaceAll('\\', '/').replaceFirst(RegExp('^/'), '')}';
+    switch (e) {
+      case Link():
+        out.add(SkillFile(rel, size: 0, kind: SkillEntryKind.link));
+      case Directory():
+        out.add(SkillFile(rel, size: 0, kind: SkillEntryKind.directory));
+      case File():
+        out.add(SkillFile(rel, size: await e.length(), read: e.readAsBytes));
+      default:
+        out.add(SkillFile(rel, size: 0, kind: SkillEntryKind.other));
+    }
+  }
+  return out;
+}
+
+Future<String> install(ImportCandidate candidate, String destDir) async {
+  if (!candidate.ok) throw StateError(candidate.check.report.errors.first);
+  final name = candidate.dirName;
+  final target = Directory('$destDir/$name');
+  if (target.existsSync() || Link(target.path).existsSync()) {
+    throw StateError('A skill called "$name" is already in $destDir. Remove it first to replace it.');
+  }
+  final staging = Directory('$destDir/.importing-$name');
+  if (staging.existsSync()) await staging.delete(recursive: true);
+  await staging.create(recursive: true);
+  try {
+    for (final f in candidate.files) {
+      if (SkillRules.ignored(f.path)) continue;
+      final path = '${staging.path}/${f.path}';
+      switch (f.kind) {
+        case SkillEntryKind.directory:
+          await Directory(path).create(recursive: true);
+        case SkillEntryKind.file:
+          final bytes = await (f.read?.call() ?? Future.value(Uint8List(0)));
+          final file = File(path);
+          await file.parent.create(recursive: true);
+          await file.writeAsBytes(bytes, flush: true);
+        case SkillEntryKind.link || SkillEntryKind.other:
+          throw StateError('${f.path}: only plain files and folders can be imported.');
+      }
+    }
+    await staging.rename(target.path);
+  } on Object {
+    if (staging.existsSync()) await staging.delete(recursive: true);
+    rethrow;
+  }
+  return target.path;
+}
+
+Future<void> delete(String dir) async {
+  final link = Link(dir);
+  if (link.existsSync()) {
+    await link.delete();
+  } else if (Directory(dir).existsSync()) {
+    await Directory(dir).delete(recursive: true);
+  }
+}

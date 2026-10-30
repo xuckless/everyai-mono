@@ -25,6 +25,7 @@ final class SessionSpec {
     this.holdClientTools = false,
     this.subagent = false,
     this.mcpConfig = const {},
+    this.skills = const [],
   });
 
   /// The session's worktree.
@@ -82,6 +83,12 @@ final class SessionSpec {
   /// The agent-server's `mcp_config`: user-configured MCP servers by name
   /// (see `StoredMcpServers.mcpConfigFor`). Empty: no MCP tools.
   final Map<String, Object?> mcpConfig;
+
+  /// Agent Skills as OpenHands `Skill`s (see `openHandsSkill`): listed in the
+  /// prompt and loaded with the server's `invoke_skill` tool. The app picks
+  /// them (enabled, and trusted for project skills); the server's own
+  /// `load_*_skills` scans stay off.
+  final List<Map<String, Object?>> skills;
 }
 
 /// A running agent conversation. Events arrive on [events] (history first,

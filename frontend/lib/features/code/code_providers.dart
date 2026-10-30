@@ -12,6 +12,7 @@ import '../../core/providers.dart';
 import '../attachments/attachment.dart';
 import '../models/domain/model_catalog.dart';
 import '../models/models_providers.dart';
+import '../skills/skills_providers.dart' show codeSkillsFor;
 import '../usage/usage_totals.dart';
 import 'domain/agent_mode.dart';
 import 'domain/code_session.dart';
@@ -274,6 +275,8 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     // MCP servers come from the app's list (global plus this project's), never from repository files.
     final projectId = ref.read(codeProjectsProvider).where((p) => p.path == projectDir).firstOrNull?.id;
     final mcpConfig = demo ? const <String, Object?>{} : ref.read(codeMcpServersProvider).mcpConfigFor(projectId);
+    // Skills likewise: the app's enabled ones, and project skills only once trusted.
+    final skills = demo ? const <Map<String, Object?>>[] : await codeSkillsFor(ref, projectId);
     return SessionSpec(
       workingDir: workingDir,
       model: model,
@@ -292,6 +295,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       holdClientTools: holdClientTools,
       subagent: subagent,
       mcpConfig: mcpConfig,
+      skills: skills,
     );
   }
 

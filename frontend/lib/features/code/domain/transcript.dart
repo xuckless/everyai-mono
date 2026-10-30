@@ -480,6 +480,7 @@ String stepTitle(ActionCall call) {
     'ListDirectoryAction' => 'Listed ${call.str('dir_path').isEmpty ? path : call.str('dir_path')}',
     'TerminalAction' => call.str('command'),
     'MCPToolAction' => 'Used ${call.toolName}',
+    'InvokeSkillAction' => 'Loaded the ${call.str('name')} skill',
     _ => call.summary.isNotEmpty ? call.summary : call.toolName,
   };
 }

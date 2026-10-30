@@ -50,6 +50,8 @@ enum AgentMode {
     'FileEditorAction' => call.str('command') == 'view',
     'ReadFileAction' || 'GlobAction' || 'GrepAction' || 'ListDirectoryAction' => true,
     'TaskTrackerAction' || 'ThinkAction' || 'FinishAction' => true,
+    // Returns a skill's instructions; the app escapes the inline commands it would run.
+    'InvokeSkillAction' => true,
     // is_input sends keys to a running process.
     'TerminalAction' => call.action['is_input'] != true && isReadOnlyShell(call.str('command')),
     _ => false,

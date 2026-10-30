@@ -87,7 +87,7 @@ final class OpenHandsHarness implements Harness {
         // and talks to them, and their tools arrive as MCPToolAction.
         if (spec.mcpConfig.isNotEmpty) 'mcp_config': spec.mcpConfig,
         'persona': ?spec.persona,
-        'agent_context': {'system_message_suffix': _suffix(spec)},
+        'agent_context': {'system_message_suffix': _suffix(spec), if (spec.skills.isNotEmpty) 'skills': spec.skills},
       },
       'workspace': {'kind': 'LocalWorkspace', 'working_dir': spec.workingDir},
       'confirmation_policy': spec.mode.confirmationPolicy(holdClientTools: spec.holdClientTools),
