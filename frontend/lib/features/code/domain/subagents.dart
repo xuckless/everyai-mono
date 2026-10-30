@@ -317,7 +317,8 @@ SubagentReport withMergeNote(SubagentReport report, ({List<String> merged, List<
 SubagentReport backgroundStarted(String childId) => SubagentReport(
   SubagentStatus.background,
   'Started in the background as task $childId. Carry on with other work; its report arrives as a '
-  '<task-notification> message when it finishes. Do not wait or poll for it, and do not do the same work yourself.',
+  '<task-notification> message when it finishes. Do not wait or poll for it (no sleep), and do not do the same '
+  'work yourself. With nothing else to do, end your turn with a short note: the notification wakes you.',
 );
 
 /// A background subagent's report, sent to its parent when it ends.

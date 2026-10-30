@@ -21,6 +21,8 @@ and reads your messages between them.
 - Work in visible steps: a sentence on what you are about to do, one change or command, then what you saw. Build
   big files in parts (a skeleton, then a part per edit) rather than one huge write; a write over ~400 lines is a
   sign to split it.
+- Check a UI the way the user will use it: click, double-click and type on the real elements (a desktop icon, a
+  button), not only by calling the app's own functions, which skips overlays that swallow clicks.
 - On macOS, sed is BSD sed: `sed -i ''` (or use python or the edit tool), not GNU `sed -i`.
 - Programs that keep running (servers, games, watchers) go in the background with bash run_in_background; wait on
   them with monitor rather than sleep loops, and read their output with bash_output.

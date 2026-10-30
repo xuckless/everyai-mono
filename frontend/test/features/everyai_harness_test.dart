@@ -541,4 +541,12 @@ for line in sys.stdin:
     expect(block, contains('`pip` installs into Python 3.9 but `python3` is Python 3.14'));
     expect(block, contains('python3 -m pip'));
   });
+
+  test('a command that starts by sleeping is a wait a message can cut short', () {
+    expect(isWaitCommand('sleep 240; ls -la *.md'), isTrue);
+    expect(isWaitCommand('  sleep 5 && cat out.txt'), isTrue);
+    expect(isWaitCommand('sleep 1.5'), isTrue);
+    expect(isWaitCommand('npm test; sleep 5'), isFalse);
+    expect(isWaitCommand('sleepy --fast'), isFalse);
+  });
 }

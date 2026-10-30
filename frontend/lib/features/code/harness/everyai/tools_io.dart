@@ -239,6 +239,9 @@ final _specs = [
 
 /// What a tool did: the action as the transcript shows it, the text the
 /// model reads, and observation fields for the UI.
+/// Whether [command] starts by sleeping: a wait, which a message may cut short.
+bool isWaitCommand(String command) => RegExp(r'^\s*sleep\s+\d+(\.\d+)?[smh]?\s*($|;|&&|\n)').hasMatch(command);
+
 final class ToolOutput {
   const ToolOutput(this.text, {this.isError = false, this.observation = const {}, this.images = const []});
   final String text;

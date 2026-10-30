@@ -136,6 +136,9 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
   /// Messages sent while a run is going: added before the next model call.
   final _inbox = <Map<String, Object?>>[];
 
+  /// Completes when a message lands in [_inbox]: cuts a sleep short.
+  Completer<void> _arrived = Completer<void>();
+
   Completer<({bool accept, String? reason})>? _decision;
 
   bool _looping = false;
@@ -404,6 +407,7 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
     if (_looping) {
       // Steering: read before the next model call.
       _inbox.add(message);
+      if (!_arrived.isCompleted) _arrived.complete();
       return;
     }
     _append(message);
@@ -886,6 +890,23 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
   bool _readOnly(LlmToolCall call) => _readOnlyTools.contains(call.name);
 
   Future<ToolOutput> _execute(LlmToolCall call, Future<void> cancel) async {
+    if (call.name == ToolNames.bash && isWaitCommand(call.args!['command'] as String? ?? '')) {
+      // A sleep to wait for something (a background fork, say) ends when a
+      // message arrives, so the agent reads it at once.
+      if (_arrived.isCompleted) _arrived = Completer<void>();
+      final arrived = _arrived.future;
+      var woke = false;
+      final out = await _tools.run(
+        call.name,
+        call.args!,
+        cancel: Future.any([cancel, arrived.then((_) => woke = true)]),
+      );
+      if (!woke) return out;
+      return const ToolOutput(
+        '[Cut short: a message arrived (below). You never need to sleep to wait for background tasks: end your turn '
+        'and their notifications wake you.]',
+      );
+    }
     if (actionKinds.containsKey(call.name)) return _tools.run(call.name, call.args!, cancel: cancel);
     if (_mcp.has(call.name)) {
       final out = await _mcp.call(call.name, call.args!);
