@@ -220,6 +220,9 @@ test "chat: UI tool, citations, usage with cache, follow-ups, billing" {
     try std.testing.expectEqual(@as(i64, 115 + 230 + 12), total);
     const cached = try env.state.db.one(i64, &c, "SELECT SUM(cached_tokens) FROM usage_events", .{});
     try std.testing.expectEqual(@as(i64, 800), cached);
+
+    // The follow-ups call is pinned to the user's language (none clear here).
+    try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[2], "Write in the same language") != null);
 }
 
 test "chat: invalid UI tool arguments go back to the model, not the app" {
@@ -942,4 +945,34 @@ test "chat: reasoning goes back within the tool loop; effort only for reasoning 
     defer free.deinit();
     try std.testing.expect(std.mem.indexOf(u8, free.body, "event: done") != null);
     try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[3], "effort") == null);
+}
+
+test "aux: follow-ups pin the user's language and use the routed model; titles" {
+    var env: Env = undefined;
+    try start(&env, &.{
+        final_turn,
+        \\{"choices":[{"message":{"role":"assistant","content":"[\"a\",\"b\",\"c\"]"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":0.00001}}
+        ,
+        \\{"choices":[{"message":{"role":"assistant","content":"\"Zigについて学ぶ。\"\n"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":0.00001}}
+    }, true);
+    defer env.deinit();
+    env.state.cfg.aux_followups_model = "openai/gpt-5.4-mini";
+
+    var res = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = "Zigについて教えてください" }},
+    } });
+    defer res.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "event: followups") != null);
+    const f = env.fake.bodies.items[1];
+    try std.testing.expect(std.mem.indexOf(u8, f, "\"model\":\"openai/gpt-5.4-mini\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, f, "Write in Japanese") != null);
+
+    var t = try env.t.post("/v1/aux/title", .{ .json = .{
+        .messages = .{ .{ .role = "user", .content = "Zigについて教えてください" }, .{ .role = "assistant", .content = "Zigは..." } },
+    } });
+    defer t.deinit();
+    try t.expectStatus(.ok);
+    try std.testing.expect(std.mem.indexOf(u8, t.body, "\"title\":\"Zigについて学ぶ\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[2], "Write in Japanese") != null);
 }

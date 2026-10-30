@@ -20,6 +20,7 @@ pub const openrouter = @import("openrouter.zig");
 const agents = @import("agents.zig");
 pub const tools = @import("tools.zig");
 pub const images = @import("images.zig");
+pub const routing = @import("routing.zig");
 pub const anthropic = @import("anthropic.zig");
 pub const devtools = @import("devtools.zig");
 pub const sse_client = @import("net/sse_client.zig");
@@ -81,6 +82,7 @@ pub fn routes(app: *anole.Server(App), state: *App) !void {
     chat.routes(app, state);
     gateway.routes(app, state);
     images.routes(app, state);
+    routing.routes(app, state);
     devtools.routes(app, state);
     agents.routes(app, state);
 }

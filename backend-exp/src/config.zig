@@ -34,6 +34,12 @@ pub const Config = struct {
     research_model: []const u8 = "perplexity/sonar-deep-research",
     /// Cheap model for follow-up questions and titles.
     utility_model: []const u8 = "google/gemini-3.5-flash-lite",
+    /// Per-job overrides of the utility model (empty = use it); see routing.zig.
+    aux_title_model: []const u8 = "",
+    aux_followups_model: []const u8 = "",
+    aux_compaction_model: []const u8 = "",
+    aux_critique_model: []const u8 = "",
+    aux_judge_model: []const u8 = "",
     /// Model for image generation (`generate_image` tool and /v1/images).
     image_model: []const u8 = "google/gemini-3.1-flash-image",
     /// Vector (SVG) model for `generate_image` with `engine: "vector"`.

@@ -29,6 +29,7 @@ const tool_wait = @import("tool_wait.zig");
 const truncation = @import("truncation.zig");
 const safe_fetch = @import("net/safe_fetch.zig");
 const web = @import("web.zig");
+const routing = @import("routing.zig");
 
 const Events = @typeInfo(@typeInfo(@TypeOf(anole.Response.startEventStream)).@"fn".return_type.?).error_union.payload;
 
@@ -933,11 +934,12 @@ fn followUps(app: *App, req: *anole.Request, who: auth.Identity, body: ChatReque
         \\
         \\Answer (excerpt): {s}
         \\
-        \\Suggest 3 short follow-up questions the user is likely to ask next, in the user's language.
+        \\Suggest 3 short follow-up questions the user is likely to ask next. {s}
         \\Reply with only a JSON array of 3 strings.
-    , .{ question[0..@min(question.len, 2000)], answer[0..@min(answer.len, 3000)] });
+    , .{ question[0..@min(question.len, 2000)], answer[0..@min(answer.len, 3000)], try routing.languageNote(req.arena, question) });
+    const model = routing.modelFor(app.cfg, .followups);
     const req_body = try std.json.Stringify.valueAlloc(req.arena, .{
-        .model = app.cfg.utility_model,
+        .model = model,
         .usage = .{ .include = true },
         .max_tokens = 200,
         .messages = .{.{ .role = "user", .content = prompt }},
@@ -949,9 +951,9 @@ fn followUps(app: *App, req: *anole.Request, who: auth.Identity, body: ChatReque
     const v = try std.json.parseFromSliceLeaky(std.json.Value, req.arena, raw, .{});
     if (v.object.get("usage")) |u| if (u == .object) {
         const usage = openrouter.parseUsage(u.object);
-        const c = try billing.charge(app, req, who.user_id, .{ .kind = "followups", .model = app.cfg.utility_model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cost_usd = usage.cost_usd, .session = body.session });
+        const c = try billing.charge(app, req, who.user_id, .{ .kind = "followups", .model = model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cost_usd = usage.cost_usd, .session = body.session });
         // Counted in the conversation's cost, not its context window.
-        try sink.send("usage", .{ .kind = "followups", .model = app.cfg.utility_model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cached_tokens = 0, .cache_write_tokens = 0, .charged_micros = c.charged_micros });
+        try sink.send("usage", .{ .kind = "followups", .model = model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cached_tokens = 0, .cache_write_tokens = 0, .charged_micros = c.charged_micros });
     };
     const content = v.object.get("choices").?.array.items[0].object.get("message").?.object.get("content").?.string;
     const start = std.mem.indexOfScalar(u8, content, '[') orelse return;
