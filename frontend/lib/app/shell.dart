@@ -11,7 +11,9 @@ import 'package:material_ui/material_ui.dart' as m;
 import '../core/platform/platform_kind.dart';
 import '../core/preferences.dart';
 import '../core/theme/every_theme.dart';
+import '../core/ui/adaptive.dart' show showAdaptiveToast;
 import '../features/history/ui/sidebar.dart';
+import '../features/remote/remote_providers.dart' show remoteHostingProvider;
 import 'router.dart';
 
 /// Lets pages toggle the sidebar and know whether it is showing.
@@ -72,6 +74,15 @@ class _AppShellState extends ConsumerState<AppShell> {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final compact = WindowSize.of(context) == WindowSize.compact;
+    // Hosting for remote devices runs app-wide (when the user turned it on);
+    // a device asking to pair is announced wherever the user is.
+    if (Host.isDesktop) {
+      ref.listen(remoteHostingProvider.select((s) => s.link.pending.length), (before, now) {
+        if (now > (before ?? 0) && !widget.location.startsWith(Routes.remote)) {
+          showAdaptiveToast(context, 'A device wants to use Code here. Approve it in Settings → Remote coding.');
+        }
+      });
+    }
 
     Widget body = _SplitView(
       compact: compact,
