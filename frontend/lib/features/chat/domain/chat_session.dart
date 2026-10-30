@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../../core/net/api_error.dart';
 import '../../models/domain/model_catalog.dart';
+import '../../usage/usage_totals.dart';
 import 'message.dart';
 
 /// Where a chat session is in its lifecycle. Transitions:
@@ -67,6 +68,7 @@ final class ChatSessionState {
     this.streamingReasoning = '',
     this.toolStatus = '',
     this.toolsEnabled = true,
+    this.liveUsage = UsageTotals.zero,
   });
 
   final String conversationId;
@@ -104,6 +106,12 @@ final class ChatSessionState {
   /// Whether the model may use tools (the composer's tools menu).
   final bool toolsEnabled;
 
+  /// Usage of the turn in flight (finished turns keep theirs in a [UsagePart]).
+  final UsageTotals liveUsage;
+
+  /// The whole conversation so far, for the composer's meter.
+  UsageTotals get usage => messages.fold(UsageTotals.zero, (sum, m) => sum + m.usage) + liveUsage;
+
   bool get isEmpty => messages.isEmpty;
 
   ChatSessionState copyWith({
@@ -118,6 +126,7 @@ final class ChatSessionState {
     String? streamingReasoning,
     String? toolStatus,
     bool? toolsEnabled,
+    UsageTotals? liveUsage,
   }) => ChatSessionState(
     conversationId: conversationId,
     title: title ?? this.title,
@@ -131,6 +140,7 @@ final class ChatSessionState {
     streamingReasoning: streamingReasoning ?? this.streamingReasoning,
     toolStatus: toolStatus ?? this.toolStatus,
     toolsEnabled: toolsEnabled ?? this.toolsEnabled,
+    liveUsage: liveUsage ?? this.liveUsage,
   );
 }
 

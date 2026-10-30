@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../../models/domain/model_catalog.dart';
+import '../../usage/usage_totals.dart';
 
 enum Role { user, assistant, system }
 
@@ -101,6 +102,13 @@ final class ArtifactPart extends MessagePart {
   final String kind;
 }
 
+/// Tokens and charge for the turn that produced this message (not rendered;
+/// summed for the composer's meter).
+final class UsagePart extends MessagePart {
+  const UsagePart(this.totals);
+  final UsageTotals totals;
+}
+
 @immutable
 final class Message {
   const Message({
@@ -126,6 +134,8 @@ final class Message {
   final String? error;
 
   bool get isUser => role == Role.user;
+
+  UsageTotals get usage => parts.whereType<UsagePart>().fold(UsageTotals.zero, (sum, p) => sum + p.totals);
 
   List<Source> get sources => parts.whereType<SourcesPart>().expand((p) => p.sources).toList(growable: false);
 

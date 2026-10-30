@@ -9,6 +9,9 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/preferences.dart';
 import '../../core/providers.dart';
+import '../models/domain/model_catalog.dart';
+import '../models/models_providers.dart';
+import '../usage/usage_totals.dart';
 import 'domain/agent_mode.dart';
 import 'domain/code_session.dart';
 import 'domain/questions.dart';
@@ -147,6 +150,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         llmApiKey: demo ? '' : await gatewayKey(ref),
         sessionTag: id,
         initialMessage: prompt,
+        maxInputTokens: ref.read(modelCatalogProvider)[ModelId(model)]?.contextLength,
       ),
     );
     ref.read(_liveProvider)[id] = live;
@@ -268,6 +272,8 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
   }
 
   void _onEvent(HarnessEvent event) {
+    // OpenHands reports `stats` after every model call; the cost lives in our ledger.
+    if (event is StateChange) ref.read(codeUsageProvider(sessionId).notifier).refreshSoon();
     _builder.add(event);
     final transcript = _builder.snapshot;
     state = state.copyWith(transcript: transcript);
@@ -351,5 +357,36 @@ final class CodeSessionController extends Notifier<CodeSessionState> {
   Future<void> startBuilding() async {
     await setMode(AgentMode.autoEdit);
     await send('The plan looks good. Go ahead and build it.');
+  }
+}
+
+/// Tokens and spend of a Code session, from the backend's ledger (the gateway
+/// attributes every model call to the session). Demo sessions have none.
+final codeUsageProvider = AsyncNotifierProvider.family<CodeUsage, UsageTotals, String>(CodeUsage.new);
+
+final class CodeUsage extends AsyncNotifier<UsageTotals> {
+  CodeUsage(this.sessionId);
+  final String sessionId;
+  Timer? _debounce;
+
+  @override
+  Future<UsageTotals> build() async {
+    ref.onDispose(() => _debounce?.cancel());
+    final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
+    if (info == null || isDemoPath(info.workingDir)) return UsageTotals.zero;
+    final json = await ref
+        .read(apiClientProvider)
+        .getJson('v1/usage/session/$sessionId', authenticated: !ref.read(appConfigProvider).devSkipAuth);
+    return UsageTotals.fromJson(json);
+  }
+
+  /// Refetches once events go quiet for a second.
+  void refreshSoon() {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(seconds: 1), () async {
+      final next = await AsyncValue.guard(build);
+      // Keep the last reading if the server can't be reached.
+      if (ref.mounted && next.hasValue) state = next;
+    });
   }
 }

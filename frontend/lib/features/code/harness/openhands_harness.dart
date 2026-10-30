@@ -40,6 +40,7 @@ final class OpenHandsHarness implements Harness {
           'api_key': spec.llmApiKey,
           'usage_id': spec.sessionTag,
           'extra_headers': {'X-EveryAI-Session': spec.sessionTag},
+          'max_input_tokens': ?spec.maxInputTokens,
         },
         'tools': [
           {'name': 'terminal'},

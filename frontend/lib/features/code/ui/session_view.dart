@@ -10,6 +10,10 @@ import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/adaptive_page.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../../core/ui/selection.dart';
+import '../../models/domain/model_catalog.dart';
+import '../../models/models_providers.dart';
+import '../../usage/ui/usage_meter.dart';
+import '../../usage/usage_totals.dart';
 import '../code_providers.dart';
 import '../domain/agent_mode.dart';
 import '../domain/code_session.dart';
@@ -116,6 +120,11 @@ class CodeSessionScreen extends ConsumerWidget {
                           info.model.split('/').last,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(color: theme.textMuted, fontSize: 12.5),
+                        ),
+                        meter: UsageMeter(
+                          totals: ref.watch(codeUsageProvider(sessionId)).value ?? UsageTotals.zero,
+                          contextWindow: ref.watch(modelCatalogProvider)[ModelId(info.model)]?.contextLength ?? 0,
+                          modelName: ref.watch(modelCatalogProvider)[ModelId(info.model)]?.name,
                         ),
                       ),
                     ],

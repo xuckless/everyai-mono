@@ -88,10 +88,18 @@ final class UsageReport extends ChatEvent {
     required this.completionTokens,
     required this.cachedTokens,
     required this.chargedMicros,
+    this.cacheWriteTokens = 0,
+    this.model,
+    this.followUps = false,
   });
   final int promptTokens;
   final int completionTokens;
   final int cachedTokens;
+  final int cacheWriteTokens;
+  final String? model;
+
+  /// The follow-up suggestions call: costs money, doesn't fill the context.
+  final bool followUps;
 
   /// What the user was charged, in millionths of a dollar.
   final int chargedMicros;
@@ -191,7 +199,10 @@ final class SseTransport implements ChatTransport {
             promptTokens: (u['prompt_tokens'] as num?)?.toInt() ?? 0,
             completionTokens: (u['completion_tokens'] as num?)?.toInt() ?? 0,
             cachedTokens: (u['cached_tokens'] as num?)?.toInt() ?? 0,
+            cacheWriteTokens: (u['cache_write_tokens'] as num?)?.toInt() ?? 0,
             chargedMicros: (u['charged_micros'] as num?)?.toInt() ?? 0,
+            model: u['model'] as String?,
+            followUps: u['kind'] == 'followups',
           );
         case ('followups', {'questions': final List<Object?> list}):
           yield FollowUpsSuggested(list.whereType<String>().toList(growable: false));

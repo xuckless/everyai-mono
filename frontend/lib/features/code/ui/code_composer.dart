@@ -24,6 +24,7 @@ class CodeComposer extends StatefulWidget {
     this.placeholder = 'Ask for a change, or reply to the agent',
     this.leading,
     this.trailing,
+    this.meter,
     this.minLines = 1,
     this.autofocus = true,
   });
@@ -41,6 +42,9 @@ class CodeComposer extends StatefulWidget {
   /// Extra controls in the bottom row (project and model pickers).
   final Widget? leading;
   final Widget? trailing;
+
+  /// Tokens, cost and context ring, before send.
+  final Widget? meter;
   final int minLines;
   final bool autofocus;
 
@@ -147,6 +151,7 @@ class _CodeComposerState extends State<CodeComposer> {
                   Expanded(
                     child: Align(alignment: Alignment.centerRight, child: widget.trailing ?? const SizedBox()),
                   ),
+                  ?widget.meter,
                   const SizedBox(width: 6),
                   if (widget.busy && widget.onStop != null && !_hasText)
                     AdaptiveIconButton(icon: EveryIcon.stop, tooltip: 'Stop (Esc)', onPressed: widget.onStop)

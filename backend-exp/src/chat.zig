@@ -7,7 +7,8 @@
 //!
 //! Events: delta {text}, reasoning {text}, sources {sources} (new ones, appended), tool {id, name,
 //! arguments}, tool_status {id, name, status, detail?}, image {id, mime, data},
-//! usage {...}, followups {questions}, done {}, error {message, retryable}.
+//! usage {kind: chat|followups, model, tokens..., charged_micros}, followups {questions}, done {},
+//! error {message, retryable}.
 const std = @import("std");
 const anole = @import("anole");
 const App = @import("main.zig").App;
@@ -254,6 +255,7 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
             .provider = route.provider,
         });
         try sink.send("usage", .{
+            .kind = "chat",
             .model = model,
             .prompt_tokens = result.usage.prompt_tokens,
             .completion_tokens = result.usage.completion_tokens,
@@ -435,7 +437,9 @@ fn followUps(app: *App, req: *anole.Request, who: auth.Identity, body: ChatReque
     const v = try std.json.parseFromSliceLeaky(std.json.Value, req.arena, raw, .{});
     if (v.object.get("usage")) |u| if (u == .object) {
         const usage = openrouter.parseUsage(u.object);
-        _ = try billing.charge(app, req, who.user_id, .{ .kind = "followups", .model = app.cfg.utility_model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cost_usd = usage.cost_usd, .session = body.session });
+        const c = try billing.charge(app, req, who.user_id, .{ .kind = "followups", .model = app.cfg.utility_model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cost_usd = usage.cost_usd, .session = body.session });
+        // Counted in the conversation's cost, not its context window.
+        try sink.send("usage", .{ .kind = "followups", .model = app.cfg.utility_model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cached_tokens = 0, .cache_write_tokens = 0, .charged_micros = c.charged_micros });
     };
     const content = v.object.get("choices").?.array.items[0].object.get("message").?.object.get("content").?.string;
     const start = std.mem.indexOfScalar(u8, content, '[') orelse return;

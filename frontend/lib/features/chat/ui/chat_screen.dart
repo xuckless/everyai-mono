@@ -14,6 +14,7 @@ import '../../../core/ui/selection.dart';
 import '../../artifacts/artifact_providers.dart';
 import '../../artifacts/domain/artifact.dart';
 import '../../artifacts/ui/artifact_panel.dart';
+import '../../usage/ui/usage_meter.dart';
 import '../chat_providers.dart';
 import '../domain/message.dart';
 import '../domain/chat_session.dart';
@@ -46,6 +47,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final phase = ref.watch(provider.select((s) => s.phase));
     final title = ref.watch(provider.select((s) => s.title));
     final isEmpty = ref.watch(provider.select((s) => s.isEmpty));
+    final usage = ref.watch(provider.select((s) => s.usage));
     final home = isEmpty && phase is! Loading;
 
     // Like Claude: a new or revised artifact (or a deck) opens the side panel.
@@ -77,6 +79,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       onModeChanged: controller.setMode,
       toolsEnabled: ref.watch(provider.select((s) => s.toolsEnabled)),
       onToolsChanged: controller.setToolsEnabled,
+      meter: UsageMeter(totals: usage, contextWindow: model.contextLength, modelName: model.name),
     );
 
     return AdaptivePage(

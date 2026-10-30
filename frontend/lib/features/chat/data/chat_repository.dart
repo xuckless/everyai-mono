@@ -5,6 +5,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../../core/db/app_database.dart';
 import '../../models/domain/model_catalog.dart';
+import '../../usage/usage_totals.dart';
 import '../domain/message.dart';
 
 /// Persists conversations and messages. Reads are reactive: watch* streams
@@ -202,6 +203,13 @@ final class ChatRepository {
           kind: 'tool_call',
           body: Value(jsonEncode({'tool': toolName, 'args': argumentsJson, 'result': resultJson, 'id': callId})),
         );
+      case UsagePart(:final totals):
+        return MessagePartsCompanion.insert(
+          messageId: messageId,
+          idx: idx,
+          kind: 'usage',
+          body: Value(jsonEncode(totals.toJson())),
+        );
       case ArtifactPart(:final artifactId, :final title, :final kind):
         return MessagePartsCompanion.insert(
           messageId: messageId,
@@ -217,6 +225,7 @@ final class ChatRepository {
     'artifact' => _artifact(p.body ?? '{}'),
     'tool_call' => _toolCall(p.body ?? '{}'),
     'reasoning' => ReasoningPart(p.body ?? ''),
+    'usage' => UsagePart(UsageTotals.fromJson(jsonDecode(p.body ?? '{}') as Map<String, Object?>)),
     'sources' => SourcesPart(
       (jsonDecode(p.body ?? '[]') as List<Object?>).map(Source.fromJson).nonNulls.toList(growable: false),
     ),

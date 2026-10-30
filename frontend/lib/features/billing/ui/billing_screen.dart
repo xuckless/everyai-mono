@@ -6,6 +6,7 @@ import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/adaptive_page.dart';
 import '../../models/domain/model_catalog.dart';
 import '../../models/models_providers.dart';
+import '../../usage/usage_totals.dart';
 import '../billing_providers.dart';
 
 /// Plan, monthly included usage, wallet balance, top-ups and recent usage.
@@ -128,7 +129,7 @@ class BillingScreen extends ConsumerWidget {
               ),
             const AdaptiveSectionHeader('This month'),
             AdaptiveListTile(
-              title: Text('${_count(b.monthTokens)} input tokens'),
+              title: Text('${formatTokens(b.monthTokens)} input tokens'),
               subtitle: Text(
                 b.monthCachedTokens == 0
                     ? 'Repeated context is cached automatically to cut costs.'
@@ -170,12 +171,6 @@ class BillingScreen extends ConsumerWidget {
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     return '${months[d.month - 1]} ${d.day}';
   }
-
-  static String _count(int n) => n >= 1000000
-      ? '${(n / 1000000).toStringAsFixed(1)}M'
-      : n >= 1000
-      ? '${(n / 1000).toStringAsFixed(1)}K'
-      : '$n';
 }
 
 class _UsageTile extends ConsumerWidget {
@@ -196,8 +191,8 @@ class _UsageTile extends ConsumerWidget {
       subtitle: Text(
         [
           '${BillingScreen._date(row.at)} $time',
-          '${BillingScreen._count(row.promptTokens)} in / ${BillingScreen._count(row.completionTokens)} out',
-          if (row.cachedTokens > 0) '${BillingScreen._count(row.cachedTokens)} cached',
+          '${formatTokens(row.promptTokens)} in / ${formatTokens(row.completionTokens)} out',
+          if (row.cachedTokens > 0) '${formatTokens(row.cachedTokens)} cached',
         ].join(' · '),
       ),
       trailing: Text(

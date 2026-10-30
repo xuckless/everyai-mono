@@ -14,6 +14,7 @@ final class SessionSpec {
     required this.llmApiKey,
     required this.sessionTag,
     this.initialMessage,
+    this.maxInputTokens,
   });
 
   /// The session's worktree.
@@ -30,6 +31,9 @@ final class SessionSpec {
   /// Sent as `X-EveryAI-Session` so usage is attributed to the session.
   final String sessionTag;
   final String? initialMessage;
+
+  /// The model's context window, so the agent condenses its history in time.
+  final int? maxInputTokens;
 }
 
 /// A running agent conversation. Events arrive on [events] (history first,

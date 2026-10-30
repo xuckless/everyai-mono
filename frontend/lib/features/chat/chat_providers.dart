@@ -6,6 +6,7 @@ import '../../core/net/api_error.dart';
 import '../../core/providers.dart';
 import '../models/domain/model_catalog.dart';
 import '../models/models_providers.dart';
+import '../usage/usage_totals.dart';
 import 'data/chat_repository.dart';
 import 'data/chat_transport.dart';
 import 'domain/chat_session.dart';
@@ -178,6 +179,7 @@ final class ChatController extends Notifier<ChatSessionState> {
     final parts = <MessagePart>[];
     var sources = const <Source>[];
     var followUps = const <String>[];
+    var usage = UsageTotals.zero;
     void flushText() {
       if (_buffer.isEmpty) return;
       parts.add(TextPart(_buffer.toString()));
@@ -191,6 +193,7 @@ final class ChatController extends Notifier<ChatSessionState> {
         if (sources.isNotEmpty) SourcesPart(sources),
         ...parts,
         if (followUps.isNotEmpty) FollowUpsPart(followUps),
+        if (!usage.isEmpty) UsagePart(usage),
       ];
     }
 
@@ -238,8 +241,16 @@ final class ChatController extends Notifier<ChatSessionState> {
           case SourcesFound(sources: final found):
             sources = List.unmodifiable([...sources, ...found]);
             state = state.copyWith(liveSources: sources);
-          case UsageReport():
-            break; // Billing views read usage from the backend.
+          case final UsageReport r:
+            usage = usage.addCall(
+              prompt: r.promptTokens,
+              completion: r.completionTokens,
+              cached: r.cachedTokens,
+              cacheWrite: r.cacheWriteTokens,
+              charged: r.chargedMicros,
+              context: !r.followUps,
+            );
+            state = state.copyWith(liveUsage: usage);
           case FollowUpsSuggested(:final questions):
             followUps = questions;
           case TurnDone():
@@ -290,6 +301,7 @@ final class ChatController extends Notifier<ChatSessionState> {
       liveParts: const [],
       streamingReasoning: '',
       toolStatus: '',
+      liveUsage: UsageTotals.zero,
     );
     _turn = null;
     _cancel = null;

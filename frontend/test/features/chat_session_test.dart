@@ -231,6 +231,44 @@ void main() {
     expect(state().title, 'persist me');
   });
 
+  test('usage sums per turn, survives a reopen; follow-ups cost but leave the context reading alone', () async {
+    await settle();
+    await ctl().send('quiz me');
+    transport.turns.single
+      ..add(
+        const UsageReport(
+          promptTokens: 1000,
+          completionTokens: 50,
+          cachedTokens: 0,
+          cacheWriteTokens: 900,
+          chargedMicros: 300,
+        ),
+      )
+      ..add(const TextDelta('done'))
+      ..add(const UsageReport(promptTokens: 1100, completionTokens: 20, cachedTokens: 900, chargedMicros: 40));
+    await settle();
+    expect(state().usage.calls, 2);
+    expect(state().usage.contextTokens, 1120);
+    transport.turns.single
+      ..add(
+        const UsageReport(promptTokens: 80, completionTokens: 10, cachedTokens: 0, chargedMicros: 5, followUps: true),
+      )
+      ..add(const TurnDone());
+    unawaited(transport.turns.single.close());
+    await settle();
+
+    container.invalidate(chatSessionProvider(id));
+    container.read(chatSessionProvider(id));
+    await settle();
+    final u = state().usage;
+    expect(u.calls, 3);
+    expect(u.promptTokens, 2180);
+    expect(u.cachedTokens, 900);
+    expect(u.cacheWriteTokens, 900);
+    expect(u.chargedMicros, 345);
+    expect(u.contextTokens, 1120);
+  });
+
   Future<void> answer(String text) async {
     transport.turns.last
       ..add(TextDelta(text))

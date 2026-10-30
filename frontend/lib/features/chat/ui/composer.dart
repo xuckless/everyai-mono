@@ -33,6 +33,7 @@ class Composer extends ConsumerStatefulWidget {
     this.onToolsChanged,
     this.placeholder = 'How can I help you today?',
     this.minLines = 1,
+    this.meter,
   });
 
   final bool busy;
@@ -50,6 +51,9 @@ class Composer extends ConsumerStatefulWidget {
 
   /// The home screen's composer starts taller.
   final int minLines;
+
+  /// Tokens, cost and context ring, beside the model picker.
+  final Widget? meter;
 
   @override
   ConsumerState<Composer> createState() => ComposerState();
@@ -218,6 +222,7 @@ class ComposerState extends ConsumerState<Composer> {
                         ),
                       ),
                     ),
+                    ?widget.meter,
                     const SizedBox(width: 6),
                     _SendButton(busy: widget.busy, enabled: _canSend, onSend: _send, onStop: widget.onStop),
                   ],

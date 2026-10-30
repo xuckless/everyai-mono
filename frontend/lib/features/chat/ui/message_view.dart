@@ -583,6 +583,7 @@ class _PartView extends StatelessWidget {
         isLatest ? _FollowUps(questions: questions, conversationId: conversationId) : const SizedBox.shrink(),
       final ToolCallPart call => InlineVisual(part: call, conversationId: conversationId),
       ArtifactPart(:final title) => Text(title, style: TextStyle(color: theme.accent)),
+      UsagePart() => const SizedBox.shrink(),
     };
   }
 }
