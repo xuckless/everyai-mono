@@ -277,11 +277,15 @@ class _SidebarSurface extends StatelessWidget {
     final theme = EveryTheme.of(context);
     final content = SafeArea(right: false, child: child);
     return switch (theme.design) {
-      // Native NSVisualEffectView vibrancy behind a cleared Flutter layer.
-      DesignLanguage.macos when !kIsWeb => TransparentMacOSSidebar(
-        child: DecoratedBox(
-          decoration: const BoxDecoration(color: Color(0xFF000000), backgroundBlendMode: BlendMode.clear),
-          child: content,
+      // Native NSVisualEffectView vibrancy behind a cleared Flutter layer. The
+      // native view only resizes when this widget builds, so rebuild on every
+      // constraint change (rail ↔ expanded animation, window resize).
+      DesignLanguage.macos when !kIsWeb => LayoutBuilder(
+        builder: (context, constraints) => TransparentMacOSSidebar(
+          child: DecoratedBox(
+            decoration: const BoxDecoration(color: Color(0xFF000000), backgroundBlendMode: BlendMode.clear),
+            child: content,
+          ),
         ),
       ),
       DesignLanguage.fluent => f.Mica(child: content),
