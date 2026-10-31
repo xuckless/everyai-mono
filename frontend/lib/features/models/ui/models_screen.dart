@@ -125,11 +125,14 @@ class _ModelsScreenState extends ConsumerState<ModelsScreen> {
 
     return AdaptivePage(
       title: 'Model shop',
+      header: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: header),
+      ),
       body: ListView.builder(
-        padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
-        itemCount: header.length + (models.isEmpty ? 1 : models.length),
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
+        itemCount: models.isEmpty ? 1 : models.length,
         itemBuilder: (context, i) {
-          if (i < header.length) return header[i];
           if (models.isEmpty) {
             final filtered = q.isNotEmpty || _provider != null || _filter != _Filter.all;
             return Padding(
@@ -149,7 +152,7 @@ class _ModelsScreenState extends ConsumerState<ModelsScreen> {
               ),
             );
           }
-          final spec = models[i - header.length];
+          final spec = models[i];
           return _ModelTile(
             spec: spec,
             added: mine.contains(spec.id),

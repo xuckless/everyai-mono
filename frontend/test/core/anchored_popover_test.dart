@@ -53,4 +53,41 @@ void main() {
     expect(rect.left, moreOrLessEquals(8));
     expect(rect.right, moreOrLessEquals(393 - 8));
   });
+
+  testWidgets('opens beside a trigger that fades out once the panel is up', (tester) async {
+    final hidden = ValueNotifier(false);
+    addTearDown(hidden.dispose);
+    await tester.pumpWidget(
+      m.MaterialApp(
+        home: m.Material(
+          child: EveryThemeScope(
+            theme: EveryTheme.resolve(DesignLanguage.cupertino, Brightness.dark),
+            child: Padding(
+              padding: const EdgeInsets.only(left: 40, top: 300),
+              child: Align(
+                alignment: Alignment.topLeft,
+                child: ValueListenableBuilder(
+                  valueListenable: hidden,
+                  // A sidebar row's ••• button: shown only while hovered.
+                  builder: (context, h, child) => Opacity(opacity: h ? 0 : 1, child: child),
+                  child: AnchoredPopover(
+                    builder: (context, close) => const SizedBox(key: Key('panel'), height: 100, width: 200),
+                    child: const SizedBox(width: 24, height: 24, child: Text('•')),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('•'));
+    await tester.pumpAndSettle();
+    hidden.value = true;
+    await tester.pumpAndSettle();
+    final rect = tester.getRect(find.byKey(const Key('panel')));
+    expect(rect.left, moreOrLessEquals(40));
+    // Lower half of the window: it opens upward, its bottom just above the trigger.
+    expect(rect.bottom, moreOrLessEquals(300 - 6));
+  });
 }

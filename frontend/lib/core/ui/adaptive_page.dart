@@ -48,8 +48,9 @@ class AdaptivePage extends StatelessWidget {
     this.actions = const [],
     this.onBack,
     this.backTooltip = 'Back',
-    required this.body,
-  });
+    this.header,
+    required Widget body,
+  }) : _body = body; // ignore: prefer_initializing_formals
 
   final String title;
 
@@ -61,7 +62,32 @@ class AdaptivePage extends StatelessWidget {
   /// elsewhere, child sessions).
   final VoidCallback? onBack;
   final String backTooltip;
-  final Widget body;
+
+  /// Stays put below the bar while [body] scrolls (a search field, filters).
+  /// The body then starts below it, not under the bar.
+  final Widget? header;
+  final Widget _body;
+
+  /// The page's content: [header] pinned below the bar, then the body. Under
+  /// a translucent bar a header in a plain Column would sit beneath the bar.
+  Widget get body {
+    final top = header;
+    if (top == null) return _body;
+    return Builder(
+      builder: (context) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: EdgeInsets.only(top: MediaQuery.paddingOf(context).top),
+            child: top,
+          ),
+          Expanded(
+            child: MediaQuery.removePadding(context: context, removeTop: true, child: _body),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {

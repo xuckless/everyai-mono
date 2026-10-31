@@ -30,20 +30,16 @@ class _AnchoredPopoverState extends State<AnchoredPopover> {
   static double _radius(EveryTheme theme) => theme.design == DesignLanguage.fluent ? 8 : 14;
 
   final _portal = OverlayPortalController();
-  final _link = LayerLink();
 
   @override
   Widget build(BuildContext context) {
-    return CompositedTransformTarget(
-      link: _link,
-      child: OverlayPortal(
-        controller: _portal,
-        overlayChildBuilder: _buildPanel,
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: _portal.toggle,
-          child: MouseRegion(cursor: SystemMouseCursors.click, child: widget.child),
-        ),
+    return OverlayPortal(
+      controller: _portal,
+      overlayChildBuilder: _buildPanel,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _portal.toggle,
+        child: MouseRegion(cursor: SystemMouseCursors.click, child: widget.child),
       ),
     );
   }
@@ -51,8 +47,14 @@ class _AnchoredPopoverState extends State<AnchoredPopover> {
   Widget _buildPanel(BuildContext overlayContext) {
     final theme = EveryTheme.of(context);
     final box = context.findRenderObject()! as RenderBox;
-    final origin = box.localToGlobal(Offset.zero);
-    final window = MediaQuery.sizeOf(overlayContext);
+    // Placed from the trigger's rect in the overlay, not by following its
+    // layer: a trigger that fades out once the pointer leaves its row
+    // (Opacity 0 isn't painted) would drop the panel at the window's corner.
+    final overlay = Overlay.maybeOf(context)?.context.findRenderObject() as RenderBox?;
+    final origin = box.localToGlobal(Offset.zero, ancestor: overlay);
+    // Read either way: a window resize rebuilds the panel at the new spot.
+    final screen = MediaQuery.sizeOf(overlayContext);
+    final window = overlay != null && overlay.hasSize ? overlay.size : screen;
     final padding = MediaQuery.paddingOf(overlayContext);
     // The on-screen keyboard (phones) covers the bottom of the window.
     final bottom = window.height - MediaQuery.viewInsetsOf(overlayContext).bottom;
@@ -84,33 +86,29 @@ class _AnchoredPopoverState extends State<AnchoredPopover> {
           child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: _portal.hide),
         ),
         Positioned(
-          left: 0,
-          top: 0,
-          child: CompositedTransformFollower(
-            link: _link,
-            targetAnchor: Alignment(alignRight ? 1 : -1, openUp ? -1 : 1),
-            followerAnchor: Alignment(alignRight ? 1 : -1, openUp ? 1 : -1),
-            offset: Offset(dx, openUp ? -6 : 6),
-            child: CallbackShortcuts(
-              bindings: {const SingleActivator(LogicalKeyboardKey.escape): _portal.hide},
-              child: FocusScope(
-                autofocus: true,
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(
-                    minWidth: minWidth,
-                    maxWidth: maxWidth,
-                    maxHeight: roomVertical.clamp(120, widget.maxHeight),
+          left: alignRight ? null : origin.dx + dx,
+          right: alignRight ? window.width - (origin.dx + box.size.width + dx) : null,
+          top: openUp ? null : origin.dy + box.size.height + 6,
+          bottom: openUp ? window.height - origin.dy + 6 : null,
+          child: CallbackShortcuts(
+            bindings: {const SingleActivator(LogicalKeyboardKey.escape): _portal.hide},
+            child: FocusScope(
+              autofocus: true,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  minWidth: minWidth,
+                  maxWidth: maxWidth,
+                  maxHeight: roomVertical.clamp(120, widget.maxHeight),
+                ),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(_radius(theme)),
+                    boxShadow: const [BoxShadow(color: Color(0x80000000), blurRadius: 48, offset: Offset(0, 24))],
                   ),
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(_radius(theme)),
-                      boxShadow: const [BoxShadow(color: Color(0x80000000), blurRadius: 48, offset: Offset(0, 24))],
-                    ),
-                    child: GlassSurface(
-                      level: GlassLevel.thick,
-                      radius: _radius(theme),
-                      child: widget.builder(overlayContext, _portal.hide),
-                    ),
+                  child: GlassSurface(
+                    level: GlassLevel.thick,
+                    radius: _radius(theme),
+                    child: widget.builder(overlayContext, _portal.hide),
                   ),
                 ),
               ),

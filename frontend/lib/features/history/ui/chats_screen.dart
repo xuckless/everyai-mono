@@ -62,7 +62,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
       actions: [
         AdaptiveIconButton(icon: EveryIcon.newChat, tooltip: 'New chat', onPressed: () => context.go(Routes.newChat)),
       ],
-      body: Center(
+      header: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 760),
           child: Column(
@@ -85,6 +85,16 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                   style: theme.type.callout.tint(theme.textMuted),
                 ),
               ),
+            ],
+          ),
+        ),
+      ),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 760),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
               Expanded(
                 child: visible.isEmpty
                     ? (_matches == null

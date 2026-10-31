@@ -46,7 +46,7 @@ class _ArtifactsScreenState extends ConsumerState<ArtifactsScreen> {
 
     return AdaptivePage(
       title: 'Artifacts',
-      body: Center(
+      header: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 760),
           child: Column(
@@ -69,6 +69,16 @@ class _ArtifactsScreenState extends ConsumerState<ArtifactsScreen> {
                   style: theme.type.callout.tint(theme.textMuted),
                 ),
               ),
+            ],
+          ),
+        ),
+      ),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 760),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
               Expanded(
                 child: switch (library) {
                   AsyncLoading() when all.isEmpty => const Center(child: AdaptiveProgress()),
