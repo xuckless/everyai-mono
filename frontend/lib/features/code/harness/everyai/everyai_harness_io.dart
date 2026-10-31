@@ -1093,6 +1093,27 @@ final class EveryAISession
   }
 
   /// Shows [calls], waits for approval, runs them, and records the results.
+  /// Calls whose arguments arrived cut off, this session: the advice grows
+  /// firmer each time (one more whole-file attempt is what fails).
+  var _cutOffs = 0;
+
+  String _cutOffAdvice(String tool) {
+    _cutOffs++;
+    final writes = tool == ToolNames.write || tool == ToolNames.edit || tool == ToolNames.applyPatch;
+    if (!writes) {
+      return 'Error: the arguments for $tool were not valid JSON (the reply was likely cut off). Nothing ran. Call '
+          'it again with complete, shorter arguments.';
+    }
+    if (_cutOffs == 1) {
+      return 'Error: the $tool call was cut off before its arguments were complete, so nothing was written. Write '
+          'the file in parts: the first ~$writePartLines lines with write, then each next part with write mode '
+          '"append" (or a skeleton, then edit per section).';
+    }
+    return 'Error: the $tool call was cut off again and nothing was written. Do NOT try the whole file in one call '
+        'again. Send parts of at most ~$writePartLines lines: write the first part now, then one write with mode '
+        '"append" per part, each in its own turn.';
+  }
+
   /// True when the run should stop (refused or interrupted).
   Future<bool> _handleCalls(
     List<LlmToolCall> calls,
@@ -1164,15 +1185,7 @@ final class EveryAISession
       }
       if (args == null) {
         // A call cut off or garbled: never run, the model is told why.
-        _result(
-          call,
-          actionId,
-          ToolOutput(
-            'Error: the arguments for ${call.name} were not valid JSON (the reply may have been cut off). Call it '
-            'again with complete arguments; for a long file, write it in parts.',
-            isError: true,
-          ),
-        );
+        _result(call, actionId, ToolOutput(_cutOffAdvice(call.name), isError: true));
         continue;
       }
       waiting.add((call: call, actionId: actionId));

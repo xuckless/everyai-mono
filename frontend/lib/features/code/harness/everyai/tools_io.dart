@@ -186,11 +186,20 @@ final _specs = [
   ),
   _fn(
     ToolNames.write,
-    'Create or overwrite a file with `content`. To change part of an existing file use edit; an existing file '
-    'must have been read first.',
+    'Create or overwrite a file with `content`, or add to its end with mode "append". To change part of an '
+    'existing file use edit; an existing file must have been read first.\n'
+    '- At most about $writePartLines lines per call. Build a longer file in parts: write the first part (or a '
+    'skeleton), then add each next part with mode "append", or fill the skeleton with edit. One huge write stalls '
+    'for minutes and is often cut off and lost.\n'
+    '- Each appended part should end on a whole line.',
     {
       'file_path': {'type': 'string'},
-      'content': {'type': 'string'},
+      'content': {'type': 'string', 'description': 'At most about $writePartLines lines'},
+      'mode': {
+        'type': 'string',
+        'enum': ['overwrite', 'append'],
+        'description': 'overwrite (default) replaces the file; append adds content to its end',
+      },
     },
     ['file_path', 'content'],
   ),
@@ -295,6 +304,9 @@ final class ToolOutput {
 
 /// An image a tool returns: [label] says what it is, [dataUrl] is the picture.
 typedef ToolImage = ({String label, String dataUrl});
+
+/// How many lines one write should carry; longer files go in parts.
+const writePartLines = 300;
 
 /// The extensions read shows as pictures.
 const imageExtensions = {'png', 'jpg', 'jpeg', 'gif', 'webp'};
@@ -704,18 +716,31 @@ final class ToolRunner {
   ToolOutput _writeFile(Map<String, Object?> args) {
     final path = resolvePath(root, args['file_path'] as String? ?? '');
     final content = args['content'] as String? ?? '';
+    final append = args['mode'] == 'append';
     final file = File(path);
     final existed = file.existsSync();
     final before = existed ? file.readAsStringSync() : '';
     if (existed) {
       if (_staleRead(path) case final problem?) return ToolOutput(problem, isError: true);
     }
+    // Parts meet on a line break.
+    final after = !append || before.isEmpty
+        ? content
+        : '$before${before.endsWith('\n') || content.startsWith('\n') ? '' : '\n'}$content';
     file.parent.createSync(recursive: true);
-    file.writeAsStringSync(content);
+    file.writeAsStringSync(after);
     _read[path] = file.lastModifiedSync();
+    final lines = const LineSplitter().convert(content).length;
+    final total = append ? const LineSplitter().convert(after).length : lines;
+    final what = append && existed
+        ? 'Appended $lines lines to $path (now $total lines).'
+        : '${existed ? 'Overwrote' : 'Created'} $path ($lines lines).';
     return ToolOutput(
-      '${existed ? 'Overwrote' : 'Created'} $path (${const LineSplitter().convert(content).length} lines).',
-      observation: {'path': path, 'old_content': before, 'new_content': content},
+      lines > writePartLines * 2
+          ? '$what That was one write of $lines lines: write longer files in parts of up to about $writePartLines '
+                'lines (mode "append" for each next part), since a long single write stalls and is often cut off.'
+          : what,
+      observation: {'path': path, 'old_content': before, 'new_content': after},
     );
   }
 

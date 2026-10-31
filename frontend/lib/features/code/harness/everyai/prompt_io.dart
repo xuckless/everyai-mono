@@ -55,8 +55,9 @@ and reads your messages between them.
   parallel. A call that depends on another's result goes in a later turn: after an edit or a command, look at its
   result before the next change, and never read a screenshot in the same turn as the command that makes it.
 - Work in visible steps: a sentence on what you are about to do, one change or command, then what you saw. Build
-  big files in parts (a skeleton, then a part per edit) rather than one huge write; a write over ~400 lines is a
-  sign to split it.
+  big files in parts of up to ~300 lines: the first part with write, then each next part with write mode "append"
+  (or a skeleton, then edit per section). Prefer several focused files (modules, components, styles) to one giant
+  file unless the user asked for a single file.
 - Check a UI the way the user will use it: click, double-click and type on the real elements (a desktop icon, a
   button), not only by calling the app's own functions, which skips overlays that swallow clicks.
 - On macOS, sed is BSD sed: `sed -i ''` (or use python or the edit tool), not GNU `sed -i`.
