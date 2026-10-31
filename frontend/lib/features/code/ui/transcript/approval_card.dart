@@ -1,9 +1,11 @@
+
 import 'dart:convert';
 
 import 'package:everyai_markdown/everyai_markdown.dart' show languageForPath;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+import '../../../../core/platform/platform_kind.dart';
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/every_icons.dart';
@@ -81,6 +83,7 @@ class _ApprovalCardState extends State<ApprovalCard> {
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.enter, meta: true): () => widget.onAllow(ApprovalScope.once),
+        const SingleActivator(LogicalKeyboardKey.enter, control: true): () => widget.onAllow(ApprovalScope.once),
         const SingleActivator(LogicalKeyboardKey.escape): () => setState(() => _denying = true),
       },
       child: Focus(
@@ -154,7 +157,10 @@ class _ApprovalCardState extends State<ApprovalCard> {
                       onPressed: () => widget.onAllow(ApprovalScope.session),
                     ),
                   ],
-                  AdaptiveButton(label: 'Allow once  ⌘↩', onPressed: () => widget.onAllow(ApprovalScope.once)),
+                  AdaptiveButton(
+                    label: 'Allow once  ${Host.enterKeys(command: true)}',
+                    onPressed: () => widget.onAllow(ApprovalScope.once),
+                  ),
                 ],
               ),
               if (remember != null)
@@ -181,6 +187,7 @@ class _ApprovalCardState extends State<ApprovalCard> {
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.enter, meta: true): () => widget.onAllow(ApprovalScope.once),
+        const SingleActivator(LogicalKeyboardKey.enter, control: true): () => widget.onAllow(ApprovalScope.once),
         const SingleActivator(LogicalKeyboardKey.escape): () => setState(() => _denying = true),
       },
       child: Focus(
@@ -256,7 +263,10 @@ class _ApprovalCardState extends State<ApprovalCard> {
                       emphasis: ButtonEmphasis.secondary,
                       onPressed: () => widget.onMode(AgentMode.autoEdit),
                     ),
-                  AdaptiveButton(label: 'Allow all  ⌘↩', onPressed: () => widget.onAllow(ApprovalScope.once)),
+                  AdaptiveButton(
+                    label: 'Allow all  ${Host.enterKeys(command: true)}',
+                    onPressed: () => widget.onAllow(ApprovalScope.once),
+                  ),
                 ],
               ),
             ],

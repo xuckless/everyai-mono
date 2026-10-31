@@ -19,7 +19,7 @@ import '../domain/agent_mode.dart';
 import '../uploads/uploads.dart';
 
 /// The Code composer. Enter sends (or queues while the agent works),
-/// ⌥Enter interrupts and sends now, Esc stops. `/` at the start opens the
+/// Option-Enter interrupts and sends now, Esc stops. `/` at the start opens the
 /// command menu.
 class CodeComposer extends ConsumerStatefulWidget {
   const CodeComposer({
@@ -241,7 +241,9 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
                   child: AdaptiveTextField(
                     controller: _controller,
                     focusNode: _focus,
-                    placeholder: widget.busy ? 'Queue a message (⌥↩ to send now)' : widget.placeholder,
+                    placeholder: widget.busy
+                        ? 'Queue a message · ${Host.enterKeys(option: true)} sends now'
+                        : widget.placeholder,
                     minLines: widget.minLines,
                     maxLines: 10,
                     borderless: true,

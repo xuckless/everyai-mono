@@ -1,6 +1,8 @@
+
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+import '../../../core/platform/platform_kind.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/every_icons.dart';
@@ -231,7 +233,7 @@ class _QuestionCardState extends State<QuestionCard> {
                       !enabled && !_sent
                           ? widget.closedLabel
                           : missing.isEmpty
-                          ? '⌘↩ to submit'
+                          ? '${Host.enterKeys(command: true)} to submit'
                           : _paged
                           ? 'Still to answer: ${missing.join(', ')}'
                           : 'Pick an answer to continue',

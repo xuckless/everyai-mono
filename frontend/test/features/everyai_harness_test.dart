@@ -33,6 +33,9 @@ final class FakeGateway {
   final replies = <Map<String, Object?>>[];
   final requests = <Map<String, Object?>>[];
 
+  /// How long a streamed reply takes to start (a slow model call).
+  var delay = Duration.zero;
+
   static Future<FakeGateway> start() async => FakeGateway._(await HttpServer.bind(InternetAddress.loopbackIPv4, 0));
 
   String get baseUrl => 'http://127.0.0.1:${_server.port}/v1';
@@ -65,6 +68,7 @@ final class FakeGateway {
       await req.response.close();
       return;
     }
+    await Future<void>.delayed(delay);
     final next = replies.isEmpty ? {'text': 'Done.', 'calls': const <(String, String)>[]} : replies.removeAt(0);
     req.response.headers.contentType = ContentType('text', 'event-stream');
     void chunk(Map<String, Object?> delta, {String? finish}) => req.response.write(
@@ -410,6 +414,24 @@ void main() {
     expect(system, contains('<MODEL-NOTES>'));
     expect(system.indexOf('<HARNESS>'), lessThan(system.indexOf('<MODEL-NOTES>')));
     expect(events.whereType<ActionCall>().last.actionKind, 'ApplyPatchAction');
+  });
+
+  test('a message sent right after a stop (Option-Enter) runs instead of being dropped', () async {
+    gateway
+      ..delay = const Duration(milliseconds: 600)
+      ..reply(text: 'Building the old thing.')
+      ..reply(text: 'Doing the new thing.');
+    final session = await harness.start(spec('build the old thing'));
+    final run = drive(session);
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    gateway.delay = Duration.zero;
+    // What steer does: stop the run, then send at once.
+    await session.interrupt();
+    await session.send('do the new thing instead');
+    final events = await run;
+    final last = gateway.requests.last['messages']! as List;
+    expect(jsonEncode(last), contains('do the new thing instead'));
+    expect(events.whereType<StateChange>().last.executionStatus, ExecutionStatus.finished);
   });
 
   test('a Claude session keeps edit and write and gets no rules block', () async {

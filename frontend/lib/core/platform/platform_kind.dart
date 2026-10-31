@@ -54,6 +54,14 @@ abstract final class Host {
   static bool get hasTrafficLights => !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
   static bool get isApple =>
       !kIsWeb && (defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.macOS);
+
+  /// A shortcut ending in Return as the host writes it: `⌘⌥↩` on Apple
+  /// hosts, `Ctrl+Alt+Enter` elsewhere. The arrow carries the text variation
+  /// selector so it never draws as an emoji.
+  static String enterKeys({bool command = false, bool option = false}) => isApple
+      ? '${command ? '⌘' : ''}${option ? '⌥' : ''}\u21A9\uFE0E'
+      : [if (command) 'Ctrl', if (option) 'Alt', 'Enter'].join('+');
+
   static bool get isDesktop =>
       !kIsWeb &&
       (defaultTargetPlatform == TargetPlatform.macOS ||

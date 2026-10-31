@@ -703,7 +703,9 @@ final class EveryAISession
     final message = {'role': 'user', 'content': images.isEmpty ? text : content, '_eid': eid};
     final moved = _flow?.onMessage(text) ?? false;
     if (_looping) {
-      // Steering: read before the next model call.
+      // Steering: read before the next model call. A message right after a
+      // stop (Option-Enter) is a new instruction, so the run carries on.
+      _pauseRequested = false;
       _inbox.add(message);
       if (moved) _inbox.add({'role': 'user', 'content': _flow!.note(), '_eid': _newId()});
       if (moved) _saveFlow();
@@ -1014,7 +1016,12 @@ final class EveryAISession
     } finally {
       _looping = false;
       _cancel = null;
-      unawaited(_browser.close());
+      // A message that arrived while the stopped call unwound starts the next run.
+      if (_inbox.isNotEmpty && !_pauseRequested) {
+        unawaited(_run());
+      } else {
+        unawaited(_browser.close());
+      }
     }
   }
 
