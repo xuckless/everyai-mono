@@ -5,7 +5,10 @@ pub fn build(b: *std.Build) void {
     const app = anole.addApp(b, .{
         .name = "everyai-backend-exp",
         .root_source_file = b.path("src/main.zig"),
-        .profile = .full,
+        // The web preset (no HTTP/3, gRPC, MongoDB, Redis, NATS, Kafka) minus what
+        // this app never uses. Jobs stay: webhookVerify (webhooks) and the cron need them.
+        .profile = .web,
+        .features = .{ .postgres = false, .s3 = false, .smtp = false, .net = false, .lambda = false, .json = false, .brotli = false },
     });
 
     // `zig build test`: unit tests plus the routes served in memory.
