@@ -6,7 +6,9 @@ import 'package:flutter/services.dart';
 import '../checks/math_raster.dart';
 import '../checks/webview_diagram_renderer.dart';
 import '../domain/artifact.dart';
+import '../domain/chart_spec.dart';
 import '../ui/renderers/slides_view.dart';
+import 'chart_svg.dart';
 import 'diagram_raster.dart';
 import 'doc_model.dart';
 import 'docx_writer.dart';
@@ -59,6 +61,21 @@ List<DownloadOption> downloadsOf(Visual v) {
           if (f == null) throw StateError('This illustration could not be drawn.');
           return f.png;
         }),
+      ];
+    case VisualKind.chart:
+      final spec = ChartSpec.fromJson(v.args);
+      final svg = chartSvg(spec);
+      return [
+        if (svg != null) ...[
+          DownloadOption('PNG', 'png', () async {
+            final f = await rasterizeSvg(svg, maxWidth: 1600, scale: 2);
+            if (f == null) throw StateError('This chart could not be drawn.');
+            return f.png;
+          }),
+          DownloadOption('SVG', 'svg', () => utf8Of(svg)),
+        ],
+        DownloadOption('CSV', 'csv', () => utf8Of(spec.csv)),
+        DownloadOption('JSON', 'json', () => utf8Of(export.text)),
       ];
     case VisualKind.diagram when diagramChecksSupported:
       return [

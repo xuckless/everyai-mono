@@ -154,7 +154,7 @@ const quiz_turn =
 ;
 
 const bad_chart_turn =
-    \\data: {"model":"anthropic/claude-haiku-5.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"toolu_9","type":"function","function":{"name":"render_chart","arguments":"{\"type\": \"donut\", \"series\": []}"}}]}}]}
+    \\data: {"model":"anthropic/claude-haiku-5.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"toolu_9","type":"function","function":{"name":"render_chart","arguments":"{\"type\": \"radar\", \"series\": []}"}}]}}]}
     \\
     \\data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":0.00001}}
     \\

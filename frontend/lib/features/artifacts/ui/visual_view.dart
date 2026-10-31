@@ -13,6 +13,7 @@ import '../domain/artifact.dart';
 import '../domain/drawing.dart';
 import 'download_button.dart';
 import 'image_view.dart';
+import '../domain/chart_spec.dart';
 import 'renderers/chart_view.dart';
 import 'renderers/drawing_page.dart';
 import 'renderers/flashcards_view.dart';
@@ -73,7 +74,7 @@ class VisualBody extends ConsumerWidget {
           surface: WebSurface.diagram,
         );
       }(),
-      VisualKind.chart => ChartView(visual: visual, height: expanded ? 380 : 260),
+      VisualKind.chart => ChartView(spec: ChartSpec.fromJson(visual.args), height: expanded ? 380 : 260),
       VisualKind.quiz => QuizView(visual: visual, conversationId: conversationId),
       VisualKind.flashcards => FlashcardsView(visual: visual, height: expanded ? 300 : 210),
       VisualKind.slides => SlidesView(visual: visual, showNotes: expanded),

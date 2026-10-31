@@ -642,6 +642,47 @@ test "artifacts: seed from history, edit, report misses" {
     try std.testing.expectEqual(@as(usize, 0), (try docs.track(a, "edit_artifact", unknown)).?.applied);
 }
 
+/// What is wrong with the ```chart blocks in `content` (each must be a JSON
+/// object with `series`, like render_chart's arguments); null when nothing is.
+fn chartProblems(arena: std.mem.Allocator, content: []const u8) !?[]const u8 {
+    const fence = "```chart";
+    var out: std.Io.Writer.Allocating = .init(arena);
+    var rest = content;
+    var n: usize = 0;
+    while (std.mem.indexOf(u8, rest, fence)) |at| {
+        rest = rest[at + fence.len ..];
+        const line_end = std.mem.indexOfScalar(u8, rest, '\n') orelse break;
+        // ```chart must be the whole info string (not ```charts or ```chart.js).
+        if (std.mem.trim(u8, rest[0..line_end], " \t\r").len > 0) continue;
+        n += 1;
+        rest = rest[line_end + 1 ..];
+        const end = std.mem.indexOf(u8, rest, "```") orelse rest.len;
+        const block = rest[0..end];
+        rest = rest[end..];
+        const value = std.json.parseFromSliceLeaky(std.json.Value, arena, block, .{}) catch {
+            try out.writer.print("\n- chart {d}: not valid JSON", .{n});
+            continue;
+        };
+        const series = if (value == .object) value.object.get("series") else null;
+        if (series == null or series.? != .array or series.?.array.items.len == 0)
+            try out.writer.print("\n- chart {d}: needs a JSON object with a non-empty series list", .{n});
+    }
+    if (out.written().len == 0) return null;
+    return try std.fmt.allocPrint(arena, "Note: the app shows these ```chart blocks as plain code. Fix them with edit_artifact; each holds the same JSON object as render_chart's arguments:{s}", .{out.written()});
+}
+
+test "chart blocks in a document are checked" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const good = "# R\n```chart\n{\"type\":\"bar\",\"series\":[{\"name\":\"a\",\"points\":[{\"x\":\"q\",\"y\":1}]}]}\n```\n";
+    try std.testing.expect(try chartProblems(a, good) == null);
+    try std.testing.expect(try chartProblems(a, "```chart.js\nnot json\n```") == null);
+    const bad = try chartProblems(a, good ++ "```chart\n{\"type\":\"bar\"\n```\n```chart\n{\"type\":\"pie\"}\n```");
+    try std.testing.expect(std.mem.indexOf(u8, bad.?, "chart 2: not valid JSON") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bad.?, "chart 3: needs") != null);
+}
+
 /// The text of a message's content: the string, or its text parts joined.
 fn textOf(content: std.json.Value) []const u8 {
     return switch (content) {
@@ -704,7 +745,12 @@ fn runTool(app: *App, req: *anole.Request, who: auth.Identity, body: ChatRequest
             if (tools.clientOnly(call.name))
                 return std.fmt.allocPrint(req.arena, "Error: {s} is turned off in the user's app. Carry on without it.", .{call.name});
             try sink.send("tool", .{ .id = call.id, .name = call.name, .arguments = args });
-            return if (edited) |e| e.message else try tool_check.shown(req.arena, call.name, args);
+            const shown = if (edited) |e| e.message else try tool_check.shown(req.arena, call.name, args);
+            // Charts inside a document the app can't draw: the model fixes them.
+            const id = openrouter.jsonString(args, "id") orelse "";
+            if (std.mem.endsWith(u8, call.name, "_artifact")) if (docs.map.get(id)) |content|
+                if (try chartProblems(req.arena, content)) |note| return std.mem.concat(req.arena, u8, &.{ shown, "\n", note });
+            return shown;
         },
         .server => {
             try sink.send("tool_status", .{ .id = call.id, .name = call.name, .status = "running", .detail = openrouter.jsonString(args, "url") orelse openrouter.jsonString(args, "query") orelse openrouter.jsonString(args, "prompt") });

@@ -509,10 +509,10 @@ test "schema problems are named by path" {
     }.f;
 
     const chart = (try check(a, "render_chart", try parse(a,
-        \\{"type":"donut","series":[{"name":"s","points":[{"x":true,"y":"3"}]}]}
+        \\{"type":"radar","series":[{"name":"s","points":[{"x":true,"y":"3"}]}]}
     ))).?;
     try has(chart, "Error: the render_chart arguments are invalid");
-    try has(chart, "type is \"donut\", which is not one of \"line\", \"bar\"");
+    try has(chart, "type is \"radar\", which is not one of \"bar\", \"line\"");
     try has(chart, "series[0].points[0].x must be string or number, got a boolean");
     try has(chart, "series[0].points[0].y must be number, got a string");
 

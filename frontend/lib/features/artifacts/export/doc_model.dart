@@ -1,6 +1,9 @@
 import 'package:flutter/foundation.dart';
 import 'package:markdown/markdown.dart' as md;
 
+import '../domain/chart_spec.dart';
+import 'chart_svg.dart';
+
 /// A Markdown document as blocks, for the PDF and Word writers.
 sealed class DocBlock {
   const DocBlock();
@@ -30,7 +33,7 @@ final class CodeBlock extends DocBlock {
   final String text;
 }
 
-/// A ```svg block (or a raw `<svg>` block).
+/// A ```svg block (or a raw `<svg>` block, or a ```chart block drawn as SVG).
 final class FigureBlock extends DocBlock {
   const FigureBlock(this.svg);
   final String svg;
@@ -191,6 +194,11 @@ List<DocBlock> _blocks(List<md.Node> nodes) {
         out.add(switch (language) {
           'svg' when text.contains('</svg>') => FigureBlock(text),
           'mermaid' => DiagramBlock(text),
+          // A chart becomes a figure, so every writer draws it like any SVG.
+          'chart' => switch (ChartSpec.tryParse(text)) {
+            final spec? => FigureBlock(chartSvg(spec)!),
+            null => CodeBlock(language, text),
+          },
           'math' || 'latex' || 'tex' => MathBlock(text),
           _ => CodeBlock(language, text),
         });

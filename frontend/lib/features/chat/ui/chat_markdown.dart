@@ -4,6 +4,8 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/platform/platform_kind.dart';
 import '../../../core/theme/every_theme.dart';
+import '../../artifacts/domain/chart_spec.dart';
+import '../../artifacts/ui/renderers/chart_view.dart';
 import '../../artifacts/ui/renderers/svg_view.dart';
 import '../../artifacts/ui/renderers/web_view.dart';
 import '../domain/message.dart';
@@ -46,12 +48,14 @@ class ChatMarkdown extends StatelessWidget {
     );
   }
 
-  /// ```svg blocks draw as figures and ```mermaid blocks as diagrams, once
+  /// ```svg blocks draw as figures, ```chart blocks as charts and ```mermaid blocks as diagrams, once
   /// complete; anything else (or a block still streaming) is code.
   static Widget _figures(BuildContext context, String text, String? language) {
     switch (language?.toLowerCase()) {
       case 'svg' when text.contains('</svg>'):
         return SvgView(svg: text, maxHeight: 560);
+      case 'chart':
+        if (ChartSpec.tryParse(text) case final spec?) return ChartView(spec: spec, showTitle: true);
       case 'mermaid' when text.trim().isNotEmpty && inlineWebSupported:
         final dark = EveryTheme.of(context).brightness == Brightness.dark;
         return WebContentView(
