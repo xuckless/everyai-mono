@@ -78,6 +78,8 @@ fn completions(app: *App, req: *anole.Request, res: *anole.Response) !void {
         defer up.close();
         const reply = try up.reader.allocRemaining(req.arena, .limited(64 * 1024 * 1024));
         res.status = @fromBackingInt(@intCast(up.status));
+        // Harnesses back off by it (overloaded, rate-limited).
+        if (up.retry_after) |v| try res.header("Retry-After", v);
         res.content_type = .json;
         res.body = reply;
         return;

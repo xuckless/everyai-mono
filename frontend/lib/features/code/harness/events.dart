@@ -89,6 +89,18 @@ sealed class HarnessEvent {
   static HarnessEvent _state(String id, Map<String, Object?> json) {
     final key = json['key'] as String?;
     final value = json['value'];
+    if (key == 'retry' && value is Map<String, Object?>) {
+      return RetryState(
+        id: id,
+        raw: json,
+        attempt: (value['attempt'] as num?)?.toInt() ?? 0,
+        max: (value['max'] as num?)?.toInt() ?? 0,
+        delayMs: (value['delay_ms'] as num?)?.toInt() ?? 0,
+        reason: value['reason'] as String? ?? '',
+        status: (value['status'] as num?)?.toInt(),
+        until: DateTime.fromMillisecondsSinceEpoch((value['until'] as num?)?.toInt() ?? 0),
+      );
+    }
     final status = switch ((key, value)) {
       ('execution_status', final String s) => s,
       ('full_state', {'execution_status': final String s}) => s,
@@ -253,6 +265,30 @@ final class StateChange extends HarnessEvent {
   const StateChange({required super.id, required super.raw, required this.executionStatus, required this.key});
   final ExecutionStatus executionStatus;
   final String key;
+}
+
+/// The model call failed on something transient (overloaded, rate-limited,
+/// a dropped connection) and is sent again: attempt [attempt] of [max]
+/// starts at [until]. What had streamed of the reply is void. Not persisted
+/// (the EveryAI harness sends it live only); the next delta, message or
+/// action ends it.
+final class RetryState extends HarnessEvent {
+  const RetryState({
+    required super.id,
+    required super.raw,
+    required this.attempt,
+    required this.max,
+    required this.delayMs,
+    required this.reason,
+    required this.until,
+    this.status,
+  });
+  final int attempt;
+  final int max;
+  final int delayMs;
+  final String reason;
+  final int? status;
+  final DateTime until;
 }
 
 final class ConversationFailure extends HarnessEvent {

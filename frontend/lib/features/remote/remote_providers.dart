@@ -678,6 +678,8 @@ final class RemoteSession extends Notifier<RemoteSessionState> {
 
   Future<void> retry() => _act(MirrorAction.retry);
 
+  Future<void> retryNow() => _act(MirrorAction.retryNow);
+
   Future<void> unqueue(int index) => _act(MirrorAction.unqueue, {'index': index});
 }
 

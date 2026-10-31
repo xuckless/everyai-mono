@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 
@@ -92,7 +93,8 @@ const maxStepsPerRun = 400;
 
 /// One conversation: its history (OpenAI-style messages), its events, and the
 /// loop that calls the model and runs tools.
-final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundShells, CompactsInPlace, PhasedSession {
+final class EveryAISession
+    implements HarnessSession, AsksAside, HasBackgroundShells, CompactsInPlace, PhasedSession, RetriesModelCalls {
   EveryAISession._(this.id, this._spec, this._dir, http.Client? client)
     : _gateway = GatewayClient(baseUrl: _spec.llmBaseUrl, apiKey: _spec.llmApiKey, client: client),
       _shell = SessionShell(root: _spec.workingDir, sessionTag: _spec.sessionTag, scratchDir: '${_dir.path}/shell') {
@@ -463,6 +465,44 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
     }
   }
 
+  /// How a failed model call is retried: 8 attempts, 15 in a Max or Ultra
+  /// session (long unattended runs ride out an overload).
+  RetryPolicy get retryPolicy =>
+      testRetryPolicy ?? RetryPolicy(maxAttempts: const {'max', 'ultra'}.contains(_spec.phaseFlow) ? 15 : 8);
+
+  /// Replaces [retryPolicy] in tests (short waits).
+  @visibleForTesting
+  static RetryPolicy? testRetryPolicy;
+
+  final _retryWait = RetryWait();
+
+  /// Cuts the wait before the next attempt short ("Retry now").
+  @override
+  void retryNow() => _retryWait.skip();
+
+  /// Tells listeners a call is being retried; live only (not kept, not
+  /// replayed). The transcript drops what had streamed of the reply.
+  void _retrying(RetryNotice n) {
+    final raw = <String, Object?>{
+      'kind': 'ConversationStateUpdateEvent',
+      'id': _newId(),
+      'timestamp': DateTime.now().toIso8601String(),
+      'key': 'retry',
+      'value': {
+        'attempt': n.attempt,
+        'max': n.max,
+        'delay_ms': n.delay.inMilliseconds,
+        'reason': n.reason,
+        'status': ?n.status,
+        'until': DateTime.now().add(n.delay).millisecondsSinceEpoch,
+      },
+    };
+    final e = HarnessEvent.decode(raw);
+    for (final c in [..._listeners]) {
+      c.add(e);
+    }
+  }
+
   void _setStatus(ExecutionStatus s) {
     if (status == s) return;
     status = s;
@@ -712,7 +752,10 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
         final cancel = _cancel = Completer<void>();
         final LlmReply reply;
         try {
-          reply = await _gateway.complete(
+          reply = await _gateway.completeWithRetry(
+            policy: retryPolicy,
+            onRetry: _retrying,
+            wait: _retryWait,
             model: _spec.model,
             messages: [
               ..._outgoing(),
@@ -781,6 +824,8 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
         final stopped = await _handleCalls(reply.toolCalls, cancel, textBefore: between, trailing: trailing);
         if (stopped) return;
       }
+    } on LlmCancelled {
+      _setStatus(ExecutionStatus.paused);
     } on LlmError catch (e) {
       _emit({'kind': 'ConversationErrorEvent', 'id': _newId(), 'detail': e.message});
       _setStatus(ExecutionStatus.error);
@@ -810,11 +855,14 @@ final class EveryAISession implements HarnessSession, AsksAside, HasBackgroundSh
     final since = _history.lastIndexWhere((e) => e is ChatMessage && e.fromUser && splitCompacted(e.text) != null);
     final plan = planCompaction(_history.sublist(since < 0 ? 0 : since));
     if (plan == null) return false;
-    final reply = await _gateway.raw({
-      'model': _spec.model,
-      'messages': summaryRequest(plan, focus: focus),
-      'max_tokens': 6000,
-    }, sessionTag: _spec.sessionTag);
+    final reply = await _gateway.raw(
+      {'model': _spec.model, 'messages': summaryRequest(plan, focus: focus), 'max_tokens': 6000},
+      sessionTag: _spec.sessionTag,
+      retry: retryPolicy,
+      onRetry: _retrying,
+      wait: _retryWait,
+      cancel: _cancel?.future,
+    );
     final text = switch (reply['choices']) {
       [{'message': {'content': final String c}}, ...] => c,
       _ => '',

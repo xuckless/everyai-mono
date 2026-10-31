@@ -178,6 +178,12 @@ abstract interface class PhasedSession {
   Future<void> setPhaseFlow(String? flow);
 }
 
+/// A session that retries failed model calls itself (the EveryAI harness):
+/// the user can cut the wait before the next attempt short.
+abstract interface class RetriesModelCalls {
+  void retryNow();
+}
+
 abstract interface class CompactsInPlace {
   /// False when there was nothing to summarize or the summary was unusable.
   Future<bool> compact({String focus = ''});

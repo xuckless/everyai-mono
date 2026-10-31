@@ -37,6 +37,7 @@ import 'transcript/approval_card.dart';
 import 'transcript/aside_card.dart';
 import 'transcript/goal_card.dart';
 import 'transcript/plan_card.dart';
+import 'transcript/retry_row.dart';
 import 'transcript/subagent_card.dart';
 import 'transcript/transcript_items.dart';
 
@@ -151,6 +152,11 @@ class CodeSessionScreen extends ConsumerWidget {
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     child: NoticeView(item: const NoticeItem('reconnecting', 'Reconnecting to the agent server…')),
+                  )
+                else if (t.retry case final retry?)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: RetryRow(retry: retry, onRetryNow: controller.retryNow, onStop: controller.stop),
                   ),
                 SafeArea(
                   top: false,

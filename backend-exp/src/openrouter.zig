@@ -17,6 +17,9 @@ pub const Stream = struct {
     reader: *std.Io.Reader,
     ctx: *anyopaque,
     closeFn: *const fn (*anyopaque) void,
+    /// The upstream's `Retry-After` on an error status (copied to the
+    /// call's arena), so the gateway can pass it on to clients that back off.
+    retry_after: ?[]const u8 = null,
 
     pub fn close(self: Stream) void {
         self.closeFn(self.ctx);
@@ -105,11 +108,14 @@ pub const Client = struct {
             .timeout = .{ .duration = .{ .raw = .fromSeconds(180), .clock = .awake } },
         });
         live.body = try live.response.reader(&live.buffer);
+        const status: u16 = @intCast(@backingInt(live.response.status()));
+        const retry_after = if (status >= 300) live.response.headers().get("Retry-After") else null;
         return .{
-            .status = @intCast(@backingInt(live.response.status())),
+            .status = status,
             .reader = &live.body.interface,
             .ctx = live,
             .closeFn = closeLive,
+            .retry_after = if (retry_after) |v| try cx.arena.dupe(u8, v) else null,
         };
     }
 
@@ -466,6 +472,7 @@ pub fn jsonFloat(v: ?std.json.Value) f64 {
 pub const Fake = struct {
     responses: []const []const u8,
     status: u16 = 200,
+    retry_after: ?[]const u8 = null,
     next_index: usize = 0,
     bodies: std.ArrayList([]const u8) = .empty,
     gpa: std.mem.Allocator,
@@ -489,7 +496,7 @@ pub const Fake = struct {
         self.next_index += 1;
         const open = try cx.arena.create(Open);
         open.reader = .fixed(self.responses[i]);
-        return .{ .status = self.status, .reader = &open.reader, .ctx = open, .closeFn = noClose };
+        return .{ .status = self.status, .reader = &open.reader, .ctx = open, .closeFn = noClose, .retry_after = self.retry_after };
     }
 
     fn noClose(_: *anyopaque) void {}

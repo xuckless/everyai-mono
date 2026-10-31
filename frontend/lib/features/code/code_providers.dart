@@ -1101,7 +1101,8 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     }
     final looped = event is ActionCall && _doom.add(event) && _live;
     event = _spilled(event);
-    if (event is! StreamDelta) _events.add(event);
+    // Live only, like deltas: a retry note is not part of what the session replays.
+    if (event is! StreamDelta && event is! RetryState) _events.add(event);
     // OpenHands reports `stats` after every model call; the cost lives in our ledger.
     if (event is StateChange) ref.read(codeUsageProvider(sessionId).notifier).refreshSoon();
     final wasRunning = state.transcript.running;
@@ -1763,6 +1764,11 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     if (!_withinBudget()) return;
     if (state.transcript.status == ExecutionStatus.stuck) return send('Carry on from where you stopped.');
     await _session?.resume();
+  }
+
+  /// Sends a model call being retried now instead of after its wait.
+  Future<void> retryNow() async {
+    if (_session case final RetriesModelCalls s) s.retryNow();
   }
 
   Future<void> stop() async {

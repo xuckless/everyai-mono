@@ -211,9 +211,13 @@ final class Transcript {
     this.pending = const [],
     this.held = const [],
     this.notedMode,
+    this.retry,
   });
 
   final List<TranscriptItem> items;
+
+  /// A model call being retried after a transient failure, or null.
+  final RetryState? retry;
 
   /// Subagents started since the user last spoke that haven't reported yet.
   List<SubagentItem> get openSubagents {
@@ -289,6 +293,7 @@ final class TranscriptBuilder {
   var _status = ExecutionStatus.idle;
   var _plan = const <PlanTask>[];
   AgentMode? _notedMode;
+  RetryState? _retry;
 
   Transcript get snapshot => Transcript(
     items: List.unmodifiable(_items),
@@ -299,6 +304,7 @@ final class TranscriptBuilder {
     status: _status,
     plan: _plan,
     notedMode: _notedMode,
+    retry: _retry,
     pending: _status == ExecutionStatus.waitingForConfirmation ? _unanswered(client: false) : const [],
     held: _status == ExecutionStatus.waitingForConfirmation ? _unanswered(client: true) : const [],
   );
@@ -308,6 +314,13 @@ final class TranscriptBuilder {
       List.unmodifiable(_open.values.where((c) => isHeldTool(c) == client));
 
   void add(HarnessEvent e) {
+    // A retry ends with the next thing the model does (or a stop or failure).
+    if (e is! RetryState &&
+        e is! ConnectionChange &&
+        !(e is StateChange &&
+            (e.executionStatus == ExecutionStatus.running || e.executionStatus == ExecutionStatus.unknown))) {
+      _retry = null;
+    }
     if (e is! StreamDelta && e is! StateChange && e is! ConnectionChange) {
       _streaming.clear();
       _reasoning.clear();
@@ -336,6 +349,9 @@ final class TranscriptBuilder {
         _status = executionStatus;
       case StateChange():
         break;
+      // What streamed before the failure is void (cleared above); the reply comes again.
+      case RetryState():
+        _retry = e;
       case ChatMessage(fromUser: true, text: final raw):
         final (mode, noted) = splitModeNote(raw);
         final (_, text) = splitContextNotes(noted);

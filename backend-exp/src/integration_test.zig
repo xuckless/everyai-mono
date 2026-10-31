@@ -669,6 +669,38 @@ test "gateway: a cut-off tool call is retried with a bigger cap, then made unpar
     try std.testing.expectEqual(@as(i64, 2), try env.state.db.one(i64, &c, "SELECT COUNT(*) FROM usage_events", .{}));
 }
 
+test "gateway: an upstream error passes Retry-After on; Anthropic's 529 becomes 503 with code 529" {
+    var env: Env = undefined;
+    try start(&env, &.{"{\"error\":{\"message\":\"Rate limited\",\"code\":429}}"}, true);
+    defer env.deinit();
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const key = try gatewayKey(&env);
+    defer alloc.free(key);
+    const body = .{ .model = "anthropic/claude-haiku-5.5", .messages = .{.{ .role = "user", .content = "hi" }} };
+
+    env.fake.status = 429;
+    env.fake.retry_after = "7";
+    var limited = try env.t.post("/v1/chat/completions", .{ .headers = &.{.{ "Authorization", try bearer(a, key) }}, .json = body });
+    defer limited.deinit();
+    try limited.expectStatus(.too_many_requests);
+    try std.testing.expectEqualStrings("7", limited.header("Retry-After").?);
+
+    env.anth.status = 529;
+    env.anth.retry_after = "3";
+    env.anth.responses = &.{"{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}"};
+    var sw = try env.t.put("/v1/dev/upstream", .{ .json = .{ .anthropic = "anthropic" } });
+    defer sw.deinit();
+    try sw.expectStatus(.ok);
+    var busy = try env.t.post("/v1/chat/completions", .{ .headers = &.{.{ "Authorization", try bearer(a, key) }}, .json = body });
+    defer busy.deinit();
+    try busy.expectStatus(.service_unavailable);
+    try std.testing.expectEqualStrings("3", busy.header("Retry-After").?);
+    try std.testing.expect(std.mem.indexOf(u8, busy.body, "\"code\":529") != null);
+    try std.testing.expect(std.mem.indexOf(u8, busy.body, "overloaded_error") != null);
+}
+
 test "gateway: cut-off text is continued and returned as one reply" {
     var env: Env = undefined;
     try start(&env, &.{ gw_cut_text, gw_rest_text }, true);

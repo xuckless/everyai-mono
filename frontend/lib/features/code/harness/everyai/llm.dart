@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:http/http.dart' as http;
 
@@ -76,12 +77,135 @@ final class LlmToolCall {
 }
 
 final class LlmError implements Exception {
-  const LlmError(this.message, {this.status});
+  const LlmError(this.message, {this.status, this.retryable = false, this.retryAfter, this.afterToolCall = false});
   final String message;
   final int? status;
 
+  /// A transient failure (overloaded, rate-limited, a dropped connection):
+  /// the same request may succeed if sent again.
+  final bool retryable;
+
+  /// How long the server asked us to wait (`Retry-After`), if it said.
+  final Duration? retryAfter;
+
+  /// The stream broke after a tool call had started: sending the request
+  /// again could write a different call, so it is not retried.
+  final bool afterToolCall;
+
   @override
   String toString() => message;
+}
+
+/// HTTP statuses worth another try: timeouts, conflicts, rate limits,
+/// server errors and Anthropic's 529 (overloaded).
+const retryableStatuses = {408, 409, 425, 429, 500, 502, 503, 504, 529};
+
+/// Whether a mid-stream `{"error": …}` is a transient one.
+bool retryableStreamError(Map<String, Object?> e) {
+  final type = '${e['type'] ?? ''}'.toLowerCase();
+  final code = '${e['code'] ?? ''}';
+  return type.contains('overloaded') ||
+      type.contains('rate_limit') ||
+      code == '429' ||
+      code == '529' ||
+      code == '503' ||
+      code == 'rate_limit_exceeded';
+}
+
+/// The wait a response asks for: `retry-after-ms`, else `Retry-After` in
+/// seconds or as an HTTP date. Null when it doesn't say (or can't be read).
+Duration? parseRetryAfter(Map<String, String> headers, {DateTime? now}) {
+  String? header(String name) {
+    for (final e in headers.entries) {
+      if (e.key.toLowerCase() == name) return e.value.trim();
+    }
+    return null;
+  }
+
+  if (header('retry-after-ms') case final ms?) {
+    if (double.tryParse(ms) case final v? when v >= 0) return Duration(microseconds: (v * 1000).round());
+  }
+  final v = header('retry-after');
+  if (v == null || v.isEmpty) return null;
+  if (double.tryParse(v) case final s?) return s < 0 ? null : Duration(milliseconds: (s * 1000).round());
+  final at = _parseHttpDate(v);
+  if (at == null) return null;
+  final d = at.difference((now ?? DateTime.now()).toUtc());
+  return d.isNegative ? Duration.zero : d;
+}
+
+const _months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+/// An RFC 1123 date ("Wed, 21 Oct 2026 07:28:00 GMT").
+DateTime? _parseHttpDate(String s) {
+  final m = RegExp(r'(\d{1,2})[ -]([A-Za-z]{3})[ -](\d{2,4}) (\d{2}):(\d{2}):(\d{2})').firstMatch(s);
+  if (m == null) return null;
+  final month = _months.indexOf(m[2]!.toLowerCase()) + 1;
+  if (month == 0) return null;
+  var year = int.parse(m[3]!);
+  if (year < 100) year += 2000;
+  return DateTime.utc(year, month, int.parse(m[1]!), int.parse(m[4]!), int.parse(m[5]!), int.parse(m[6]!));
+}
+
+/// How often and how patiently a model call is sent again after a
+/// transient failure: exponential backoff from [base] to [cap] with
+/// ±[jitter], or the server's `Retry-After` up to [maxRetryAfter].
+final class RetryPolicy {
+  const RetryPolicy({
+    this.maxAttempts = 8,
+    this.base = const Duration(seconds: 1),
+    this.cap = const Duration(seconds: 60),
+    this.jitter = 0.25,
+    this.maxRetryAfter = const Duration(minutes: 5),
+  });
+
+  /// Attempts in all, the first one included.
+  final int maxAttempts;
+  final Duration base;
+  final Duration cap;
+  final double jitter;
+  final Duration maxRetryAfter;
+
+  /// The wait after [failed] attempts failed, before the next one.
+  Duration delay(int failed, {Duration? retryAfter, Random? random}) {
+    if (retryAfter != null) return retryAfter > maxRetryAfter ? maxRetryAfter : retryAfter;
+    final exp = base.inMicroseconds * pow(2, max(0, failed - 1));
+    final capped = min(exp.toDouble(), cap.inMicroseconds.toDouble());
+    final spread = 1 + jitter * (2 * (random ?? _random).nextDouble() - 1);
+    return Duration(microseconds: (capped * spread).round());
+  }
+
+  static final _random = Random();
+}
+
+/// A retry about to happen, shown live in the transcript: [attempt] of
+/// [max] starts after [delay].
+typedef RetryNotice = ({int attempt, int max, Duration delay, String reason, int? status});
+
+/// The wait between attempts, which the user can cut short ("Retry now").
+final class RetryWait {
+  Completer<void>? _now;
+
+  /// Ends the current wait at once (nothing when none is going).
+  void skip() {
+    final c = _now;
+    if (c != null && !c.isCompleted) c.complete();
+  }
+
+  Future<void> sleep(Duration d, {Future<void>? cancel}) async {
+    final now = _now = Completer<void>();
+    final timer = Timer(d, () {
+      if (!now.isCompleted) now.complete();
+    });
+    unawaited(
+      cancel?.then((_) {
+        if (!now.isCompleted) now.complete();
+      }),
+    );
+    await now.future;
+    timer.cancel();
+    if (identical(_now, now)) _now = null;
+  }
 }
 
 /// Calls the EveryAI gateway (`POST {base}/chat/completions`, OpenAI-style,
@@ -128,11 +252,20 @@ final class GatewayClient {
         'tool_choice': ?toolChoice,
         'max_tokens': ?maxTokens,
       });
-    final res = await _http.send(req);
+    final http.StreamedResponse res;
+    try {
+      res = await _http.send(req);
+    } on http.ClientException catch (e) {
+      throw LlmError('Could not reach the model: ${e.message}', retryable: true);
+    } on TimeoutException {
+      throw const LlmError('The model call timed out.', retryable: true);
+    }
     if (res.statusCode >= 300) {
       final body = await res.stream.bytesToString();
-      throw LlmError(_errorText(body, res.statusCode), status: res.statusCode);
+      throw _statusError(body, res.statusCode, res.headers);
     }
+    // Once a tool call starts streaming, a broken stream is not retried.
+    var toolStarted = false;
     final text = StringBuffer();
     final reasoning = StringBuffer();
     final details = <int, Map<String, Object?>>{};
@@ -174,6 +307,7 @@ final class GatewayClient {
             for (final t in jsonDecode(line.substring(11)) as List<Object?>) {
               if (t case {'index': final num i}) {
                 final m = t as Map<String, Object?>;
+                toolStarted = true;
                 toolAt(i.toInt());
                 onToolProgress?.call((
                   index: i.toInt(),
@@ -200,7 +334,17 @@ final class GatewayClient {
         }
         if (json is! Map<String, Object?>) return;
         if (json['error'] case final Map<String, Object?> e) {
-          if (!done.isCompleted) done.completeError(LlmError('${e['message'] ?? e}'));
+          if (!done.isCompleted) {
+            final code = e['code'];
+            done.completeError(
+              LlmError(
+                '${e['message'] ?? e}',
+                status: code is num ? code.toInt() : int.tryParse('${code ?? ''}'),
+                retryable: retryableStreamError(e),
+                afterToolCall: toolStarted,
+              ),
+            );
+          }
           return;
         }
         if (json['usage'] case {'prompt_tokens': final num p}) promptTokens = p.toInt();
@@ -231,6 +375,7 @@ final class GatewayClient {
           for (final item in list) {
             if (item is! Map<String, Object?>) continue;
             final index = (item['index'] as num?)?.toInt() ?? calls.length;
+            toolStarted = true;
             toolAt(index);
             final slot = calls.putIfAbsent(
               index,
@@ -249,7 +394,11 @@ final class GatewayClient {
         }
       },
       onError: (Object e) {
-        if (!done.isCompleted) done.completeError(LlmError('The connection to the model dropped: $e'));
+        if (!done.isCompleted) {
+          done.completeError(
+            LlmError('The connection to the model dropped: $e', retryable: true, afterToolCall: toolStarted),
+          );
+        }
       },
       onDone: () {
         if (!done.isCompleted) done.complete();
@@ -285,6 +434,68 @@ final class GatewayClient {
     );
   }
 
+  /// [complete], sent again after a transient failure ([LlmError.retryable])
+  /// as long as no tool call had started streaming: the same request, so the
+  /// cached prefix makes the retry cheap. Text that streamed before the
+  /// failure is dropped: [onRetry] tells the caller (to clear it) before
+  /// each wait, which [wait] lets the user cut short. [cancel] ends it all.
+  Future<LlmReply> completeWithRetry({
+    required String model,
+    required List<Map<String, Object?>> messages,
+    required List<Map<String, Object?>> tools,
+    required String sessionTag,
+    String? effort,
+    int? maxTokens,
+    String? toolChoice,
+    void Function(String delta)? onText,
+    void Function(String delta)? onReasoning,
+    void Function(ToolProgress progress)? onToolProgress,
+    Future<void>? cancel,
+    RetryPolicy policy = const RetryPolicy(),
+    void Function(RetryNotice notice)? onRetry,
+    RetryWait? wait,
+  }) => _retrying(
+    () => complete(
+      model: model,
+      messages: messages,
+      tools: tools,
+      sessionTag: sessionTag,
+      effort: effort,
+      maxTokens: maxTokens,
+      toolChoice: toolChoice,
+      onText: onText,
+      onReasoning: onReasoning,
+      onToolProgress: onToolProgress,
+      cancel: cancel,
+    ),
+    policy: policy,
+    onRetry: onRetry,
+    wait: wait,
+    cancel: cancel,
+  );
+
+  Future<T> _retrying<T>(
+    Future<T> Function() attempt, {
+    required RetryPolicy policy,
+    void Function(RetryNotice notice)? onRetry,
+    RetryWait? wait,
+    Future<void>? cancel,
+  }) async {
+    var cancelled = false;
+    unawaited(cancel?.then((_) => cancelled = true));
+    for (var n = 1; ; n++) {
+      try {
+        return await attempt();
+      } on LlmError catch (e) {
+        if (!e.retryable || e.afterToolCall || n >= policy.maxAttempts || cancelled) rethrow;
+        final delay = policy.delay(n, retryAfter: e.retryAfter);
+        onRetry?.call((attempt: n + 1, max: policy.maxAttempts, delay: delay, reason: e.message, status: e.status));
+        await (wait ?? RetryWait()).sleep(delay, cancel: cancel);
+        if (cancelled) throw const LlmCancelled();
+      }
+    }
+  }
+
   /// A page through the gateway's safe fetcher (`POST {base}/fetch`): no local
   /// or private addresses, redirects checked, and only [allow]'s hosts when
   /// given. Returns the page's text, fenced as untrusted, or throws.
@@ -316,14 +527,40 @@ final class GatewayClient {
     throw LlmError('The fetch failed (${res.statusCode}).', status: res.statusCode);
   }
 
-  /// A plain (not streamed) call, for search and the goal judge.
-  Future<Map<String, Object?>> raw(Map<String, Object?> body, {required String sessionTag}) async {
-    final res = await _http.post(_url, headers: _headers(sessionTag, null), body: jsonEncode(body));
-    if (res.statusCode >= 300) throw LlmError(_errorText(res.body, res.statusCode), status: res.statusCode);
-    final v = jsonDecode(res.body);
-    if (v is! Map<String, Object?>) throw const LlmError('The model sent an unreadable reply.');
-    return v;
+  /// A plain (not streamed) call, for search, the goal judge and
+  /// compaction; with [retry], transient failures are tried again as in
+  /// [completeWithRetry].
+  Future<Map<String, Object?>> raw(
+    Map<String, Object?> body, {
+    required String sessionTag,
+    RetryPolicy? retry,
+    void Function(RetryNotice notice)? onRetry,
+    RetryWait? wait,
+    Future<void>? cancel,
+  }) {
+    Future<Map<String, Object?>> once() async {
+      final http.Response res;
+      try {
+        res = await _http.post(_url, headers: _headers(sessionTag, null), body: jsonEncode(body));
+      } on http.ClientException catch (e) {
+        throw LlmError('Could not reach the model: ${e.message}', retryable: true);
+      }
+      if (res.statusCode >= 300) throw _statusError(res.body, res.statusCode, res.headers);
+      final v = jsonDecode(res.body);
+      if (v is! Map<String, Object?>) throw const LlmError('The model sent an unreadable reply.');
+      return v;
+    }
+
+    if (retry == null) return once();
+    return _retrying(once, policy: retry, onRetry: onRetry, wait: wait, cancel: cancel);
   }
+
+  static LlmError _statusError(String body, int status, Map<String, String> headers) => LlmError(
+    _errorText(body, status),
+    status: status,
+    retryable: retryableStatuses.contains(status),
+    retryAfter: parseRetryAfter(headers),
+  );
 
   static String _errorText(String body, int status) {
     try {

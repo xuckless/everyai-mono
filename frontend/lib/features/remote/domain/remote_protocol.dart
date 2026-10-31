@@ -196,6 +196,9 @@ abstract final class MirrorAction {
   static const build = 'build';
   static const retry = 'retry';
 
+  /// Sends a model call being retried now instead of after its wait.
+  static const retryNow = 'retry_now';
+
   /// `{index}` of a queued message.
   static const unqueue = 'unqueue';
 }

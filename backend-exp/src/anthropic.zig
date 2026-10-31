@@ -74,9 +74,12 @@ pub const Adapter = struct {
         if (up.status >= 300) {
             defer up.close();
             const raw = up.reader.allocRemaining(arena, .limited(64 * 1024)) catch "";
-            // 529 (overloaded) is Anthropic-only; clients know 503.
+            // 529 (overloaded) is Anthropic-only; clients know 503. The body
+            // keeps `code: 529` and the upstream's Retry-After goes along.
             const status: u16 = if (up.status == 529) 503 else up.status;
-            return fixed(arena, status, try translateError(arena, raw, up.status));
+            var out = try fixed(arena, status, try translateError(arena, raw, up.status));
+            out.retry_after = up.retry_after;
+            return out;
         }
         const cont: Cont = .{ .inner = self.inner, .cx = cx, .body = t.body, .headers = headers.items };
         if (!t.stream) return fixed(arena, 200, try self.whole(arena, up, cont, &meta));

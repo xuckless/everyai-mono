@@ -15,6 +15,7 @@ import '../../code/ui/code_composer.dart';
 import '../../code/ui/phase_strip.dart';
 import '../../code/ui/session_view.dart' show StartBuildingBar, StatusPill, TranscriptList;
 import '../../code/ui/transcript/approval_card.dart';
+import '../../code/ui/transcript/retry_row.dart';
 import '../../code/ui/transcript/transcript_items.dart';
 import '../../models/domain/model_catalog.dart';
 import '../../models/models_providers.dart';
@@ -302,6 +303,15 @@ class RemoteSessionScreen extends ConsumerWidget {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: NoticeView(item: NoticeItem('error', error, error: true)),
+            )
+          else if (t.retry case final retry?)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: RetryRow(
+                retry: retry,
+                onRetryNow: () => act(controller.retryNow),
+                onStop: () => act(controller.stop),
+              ),
             ),
           SafeArea(
             top: false,

@@ -237,6 +237,8 @@ final class HostMirror {
           await c.startBuilding();
         case MirrorAction.retry:
           await c.retry();
+        case MirrorAction.retryNow:
+          await c.retryNow();
         case MirrorAction.unqueue:
           final i = args['index'];
           if (i is int && i >= 0 && i < _ref.read(codeSessionProvider(s)).queued.length) c.unqueue(i);
