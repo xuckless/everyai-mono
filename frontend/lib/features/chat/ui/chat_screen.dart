@@ -342,8 +342,9 @@ class _WithPanel extends ConsumerWidget {
     if (!open) return child;
     return LayoutBuilder(
       builder: (context, constraints) {
-        final panel = ArtifactPanel(conversationId: conversationId);
-        if (constraints.maxWidth < 720) {
+        final fullScreen = constraints.maxWidth < 720;
+        final panel = ArtifactPanel(conversationId: conversationId, fullScreen: fullScreen);
+        if (fullScreen) {
           return Stack(
             children: [
               child,

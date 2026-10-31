@@ -20,9 +20,13 @@ import 'visual_view.dart';
 /// The side panel beside a chat: the open artifact (with its versions) or a
 /// visual at full size, with copy, save and close.
 class ArtifactPanel extends ConsumerWidget {
-  const ArtifactPanel({super.key, required this.conversationId});
+  const ArtifactPanel({super.key, required this.conversationId, this.fullScreen = false});
 
   final String conversationId;
+
+  /// Covers the chat (phones): a back chevron leads the header instead of the
+  /// trailing close button.
+  final bool fullScreen;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -47,6 +51,11 @@ class ArtifactPanel extends ConsumerWidget {
         break;
     }
     if (visual == null) return const SizedBox.shrink();
+    void close() {
+      ref.read(artifactEditProvider(conversationId).notifier).cancel();
+      panel.close();
+    }
+
     final v = visual;
     final export = exportOf(v);
     final interactive = v.kind == VisualKind.html && ref.watch(webInteractiveProvider(webArtifactKey(v)));
@@ -63,157 +72,162 @@ class ArtifactPanel extends ConsumerWidget {
         color: theme.surface,
         border: Border(left: BorderSide(color: theme.border)),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Container(
-            height: 52,
-            padding: const EdgeInsets.only(left: 16, right: 6),
-            decoration: BoxDecoration(
-              border: Border(bottom: BorderSide(color: theme.border)),
-            ),
-            child: Row(
-              children: [
-                AdaptiveIcon(iconOf(v.kind), size: 17, color: theme.accent),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        artifact?.title ?? v.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.type.body.semibold.tint(theme.text),
-                      ),
-                      Text(
-                        [
-                          v.kind == VisualKind.code && v.str('language').isNotEmpty ? v.str('language') : v.kind.label,
-                          if (v.kind == VisualKind.html) interactive ? 'Interactive' : 'Static',
-                          if (v.kind == VisualKind.drawing && (draft != null || artifact == null)) 'Not saved',
-                          if (editing != null)
-                            editing.changed ? 'Editing · Not saved' : 'Editing'
-                          else ...[
-                            if (artifact != null && artifact.versions.length > 1)
-                              'Version ${version + 1} of ${artifact.versions.length}',
-                            if (v.editedByUser) 'Edited by you',
-                          ],
-                        ].join(' · '),
-                        style: theme.type.caption.tint(theme.textMuted),
-                      ),
-                    ],
-                  ),
-                ),
-                if (editing != null) ...[
-                  AdaptiveButton(
-                    label: 'Cancel',
-                    emphasis: ButtonEmphasis.plain,
-                    onPressed: ref.read(artifactEditProvider(conversationId).notifier).cancel,
-                  ),
-                  const SizedBox(width: 6),
-                  AdaptiveButton(label: 'Save', onPressed: editing.changed ? () => _saveEdit(context, ref) : null),
-                  const SizedBox(width: 6),
-                ] else if (artifact != null && artifact.versions.length > 1) ...[
-                  AdaptiveIconButton(
-                    icon: EveryIcon.chevronLeft,
-                    tooltip: 'Previous version',
-                    onPressed: version == 0 ? null : () => panel.openArtifact(artifact!.id, version: version - 1),
-                  ),
-                  AdaptiveIconButton(
-                    icon: EveryIcon.chevronRight,
-                    tooltip: 'Next version',
-                    onPressed: version == artifact.versions.length - 1
-                        ? null
-                        : () => panel.openArtifact(artifact!.id, version: version + 1),
-                  ),
-                ],
-                if (canEdit && editing == null)
-                  AdaptiveIconButton(
-                    icon: EveryIcon.edit,
-                    tooltip: 'Edit',
-                    onPressed: () => ref.read(artifactEditProvider(conversationId).notifier).start(artifact!.id, v),
-                  ),
-                if (v.kind == VisualKind.svg && editing == null)
-                  AdaptiveIconButton(
-                    icon: EveryIcon.spark,
-                    tooltip: polishing ? 'Polishing…' : 'Polish: look at the render and fix what\'s off',
-                    onPressed: polishing ? null : () => _polish(context, ref, v, artifact),
-                  ),
-                if (v.kind == VisualKind.html && editing == null)
-                  AdaptiveIconButton(
-                    icon: interactive ? EveryIcon.pause : EveryIcon.play,
-                    tooltip: interactive ? 'Show without scripts' : 'Run scripts',
-                    onPressed: ref.read(webInteractiveProvider(webArtifactKey(v)).notifier).toggle,
-                  ),
-                if (v.kind == VisualKind.drawing)
-                  AdaptiveIconButton(
-                    icon: EveryIcon.check,
-                    tooltip: 'Save as a new version',
-                    onPressed: draft == null ? null : () => _saveDrawing(context, ref, v, artifact, draft),
-                  ),
-                if (v.kind == VisualKind.diagram && inlineWebSupported && editing == null)
-                  AdaptiveIconButton(
-                    icon: EveryIcon.drawing,
-                    tooltip: 'Make editable',
-                    onPressed: () => _makeEditable(ref, v, artifact),
-                  ),
-                if ((v.kind == VisualKind.html || v.kind == VisualKind.diagram) && editing == null)
-                  AdaptiveIconButton(
-                    icon: EveryIcon.external,
-                    tooltip: 'Open in browser',
-                    onPressed: () => v.kind == VisualKind.html
-                        ? openHtmlInBrowser(v.str('content'), interactive: interactive)
-                        : openHtmlInBrowser(
-                            mermaidPage(v.args['mermaid'] as String? ?? v.str('content'), dark: false),
-                            surface: WebSurface.diagram,
-                          ),
-                  ),
-                AdaptiveIconButton(
-                  icon: EveryIcon.copy,
-                  tooltip: 'Copy',
-                  onPressed: () async {
-                    await Clipboard.setData(ClipboardData(text: export.text));
-                    if (context.mounted) showAdaptiveToast(context, 'Copied');
-                  },
-                ),
-                if (!kIsWeb) DownloadButton(visual: v),
-                AdaptiveIconButton(
-                  icon: EveryIcon.close,
-                  tooltip: 'Close panel',
-                  onPressed: () {
-                    ref.read(artifactEditProvider(conversationId).notifier).cancel();
-                    panel.close();
-                  },
-                ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: editing != null
-                ? ArtifactTextEditor(
-                    key: ValueKey('edit:${editing.base.callId}'),
-                    initialText: editing.text,
-                    onChanged: ref.read(artifactEditProvider(conversationId).notifier).update,
-                    onSave: () => _saveEdit(context, ref),
-                    onCancel: ref.read(artifactEditProvider(conversationId).notifier).cancel,
-                  )
-                : fills
-                ? Padding(
-                    padding: EdgeInsets.all(v.kind == VisualKind.drawing ? 0 : 12),
-                    child: VisualBody(visual: v, conversationId: conversationId, expanded: true),
-                  )
-                : SingleChildScrollView(
-                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
-                    child: VisualBody(
-                      key: ValueKey(v.callId),
-                      visual: v,
-                      conversationId: conversationId,
-                      expanded: true,
+      // Below the translucent navigation bar (iOS) and above the home indicator.
+      child: SafeArea(
+        left: false,
+        right: false,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              height: 52,
+              padding: EdgeInsets.only(left: fullScreen ? 4 : 16, right: 6),
+              decoration: BoxDecoration(
+                border: Border(bottom: BorderSide(color: theme.border)),
+              ),
+              child: Row(
+                children: [
+                  if (fullScreen) ...[
+                    AdaptiveIconButton(icon: EveryIcon.chevronLeft, tooltip: 'Back to chat', onPressed: close),
+                    const SizedBox(width: 2),
+                  ] else ...[
+                    AdaptiveIcon(iconOf(v.kind), size: 17, color: theme.accent),
+                    const SizedBox(width: 10),
+                  ],
+                  Expanded(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          artifact?.title ?? v.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.type.body.semibold.tint(theme.text),
+                        ),
+                        Text(
+                          [
+                            v.kind == VisualKind.code && v.str('language').isNotEmpty
+                                ? v.str('language')
+                                : v.kind.label,
+                            if (v.kind == VisualKind.html) interactive ? 'Interactive' : 'Static',
+                            if (v.kind == VisualKind.drawing && (draft != null || artifact == null)) 'Not saved',
+                            if (editing != null)
+                              editing.changed ? 'Editing · Not saved' : 'Editing'
+                            else ...[
+                              if (artifact != null && artifact.versions.length > 1)
+                                'Version ${version + 1} of ${artifact.versions.length}',
+                              if (v.editedByUser) 'Edited by you',
+                            ],
+                          ].join(' · '),
+                          style: theme.type.caption.tint(theme.textMuted),
+                        ),
+                      ],
                     ),
                   ),
-          ),
-        ],
+                  if (editing != null) ...[
+                    AdaptiveButton(
+                      label: 'Cancel',
+                      emphasis: ButtonEmphasis.plain,
+                      onPressed: ref.read(artifactEditProvider(conversationId).notifier).cancel,
+                    ),
+                    const SizedBox(width: 6),
+                    AdaptiveButton(label: 'Save', onPressed: editing.changed ? () => _saveEdit(context, ref) : null),
+                    const SizedBox(width: 6),
+                  ] else if (artifact != null && artifact.versions.length > 1) ...[
+                    AdaptiveIconButton(
+                      icon: EveryIcon.chevronLeft,
+                      tooltip: 'Previous version',
+                      onPressed: version == 0 ? null : () => panel.openArtifact(artifact!.id, version: version - 1),
+                    ),
+                    AdaptiveIconButton(
+                      icon: EveryIcon.chevronRight,
+                      tooltip: 'Next version',
+                      onPressed: version == artifact.versions.length - 1
+                          ? null
+                          : () => panel.openArtifact(artifact!.id, version: version + 1),
+                    ),
+                  ],
+                  if (canEdit && editing == null)
+                    AdaptiveIconButton(
+                      icon: EveryIcon.edit,
+                      tooltip: 'Edit',
+                      onPressed: () => ref.read(artifactEditProvider(conversationId).notifier).start(artifact!.id, v),
+                    ),
+                  if (v.kind == VisualKind.svg && editing == null)
+                    AdaptiveIconButton(
+                      icon: EveryIcon.spark,
+                      tooltip: polishing ? 'Polishing…' : 'Polish: look at the render and fix what\'s off',
+                      onPressed: polishing ? null : () => _polish(context, ref, v, artifact),
+                    ),
+                  if (v.kind == VisualKind.html && editing == null)
+                    AdaptiveIconButton(
+                      icon: interactive ? EveryIcon.pause : EveryIcon.play,
+                      tooltip: interactive ? 'Show without scripts' : 'Run scripts',
+                      onPressed: ref.read(webInteractiveProvider(webArtifactKey(v)).notifier).toggle,
+                    ),
+                  if (v.kind == VisualKind.drawing)
+                    AdaptiveIconButton(
+                      icon: EveryIcon.check,
+                      tooltip: 'Save as a new version',
+                      onPressed: draft == null ? null : () => _saveDrawing(context, ref, v, artifact, draft),
+                    ),
+                  if (v.kind == VisualKind.diagram && inlineWebSupported && editing == null)
+                    AdaptiveIconButton(
+                      icon: EveryIcon.drawing,
+                      tooltip: 'Make editable',
+                      onPressed: () => _makeEditable(ref, v, artifact),
+                    ),
+                  if ((v.kind == VisualKind.html || v.kind == VisualKind.diagram) && editing == null)
+                    AdaptiveIconButton(
+                      icon: EveryIcon.external,
+                      tooltip: 'Open in browser',
+                      onPressed: () => v.kind == VisualKind.html
+                          ? openHtmlInBrowser(v.str('content'), interactive: interactive)
+                          : openHtmlInBrowser(
+                              mermaidPage(v.args['mermaid'] as String? ?? v.str('content'), dark: false),
+                              surface: WebSurface.diagram,
+                            ),
+                    ),
+                  AdaptiveIconButton(
+                    icon: EveryIcon.copy,
+                    tooltip: 'Copy',
+                    onPressed: () async {
+                      await Clipboard.setData(ClipboardData(text: export.text));
+                      if (context.mounted) showAdaptiveToast(context, 'Copied');
+                    },
+                  ),
+                  if (!kIsWeb) DownloadButton(visual: v),
+                  if (!fullScreen) AdaptiveIconButton(icon: EveryIcon.close, tooltip: 'Close panel', onPressed: close),
+                ],
+              ),
+            ),
+            Expanded(
+              child: editing != null
+                  ? ArtifactTextEditor(
+                      key: ValueKey('edit:${editing.base.callId}'),
+                      initialText: editing.text,
+                      onChanged: ref.read(artifactEditProvider(conversationId).notifier).update,
+                      onSave: () => _saveEdit(context, ref),
+                      onCancel: ref.read(artifactEditProvider(conversationId).notifier).cancel,
+                    )
+                  : fills
+                  ? Padding(
+                      padding: EdgeInsets.all(v.kind == VisualKind.drawing ? 0 : 12),
+                      child: VisualBody(visual: v, conversationId: conversationId, expanded: true),
+                    )
+                  : SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+                      child: VisualBody(
+                        key: ValueKey(v.callId),
+                        visual: v,
+                        conversationId: conversationId,
+                        expanded: true,
+                      ),
+                    ),
+            ),
+          ],
+        ),
       ),
     );
   }
