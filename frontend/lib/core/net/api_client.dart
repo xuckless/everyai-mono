@@ -225,6 +225,11 @@ final class ApiClient {
       final decoded = jsonDecode(utf8.decode(bytes));
       final code = decoded is Map ? decoded['code'] as String? : null;
       if (decoded case {'message': final String message}) return (message: message, code: code);
+      // A 422 problem: the first field's problem says more than "1 field is invalid."
+      if (decoded case {'errors': [{'message': final String message} && final Map<String, Object?> first, ...]}) {
+        final field = first['field'];
+        return (message: field is String && field.isNotEmpty ? '$field $message' : message, code: code);
+      }
       if (decoded case {'detail': final String detail}) return (message: detail, code: code);
       if (decoded case {'title': final String title}) return (message: title, code: code);
       if (decoded case {'error': {'message': final String message}}) return (message: message, code: code);

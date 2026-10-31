@@ -18,9 +18,12 @@ const web = @import("web.zig");
 
 fn completions(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const who = try auth.identity(req);
-    const raw = (try req.body()) orelse return res.fail(.bad_request, "missing body");
-    var root = std.json.parseFromSliceLeaky(std.json.Value, req.arena, raw, .{}) catch return res.fail(.bad_request, "body must be JSON");
-    if (root != .object) return res.fail(.bad_request, "body must be a JSON object");
+    // Passed through to the upstream with a few fields changed, so the
+    // object as sent, not a typed copy.
+    var root: std.json.Value = .{ .object = (req.jsonObject() catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return res.fail(.bad_request, "body must be JSON"),
+    }) orelse return res.fail(.bad_request, "body must be a JSON object") };
     const o = &root.object;
 
     // LiteLLM-style prefixes ("openai/anthropic/claude-...") are stripped to the OpenRouter id.
@@ -591,24 +594,32 @@ pub fn routes(app: *anole.Server(App), state: *App) void {
 /// capped), optionally only from the hosts in `allow` (research jobs), as
 /// one window of readable text fenced as untrusted.
 /// Body: `{"url", "allow"?: [host], "offset"?, "max_chars"?}`.
+/// POST /v1/fetch: one page for the Code agent's web tool.
+const FetchBody = struct {
+    url: []const u8,
+    /// Hosts the agent may reach even when private (a local dev server).
+    allow: ?[]const []const u8 = null,
+    offset: i64 = 0,
+    max_chars: ?i64 = null,
+
+    pub const field_rules = .{
+        .url = .{ anole.validate.trim, anole.validate.notBlank, anole.validate.maxLength(8192) },
+        .allow = .{anole.validate.maxItems(64)},
+        .offset = .{anole.validate.min(0)},
+        .max_chars = .{anole.validate.min(1)},
+    };
+};
+
 fn fetch(app: *App, req: *anole.Request, res: *anole.Response) !void {
     // Up to five redirects, each with its own fetch budget.
     req.setTimeout(.fromSeconds(150));
     _ = try auth.identity(req);
     const fetcher = app.web orelse return res.fail(.service_unavailable, "fetching is not available here");
-    const raw = (try req.body()) orelse return res.fail(.bad_request, "missing body");
-    const body = std.json.parseFromSliceLeaky(std.json.Value, req.arena, raw, .{}) catch return res.fail(.bad_request, "body must be JSON");
-    if (body != .object) return res.fail(.bad_request, "body must be a JSON object");
-    const url = std.mem.trim(u8, openrouter.jsonStr(body.object.get("url")) orelse "", " \t\r\n");
-    var allow: ?[]const []const u8 = null;
-    if (body.object.get("allow")) |a| if (a == .array) {
-        var hosts: std.ArrayList([]const u8) = .empty;
-        for (a.array.items) |h| if (h == .string) try hosts.append(req.arena, h.string);
-        allow = hosts.items;
-    };
-    const offset: usize = @intCast(@max(0, openrouter.jsonInt(body.object.get("offset"))));
-    const asked = openrouter.jsonInt(body.object.get("max_chars"));
-    const limit: usize = @intCast(std.math.clamp(if (asked > 0) asked else web.default_chars, web.min_chars, web.max_chars));
+    const body = try req.bind(FetchBody);
+    const url = body.url;
+    const allow = body.allow;
+    const offset: usize = @intCast(body.offset);
+    const limit: usize = @intCast(std.math.clamp(body.max_chars orelse web.default_chars, web.min_chars, web.max_chars));
     const page = fetcher.getAllowed(req.io, req.arena, url, "text/html,text/plain,application/xhtml+xml,application/json,*/*;q=0.5", allow) catch |err| {
         res.status = .unprocessable_entity;
         return res.json(.{ .@"error" = safe_fetch.describe(err) });

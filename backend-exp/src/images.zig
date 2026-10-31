@@ -180,6 +180,13 @@ const ImageRequest = struct {
     output_format: ?[]const u8 = null,
     /// Images to edit or follow: data: or https: URLs.
     input_references: []const []const u8 = &.{},
+
+    pub const field_rules = .{
+        .prompt = .{ anole.validate.trim, anole.validate.notBlank, anole.validate.maxLength(32_000) },
+        .engine = .{anole.validate.oneOf(.{ "raster", "vector" })},
+        .n = .{anole.validate.range(1, 10)},
+        .input_references = .{anole.validate.maxItems(16)},
+    };
 };
 
 fn create(app: *App, req: *anole.Request, res: *anole.Response) !void {
@@ -187,7 +194,6 @@ fn create(app: *App, req: *anole.Request, res: *anole.Response) !void {
     req.setTimeout(.fromSeconds(300));
     const who = try auth.identity(req);
     const body = try req.bind(ImageRequest);
-    if (std.mem.trim(u8, body.prompt, " \n\t").len == 0) return res.fail(.unprocessable_entity, "prompt must not be blank");
     const vector = std.mem.eql(u8, body.engine orelse "", "vector");
     const model = body.model orelse if (vector) app.cfg.vector_model else app.cfg.image_model;
     var message: []const u8 = "The image model returned no image.";

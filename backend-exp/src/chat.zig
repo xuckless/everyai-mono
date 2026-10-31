@@ -355,16 +355,18 @@ pub const Sink = struct {
 
 fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const who = try auth.identity(req);
-    // std.json directly: content may be a string or an array of parts.
-    const raw = (try req.body()) orelse return res.fail(.bad_request, "missing body");
-    var body = std.json.parseFromSliceLeaky(ChatRequest, req.arena, raw, .{ .ignore_unknown_fields = true }) catch
-        return res.fail(.unprocessable_entity, "body must be {model?, mode, messages: [{role, content}], tools_enabled, session?}");
-    if (body.messages.len == 0) return res.fail(.unprocessable_entity, "messages must not be empty");
-    if (body.memory) |m| if (m.len > memory_max) return res.fail(.unprocessable_entity, "memory is too long");
-    if (body.skills) |k| if (k.len > skills_max) return res.fail(.unprocessable_entity, "skills is too long");
-    if (body.force_tool) |t| if (!knownTool(t)) return res.fail(.unprocessable_entity, "force_tool is not a known tool");
+    // bindWith, not bind: content is a string or an array of parts (a
+    // std.json.Value, which bind's mapper does not take).
+    var body = req.bindWith(ChatRequest, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return res.fail(.unprocessable_entity, "body must be {model?, mode, messages: [{role, content}], tools_enabled, session?}"),
+    };
+    if (body.messages.len == 0) return req.invalid("messages", "chat.messages_empty", "must not be empty");
+    if (body.memory) |m| if (m.len > memory_max) return req.invalid("memory", "chat.memory_too_long", "is too long");
+    if (body.skills) |k| if (k.len > skills_max) return req.invalid("skills", "chat.skills_too_long", "is too long");
+    if (body.force_tool) |t| if (!knownTool(t)) return req.invalid("force_tool", "chat.unknown_tool", "is not a known tool");
     for (body.messages) |m| if (m.content != .string and m.content != .array)
-        return res.fail(.unprocessable_entity, "content must be a string or an array of parts");
+        return req.invalid("messages", "chat.content_shape", "content must be a string or an array of parts");
 
     app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
     var model = body.model orelse app.cfg.default_model;
@@ -882,9 +884,11 @@ const ToolResultBody = struct {
 /// POST /v1/chat/tool_result: the app's answer to a `tool_wait`.
 fn toolResult(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const who = try auth.identity(req);
-    const raw = (try req.body()) orelse return res.fail(.bad_request, "missing body");
-    const body = std.json.parseFromSliceLeaky(ToolResultBody, req.arena, raw, .{ .ignore_unknown_fields = true }) catch
-        return res.fail(.unprocessable_entity, "body must be {call_id, result, is_error?}");
+    // `result` is any JSON (a std.json.Value): bindWith, as in `stream`.
+    const body = req.bindWith(ToolResultBody, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return res.fail(.unprocessable_entity, "body must be {call_id, result, is_error?}"),
+    };
     const text = switch (body.result) {
         .string => |t| t,
         .null => "",

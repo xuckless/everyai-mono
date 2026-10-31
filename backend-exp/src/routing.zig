@@ -306,9 +306,11 @@ fn skillDraft(app: *App, req: *anole.Request, res: *anole.Response) !void {
     // A whole skill written from a transcript or a fetched page.
     req.setTimeout(.fromSeconds(180));
     const who = try auth.identity(req);
-    const raw_body = (try req.body()) orelse return res.fail(.bad_request, "missing body");
-    const body = std.json.parseFromSliceLeaky(SkillRequest, req.arena, raw_body, .{ .ignore_unknown_fields = true }) catch
-        return res.fail(.unprocessable_entity, "body must be {messages: [{role, content}] | url | documents: [{path, text}], hint?}");
+    // Message content is any JSON (a std.json.Value): bindWith, not bind.
+    const body = req.bindWith(SkillRequest, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return res.fail(.unprocessable_entity, "body must be {messages: [{role, content}] | url | documents: [{path, text}], hint?}"),
+    };
     const source: SkillSource = if (std.mem.trim(u8, body.url, " \t\r\n").len > 0) .page else if (body.documents.len > 0) .folder else .conversation;
     var text: []const u8 = switch (source) {
         .conversation => try conversationText(req.arena, body.messages),

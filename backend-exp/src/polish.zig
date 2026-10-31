@@ -137,6 +137,11 @@ const PolishRequest = struct {
     brief: ?[]const u8 = null,
     /// Usage attribution (the chat conversation id).
     session: ?[]const u8 = null,
+
+    pub const field_rules = .{
+        .svg = .{ anole.validate.trim, anole.validate.contains("<svg"), anole.validate.maxBytes(max_svg_bytes).withMessage("is too large to polish") },
+        .png_base64 = .{ anole.validate.trim, anole.validate.notBlank, anole.validate.maxBytes(max_png_bytes).withMessage("is too large") },
+    };
 };
 
 fn userText(arena: std.mem.Allocator, svg: []const u8, brief: ?[]const u8) ![]const u8 {
@@ -159,13 +164,10 @@ fn polish(app: *App, req: *anole.Request, res: *anole.Response) !void {
     req.setTimeout(.fromSeconds(180));
     const who = try auth.identity(req);
     const body = try req.bind(PolishRequest);
-    const svg = std.mem.trim(u8, body.svg, " \n\t\r");
-    if (svg.len == 0 or std.mem.indexOf(u8, svg, "<svg") == null) return res.fail(.unprocessable_entity, "svg must be a complete <svg> element");
-    if (svg.len > max_svg_bytes) return res.fail(.unprocessable_entity, "This figure is too large to polish.");
-    var png = std.mem.trim(u8, body.png_base64, " \n\t\r");
+    const svg = body.svg;
+    var png = body.png_base64;
     if (std.mem.startsWith(u8, png, "data:")) png = png[(std.mem.indexOfScalar(u8, png, ',') orelse png.len - 1) + 1 ..];
-    if (png.len == 0) return res.fail(.unprocessable_entity, "png_base64 must hold the rendered figure");
-    if (png.len > max_png_bytes) return res.fail(.unprocessable_entity, "The rendered image is too large.");
+    if (png.len == 0) return req.invalid("png_base64", "polish.png_empty", "must hold the rendered figure");
 
     const model = routing.modelFor(app.cfg, .polish);
     app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
