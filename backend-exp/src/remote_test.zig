@@ -18,6 +18,7 @@ const Env = struct {
     fn deinit(self: *Env) void {
         self.t.deinit();
         self.server.deinit();
+        self.state.limiter.deinit();
         self.state.relay.deinit();
         self.state.catalog.deinit();
         self.fake.deinit();

@@ -668,14 +668,23 @@ fn serveClient(app: *App, ws: *websocket.Socket, req: *anole.Request, device: De
 
 // ------------------------------------------------------------------ routes
 
+/// The rate-limit bucket of a signed-in user, or of the address without one.
+fn byUser(req: *anole.Request, buf: []u8) []const u8 {
+    if (req.local(auth.Identity, "identity")) |who| return std.fmt.bufPrint(buf, "user:{s}", .{who.user_id}) catch who.user_id;
+    return anole.ratelimit.clientAddress(req, buf);
+}
+
 pub fn routes(app: *anole.Server(App), state: *App) void {
     const v1 = app.group("/v1/remote", .{auth.Authenticate{ .app = state }});
     v1.post("/hosts", createHost);
     v1.get("/hosts", listHosts);
     v1.delete("/hosts/:id", deleteHost);
     v1.delete("/devices/:id", deleteDevice);
-    v1.post("/pair", pair);
-    v1.post("/pair/redeem", redeem);
+    // Codes are guessable only by brute force; cap the attempts per account
+    // (after Authenticate, so the key is a verified user).
+    const guarded = v1.group("", .{anole.ratelimit.Middleware.init(state.limiter.limiter(), .{ .limit = 10, .window = .fromSeconds(60), .key = byUser, .on_error = .deny })});
+    guarded.post("/pair", pair);
+    guarded.post("/pair/redeem", redeem);
     v1.get("/pair/:id", pairStatus);
     v1.post("/pair/:id/approve", approvePairing);
     v1.post("/pair/:id/deny", denyPairing);

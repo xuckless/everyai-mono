@@ -34,21 +34,38 @@ pub const Authenticate = struct {
     app: *App,
     keys: bool = false,
 
+    /// What /docs shows for the routes behind it.
+    pub const openapi: anole.openapi.MiddlewareDoc = .{
+        .security_schemes = &.{
+            .{ .name = "bearerAuth", .kind = .{ .http = .{ .scheme = "bearer", .bearer_format = "JWT" } } },
+            .{ .name = "gatewayKey", .description = "An sk-eai- gateway key, as Authorization: Bearer <key> or X-Api-Key (gateway routes only).", .kind = .{ .api_key = .{ .in = .header, .param = "X-Api-Key" } } },
+        },
+        .security = .any,
+        .responses = .{ .unauthorized = .{ .description = "Missing, expired or invalid token or key" } },
+    };
+
     pub fn execute(self: *const Authenticate, req: *anole.Request, res: *anole.Response, next: anytype) !void {
         const header = req.headers.get("Authorization") orelse req.headers.get("X-Api-Key");
         if (header) |h| {
             const token = if (std.ascii.startsWithIgnoreCase(h, "Bearer ")) std.mem.trim(u8, h[7..], " ") else h;
             if (std.mem.startsWith(u8, token, key_prefix)) {
-                if (!self.keys) return res.fail(.unauthorized, "API keys are not accepted here");
-                const id = try lookupKey(self.app, req, token) orelse return res.fail(.unauthorized, "invalid API key");
+                if (!self.keys) return challenge(res, "API keys are not accepted here");
+                const id = try lookupKey(self.app, req, token) orelse return challenge(res, "invalid API key");
                 try req.setLocal("identity", id);
                 return next.call();
             }
             const verified = anole.auth.verify(req.arena, token, &self.app.jwt_keys, .{
                 .issuer = issuer,
                 .audience = audience,
-            }, util.now(req.io)) catch return res.fail(.unauthorized, "invalid or expired token");
-            const sub = verified.string("sub") orelse return res.fail(.unauthorized, "invalid token");
+            }, util.now(req.io)) catch |err| switch (err) {
+                // A secret under 32 bytes verifies nothing: a server fault, not the client's.
+                error.WeakKey => {
+                    std.log.err("JWT_SECRET is shorter than 32 bytes; no token can verify", .{});
+                    return error.InternalServerError;
+                },
+                else => return challenge(res, "invalid or expired token"),
+            };
+            const sub = verified.string("sub") orelse return challenge(res, "invalid token");
             try req.setLocal("identity", Identity{ .user_id = sub });
             return next.call();
         }
@@ -56,9 +73,15 @@ pub const Authenticate = struct {
             try req.setLocal("identity", Identity{ .user_id = dev_user_id });
             return next.call();
         }
-        return res.fail(.unauthorized, "sign in required");
+        return challenge(res, "sign in required");
     }
 };
+
+/// 401 with the scheme the client should use (RFC 9110 requires the header).
+fn challenge(res: *anole.Response, message: []const u8) !void {
+    try res.header("WWW-Authenticate", "Bearer realm=\"everyai\"");
+    return res.fail(.unauthorized, message);
+}
 
 /// The account behind an access JWT, or null when it is invalid or expired.
 pub fn userOfToken(app: *App, req: *anole.Request, token: []const u8) ?[]const u8 {
@@ -154,10 +177,29 @@ fn signUp(app: *App, req: *anole.Request, in: anole.In(.{ .body = SignUp })) !an
 }
 
 fn logIn(app: *App, req: *anole.Request, in: anole.In(.{ .body = struct { email: []const u8, password: []const u8 } })) !Tokens {
-    const row = try app.db.optional(struct { id: []const u8, password_hash: ?[]const u8 }, req, "SELECT id, password_hash FROM users WHERE email = ?", .{in.body.email}) orelse return error.Unauthorized;
-    const stored = row.password_hash orelse return error.Unauthorized;
+    const row = try app.db.optional(struct { id: []const u8, password_hash: ?[]const u8 }, req, "SELECT id, password_hash FROM users WHERE email = ?", .{in.body.email});
+    // An unknown address (or a Google-only account) costs the same hash as a
+    // wrong password, so timing doesn't tell which emails have accounts.
+    const stored = (if (row) |r| r.password_hash else null) orelse {
+        _ = anole.auth.password.verify(app.gpa, req.io, try decoyHash(app, req.io), in.body.password);
+        return error.Unauthorized;
+    };
     if (!anole.auth.password.verify(app.gpa, req.io, stored, in.body.password)) return error.Unauthorized;
-    return issue(app, req, try loadUser(app, req, row.id));
+    return issue(app, req, try loadUser(app, req, row.?.id));
+}
+
+/// A real Argon2id hash of nothing anyone knows, made once, to verify
+/// against when there is no account (Auth: dummy hash for unknown users).
+fn decoyHash(app: *App, io: std.Io) ![]const u8 {
+    app.decoy.mutex.lockUncancelable(io);
+    defer app.decoy.mutex.unlock(io);
+    if (app.decoy.len == 0) {
+        var secret: [32]u8 = undefined;
+        try io.randomSecure(&secret);
+        const hash = try anole.auth.password.hash(app.gpa, io, &secret, &app.decoy.buf);
+        app.decoy.len = hash.len;
+    }
+    return app.decoy.buf[0..app.decoy.len];
 }
 
 /// Signs in (or up) with a Google ID token from the native Google Sign-In SDKs.
@@ -264,7 +306,9 @@ fn deleteKey(app: *App, req: *anole.Request, in: anole.In(.{ .path = struct { id
 }
 
 pub fn routes(app: *anole.Server(App), state: *App) void {
-    const public = app.group("/v1/auth", .{});
+    // Sign-in by address: an unlimited burst is a password-guessing attack, so
+    // a full bucket refuses (deny, even if the limiter fails).
+    const public = app.group("/v1/auth", .{anole.ratelimit.Middleware.init(state.limiter.limiter(), .{ .limit = 10, .window = .fromSeconds(60), .on_error = .deny })});
     public.post("/signup", signUp);
     public.post("/login", logIn);
     public.post("/google", google);

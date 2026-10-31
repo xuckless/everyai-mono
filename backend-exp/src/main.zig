@@ -57,6 +57,10 @@ pub const App = struct {
     web: ?*const safe_fetch.Fetcher = null,
     /// Live remote-host and client sockets (remote.zig).
     relay: remote.Relay = .{},
+    /// Request buckets for the rate-limited routes (auth, pairing); set up in `routes`.
+    limiter: anole.ratelimit.MemoryLimiter = undefined,
+    /// The decoy password hash for sign-ins to unknown addresses (auth.zig).
+    decoy: struct { mutex: std.Io.Mutex = .init, buf: [128]u8 = undefined, len: usize = 0 } = .{},
     /// Earlier web_search results per user and chat (web.zig).
     searches: @import("web.zig").SearchCache = .{},
 
@@ -78,6 +82,8 @@ fn ping(_: *App, _: *anole.Request) struct { ok: bool, service: []const u8 } {
 
 /// Apart from `main` so the tests serve the same routes.
 pub fn routes(app: *anole.Server(App), state: *App) !void {
+    // One process: buckets live in memory (the caller deinits it).
+    state.limiter = .init(state.gpa, app.io(), .{});
     _ = app.health(.{});
     app.openapi(.{ .info = .{ .title = "EveryAI API", .version = "0.1.0" } });
     app.get("/v1/ping", ping);
@@ -103,7 +109,11 @@ pub fn prepare(state: *App, ctx: anytype) !void {
 }
 
 pub fn main(init: std.process.Init) !void {
-    const cfg = try anole.config.load(config.Config, init, .{ .env_files = &.{ ".env", "../.env" } });
+    // Development reads backend-exp/.env, then the monorepo's root .env; a
+    // production process reads the real environment only (Config: a dev .env
+    // copied into an image must not supply a production secret).
+    const env_files: []const []const u8 = if (anole.env.environment() == .development) &.{ ".env", "../.env" } else &.{};
+    const cfg = try anole.config.load(config.Config, init, .{ .env_files = env_files });
 
     if (config.lanExposure(cfg)) {
         std.log.err("refusing to start: HOST={s} is reachable from the network and DEV_AUTH=true lets anyone there use the dev account. " ++
@@ -125,7 +135,9 @@ pub fn main(init: std.process.Init) !void {
     defer state.relay.deinit();
 
     var app = try anole.Server(App).init(init.gpa, .{
-        .http = .{ .address = cfg.host, .port = cfg.port, .h2c = true },
+        .http = .{ .address = cfg.host, .port = cfg.port },
+        // The same files for Anole's own variables (ANOLE_*, PORT).
+        .env_files = env_files,
         // Argon2 runs on the blocking pool, not an executor.
         .blocking = .{},
         // Upstream model calls stream, and a streamed fetch's budget ends at the
@@ -172,6 +184,7 @@ pub fn main(init: std.process.Init) !void {
     try prepare(&state, &setup);
 
     try routes(&app, &state);
+    defer state.limiter.deinit();
     std.log.info("EveryAI backend-exp on :{d} (dev_auth={}, markup={d:.2}, stripe={s}, claude via {s})", .{
         cfg.port, cfg.dev_auth, cfg.markup, if (cfg.stripe_secret_key == null) "mock" else "test", state.route("anthropic/", true).provider,
     });

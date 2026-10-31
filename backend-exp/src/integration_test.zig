@@ -21,6 +21,7 @@ const Env = struct {
     fn deinit(self: *Env) void {
         self.t.deinit();
         self.server.deinit();
+        self.state.limiter.deinit();
         self.state.catalog.deinit();
         self.state.searches.deinit(self.state.gpa);
         self.fake.deinit();
@@ -1641,4 +1642,23 @@ test "billing: Stripe events of any shape are acknowledged, and a top-up credits
 
     var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = a };
     try std.testing.expectEqual(@as(i64, 5_000_000), try env.state.db.one(i64, &c, "SELECT amount_micros FROM wallet_ledger WHERE ref = 'cs_1'", .{}));
+}
+
+test "auth: unknown addresses fail like wrong passwords, a burst is limited, 401s carry a challenge" {
+    var env: Env = undefined;
+    try start(&env, &.{""}, false);
+    defer env.deinit();
+    for (0..10) |_| {
+        var res = try env.t.post("/v1/auth/login", .{ .json = .{ .email = "nobody@example.com", .password = "whatever-123" } });
+        defer res.deinit();
+        try res.expectStatus(.unauthorized);
+    }
+    var limited = try env.t.post("/v1/auth/login", .{ .json = .{ .email = "nobody@example.com", .password = "whatever-123" } });
+    defer limited.deinit();
+    try limited.expectStatus(.too_many_requests);
+
+    var me = try env.t.get("/v1/me", .{});
+    defer me.deinit();
+    try me.expectStatus(.unauthorized);
+    try std.testing.expect(me.header("WWW-Authenticate") != null);
 }

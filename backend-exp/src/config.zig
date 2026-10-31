@@ -1,5 +1,5 @@
 //! Typed settings, loaded once in `main` by `anole.config.load`: the defaults
-//! below, then `.env` files (backend-exp/.env, then the monorepo's root .env),
+//! below, then (development only) `.env` files: backend-exp/.env, then the monorepo's root .env;
 //! then the environment. `Secret`s never print.
 const std = @import("std");
 const anole = @import("anole");
