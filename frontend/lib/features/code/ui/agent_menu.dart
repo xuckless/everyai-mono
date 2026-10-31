@@ -12,6 +12,7 @@ import '../agent_models.dart';
 import '../domain/agent_menu.dart';
 import '../settings/agent_prompt.dart' show HarnessMode, HarnessTier;
 import '../settings/code_settings.dart' show budgetPresets;
+import '../../settings/byok_keys.dart' show byokUltraCapProvider, modelBillingProvider;
 import '../ultra/ultra_access.dart' show ultraAccessProvider;
 
 /// The agent menu: Harness mode, the tier bar (Efficient → Ultra),
@@ -64,7 +65,9 @@ class AgentMenu extends ConsumerWidget {
     final library = ref.watch(libraryProvider).value ?? const <ModelSpec>[];
     final groups = libraryMenuGroups(library, catalog, current: model, nameOf: (id) => specs[ModelId(id)]?.name);
     final current = [for (final (_, ms) in groups) ...ms].where((m) => m.model == model).firstOrNull;
-    final ultraAllowed = ref.watch(ultraAccessProvider).value ?? false;
+    // Max includes Ultra; on the user's own key it runs under their spend cap.
+    final ownKey = ref.watch(modelBillingProvider).ownKey(ModelId(model));
+    final ultraAllowed = (ref.watch(ultraAccessProvider).value ?? false) || ownKey;
     final label = [
       agentMenuLabel(current?.name ?? model.split('/').last, effort),
       if (onTier != null) tier.label,
@@ -85,6 +88,7 @@ class AgentMenu extends ConsumerWidget {
         harnessMode: harnessMode,
         onHarnessMode: onHarnessMode,
         ultraAllowed: ultraAllowed,
+        keyCap: ownKey ? ref.watch(byokUltraCapProvider) : null,
         budget: budget,
         onBudget: onBudget,
       ),
@@ -139,6 +143,7 @@ class AgentMenuPanel extends StatefulWidget {
     this.harnessMode = HarnessMode.build,
     this.onHarnessMode,
     this.ultraAllowed = false,
+    this.keyCap,
     this.budget,
     this.onBudget,
   });
@@ -150,6 +155,9 @@ class AgentMenuPanel extends StatefulWidget {
 
   /// The plan allows Ultra (the Max plan).
   final bool ultraAllowed;
+
+  /// The own-key Ultra cap (USD) when the model bills to the user's key.
+  final double? keyCap;
   final double? budget;
   final ValueChanged<double?>? onBudget;
 
@@ -191,7 +199,7 @@ class _AgentMenuPanelState extends State<AgentMenuPanel> {
   String? _blocked(HarnessTier t) => t.everyaiOnly && widget.harness != CodeHarnessKind.everyai
       ? 'EveryAI harness only'
       : t == HarnessTier.ultra && !widget.ultraAllowed
-      ? 'On the Max plan'
+      ? 'Max plan or your own key'
       : null;
 
   AgentMenuModel? get _current =>
@@ -265,7 +273,11 @@ class _AgentMenuPanelState extends State<AgentMenuPanel> {
           PopoverRow(
             key: const ValueKey('agent-menu.budget'),
             title: 'Spending cap',
-            subtitle: _budget == null ? 'No cap' : formatMicros((_budget! * 1e6).round()),
+            subtitle: _budget != null
+                ? formatMicros((_budget! * 1e6).round())
+                : _tier == HarnessTier.ultra && widget.keyCap != null
+                ? 'Your key\'s Ultra cap, ${formatMicros((widget.keyCap! * 1e6).round())}'
+                : 'No cap',
             trailing: more,
             onTap: () => setState(() => _page = _Page.budget),
           ),

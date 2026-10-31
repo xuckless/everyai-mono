@@ -6,6 +6,8 @@ import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/adaptive_page.dart';
 import '../../../core/ui/brand.dart';
 import '../../../core/ui/every_icons.dart';
+import '../../settings/byok_keys.dart' show modelBillersProvider, modelBillingProvider;
+import '../../settings/domain/byok_providers.dart' show Biller, ModelBilling;
 import '../domain/model_catalog.dart';
 import '../models_providers.dart';
 import 'model_avatar.dart';
@@ -17,14 +19,16 @@ enum _Filter {
   image('Image'),
   vision('Vision'),
   tools('Tools'),
-  reasoning('Reasoning');
+  reasoning('Reasoning'),
+  ownKey('On your keys');
 
   const _Filter(this.label);
   final String label;
 
-  bool test(ModelSpec s, Set<ModelId> mine) => switch (this) {
+  bool test(ModelSpec s, Set<ModelId> mine, ModelBilling billing) => switch (this) {
     all => true,
     _Filter.mine => mine.contains(s.id),
+    ownKey => billing.billersFor(s.id).any((b) => b.isOwnKey),
     free => s.free,
     image => s.output == Modality.image,
     vision => s.imageInput,
@@ -55,6 +59,7 @@ class _ModelsScreenState extends ConsumerState<ModelsScreen> {
     final library = ref.watch(libraryProvider).value ?? const <ModelSpec>[];
     final defaultModel = ref.watch(defaultModelProvider);
     final mine = {for (final s in library) s.id};
+    final billing = ref.watch(modelBillingProvider);
     final q = _query.trim().toLowerCase();
 
     // Providers with the most models first.
@@ -65,7 +70,7 @@ class _ModelsScreenState extends ConsumerState<ModelsScreen> {
     final models = source
         .where(
           (s) =>
-              _filter.test(s, mine) &&
+              _filter.test(s, mine, billing) &&
               (_provider == null || s.provider == _provider) &&
               (q.isEmpty ||
                   s.name.toLowerCase().contains(q) ||
@@ -87,11 +92,12 @@ class _ModelsScreenState extends ConsumerState<ModelsScreen> {
         runSpacing: 8,
         children: [
           for (final f in _Filter.values)
-            _FilterChip(
-              label: f == _Filter.mine ? '${f.label} (${library.length})' : f.label,
-              selected: _filter == f,
-              onTap: () => setState(() => _filter = f),
-            ),
+            if (f != _Filter.ownKey || billing.hasKeys)
+              _FilterChip(
+                label: f == _Filter.mine ? '${f.label} (${library.length})' : f.label,
+                selected: _filter == f,
+                onTap: () => setState(() => _filter = f),
+              ),
         ],
       ),
       const SizedBox(height: 8),
@@ -157,7 +163,14 @@ class _ModelsScreenState extends ConsumerState<ModelsScreen> {
             spec: spec,
             added: mine.contains(spec.id),
             isDefault: spec == defaultModel,
+            // Free models cost nothing on EveryAI, so there is nothing to pick.
+            billers: spec.free ? const [Biller.everyai] : billing.billersFor(spec.id),
+            biller: spec.free ? Biller.everyai : billing.billerFor(spec.id),
             onToggle: () => ref.read(libraryProvider.notifier).toggle(spec),
+            onAddBilledTo: (b) {
+              ref.read(modelBillersProvider.notifier).set(spec.id, b);
+              if (!mine.contains(spec.id)) ref.read(libraryProvider.notifier).toggle(spec);
+            },
             onMakeDefault: () => ref.read(defaultModelProvider.notifier).set(spec),
           );
         },
@@ -171,14 +184,24 @@ class _ModelTile extends StatelessWidget {
     required this.spec,
     required this.added,
     required this.isDefault,
+    required this.billers,
+    required this.biller,
     required this.onToggle,
+    required this.onAddBilledTo,
     required this.onMakeDefault,
   });
 
   final ModelSpec spec;
   final bool added;
   final bool isDefault;
+
+  /// Who can pay for this model; more than one makes Add a menu.
+  final List<Biller> billers;
+  final Biller biller;
   final VoidCallback onToggle;
+
+  /// Bills the model to the account and adds it (if it isn't already).
+  final ValueChanged<Biller> onAddBilledTo;
   final VoidCallback onMakeDefault;
 
   @override
@@ -189,7 +212,9 @@ class _ModelTile extends StatelessWidget {
       if (spec.contextLength > 0) '${spec.contextLabel} context',
       if (spec.output == Modality.image) 'Image output',
       if (isDefault) 'Default for new chats',
+      if (biller.isOwnKey) 'Bills to your ${biller.provider!.name} key',
     ].join(' · ');
+    final choose = billers.length > 1;
     return AdaptiveListTile(
       leading: ModelAvatar(spec.provider, size: 32),
       title: Row(
@@ -207,6 +232,9 @@ class _ModelTile extends StatelessWidget {
             actions: [
               MenuAction(label: 'Use for new chats', checked: isDefault, onSelected: onMakeDefault),
               MenuAction(label: added ? 'Remove from My models' : 'Add to My models', onSelected: onToggle),
+              if (choose && added)
+                for (final b in billers)
+                  MenuAction(label: 'Bill to ${b.label}', checked: b == biller, onSelected: () => onAddBilledTo(b)),
             ],
             child: Padding(
               padding: const EdgeInsets.all(6),
@@ -214,11 +242,46 @@ class _ModelTile extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 4),
-          AdaptiveButton(
-            label: added ? 'Added' : 'Add',
-            emphasis: added ? ButtonEmphasis.secondary : ButtonEmphasis.primary,
-            onPressed: onToggle,
-          ),
+          if (choose && !added)
+            AdaptiveMenuButton(
+              key: ValueKey('shop.add.${spec.id.value}'),
+              tooltip: 'Add and choose who pays',
+              width: 260,
+              actions: [
+                for (final b in billers)
+                  MenuAction(label: 'Bill to ${b.label}', checked: b == biller, onSelected: () => onAddBilledTo(b)),
+              ],
+              child: const _AddPill(),
+            )
+          else
+            AdaptiveButton(
+              label: added ? 'Added' : 'Add',
+              emphasis: added ? ButtonEmphasis.secondary : ButtonEmphasis.primary,
+              onPressed: onToggle,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// "Add ▾": the Add button's look for a model more than one account can pay
+/// for (the menu around it handles the tap).
+class _AddPill extends StatelessWidget {
+  const _AddPill();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      decoration: BoxDecoration(color: theme.primary, borderRadius: BorderRadius.circular(theme.radius)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('Add', style: theme.type.callout.medium.tint(theme.onPrimary)),
+          const SizedBox(width: 4),
+          AdaptiveIcon(EveryIcon.chevronDown, size: 11, color: theme.onPrimary),
         ],
       ),
     );

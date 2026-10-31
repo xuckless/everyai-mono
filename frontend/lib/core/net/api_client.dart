@@ -129,6 +129,7 @@ final class ApiClient {
     bool authenticated = false,
     Duration timeout = generationTimeout,
     Future<void>? cancel,
+    Map<String, String> headers = const {},
   }) async* {
     final res = await _send(
       'POST',
@@ -137,7 +138,7 @@ final class ApiClient {
       authenticated: authenticated,
       timeout: timeout,
       cancel: cancel,
-      headers: const {'Accept': 'text/event-stream', 'Cache-Control': 'no-cache'},
+      headers: {...headers, 'Accept': 'text/event-stream', 'Cache-Control': 'no-cache'},
     );
     if (res.statusCode ~/ 100 != 2) {
       await _readBody(res); // throws a typed error

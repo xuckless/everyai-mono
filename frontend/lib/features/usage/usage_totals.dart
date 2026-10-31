@@ -11,6 +11,7 @@ final class UsageTotals {
     this.cachedTokens = 0,
     this.cacheWriteTokens = 0,
     this.chargedMicros = 0,
+    this.ownKeyMicros = 0,
     this.lastPromptTokens = 0,
     this.lastCompletionTokens = 0,
   });
@@ -27,6 +28,7 @@ final class UsageTotals {
       cachedTokens: n('cached_tokens'),
       cacheWriteTokens: n('cache_write_tokens'),
       chargedMicros: n('charged_micros'),
+      ownKeyMicros: n('byok_cost_micros'),
       lastPromptTokens: n('last_prompt_tokens'),
       lastCompletionTokens: n('last_completion_tokens'),
     );
@@ -39,6 +41,7 @@ final class UsageTotals {
     'cached_tokens': cachedTokens,
     'cache_write_tokens': cacheWriteTokens,
     'charged_micros': chargedMicros,
+    if (ownKeyMicros > 0) 'byok_cost_micros': ownKeyMicros,
     'last_prompt_tokens': lastPromptTokens,
     'last_completion_tokens': lastCompletionTokens,
   };
@@ -53,6 +56,12 @@ final class UsageTotals {
 
   /// What the user was charged, in millionths of a dollar.
   final int chargedMicros;
+
+  /// What calls on the user's own keys cost upstream (never charged).
+  final int ownKeyMicros;
+
+  /// All spending, charged or on the user's keys: what a spend cap counts.
+  int get spentMicros => chargedMicros + ownKeyMicros;
 
   /// The latest model call: what the next one starts from.
   final int lastPromptTokens;
@@ -81,6 +90,7 @@ final class UsageTotals {
     cachedTokens: cachedTokens + cached,
     cacheWriteTokens: cacheWriteTokens + cacheWrite,
     chargedMicros: chargedMicros + charged,
+    ownKeyMicros: ownKeyMicros,
     lastPromptTokens: context ? prompt : lastPromptTokens,
     lastCompletionTokens: context ? completion : lastCompletionTokens,
   );
@@ -93,6 +103,7 @@ final class UsageTotals {
     cachedTokens: cachedTokens + other.cachedTokens,
     cacheWriteTokens: cacheWriteTokens + other.cacheWriteTokens,
     chargedMicros: chargedMicros + other.chargedMicros,
+    ownKeyMicros: ownKeyMicros + other.ownKeyMicros,
     lastPromptTokens: other.lastPromptTokens > 0 ? other.lastPromptTokens : lastPromptTokens,
     lastCompletionTokens: other.lastPromptTokens > 0 ? other.lastCompletionTokens : lastCompletionTokens,
   );
@@ -106,6 +117,7 @@ final class UsageTotals {
       other.cachedTokens == cachedTokens &&
       other.cacheWriteTokens == cacheWriteTokens &&
       other.chargedMicros == chargedMicros &&
+      other.ownKeyMicros == ownKeyMicros &&
       other.lastPromptTokens == lastPromptTokens &&
       other.lastCompletionTokens == lastCompletionTokens;
 
@@ -117,6 +129,7 @@ final class UsageTotals {
     cachedTokens,
     cacheWriteTokens,
     chargedMicros,
+    ownKeyMicros,
     lastPromptTokens,
     lastCompletionTokens,
   );

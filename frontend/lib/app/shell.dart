@@ -14,6 +14,7 @@ import '../core/theme/every_theme.dart';
 import '../core/ui/adaptive.dart' show showAdaptiveToast;
 import '../features/history/ui/sidebar.dart';
 import '../features/remote/remote_providers.dart' show remoteHostingProvider;
+import '../features/settings/byok_keys.dart' show modelBillingProvider;
 import '../features/settings/settings_registry.dart';
 import '../features/settings/ui/settings_modal.dart';
 import 'router.dart';
@@ -97,6 +98,9 @@ class _AppShellState extends ConsumerState<AppShell> {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final compact = WindowSize.of(context) == WindowSize.compact;
+    // Loads the user's keys and billing picks for the request paths outside
+    // Riverpod (the Code harness reads ModelBilling.current).
+    ref.listen(modelBillingProvider, (_, _) {});
     // Hosting for remote devices runs app-wide (when the user turned it on);
     // a device asking to pair is announced wherever the user is.
     if (Host.isDesktop) {

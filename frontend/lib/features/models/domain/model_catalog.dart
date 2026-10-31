@@ -53,7 +53,7 @@ final class ModelProvider {
     'tencent': const ModelProvider._('tencent', 'Hunyuan', 'Tencent'),
     'bytedance-seed': const ModelProvider._('bytedance-seed', 'Seed', 'ByteDance'),
     'xiaomi': const ModelProvider._('xiaomi', 'MiMo', 'Xiaomi'),
-    'openrouter': const ModelProvider._('openrouter', 'OpenRouter', 'OpenRouter'),
+    'openrouter': const ModelProvider._('openrouter', 'OpenRouter', 'OpenRouter', 'assets/models/openrouter.png'),
     'xingchen-agi': const ModelProvider._('xingchen-agi', 'Xing', 'TeleAI'),
     'dots-studio': const ModelProvider._('dots-studio', 'Dots', 'Dots Studio'),
   };

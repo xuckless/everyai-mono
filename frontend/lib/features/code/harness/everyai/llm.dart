@@ -4,6 +4,9 @@ import 'dart:math';
 
 import 'package:http/http.dart' as http;
 
+import '../../../models/domain/model_catalog.dart' show ModelId;
+import '../../../settings/domain/byok_providers.dart' show ModelBilling;
+
 /// What a tool call being written has streamed so far (the gateway's
 /// progress notes, or the call's own deltas).
 typedef ToolProgress = ({int index, String name, String path, int chars, int lines});
@@ -220,11 +223,14 @@ final class GatewayClient {
 
   Uri get _url => Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}/chat/completions');
 
-  Map<String, String> _headers(String sessionTag, String? effort) => {
+  /// With [model], the user's own key when that model bills to one
+  /// (`ModelBilling`): read per call, so forks and model switches follow it.
+  Map<String, String> _headers(String sessionTag, String? effort, {String? model}) => {
     'Authorization': 'Bearer $apiKey',
     'Content-Type': 'application/json',
     'X-EveryAI-Session': sessionTag,
     'X-EveryAI-Effort': ?effort,
+    if (model != null) ...ModelBilling.current.headersFor(ModelId(model)),
   };
 
   /// Streams one reply. [onText] and [onReasoning] get the deltas as they
@@ -243,7 +249,7 @@ final class GatewayClient {
     Future<void>? cancel,
   }) async {
     final req = http.Request('POST', _url)
-      ..headers.addAll(_headers(sessionTag, effort))
+      ..headers.addAll(_headers(sessionTag, effort, model: model))
       ..body = jsonEncode({
         'model': model,
         'stream': true,
@@ -541,7 +547,11 @@ final class GatewayClient {
     Future<Map<String, Object?>> once() async {
       final http.Response res;
       try {
-        res = await _http.post(_url, headers: _headers(sessionTag, null), body: jsonEncode(body));
+        res = await _http.post(
+          _url,
+          headers: _headers(sessionTag, null, model: body['model'] as String?),
+          body: jsonEncode(body),
+        );
       } on http.ClientException catch (e) {
         throw LlmError('Could not reach the model: ${e.message}', retryable: true);
       }

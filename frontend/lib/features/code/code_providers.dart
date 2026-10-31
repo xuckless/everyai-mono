@@ -13,6 +13,8 @@ import '../agents/agents_providers.dart' show AgentDefinition, agentLibrarySetti
 import '../attachments/attachment.dart';
 import '../models/domain/model_catalog.dart';
 import '../models/models_providers.dart';
+import '../settings/byok_keys.dart' show byokUltraCapProvider;
+import '../settings/domain/byok_providers.dart' show ModelBilling;
 import '../skills/data/skill_import.dart' show findImportCandidates;
 import '../skills/data/skill_store.dart' show folderFiles;
 import '../skills/skills_providers.dart' show codeSkillsFor, installedSkillsProvider;
@@ -973,13 +975,24 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
   /// The budget note shown once spending reaches it, or null under it.
   String? get budgetReached {
     final owner = _budgetOwner;
-    final budget = ref.read(codeSettingsProvider).budgets[owner];
+    final own = ref.read(codeSettingsProvider).budgets[owner];
+    // Ultra on the user's own key never runs uncapped: no budget of its own
+    // means the cap from Settings → Add API keys.
+    final info = ref.read(codeSessionsProvider.notifier).byId(owner);
+    final keyCap = own == null && info != null && byokUltraCapped(info.tier, ModelId(info.model), ModelBilling.current)
+        ? ref.read(byokUltraCapProvider)
+        : null;
+    final budget = own ?? keyCap;
     final spent = budgetSpentMicros(
       owner,
       sessions: ref.read(codeSessionsProvider),
-      usage: (id) => ref.exists(codeUsageProvider(id)) ? ref.read(codeUsageProvider(id)).value?.chargedMicros : null,
+      usage: (id) => ref.exists(codeUsageProvider(id)) ? ref.read(codeUsageProvider(id)).value?.spentMicros : null,
     );
     if (budget == null || budget <= 0 || spent < budget * 1e6) return null;
+    if (keyCap != null) {
+      return 'This Ultra session reached your \$${budget.toStringAsFixed(2)} spend cap on your own key. '
+          'Set a budget in the top bar, or raise the cap in Settings → Add API keys, to carry on.';
+    }
     return 'This session reached its \$${budget.toStringAsFixed(2)} budget. Raise it in the top bar to carry on.';
   }
 
@@ -2189,10 +2202,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
   /// that can be remembered (call id → rule), for the card's per-call menus.
   Map<String, String> rememberBy() {
     final dir = policy.workingDir;
-    return {
-      for (final c in state.transcript.pending)
-        c.id: ?rememberPattern(c, workingDir: dir),
-    };
+    return {for (final c in state.transcript.pending) c.id: ?rememberPattern(c, workingDir: dir)};
   }
 
   /// Approves the pending actions ([callIds], or every one not answered
@@ -2385,6 +2395,11 @@ Future<Map<String, SessionStatus>> sessionStatusesNow(Ref ref, List<CodeSessionI
 /// What [owner]'s budget has spent: its own ledger (subagents bill there
 /// too) plus children billed under their own ids (Ultra steps and the
 /// orchestrator), as far as [usage] has read them.
+/// Whether a session runs under the own-key Ultra cap: the Ultra tier on a
+/// model billed to one of the user's keys.
+bool byokUltraCapped(HarnessTier tier, ModelId model, ModelBilling billing) =>
+    tier == HarnessTier.ultra && billing.ownKey(model);
+
 int budgetSpentMicros(
   String owner, {
   required List<CodeSessionInfo> sessions,

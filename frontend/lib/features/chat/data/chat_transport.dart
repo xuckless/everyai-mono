@@ -32,9 +32,14 @@ final class ChatRequest {
     this.replyLanguage,
     this.forceTool,
     this.researchDepth = ResearchDepth.standard,
+    this.providerKeys = const {},
   });
 
   final ModelSpec model;
+
+  /// The user's own key for [model], as its request header
+  /// (`ModelBilling.headersFor`); empty when EveryAI credits pay.
+  final Map<String, String> providerKeys;
   final String prompt;
 
   /// Files sent with [prompt].
@@ -195,6 +200,7 @@ final class ImageTransport implements ChatTransport {
       authenticated: authenticated,
       timeout: ApiClient.generationTimeout,
       cancel: cancel,
+      headers: request.providerKeys,
     );
     if (json case {'mime': final String mime, 'data': final String data}) {
       yield ImageOutput(
@@ -257,7 +263,13 @@ final class SseTransport implements ChatTransport {
       ],
     };
 
-    await for (final event in _api.postSse(path, body, authenticated: authenticated, cancel: cancel)) {
+    await for (final event in _api.postSse(
+      path,
+      body,
+      authenticated: authenticated,
+      cancel: cancel,
+      headers: request.providerKeys,
+    )) {
       final Object? data;
       try {
         data = event.data.isEmpty ? const <String, Object?>{} : jsonDecode(event.data);

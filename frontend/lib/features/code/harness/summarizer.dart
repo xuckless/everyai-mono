@@ -2,6 +2,9 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../../models/domain/model_catalog.dart' show ModelId;
+import '../../settings/domain/byok_providers.dart' show ModelBilling;
+
 import '../domain/compaction.dart';
 import 'openhands_harness.dart' show HarnessError;
 
@@ -51,6 +54,7 @@ Future<String> Function(String apiKey, List<Map<String, Object?>> messages) _gat
               'Authorization': 'Bearer $apiKey',
               'Content-Type': 'application/json',
               'X-EveryAI-Session': sessionTag,
+              ...ModelBilling.current.headersFor(ModelId(model)),
             },
             body: jsonEncode({'model': model, 'messages': messages, 'max_tokens': 6000, 'stream': false}),
           )
