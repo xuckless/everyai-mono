@@ -114,6 +114,9 @@ const Call = struct {
     /// What to do after a reply that finished with `finish` (`used` output tokens).
     fn next(self: *Call, finish: []const u8, has_tools: bool, text: []const u8, used: i64) !Next {
         if (!truncation.isLength(finish)) return .done;
+        // Another attempt runs the plugins again (a web search is billed per
+        // run), and their callers cap the output on purpose.
+        if (self.o.get("plugins") != null) return .done;
         const arena = self.req.arena;
         if (has_tools) {
             if (self.boosted) return .done;

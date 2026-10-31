@@ -706,6 +706,33 @@ const gw_full_stream =
     \\
 ;
 
+test "gateway: a web search cut at its small cap is not run again" {
+    var env: Env = undefined;
+    try start(&env, &.{ gw_cut_text, gw_rest_text }, true);
+    defer env.deinit();
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const key = try gatewayKey(&env);
+    defer alloc.free(key);
+
+    var res = try env.t.post("/v1/chat/completions", .{
+        .headers = &.{.{ "Authorization", try bearer(a, key) }},
+        .json = .{
+            .model = "google/gemini-3.5-flash-lite",
+            .max_tokens = 32,
+            .plugins = .{.{ .id = "web", .engine = "exa", .max_results = 6 }},
+            .messages = .{.{ .role = "user", .content = "zig 0.17 release" }},
+        },
+    });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    // One search, billed once: a continuation would run (and bill) the plugin again.
+    try std.testing.expectEqual(@as(usize, 1), env.fake.bodies.items.len);
+    var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = a };
+    try std.testing.expectEqual(@as(i64, 1), try env.state.db.one(i64, &c, "SELECT COUNT(*) FROM usage_events", .{}));
+}
+
 test "gateway: streamed, a cut-off tool call is held back and replaced by the retry's" {
     var env: Env = undefined;
     try start(&env, &.{ gw_cut_stream, gw_full_stream }, true);
