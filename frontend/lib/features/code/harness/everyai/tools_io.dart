@@ -789,17 +789,8 @@ final class ToolRunner {
       return ToolOutput('Error: refused: the query contains $what. Never put secrets in searches.', isError: true);
     }
     final sites = researchSites;
-    final reply = await gateway.raw({
-      'model': webSearchModel,
-      'max_tokens': 32,
-      'plugins': [
-        {'id': 'web', 'engine': 'exa', 'max_results': 6},
-      ],
-      'messages': [
-        {'role': 'user', 'content': query},
-      ],
-    }, sessionTag: sessionTag);
-    final out = StringBuffer('<search_results query="$query">\n');
+    final (reply, repeated) = await _searchOnce(query);
+    final out = StringBuffer('<search_results query="$query"${repeated ? ' repeated="true"' : ''}>\n');
     var n = 0;
     final seen = <String>{};
     final annotations = switch (reply['choices']) {
@@ -829,7 +820,43 @@ final class ToolRunner {
     out.write('</search_results>');
     return ToolOutput(out.toString());
   }
+
+  /// Runs [query] once per session: a repeat (a parallel researcher asking
+  /// the same) gets the first one's results instead of paying for another.
+  Future<(Map<String, Object?>, bool)> _searchOnce(String query) async {
+    final key = '$sessionTag\u0000${query.toLowerCase().replaceAll(RegExp(r'\s+'), ' ')}';
+    final now = DateTime.now();
+    _searches.removeWhere((_, v) => now.difference(v.at) > _searchKeep);
+    if (_searches[key] case final hit? when sessionTag.isNotEmpty) return (await hit.reply, true);
+    final reply = gateway.raw({
+      'model': webSearchModel,
+      'max_tokens': 32,
+      'plugins': [
+        {'id': 'web', 'engine': 'exa', 'max_results': 6},
+      ],
+      'messages': [
+        {'role': 'user', 'content': query},
+      ],
+    }, sessionTag: sessionTag);
+    if (sessionTag.isEmpty) return (await reply, false);
+    final entry = (at: now, reply: reply);
+    _searches[key] = entry;
+    if (_searches.length > _searchesKept) _searches.remove(_searches.keys.first);
+    try {
+      return (await reply, false);
+    } on Object {
+      // A failed search is tried again next time.
+      if (identical(_searches[key], entry)) _searches.remove(key);
+      rethrow;
+    }
+  }
 }
+
+/// Web searches already run, by session tag and query (a session's forks
+/// share its tag, so their researchers share these too).
+final _searches = <String, ({DateTime at, Future<Map<String, Object?>> reply})>{};
+const _searchKeep = Duration(hours: 1);
+const _searchesKept = 300;
 
 /// The model that runs web searches (OpenRouter's web plugin), as the
 /// chat's search does.

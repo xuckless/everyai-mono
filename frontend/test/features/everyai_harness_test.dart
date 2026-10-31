@@ -17,6 +17,8 @@ import 'package:every_ai/features/code/harness/everyai/scrub.dart';
 import 'package:every_ai/features/code/harness/everyai/tools_io.dart';
 import 'package:every_ai/features/code/harness/harness.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:image/image.dart' as img;
 
 /// A stand-in for the gateway: answers each chat completion with the next
@@ -328,6 +330,48 @@ void main() {
     expect(out.text, contains('Matched: server ready'));
     expect(watch.elapsed, lessThan(const Duration(seconds: 10)));
     await shell.killAll();
+  });
+
+  test('the same web search runs once per session, even from forks at the same time', () async {
+    var calls = 0;
+    final client = MockClient((req) async {
+      calls++;
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      return http.Response(
+        jsonEncode({
+          'choices': [
+            {
+              'message': {
+                'content': '',
+                'annotations': [
+                  {
+                    'url_citation': {'url': 'https://developer.mozilla.org/a', 'title': 'A', 'content': 'about a'},
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        200,
+      );
+    });
+    ToolRunner runner(String tag) => ToolRunner(
+      root: work,
+      shell: SessionShell(root: work, sessionTag: tag, scratchDir: '${tmp.path}/sh-$tag'),
+      gateway: GatewayClient(baseUrl: 'http://127.0.0.1:9/v1', apiKey: '', client: client),
+      sessionTag: tag,
+    );
+    final parent = runner('search-1'), fork = runner('search-1');
+    final both = await Future.wait([
+      parent.run('web_search', {'query': 'WebGL  game loop'}),
+      fork.run('web_search', {'query': 'webgl game loop'}),
+    ]);
+    expect(calls, 1);
+    expect(both.map((o) => o.text), everyElement(contains('developer.mozilla.org/a')));
+    expect(both.where((o) => o.text.contains('repeated="true"')), hasLength(1));
+    // Another session pays for its own.
+    await runner('search-2').run('web_search', {'query': 'webgl game loop'});
+    expect(calls, 2);
   });
 
   test("a fork's tools read the parent's paths as its own copy's", () async {
