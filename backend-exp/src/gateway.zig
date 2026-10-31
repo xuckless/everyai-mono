@@ -61,6 +61,9 @@ fn completions(app: *App, req: *anole.Request, res: *anole.Response) !void {
     if (chat.wantsBreakpoints(model)) try addBreakpoints(req.arena, o, app.cfg.gateway_cache_ttl);
     try applyEffort(req.arena, o, req.headers.get("X-EveryAI-Effort"));
     const streaming = if (o.get("stream")) |s| s == .bool and s.bool else false;
+    // A whole non-streamed completion (an agent writing a file) can take
+    // minutes; a stream's deadline ends once its head is out.
+    if (!streaming) req.setTimeout(.fromSeconds(600));
     const body = try std.json.Stringify.valueAlloc(req.arena, root, .{});
     const session = req.headers.get("X-EveryAI-Session");
 
@@ -589,6 +592,8 @@ pub fn routes(app: *anole.Server(App), state: *App) void {
 /// one window of readable text fenced as untrusted.
 /// Body: `{"url", "allow"?: [host], "offset"?, "max_chars"?}`.
 fn fetch(app: *App, req: *anole.Request, res: *anole.Response) !void {
+    // Up to five redirects, each with its own fetch budget.
+    req.setTimeout(.fromSeconds(150));
     _ = try auth.identity(req);
     const fetcher = app.web orelse return res.fail(.service_unavailable, "fetching is not available here");
     const raw = (try req.body()) orelse return res.fail(.bad_request, "missing body");

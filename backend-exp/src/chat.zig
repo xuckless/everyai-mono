@@ -345,8 +345,10 @@ pub const Sink = struct {
         return e.n;
     }
 
-    /// Keeps the stream alive while a tool waits for the app.
+    /// Keeps the stream alive while a tool waits for the app; ends the wait
+    /// when the server starts to drain.
     pub fn heartbeat(self: Sink) !void {
+        if (self.ev.draining()) return error.ServerDraining;
         try self.ev.comment("waiting for the app");
     }
 };
@@ -397,6 +399,8 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
 
     run(app, req, who, model, body, facts, sink) catch |err| switch (err) {
         error.Upstream, error.OutOfCredits => {}, // already reported
+        // A restart: the app retries the turn once the server is back.
+        error.ServerDraining => sink.send("error", .{ .message = "The server is restarting. Try again in a moment.", .retryable = true }) catch {},
         else => {
             std.log.err("chat turn failed: {t}", .{err});
             sink.send("error", .{ .message = "Something went wrong while answering.", .retryable = true }) catch {};
@@ -438,6 +442,8 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
     var cap: ?i64 = null;
     var out_of_steps = false;
     while (true) {
+        // A draining server takes no new upstream call; the turn ends retryable.
+        if (sink.ev.draining()) return error.ServerDraining;
         // The first call may be forced to one tool (see ChatRequest.force_tool).
         const wanted: ?[]const u8 = if (with_tools and steps == 0 and continuations == 0) body.force_tool else null;
         const nudge = wanted != null and nudgesTool(model, route.provider, effort);

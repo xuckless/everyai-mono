@@ -155,6 +155,8 @@ fn outOfCredits(res: *anole.Response) !void {
 }
 
 fn polish(app: *App, req: *anole.Request, res: *anole.Response) !void {
+    // One whole model reply that rewrites an SVG.
+    req.setTimeout(.fromSeconds(180));
     const who = try auth.identity(req);
     const body = try req.bind(PolishRequest);
     const svg = std.mem.trim(u8, body.svg, " \n\t\r");

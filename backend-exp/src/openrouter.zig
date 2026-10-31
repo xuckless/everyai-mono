@@ -101,7 +101,8 @@ pub const Client = struct {
             .headers = &h,
             .body = body,
             .stream = true,
-            .timeout = .none,
+            // Until the response head; the body streams on the turn's time.
+            .timeout = .{ .duration = .{ .raw = .fromSeconds(180), .clock = .awake } },
         });
         live.body = try live.response.reader(&live.buffer);
         return .{

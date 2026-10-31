@@ -307,6 +307,7 @@ const Job = struct {
 
         var step: usize = 0;
         while (true) : (step += 1) {
+            if (self.shared.sink.ev.draining()) return error.ServerDraining;
             const last = step + 1 >= self.steps;
             const body = try std.mem.concat(a, u8, &.{
                 "{\"model\":",                                          try std.json.Stringify.valueAlloc(a, self.task.model, .{}),

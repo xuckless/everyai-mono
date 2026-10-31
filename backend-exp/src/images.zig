@@ -183,6 +183,8 @@ const ImageRequest = struct {
 };
 
 fn create(app: *App, req: *anole.Request, res: *anole.Response) !void {
+    // A batch of images takes a minute or more.
+    req.setTimeout(.fromSeconds(300));
     const who = try auth.identity(req);
     const body = try req.bind(ImageRequest);
     if (std.mem.trim(u8, body.prompt, " \n\t").len == 0) return res.fail(.unprocessable_entity, "prompt must not be blank");

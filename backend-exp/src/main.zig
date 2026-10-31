@@ -128,12 +128,15 @@ pub fn main(init: std.process.Init) !void {
         .http = .{ .address = cfg.host, .port = cfg.port, .h2c = true },
         // Argon2 runs on the blocking pool, not an executor.
         .blocking = .{},
-        .client = .{ .timeout = null },
+        // Upstream model calls stream, and a streamed fetch's budget ends at the
+        // response head (openrouter.zig sets its own). Idempotent calls (the
+        // catalog, Google's keys) are retried; a host that keeps failing
+        // trips its breaker and fails fast (503) instead of hanging turns.
+        .client = .{ .timeout = .fromSeconds(60), .retry = .{ .attempts = 3 }, .breaker = .{} },
         // Chat attachments (images, PDFs) arrive inline as base64.
         .limits = .{ .body_max = body_max },
-        // Non-streamed gateway completions (agents writing whole files) run
-        // well past the 30 s default; the upstream bounds them anyway.
-        .timeouts = .{ .request = .fromSeconds(600) },
+        // The default 30 s request deadline; slow handlers set their own
+        // (req.setTimeout), and a stream's deadline ends at its head.
     }, &state);
     defer app.deinit();
     const io = app.io();

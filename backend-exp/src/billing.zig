@@ -419,6 +419,8 @@ fn checkout(app: *App, req: *anole.Request, in: anole.In(.{ .body = Checkout }))
         .headers = &.{
             .{ "Authorization", try std.fmt.allocPrint(req.arena, "Bearer {s}", .{key.expose()}) },
             .{ "Content-Type", "application/x-www-form-urlencoded" },
+            // Makes the POST safe to retry: Stripe answers a repeat with the same session.
+            .{ "Idempotency-Key", try util.uuid(req.arena, req.io) },
         },
         .body = form.written(),
     });

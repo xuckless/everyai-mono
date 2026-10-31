@@ -135,6 +135,7 @@ fn textOf(v: std.json.Value) []const u8 {
 }
 
 fn title(app: *App, req: *anole.Request, res: *anole.Response) !void {
+    req.setTimeout(.fromSeconds(60));
     const who = try auth.identity(req);
     const body = try req.bind(TitleRequest);
     var user: []const u8 = "";
@@ -302,6 +303,8 @@ fn isText(content_type: []const u8) bool {
 }
 
 fn skillDraft(app: *App, req: *anole.Request, res: *anole.Response) !void {
+    // A whole skill written from a transcript or a fetched page.
+    req.setTimeout(.fromSeconds(180));
     const who = try auth.identity(req);
     const raw_body = (try req.body()) orelse return res.fail(.bad_request, "missing body");
     const body = std.json.parseFromSliceLeaky(SkillRequest, req.arena, raw_body, .{ .ignore_unknown_fields = true }) catch
