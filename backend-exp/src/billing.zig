@@ -34,32 +34,62 @@ pub fn planById(id: []const u8) ?Plan {
 pub const CreditKind = enum { topup, usage, grant, refund };
 
 pub fn credit(app: *App, ctx: anytype, user_id: []const u8, micros: i64, kind: CreditKind, ref: ?[]const u8) !void {
-    _ = try app.db.exec(ctx, "INSERT INTO wallet_ledger (user_id, amount_micros, kind, ref, created_at) VALUES (?, ?, ?, ?, ?)", .{
+    try creditIn(app.db, ctx, user_id, micros, kind, ref);
+}
+
+// The `...In` helpers take a database handle: the client, or a transaction's
+// `Tx` (the same calls), so callers can group writes into one transaction.
+
+fn creditIn(db: anytype, ctx: anytype, user_id: []const u8, micros: i64, kind: CreditKind, ref: ?[]const u8) !void {
+    _ = try db.exec(ctx, "INSERT INTO wallet_ledger (user_id, amount_micros, kind, ref, created_at) VALUES (?, ?, ?, ?, ?)", .{
         user_id, micros, @tagName(kind), ref, util.now(ctx.io),
     });
 }
 
-/// Opens a period for `plan_id` starting now (plan change or renewal).
+/// Opens a period for `plan_id` starting now (plan change or renewal), in
+/// one transaction.
 pub fn startPeriod(app: *App, ctx: anytype, user_id: []const u8, plan_id: []const u8) !void {
+    const Run = struct {
+        fn run(tx: *anole.sqlite.Tx, c: @TypeOf(ctx), user: []const u8, plan: []const u8) !void {
+            try startPeriodIn(tx, c, user, plan);
+        }
+    };
+    try app.db.transaction(ctx, .{ .retries = 3 }, Run.run, .{ ctx, user_id, plan_id });
+}
+
+pub fn startPeriodIn(db: anytype, ctx: anytype, user_id: []const u8, plan_id: []const u8) !void {
     const plan = planById(plan_id) orelse return error.UnknownPlan;
     const now = util.now(ctx.io);
     // Close any open period first.
-    _ = try app.db.exec(ctx, "UPDATE quota_periods SET period_end = ? WHERE user_id = ? AND period_end > ?", .{ now, user_id, now });
-    _ = try app.db.exec(ctx, "INSERT OR REPLACE INTO quota_periods (user_id, period_start, period_end, included_micros) VALUES (?, ?, ?, ?)", .{
+    _ = try db.exec(ctx, "UPDATE quota_periods SET period_end = ? WHERE user_id = ? AND period_end > ?", .{ now, user_id, now });
+    _ = try db.exec(ctx, "INSERT OR REPLACE INTO quota_periods (user_id, period_start, period_end, included_micros) VALUES (?, ?, ?, ?)", .{
         user_id, now, now + period_seconds, plan.included_micros,
     });
-    _ = try app.db.exec(ctx, "UPDATE users SET plan = ? WHERE id = ?", .{ plan_id, user_id });
+    _ = try db.exec(ctx, "UPDATE users SET plan = ? WHERE id = ?", .{ plan_id, user_id });
 }
 
 const Period = struct { period_start: i64, period_end: i64, included_micros: i64, used_micros: i64 };
 
-/// The open period, renewing it if the last one ended.
+const open_period_sql = "SELECT period_start, period_end, included_micros, used_micros FROM quota_periods WHERE user_id = ? AND period_end > ? ORDER BY period_start DESC LIMIT 1";
+
+/// The open period. One that ended renews in a transaction (only a read
+/// otherwise).
 fn currentPeriod(app: *App, ctx: anytype, user_id: []const u8) !Period {
+    if (try app.db.optional(Period, ctx, open_period_sql, .{ user_id, util.now(ctx.io) })) |p| return p;
+    const Run = struct {
+        fn run(tx: *anole.sqlite.Tx, c: @TypeOf(ctx), user: []const u8) !Period {
+            return currentPeriodIn(tx, c, user);
+        }
+    };
+    return app.db.transaction(ctx, .{ .retries = 3 }, Run.run, .{ ctx, user_id });
+}
+
+fn currentPeriodIn(db: anytype, ctx: anytype, user_id: []const u8) !Period {
     const now = util.now(ctx.io);
-    if (try app.db.optional(Period, ctx, "SELECT period_start, period_end, included_micros, used_micros FROM quota_periods WHERE user_id = ? AND period_end > ? ORDER BY period_start DESC LIMIT 1", .{ user_id, now })) |p| return p;
-    const plan = try app.db.one([]const u8, ctx, "SELECT plan FROM users WHERE id = ?", .{user_id});
-    try startPeriod(app, ctx, user_id, plan);
-    return app.db.one(Period, ctx, "SELECT period_start, period_end, included_micros, used_micros FROM quota_periods WHERE user_id = ? AND period_end > ? ORDER BY period_start DESC LIMIT 1", .{ user_id, now });
+    if (try db.optional(Period, ctx, open_period_sql, .{ user_id, now })) |p| return p;
+    const plan = try db.one([]const u8, ctx, "SELECT plan FROM users WHERE id = ?", .{user_id});
+    try startPeriodIn(db, ctx, user_id, plan);
+    return db.one(Period, ctx, open_period_sql, .{ user_id, now });
 }
 
 pub fn walletBalance(app: *App, ctx: anytype, user_id: []const u8) !i64 {
@@ -97,20 +127,31 @@ pub const Charge = struct { cost_micros: i64, charged_micros: i64, from_quota: i
 
 /// Records one upstream call and takes its price from quota, then wallet.
 /// The wallet may go slightly negative on the call that crosses zero; the
-/// next preflight stops further paid calls.
+/// next preflight stops further paid calls. One transaction (it holds the
+/// writer), so concurrent calls (parallel researchers) can't both spend
+/// the same quota.
 pub fn charge(app: *App, ctx: anytype, user_id: []const u8, u: Usage) !Charge {
+    const Run = struct {
+        fn run(tx: *anole.sqlite.Tx, c: @TypeOf(ctx), user: []const u8, call: Usage, markup: f64) !Charge {
+            return chargeIn(tx, c, user, call, markup);
+        }
+    };
+    return app.db.transaction(ctx, .{ .retries = 3 }, Run.run, .{ ctx, user_id, u, app.cfg.markup });
+}
+
+fn chargeIn(db: anytype, ctx: anytype, user_id: []const u8, u: Usage, markup: f64) !Charge {
     const cost = util.usdToMicros(u.cost_usd);
-    const charged = util.applyMarkup(cost, app.cfg.markup);
+    const charged = util.applyMarkup(cost, markup);
     var from_quota: i64 = 0;
     var from_wallet: i64 = 0;
     if (charged > 0) {
-        const p = try currentPeriod(app, ctx, user_id);
+        const p = try currentPeriodIn(db, ctx, user_id);
         from_quota = @min(charged, @max(0, p.included_micros - p.used_micros));
         from_wallet = charged - from_quota;
-        if (from_quota > 0) _ = try app.db.exec(ctx, "UPDATE quota_periods SET used_micros = used_micros + ? WHERE user_id = ? AND period_start = ?", .{ from_quota, user_id, p.period_start });
-        if (from_wallet > 0) try credit(app, ctx, user_id, -from_wallet, .usage, u.model);
+        if (from_quota > 0) _ = try db.exec(ctx, "UPDATE quota_periods SET used_micros = used_micros + ? WHERE user_id = ? AND period_start = ?", .{ from_quota, user_id, p.period_start });
+        if (from_wallet > 0) try creditIn(db, ctx, user_id, -from_wallet, .usage, u.model);
     }
-    _ = try app.db.exec(ctx,
+    _ = try db.exec(ctx,
         \\INSERT INTO usage_events (user_id, api_key_id, session, kind, model, prompt_tokens, completion_tokens,
         \\  cached_tokens, cache_write_tokens, cost_micros, charged_micros, from_quota_micros, from_wallet_micros, created_at, provider)
         \\VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -392,36 +433,67 @@ fn checkout(app: *App, req: *anole.Request, in: anole.In(.{ .body = Checkout }))
 
 /// Stripe webhook (signature and duplicate deliveries handled by Anole's
 /// `webhookVerify` preset). Credits top-ups and applies subscriptions.
-fn stripeWebhook(app: *App, req: *anole.Request, res: *anole.Response) !void {
-    const body = (try req.body()) orelse "";
-    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, req.arena, body, .{});
-    const ev_type = parsed.object.get("type").?.string;
-    const obj = parsed.object.get("data").?.object.get("object").?.object;
-    const meta = if (obj.get("metadata")) |m| m.object else null;
+/// The parts of a Stripe event this handler reads. Every field is optional:
+/// a signed event of another shape is acknowledged, never a crash.
+const StripeEvent = struct {
+    type: []const u8 = "",
+    data: ?struct { object: ?StripeObject = null } = null,
+};
 
-    if (std.mem.eql(u8, ev_type, "checkout.session.completed")) {
-        const user_id = obj.get("client_reference_id").?.string;
-        const kind = if (meta) |m| (if (m.get("kind")) |k| k.string else "") else "";
-        if (std.mem.eql(u8, kind, "topup")) {
-            const cents = try std.fmt.parseInt(i64, meta.?.get("amount_cents").?.string, 10);
-            try credit(app, req, user_id, cents * 10_000, .topup, obj.get("id").?.string);
-        } else if (std.mem.eql(u8, kind, "subscription")) {
-            const plan = meta.?.get("plan").?.string;
-            try startPeriod(app, req, user_id, plan);
-            _ = try app.db.exec(req, "INSERT OR REPLACE INTO subscriptions (user_id, plan, status, stripe_subscription_id) VALUES (?, ?, 'active', ?)", .{
-                user_id, plan, if (obj.get("subscription")) |s| (if (s == .string) s.string else null) else null,
-            });
-        }
-    } else if (std.mem.eql(u8, ev_type, "invoice.paid")) {
-        // Renewal: a fresh period for the subscription's plan.
-        if (obj.get("subscription")) |s| if (s == .string) {
-            if (try app.db.optional(struct { user_id: []const u8, plan: []const u8 }, req, "SELECT user_id, plan FROM subscriptions WHERE stripe_subscription_id = ?", .{s.string})) |sub|
-                try startPeriod(app, req, sub.user_id, sub.plan);
+const StripeObject = struct {
+    id: ?[]const u8 = null,
+    client_reference_id: ?[]const u8 = null,
+    /// An id, or the expanded object on newer API versions.
+    subscription: ?std.json.Value = null,
+    metadata: ?struct { kind: ?[]const u8 = null, amount_cents: ?[]const u8 = null, plan: ?[]const u8 = null } = null,
+
+    fn subscriptionId(self: StripeObject) ?[]const u8 {
+        const v = self.subscription orelse return null;
+        return switch (v) {
+            .string => |id| id,
+            .object => |o| if (o.get("id")) |id| (if (id == .string) id.string else null) else null,
+            else => null,
         };
-    } else if (std.mem.eql(u8, ev_type, "customer.subscription.deleted")) {
-        if (obj.get("id")) |s| if (try app.db.optional([]const u8, req, "SELECT user_id FROM subscriptions WHERE stripe_subscription_id = ?", .{s.string})) |user_id| {
-            _ = try app.db.exec(req, "UPDATE subscriptions SET status = 'canceled' WHERE user_id = ?", .{user_id});
-            try startPeriod(app, req, user_id, "free");
+    }
+};
+
+fn stripeWebhook(app: *App, req: *anole.Request, res: *anole.Response) !void {
+    const event = try req.bind(StripeEvent);
+    const obj: StripeObject = if (event.data) |d| d.object orelse .{} else .{};
+    const meta = obj.metadata orelse @as(@TypeOf(obj.metadata.?), .{});
+
+    if (std.mem.eql(u8, event.type, "checkout.session.completed")) checkout: {
+        const user_id = obj.client_reference_id orelse break :checkout;
+        const kind = meta.kind orelse "";
+        if (std.mem.eql(u8, kind, "topup")) {
+            const cents = std.fmt.parseInt(i64, meta.amount_cents orelse break :checkout, 10) catch break :checkout;
+            try credit(app, req, user_id, cents * 10_000, .topup, obj.id);
+        } else if (std.mem.eql(u8, kind, "subscription")) {
+            const plan = meta.plan orelse break :checkout;
+            if (planById(plan) == null) break :checkout;
+            const Run = struct {
+                fn run(tx: *anole.sqlite.Tx, r: *anole.Request, user: []const u8, p: []const u8, sub_id: ?[]const u8) !void {
+                    try startPeriodIn(tx, r, user, p);
+                    _ = try tx.exec(r, "INSERT OR REPLACE INTO subscriptions (user_id, plan, status, stripe_subscription_id) VALUES (?, ?, 'active', ?)", .{ user, p, sub_id });
+                }
+            };
+            try app.db.transaction(req, .{ .retries = 3 }, Run.run, .{ req, user_id, plan, obj.subscriptionId() });
+        }
+    } else if (std.mem.eql(u8, event.type, "invoice.paid")) {
+        // Renewal: a fresh period for the subscription's plan.
+        if (obj.subscriptionId()) |s| {
+            if (try app.db.optional(struct { user_id: []const u8, plan: []const u8 }, req, "SELECT user_id, plan FROM subscriptions WHERE stripe_subscription_id = ?", .{s})) |sub|
+                try startPeriod(app, req, sub.user_id, sub.plan);
+        }
+    } else if (std.mem.eql(u8, event.type, "customer.subscription.deleted")) {
+        if (obj.id) |s| if (try app.db.optional([]const u8, req, "SELECT user_id FROM subscriptions WHERE stripe_subscription_id = ?", .{s})) |user_id| {
+            const Run = struct {
+                fn run(tx: *anole.sqlite.Tx, r: *anole.Request, user: []const u8) !void {
+                    _ = try tx.exec(r, "UPDATE subscriptions SET status = 'canceled' WHERE user_id = ?", .{user});
+                    try startPeriodIn(tx, r, user, "free");
+                }
+            };
+            try app.db.transaction(req, .{ .retries = 3 }, Run.run, .{ req, user_id });
         };
     }
     res.status = .ok;

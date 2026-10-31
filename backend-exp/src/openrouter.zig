@@ -23,19 +23,30 @@ pub const Stream = struct {
     }
 };
 
+/// What an upstream call needs from its caller: the runtime and an arena
+/// for the call's memory. A handler passes `ctxOf(req)`; a task it starts
+/// passes its own (Clients: give such a task its own allocator).
+pub const Ctx = anole.db.Ctx;
+
+/// The call context of a request, a `*anole.db.Ctx` or anything else with
+/// `io` and `arena`.
+pub fn ctxOf(c: anytype) Ctx {
+    return .{ .io = c.io, .arena = c.arena };
+}
+
 pub const Upstream = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
     pub const VTable = struct {
         /// POST `path` (relative to the API root) with a JSON body, streamed.
-        post: *const fn (ptr: *anyopaque, req: *anole.Request, path: []const u8, body: []const u8, extra_headers: []const [2][]const u8) anyerror!Stream,
+        post: *const fn (ptr: *anyopaque, cx: Ctx, path: []const u8, body: []const u8, extra_headers: []const [2][]const u8) anyerror!Stream,
         /// GET `path`, whole body, for catalog refreshes (no request needed).
         get: *const fn (ptr: *anyopaque, io: std.Io, arena: std.mem.Allocator, path: []const u8) anyerror![]const u8,
     };
 
-    pub fn post(self: Upstream, req: *anole.Request, path: []const u8, body: []const u8, extra_headers: []const [2][]const u8) !Stream {
-        return self.vtable.post(self.ptr, req, path, body, extra_headers);
+    pub fn post(self: Upstream, cx: Ctx, path: []const u8, body: []const u8, extra_headers: []const [2][]const u8) !Stream {
+        return self.vtable.post(self.ptr, cx, path, body, extra_headers);
     }
 
     pub fn get(self: Upstream, io: std.Io, arena: std.mem.Allocator, path: []const u8) ![]const u8 {
@@ -80,12 +91,12 @@ pub const Client = struct {
         return h;
     }
 
-    fn post(ptr: *anyopaque, req: *anole.Request, path: []const u8, body: []const u8, extra: []const [2][]const u8) anyerror!Stream {
+    fn post(ptr: *anyopaque, cx: Ctx, path: []const u8, body: []const u8, extra: []const [2][]const u8) anyerror!Stream {
         const self: *Client = @ptrCast(@alignCast(ptr));
-        const url = try std.fmt.allocPrint(req.arena, "{s}{s}", .{ self.base_url, path });
-        const h = try self.headers(req.arena, extra);
-        const live = try req.arena.create(Live);
-        live.response = try anole.client(req).http.fetch(url, .{
+        const url = try std.fmt.allocPrint(cx.arena, "{s}{s}", .{ self.base_url, path });
+        const h = try self.headers(cx.arena, extra);
+        const live = try cx.arena.create(Live);
+        live.response = try anole.client(cx.io).http.fetch(url, .{
             .method = .post,
             .headers = &h,
             .body = body,
@@ -191,8 +202,8 @@ pub const UpstreamError = struct {
 /// Streams one `/chat/completions` call. `sink.onDelta(Delta)` is called as
 /// content arrives; the accumulated result is returned (memory in `arena`).
 /// An upstream failure returns `error.Upstream` with `err_out` filled in.
-pub fn complete(up: Upstream, req: *anole.Request, arena: std.mem.Allocator, body: []const u8, extra_headers: []const [2][]const u8, sink: anytype, err_out: *UpstreamError) !Result {
-    const stream = try up.post(req, "/chat/completions", body, extra_headers);
+pub fn complete(up: Upstream, cx: Ctx, arena: std.mem.Allocator, body: []const u8, extra_headers: []const [2][]const u8, sink: anytype, err_out: *UpstreamError) !Result {
+    const stream = try up.post(cx, "/chat/completions", body, extra_headers);
     defer stream.close();
 
     if (stream.status >= 300) {
@@ -470,12 +481,12 @@ pub const Fake = struct {
         self.bodies.deinit(self.gpa);
     }
 
-    fn fakePost(ptr: *anyopaque, req: *anole.Request, _: []const u8, body: []const u8, _: []const [2][]const u8) anyerror!Stream {
+    fn fakePost(ptr: *anyopaque, cx: Ctx, _: []const u8, body: []const u8, _: []const [2][]const u8) anyerror!Stream {
         const self: *Fake = @ptrCast(@alignCast(ptr));
         try self.bodies.append(self.gpa, try self.gpa.dupe(u8, body));
         const i = @min(self.next_index, self.responses.len - 1);
         self.next_index += 1;
-        const open = try req.arena.create(Open);
+        const open = try cx.arena.create(Open);
         open.reader = .fixed(self.responses[i]);
         return .{ .status = self.status, .reader = &open.reader, .ctx = open, .closeFn = noClose };
     }

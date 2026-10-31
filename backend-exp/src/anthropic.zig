@@ -48,10 +48,10 @@ pub const Adapter = struct {
         return error.Unsupported;
     }
 
-    fn post(ptr: *anyopaque, req: *anole.Request, path: []const u8, body: []const u8, extra: []const [2][]const u8) anyerror!openrouter.Stream {
+    fn post(ptr: *anyopaque, cx: openrouter.Ctx, path: []const u8, body: []const u8, extra: []const [2][]const u8) anyerror!openrouter.Stream {
         const self: *Adapter = @ptrCast(@alignCast(ptr));
         if (!std.mem.eql(u8, path, "/chat/completions")) return error.Unsupported;
-        const arena = req.arena;
+        const arena = cx.arena;
         const in = try std.json.parseFromSliceLeaky(Value, arena, body, .{});
         if (in != .object) return error.BadRequest;
         const t = try translateRequest(arena, in.object);
@@ -59,16 +59,16 @@ pub const Adapter = struct {
         var headers: std.ArrayList([2][]const u8) = .empty;
         try headers.appendSlice(arena, extra);
         if (t.fallbacks) try headers.append(arena, .{ "anthropic-beta", "server-side-fallback-2026-07-01" });
-        const up = try self.inner.post(req, "/messages", t.body, headers.items);
+        const up = try self.inner.post(cx, "/messages", t.body, headers.items);
 
-        const prices = self.catalog.pricesOf(req.io, t.model);
+        const prices = self.catalog.pricesOf(cx.io, t.model);
         if (prices == null) std.log.warn("no catalog prices for {s}; the call is billed as free", .{t.model});
         var meta: Meta = .{
             .model = t.model,
             .api_id = try anthropicId(arena, t.model),
             .prices = prices,
-            .created = util.now(req.io),
-            .resolver = .{ .ctx = self, .io = req.io, .lookupFn = lookup },
+            .created = util.now(cx.io),
+            .resolver = .{ .ctx = self, .io = cx.io, .lookupFn = lookup },
         };
 
         if (up.status >= 300) {
@@ -78,7 +78,7 @@ pub const Adapter = struct {
             const status: u16 = if (up.status == 529) 503 else up.status;
             return fixed(arena, status, try translateError(arena, raw, up.status));
         }
-        const cont: Cont = .{ .inner = self.inner, .req = req, .body = t.body, .headers = headers.items };
+        const cont: Cont = .{ .inner = self.inner, .cx = cx, .body = t.body, .headers = headers.items };
         if (!t.stream) return fixed(arena, 200, try self.whole(arena, up, cont, &meta));
         const tr = try arena.create(Translator);
         tr.init(arena, up, meta);
@@ -113,7 +113,7 @@ pub const Adapter = struct {
             if (!std.mem.eql(u8, stop, "pause_turn") or round >= max_continues) break;
 
             const next_body = try continueBody(arena, body, part);
-            const next = cont.inner.post(cont.req, "/messages", next_body, cont.headers) catch |err| {
+            const next = cont.inner.post(cont.cx, "/messages", next_body, cont.headers) catch |err| {
                 std.log.warn("anthropic pause_turn continuation failed: {t}", .{err});
                 break;
             };
@@ -149,7 +149,7 @@ const max_continues = 5;
 /// What re-posting a paused turn needs.
 const Cont = struct {
     inner: openrouter.Upstream,
-    req: *anole.Request,
+    cx: openrouter.Ctx,
     /// The Messages request that was last sent.
     body: []const u8,
     headers: []const [2][]const u8,
@@ -853,7 +853,7 @@ const Translator = struct {
         var cont = self.cont orelse return false;
         if (self.continues >= max_continues) return false;
         const body = try continueBody(self.arena, cont.body, try self.assistantBlocks());
-        const next = cont.inner.post(cont.req, "/messages", body, cont.headers) catch |err| {
+        const next = cont.inner.post(cont.cx, "/messages", body, cont.headers) catch |err| {
             std.log.warn("anthropic pause_turn continuation failed: {t}", .{err});
             return false;
         };

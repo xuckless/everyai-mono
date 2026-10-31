@@ -570,7 +570,7 @@ const Turn = struct {
         o.effort = self.effort;
         const request_body = try buildBody(self.req.arena, self.model, self.body.mode, self.with_tools, messages, app.cfg.cache_ttl, app.cfg.search_engine, o);
         var up_err: openrouter.UpstreamError = .{ .status = 0, .message = "" };
-        const result = openrouter.complete(self.route.up, self.req, self.req.arena, request_body, &.{}, deltas, &up_err) catch |err| switch (err) {
+        const result = openrouter.complete(self.route.up, openrouter.ctxOf(self.req), self.req.arena, request_body, &.{}, deltas, &up_err) catch |err| switch (err) {
             error.Upstream => {
                 try sink.send("error", .{ .message = up_err.message, .retryable = up_err.status == 429 or up_err.status >= 500, .status = up_err.status });
                 return err;
@@ -894,7 +894,8 @@ fn toolResult(app: *App, req: *anole.Request, res: *anole.Response) !void {
 /// and, when the text goes on, `next_offset` for the next window. The fetch
 /// goes through `safe_fetch`: no local or private addresses, every redirect
 /// hop checked again, the body capped.
-pub fn webFetch(app: *App, req: *anole.Request, args: std.json.Value, sink: anytype) ![]const u8 {
+/// `req` is the request, or a task's own `*anole.db.Ctx` (research.zig).
+pub fn webFetch(app: *App, req: anytype, args: std.json.Value, sink: anytype) ![]const u8 {
     const fetcher = app.web orelse return "Error: web_fetch is not available here.";
     const url = std.mem.trim(u8, openrouter.jsonString(args, "url") orelse "", " \t\r\n");
     const offset: usize = @intCast(@max(0, intArg(args, "offset") orelse 0));
@@ -930,7 +931,8 @@ fn intArg(args: std.json.Value, key: []const u8) ?i64 {
 /// utility model, metered like any call. The results join the turn's source
 /// ledger, so the model cites the numbers it is given and the app gets them
 /// as `sources`.
-pub fn webSearch(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, args: std.json.Value, sink: anytype) ![]const u8 {
+/// `req` is the request, or a task's own `*anole.db.Ctx` (research.zig).
+pub fn webSearch(app: *App, req: anytype, who: auth.Identity, session: ?[]const u8, args: std.json.Value, sink: anytype) ![]const u8 {
     const arena = req.arena;
     const query = std.mem.trim(u8, openrouter.jsonString(args, "query") orelse "", " \t\r\n");
     if (query.len == 0) return "Error: query is empty.";
@@ -947,7 +949,7 @@ pub fn webSearch(app: *App, req: *anole.Request, who: auth.Identity, session: ?[
     const cached = if (key) |k| try app.searches.get(req.io, arena, k, now) else null;
     const sources = cached orelse blk: {
         const body = try web.searchBody(arena, app.cfg.utility_model, app.cfg.search_engine, query, limit);
-        const s = try app.upstream.post(req, "/chat/completions", body, &.{});
+        const s = try app.upstream.post(openrouter.ctxOf(req), "/chat/completions", body, &.{});
         defer s.close();
         const raw = try s.reader.allocRemaining(arena, .limited(1024 * 1024));
         if (s.status >= 300) return std.fmt.allocPrint(arena, "Error: the search failed ({s}). Try again or carry on without it.", .{openrouter.errorMessage(arena, raw)});
@@ -1182,7 +1184,7 @@ fn followUps(app: *App, req: *anole.Request, who: auth.Identity, body: ChatReque
         .max_tokens = 200,
         .messages = .{.{ .role = "user", .content = prompt }},
     }, .{});
-    const s = try app.upstream.post(req, "/chat/completions", req_body, &.{});
+    const s = try app.upstream.post(openrouter.ctxOf(req), "/chat/completions", req_body, &.{});
     defer s.close();
     const raw = try s.reader.allocRemaining(req.arena, .limited(1024 * 1024));
     if (s.status >= 300) return error.UpstreamFailed;

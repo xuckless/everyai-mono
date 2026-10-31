@@ -161,24 +161,59 @@ fn logIn(app: *App, req: *anole.Request, in: anole.In(.{ .body = struct { email:
 }
 
 /// Signs in (or up) with a Google ID token from the native Google Sign-In SDKs.
-fn google(app: *App, req: *anole.Request, in: anole.In(.{ .body = struct { id_token: []const u8 } })) !Tokens {
+/// Accounts are keyed on Google's subject. An email is trusted only when
+/// Google marks it verified, and never links an existing account: a password
+/// account with the same address stays the password owner's.
+fn google(app: *App, req: *anole.Request, in: anole.In(.{ .body = struct { token: ?[]const u8 = null, id_token: ?[]const u8 = null } })) !Tokens {
     const keyring = app.google_keys orelse return error.NotImplemented;
+    // The app sends `token`; `id_token` is the older name.
+    const token = in.body.token orelse in.body.id_token orelse return error.BadRequest;
     var it = std.mem.tokenizeScalar(u8, app.cfg.google_client_ids, ',');
     const verified = while (it.next()) |client_id| {
-        if (keyring.verify(req.arena, in.body.id_token, .{
+        if (keyring.verify(req.arena, token, .{
             .issuer = "https://accounts.google.com",
             .audience = std.mem.trim(u8, client_id, " "),
         })) |v| break v else |_| continue;
     } else return error.Unauthorized;
 
     const sub = verified.string("sub") orelse return error.Unauthorized;
-    const email = verified.string("email") orelse return error.Unauthorized;
-    const name = verified.string("name") orelse email;
-    if (try app.db.optional([]const u8, req, "SELECT id FROM users WHERE google_sub = ? OR email = ?", .{ sub, email })) |id| {
-        _ = try app.db.exec(req, "UPDATE users SET google_sub = ? WHERE id = ?", .{ sub, id });
-        return issue(app, req, try loadUser(app, req, id));
-    }
-    return issue(app, req, try createUser(app, req, name, email, null, sub));
+    const email = verified.string("email") orelse "";
+    const by_sub = try app.db.optional([]const u8, req, "SELECT id FROM users WHERE google_sub = ?", .{sub});
+    const email_taken = by_sub == null and email.len > 0 and
+        try app.db.optional([]const u8, req, "SELECT id FROM users WHERE email = ?", .{email}) != null;
+    return switch (googleAccount(by_sub != null, emailVerified(verified) and email.len > 0, email_taken)) {
+        .sign_in => issue(app, req, try loadUser(app, req, by_sub.?)),
+        .create => issue(app, req, try createUser(app, req, verified.string("name") orelse email, email, null, sub)),
+        .unverified => error.Unauthorized,
+        .taken => error.Conflict,
+    };
+}
+
+/// What a verified Google token does: sign in the account with its subject,
+/// or make one for a verified email no account has. A matching email alone
+/// never signs into an existing account.
+fn googleAccount(has_subject: bool, email_verified: bool, email_taken: bool) enum { sign_in, create, unverified, taken } {
+    if (has_subject) return .sign_in;
+    if (!email_verified) return .unverified;
+    if (email_taken) return .taken;
+    return .create;
+}
+
+test "google sign-in never links an account by email" {
+    try std.testing.expectEqual(.sign_in, googleAccount(true, false, false));
+    try std.testing.expectEqual(.taken, googleAccount(false, true, true));
+    try std.testing.expectEqual(.unverified, googleAccount(false, false, false));
+    try std.testing.expectEqual(.create, googleAccount(false, true, false));
+}
+
+/// Google sends `email_verified` as a boolean (older tokens: the string "true").
+fn emailVerified(v: anole.auth.Verified) bool {
+    const claim = v.claims.get("email_verified") orelse return false;
+    return switch (claim) {
+        .bool => |b| b,
+        .string => |str| std.mem.eql(u8, str, "true"),
+        else => false,
+    };
 }
 
 /// Rotates: the presented refresh token is revoked and a new pair issued.

@@ -144,7 +144,7 @@ pub fn generate(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]
     // Images are billed after the fact, so a request must fit what is left.
     if (!free and try billing.available(app, req, who.user_id) < worstCaseMicros(o, app.cfg.markup)) return error.PaymentRequired;
     const body = try requestBody(req.arena, o);
-    const s = try app.upstream.post(req, "/images", body, &.{});
+    const s = try app.upstream.post(openrouter.ctxOf(req), "/images", body, &.{});
     defer s.close();
     const raw = try s.reader.allocRemaining(req.arena, .limited(64 * 1024 * 1024));
     if (s.status >= 300) {

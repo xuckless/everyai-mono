@@ -65,7 +65,7 @@ fn completions(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const session = req.headers.get("X-EveryAI-Session");
 
     const route = app.route(model, true);
-    const up = try route.up.post(req, "/chat/completions", body, &.{});
+    const up = try route.up.post(openrouter.ctxOf(req), "/chat/completions", body, &.{});
     var call: Call = .{ .app = app, .req = req, .who = who, .session = session, .model = model, .route = route, .o = o, .max_output = facts.max_output };
 
     if (up.status >= 300) {
@@ -150,7 +150,7 @@ const Call = struct {
     fn retry(self: *Call, step: Next, text: []const u8) !?openrouter.Stream {
         const kept = self.text.items.len;
         if (step == .continue_text) try self.text.appendSlice(self.req.arena, text);
-        const up = self.route.up.post(self.req, "/chat/completions", try self.body(), &.{}) catch |err| {
+        const up = self.route.up.post(openrouter.ctxOf(self.req), "/chat/completions", try self.body(), &.{}) catch |err| {
             std.log.warn("gateway retry failed: {t}", .{err});
             self.text.shrinkRetainingCapacity(kept);
             return null;

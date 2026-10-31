@@ -29,6 +29,13 @@ const Env = struct {
 };
 
 fn start(env: *Env, responses: []const []const u8, dev_auth: bool) !void {
+    return startWith(env, responses, dev_auth, .{});
+}
+
+/// Settings beyond the defaults a test needs.
+const Extra = struct { stripe_webhook_secret: ?[]const u8 = null };
+
+fn startWith(env: *Env, responses: []const []const u8, dev_auth: bool, extra: Extra) !void {
     env.fake = .{ .responses = responses, .gpa = alloc, .models_json = models_json };
     env.anth = .{ .responses = &.{""}, .gpa = alloc };
     var cfg: config.Config = .{
@@ -37,6 +44,7 @@ fn start(env: *Env, responses: []const []const u8, dev_auth: bool) !void {
         .dev_auth = dev_auth,
     };
     cfg.max_tool_steps = 4;
+    if (extra.stripe_webhook_secret) |secret| cfg.stripe_webhook_secret = .init(secret);
     env.state = .{
         .gpa = alloc,
         .cfg = cfg,
@@ -1584,4 +1592,53 @@ test "gateway fetch: local and metadata addresses are refused, and the allowlist
     defer off.deinit();
     try off.expectStatus(.unprocessable_entity);
     try std.testing.expect(std.mem.indexOf(u8, off.body, "research allowlist") != null);
+}
+
+/// Stripe's signature header for `body` at `ts`: `t=<ts>,v1=<hex HMAC-SHA256 of "ts.body">`.
+fn stripeSignature(a: std.mem.Allocator, secret: []const u8, ts: i64, body: []const u8) ![]const u8 {
+    const Hmac = std.crypto.auth.hmac.sha2.HmacSha256;
+    var mac: [Hmac.mac_length]u8 = undefined;
+    var h = Hmac.init(secret);
+    h.update(try std.fmt.allocPrint(a, "{d}.", .{ts}));
+    h.update(body);
+    h.final(&mac);
+    return std.fmt.allocPrint(a, "t={d},v1={x}", .{ ts, &mac });
+}
+
+test "billing: Stripe events of any shape are acknowledged, and a top-up credits the wallet" {
+    var env: Env = undefined;
+    const secret = "whsec_test_secret";
+    try startWith(&env, &.{""}, true, .{ .stripe_webhook_secret = secret });
+    defer env.deinit();
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const now = std.Io.Clock.real.now(env.server.io()).toSeconds();
+
+    const events = [_][]const u8{
+        // Signed but missing what the handler reads: no crash, 200.
+        \\{"id":"evt_1","type":"checkout.session.completed","data":{"object":{"metadata":{"kind":"topup"}}}}
+        ,
+        \\{"id":"evt_2","type":"invoice.paid","data":{}}
+        ,
+        \\{"id":"evt_3","type":"something.new"}
+        ,
+        \\{"id":"evt_4","type":"checkout.session.completed","data":{"object":{"id":"cs_1","client_reference_id":"dev-user","metadata":{"kind":"topup","amount_cents":"500"}}}}
+        ,
+    };
+    for (events) |body| {
+        var res = try env.t.post("/v1/billing/webhook", .{
+            .headers = &.{ .{ "Stripe-Signature", try stripeSignature(a, secret, now, body) }, .{ "Content-Type", "application/json" } },
+            .body = body,
+        });
+        defer res.deinit();
+        try res.expectStatus(.ok);
+    }
+    // A wrong signature never reaches the handler.
+    var forged = try env.t.post("/v1/billing/webhook", .{ .headers = &.{.{ "Stripe-Signature", "t=1,v1=00" }}, .body = events[3] });
+    defer forged.deinit();
+    try forged.expectStatus(.bad_request);
+
+    var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = a };
+    try std.testing.expectEqual(@as(i64, 5_000_000), try env.state.db.one(i64, &c, "SELECT amount_micros FROM wallet_ledger WHERE ref = 'cs_1'", .{}));
 }

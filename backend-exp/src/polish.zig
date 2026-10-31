@@ -192,7 +192,7 @@ fn polish(app: *App, req: *anole.Request, res: *anole.Response) !void {
             } },
         },
     }, .{});
-    const s = try app.upstream.post(req, "/chat/completions", req_body, &.{});
+    const s = try app.upstream.post(openrouter.ctxOf(req), "/chat/completions", req_body, &.{});
     defer s.close();
     const raw = try s.reader.allocRemaining(req.arena, .limited(8 * 1024 * 1024));
     if (s.status >= 300) return res.fail(.bad_gateway, openrouter.errorMessage(req.arena, raw));

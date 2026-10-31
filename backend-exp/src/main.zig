@@ -187,4 +187,15 @@ test {
     _ = tool_wait;
     _ = polish;
     _ = remote;
+    // Modules the app reaches only through others: listed so their tests run too.
+    _ = @import("auth.zig");
+    _ = @import("config.zig");
+    _ = @import("openrouter.zig");
+    _ = @import("images.zig");
+    _ = @import("research.zig");
+    _ = @import("routing.zig");
+    _ = @import("truncation.zig");
+    _ = @import("web.zig");
+    _ = @import("tool_check.zig");
+    _ = @import("modes.zig");
 }

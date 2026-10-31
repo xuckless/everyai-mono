@@ -160,7 +160,7 @@ fn title(app: *App, req: *anole.Request, res: *anole.Response) !void {
         .max_tokens = 40,
         .messages = .{.{ .role = "user", .content = prompt }},
     }, .{});
-    const s = try app.upstream.post(req, "/chat/completions", req_body, &.{});
+    const s = try app.upstream.post(openrouter.ctxOf(req), "/chat/completions", req_body, &.{});
     defer s.close();
     const raw = try s.reader.allocRemaining(req.arena, .limited(1024 * 1024));
     if (s.status >= 300) return res.fail(.bad_gateway, "the title model failed");
@@ -340,7 +340,7 @@ fn skillDraft(app: *App, req: *anole.Request, res: *anole.Response) !void {
         .max_tokens = 1500,
         .messages = .{.{ .role = "user", .content = try sourcePrompt(req.arena, source, text, hint) }},
     }, .{});
-    const s = try app.upstream.post(req, "/chat/completions", req_body, &.{});
+    const s = try app.upstream.post(openrouter.ctxOf(req), "/chat/completions", req_body, &.{});
     defer s.close();
     const raw = try s.reader.allocRemaining(req.arena, .limited(1024 * 1024));
     if (s.status >= 300) return res.fail(.bad_gateway, "the skill model failed");

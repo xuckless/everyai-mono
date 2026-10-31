@@ -127,6 +127,8 @@ pub fn run(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const
     const briefs = try arena.alloc(Brief, tasks.len);
     const jobs = try arena.alloc(Job, tasks.len);
     var group: std.Io.Group = .init;
+    // Tasks started before an error below must not outlive this frame.
+    defer group.cancel(req.io);
     for (tasks, briefs, jobs, 0..) |t, *b, *j, i| {
         b.* = .{};
         j.* = .{
@@ -260,8 +262,10 @@ fn dupeSource(arena: std.mem.Allocator, s: openrouter.Source) !openrouter.Source
     };
 }
 
-/// One researcher: a tool loop on its own arena and its own copy of the
-/// request (same runtime, its own memory).
+/// One researcher: a tool loop with its own arena, passed as an
+/// `anole.db.Ctx` (the request's arena is the handler's alone). Tasks stay
+/// on the request's executor (pinned scheduling), so the turn's sink and
+/// arena are touched only between waits; the lock keeps that explicit.
 const Job = struct {
     app: *App,
     req: *anole.Request,
@@ -289,8 +293,7 @@ const Job = struct {
     }
 
     fn loop(self: *Job, a: std.mem.Allocator) ![]const u8 {
-        var sub = self.req.*;
-        sub.arena = a;
+        var cx: anole.db.Ctx = .{ .io = self.req.io, .arena = a };
         const sink: LockedSink = .{ .shared = self.shared };
         const web_tools = try webTools(a);
 
@@ -311,7 +314,7 @@ const Job = struct {
                 if (last) ",\"tool_choice\":\"none\"" else "",           ",\"messages\":[",
                 try std.mem.join(a, ",", messages.items),               "]}",
             });
-            const reply = try self.call(&sub, a, body);
+            const reply = try self.call(&cx, a, body);
             const message = reply.message;
             const content = openrouter.jsonString(message, "content") orelse "";
             const calls = if (message == .object) (if (message.object.get("tool_calls")) |c| (if (c == .array) c.array.items else &.{}) else &.{}) else &.{};
@@ -329,9 +332,9 @@ const Job = struct {
                 const output = if (args == null)
                     "Error: the arguments were not valid JSON."
                 else if (std.mem.eql(u8, name, "web_search"))
-                    chat.webSearch(self.app, &sub, self.who, self.session, args.?, sink) catch |err| try std.fmt.allocPrint(a, "Error: {t}", .{err})
+                    chat.webSearch(self.app, &cx, self.who, self.session, args.?, sink) catch |err| try std.fmt.allocPrint(a, "Error: {t}", .{err})
                 else if (std.mem.eql(u8, name, "web_fetch"))
-                    chat.webFetch(self.app, &sub, args.?, sink) catch |err| try std.fmt.allocPrint(a, "Error: {t}", .{err})
+                    chat.webFetch(self.app, &cx, args.?, sink) catch |err| try std.fmt.allocPrint(a, "Error: {t}", .{err})
                 else
                     "Error: researchers have web_search and web_fetch only.";
                 try messages.append(a, try std.json.Stringify.valueAlloc(a, .{ .role = "tool", .tool_call_id = id, .content = output }, .{}));
@@ -340,8 +343,8 @@ const Job = struct {
     }
 
     /// One upstream call, metered under the chat; its message.
-    fn call(self: *Job, sub: *anole.Request, a: std.mem.Allocator, body: []const u8) !struct { message: std.json.Value } {
-        const s = try self.app.upstream.post(sub, "/chat/completions", body, &.{});
+    fn call(self: *Job, cx: *anole.db.Ctx, a: std.mem.Allocator, body: []const u8) !struct { message: std.json.Value } {
+        const s = try self.app.upstream.post(cx.*, "/chat/completions", body, &.{});
         defer s.close();
         const raw = try s.reader.allocRemaining(a, .limited(4 * 1024 * 1024));
         if (s.status >= 300) {
@@ -353,7 +356,7 @@ const Job = struct {
         if (v.object.get("usage")) |u| if (u == .object) {
             const usage = openrouter.parseUsage(u.object);
             self.out.cost_usd += usage.cost_usd;
-            const c = try billing.charge(self.app, sub, self.who.user_id, .{ .kind = "research", .model = self.task.model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cached_tokens = usage.cached_tokens, .cost_usd = usage.cost_usd, .session = self.session });
+            const c = try billing.charge(self.app, cx, self.who.user_id, .{ .kind = "research", .model = self.task.model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cached_tokens = usage.cached_tokens, .cost_usd = usage.cost_usd, .session = self.session });
             const sink: LockedSink = .{ .shared = self.shared };
             try sink.send("usage", .{ .kind = "research", .model = self.task.model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cached_tokens = usage.cached_tokens, .cache_write_tokens = usage.cache_write_tokens, .charged_micros = c.charged_micros });
         };
