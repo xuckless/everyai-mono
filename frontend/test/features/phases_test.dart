@@ -153,4 +153,18 @@ void main() {
       expect(flowLabel('bugfix-ultra'), 'Bug fix');
     });
   });
+
+  test('a researcher that paused on a question is still pending, and its question may go to the user', () {
+    final f = PhaseFlow();
+    final args = {'role': 'researcher', 'description': 'stack'};
+    final reason = subagentReason({'act-1': forkAsks('fork-1', 'stack', '1. Which database?')});
+    expect(f.onAnswer(taskTool, args, reason, callId: 'act-1'), isFalse);
+    expect(f.researchReports, 0);
+    expect(f.researchPending, 1);
+    // Research hasn't reported, yet the agent may ask the user on the fork's behalf.
+    expect(f.gate('ask_user_question', {}, inScratch: scratch), isNull);
+    expect(f.onAnswer('ask_user_question', {}, 'Postgres', callId: 'act-2'), isFalse);
+    expect(f.askedUser, isFalse);
+    expect(f.gate('ask_user_question', {}, inScratch: scratch), contains('once research has reported'));
+  });
 }

@@ -1128,7 +1128,9 @@ final class EveryAISession
             : actionFor(call.name, args, _spec.workingDir),
         'security_risk': 'UNKNOWN',
       });
-      if (isFork && clientTools.contains(call.name)) {
+      // A fork's questions go to the agent that started it (the app routes
+      // them); the other client tools are the orchestrator's.
+      if (isFork && clientTools.contains(call.name) && call.name != askUserQuestionTool) {
         // A fork keeps the parent's tools (for the cache) but can't use these.
         _result(
           call,
@@ -1199,7 +1201,7 @@ final class EveryAISession
       }
       final reason = verdict.reason ?? '';
       if (w.call.name == presentPlanTool && reason.startsWith(planApprovedReason)) _planApproved(w.call);
-      if (_flow?.onAnswer(w.call.name, w.call.args ?? const {}, reason) ?? false) moved = true;
+      if (_flow?.onAnswer(w.call.name, w.call.args ?? const {}, reason, callId: w.actionId) ?? false) moved = true;
       _emit({
         'kind': 'UserRejectObservation',
         'id': _newId(),

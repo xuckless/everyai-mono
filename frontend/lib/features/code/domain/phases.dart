@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'agent_mode.dart' show askUserQuestionTool, presentPlanTool;
 import 'permissions.dart' show cancelledLead;
 import 'shell_readonly.dart';
-import 'subagents.dart' show SubagentReport, parseTaskNotification, taskTool;
+import 'subagents.dart' show SubagentReport, SubagentStatus, parseSubagentReports, parseTaskNotification, taskTool;
 import 'transcript.dart' show planApprovedMessage, planApprovedReason;
 
 /// The steps of a Max, Ultra or Bug fix session. The harness enforces
@@ -221,7 +221,8 @@ final class PhaseFlow {
         return 'Error ($where): only read-only commands run before the plan is approved (write makes the folders '
             'it needs under .everyai/scratch/). Next: ${next()}';
       case askUserQuestionTool:
-        if (phase == Phase.research && !bugfix) {
+        // A fork's question may need the user now, research or not.
+        if (phase == Phase.research && !bugfix && !forkAsking) {
           return 'Error ($where): ask once research has reported, so the questions are about what it found. '
               'Next: ${next()}';
         }
@@ -304,6 +305,9 @@ final class PhaseFlow {
       '${stuck ? 'The $flowName flow is stuck at the ${phase.label.toLowerCase()} phase.' : 'Phase: ${phase.label}.'} '
       'Next: ${next()}\n</everyai-phase>';
 
+  /// A fork asked something the orchestrator may take to the user.
+  bool forkAsking = false;
+
   /// A call was made: remember researchers.
   void onCall(String tool, Map<String, Object?> args) {
     if (tool != taskTool || (args['role'] ?? args['agent']) != 'researcher') return;
@@ -312,15 +316,22 @@ final class PhaseFlow {
 
   /// A held call got its answer ([reason], what the app sent back). True
   /// when the phase moved.
-  bool onAnswer(String tool, Map<String, Object?> args, String reason) {
+  bool onAnswer(String tool, Map<String, Object?> args, String reason, {String? callId}) {
+    if (reason.contains('<fork-question')) forkAsking = true;
     switch (tool) {
       case taskTool when (args['role'] ?? args['agent']) == 'researcher':
-        if (reason.startsWith('Started in the background')) {
+        // This call's own report when several came back together.
+        final mine = callId == null ? null : parseSubagentReports(reason)[callId];
+        if (reason.startsWith('Started in the background') || mine?.status == SubagentStatus.background) {
           researchPending++;
           return false;
         }
         researchReports++;
         return _advanceFrom(Phase.research);
+      // Asking the user on a fork's behalf during research isn't the flow's questions step.
+      case askUserQuestionTool when forkAsking && phase == Phase.research:
+        forkAsking = false;
+        return false;
       case askUserQuestionTool when reason.trim().isNotEmpty && !_cancelled(reason):
         askedUser = true;
         return _advanceFrom(Phase.questions);
@@ -334,6 +345,7 @@ final class PhaseFlow {
   /// research workflow's reports, move research on; the plan approval sent as
   /// a message moves plan on.
   bool onMessage(String text) {
+    if (text.contains('<fork-question')) forkAsking = true;
     // "Start building" for a plan that wasn't held (or was closed by a reply)
     // comes as a message; it approves the plan as much as the held answer does.
     if (phase == Phase.plan && text.contains(planApprovedMessage)) return _advanceFrom(Phase.plan);

@@ -281,6 +281,7 @@ String tierBlock(HarnessTier tier, {bool forks = false}) {
                 'together in one message. You ask the questions and write the plan; in build, give each independent '
                 'part of the plan to its own fork (isolation "worktree"), integrate them and verify the whole.',
         };
+  final orchestrate = fork.isEmpty ? '' : _orchestrating;
   final rules = switch (tier) {
     HarnessTier.ultraEfficient =>
       '- Do what was asked with the smallest sound change. Check the essentials once (the build, the tests, or '
@@ -289,8 +290,19 @@ String tierBlock(HarnessTier tier, {bool forks = false}) {
     HarnessTier.thorough => _thoroughRules,
     HarnessTier.max || HarnessTier.ultra => '$_phasedRules to the Thorough standard:\n$_thoroughRules',
   };
-  return '<HARNESS_TIER name="${tier.name}">\n$rules$fork\n</HARNESS_TIER>';
+  return '<HARNESS_TIER name="${tier.name}">\n$rules$fork$orchestrate\n</HARNESS_TIER>';
 }
+
+/// What running forks makes of the agent: their orchestrator.
+const _orchestrating =
+    '\n- Once you start forks you are their orchestrator, and that is your main job while they run: keep them on '
+    'track instead of doing their work. Look in with check_forks while they run and before you start more. A fork '
+    'that needs a decision sends a <fork-question>: answer it with answer_fork, and when it is the user\'s call ask '
+    'them with ask_user_question first and pass their answer on. Stop a fork that is stuck, looping or off its task '
+    '(stop_fork), then redo the part or start a fork with a clearer task.'
+    '\n- When every fork has reported, integrate: read each report and merge note, resolve conflicts, connect the '
+    'parts (shared names, imports, routes, styles, data shapes), then build, run and check the whole the way the user '
+    'will, and fix the seams yourself. The work is done when the integrated whole works, not when the forks report.';
 
 /// The system-prompt suffix: [workingRules], then what the settings add.
 /// [agents] are the library agents the session may start (name, one-line

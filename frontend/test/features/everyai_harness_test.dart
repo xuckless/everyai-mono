@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:every_ai/features/code/domain/agent_mode.dart';
+import 'package:every_ai/features/code/domain/subagents.dart' show forkAnswerReason, taskTool;
 import 'package:every_ai/features/code/harness/events.dart';
 import 'package:every_ai/features/code/domain/permissions.dart';
 import 'package:every_ai/features/code/harness/everyai/agent_server_facade_io.dart';
@@ -263,21 +264,39 @@ void main() {
     expect((forked.last! as Map)['content'], 'Now count the lines.');
   });
 
-  test('a fork keeps the parent\'s tools but cannot ask the user or start subagents', () async {
+  test('a fork keeps the parent\'s tools; it cannot start subagents, and its questions wait for an answer', () async {
     gateway.reply(text: 'Parent done.');
     final parent = await harness.start(spec('hi'));
     await drive(parent);
     gateway
       ..reply(
         calls: [
-          (askUserQuestionTool, {'questions': <Object?>[]}),
+          (taskTool, {'description': 'x', 'prompt': 'y'}),
+        ],
+      )
+      ..reply(
+        calls: [
+          (
+            askUserQuestionTool,
+            {
+              'questions': [
+                {'question': 'Dark or light?', 'header': 'Theme', 'options': <Object?>[]},
+              ],
+            },
+          ),
         ],
       )
       ..reply(text: 'Report.');
     final child = await harness.fork(parent.id, spec('do a thing'));
-    final events = await drive(child);
-    final refused = events.whereType<ToolResult>().single;
-    expect(refused.text, contains('a fork cannot use ask_user_question'));
+    // The orchestrator's answer comes back as the question's result.
+    final events = await drive(
+      child,
+      answer: (c) => c.toolName == askUserQuestionTool ? forkAnswerReason('Dark.') : null,
+    );
+    final results = events.whereType<ToolResult>().toList();
+    expect(results.first.text, contains('a fork cannot use run_subagent'));
+    expect('${results.last.observation['reason']}', contains('Dark.'));
+    expect(events.whereType<ChatMessage>().last.text, 'Report.');
     // Same tool list as the parent, so the cached prefix holds.
     expect(jsonEncode(gateway.requests.last['tools']), jsonEncode(gateway.requests.first['tools']));
   });

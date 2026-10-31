@@ -178,8 +178,9 @@ String forkBrief(SubagentTask task, {String? copyAt, String? parentDir, String? 
 
 String _forkBrief(SubagentTask task) =>
     '<fork>\nYou are now a fork of the agent above, started to do one task. The conversation so far is your context; '
-    'the user is not reading along and you cannot ask them or the other agent anything, start subagents, or present a '
-    'plan. Phase notes above (<everyai-phase>) were the other agent\'s flow, not yours: skip its research, '
+    'the user is not reading along, and you cannot start subagents or present a plan. When you need a decision you '
+    'cannot make yourself, call ask_user_question: the other agent gets your questions, answers them or asks the '
+    'user, and the answer comes back as the call\'s result. Phase notes above (<everyai-phase>) were the other agent\'s flow, not yours: skip its research, '
     'questions, plan and build steps unless this task is one of them. Do only '
     'this task, then end with one final message that is your report: what you found or changed (paths and line '
     'numbers), how you checked it, and anything left open. That message is all the other agent gets back.\n'
@@ -370,3 +371,90 @@ final _notification = RegExp(
   if (m == null) return null;
   return (childId: m[1]!, title: m[2]!, status: SubagentStatus.parse(m[3]!), result: m[4]!);
 }
+
+// ------------------------------------------------------------ orchestrating
+
+/// The orchestrator's tools for its forks: see how they are doing, answer
+/// one that asked something, stop one that went wrong. Answered by the app.
+const checkForksTool = 'check_forks';
+const answerForkTool = 'answer_fork';
+const stopForkTool = 'stop_fork';
+const forkTools = {checkForksTool, answerForkTool, stopForkTool};
+
+const checkForksSpec = <String, Object?>{
+  'name': checkForksTool,
+  'description':
+      'How your running forks are doing: each one\'s status (working, waiting on a question or an approval, '
+      'retrying, done), how long it has run, what it spent, its latest steps and any error. Check while forks run in '
+      'the background and before you start more; step in (answer_fork, stop_fork) when one is stuck, looping or '
+      'going off its task. Returns at once.',
+  'parameters': {'type': 'object', 'properties': <String, Object?>{}},
+};
+
+const answerForkSpec = <String, Object?>{
+  'name': answerForkTool,
+  'description':
+      'Answer a fork that paused on questions (a <fork-question> reached you). Answer from what you know and the '
+      'plan; when the user should decide (taste, scope, credentials, anything you would ask them yourself), ask the '
+      'user with ask_user_question first and pass their answer on. The fork carries on with your answer; its report '
+      'comes later as a <task-notification>.',
+  'parameters': {
+    'type': 'object',
+    'properties': {
+      'fork_id': {'type': 'string', 'description': 'The fork_id from the <fork-question>'},
+      'answer': {'type': 'string', 'description': 'The answer to each of its questions, in order'},
+    },
+    'required': ['fork_id', 'answer'],
+  },
+};
+
+const stopForkSpec = <String, Object?>{
+  'name': stopForkTool,
+  'description':
+      'Stop a fork that is stuck, looping, or working on the wrong thing. What it did so far comes back as its '
+      'report (a stopped fork in its own worktree is kept unmerged). Then redo the work yourself or start a new fork '
+      'with a clearer task.',
+  'parameters': {
+    'type': 'object',
+    'properties': {
+      'fork_id': {'type': 'string'},
+      'reason': {'type': 'string', 'description': 'Why, for the record'},
+    },
+    'required': ['fork_id'],
+  },
+};
+
+/// [questions] as plain text for the orchestrator: each question with its
+/// options.
+String forkQuestionsText(List<({String question, List<String> options, bool multi})> questions) => [
+  for (final (i, q) in questions.indexed)
+    '${i + 1}. ${q.question}${q.multi ? ' (any number)' : ''}'
+        '${q.options.isEmpty ? '' : '\n${[for (final o in q.options) '   - $o'].join('\n')}'}',
+].join('\n');
+
+String _forkQuestionBlock(String childId, String title, String questions) =>
+    '<fork-question fork_id="$childId" task="${title.replaceAll('"', "'")}">\n$questions\n</fork-question>\n'
+    'Answer it with answer_fork (fork_id "$childId"). If the user should decide, ask them with ask_user_question '
+    'first and pass their answer on. Don\'t do the fork\'s work yourself meanwhile; its report arrives as a '
+    '<task-notification>.';
+
+/// A held fork's call returns this when the fork stops to ask: the fork goes
+/// on in the background, so the orchestrator is free to get the answer.
+SubagentReport forkAsks(String childId, String title, String questions) => SubagentReport(
+  SubagentStatus.background,
+  'Started in the background as task $childId, and it has paused to ask you:\n'
+  '${_forkQuestionBlock(childId, title, questions)}',
+);
+
+/// The same, as a message, for a fork already in the background.
+String forkQuestionMessage(String childId, String title, String questions) =>
+    'A fork asks you something.\n${_forkQuestionBlock(childId, title, questions)}';
+
+/// What other held forks' calls return when one fork's question frees the
+/// orchestrator: they keep going in the background.
+SubagentReport movedToBackground(String childId) =>
+    backgroundStarted(childId, note: '[Moved to the background so you can answer another fork\'s question.]');
+
+/// What a fork's ask_user_question returns once the orchestrator answers.
+String forkAnswerReason(String answer) =>
+    'Not an error: the agent that started you answered (it may have asked the user):\n${answer.trim()}';

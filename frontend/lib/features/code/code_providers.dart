@@ -12,6 +12,7 @@ import '../../core/providers.dart';
 import '../agents/agents_providers.dart' show AgentDefinition, agentLibrarySettingsProvider, childSetup, codeAgentsFor;
 import '../attachments/attachment.dart';
 import '../models/domain/model_catalog.dart';
+import '../billing/billing_providers.dart' show formatMicros;
 import '../models/models_providers.dart';
 import '../settings/byok_keys.dart' show byokUltraCapProvider;
 import '../settings/domain/byok_providers.dart' show ModelBilling;
@@ -1150,6 +1151,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     _autoRespond(transcript);
     _ultraResearch(transcript);
     _syncSubagents();
+    _syncForkTools();
     _deliver();
     _goalTick(turnEnded: wasRunning && !transcript.running);
     if (!transcript.running &&
@@ -1255,6 +1257,8 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
   /// Whether this session answers cards and plans inside the held call.
   bool get _holds => ref.read(codeSessionsProvider.notifier).byId(sessionId)?.holdClientTools ?? false;
 
+  bool get _isSubagent => ref.read(codeSessionsProvider.notifier).byId(sessionId)?.isSubagent ?? false;
+
   /// The plan last approved on the user's behalf (Full auto, Max flow).
   String _autoPlanned = '';
 
@@ -1329,6 +1333,8 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     if (session == null) return;
     for (final call in waiting) {
       if (_decided.containsKey(call.id)) continue;
+      // A fork's question waits for the agent that started it (answerFromOrchestrator).
+      if (_isSubagent && isHeldTool(call)) continue;
       final verdict = switch (_mustWait([call], t)) {
         final reason? => (accept: false, reason: reason),
         null => policy.decideAll([call], state.mode),
@@ -1948,7 +1954,11 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     final outcome = subagentOutcome(child.transcript, error: child.error);
     if (outcome?.status == SubagentStatus.failed && _retryOnParentModel(callId, outcome!)) return;
     if (outcome != null) return _finishChild(callId, outcome);
-    final waiting = child.status == SessionStatus.needsInput;
+    final question = child.transcript.openQuestion;
+    final asked = question != null && child.transcript.held.any((c) => c.id == question.call.id);
+    if (asked && _forwarded.add(question.call.id)) _forwardQuestion(callId, question);
+    // A question is the orchestrator's to answer; only approvals need the user.
+    final waiting = child.status == SessionStatus.needsInput && !asked;
     if (waiting ? _childWaiting.add(callId) : _childWaiting.remove(callId)) {
       state = state.copyWith(subagentNeedsInput: _childWaiting.isNotEmpty);
     }
@@ -2127,6 +2137,143 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     _childWaiting.remove(callId);
     state = state.copyWith(subagentNeedsInput: _childWaiting.isNotEmpty);
     _deliver();
+  }
+
+  // ------------------------------------------------------ orchestrating forks
+
+  /// Fork questions already passed to this agent, by call id.
+  final _forwarded = <String>{};
+
+  /// Orchestrator tool calls already answered.
+  final _forkToolsDone = <String>{};
+
+  /// A fork stopped to ask: this agent (its orchestrator) gets the questions
+  /// and answers them with answer_fork, asking the user first if it must. A
+  /// held fork call returns at once with the question, and its siblings move
+  /// to the background, so the agent is free to act; their reports come as
+  /// task notifications.
+  void _forwardQuestion(String callId, QuestionItem item) {
+    final sessions = ref.read(codeSessionsProvider.notifier);
+    final childId = _childOf[callId];
+    if (childId == null) return;
+    final title = sessions.byId(childId)?.title ?? 'fork';
+    final text = forkQuestionsText([
+      for (final q in item.questions)
+        (
+          question: q.question,
+          options: [for (final o in q.options) o.description.isEmpty ? o.label : '${o.label}: ${o.description}'],
+          multi: q.multiSelect,
+        ),
+    ]);
+    if (_background.containsKey(callId)) {
+      unawaited(_session?.send(forkQuestionMessage(childId, title, text)).catchError((Object _) {}));
+      return;
+    }
+    for (final MapEntry<String, String>(key: id, value: kid) in [..._childOf.entries]) {
+      if (_background.containsKey(id) || _reports.containsKey(id)) continue;
+      final t = sessions.byId(kid)?.title ?? 'fork';
+      _background[id] = (childId: kid, title: t);
+      _reports[id] = id == callId ? forkAsks(kid, t, text) : movedToBackground(kid);
+    }
+    _deliver();
+  }
+
+  /// Answers the orchestrator's check_forks / answer_fork / stop_fork calls.
+  void _syncForkTools() {
+    final session = _session;
+    if (session == null || !_live) return;
+    for (final call in state.transcript.held) {
+      if (!forkTools.contains(call.toolName) || !_forkToolsDone.add(call.id)) continue;
+      unawaited(() async {
+        final String out;
+        try {
+          out = await _forkTool(call);
+        } on Object catch (e) {
+          await session.respond(accept: false, reason: 'Error: $e', callIds: [call.id]);
+          return;
+        }
+        _markDecided([call.id], accept: false);
+        await session.respond(accept: false, reason: out, callIds: [call.id]);
+      }());
+    }
+  }
+
+  /// This session's forks still at work (or waiting), by child id.
+  Map<String, String> get _activeForks => {
+    for (final MapEntry(key: callId, value: childId) in _childOf.entries) childId: callId,
+  };
+
+  Future<String> _forkTool(ActionCall call) async {
+    final sessions = ref.read(codeSessionsProvider.notifier);
+    final forkId = call.str('fork_id').trim();
+    switch (call.toolName) {
+      case checkForksTool:
+        if (_activeForks.isEmpty) return 'No forks are running. Every fork you started has reported.';
+        return [for (final id in _activeForks.keys) _forkStatus(id)].join('\n\n');
+      case answerForkTool:
+        if (!_activeForks.containsKey(forkId)) return _noSuchFork(forkId);
+        final ok = await ref.read(codeSessionProvider(forkId).notifier).answerFromOrchestrator(call.str('answer'));
+        return ok
+            ? 'Sent. The fork carries on; its report arrives as a <task-notification>.'
+            : 'That fork has no open question now (it may have been answered in its own view).';
+      case stopForkTool:
+        if (!_activeForks.containsKey(forkId)) return _noSuchFork(forkId);
+        final title = sessions.byId(forkId)?.title ?? forkId;
+        await ref.read(codeSessionProvider(forkId).notifier).stop();
+        return 'Stopped "$title". What it did so far arrives as its report.';
+    }
+    return 'Error: unknown tool ${call.toolName}.';
+  }
+
+  static String _noSuchFork(String id) => 'Error: no running fork has id "$id". check_forks lists them.';
+
+  /// One fork's state, for check_forks.
+  String _forkStatus(String childId) {
+    final info = ref.read(codeSessionsProvider.notifier).byId(childId);
+    final live = ref.exists(codeSessionProvider(childId)) ? ref.read(codeSessionProvider(childId)) : null;
+    final t = live?.transcript;
+    final minutes = info == null ? 0 : DateTime.now().difference(info.createdAt).inMinutes;
+    final spent = ref.exists(codeUsageProvider(childId))
+        ? ref.read(codeUsageProvider(childId)).value?.spentMicros
+        : null;
+    final status = switch (live) {
+      null => 'not loaded',
+      _ when t?.openQuestion != null => 'waiting on your answer to its question',
+      _ when t!.pending.isNotEmpty => 'waiting for the user to approve ${t.pending.length} action(s)',
+      _ when t.retry != null => 'retrying a failed model call',
+      _ when live.error != null => 'failed: ${live.error}',
+      _ => live.status.name,
+    };
+    final steps = ref.exists(codeSessionProvider(childId))
+        ? [
+            for (final e in ref.read(codeSessionProvider(childId).notifier).mirrorEvents.whereType<ActionCall>())
+              '${e.toolName} ${_gist(e)}'.trim(),
+          ]
+        : const <String>[];
+    final last = steps.length > 4 ? steps.sublist(steps.length - 4) : steps;
+    return '- ${info?.title ?? childId} (fork_id $childId): $status; ${minutes}m, ${steps.length} steps'
+        '${spent == null ? '' : ', ${formatMicros(spent)}'}'
+        '${last.isEmpty ? '' : '\n  latest: ${last.join(' · ')}'}';
+  }
+
+  static String _gist(ActionCall c) {
+    final s = c.str('command').isNotEmpty
+        ? c.str('command')
+        : c.str('path').isNotEmpty
+        ? c.str('path')
+        : c.str('file_path');
+    final one = s.split('\n').first;
+    return one.length > 80 ? '${one.substring(0, 80)}…' : one;
+  }
+
+  /// The orchestrator answers this fork's open question.
+  Future<bool> answerFromOrchestrator(String answer) async {
+    final item = state.transcript.openQuestion;
+    final session = _session;
+    if (item == null || session == null || !_isHeld(item.call)) return false;
+    _markDecided([item.call.id], accept: false);
+    await session.respond(accept: false, reason: forkAnswerReason(answer), callIds: [item.call.id]);
+    return true;
   }
 
   /// A subagent of this session was stopped by the user: the agent gets what

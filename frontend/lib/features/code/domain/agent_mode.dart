@@ -215,7 +215,7 @@ const presentFilesTool = 'present_files';
 bool isHeldTool(ActionCall call) => isClientTool(call) && call.toolName != presentFilesTool;
 
 /// The client tools registered with every session.
-const clientTools = {askUserQuestionTool, presentPlanTool, presentFilesTool, taskTool};
+const clientTools = {askUserQuestionTool, presentPlanTool, presentFilesTool, taskTool, ...forkTools};
 
 /// A call to one of [clientTools]. An MCP server's tool with the same name
 /// is not one: it doesn't get a client tool's free pass.
@@ -259,6 +259,9 @@ List<Map<String, Object?>> clientToolSpecs({bool held = false}) => [
     presentPlanSpec,
   presentFilesSpec,
   taskSpecFor(held: held),
+  checkForksSpec,
+  answerForkSpec,
+  stopForkSpec,
 ];
 
 const presentFilesSpec = <String, Object?>{
