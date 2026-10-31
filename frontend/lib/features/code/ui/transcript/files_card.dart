@@ -4,6 +4,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../../../core/platform/platform_kind.dart';
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/every_icons.dart';
@@ -63,12 +64,14 @@ class _FileRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    final exists = File(path).existsSync() || Directory(path).existsSync();
+    // Elsewhere (a device mirroring the computer's session) the file is on the computer.
+    final local = Host.isDesktop;
+    final exists = local && (File(path).existsSync() || Directory(path).existsSync());
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
-          AdaptiveIcon(EveryIcon.document, size: 16, color: exists ? theme.accent : theme.textMuted),
+          AdaptiveIcon(EveryIcon.document, size: 16, color: exists || !local ? theme.accent : theme.textMuted),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -81,7 +84,9 @@ class _FileRow extends StatelessWidget {
                   style: theme.type.body.medium.tint(theme.text),
                 ),
                 Text(
-                  exists ? (file.description.isNotEmpty ? file.description : file.path) : '${file.path} (not found)',
+                  exists || !local
+                      ? (file.description.isNotEmpty ? file.description : file.path)
+                      : '${file.path} (not found)',
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: theme.type.caption.copyWith(color: theme.textMuted, height: 1.35),

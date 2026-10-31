@@ -352,17 +352,9 @@ final class TranscriptBuilder {
           _items.add(NoticeItem(e.id, 'Research workflow: $n reports', detail: text));
           return;
         }
+        // Shown by the phase strip above the composer (stuck too), not in the transcript.
         if (parsePhaseNote(text) case final p?) {
           _phase = (flow: p.flow, phase: p.phase, stuck: p.stuck);
-          final flow = flowLabel(p.flow);
-          _items.add(
-            NoticeItem(
-              e.id,
-              p.stuck ? '$flow flow stuck at ${p.phase.label.toLowerCase()}' : '$flow · ${p.phase.label}',
-              error: p.stuck,
-              detail: p.body,
-            ),
-          );
           return;
         }
         if (parseTaskNotification(text) case final n?) {
