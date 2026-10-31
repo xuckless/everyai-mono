@@ -93,6 +93,10 @@ pub const Catalog = struct {
     /// The serialized `/v1/models` body.
     json: []const u8 = "{\"object\":\"list\",\"data\":[]}",
     fetched_at: i64 = 0,
+    /// Set while one request refreshes (`ensureFresh`).
+    refreshing: std.atomic.Value(bool) = .init(false),
+    /// No refresh before this (after a failure).
+    retry_at: std.atomic.Value(i64) = .init(0),
 
     pub fn init(gpa: std.mem.Allocator) Catalog {
         return .{ .gpa = gpa };
@@ -106,9 +110,21 @@ pub const Catalog = struct {
     }
 
     /// Refetches when older than an hour. A failed fetch keeps the old list.
+    /// The wait after a failed refresh.
+    const retry_seconds = 60;
+
+    /// Refreshes a stale catalog. One request does it while the others go on
+    /// with the copy they have; a failure waits `retry_seconds` before the next
+    /// try instead of costing every request an upstream call.
     pub fn ensureFresh(self: *Catalog, up: openrouter.Upstream, io: std.Io, markup: f64) void {
-        if (util.now(io) - self.fetched_at < ttl_seconds) return;
-        self.refresh(up, io, markup) catch |err| std.log.warn("model catalog refresh failed: {t}", .{err});
+        const now = util.now(io);
+        if (now - self.fetched_at < ttl_seconds or now < self.retry_at.load(.monotonic)) return;
+        if (self.refreshing.swap(true, .acquire)) return;
+        defer self.refreshing.store(false, .release);
+        self.refresh(up, io, markup) catch |err| {
+            self.retry_at.store(now + retry_seconds, .monotonic);
+            std.log.warn("model catalog refresh failed: {t}", .{err});
+        };
     }
 
     pub fn refresh(self: *Catalog, up: openrouter.Upstream, io: std.Io, markup: f64) !void {

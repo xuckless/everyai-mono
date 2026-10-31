@@ -182,6 +182,9 @@ pub fn main(init: std.process.Init) !void {
     defer setup_arena.deinit();
     var setup: anole.db.Ctx = .{ .io = io, .arena = setup_arena.allocator() };
     try prepare(&state, &setup);
+    // The catalog before the first request, so none waits for it (the first
+    // stale one later refreshes; a failure here leaves that to it).
+    state.catalog.refresh(state.upstream, io, cfg.markup) catch |err| std.log.warn("model catalog not loaded at start: {t}", .{err});
 
     try routes(&app, &state);
     defer state.limiter.deinit();
