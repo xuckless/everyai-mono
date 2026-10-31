@@ -60,7 +60,7 @@ void main() {
     expect(allowed, ['a']);
     expect(denied, ['b']);
 
-    await tester.tap(find.text('Allow all  ⌘↩'));
+    await tester.tap(find.text('Allow all  ${Host.enterKeys(command: true)}'));
     expect(all, ApprovalScope.once);
   });
 
