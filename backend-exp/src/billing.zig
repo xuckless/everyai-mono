@@ -367,6 +367,9 @@ const SessionTotals = struct {
     cached_tokens: i64,
     cache_write_tokens: i64,
     charged_micros: i64,
+    /// What calls on the user's own keys cost upstream (not charged): a
+    /// spend cap counts these too.
+    byok_cost_micros: i64 = 0,
     /// The latest model call (not follow-ups or images): how full the
     /// context window is now.
     last_prompt_tokens: i64 = 0,
@@ -380,7 +383,9 @@ fn sessionUsage(app: *App, req: *anole.Request, in: anole.In(.{ .path = struct {
     var t = try app.db.one(SessionTotals, req,
         \\SELECT COUNT(*) AS calls, COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens, COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
         \\  COALESCE(SUM(cached_tokens), 0) AS cached_tokens, COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
-        \\  COALESCE(SUM(charged_micros), 0) AS charged_micros, 0 AS last_prompt_tokens, 0 AS last_completion_tokens
+        \\  COALESCE(SUM(charged_micros), 0) AS charged_micros,
+        \\  COALESCE(SUM(CASE WHEN provider LIKE '%-byok' THEN cost_micros ELSE 0 END), 0) AS byok_cost_micros,
+        \\  0 AS last_prompt_tokens, 0 AS last_completion_tokens
         \\FROM usage_events WHERE user_id = ? AND session = ?
     , .{ who.user_id, in.path.id });
     if (try app.db.optional(struct { p: i64, c: i64 }, req, "SELECT prompt_tokens AS p, completion_tokens AS c FROM usage_events WHERE user_id = ? AND session = ? AND kind IN ('chat', 'gateway') ORDER BY id DESC LIMIT 1", .{ who.user_id, in.path.id })) |last| {

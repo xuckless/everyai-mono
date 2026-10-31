@@ -294,7 +294,7 @@ test "byok: a user's own key runs paid models with no credit left and is never c
     // An OpenRouter key covers every model, follow-ups included.
     var res = try env.t.post("/v1/chat/stream", .{
         .headers = &.{.{ "X-Provider-Key-OpenRouter", "sk-or-v1-user-key" }},
-        .json = .{ .model = "anthropic/claude-haiku-5.5", .messages = .{.{ .role = "user", .content = "hi" }}, .tools_enabled = false },
+        .json = .{ .model = "anthropic/claude-haiku-5.5", .messages = .{.{ .role = "user", .content = "hi" }}, .tools_enabled = false, .session = "own-key" },
     });
     defer res.deinit();
     try res.expectStatus(.ok);
@@ -308,6 +308,13 @@ test "byok: a user's own key runs paid models with no credit left and is never c
         try std.testing.expectEqual(@as(i64, 0), r.charged_micros);
         try std.testing.expect(r.cost_micros > 0);
     }
+
+    // A spend cap still sees what the key spent.
+    var totals = try env.t.get("/v1/usage/session/own-key", .{});
+    defer totals.deinit();
+    const t = try totals.json(struct { charged_micros: i64, byok_cost_micros: i64 });
+    try std.testing.expectEqual(@as(i64, 0), t.charged_micros);
+    try std.testing.expect(t.byok_cost_micros > 0);
 
     // An Anthropic key covers Claude only: other paid models still need credit.
     var other = try env.t.post("/v1/chat/completions", .{
