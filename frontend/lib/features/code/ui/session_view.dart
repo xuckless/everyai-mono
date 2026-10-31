@@ -396,7 +396,8 @@ class TranscriptList extends StatelessWidget {
       for (final entry in groupSteps(t.items).reversed)
         if (entry is StepRun)
           StepRunView(key: ValueKey(entry.key), run: entry)
-        else
+        // The task list shows above the composer while the agent works, not in the transcript too.
+        else if (entry is! PlanItem)
           // Every row is keyed: unkeyed rows handed their expanded state to
           // whichever row of the same type slid into their index.
           KeyedSubtree(key: ValueKey((entry as TranscriptItem).key), child: _itemView(entry)),
