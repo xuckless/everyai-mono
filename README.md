@@ -260,6 +260,6 @@ The research behind it lives in [`docs/research/`](docs/research) (opencode, Her
 
 <img src="frontend/assets/brand/logo/mark-primary-on-dark.svg" width="44" alt="EveryAI mark"/>
 
-<sub>Proprietary. See <a href="LICENCE.md">LICENCE.md</a>.<br/>The bundled OpenHands agent-server is MIT-licensed; third-party notices ship with the app.</sub>
+<sub>Copyright 2026 xuckless and Syed Ali. Source-available under the <a href="LICENCE.md">Functional Source License 1.1 (FSL-1.1-ALv2)</a>: use, modify and self-host it for any purpose except a competing product; each release becomes Apache-2.0 two years after it ships. See <a href="NOTICE">NOTICE</a>.<br/>"EveryAI" and its logo are trademarks of xuckless and Syed Ali and are not licensed.<br/>The bundled OpenHands agent-server is MIT-licensed; third-party notices ship with the app.</sub>
 
 </div>

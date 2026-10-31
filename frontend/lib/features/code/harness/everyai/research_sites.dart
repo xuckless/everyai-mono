@@ -1,3 +1,5 @@
+// Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
+
 // What research jobs may reach and read; no dart:io, so settings can use it on the web.
 
 /// The sites research jobs may reach unless the user changes the list.

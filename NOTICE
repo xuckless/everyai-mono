@@ -1,0 +1,16 @@
+EveryAI
+Copyright 2026 xuckless and Syed Ali
+
+EveryAI, including its coding-agent harness (frontend/lib/features/code/), was
+written by xuckless and Syed Ali. It is licensed under the Functional Source
+License, Version 1.1, ALv2 Future License (FSL-1.1-ALv2); see LICENCE.md.
+
+Keep this notice and the copyright notices in the source files in every copy,
+modification or derivative of the software.
+
+"EveryAI" and the EveryAI logo are trademarks of xuckless and Syed Ali. The
+licence does not grant the right to use them except to identify the origin of
+the software.
+
+This product includes third-party software under its own licences; see
+THIRD_PARTY_NOTICES.md.

@@ -1,3 +1,5 @@
+// Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
+
 // The `apply_patch` tool's patch format (the "V4A" envelope OpenAI's models
 // are trained to write), parsed and applied by our own code:
 //

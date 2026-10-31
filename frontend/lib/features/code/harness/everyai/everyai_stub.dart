@@ -1,3 +1,5 @@
+// Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
+
 import 'package:http/http.dart' as http;
 
 import '../events.dart';

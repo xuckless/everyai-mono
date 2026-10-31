@@ -1,3 +1,5 @@
+// Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
+
 import 'package:flutter/foundation.dart';
 
 import '../harness/events.dart';

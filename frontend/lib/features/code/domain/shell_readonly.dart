@@ -1,3 +1,5 @@
+// Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
+
 /// Whether a terminal command only looks at the workspace, so Ask and Plan
 /// mode can run it without asking.
 ///

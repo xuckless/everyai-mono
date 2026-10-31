@@ -1,3 +1,5 @@
+// Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
+
 /// Model families the EveryAI harness tunes its tools and rules for.
 enum ModelFamily {
   /// Anthropic's Claude: the default tools and rules.
