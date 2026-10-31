@@ -74,6 +74,7 @@ final class ChatSessionState {
     this.toolsEnabled = true,
     this.liveUsage = UsageTotals.zero,
     this.effort = ReasoningEffort.auto,
+    this.researchDepth = ResearchDepth.standard,
   });
 
   final String conversationId;
@@ -124,6 +125,9 @@ final class ChatSessionState {
   /// Thinking effort for reasoning models (the composer's thinking menu).
   final ReasoningEffort effort;
 
+  /// How far Research mode goes (the composer's depth menu).
+  final ResearchDepth researchDepth;
+
   /// The whole conversation so far, for the composer's meter.
   UsageTotals get usage => messages.fold(UsageTotals.zero, (sum, m) => sum + m.usage) + liveUsage;
 
@@ -145,6 +149,7 @@ final class ChatSessionState {
     bool? toolsEnabled,
     UsageTotals? liveUsage,
     ReasoningEffort? effort,
+    ResearchDepth? researchDepth,
   }) => ChatSessionState(
     conversationId: conversationId,
     title: title ?? this.title,
@@ -162,6 +167,7 @@ final class ChatSessionState {
     toolsEnabled: toolsEnabled ?? this.toolsEnabled,
     liveUsage: liveUsage ?? this.liveUsage,
     effort: effort ?? this.effort,
+    researchDepth: researchDepth ?? this.researchDepth,
   );
 }
 

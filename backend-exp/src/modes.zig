@@ -5,6 +5,7 @@
 //! steers which tools to reach for, and the server refuses what a mode or
 //! phase doesn't allow (see `chat.zig`).
 const std = @import("std");
+const research = @import("research.zig");
 
 pub const Mode = enum { chat, search, research, learn, summarise };
 
@@ -12,8 +13,10 @@ pub const Mode = enum { chat, search, research, learn, summarise };
 /// without tools falls back to OpenRouter's web plugin and needs no block.
 pub fn block(mode: Mode, with_tools: bool) ?[]const u8 {
     return switch (mode) {
-        .chat, .research => null,
+        .chat => null,
         .search => if (with_tools) search else null,
+        // Without tools the deep-research model answers on its own.
+        .research => if (with_tools) research_block else null,
         .learn => learn,
         .summarise => summarise,
     };
@@ -26,9 +29,10 @@ pub fn usesPlugin(mode: Mode, with_tools: bool) bool {
 }
 
 /// Whether a turn may use the native Anthropic route (the web plugin and the
-/// Research model need OpenRouter).
+/// deep-research model need OpenRouter).
 pub fn nativeOk(mode: Mode, with_tools: bool) bool {
-    return mode != .research and !usesPlugin(mode, with_tools);
+    if (mode == .research) return with_tools;
+    return !usesPlugin(mode, with_tools);
 }
 
 const search =
@@ -43,6 +47,25 @@ const search =
     \\6. Numbers compared across options or over time go in render_chart with the source; options side by side go in a table.
     \\
     \\If the search finds nothing reliable, say so plainly, and mark anything you add from your own knowledge as not from the search.
+    \\</mode>
+;
+
+const research_block = research_lead ++ "\n" ++ research.roster_block;
+
+const research_lead =
+    \\<mode name="research">
+    \\The user is in Research mode: they want a thorough, sourced answer to a question that needs many sources weighed against each other. You lead the research: plan it, send researchers to gather, then write the report yourself.
+    \\
+    \\1. Scope. If the question is open in a way that changes the research (timeframe, region, audience, what the report is for), ask once with ask_user. Otherwise state the scope you chose in one line and go on. One or two web_search calls to get your bearings are fine.
+    \\2. Gather with the research tool. Split the question into sub-questions that can be answered on their own, each specific about what to find and which sources to trust, and give each a model from the roster below by what it needs. Researchers search and read in parallel and return cited briefs. Call research again only for real gaps or conflicts the briefs show, never to repeat a question.
+    \\3. Write the report as one markdown artifact with create_artifact:
+    \\- a summary of 3-6 sentences that answers the question;
+    \\- sections that build the answer, each claim cited with the numbers the briefs give ([3], [3][7]);
+    \\- ```chart blocks for numbers compared across options or over time, each with a caption and its source; a table for options side by side; a ```mermaid or ```svg figure where structure helps;
+    \\- what is uncertain, disputed or missing, and why;
+    \\- a Sources section listing each cited number with its title and URL.
+    \\Cite only numbers you were given; never invent sources, figures or quotes. Prefer primary and recent sources, and say where the evidence is thin.
+    \\4. Then a brief of 3-5 lines in the chat: the answer, and what the report covers. Don't repeat the report.
     \\</mode>
 ;
 
@@ -87,11 +110,13 @@ test "each mode block is constant text that names its mode" {
         if (block(mode, true)) |b| {
             const tag = "<mode name=\"" ++ @tagName(mode) ++ "\">";
             try std.testing.expect(std.mem.startsWith(u8, b, tag));
-            try std.testing.expect(std.mem.endsWith(u8, b, "</mode>"));
+            try std.testing.expect(std.mem.indexOf(u8, b, "</mode>") != null);
             try std.testing.expect(std.mem.indexOf(u8, b, "{s}") == null);
         }
     }
     try std.testing.expect(block(.chat, true) == null);
     try std.testing.expect(block(.search, false) == null);
     try std.testing.expect(!nativeOk(.search, false) and nativeOk(.search, true));
+    try std.testing.expect(std.mem.indexOf(u8, block(.research, true).?, "<researchers>") != null);
+    try std.testing.expect(block(.research, false) == null and !nativeOk(.research, false));
 }

@@ -30,6 +30,7 @@ final class ChatRequest {
     this.skills,
     this.effort,
     this.forceTool,
+    this.researchDepth = ResearchDepth.standard,
   });
 
   final ModelSpec model;
@@ -63,6 +64,9 @@ final class ChatRequest {
 
   /// A tool the model must call first (`make_quiz`…); later calls of the turn are free.
   final String? forceTool;
+
+  /// Sent in Research mode.
+  final ResearchDepth researchDepth;
 }
 
 /// Incremental output of one assistant turn.
@@ -227,6 +231,7 @@ final class SseTransport implements ChatTransport {
       'skills': ?request.skills,
       'effort': ?request.effort,
       'force_tool': ?request.forceTool,
+      if (request.mode == ChatMode.research) 'research_depth': request.researchDepth.name,
       if (request.clientTools.isNotEmpty) 'client_tools': request.clientTools.toList(growable: false),
       if (request.toolsEnabled && images.isNotEmpty)
         'images': imageRefsJson(images, inMessages: uploadsInMessages(request.history, pending: request.attachments)),
@@ -288,7 +293,8 @@ final class SseTransport implements ChatTransport {
             cacheWriteTokens: (u['cache_write_tokens'] as num?)?.toInt() ?? 0,
             chargedMicros: (u['charged_micros'] as num?)?.toInt() ?? 0,
             model: u['model'] as String?,
-            followUps: u['kind'] == 'followups' || u['kind'] == 'search',
+            // Side calls cost money but don't fill the chat's context.
+            followUps: const {'followups', 'search', 'research'}.contains(u['kind']),
           );
         case ('followups', {'questions': final List<Object?> list}):
           yield FollowUpsSuggested(list.whereType<String>().toList(growable: false));

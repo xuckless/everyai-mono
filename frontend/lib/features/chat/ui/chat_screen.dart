@@ -90,6 +90,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       onToolsChanged: controller.setToolsEnabled,
       effort: ref.watch(provider.select((s) => s.effort)),
       onEffortChanged: controller.setEffort,
+      researchDepth: ref.watch(provider.select((s) => s.researchDepth)),
+      onResearchDepthChanged: controller.setResearchDepth,
       slash: chatSlashHost(context, ref, widget.conversationId),
       meter: UsageMeter(totals: usage, contextWindow: model.contextLength, modelName: model.name),
     );

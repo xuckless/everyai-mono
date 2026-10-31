@@ -15,6 +15,15 @@ String toolStepLabel(String name, ToolRunStatus status) => switch ((name, status
   ('generate_image', ToolRunStatus.running) => 'Creating an image',
   ('generate_image', ToolRunStatus.done) => 'Created an image',
   ('generate_image', ToolRunStatus.failed) => 'Couldn\'t create the image',
+  ('web_search', ToolRunStatus.running) => 'Searching',
+  ('web_search', ToolRunStatus.done) => 'Searched',
+  ('web_search', ToolRunStatus.failed) => 'Couldn\'t search',
+  ('research', ToolRunStatus.running) => 'Sending researchers',
+  ('research', ToolRunStatus.done) => 'Researchers reported',
+  ('research', ToolRunStatus.failed) => 'Research failed',
+  ('researcher', ToolRunStatus.running) => 'Researching',
+  ('researcher', ToolRunStatus.done) => 'Researched',
+  ('researcher', ToolRunStatus.failed) => 'Couldn\'t research',
   (_, ToolRunStatus.running) => 'Using ${_readable(name)}',
   (_, ToolRunStatus.done) => 'Used ${_readable(name)}',
   (_, ToolRunStatus.failed) => '${_readable(name)} failed',
@@ -26,9 +35,13 @@ String _readable(String name) => name.replaceAll('_', ' ');
 String toolRunSummary(List<LiveToolStep> steps) {
   final pages = steps.where((s) => s.name == 'web_fetch').length;
   final images = steps.where((s) => s.name == 'generate_image').length;
-  final other = steps.length - pages - images;
+  final researchers = steps.where((s) => s.name == 'researcher').length;
+  final searches = steps.where((s) => s.name == 'web_search').length;
+  final other = steps.length - pages - images - researchers - searches;
   String n(int count, String one, String many) => '$count ${count == 1 ? one : many}';
   final parts = [
+    if (researchers > 0) 'ran ${n(researchers, 'researcher', 'researchers')}',
+    if (searches > 0) 'searched ${n(searches, 'time', 'times')}',
     if (pages > 0) 'read ${n(pages, 'page', 'pages')}',
     if (images > 0) 'created ${n(images, 'image', 'images')}',
     if (other > 0) 'used ${n(other, 'tool', 'tools')}',

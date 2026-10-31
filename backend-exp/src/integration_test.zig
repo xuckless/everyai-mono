@@ -886,6 +886,134 @@ const search_again_turn =
     \\
 ;
 
+fn leadCall(comptime name: []const u8, comptime args: []const u8) []const u8 {
+    return "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_" ++ name ++ "\",\"type\":\"function\",\"function\":{\"name\":\"" ++ name ++ "\",\"arguments\":" ++ args ++ "}}]}}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":900,\"completion_tokens\":20,\"cost\":0.0001}}\n\ndata: [DONE]\n\n";
+}
+
+const early_report = leadCall("create_artifact",
+    \\"{\"id\":\"r\",\"title\":\"R\",\"kind\":\"markdown\",\"content\":\"# R\"}"
+);
+const send_researchers = leadCall("research",
+    \\"{\"questions\":[{\"question\":\"When was Zig 0.17 released?\",\"model\":\"google/gemini-3.5-flash-lite\"}]}"
+);
+const researcher_searches =
+    \\{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"rs1","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"zig 0.17 release\"}"}}]}}],"usage":{"prompt_tokens":300,"completion_tokens":10,"cost":0.001}}
+;
+const researcher_brief =
+    \\{"choices":[{"message":{"role":"assistant","content":"Findings: 0.17.0 is out [2]."}}],"usage":{"prompt_tokens":500,"completion_tokens":40,"cost":0.002}}
+;
+const write_report = leadCall("create_artifact",
+    \\"{\"id\":\"r\",\"title\":\"Zig 0.17\",\"kind\":\"markdown\",\"content\":\"# Zig 0.17\\nReleased [2], said [9].\"}"
+);
+const research_brief_turn =
+    \\data: {"choices":[{"index":0,"delta":{"content":"Zig 0.17 is out; the report has the details [2]."}}]}
+    \\
+    \\data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1200,"completion_tokens":15,"cost":0.0002}}
+    \\
+    \\data: [DONE]
+    \\
+    \\
+;
+
+test "chat: Research waits for researchers, runs them on the roster, and checks the report's citations" {
+    var env: Env = undefined;
+    try start(&env, &.{ early_report, send_researchers, researcher_searches, search_reply, researcher_brief, write_report, research_brief_turn, followups_reply }, true);
+    defer env.deinit();
+
+    var res = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .mode = "research",
+        .messages = .{.{ .role = "user", .content = "What's new in Zig 0.17?" }},
+        .session = "conv-r",
+    } });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    const b = env.fake.bodies.items;
+    try std.testing.expectEqual(@as(usize, 8), b.len);
+    // The lead runs the user's model under the Research block and the roster.
+    try std.testing.expect(std.mem.indexOf(u8, b[0], "\"model\":\"anthropic/claude-haiku-5.5\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b[0], "is in Research mode") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b[0], "<researchers>") != null);
+    // A report before any research is turned back.
+    try std.testing.expect(std.mem.indexOf(u8, b[1], "Not yet: in Research mode the report comes after") != null);
+    // The researcher: its own model, web tools only.
+    try std.testing.expect(std.mem.indexOf(u8, b[2], "\"model\":\"google/gemini-3.5-flash-lite\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b[2], "\"name\":\"web_search\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b[2], "\"name\":\"create_artifact\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, b[4], "[2] Download") != null);
+    // The lead gets the brief and what is left.
+    try std.testing.expect(std.mem.indexOf(u8, b[5], "Findings: 0.17.0 is out [2].") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b[5], "Round 1 of 2 (standard depth)") != null);
+    // [9] is not a source this turn.
+    try std.testing.expect(std.mem.indexOf(u8, b[6], "the report cites [9]") != null);
+    // The app saw the researcher's progress and the sources.
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "\"name\":\"researcher\",\"status\":\"running\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "\"name\":\"researcher\",\"status\":\"done\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "\"url\":\"https://ziglang.org/download\"") != null);
+
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = arena.allocator() };
+    try std.testing.expectEqual(@as(i64, 2), try env.state.db.one(i64, &c, "SELECT COUNT(*) FROM usage_events WHERE kind = 'research'", .{}));
+}
+
+test "chat: researchers run side by side and each brief comes back in order" {
+    var env: Env = undefined;
+    const two = leadCall("research",
+        \\"{\"questions\":[{\"question\":\"first\",\"model\":\"google/gemini-3.5-flash-lite\"},{\"question\":\"second\",\"model\":\"openai/gpt-5.4-mini\"}]}"
+    );
+    try start(&env, &.{ two, researcher_brief, researcher_brief, research_brief_turn, research_brief_turn, followups_reply }, true);
+    defer env.deinit();
+    var res = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .mode = "research",
+        .messages = .{.{ .role = "user", .content = "Two things" }},
+        .session = "conv-2",
+    } });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    const lead = env.fake.bodies.items[3];
+    const first = std.mem.indexOf(u8, lead, "Question: first").?;
+    const second = std.mem.indexOf(u8, lead, "Question: second").?;
+    try std.testing.expect(first < second);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, res.body, "\"name\":\"researcher\",\"status\":\"done\""));
+    // Gathered but no report: one nudge, then it may end.
+    try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[4], "haven't written the report") != null);
+}
+
+test "chat: research outside Research mode, or past the depth's caps, is refused with what to do" {
+    var env: Env = undefined;
+    const too_many = leadCall("research",
+        \\"{\"questions\":[{\"question\":\"a\",\"model\":\"google/gemini-3.5-flash-lite\"},{\"question\":\"b\",\"model\":\"google/gemini-3.5-flash-lite\"},{\"question\":\"c\",\"model\":\"google/gemini-3.5-flash-lite\"}]}"
+    );
+    const too_strong = leadCall("research",
+        \\"{\"questions\":[{\"question\":\"a\",\"model\":\"anthropic/claude-sonnet-5.5\"}]}"
+    );
+    try start(&env, &.{ too_many, too_strong, final_turn, followups_reply, send_researchers, final_turn, followups_reply }, true);
+    defer env.deinit();
+
+    var quick = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .mode = "research",
+        .research_depth = "quick",
+        .messages = .{.{ .role = "user", .content = "Compare things" }},
+        .session = "conv-q",
+    } });
+    defer quick.deinit();
+    const b = env.fake.bodies.items;
+    try std.testing.expect(std.mem.indexOf(u8, b[1], "at most 2 researchers per round") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b[2], "quick research allows up to tier 1") != null);
+
+    var chat_mode = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = "Research this" }},
+        .session = "conv-c",
+    } });
+    defer chat_mode.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[5], "research runs only in Research mode") != null);
+}
+
 test "chat: the same search again in the same chat is answered from the cache, free" {
     var env: Env = undefined;
     // No second search_reply: a second upstream search would get the final turn instead.

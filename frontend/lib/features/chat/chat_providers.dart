@@ -129,10 +129,8 @@ final class ChatController extends Notifier<ChatSessionState> {
     if (state.phase is Loading) return;
     final (:model, :prompt) = parseMention(input, _catalog);
     if (prompt.isEmpty && attachments.isEmpty) return;
-    // A forced tool needs tools on, and Research runs without any.
-    if (forceTool != null) {
-      state = state.copyWith(toolsEnabled: true, mode: state.mode == ChatMode.research ? ChatMode.chat : state.mode);
-    }
+    // A forced tool needs tools on.
+    if (forceTool != null) state = state.copyWith(toolsEnabled: true);
     final staged = _stagedContext;
     _stagedContext = null;
     await _startTurn(
@@ -150,6 +148,8 @@ final class ChatController extends Notifier<ChatSessionState> {
   void stageContext(String context) => _stagedContext = context;
 
   void setMode(ChatMode mode) => state = state.copyWith(mode: mode);
+
+  void setResearchDepth(ResearchDepth depth) => state = state.copyWith(researchDepth: depth);
 
   /// Asks the last question again in [mode] (the button the model offers
   /// with `suggest_mode`). The earlier answer stays above the new one.
@@ -436,6 +436,7 @@ final class ChatController extends Notifier<ChatSessionState> {
             skills: skillCatalogBlock(skills),
             effort: state.effort.wireFor(model),
             forceTool: state.toolsEnabled ? forceTool : null,
+            researchDepth: state.researchDepth,
           ),
           cancel: cancel.future,
         );

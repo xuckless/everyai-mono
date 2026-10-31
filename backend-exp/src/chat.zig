@@ -33,6 +33,7 @@ const safe_fetch = @import("net/safe_fetch.zig");
 const web = @import("web.zig");
 const routing = @import("routing.zig");
 const modes = @import("modes.zig");
+const research = @import("research.zig");
 
 const Events = @typeInfo(@typeInfo(@TypeOf(anole.Response.startEventStream)).@"fn".return_type.?).error_union.payload;
 
@@ -85,6 +86,8 @@ pub const ChatRequest = struct {
     /// Only the first upstream call of the turn is forced, so the loop goes
     /// on normally after the tool ran. Must name a tool in `tools.definitions`.
     force_tool: ?[]const u8 = null,
+    /// Research mode: how far the researchers go (caps in research.zig).
+    research_depth: research.Depth = .standard,
 };
 
 pub const Effort = enum {
@@ -305,14 +308,14 @@ fn buildBody(arena: std.mem.Allocator, model: []const u8, mode: Mode, with_tools
 
 // ------------------------------------------------------------------ the turn
 
-const Sink = struct {
+pub const Sink = struct {
     ev: *Events,
     scratch: *std.Io.Writer.Allocating,
     /// The turn's web sources: numbers citations, and lets only new ones out.
     ledger: *web.Ledger,
     arena: std.mem.Allocator,
 
-    fn send(self: Sink, name: []const u8, value: anytype) !void {
+    pub fn send(self: Sink, name: []const u8, value: anytype) !void {
         self.scratch.clearRetainingCapacity();
         try std.json.Stringify.value(value, .{}, &self.scratch.writer);
         try self.ev.send(self.scratch.written(), .{ .event = name });
@@ -329,8 +332,14 @@ const Sink = struct {
         }
     }
 
+    /// The citation number of `source`, without telling the app (web_search
+    /// sends its results as one `sources` event first).
+    pub fn number(self: Sink, source: openrouter.Source) !usize {
+        return (try self.ledger.add(self.arena, source)).n;
+    }
+
     /// The citation number of `source`; the app hears of it the first time.
-    fn cite(self: Sink, source: openrouter.Source) !usize {
+    pub fn cite(self: Sink, source: openrouter.Source) !usize {
         const e = try self.ledger.add(self.arena, source);
         if (e.new) try self.send("sources", .{ .sources = self.ledger.list.items[e.n - 1 ..][0..1] });
         return e.n;
@@ -355,12 +364,15 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
     for (body.messages) |m| if (m.content != .string and m.content != .array)
         return res.fail(.unprocessable_entity, "content must be a string or an array of parts");
 
-    const model = switch (body.mode) {
-        .research => app.cfg.research_model,
-        else => body.model orelse app.cfg.default_model,
-    };
     app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
-    const facts = app.catalog.facts(req.io, model);
+    var model = body.model orelse app.cfg.default_model;
+    var facts = app.catalog.facts(req.io, model);
+    // Research is led by the user's model with tools; one without them hands
+    // the question to the deep-research model instead.
+    if (body.mode == .research and !(facts.tools and body.tools_enabled)) {
+        model = app.cfg.research_model;
+        facts = app.catalog.facts(req.io, model);
+    }
     // Only the newest user message's attachments are being sent now; earlier
     // ones (resent with the history) become notes when the model can't read them.
     const newest = newestUser(body.messages);
@@ -409,7 +421,8 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
             else => try messages.append(arena, .{ .role = role, .content = textOf(m.content) }),
         }
     }
-    const with_tools = body.tools_enabled and facts.tools and body.mode != .research;
+    const with_tools = body.tools_enabled and facts.tools;
+    var inquiry: research.State = .{ .depth = body.research_depth };
     var docs: Artifacts = .{};
     for (messages.items) |m| if (std.mem.eql(u8, m.role, "assistant")) try docs.seed(arena, m.content);
     var pictures: ImageBook = .{};
@@ -445,6 +458,13 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
         try final_text.writer.writeAll(result.text);
 
         if (result.tool_calls.len == 0) {
+            // Research gathered but stopped short of the report: once, ask for it.
+            if (inquiry.gathered and !inquiry.reported and !inquiry.nudged and with_tools) {
+                inquiry.nudged = true;
+                try messages.append(arena, .{ .role = "assistant", .content = result.text, .reasoning = result.reasoning, .reasoning_details = result.reasoning_details });
+                try messages.append(arena, .{ .role = "user", .content = research.report_nudge });
+                continue;
+            }
             // Cut-off text: let the model carry on where it stopped.
             if (cut_off and result.text.len > 0 and continuations < truncation.max_continuations) {
                 continuations += 1;
@@ -477,13 +497,14 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
             const output = if (cut_call == i)
                 try truncation.notRun(arena, call.name)
             else
-                try runTool(app, req, who, body, call, sink, &docs, &pictures);
+                try runTool(app, req, who, body, call, sink, &docs, &pictures, &inquiry);
             try messages.append(arena, .{ .role = "tool", .tool_call_id = call.id, .content = output });
         }
         steps += 1;
         // A model that stopped for another reason than tools is done.
         if (!std.mem.eql(u8, result.finish_reason, "tool_calls") and !cut_off and result.text.len > 0) break;
-        if (steps >= app.cfg.max_tool_steps) {
+        // Research needs room for its rounds, the report and its fixes.
+        if (steps >= app.cfg.max_tool_steps + @as(u8, if (body.mode == .research) 8 else 0)) {
             out_of_steps = true;
             break;
         }
@@ -497,7 +518,7 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
         try final_text.writer.writeAll(result.text);
     }
 
-    if (body.mode != .research and final_text.written().len > 0) {
+    if (final_text.written().len > 0) {
         followUps(app, req, who, body, final_text.written(), sink) catch |err| {
             // Test fixtures reuse their last (streamed) reply for this call; its parse error is expected.
             if (!builtin.is_test) std.log.warn("follow-ups failed: {t}", .{err});
@@ -750,7 +771,7 @@ fn toolCallsJson(arena: std.mem.Allocator, calls: []const openrouter.ToolCall) !
 }
 
 /// Runs or forwards one tool call; returns the text the model sees.
-fn runTool(app: *App, req: *anole.Request, who: auth.Identity, body: ChatRequest, call: openrouter.ToolCall, sink: Sink, docs: *Artifacts, pictures: *ImageBook) ![]const u8 {
+fn runTool(app: *App, req: *anole.Request, who: auth.Identity, body: ChatRequest, call: openrouter.ToolCall, sink: Sink, docs: *Artifacts, pictures: *ImageBook, inquiry: *research.State) ![]const u8 {
     const session = body.session;
     const args_text = if (call.arguments.len == 0) "{}" else call.arguments;
     const args = std.json.parseFromSliceLeaky(std.json.Value, req.arena, args_text, .{}) catch {
@@ -762,6 +783,9 @@ fn runTool(app: *App, req: *anole.Request, who: auth.Identity, body: ChatRequest
     if (try tool_check.check(req.arena, call.name, args)) |problem| return problem;
     switch (kind) {
         .ui => {
+            // Research: the report waits for the researchers.
+            if (body.mode == .research and std.mem.eql(u8, call.name, "create_artifact") and !inquiry.gathered)
+                return research.report_too_early;
             // An edit is checked here first, so the model learns about misses.
             const edited = try docs.track(req.arena, call.name, args);
             if (edited) |e| if (e.applied == 0) return e.message;
@@ -772,13 +796,24 @@ fn runTool(app: *App, req: *anole.Request, who: auth.Identity, body: ChatRequest
             const shown = if (edited) |e| e.message else try tool_check.shown(req.arena, call.name, args);
             // Charts inside a document the app can't draw: the model fixes them.
             const id = openrouter.jsonString(args, "id") orelse "";
-            if (std.mem.endsWith(u8, call.name, "_artifact")) if (docs.map.get(id)) |content|
-                if (try chartProblems(req.arena, content)) |note| return std.mem.concat(req.arena, u8, &.{ shown, "\n", note });
-            return shown;
+            if (!std.mem.endsWith(u8, call.name, "_artifact")) return shown;
+            const content = docs.map.get(id) orelse return shown;
+            if (body.mode == .research and inquiry.gathered and std.mem.eql(u8, call.name, "create_artifact")) inquiry.reported = true;
+            var notes: std.Io.Writer.Allocating = .init(req.arena);
+            if (try chartProblems(req.arena, content)) |note| try notes.writer.print("\n{s}", .{note});
+            // Citations are checked against this turn's sources, when it gathered any.
+            if (inquiry.gathered) if (try research.citationProblems(req.arena, content, sink.ledger.list.items.len)) |note|
+                try notes.writer.print("\n{s}", .{note});
+            return std.mem.concat(req.arena, u8, &.{ shown, notes.written() });
         },
         .server => {
             try sink.send("tool_status", .{ .id = call.id, .name = call.name, .status = "running", .detail = openrouter.jsonString(args, "url") orelse openrouter.jsonString(args, "query") orelse openrouter.jsonString(args, "prompt") });
-            const output = (if (std.mem.eql(u8, call.name, "web_fetch"))
+            const output = (if (std.mem.eql(u8, call.name, "research"))
+                (if (body.mode == .research)
+                    research.run(app, req, who, session, call.id, args, sink, inquiry)
+                else
+                    @as(anyerror![]const u8, "Error: research runs only in Research mode. Use web_search and web_fetch here, or offer the switch with suggest_mode."))
+            else if (std.mem.eql(u8, call.name, "web_fetch"))
                 webFetch(app, req, args, sink)
             else if (std.mem.eql(u8, call.name, "web_search"))
                 webSearch(app, req, who, session, args, sink)
@@ -859,7 +894,7 @@ fn toolResult(app: *App, req: *anole.Request, res: *anole.Response) !void {
 /// and, when the text goes on, `next_offset` for the next window. The fetch
 /// goes through `safe_fetch`: no local or private addresses, every redirect
 /// hop checked again, the body capped.
-fn webFetch(app: *App, req: *anole.Request, args: std.json.Value, sink: Sink) ![]const u8 {
+pub fn webFetch(app: *App, req: *anole.Request, args: std.json.Value, sink: anytype) ![]const u8 {
     const fetcher = app.web orelse return "Error: web_fetch is not available here.";
     const url = std.mem.trim(u8, openrouter.jsonString(args, "url") orelse "", " \t\r\n");
     const offset: usize = @intCast(@max(0, intArg(args, "offset") orelse 0));
@@ -895,7 +930,7 @@ fn intArg(args: std.json.Value, key: []const u8) ?i64 {
 /// utility model, metered like any call. The results join the turn's source
 /// ledger, so the model cites the numbers it is given and the app gets them
 /// as `sources`.
-fn webSearch(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, args: std.json.Value, sink: Sink) ![]const u8 {
+pub fn webSearch(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, args: std.json.Value, sink: anytype) ![]const u8 {
     const arena = req.arena;
     const query = std.mem.trim(u8, openrouter.jsonString(args, "query") orelse "", " \t\r\n");
     if (query.len == 0) return "Error: query is empty.";
@@ -928,7 +963,7 @@ fn webSearch(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]con
     // One `sources` event for the new results, then each one's number.
     try sink.onDelta(.{ .sources = sources });
     const numbered = try arena.alloc(web.Numbered, sources.len);
-    for (sources, numbered) |src, *out| out.* = .{ .n = (try sink.ledger.add(arena, src)).n, .source = src };
+    for (sources, numbered) |src, *out| out.* = .{ .n = try sink.number(src), .source = src };
     return web.formatResults(arena, query, numbered, cached != null);
 }
 

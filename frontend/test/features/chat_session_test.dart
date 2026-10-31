@@ -392,6 +392,16 @@ void main() {
     expect(state().mode, ChatMode.learn);
   });
 
+  test('Research sends the chosen depth', () async {
+    await settle();
+    ctl()
+      ..setMode(ChatMode.research)
+      ..setResearchDepth(ResearchDepth.deep);
+    await ctl().send('compare heat pumps');
+    expect(transport.requests.single.mode, ChatMode.research);
+    expect(transport.requests.single.researchDepth, ResearchDepth.deep);
+  });
+
   test('client-executed tools: declared, rendered, pending until resolved or the server gives up', () async {
     await settle();
     await ctl().send('draw it');

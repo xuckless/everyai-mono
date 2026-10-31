@@ -46,6 +46,8 @@ class Composer extends ConsumerStatefulWidget {
     this.replying = false,
     this.effort = ReasoningEffort.auto,
     this.onEffortChanged,
+    this.researchDepth = ResearchDepth.standard,
+    this.onResearchDepthChanged,
     this.slash,
   });
 
@@ -76,6 +78,11 @@ class Composer extends ConsumerStatefulWidget {
   /// [onEffortChanged] is set.
   final ReasoningEffort effort;
   final ValueChanged<ReasoningEffort>? onEffortChanged;
+
+  /// How far Research goes; the menu shows in Research mode when
+  /// [onResearchDepthChanged] is set.
+  final ResearchDepth researchDepth;
+  final ValueChanged<ResearchDepth>? onResearchDepthChanged;
 
   /// What the `/` commands may drive in this chat; null keeps just mode switches.
   final ChatSlashHost? slash;
@@ -311,6 +318,10 @@ class ComposerState extends ConsumerState<Composer> {
                         _ModeMenu(mode: widget.mode, onChanged: widget.onModeChanged)
                       else
                         _ModeSelector(mode: widget.mode, onChanged: widget.onModeChanged),
+                      if (widget.mode == ChatMode.research && widget.onResearchDepthChanged != null) ...[
+                        const SizedBox(width: 4),
+                        _DepthMenu(depth: widget.researchDepth, onChanged: widget.onResearchDepthChanged!),
+                      ],
                       Expanded(
                         child: Align(
                           alignment: Alignment.centerRight,
@@ -428,6 +439,58 @@ class _ToolsButton extends StatelessWidget {
 
 /// Thinking effort for reasoning models: a small pill beside the model chip
 /// that opens a popover of levels.
+/// Research depth: Quick, Standard or Deep.
+class _DepthMenu extends StatelessWidget {
+  const _DepthMenu({required this.depth, required this.onChanged});
+
+  final ResearchDepth depth;
+  final ValueChanged<ResearchDepth> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return AnchoredPopover(
+      width: 280,
+      builder: (context, close) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const PopoverHeader('Research depth'),
+            for (final d in ResearchDepth.values)
+              PopoverRow(
+                title: d.label,
+                subtitle: d.description,
+                selected: d == depth,
+                trailing: d == depth ? AdaptiveIcon(EveryIcon.check, size: 14, color: theme.accent) : null,
+                onTap: () {
+                  close();
+                  onChanged(d);
+                },
+              ),
+          ],
+        ),
+      ),
+      child: Semantics(
+        button: true,
+        label: 'Research depth: ${depth.label}',
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(depth.label, style: theme.type.callout.medium.tint(theme.textMuted)),
+              const SizedBox(width: 3),
+              AdaptiveIcon(EveryIcon.chevronDown, size: 11, color: theme.textMuted),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class EffortMenu extends StatelessWidget {
   const EffortMenu({super.key, required this.effort, required this.onChanged});
 

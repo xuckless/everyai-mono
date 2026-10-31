@@ -11,11 +11,23 @@ enum Role { user, assistant, system }
 enum ChatMode {
   chat('Chat', 'Answer from the model alone'),
   search('Search', 'Search the web and cite sources'),
-  research('Research', 'Multi-step research with a report'),
+  research('Research', 'Researchers gather sources; you get a cited report'),
   learn('Learn', 'Step-by-step teaching with visuals and quizzes'),
   summarise('Summarise', 'Condense a file, page or chat');
 
   const ChatMode(this.label, this.description);
+  final String label;
+  final String description;
+}
+
+/// How far Research goes: researchers per round, rounds, the models they
+/// may use and what they may spend (caps in `backend-exp/src/research.zig`).
+enum ResearchDepth {
+  quick('Quick', 'Two researchers, one round'),
+  standard('Standard', 'Up to four researchers, two rounds'),
+  deep('Deep', 'Up to six researchers on stronger models, three rounds');
+
+  const ResearchDepth(this.label, this.description);
   final String label;
   final String description;
 }

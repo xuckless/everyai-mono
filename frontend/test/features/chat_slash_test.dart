@@ -292,7 +292,7 @@ void main() {
     ChatController ctl() => container.read(chatSessionProvider(id).notifier);
     ChatSessionState state() => container.read(chatSessionProvider(id));
 
-    test('a forced tool turns tools on and leaves Research, for that turn only', () async {
+    test('a forced tool turns tools on and keeps the mode, which has tools too', () async {
       ctl()
         ..setToolsEnabled(false)
         ..setMode(ChatMode.research);
@@ -300,7 +300,7 @@ void main() {
       await settle();
       expect(transport.requests.single.forceTool, 'make_quiz');
       expect(transport.requests.single.toolsEnabled, isTrue);
-      expect(transport.requests.single.mode, ChatMode.chat);
+      expect(transport.requests.single.mode, ChatMode.research);
 
       await ctl().send('thanks');
       await settle();

@@ -154,7 +154,14 @@ class _UsageTile extends ConsumerWidget {
 
   final UsageRow row;
 
-  static const _kinds = {'chat': 'Chat', 'gateway': 'Code', 'image': 'Image', 'followups': 'Suggestions'};
+  static const _kinds = {
+    'chat': 'Chat',
+    'gateway': 'Code',
+    'image': 'Image',
+    'followups': 'Suggestions',
+    'search': 'Search',
+    'research': 'Researchers',
+  };
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
