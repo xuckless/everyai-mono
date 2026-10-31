@@ -35,7 +35,15 @@ final class QuestionOption {
   const QuestionOption(this.label, this.description);
   final String label;
   final String description;
+
+  /// Whether the agent marked this option as its pick ("Postgres (Recommended)").
+  bool get recommended => _recommended.hasMatch(label);
+
+  /// [label] without the "(Recommended)" mark, which the card shows as a tag.
+  String get shownLabel => label.replaceFirst(_recommended, '');
 }
+
+final _recommended = RegExp(r'\s*\(recommended\)\s*$', caseSensitive: false);
 
 /// The user's answer to one [Question]: picked option indices plus an
 /// optional "Other" text.

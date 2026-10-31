@@ -313,7 +313,8 @@ class _QuestionPage extends StatelessWidget {
         const SizedBox(height: 8),
         for (final (oi, option) in q.options.indexed)
           _OptionRow(
-            label: option.label,
+            label: option.shownLabel,
+            recommended: option.recommended,
             description: option.description,
             multiple: q.multiSelect,
             selected: answer.selected.contains(oi),
@@ -403,6 +404,7 @@ class _OptionRow extends StatefulWidget {
     required this.label,
     required this.description,
     required this.multiple,
+    this.recommended = false,
     required this.selected,
     required this.onTap,
     this.shortcut,
@@ -413,6 +415,9 @@ class _OptionRow extends StatefulWidget {
   final bool multiple;
   final bool selected;
   final VoidCallback? onTap;
+
+  /// The agent's pick, shown as a small tag after the label.
+  final bool recommended;
 
   /// The number key that picks it.
   final String? shortcut;
@@ -432,7 +437,11 @@ class _OptionRowState extends State<_OptionRow> {
       button: true,
       inMutuallyExclusiveGroup: !widget.multiple,
       checked: selected,
-      label: widget.description.isEmpty ? widget.label : '${widget.label}. ${widget.description}',
+      label: [
+        widget.label,
+        if (widget.recommended) 'recommended',
+        if (widget.description.isNotEmpty) widget.description,
+      ].join('. '),
       excludeSemantics: true,
       child: MouseRegion(
         cursor: widget.onTap == null ? MouseCursor.defer : SystemMouseCursors.click,
@@ -465,7 +474,19 @@ class _OptionRowState extends State<_OptionRow> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(widget.label, style: theme.type.body.semibold.tint(theme.text)),
+                      Text.rich(
+                        TextSpan(
+                          text: widget.label,
+                          children: [
+                            if (widget.recommended)
+                              WidgetSpan(
+                                alignment: PlaceholderAlignment.middle,
+                                child: Padding(padding: const EdgeInsets.only(left: 6), child: _RecommendedTag()),
+                              ),
+                          ],
+                        ),
+                        style: theme.type.body.semibold.tint(theme.text),
+                      ),
                       if (widget.description.isNotEmpty)
                         Padding(
                           padding: const EdgeInsets.only(top: 2),
@@ -651,6 +672,19 @@ class _Answered extends StatelessWidget {
             ),
         ],
       ),
+    );
+  }
+}
+
+/// "Recommended", after the label of the option the agent would pick.
+class _RecommendedTag extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(color: theme.accent.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(5)),
+      child: Text('Recommended', style: theme.type.micro.semibold.tint(theme.accent)),
     );
   }
 }

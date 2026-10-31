@@ -85,6 +85,34 @@ void main() {
     ]);
   });
 
+  testWidgets('the recommended option shows a tag instead of its "(Recommended)" suffix', (tester) async {
+    final questions = Question.listFrom({
+      'questions': [
+        {
+          'question': 'Which database?',
+          'options': [
+            {'label': 'Postgres (Recommended)', 'description': 'Relational, runs anywhere'},
+            {'label': 'SQLite', 'description': 'One file, no server'},
+          ],
+        },
+      ],
+    });
+    expect(questions.single.options.map((o) => (o.shownLabel, o.recommended)), [('Postgres', true), ('SQLite', false)]);
+    await tester.pumpWidget(
+      m.MaterialApp(
+        home: m.Material(
+          child: EveryThemeScope(
+            theme: EveryTheme.resolve(DesignLanguage.material, Brightness.light),
+            child: QuestionCard(questions: questions, onSubmit: (_) {}),
+          ),
+        ),
+      ),
+    );
+    expect(find.text('Recommended'), findsOneWidget);
+    expect(find.textContaining('(Recommended)'), findsNothing);
+    expect(find.text('Relational, runs anywhere'), findsOneWidget);
+  });
+
   testWidgets('tabs jump between questions', (tester) async {
     await tester.pumpWidget(host((_) {}));
     await tester.tap(find.text('Address'));

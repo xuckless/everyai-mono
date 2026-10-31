@@ -164,7 +164,8 @@ const askUserQuestionSpec = <String, Object?>{
   'description':
       'Ask the user 1-4 multiple-choice questions when a decision is genuinely theirs (scope, design, '
       'trade-offs) and you cannot resolve it from the code. Each question has 2-4 options with a short label '
-      'and a description; set multi_select when several answers can apply. The user can also write their own '
+      'and a one-line description of what choosing it means; list the option you recommend first and end its label '
+      'with " (Recommended)". Set multi_select when several answers can apply. The user can also write their own '
       'answer. $_askEndsTurn',
   'parameters': {
     'type': 'object',
