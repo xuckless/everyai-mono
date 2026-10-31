@@ -349,7 +349,7 @@ const Job = struct {
         defer s.close();
         const raw = try s.reader.allocRemaining(a, .limited(4 * 1024 * 1024));
         if (s.status >= 300) {
-            std.log.warn("researcher {s}: {s}", .{ self.task.model, openrouter.errorMessage(a, raw) });
+            self.req.log().warn("researcher failed", .{ .model = self.task.model, .upstream = openrouter.errorMessage(a, raw) });
             return error.UpstreamFailed;
         }
         const v = std.json.parseFromSliceLeaky(std.json.Value, a, raw, .{}) catch return error.BadReply;

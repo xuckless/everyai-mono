@@ -426,7 +426,7 @@ fn checkout(app: *App, req: *anole.Request, in: anole.In(.{ .body = Checkout }))
     });
     defer r.deinit();
     if (@backingInt(r.status()) >= 300) {
-        std.log.err("stripe checkout failed: {d} {s}", .{ @backingInt(r.status()), r.body() catch "" });
+        req.log().err("stripe checkout failed", .{ .status = @backingInt(r.status()), .body = r.body() catch "" });
         return error.BadGateway;
     }
     const session = try r.json(struct { url: []const u8 }, req.arena);

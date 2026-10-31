@@ -37,7 +37,7 @@ fn put(app: *App, req: *anole.Request, res: *anole.Response, in: anole.In(.{ .bo
     if (native and app.anthropic == null) return res.fail(.unprocessable_entity, "ANTHROPIC_API_KEY is not set on the server");
     _ = try app.db.exec(req, "INSERT OR REPLACE INTO settings (key, value) VALUES ('upstream.anthropic', ?)", .{in.body.anthropic});
     app.native_anthropic.store(native, .monotonic);
-    std.log.info("dev: anthropic/* models now go to {s}", .{in.body.anthropic});
+    req.log().info("dev: anthropic/* models switched", .{ .to = in.body.anthropic });
     try res.json(current(app));
 }
 

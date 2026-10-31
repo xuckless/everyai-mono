@@ -80,11 +80,17 @@ fn ping(_: *App, _: *anole.Request) struct { ok: bool, service: []const u8 } {
     return .{ .ok = true, .service = "everyai-backend-exp" };
 }
 
+fn catalogLoaded(ctx: ?*anyopaque) bool {
+    const state: *App = @ptrCast(@alignCast(ctx.?));
+    return state.catalog.fetched_at > 0;
+}
+
 /// Apart from `main` so the tests serve the same routes.
 pub fn routes(app: *anole.Server(App), state: *App) !void {
     // One process: buckets live in memory (the caller deinits it).
     state.limiter = .init(state.gpa, app.io(), .{});
-    _ = app.health(.{});
+    // /readyz waits for the model catalog: without it chat can't price or route.
+    try app.health(.{}).addCheck("catalog", catalogLoaded, state);
     app.openapi(.{ .info = .{ .title = "EveryAI API", .version = "0.1.0" } });
     app.get("/v1/ping", ping);
     auth.routes(app, state);
@@ -106,6 +112,16 @@ pub fn prepare(state: *App, ctx: anytype) !void {
     const saved = try state.db.optional([]const u8, ctx, "SELECT value FROM settings WHERE key = 'upstream.anthropic'", .{});
     state.native_anthropic.store(std.mem.eql(u8, saved orelse state.cfg.anthropic_upstream, "anthropic"), .monotonic);
     if (state.cfg.dev_auth) try auth.seedDevUser(state, ctx);
+    try pruneExpired(state, ctx);
+}
+
+/// Drops refresh tokens and pairing codes nobody can use any more (expired
+/// or revoked); they pile up otherwise. Runs at each start.
+fn pruneExpired(state: *App, ctx: anytype) !void {
+    const now = util.now(ctx.io);
+    _ = try state.db.exec(ctx, "DELETE FROM refresh_tokens WHERE expires_at < ? OR revoked = 1", .{now});
+    // A decided pairing stays a day for its status poll.
+    _ = try state.db.exec(ctx, "DELETE FROM remote_pairings WHERE expires_at < ? AND (decide_by IS NULL OR decide_by < ?)", .{ now - 86_400, now - 86_400 });
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -147,6 +163,8 @@ pub fn main(init: std.process.Init) !void {
         .client = .{ .timeout = .fromSeconds(60), .retry = .{ .attempts = 3 }, .breaker = .{} },
         // Chat attachments (images, PDFs) arrive inline as base64.
         .limits = .{ .body_max = body_max },
+        // A JSON API: its own errors (404, 405, res.fail) are JSON for every client.
+        .errors = .json,
         // The default 30 s request deadline; slow handlers set their own
         // (req.setTimeout), and a stream's deadline ends at its head.
     }, &state);
@@ -170,9 +188,10 @@ pub fn main(init: std.process.Init) !void {
         keyring.* = anole.auth.Keyring.init(init.gpa, io, app.client(), anole.auth.oidc.Provider.google.jwks_uri);
         state.google_keys = keyring;
     }
+    defer if (state.google_keys) |k| k.deinit();
 
     app.use(anole.middleware.RequestId.init(.{}));
-    app.use(anole.observe.AccessLog.init(.{}));
+    app.use(anole.observe.AccessLog.init(.{ .exclude = &anole.observe.probe_paths }));
     app.use(anole.middleware.Cors.init(.{}));
 
     const dir = std.fs.path.dirname(cfg.database_path) orelse ".";

@@ -157,12 +157,12 @@ const Call = struct {
         const kept = self.text.items.len;
         if (step == .continue_text) try self.text.appendSlice(self.req.arena, text);
         const up = self.route.up.post(openrouter.ctxOf(self.req), "/chat/completions", try self.body(), &.{}) catch |err| {
-            std.log.warn("gateway retry failed: {t}", .{err});
+            self.req.log().warn("gateway retry failed", .{ .err = @errorName(err) });
             self.text.shrinkRetainingCapacity(kept);
             return null;
         };
         if (up.status < 300) return up;
-        std.log.warn("gateway retry failed: HTTP {d}", .{up.status});
+        self.req.log().warn("gateway retry failed", .{ .status = up.status });
         up.close();
         self.text.shrinkRetainingCapacity(kept);
         return null;

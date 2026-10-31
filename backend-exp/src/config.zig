@@ -72,7 +72,7 @@ pub const Config = struct {
 
     /// Google OAuth client ids whose ID tokens we accept (comma separated:
     /// android, ios, web/desktop).
-    google_client_ids: []const u8 = "",
+    google_client_ids: []const []const u8 = &.{},
 
     /// Stripe test mode. Without a key, checkout credits immediately (mock).
     stripe_secret_key: ?anole.Secret = null,

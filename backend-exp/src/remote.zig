@@ -299,10 +299,9 @@ fn listHosts(app: *App, req: *anole.Request) ![]const HostInfo {
 
 fn deleteHost(app: *App, req: *anole.Request, in: anole.In(.{ .path = struct { id: []const u8 } })) !void {
     const who = try auth.identity(req);
+    // Its devices and pairings go with it (ON DELETE CASCADE; Anole's SQLite
+    // turns foreign keys on).
     if (try app.db.exec(req, "DELETE FROM remote_hosts WHERE id = ? AND user_id = ?", .{ in.path.id, who.user_id }) == 0) return error.NotFound;
-    // Without relying on foreign keys being enforced.
-    _ = try app.db.exec(req, "DELETE FROM remote_devices WHERE host_id = ?", .{in.path.id});
-    _ = try app.db.exec(req, "DELETE FROM remote_pairings WHERE host_id = ?", .{in.path.id});
     app.relay.revokeHost(req.io, in.path.id);
 }
 
@@ -465,7 +464,7 @@ fn hostSocket(app: *App, req: *anole.Request, res: *anole.Response) !void {
     defer ws.deinit();
     serveHost(app, &ws, req, host) catch |err| {
         if (err == error.Canceled) return err;
-        std.log.warn("remote host {s}: {t}", .{ host.id, err });
+        req.log().warn("remote host socket failed", .{ .host = host.id, .err = @errorName(err) });
         if (!ws.isClosed()) ws.close(.internal_error, "") catch {};
         return;
     };
@@ -591,7 +590,7 @@ fn clientSocket(app: *App, req: *anole.Request, res: *anole.Response) !void {
     defer ws.deinit();
     serveClient(app, &ws, req, device) catch |err| {
         if (err == error.Canceled) return err;
-        std.log.warn("remote client {s}: {t}", .{ device.id, err });
+        req.log().warn("remote client socket failed", .{ .device = device.id, .err = @errorName(err) });
         if (!ws.isClosed()) ws.close(.internal_error, "") catch {};
         return;
     };
@@ -689,8 +688,10 @@ pub fn routes(app: *anole.Server(App), state: *App) void {
     v1.post("/pair/:id/approve", approvePairing);
     v1.post("/pair/:id/deny", denyPairing);
     // Sockets authenticate with their own tokens, not the user's.
-    app.get("/v1/remote/host", hostSocket);
-    app.get("/v1/remote/client/:host_id", clientSocket);
+    // WebSocket upgrades: OpenAPI has no way to describe them, and a GET
+    // listed in /docs would only fail with 426 when tried.
+    app.get("/v1/remote/host", anole.doc(.{ .hidden = true }, hostSocket));
+    app.get("/v1/remote/client/:host_id", anole.doc(.{ .hidden = true }, clientSocket));
 }
 
 test normalizeCode {

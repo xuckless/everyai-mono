@@ -60,7 +60,7 @@ pub const Authenticate = struct {
             }, util.now(req.io)) catch |err| switch (err) {
                 // A secret under 32 bytes verifies nothing: a server fault, not the client's.
                 error.WeakKey => {
-                    std.log.err("JWT_SECRET is shorter than 32 bytes; no token can verify", .{});
+                    req.log().err("JWT_SECRET is shorter than 32 bytes; no token can verify", .{});
                     return error.InternalServerError;
                 },
                 else => return challenge(res, "invalid or expired token"),
@@ -94,8 +94,12 @@ pub fn userOfToken(app: *App, req: *anole.Request, token: []const u8) ?[]const u
 
 fn lookupKey(app: *App, req: *anole.Request, key: []const u8) !?Identity {
     const digest = try util.sha256Hex(req.arena, key);
-    const row = try app.db.optional(struct { id: []const u8, user_id: []const u8 }, req, "SELECT id, user_id FROM api_keys WHERE digest = ?", .{digest}) orelse return null;
-    _ = try app.db.exec(req, "UPDATE api_keys SET last_used_at = ? WHERE id = ?", .{ util.now(req.io), row.id });
+    const row = try app.db.optional(struct { id: []const u8, user_id: []const u8, last_used_at: ?i64 }, req, "SELECT id, user_id, last_used_at FROM api_keys WHERE digest = ?", .{digest}) orelse return null;
+    // A write per gateway call took the database's one writer for a
+    // timestamp; once a minute is precise enough for "last used".
+    const now = util.now(req.io);
+    if (now - (row.last_used_at orelse 0) >= 60)
+        _ = try app.db.exec(req, "UPDATE api_keys SET last_used_at = ? WHERE id = ?", .{ now, row.id });
     return .{ .user_id = row.user_id, .key_id = row.id };
 }
 
@@ -210,11 +214,10 @@ fn google(app: *App, req: *anole.Request, in: anole.In(.{ .body = struct { token
     const keyring = app.google_keys orelse return error.NotImplemented;
     // The app sends `token`; `id_token` is the older name.
     const token = in.body.token orelse in.body.id_token orelse return error.BadRequest;
-    var it = std.mem.tokenizeScalar(u8, app.cfg.google_client_ids, ',');
-    const verified = while (it.next()) |client_id| {
+    const verified = for (app.cfg.google_client_ids) |client_id| {
         if (keyring.verify(req.arena, token, .{
             .issuer = "https://accounts.google.com",
-            .audience = std.mem.trim(u8, client_id, " "),
+            .audience = client_id,
         })) |v| break v else |_| continue;
     } else return error.Unauthorized;
 

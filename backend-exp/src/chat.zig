@@ -404,7 +404,7 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
         // A restart: the app retries the turn once the server is back.
         error.ServerDraining => sink.send("error", .{ .message = "The server is restarting. Try again in a moment.", .retryable = true }) catch {},
         else => {
-            std.log.err("chat turn failed: {t}", .{err});
+            req.log().err("chat turn failed", .{ .err = @errorName(err) });
             sink.send("error", .{ .message = "Something went wrong while answering.", .retryable = true }) catch {};
         },
     };
@@ -529,7 +529,7 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
     if (final_text.written().len > 0) {
         followUps(app, req, who, body, final_text.written(), sink) catch |err| {
             // Test fixtures reuse their last (streamed) reply for this call; its parse error is expected.
-            if (!builtin.is_test) std.log.warn("follow-ups failed: {t}", .{err});
+            if (!builtin.is_test) req.log().warn("follow-ups failed", .{ .err = @errorName(err) });
         };
     }
     try sink.send("done", .{});
