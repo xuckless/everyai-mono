@@ -104,7 +104,7 @@ class _ModelPickerPanelState extends ConsumerState<_ModelPickerPanel> {
     Widget row(ModelSpec spec) => PopoverRow(
       leading: ModelAvatar(spec.provider, size: 20),
       title: spec.name,
-      subtitle: [if (spec.blurb.isNotEmpty) spec.blurb else spec.provider.company, if (spec.free) 'Free'].join(' · '),
+      subtitle: spec.free ? 'Free' : null,
       trailing: spec == widget.selected ? AdaptiveIcon(EveryIcon.check, size: 15, color: theme.accent) : null,
       selected: spec == widget.selected,
       onTap: () => widget.onSelected(spec),

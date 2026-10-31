@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
@@ -51,9 +53,30 @@ class _AnchoredPopoverState extends State<AnchoredPopover> {
     final box = context.findRenderObject()! as RenderBox;
     final origin = box.localToGlobal(Offset.zero);
     final window = MediaQuery.sizeOf(overlayContext);
+    final padding = MediaQuery.paddingOf(overlayContext);
+    // The on-screen keyboard (phones) covers the bottom of the window.
+    final bottom = window.height - MediaQuery.viewInsetsOf(overlayContext).bottom;
     final alignRight = origin.dx + box.size.width / 2 > window.width / 2;
-    final openUp = origin.dy + box.size.height / 2 > window.height / 2;
-    final roomVertical = openUp ? origin.dy - 12 : window.height - origin.dy - box.size.height - 12;
+    final openUp = origin.dy + box.size.height / 2 > bottom / 2;
+    final roomVertical = openUp
+        ? origin.dy - padding.top - 12
+        : bottom - padding.bottom - origin.dy - box.size.height - 12;
+
+    // Keep the panel inside the window on narrow screens: cap its width, then
+    // shift it sideways when the trigger's edge leaves too little room.
+    const margin = 8.0;
+    final maxWidth = (widget.width ?? 360).clamp(0.0, window.width - 2 * margin);
+    final minWidth = (widget.width ?? 200).clamp(0.0, maxWidth);
+    final double dx;
+    if (alignRight) {
+      // Right edges line up; move right when the left edge would cross the margin.
+      final right = origin.dx + box.size.width;
+      dx = math.min(math.max(0.0, margin + maxWidth - right), window.width - margin - right);
+    } else {
+      // Left edges line up; move left when the right edge would cross the margin.
+      final left = origin.dx;
+      dx = math.max(math.min(0.0, window.width - margin - maxWidth - left), margin - left);
+    }
 
     return Stack(
       children: [
@@ -67,15 +90,15 @@ class _AnchoredPopoverState extends State<AnchoredPopover> {
             link: _link,
             targetAnchor: Alignment(alignRight ? 1 : -1, openUp ? -1 : 1),
             followerAnchor: Alignment(alignRight ? 1 : -1, openUp ? 1 : -1),
-            offset: Offset(0, openUp ? -6 : 6),
+            offset: Offset(dx, openUp ? -6 : 6),
             child: CallbackShortcuts(
               bindings: {const SingleActivator(LogicalKeyboardKey.escape): _portal.hide},
               child: FocusScope(
                 autofocus: true,
                 child: ConstrainedBox(
                   constraints: BoxConstraints(
-                    minWidth: widget.width ?? 200,
-                    maxWidth: widget.width ?? 360,
+                    minWidth: minWidth,
+                    maxWidth: maxWidth,
                     maxHeight: roomVertical.clamp(120, widget.maxHeight),
                   ),
                   child: DecoratedBox(
