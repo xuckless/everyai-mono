@@ -110,7 +110,7 @@ pub fn parseSearch(arena: std.mem.Allocator, raw: []const u8) !SearchReply {
 /// What the model reads back from `web_search`: one numbered entry per result
 /// (the numbers it cites), fenced as untrusted since titles and snippets come
 /// from the web.
-pub fn formatResults(arena: std.mem.Allocator, query: []const u8, numbered: []const Numbered) ![]const u8 {
+pub fn formatResults(arena: std.mem.Allocator, query: []const u8, numbered: []const Numbered, repeated: bool) ![]const u8 {
     if (numbered.len == 0) return std.fmt.allocPrint(arena, "No results for \"{s}\". Try other words, or a broader query.", .{query});
     var body: std.Io.Writer.Allocating = .init(arena);
     for (numbered, 0..) |r, i| {
@@ -119,10 +119,133 @@ pub fn formatResults(arena: std.mem.Allocator, query: []const u8, numbered: []co
         if (r.source.snippet) |s| try body.writer.print("{s}\n", .{s});
     }
     const fenced = try safe_fetch.wrapUntrusted(arena, "web_search", body.written());
-    return std.fmt.allocPrint(arena, "{d} result(s) for \"{s}\". Cite them by their numbers, e.g. [{d}]. Snippets are short: call web_fetch on a URL to read the page.\n{s}", .{ numbered.len, query, numbered[0].n, fenced });
+    const again: []const u8 = if (repeated) "You searched for this in this chat already; these are the same results. Search with other words for new ones.\n" else "";
+    return std.fmt.allocPrint(arena, "{s}{d} result(s) for \"{s}\". Cite them by their numbers, e.g. [{d}]. Snippets are short: call web_fetch on a URL to read the page.\n{s}", .{ again, numbered.len, query, numbered[0].n, fenced });
 }
 
 pub const Numbered = struct { n: usize, source: Source };
+
+// ------------------------------------------------------------------ search cache
+
+/// Earlier `web_search` results per user and chat, so a repeated query (the
+/// same chat asking again, a researcher overlapping another) costs nothing.
+/// Keys squash case and spacing; entries live an hour; at most `max_entries`.
+pub const SearchCache = struct {
+    mutex: std.Io.Mutex = .init,
+    map: std.StringHashMapUnmanaged(Hit) = .empty,
+
+    const Hit = struct { at: i64, sources: []const Source };
+
+    pub const ttl_seconds = 60 * 60;
+    pub const max_entries = 300;
+
+    /// "user|chat|limit|query", the query lowercased with whitespace squashed;
+    /// null without a chat id (nothing to scope it to).
+    pub fn key(arena: std.mem.Allocator, user: []const u8, session: ?[]const u8, query: []const u8, limit: usize) !?[]const u8 {
+        const chat = session orelse return null;
+        if (chat.len == 0) return null;
+        var out: std.Io.Writer.Allocating = .init(arena);
+        try out.writer.print("{s}|{s}|{d}|", .{ user, chat, limit });
+        var space = false;
+        for (std.mem.trim(u8, query, " \t\r\n")) |c| {
+            if (std.ascii.isWhitespace(c)) {
+                space = true;
+                continue;
+            }
+            if (space) try out.writer.writeByte(' ');
+            space = false;
+            try out.writer.writeByte(std.ascii.toLower(c));
+        }
+        return out.written();
+    }
+
+    /// The cached results for `k`, copied into `arena`; null when absent or stale.
+    pub fn get(self: *SearchCache, io: std.Io, arena: std.mem.Allocator, k: []const u8, now: i64) !?[]const Source {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        const hit = self.map.get(k) orelse return null;
+        if (now - hit.at > ttl_seconds) return null;
+        const out = try arena.alloc(Source, hit.sources.len);
+        for (hit.sources, out) |src, *o| o.* = .{
+            .url = try arena.dupe(u8, src.url),
+            .title = try arena.dupe(u8, src.title),
+            .snippet = if (src.snippet) |sn| try arena.dupe(u8, sn) else null,
+        };
+        return out;
+    }
+
+    /// Keeps `sources` for `k`, making room by dropping stale entries, then the oldest.
+    pub fn put(self: *SearchCache, io: std.Io, gpa: std.mem.Allocator, k: []const u8, sources: []const Source, now: i64) !void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        if (self.map.fetchRemove(k)) |old| free(gpa, old.key, old.value);
+        if (self.map.count() >= max_entries) {
+            var oldest: ?[]const u8 = null;
+            var oldest_at: i64 = std.math.maxInt(i64);
+            var stale: std.ArrayList([]const u8) = .empty;
+            defer stale.deinit(gpa);
+            var it = self.map.iterator();
+            while (it.next()) |e| {
+                if (now - e.value_ptr.at > ttl_seconds) try stale.append(gpa, e.key_ptr.*);
+                if (e.value_ptr.at < oldest_at) {
+                    oldest_at = e.value_ptr.at;
+                    oldest = e.key_ptr.*;
+                }
+            }
+            if (stale.items.len == 0) if (oldest) |o| try stale.append(gpa, o);
+            for (stale.items) |sk| if (self.map.fetchRemove(sk)) |old| free(gpa, old.key, old.value);
+        }
+        const owned = try gpa.alloc(Source, sources.len);
+        for (sources, owned) |src, *o| o.* = .{
+            .url = try gpa.dupe(u8, src.url),
+            .title = try gpa.dupe(u8, src.title),
+            .snippet = if (src.snippet) |sn| try gpa.dupe(u8, sn) else null,
+        };
+        try self.map.put(gpa, try gpa.dupe(u8, k), .{ .at = now, .sources = owned });
+    }
+
+    fn free(gpa: std.mem.Allocator, k: []const u8, hit: Hit) void {
+        for (hit.sources) |src| {
+            gpa.free(src.url);
+            gpa.free(src.title);
+            if (src.snippet) |sn| gpa.free(sn);
+        }
+        gpa.free(hit.sources);
+        gpa.free(k);
+    }
+
+    pub fn deinit(self: *SearchCache, gpa: std.mem.Allocator) void {
+        var it = self.map.iterator();
+        while (it.next()) |e| free(gpa, e.key_ptr.*, e.value_ptr.*);
+        self.map.deinit(gpa);
+    }
+};
+
+test "search cache: keyed per user and chat, squashed, expires, bounded" {
+    const gpa = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var cache: SearchCache = .{};
+    defer cache.deinit(gpa);
+    const k = (try SearchCache.key(a, "u1", "c1", "  Zig   Release\tDate ", 5)).?;
+    try std.testing.expectEqualStrings("u1|c1|5|zig release date", k);
+    try std.testing.expect(try SearchCache.key(a, "u1", null, "x", 5) == null);
+    const results = [_]Source{.{ .url = "https://ziglang.org", .title = "Zig", .snippet = "0.17" }};
+    try cache.put(io, gpa, k, &results, 1000);
+    const hit = (try cache.get(io, a, k, 1000 + 60)).?;
+    try std.testing.expectEqualStrings("Zig", hit[0].title);
+    try std.testing.expect(try cache.get(io, a, (try SearchCache.key(a, "u2", "c1", "zig release date", 5)).?, 1000) == null);
+    try std.testing.expect(try cache.get(io, a, k, 1000 + SearchCache.ttl_seconds + 1) == null);
+    // Full: the oldest goes.
+    var i: usize = 0;
+    while (i < SearchCache.max_entries + 5) : (i += 1) {
+        const kk = (try SearchCache.key(a, "u1", "c1", try std.fmt.allocPrint(a, "q{d}", .{i}), 5)).?;
+        try cache.put(io, gpa, kk, &results, 2000 + @as(i64, @intCast(i)));
+    }
+    try std.testing.expect(cache.map.count() <= SearchCache.max_entries);
+}
 
 // ------------------------------------------------------------------ web_fetch paging
 
@@ -251,11 +374,11 @@ test "formatResults numbers entries and fences them" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const text = try formatResults(a, "zig", &.{ .{ .n = 3, .source = .{ .url = "https://z.dev", .title = "Z", .snippet = "snip" } }, .{ .n = 4, .source = .{ .url = "https://y.dev", .title = "Y" } } });
+    const text = try formatResults(a, "zig", &.{ .{ .n = 3, .source = .{ .url = "https://z.dev", .title = "Z", .snippet = "snip" } }, .{ .n = 4, .source = .{ .url = "https://y.dev", .title = "Y" } } }, false);
     try std.testing.expect(std.mem.indexOf(u8, text, "[3] Z\nhttps://z.dev\nsnip") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "[4] Y") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "<untrusted_tool_result source=\"web_search\">") != null);
-    try std.testing.expect(std.mem.startsWith(u8, try formatResults(a, "zig", &.{}), "No results"));
+    try std.testing.expect(std.mem.startsWith(u8, try formatResults(a, "zig", &.{}, false), "No results"));
 }
 
 test "window pages on word and UTF-8 boundaries and reports next_offset" {

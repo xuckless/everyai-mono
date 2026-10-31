@@ -22,6 +22,7 @@ const Env = struct {
         self.t.deinit();
         self.server.deinit();
         self.state.catalog.deinit();
+        self.state.searches.deinit(self.state.gpa);
         self.fake.deinit();
         self.anth.deinit();
     }
@@ -210,7 +211,9 @@ test "chat: UI tool, citations, usage with cache, follow-ups, billing" {
     try std.testing.expect(std.mem.indexOf(u8, second, "\"role\":\"tool\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, second, "Shown to the user: quiz \\\"Zig\\\" with 1 question(s).") != null);
     try std.testing.expect(std.mem.indexOf(u8, second, "cache_control") != null);
-    try std.testing.expect(std.mem.indexOf(u8, second, "\"plugins\":[{\"id\":\"web\"") != null);
+    // A model with tools searches with web_search under the Search block, not the plugin.
+    try std.testing.expect(std.mem.indexOf(u8, second, "\"plugins\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, second, "is in Search mode") != null);
 
     // Billed: three calls, each cost x 1.15, rounded up.
     var arena: std.heap.ArenaAllocator = .init(alloc);
@@ -871,6 +874,42 @@ test "chat: web_search numbers results in the source ledger, sends each source o
     defer arena.deinit();
     var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = arena.allocator() };
     try std.testing.expectEqual(@as(i64, 23_000), try env.state.db.one(i64, &c, "SELECT charged_micros FROM usage_events WHERE kind = 'search'", .{}));
+}
+
+const search_again_turn =
+    \\data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_s2","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"  Zig   RELEASE \",\"max_results\":3}"}}]}}]}
+    \\
+    \\data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":900,"completion_tokens":20,"cost":0.0001}}
+    \\
+    \\data: [DONE]
+    \\
+    \\
+;
+
+test "chat: the same search again in the same chat is answered from the cache, free" {
+    var env: Env = undefined;
+    // No second search_reply: a second upstream search would get the final turn instead.
+    try start(&env, &.{ search_turn, search_reply, search_again_turn, final_turn, followups_reply }, true);
+    defer env.deinit();
+
+    var res = try env.t.post("/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .mode = "search",
+        .messages = .{.{ .role = "user", .content = "What's new in Zig?" }},
+        .session = "conv-cache",
+    } });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    // Calls: turn, search, turn (cached search), final, follow-ups.
+    try std.testing.expectEqual(@as(usize, 5), env.fake.bodies.items.len);
+    const after = env.fake.bodies.items[3];
+    try std.testing.expect(std.mem.indexOf(u8, after, "You searched for this in this chat already") != null);
+    try std.testing.expect(std.mem.indexOf(u8, after, "[2] Download") != null);
+
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = arena.allocator() };
+    try std.testing.expectEqual(@as(i64, 1), try env.state.db.one(i64, &c, "SELECT COUNT(*) FROM usage_events WHERE kind = 'search'", .{}));
 }
 
 test "chat: with no credit left, a free model's web_search and follow-ups are skipped, not charged" {

@@ -194,8 +194,8 @@ fn writeContent(s: *std.json.Stringify, text: []const u8, parts: ?[]const std.js
 /// The system message: the base prompt, then the mode's block as a second
 /// part. With breakpoints each part gets one, so every mode reuses the base
 /// prompt's cache and keeps its own.
-fn writeSystem(s: *std.json.Stringify, mode: Mode, breakpoint: bool, ttl: []const u8) !void {
-    const extra = modes.block(mode) orelse return writeContent(s, tools.system_prompt, null, breakpoint, ttl);
+fn writeSystem(s: *std.json.Stringify, mode_block: ?[]const u8, breakpoint: bool, ttl: []const u8) !void {
+    const extra = mode_block orelse return writeContent(s, tools.system_prompt, null, breakpoint, ttl);
     try s.objectField("content");
     try s.beginArray();
     for ([_][]const u8{ tools.system_prompt, extra }) |text| {
@@ -265,7 +265,7 @@ fn buildBody(arena: std.mem.Allocator, model: []const u8, mode: Mode, with_tools
             try s.print("{{\"type\":\"function\",\"function\":{{\"name\":\"{s}\"}}}}", .{name});
         }
     }
-    if (mode == .search) {
+    if (modes.usesPlugin(mode, with_tools)) {
         try s.objectField("plugins");
         try s.print("[{{\"id\":\"web\",\"engine\":\"{s}\",\"max_results\":5}}]", .{engine});
     }
@@ -274,7 +274,7 @@ fn buildBody(arena: std.mem.Allocator, model: []const u8, mode: Mode, with_tools
     try s.beginObject();
     try s.objectField("role");
     try s.write("system");
-    try writeSystem(&s, mode, bp, ttl);
+    try writeSystem(&s, modes.block(mode, with_tools), bp, ttl);
     try s.endObject();
     for (messages, 0..) |m, i| {
         try s.beginObject();
@@ -415,8 +415,8 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
     var pictures: ImageBook = .{};
     try pictures.seed(arena, body.images, body.messages);
     var final_text: std.Io.Writer.Allocating = .init(arena);
-    // Search (its fallback) and the Research model need OpenRouter.
-    const route = app.route(model, modes.nativeOk(body.mode));
+    // The web plugin (Search without tools) and the Research model need OpenRouter.
+    const route = app.route(model, modes.nativeOk(body.mode, with_tools));
     const effort: ?[]const u8 = if (body.effort) |e| (if (facts.reasoning) e.wire(route.provider) else null) else null;
     const turn: Turn = .{ .app = app, .req = req, .who = who, .model = model, .body = body, .route = route, .with_tools = with_tools, .effort = effort };
 
@@ -906,22 +906,30 @@ fn webSearch(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]con
         error.PaymentRequired => return "Error: the user is out of credits, so web_search is unavailable. Answer without it and say so if it matters.",
         else => return err,
     };
-    const body = try web.searchBody(arena, app.cfg.utility_model, app.cfg.search_engine, query, limit);
-    const s = try app.upstream.post(req, "/chat/completions", body, &.{});
-    defer s.close();
-    const raw = try s.reader.allocRemaining(arena, .limited(1024 * 1024));
-    if (s.status >= 300) return std.fmt.allocPrint(arena, "Error: the search failed ({s}). Try again or carry on without it.", .{openrouter.errorMessage(arena, raw)});
-    const reply = web.parseSearch(arena, raw) catch return "Error: the search service sent an unreadable reply. Try again or carry on without it.";
-    if (reply.usage) |u| {
-        const c = try billing.charge(app, req, who.user_id, .{ .kind = "search", .model = app.cfg.utility_model, .prompt_tokens = u.prompt_tokens, .completion_tokens = u.completion_tokens, .cost_usd = u.cost_usd, .session = session });
-        // Costs money; does not fill the conversation's context.
-        try sink.send("usage", .{ .kind = "search", .model = app.cfg.utility_model, .prompt_tokens = u.prompt_tokens, .completion_tokens = u.completion_tokens, .cached_tokens = 0, .cache_write_tokens = 0, .charged_micros = c.charged_micros });
-    }
+    // The same query in the same chat: the earlier results, free.
+    const key = try web.SearchCache.key(arena, who.user_id, session, query, limit);
+    const now = util.now(req.io);
+    const cached = if (key) |k| try app.searches.get(req.io, arena, k, now) else null;
+    const sources = cached orelse blk: {
+        const body = try web.searchBody(arena, app.cfg.utility_model, app.cfg.search_engine, query, limit);
+        const s = try app.upstream.post(req, "/chat/completions", body, &.{});
+        defer s.close();
+        const raw = try s.reader.allocRemaining(arena, .limited(1024 * 1024));
+        if (s.status >= 300) return std.fmt.allocPrint(arena, "Error: the search failed ({s}). Try again or carry on without it.", .{openrouter.errorMessage(arena, raw)});
+        const reply = web.parseSearch(arena, raw) catch return "Error: the search service sent an unreadable reply. Try again or carry on without it.";
+        if (reply.usage) |u| {
+            const c = try billing.charge(app, req, who.user_id, .{ .kind = "search", .model = app.cfg.utility_model, .prompt_tokens = u.prompt_tokens, .completion_tokens = u.completion_tokens, .cost_usd = u.cost_usd, .session = session });
+            // Costs money; does not fill the conversation's context.
+            try sink.send("usage", .{ .kind = "search", .model = app.cfg.utility_model, .prompt_tokens = u.prompt_tokens, .completion_tokens = u.completion_tokens, .cached_tokens = 0, .cache_write_tokens = 0, .charged_micros = c.charged_micros });
+        }
+        if (key) |k| if (reply.sources.len > 0) try app.searches.put(req.io, app.gpa, k, reply.sources, now);
+        break :blk reply.sources;
+    };
     // One `sources` event for the new results, then each one's number.
-    try sink.onDelta(.{ .sources = reply.sources });
-    const numbered = try arena.alloc(web.Numbered, reply.sources.len);
-    for (reply.sources, numbered) |src, *out| out.* = .{ .n = (try sink.ledger.add(arena, src)).n, .source = src };
-    return web.formatResults(arena, query, numbered);
+    try sink.onDelta(.{ .sources = sources });
+    const numbered = try arena.alloc(web.Numbered, sources.len);
+    for (sources, numbered) |src, *out| out.* = .{ .n = (try sink.ledger.add(arena, src)).n, .source = src };
+    return web.formatResults(arena, query, numbered, cached != null);
 }
 
 /// Content types `readableText` makes sense of; an absent one is tried.
@@ -1175,7 +1183,8 @@ test buildBody {
     defer arena.deinit();
     const a = arena.allocator();
     const msgs = [_]Msg{ .{ .role = "user", .content = "hi" }, .{ .role = "assistant", .content = "hello" }, .{ .role = "user", .content = "again" } };
-    const anthropic = try buildBody(a, "anthropic/claude-haiku-5.5", .search, true, &msgs, "5m", "exa", .{});
+    // Search without tools: the web plugin, and no mode block.
+    const anthropic = try buildBody(a, "anthropic/claude-haiku-5.5", .search, false, &msgs, "5m", "exa", .{});
     // System and last message carry breakpoints; the middle one does not.
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, anthropic, "cache_control"));
     try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"plugins\":[{\"id\":\"web\"") != null);

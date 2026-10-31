@@ -57,6 +57,8 @@ pub const App = struct {
     web: ?*const safe_fetch.Fetcher = null,
     /// Live remote-host and client sockets (remote.zig).
     relay: remote.Relay = .{},
+    /// Earlier web_search results per user and chat (web.zig).
+    searches: @import("web.zig").SearchCache = .{},
 
     pub const Route = struct { up: openrouter.Upstream, provider: []const u8 };
 
@@ -118,6 +120,7 @@ pub fn main(init: std.process.Init) !void {
         .catalog = .init(init.gpa),
     };
     defer state.catalog.deinit();
+    defer state.searches.deinit(init.gpa);
     // After the server (defers run last first): rooms outlive their sockets.
     defer state.relay.deinit();
 

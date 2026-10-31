@@ -8,20 +8,43 @@ const std = @import("std");
 
 pub const Mode = enum { chat, search, research, learn, summarise };
 
-/// The mode's block; null for plain chat (the base prompt alone).
-pub fn block(mode: Mode) ?[]const u8 {
+/// The mode's block; null for plain chat (the base prompt alone). Search
+/// without tools falls back to OpenRouter's web plugin and needs no block.
+pub fn block(mode: Mode, with_tools: bool) ?[]const u8 {
     return switch (mode) {
-        .chat, .search, .research => null,
+        .chat, .research => null,
+        .search => if (with_tools) search else null,
         .learn => learn,
         .summarise => summarise,
     };
 }
 
-/// Whether a mode may use the native Anthropic route (Search's fallback and
-/// the old Research model need OpenRouter).
-pub fn nativeOk(mode: Mode) bool {
-    return mode != .search and mode != .research;
+/// Whether a turn searches through OpenRouter's web plugin: Search on a model
+/// (or with tools off) that can't run web_search itself.
+pub fn usesPlugin(mode: Mode, with_tools: bool) bool {
+    return mode == .search and !with_tools;
 }
+
+/// Whether a turn may use the native Anthropic route (the web plugin and the
+/// Research model need OpenRouter).
+pub fn nativeOk(mode: Mode, with_tools: bool) bool {
+    return mode != .research and !usesPlugin(mode, with_tools);
+}
+
+const search =
+    \\<mode name="search">
+    \\The user is in Search mode: they want a current answer backed by web sources.
+    \\
+    \\1. Search before answering, even when you think you know. Use web_search with specific queries (names, versions, places, dates; the user's language and region when they matter): 1-3 for a simple fact, up to 5 for a question with several parts. Independent queries go together in one step.
+    \\2. Read before relying on it: snippets are short and can mislead. web_fetch the 1-3 most relevant results (official sources, primary documents and recent reporting first) before you state details, numbers or quotes.
+    \\3. Answer first: open with the direct answer in one or two sentences, then the supporting detail. A short question gets a short answer.
+    \\4. Cite each claim from a source with its number right after it, [1] or [1][3]. Cite only numbers the tools gave you.
+    \\5. Say how current it is: dates for news, prices and releases, and say when sources disagree or are older than the question needs.
+    \\6. Numbers compared across options or over time go in render_chart with the source; options side by side go in a table.
+    \\
+    \\If the search finds nothing reliable, say so plainly, and mark anything you add from your own knowledge as not from the search.
+    \\</mode>
+;
 
 const learn =
     \\<mode name="learn">
@@ -61,12 +84,14 @@ const summarise =
 
 test "each mode block is constant text that names its mode" {
     inline for (comptime std.enums.values(Mode)) |mode| {
-        if (block(mode)) |b| {
+        if (block(mode, true)) |b| {
             const tag = "<mode name=\"" ++ @tagName(mode) ++ "\">";
             try std.testing.expect(std.mem.startsWith(u8, b, tag));
             try std.testing.expect(std.mem.endsWith(u8, b, "</mode>"));
             try std.testing.expect(std.mem.indexOf(u8, b, "{s}") == null);
         }
     }
-    try std.testing.expect(block(.chat) == null);
+    try std.testing.expect(block(.chat, true) == null);
+    try std.testing.expect(block(.search, false) == null);
+    try std.testing.expect(!nativeOk(.search, false) and nativeOk(.search, true));
 }
