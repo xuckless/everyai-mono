@@ -92,7 +92,8 @@ const Task = struct { question: []const u8, model: []const u8, focus: []const u8
 
 /// The `research` tool: checks the call against the depth's caps and the
 /// roster, runs the researchers in parallel, and returns their briefs.
-pub fn run(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, call_id: []const u8, args: std.json.Value, sink: chat.Sink, state: *State) ![]const u8 {
+/// `aux` is where the researchers' calls go (`App.aux`).
+pub fn run(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, call_id: []const u8, args: std.json.Value, sink: chat.Sink, state: *State, aux: App.Route) ![]const u8 {
     const arena = req.arena;
     const caps = state.depth.caps();
     if (state.rounds >= caps.rounds)
@@ -117,7 +118,7 @@ pub fn run(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const
         tasks[i] = .{ .question = question, .model = model, .focus = openrouter.jsonString(q, "focus") orelse "" };
     }
     // Researchers need credit even when the lead's model is free.
-    billing.preflight(app, req, who.user_id, false) catch |err| switch (err) {
+    billing.preflight(app, req, who.user_id, aux.byok) catch |err| switch (err) {
         error.PaymentRequired => return "Error: the user is out of credits, so researchers can't run. Answer from what you know and say so.",
         else => return err,
     };
@@ -141,6 +142,7 @@ pub fn run(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const
             .status_id = try std.fmt.allocPrint(arena, "{s}-r{d}", .{ call_id, i + 1 }),
             .shared = &shared,
             .out = b,
+            .aux = aux,
         };
         try shared.status(j.status_id, "running", t);
         group.concurrent(req.io, Job.run, .{j}) catch group.async(req.io, Job.run, .{j});
@@ -276,6 +278,7 @@ const Job = struct {
     status_id: []const u8,
     shared: *Shared,
     out: *Brief,
+    aux: App.Route,
 
     fn run(self: *Job) void {
         var memory: std.heap.ArenaAllocator = .init(self.app.gpa);
@@ -333,7 +336,7 @@ const Job = struct {
                 const output = if (args == null)
                     "Error: the arguments were not valid JSON."
                 else if (std.mem.eql(u8, name, "web_search"))
-                    chat.webSearch(self.app, &cx, self.who, self.session, args.?, sink) catch |err| try std.fmt.allocPrint(a, "Error: {t}", .{err})
+                    chat.webSearch(self.app, &cx, self.who, self.session, args.?, sink, self.aux) catch |err| try std.fmt.allocPrint(a, "Error: {t}", .{err})
                 else if (std.mem.eql(u8, name, "web_fetch"))
                     chat.webFetch(self.app, &cx, args.?, sink) catch |err| try std.fmt.allocPrint(a, "Error: {t}", .{err})
                 else
@@ -345,7 +348,7 @@ const Job = struct {
 
     /// One upstream call, metered under the chat; its message.
     fn call(self: *Job, cx: *anole.db.Ctx, a: std.mem.Allocator, body: []const u8) !struct { message: std.json.Value } {
-        const s = try self.app.upstream.post(cx.*, "/chat/completions", body, &.{});
+        const s = try self.aux.up.post(cx.*, "/chat/completions", body, &.{});
         defer s.close();
         const raw = try s.reader.allocRemaining(a, .limited(4 * 1024 * 1024));
         if (s.status >= 300) {
@@ -357,7 +360,7 @@ const Job = struct {
         if (v.object.get("usage")) |u| if (u == .object) {
             const usage = openrouter.parseUsage(u.object);
             self.out.cost_usd += usage.cost_usd;
-            const c = try billing.charge(self.app, cx, self.who.user_id, .{ .kind = "research", .model = self.task.model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cached_tokens = usage.cached_tokens, .cost_usd = usage.cost_usd, .session = self.session });
+            const c = try billing.charge(self.app, cx, self.who.user_id, .{ .kind = "research", .model = self.task.model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cached_tokens = usage.cached_tokens, .cost_usd = usage.cost_usd, .session = self.session, .byok = self.aux.byok });
             const sink: LockedSink = .{ .shared = self.shared };
             try sink.send("usage", .{ .kind = "research", .model = self.task.model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cached_tokens = usage.cached_tokens, .cache_write_tokens = usage.cache_write_tokens, .charged_micros = c.charged_micros });
         };

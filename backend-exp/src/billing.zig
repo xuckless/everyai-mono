@@ -121,6 +121,8 @@ pub const Usage = struct {
     api_key_id: ?[]const u8 = null,
     /// Who served the call: "openrouter" or "anthropic".
     provider: []const u8 = "openrouter",
+    /// Ran on the user's own key (byok.zig): recorded at cost, never charged.
+    byok: bool = false,
 };
 
 pub const Charge = struct { cost_micros: i64, charged_micros: i64, from_quota: i64, from_wallet: i64 };
@@ -141,7 +143,7 @@ pub fn charge(app: *App, ctx: anytype, user_id: []const u8, u: Usage) !Charge {
 
 fn chargeIn(db: anytype, ctx: anytype, user_id: []const u8, u: Usage, markup: f64) !Charge {
     const cost = util.usdToMicros(u.cost_usd);
-    const charged = util.applyMarkup(cost, markup);
+    const charged = if (u.byok) 0 else util.applyMarkup(cost, markup);
     var from_quota: i64 = 0;
     var from_wallet: i64 = 0;
     if (charged > 0) {
@@ -155,8 +157,14 @@ fn chargeIn(db: anytype, ctx: anytype, user_id: []const u8, u: Usage, markup: f6
         \\INSERT INTO usage_events (user_id, api_key_id, session, kind, model, prompt_tokens, completion_tokens,
         \\  cached_tokens, cache_write_tokens, cost_micros, charged_micros, from_quota_micros, from_wallet_micros, created_at, provider)
         \\VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    , .{ user_id, u.api_key_id, u.session, u.kind, u.model, u.prompt_tokens, u.completion_tokens, u.cached_tokens, u.cache_write_tokens, cost, charged, from_quota, from_wallet, util.now(ctx.io), u.provider });
+    , .{ user_id, u.api_key_id, u.session, u.kind, u.model, u.prompt_tokens, u.completion_tokens, u.cached_tokens, u.cache_write_tokens, cost, charged, from_quota, from_wallet, util.now(ctx.io), providerLabel(u) });
     return .{ .cost_micros = cost, .charged_micros = charged, .from_quota = from_quota, .from_wallet = from_wallet };
+}
+
+/// usage_events.provider: "openrouter" | "anthropic", with "-byok" on the user's key.
+fn providerLabel(u: Usage) []const u8 {
+    if (!u.byok) return u.provider;
+    return if (std.mem.eql(u8, u.provider, "anthropic")) "anthropic-byok" else "openrouter-byok";
 }
 
 // ------------------------------------------------------------------ routes

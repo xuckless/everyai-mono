@@ -188,7 +188,8 @@ fn title(app: *App, req: *anole.Request, res: *anole.Response) !void {
     if (std.mem.trim(u8, user, " \n\t").len == 0) return res.fail(.unprocessable_entity, "messages need a user message");
     const model = modelFor(app.cfg, .title);
     app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
-    billing.preflight(app, req, who.user_id, app.catalog.facts(req.io, model).free) catch |err| switch (err) {
+    const aux = try app.aux(req);
+    billing.preflight(app, req, who.user_id, app.catalog.facts(req.io, model).free or aux.byok) catch |err| switch (err) {
         error.PaymentRequired => {
             res.status = .payment_required;
             return res.json(.{ .message = "You're out of credits.", .code = "out_of_credits" });
@@ -202,7 +203,7 @@ fn title(app: *App, req: *anole.Request, res: *anole.Response) !void {
         .max_tokens = 40,
         .messages = .{.{ .role = "user", .content = prompt }},
     }, .{});
-    const s = try app.upstream.post(openrouter.ctxOf(req), "/chat/completions", req_body, &.{});
+    const s = try aux.up.post(openrouter.ctxOf(req), "/chat/completions", req_body, &.{});
     defer s.close();
     const raw = try s.reader.allocRemaining(req.arena, .limited(1024 * 1024));
     if (s.status >= 300) return res.fail(.bad_gateway, "the title model failed");
@@ -210,7 +211,7 @@ fn title(app: *App, req: *anole.Request, res: *anole.Response) !void {
     var charged: i64 = 0;
     if (v.object.get("usage")) |u| if (u == .object) {
         const usage = openrouter.parseUsage(u.object);
-        const c = try billing.charge(app, req, who.user_id, .{ .kind = "title", .model = model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cost_usd = usage.cost_usd, .session = body.session });
+        const c = try billing.charge(app, req, who.user_id, .{ .kind = "title", .model = model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cost_usd = usage.cost_usd, .session = body.session, .byok = aux.byok });
         charged = c.charged_micros;
     };
     const choices = (v.object.get("choices") orelse return res.fail(.bad_gateway, "the title model failed")).array.items;
@@ -373,7 +374,8 @@ fn skillDraft(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const hint = if (body.hint.len > 0) try std.fmt.allocPrint(req.arena, "The user says it is for: {s}\n", .{body.hint[0..@min(body.hint.len, 500)]}) else "";
     const model = modelFor(app.cfg, .compaction);
     app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
-    billing.preflight(app, req, who.user_id, app.catalog.facts(req.io, model).free) catch |err| switch (err) {
+    const aux = try app.aux(req);
+    billing.preflight(app, req, who.user_id, app.catalog.facts(req.io, model).free or aux.byok) catch |err| switch (err) {
         error.PaymentRequired => {
             res.status = .payment_required;
             return res.json(.{ .message = "You're out of credits.", .code = "out_of_credits" });
@@ -386,7 +388,7 @@ fn skillDraft(app: *App, req: *anole.Request, res: *anole.Response) !void {
         .max_tokens = 1500,
         .messages = .{.{ .role = "user", .content = try sourcePrompt(req.arena, source, text, hint) }},
     }, .{});
-    const s = try app.upstream.post(openrouter.ctxOf(req), "/chat/completions", req_body, &.{});
+    const s = try aux.up.post(openrouter.ctxOf(req), "/chat/completions", req_body, &.{});
     defer s.close();
     const raw = try s.reader.allocRemaining(req.arena, .limited(1024 * 1024));
     if (s.status >= 300) return res.fail(.bad_gateway, "the skill model failed");
@@ -394,7 +396,7 @@ fn skillDraft(app: *App, req: *anole.Request, res: *anole.Response) !void {
     var charged: i64 = 0;
     if (v.object.get("usage")) |u| if (u == .object) {
         const usage = openrouter.parseUsage(u.object);
-        const c = try billing.charge(app, req, who.user_id, .{ .kind = "skill", .model = model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cost_usd = usage.cost_usd, .session = body.session });
+        const c = try billing.charge(app, req, who.user_id, .{ .kind = "skill", .model = model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cost_usd = usage.cost_usd, .session = body.session, .byok = aux.byok });
         charged = c.charged_micros;
     };
     const choices = (v.object.get("choices") orelse return res.fail(.bad_gateway, "the skill model failed")).array.items;

@@ -54,7 +54,9 @@ fn completions(app: *App, req: *anole.Request, res: *anole.Response) !void {
             } else content.* = try models.dropUnsupported(req.arena, facts.inputs, content.*);
         }
     };
-    billing.preflight(app, req, who.user_id, facts.free) catch {
+    // The user's own key (byok.zig) pays for the call instead.
+    const route = try app.routeFor(req, model, true);
+    billing.preflight(app, req, who.user_id, facts.free or route.byok) catch {
         res.status = .payment_required;
         return res.json(.{ .@"error" = .{ .message = "Out of EveryAI credits", .type = "insufficient_quota", .code = "out_of_credits" } });
     };
@@ -70,7 +72,6 @@ fn completions(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const body = try std.json.Stringify.valueAlloc(req.arena, root, .{});
     const session = req.headers.get("X-EveryAI-Session");
 
-    const route = app.route(model, true);
     const up = try route.up.post(openrouter.ctxOf(req), "/chat/completions", body, &.{});
     var call: Call = .{ .app = app, .req = req, .who = who, .session = session, .model = model, .route = route, .o = o, .max_output = facts.max_output };
 
@@ -171,7 +172,7 @@ const Call = struct {
     }
 
     fn meter(self: *Call, u: openrouter.Usage) !void {
-        try meterUsage(self.app, self.req, self.who, self.session, self.model, self.route.provider, u);
+        try meterUsage(self.app, self.req, self.who, self.session, self.model, self.route, u);
     }
 
     /// Non-streamed: the final reply's JSON.
@@ -440,7 +441,7 @@ fn markCut(arena: std.mem.Allocator, call: *std.json.Value) !void {
 
 /// Records a gateway call under the model that served it; server-side web
 /// searches go in as their own "search" event.
-fn meterUsage(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, model: []const u8, provider: []const u8, u: openrouter.Usage) !void {
+fn meterUsage(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, model: []const u8, route: App.Route, u: openrouter.Usage) !void {
     _ = try billing.charge(app, req, who.user_id, .{
         .kind = "gateway",
         .model = u.billedModel(model),
@@ -451,7 +452,8 @@ fn meterUsage(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]co
         .cost_usd = u.tokenCost(),
         .session = session,
         .api_key_id = who.key_id,
-        .provider = provider,
+        .provider = route.provider,
+        .byok = route.byok,
     });
     if (u.search_cost_usd > 0) _ = try billing.charge(app, req, who.user_id, .{
         .kind = "search",
@@ -459,7 +461,8 @@ fn meterUsage(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]co
         .cost_usd = u.search_cost_usd,
         .session = session,
         .api_key_id = who.key_id,
-        .provider = provider,
+        .provider = route.provider,
+        .byok = route.byok,
     });
 }
 

@@ -171,10 +171,13 @@ fn polish(app: *App, req: *anole.Request, res: *anole.Response) !void {
 
     const model = routing.modelFor(app.cfg, .polish);
     app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
-    const free = app.catalog.facts(req.io, model).free;
+    const aux = try app.aux(req);
+    const model_free = app.catalog.facts(req.io, model).free;
+    // On the user's own key nothing is charged, but the cost cap still holds.
+    const free = model_free or aux.byok;
     const text = try userText(req.arena, svg, body.brief);
     const prompt_tokens = tokensOf(instructions) + tokensOf(text) + prompt_overhead_tokens + image_tokens;
-    const prices: ?models.Prices = if (free) null else app.catalog.pricesOf(req.io, model);
+    const prices: ?models.Prices = if (model_free) null else app.catalog.pricesOf(req.io, model);
     const plan = budget(prices, app.cfg.markup, prompt_tokens, tokensOf(svg), app.cfg.polish_max_micros) orelse
         return res.fail(.unprocessable_entity, "This figure is too large to polish within the cost limit.");
     billing.preflight(app, req, who.user_id, free) catch |err| switch (err) {
@@ -196,7 +199,7 @@ fn polish(app: *App, req: *anole.Request, res: *anole.Response) !void {
             } },
         },
     }, .{});
-    const s = try app.upstream.post(openrouter.ctxOf(req), "/chat/completions", req_body, &.{});
+    const s = try aux.up.post(openrouter.ctxOf(req), "/chat/completions", req_body, &.{});
     defer s.close();
     const raw = try s.reader.allocRemaining(req.arena, .limited(8 * 1024 * 1024));
     if (s.status >= 300) return res.fail(.bad_gateway, openrouter.errorMessage(req.arena, raw));
@@ -214,6 +217,7 @@ fn polish(app: *App, req: *anole.Request, res: *anole.Response) !void {
             .cached_tokens = usage.cached_tokens,
             .cost_usd = usage.cost_usd,
             .session = body.session,
+            .byok = aux.byok,
         });
         charged = c.charged_micros;
     };

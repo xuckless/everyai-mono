@@ -16,6 +16,7 @@
 //! usage {kind: chat|followups, model, tokens..., charged_micros}, followups {questions}, done {},
 //! error {message, retryable}.
 const std = @import("std");
+const byok = @import("byok.zig");
 const anole = @import("anole");
 const App = @import("main.zig").App;
 const auth = @import("auth.zig");
@@ -393,7 +394,8 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
         } else m.content = try models.dropUnsupported(req.arena, facts.inputs, m.content);
     }
     body.messages = msgs;
-    billing.preflight(app, req, who.user_id, facts.free) catch {
+    const on_key = byok.Keys.of(req).covers(model, modes.nativeOk(body.mode, body.tools_enabled and facts.tools));
+    billing.preflight(app, req, who.user_id, facts.free or on_key) catch {
         res.status = .payment_required;
         return res.json(.{ .message = "You're out of credits. Top up or upgrade your plan to keep using paid models.", .code = "out_of_credits" });
     };
@@ -442,7 +444,7 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
     try pictures.seed(arena, body.images, body.messages);
     var final_text: std.Io.Writer.Allocating = .init(arena);
     // The web plugin (Search without tools) and the Research model need OpenRouter.
-    const route = app.route(model, modes.nativeOk(body.mode, with_tools));
+    const route = try app.routeFor(req, model, modes.nativeOk(body.mode, with_tools));
     const effort: ?[]const u8 = if (body.effort) |e| (if (facts.reasoning) e.wire(route.provider) else null) else null;
     const turn: Turn = .{ .app = app, .req = req, .who = who, .model = model, .body = body, .route = route, .with_tools = with_tools, .effort = effort };
 
@@ -605,6 +607,7 @@ const Turn = struct {
             .cost_usd = result.usage.tokenCost(),
             .session = self.body.session,
             .provider = self.route.provider,
+            .byok = self.route.byok,
         });
         try sink.send("usage", .{
             .kind = "chat",
@@ -616,7 +619,7 @@ const Turn = struct {
             .charged_micros = c.charged_micros,
         });
         if (result.usage.search_cost_usd > 0) {
-            const sc = try billing.charge(app, self.req, self.who.user_id, .{ .kind = "search", .model = billed, .cost_usd = result.usage.search_cost_usd, .session = self.body.session, .provider = self.route.provider });
+            const sc = try billing.charge(app, self.req, self.who.user_id, .{ .kind = "search", .model = billed, .cost_usd = result.usage.search_cost_usd, .session = self.body.session, .provider = self.route.provider, .byok = self.route.byok });
             try sink.send("usage", .{ .kind = "search", .model = billed, .prompt_tokens = 0, .completion_tokens = 0, .cached_tokens = 0, .cache_write_tokens = 0, .charged_micros = sc.charged_micros });
         }
         return result;
@@ -825,13 +828,13 @@ fn runTool(app: *App, req: *anole.Request, who: auth.Identity, body: ChatRequest
             try sink.send("tool_status", .{ .id = call.id, .name = call.name, .status = "running", .detail = openrouter.jsonString(args, "url") orelse openrouter.jsonString(args, "query") orelse openrouter.jsonString(args, "prompt") });
             const output = (if (std.mem.eql(u8, call.name, "research"))
                 (if (body.mode == .research)
-                    research.run(app, req, who, session, call.id, args, sink, inquiry)
+                    research.run(app, req, who, session, call.id, args, sink, inquiry, try app.aux(req))
                 else
                     @as(anyerror![]const u8, "Error: research runs only in Research mode. Use web_search and web_fetch here, or offer the switch with suggest_mode."))
             else if (std.mem.eql(u8, call.name, "web_fetch"))
                 webFetch(app, req, args, sink)
             else if (std.mem.eql(u8, call.name, "web_search"))
-                webSearch(app, req, who, session, args, sink)
+                webSearch(app, req, who, session, args, sink, try app.aux(req))
             else
                 generateImage(app, req, who, session, call.id, args, sink, pictures)) catch |err| blk: {
                 break :blk try std.fmt.allocPrint(req.arena, "Error: {t}", .{err});
@@ -949,14 +952,15 @@ fn intArg(args: std.json.Value, key: []const u8) ?i64 {
 /// ledger, so the model cites the numbers it is given and the app gets them
 /// as `sources`.
 /// `req` is the request, or a task's own `*anole.db.Ctx` (research.zig).
-pub fn webSearch(app: *App, req: anytype, who: auth.Identity, session: ?[]const u8, args: std.json.Value, sink: anytype) ![]const u8 {
+/// `aux` is where side calls go (`App.aux`): the user's OpenRouter key or ours.
+pub fn webSearch(app: *App, req: anytype, who: auth.Identity, session: ?[]const u8, args: std.json.Value, sink: anytype, aux: App.Route) ![]const u8 {
     const arena = req.arena;
     const query = std.mem.trim(u8, openrouter.jsonString(args, "query") orelse "", " \t\r\n");
     if (query.len == 0) return "Error: query is empty.";
     const limit: usize = @intCast(std.math.clamp(intArg(args, "max_results") orelse web.default_results, 1, web.max_results));
     // The web plugin bills per search even on a free model, so a search
     // needs credit even when the chat model is free.
-    billing.preflight(app, req, who.user_id, false) catch |err| switch (err) {
+    billing.preflight(app, req, who.user_id, aux.byok) catch |err| switch (err) {
         error.PaymentRequired => return "Error: the user is out of credits, so web_search is unavailable. Answer without it and say so if it matters.",
         else => return err,
     };
@@ -966,13 +970,13 @@ pub fn webSearch(app: *App, req: anytype, who: auth.Identity, session: ?[]const 
     const cached = if (key) |k| try app.searches.get(req.io, arena, k, now) else null;
     const sources = cached orelse blk: {
         const body = try web.searchBody(arena, app.cfg.utility_model, app.cfg.search_engine, query, limit);
-        const s = try app.upstream.post(openrouter.ctxOf(req), "/chat/completions", body, &.{});
+        const s = try aux.up.post(openrouter.ctxOf(req), "/chat/completions", body, &.{});
         defer s.close();
         const raw = try s.reader.allocRemaining(arena, .limited(1024 * 1024));
         if (s.status >= 300) return std.fmt.allocPrint(arena, "Error: the search failed ({s}). Try again or carry on without it.", .{openrouter.errorMessage(arena, raw)});
         const reply = web.parseSearch(arena, raw) catch return "Error: the search service sent an unreadable reply. Try again or carry on without it.";
         if (reply.usage) |u| {
-            const c = try billing.charge(app, req, who.user_id, .{ .kind = "search", .model = app.cfg.utility_model, .prompt_tokens = u.prompt_tokens, .completion_tokens = u.completion_tokens, .cost_usd = u.cost_usd, .session = session });
+            const c = try billing.charge(app, req, who.user_id, .{ .kind = "search", .model = app.cfg.utility_model, .prompt_tokens = u.prompt_tokens, .completion_tokens = u.completion_tokens, .cost_usd = u.cost_usd, .session = session, .byok = aux.byok });
             // Costs money; does not fill the conversation's context.
             try sink.send("usage", .{ .kind = "search", .model = app.cfg.utility_model, .prompt_tokens = u.prompt_tokens, .completion_tokens = u.completion_tokens, .cached_tokens = 0, .cache_write_tokens = 0, .charged_micros = c.charged_micros });
         }
@@ -1190,8 +1194,9 @@ fn followUps(app: *App, req: *anole.Request, who: auth.Identity, body: ChatReque
         \\Reply with only a JSON array of 3 strings.
     , .{ question[0..@min(question.len, 2000)], answer[0..@min(answer.len, 3000)], try routing.followUpLanguage(req.arena, body.reply_language, question) });
     const model = routing.modelFor(app.cfg, .followups);
+    const aux = try app.aux(req);
     // Follow-ups are extra; a free-model turn with no credit left skips them.
-    billing.preflight(app, req, who.user_id, app.catalog.facts(req.io, model).free) catch |err| switch (err) {
+    billing.preflight(app, req, who.user_id, app.catalog.facts(req.io, model).free or aux.byok) catch |err| switch (err) {
         error.PaymentRequired => return,
         else => return err,
     };
@@ -1201,14 +1206,14 @@ fn followUps(app: *App, req: *anole.Request, who: auth.Identity, body: ChatReque
         .max_tokens = 200,
         .messages = .{.{ .role = "user", .content = prompt }},
     }, .{});
-    const s = try app.upstream.post(openrouter.ctxOf(req), "/chat/completions", req_body, &.{});
+    const s = try aux.up.post(openrouter.ctxOf(req), "/chat/completions", req_body, &.{});
     defer s.close();
     const raw = try s.reader.allocRemaining(req.arena, .limited(1024 * 1024));
     if (s.status >= 300) return error.UpstreamFailed;
     const v = try std.json.parseFromSliceLeaky(std.json.Value, req.arena, raw, .{});
     if (v.object.get("usage")) |u| if (u == .object) {
         const usage = openrouter.parseUsage(u.object);
-        const c = try billing.charge(app, req, who.user_id, .{ .kind = "followups", .model = model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cost_usd = usage.cost_usd, .session = body.session });
+        const c = try billing.charge(app, req, who.user_id, .{ .kind = "followups", .model = model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cost_usd = usage.cost_usd, .session = body.session, .byok = aux.byok });
         // Counted in the conversation's cost, not its context window.
         try sink.send("usage", .{ .kind = "followups", .model = model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cached_tokens = 0, .cache_write_tokens = 0, .charged_micros = c.charged_micros });
     };

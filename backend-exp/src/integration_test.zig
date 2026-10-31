@@ -276,6 +276,56 @@ test "billing: paid models answer 402 when quota and wallet are spent; free mode
     try free.expectStatus(.ok);
 }
 
+test "byok: a user's own key runs paid models with no credit left and is never charged" {
+    var env: Env = undefined;
+    try start(&env, &.{}, true);
+    defer env.deinit();
+    var keyed: openrouter.Fake = .{ .responses = &.{ final_turn, followups_reply }, .gpa = alloc, .models_json = models_json };
+    defer keyed.deinit();
+    env.state.keyed_transport = keyed.upstream();
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = arena.allocator() };
+    _ = try env.state.db.exec(&c, "UPDATE quota_periods SET used_micros = included_micros", .{});
+    _ = try env.state.db.exec(&c, "DELETE FROM wallet_ledger", .{});
+    var models = try env.t.get("/v1/models", .{});
+    models.deinit();
+
+    // An OpenRouter key covers every model, follow-ups included.
+    var res = try env.t.post("/v1/chat/stream", .{
+        .headers = &.{.{ "X-Provider-Key-OpenRouter", "sk-or-v1-user-key" }},
+        .json = .{ .model = "anthropic/claude-haiku-5.5", .messages = .{.{ .role = "user", .content = "hi" }}, .tools_enabled = false },
+    });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    try std.testing.expect(std.mem.indexOf(u8, res.body, "event: followups") != null);
+    try std.testing.expectEqual(@as(usize, 2), keyed.bodies.items.len);
+    try std.testing.expectEqual(@as(usize, 0), env.fake.bodies.items.len);
+    const rows = try env.state.db.all(struct { provider: []const u8, charged_micros: i64, cost_micros: i64 }, &c, "SELECT provider, charged_micros, cost_micros FROM usage_events ORDER BY id", .{});
+    try std.testing.expectEqual(@as(usize, 2), rows.len);
+    for (rows) |r| {
+        try std.testing.expectEqualStrings("openrouter-byok", r.provider);
+        try std.testing.expectEqual(@as(i64, 0), r.charged_micros);
+        try std.testing.expect(r.cost_micros > 0);
+    }
+
+    // An Anthropic key covers Claude only: other paid models still need credit.
+    var other = try env.t.post("/v1/chat/completions", .{
+        .headers = &.{.{ "X-Provider-Key-Anthropic", "sk-ant-user-key-123" }},
+        .json = .{ .model = "openai/gpt-6.1-sol", .messages = .{.{ .role = "user", .content = "hi" }} },
+    });
+    defer other.deinit();
+    try other.expectStatus(.payment_required);
+
+    // A malformed key is ignored, not forwarded.
+    var junk = try env.t.post("/v1/chat/stream", .{
+        .headers = &.{.{ "X-Provider-Key-OpenRouter", "short" }},
+        .json = .{ .model = "anthropic/claude-haiku-5.5", .messages = .{.{ .role = "user", .content = "hi" }} },
+    });
+    defer junk.deinit();
+    try junk.expectStatus(.payment_required);
+}
+
 test "billing: mock checkout credits the wallet and switches plans" {
     var env: Env = undefined;
     try start(&env, &.{""}, true);

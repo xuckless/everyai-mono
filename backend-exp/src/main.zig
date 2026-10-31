@@ -27,6 +27,7 @@ pub const devtools = @import("devtools.zig");
 pub const safe_fetch = @import("net/safe_fetch.zig");
 pub const tool_wait = @import("tool_wait.zig");
 pub const remote = @import("remote.zig");
+pub const byok = @import("byok.zig");
 
 pub const std_options = anole.std_options;
 
@@ -49,6 +50,9 @@ pub const App = struct {
     /// models while the dev switch `native_anthropic` is on.
     anthropic: ?openrouter.Upstream = null,
     native_anthropic: std.atomic.Value(bool) = .init(false),
+    /// Tests: the transport for calls on a user's own key, instead of a
+    /// client built with that key (the Anthropic adapter still wraps it).
+    keyed_transport: ?openrouter.Upstream = null,
     catalog: models.Catalog,
     /// Chat turns parked on a tool the app runs (`POST /v1/chat/tool_result`).
     waits: tool_wait.Waits = .{},
@@ -64,7 +68,12 @@ pub const App = struct {
     /// Earlier web_search results per user and chat (web.zig).
     searches: @import("web.zig").SearchCache = .{},
 
-    pub const Route = struct { up: openrouter.Upstream, provider: []const u8 };
+    pub const Route = struct {
+        up: openrouter.Upstream,
+        provider: []const u8,
+        /// On the user's own key (byok.zig): recorded, never charged.
+        byok: bool = false,
+    };
 
     /// Where a call to `model` goes. `native_ok` is false for calls that need
     /// OpenRouter features (the web plugin in Search mode).
@@ -73,6 +82,38 @@ pub const App = struct {
             if (self.anthropic) |a| return .{ .up = a, .provider = "anthropic" };
         }
         return .{ .up = self.upstream, .provider = "openrouter" };
+    }
+
+    /// `route` for one request: a model the user's own key covers (byok.zig)
+    /// goes out on that key and isn't charged. An Anthropic key takes
+    /// `anthropic/*` models natively; an OpenRouter key takes the rest.
+    pub fn routeFor(self: *App, req: *anole.Request, model: []const u8, native_ok: bool) !Route {
+        const keys = byok.Keys.of(req);
+        if (native_ok and byok.isAnthropic(model)) if (keys.anthropic) |k| {
+            const adapter = try req.arena.create(anthropic.Adapter);
+            adapter.* = .{ .inner = self.keyed_transport orelse inner: {
+                const client = try req.arena.create(openrouter.Client);
+                client.* = .{ .base_url = self.cfg.anthropic_base_url, .api_key = k, .auth = .anthropic };
+                break :inner client.upstream();
+            }, .catalog = &self.catalog };
+            return .{ .up = adapter.upstream(), .provider = "anthropic", .byok = true };
+        };
+        if (keys.openrouter) |k| return self.onOpenRouterKey(req, k);
+        return self.route(model, native_ok);
+    }
+
+    /// Side calls (follow-ups, titles, researchers, search, images) use
+    /// OpenRouter models: on the user's OpenRouter key when there is one.
+    pub fn aux(self: *App, req: *anole.Request) !Route {
+        if (byok.Keys.of(req).openrouter) |k| return self.onOpenRouterKey(req, k);
+        return .{ .up = self.upstream, .provider = "openrouter" };
+    }
+
+    fn onOpenRouterKey(self: *App, req: *anole.Request, key: []const u8) !Route {
+        if (self.keyed_transport) |t| return .{ .up = t, .provider = "openrouter", .byok = true };
+        const client = try req.arena.create(openrouter.Client);
+        client.* = .{ .base_url = self.cfg.openrouter_base_url, .api_key = key, .referer = self.cfg.public_url };
+        return .{ .up = client.upstream(), .provider = "openrouter", .byok = true };
     }
 };
 
@@ -225,6 +266,7 @@ test {
     _ = tool_wait;
     _ = polish;
     _ = remote;
+    _ = byok;
     // Modules the app reaches only through others: listed so their tests run too.
     _ = @import("auth.zig");
     _ = @import("config.zig");

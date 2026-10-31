@@ -139,12 +139,13 @@ fn mimeOf(format: ?[]const u8, b64: []const u8) []const u8 {
 /// `err_message` when given.
 pub fn generate(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, o: Options, err_message: ?*[]const u8) ![]const Image {
     app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
-    const free = app.catalog.facts(req.io, o.model).free;
+    const aux = try app.aux(req);
+    const free = app.catalog.facts(req.io, o.model).free or aux.byok;
     try billing.preflight(app, req, who.user_id, free);
     // Images are billed after the fact, so a request must fit what is left.
     if (!free and try billing.available(app, req, who.user_id) < worstCaseMicros(o, app.cfg.markup)) return error.PaymentRequired;
     const body = try requestBody(req.arena, o);
-    const s = try app.upstream.post(openrouter.ctxOf(req), "/images", body, &.{});
+    const s = try aux.up.post(openrouter.ctxOf(req), "/images", body, &.{});
     defer s.close();
     const raw = try s.reader.allocRemaining(req.arena, .limited(64 * 1024 * 1024));
     if (s.status >= 300) {
@@ -156,7 +157,7 @@ pub fn generate(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]
     const list = try imagesIn(req.arena, v, format);
     if (v.object.get("usage")) |u| if (u == .object) {
         const usage = openrouter.parseUsage(u.object);
-        _ = try billing.charge(app, req, who.user_id, .{ .kind = "image", .model = o.model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cost_usd = usage.cost_usd, .session = session });
+        _ = try billing.charge(app, req, who.user_id, .{ .kind = "image", .model = o.model, .prompt_tokens = usage.prompt_tokens, .completion_tokens = usage.completion_tokens, .cost_usd = usage.cost_usd, .session = session, .byok = aux.byok });
     };
     return list;
 }
