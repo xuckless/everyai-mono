@@ -32,10 +32,15 @@ const truncation = @import("truncation.zig");
 const safe_fetch = @import("net/safe_fetch.zig");
 const web = @import("web.zig");
 const routing = @import("routing.zig");
+const modes = @import("modes.zig");
 
 const Events = @typeInfo(@typeInfo(@TypeOf(anole.Response.startEventStream)).@"fn".return_type.?).error_union.payload;
 
-pub const Mode = enum { chat, search, research };
+pub const Mode = modes.Mode;
+
+test {
+    _ = modes;
+}
 
 pub const InMessage = struct {
     role: []const u8,
@@ -186,6 +191,25 @@ fn writeContent(s: *std.json.Stringify, text: []const u8, parts: ?[]const std.js
     try s.endArray();
 }
 
+/// The system message: the base prompt, then the mode's block as a second
+/// part. With breakpoints each part gets one, so every mode reuses the base
+/// prompt's cache and keeps its own.
+fn writeSystem(s: *std.json.Stringify, mode: Mode, breakpoint: bool, ttl: []const u8) !void {
+    const extra = modes.block(mode) orelse return writeContent(s, tools.system_prompt, null, breakpoint, ttl);
+    try s.objectField("content");
+    try s.beginArray();
+    for ([_][]const u8{ tools.system_prompt, extra }) |text| {
+        try s.beginObject();
+        try s.objectField("type");
+        try s.write("text");
+        try s.objectField("text");
+        try s.write(text);
+        if (breakpoint) try writeCacheControl(s, ttl);
+        try s.endObject();
+    }
+    try s.endArray();
+}
+
 /// Per-call knobs that don't change the cached prefix.
 const CallOpts = struct {
     /// Output cap; null leaves the provider's default.
@@ -250,7 +274,7 @@ fn buildBody(arena: std.mem.Allocator, model: []const u8, mode: Mode, with_tools
     try s.beginObject();
     try s.objectField("role");
     try s.write("system");
-    try writeContent(&s, tools.system_prompt, null, bp, ttl);
+    try writeSystem(&s, mode, bp, ttl);
     try s.endObject();
     for (messages, 0..) |m, i| {
         try s.beginObject();
@@ -391,8 +415,8 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
     var pictures: ImageBook = .{};
     try pictures.seed(arena, body.images, body.messages);
     var final_text: std.Io.Writer.Allocating = .init(arena);
-    // Search needs OpenRouter's web plugin.
-    const route = app.route(model, body.mode == .chat);
+    // Search (its fallback) and the Research model need OpenRouter.
+    const route = app.route(model, modes.nativeOk(body.mode));
     const effort: ?[]const u8 = if (body.effort) |e| (if (facts.reasoning) e.wire(route.provider) else null) else null;
     const turn: Turn = .{ .app = app, .req = req, .who = who, .model = model, .body = body, .route = route, .with_tools = with_tools, .effort = effort };
 
@@ -1161,6 +1185,28 @@ test buildBody {
     const turn2 = try buildBody(a, "openai/gpt-6.1-sol", .chat, true, msgs[0..1], "5m", "exa", .{});
     const cut = std.mem.indexOf(u8, openai, "\"role\":\"user\"").?;
     try std.testing.expectEqualStrings(openai[0..cut], turn2[0..cut]);
+}
+
+test "buildBody: a mode adds its block after the base prompt, each part cached" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const msgs = [_]Msg{.{ .role = "user", .content = "teach me" }};
+    const learn = try buildBody(a, "anthropic/claude-haiku-5.5", .learn, true, &msgs, "5m", "exa", .{});
+    // Base prompt, mode block and last message.
+    try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, learn, "cache_control"));
+    try std.testing.expect(std.mem.indexOf(u8, learn, "is in Learn mode") != null);
+    try std.testing.expect(std.mem.indexOf(u8, learn, "plugins") == null);
+    // Plain chat sends the base prompt alone, byte for byte the same up to it.
+    const chat = try buildBody(a, "anthropic/claude-haiku-5.5", .chat, true, &msgs, "5m", "exa", .{});
+    try std.testing.expect(std.mem.indexOf(u8, chat, "<mode name=") == null);
+    const base_end = std.mem.indexOf(u8, learn, "<mode name=").?;
+    const shared = std.mem.indexOf(u8, learn, "\"role\":\"system\"").?;
+    try std.testing.expectEqualStrings(chat[0..shared], learn[0..shared]);
+    try std.testing.expect(base_end > shared);
+    const openai = try buildBody(a, "openai/gpt-6.1-sol", .summarise, true, &msgs, "5m", "exa", .{});
+    try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, openai, "cache_control"));
+    try std.testing.expect(std.mem.indexOf(u8, openai, "is in Summarise mode") != null);
 }
 
 test "buildBody: effort and reasoning passback on assistant steps" {

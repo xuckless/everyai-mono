@@ -65,13 +65,14 @@ String _toolNote(String tool) => switch (tool) {
   _ => 'Used $tool',
 };
 
-SlashCommand _chatMode(String name, String description) => SlashCommand(
+/// Switches to a mode (named [mode] when the command's [name] differs).
+SlashCommand _chatMode(String name, String description, {String? mode}) => SlashCommand(
   name: name,
   description: description,
   argsHint: '[message]',
   scope: SlashScope.chat,
   run: (ctx, args) {
-    ctx.chat?.setMode(name);
+    ctx.chat?.setMode(mode ?? name);
     if (args.isNotEmpty) ctx.send(args);
   },
 );
@@ -104,6 +105,9 @@ final chatBuiltIns = <SlashCommand>[
   _chatMode('chat', 'Answer from the model alone'),
   _chatMode('search', 'Search the web and cite sources'),
   _chatMode('research', 'Multi-step research with a report'),
+  // /learn makes a skill from the chat, so Learn mode is /teach.
+  _chatMode('teach', 'Learn mode: step-by-step teaching with visuals and quizzes', mode: 'learn'),
+  _chatMode('summarise', 'Condense a file, page or chat'),
   SlashCommand(
     name: 'model',
     description: 'Switch the model',

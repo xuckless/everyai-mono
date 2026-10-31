@@ -10,6 +10,7 @@ import 'package:every_ai/features/chat/chat_providers.dart';
 import 'package:every_ai/features/chat/data/chat_transport.dart';
 import 'package:every_ai/features/chat/domain/chat_session.dart';
 import 'package:every_ai/features/chat/domain/message.dart';
+import 'package:every_ai/features/chat/domain/suggest_mode.dart';
 import 'package:every_ai/features/models/domain/model_catalog.dart';
 import 'package:every_ai/features/models/models_providers.dart';
 import 'package:every_ai/features/skills/skills_providers.dart';
@@ -361,6 +362,34 @@ void main() {
     final reloaded = state().messages.last;
     expect(reloaded.sources.single.url, source.url);
     expect((reloaded.parts.last as FollowUpsPart).questions, ['And then?']);
+  });
+
+  test('a suggested mode asks the last question again in that mode and keeps the first answer', () async {
+    await settle();
+    await ctl().send('explain photosynthesis');
+    await answer('short answer');
+    expect(
+      suggestedMode(
+        const ToolCallPart(
+          callId: 's',
+          toolName: suggestModeTool,
+          argumentsJson: '{"mode":"learn","reason":"step by step with a quiz"}',
+        ),
+      ),
+      (mode: ChatMode.learn, reason: 'step by step with a quiz'),
+    );
+
+    await ctl().rerunIn(ChatMode.learn);
+    expect(transport.requests.last.mode, ChatMode.learn);
+    expect(transport.requests.last.prompt, 'explain photosynthesis');
+    await answer('lesson');
+    expect(state().messages.map((m) => m.plainText), [
+      'explain photosynthesis',
+      'short answer',
+      'explain photosynthesis',
+      'lesson',
+    ]);
+    expect(state().mode, ChatMode.learn);
   });
 
   test('client-executed tools: declared, rendered, pending until resolved or the server gives up', () async {

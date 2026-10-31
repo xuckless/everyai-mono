@@ -151,6 +151,22 @@ final class ChatController extends Notifier<ChatSessionState> {
 
   void setMode(ChatMode mode) => state = state.copyWith(mode: mode);
 
+  /// Asks the last question again in [mode] (the button the model offers
+  /// with `suggest_mode`). The earlier answer stays above the new one.
+  Future<void> rerunIn(ChatMode mode) async {
+    if (state.phase.busy || state.phase is Loading) return;
+    final last = state.messages.lastWhere((m) => m.isUser, orElse: () => state.messages.first);
+    if (!last.isUser) return;
+    setMode(mode);
+    final (:model, :prompt) = parseMention(last.plainText, _catalog);
+    await _startTurn(
+      prompt: prompt,
+      model: model ?? state.model,
+      userText: last.plainText.trim(),
+      attachments: last.attachments,
+    );
+  }
+
   void setToolsEnabled(bool enabled) => state = state.copyWith(toolsEnabled: enabled);
 
   /// Sets the conversation's thinking effort, kept across restarts.

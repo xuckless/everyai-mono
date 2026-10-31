@@ -69,7 +69,7 @@ class ChatSlashHost {
     this.saveAsSkill,
   });
 
-  /// Takes a `ChatMode` name: chat, search or research.
+  /// Takes a `ChatMode` name: chat, search, research, learn or summarise.
   final ValueChanged<String> setMode;
 
   /// Picks the model best matching a name; returns a message to show, or null.

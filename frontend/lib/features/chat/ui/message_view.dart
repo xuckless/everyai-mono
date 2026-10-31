@@ -22,6 +22,7 @@ import '../../models/ui/model_avatar.dart';
 import '../chat_providers.dart';
 import '../domain/ask_user.dart';
 import '../domain/message.dart';
+import '../domain/suggest_mode.dart';
 import 'ask_user_card.dart';
 import 'chat_markdown.dart';
 import 'tool_steps.dart';
@@ -578,6 +579,37 @@ class _FollowUps extends ConsumerWidget {
   }
 }
 
+/// The `suggest_mode` button: asks the last question again in another mode.
+class _SuggestedMode extends ConsumerWidget {
+  const _SuggestedMode({required this.part, required this.conversationId, required this.isLatest});
+
+  final ToolCallPart part;
+  final String conversationId;
+  final bool isLatest;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final (:mode, :reason) = suggestedMode(part);
+    // Only the latest answer offers it, and not for the mode the chat is in.
+    if (mode == null || !isLatest) return const SizedBox.shrink();
+    final current = ref.watch(chatSessionProvider(conversationId).select((s) => s.mode));
+    if (mode == current) return const SizedBox.shrink();
+    final theme = EveryTheme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: AdaptiveButton(
+          label: 'Run as ${mode.label}${reason.isEmpty ? '' : ' · $reason'}',
+          emphasis: ButtonEmphasis.secondary,
+          icon: AdaptiveIcon(EveryIcon.spark, size: 14, color: theme.accent),
+          onPressed: () => ref.read(chatSessionProvider(conversationId).notifier).rerunIn(mode),
+        ),
+      ),
+    );
+  }
+}
+
 /// Waiting for the first token: the mark's arms fade in turn.
 class _TypingIndicator extends StatelessWidget {
   const _TypingIndicator();
@@ -611,6 +643,11 @@ class _PartView extends StatelessWidget {
       final ToolCallPart call when call.toolName == askUserTool => AskUserCard(
         part: call,
         conversationId: conversationId,
+      ),
+      final ToolCallPart call when call.toolName == suggestModeTool => _SuggestedMode(
+        part: call,
+        conversationId: conversationId,
+        isLatest: isLatest,
       ),
       final ToolCallPart call when allLocalChatTools.contains(call.toolName) => LocalToolChip(part: call),
       final ToolCallPart call => InlineVisual(part: call, conversationId: conversationId),

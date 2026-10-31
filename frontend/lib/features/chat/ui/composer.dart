@@ -307,7 +307,7 @@ class ComposerState extends ConsumerState<Composer> {
                         onToolsChanged: widget.onToolsChanged,
                       ),
                       const SizedBox(width: 4),
-                      if (constraints.maxWidth < 560)
+                      if (constraints.maxWidth < 720)
                         _ModeMenu(mode: widget.mode, onChanged: widget.onModeChanged)
                       else
                         _ModeSelector(mode: widget.mode, onChanged: widget.onModeChanged),

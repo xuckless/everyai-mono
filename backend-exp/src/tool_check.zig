@@ -353,6 +353,8 @@ pub fn shown(arena: std.mem.Allocator, name: []const u8, args: Value) ![]const u
     // Only when the app did not take the call itself (no `client_tools`).
     if (eql(name, "ask_user"))
         return std.fmt.allocPrint(arena, "Shown to the user: {d} question(s). The app cannot wait for the answers here, so end your turn now; the user answers in their next message.", .{arr(args, "questions").len});
+    if (eql(name, "suggest_mode"))
+        return std.fmt.allocPrint(arena, "Shown to the user: a button to run this request again in {s} mode. Don't mention it again.", .{str(args, "mode") orelse ""});
     return "Shown to the user.";
 }
 

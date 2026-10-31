@@ -6,12 +6,14 @@ import '../../usage/usage_totals.dart';
 
 enum Role { user, assistant, system }
 
-/// How the assistant should answer. Search and Research need a backend with web
-/// search; until then they are sent as hints and answered like Chat.
+/// How the assistant should answer: each mode is a set of instructions on the
+/// backend (`backend-exp/src/modes.zig`).
 enum ChatMode {
   chat('Chat', 'Answer from the model alone'),
   search('Search', 'Search the web and cite sources'),
-  research('Research', 'Multi-step research with a report');
+  research('Research', 'Multi-step research with a report'),
+  learn('Learn', 'Step-by-step teaching with visuals and quizzes'),
+  summarise('Summarise', 'Condense a file, page or chat');
 
   const ChatMode(this.label, this.description);
   final String label;
