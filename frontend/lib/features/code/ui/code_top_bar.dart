@@ -234,8 +234,8 @@ class _SettingsChip extends ConsumerWidget {
               ),
               PopoverRow(
                 key: const ValueKey('top-bar.settings.json'),
-                title: 'settings.json…',
-                subtitle: 'Global, project and session layers as JSON',
+                title: 'All Code settings…',
+                subtitle: 'Global, project and session layers',
                 onTap: () => open(
                   SettingsSection.code,
                   anchor: 'json',
@@ -299,6 +299,20 @@ class SessionMeter extends ConsumerWidget {
                   ref.read(codeSettingsProvider.notifier).setBudget(sessionId, usd);
                 },
               ),
+            PopoverRow(
+              key: const ValueKey('meter.settings'),
+              title: 'Edit in Settings',
+              leading: AdaptiveIcon(EveryIcon.settings, size: 14, color: theme.textMuted),
+              onTap: () {
+                close();
+                showSettings(
+                  context,
+                  section: SettingsSection.code,
+                  anchor: 'budget',
+                  args: {'scope': SettingsScope.session.name, 'session': sessionId},
+                );
+              },
+            ),
             const SizedBox(height: 5),
           ],
         ),

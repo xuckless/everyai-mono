@@ -14,7 +14,7 @@ import '../../auth/auth_providers.dart';
 import '../../auth/domain/auth_state.dart';
 import '../../billing/ui/billing_screen.dart';
 import '../../code/code_settings_providers.dart' show SettingsScope;
-import '../../code/ui/code_settings_screen.dart';
+import '../../code/ui/code_settings_section.dart';
 import '../../code/ui/mcp_settings_screen.dart';
 import '../../memory/ui/memory_screen.dart';
 import '../../models/models_providers.dart';
@@ -40,11 +40,12 @@ Widget settingsSectionBody(SettingsSection section, Map<String, String> args) =>
   SettingsSection.usage => const UsageBody(),
   SettingsSection.models => const ModelsSection(),
   SettingsSection.memory => const MemoryBody(),
-  SettingsSection.code || SettingsSection.permissions => CodeSettingsBody(
+  SettingsSection.code => CodeSettingsSection(
     projectId: args['project'],
     sessionId: args['session'],
-    scope: SettingsScope.parse(args['scope']),
+    scope: args['scope'] == null ? null : SettingsScope.parse(args['scope']),
   ),
+  SettingsSection.permissions => const PermissionsSection(),
   SettingsSection.mcp => const McpSettingsBody(),
   SettingsSection.skills => const SkillsSettingsBody(),
   SettingsSection.agents => const AgentsSettingsBody(),

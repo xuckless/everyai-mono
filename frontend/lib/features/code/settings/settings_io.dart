@@ -15,6 +15,31 @@ Future<AgentSettings> loadAgentSettings(String projectDir) async {
   ]);
 }
 
+Future<String?> userSettingsPath() => _userSettings();
+
+Future<Map<String, Object?>> readLayer(String path) async {
+  final f = File(path);
+  if (!f.existsSync()) return {};
+  final text = await f.readAsString();
+  if (text.trim().isEmpty) return {};
+  final json = jsonDecode(text);
+  if (json is! Map<String, Object?>) throw FormatException('$path is not a JSON object.');
+  return json;
+}
+
+Future<Map<String, Object?>> writeLayer(
+  String path,
+  Map<String, Object?> Function(Map<String, Object?> current) edit,
+) async {
+  final next = edit(await readLayer(path));
+  final f = File(path);
+  await f.parent.create(recursive: true);
+  final tmp = File('$path.$pid.tmp');
+  await tmp.writeAsString('${const JsonEncoder.withIndent('  ').convert(next)}\n', flush: true);
+  await tmp.rename(path);
+  return next;
+}
+
 /// App Support `settings.json`; null where there is no app (headless tools).
 Future<String?> _userSettings() async {
   try {

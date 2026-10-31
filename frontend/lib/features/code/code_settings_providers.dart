@@ -3,10 +3,11 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/preferences.dart';
-import '../skills/skills_providers.dart' show SkillSettings, SkillSettingsNotifier, skillSettingsProvider;
+import '../skills/skills_providers.dart' show skillSettingsProvider;
 import 'mcp_providers.dart';
 import 'permissions_providers.dart';
 import 'settings/code_settings.dart';
+import 'settings/settings.dart' show readLayer, userSettingsPath;
 
 export 'settings/code_settings.dart';
 
@@ -33,6 +34,9 @@ final class CodeSettings extends Notifier<StoredCodeSettings> {
     ref.read(preferencesProvider)[key] = jsonEncode(next.toJson());
   }
 
+  /// Replaces every value at once (the Code settings editor).
+  void replace(StoredCodeSettings next) => _set(next);
+
   /// The prompt for [projectId] (null: every project).
   void setPrompt(String? projectId, String prompt) => _set(state.withPrompt(projectId, prompt));
 
@@ -49,43 +53,14 @@ final class CodeSettings extends Notifier<StoredCodeSettings> {
 
   /// Caps session [sessionId]'s spending at [usd] dollars (null: no cap).
   void setBudget(String sessionId, double? usd) => _set(state.withBudget(sessionId, usd));
-
-  /// Saves a global or project [edit] into the stores it came from: the
-  /// permission, MCP and skill stores keep their own Preferences keys and
-  /// formats, so their screens and sessions read the change as usual. MCP
-  /// approvals and skill trust carry over (see [keepApprovals]). The session
-  /// layer is applied by the session itself.
-  void applyLayer(SettingsScope scope, LayerEdit edit, {String? projectId}) {
-    if (scope == SettingsScope.session) throw ArgumentError('The session applies its own layer.');
-    final id = scope == SettingsScope.global ? null : projectId;
-    if (scope == SettingsScope.project && id == null) throw StateError('No project to save into.');
-    final prefs = ref.read(preferencesProvider);
-
-    if (edit.systemPrompt case final p?) setPrompt(id, p);
-
-    if (edit.permissions case final rules?) {
-      final old = ref.read(codePermissionsProvider);
-      final next = id == null
-          ? StoredPermissions(global: rules, projects: old.projects)
-          : StoredPermissions(global: old.global, projects: {...old.projects, id: rules});
-      prefs[CodePermissions.key] = jsonEncode(next.toJson());
-      ref.invalidate(codePermissionsProvider);
-    }
-
-    if (edit.mcpServers case final servers?) {
-      final old = ref.read(codeMcpServersProvider);
-      final next = old.withList(id, keepApprovals(old.listFor(id), servers));
-      prefs[CodeMcpServers.key] = jsonEncode(next.toJson());
-      ref.invalidate(codeMcpServersProvider);
-    }
-
-    if (edit.skillsDisabled case final disabled?) {
-      final old = ref.read(skillSettingsProvider);
-      prefs[SkillSettingsNotifier.key] = jsonEncode(SkillSettings(disabled: disabled, trusted: old.trusted).toJson());
-      ref.invalidate(skillSettingsProvider);
-    }
-  }
 }
+
+/// Where the Global `settings.json` lives (null without an app folder).
+final userSettingsPathProvider = FutureProvider<String?>((ref) => userSettingsPath());
+
+/// The JSON object in a `settings.json` layer file, by path. Invalidate it
+/// after a write. Errors when the file isn't a JSON object.
+final settingsLayerProvider = FutureProvider.family<Map<String, Object?>, String>((ref, path) => readLayer(path));
 
 /// Every store the layered settings read; [session] adds the
 /// session layer. [watch] (in build methods) rebuilds the caller on changes.
