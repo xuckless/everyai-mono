@@ -264,4 +264,62 @@ void main() {
     expect(back.compactedFrom, ['c1']);
     expect(CodeSessionInfo.fromJson(info.toJson()).compactedFrom, isEmpty);
   });
+
+  group('clearOldToolOutput', () {
+    List<Map<String, Object?>> history(int steps, {int size = 30000}) => [
+      {'role': 'system', 'content': 'rules'},
+      {'role': 'user', 'content': 'do it'},
+      for (var i = 0; i < steps; i++) ...[
+        {
+          'role': 'assistant',
+          'content': '',
+          'tool_calls': [
+            {
+              'id': 'c$i',
+              'type': 'function',
+              'function': {'name': i.isEven ? 'read' : 'bash', 'arguments': '{}'},
+            },
+          ],
+        },
+        {'role': 'tool', 'tool_call_id': 'c$i', 'content': 'x' * size},
+      ],
+    ];
+
+    test('clears the oldest output down to the target, never the newest three steps', () {
+      final messages = history(10);
+      // 7 old results of 30K characters: about 52K tokens, over 40K.
+      expect(clearOldToolOutput(messages), 5);
+      final tools = messages.where((m) => m['role'] == 'tool').map((m) => m['content']! as String).toList();
+      expect(tools.take(5), everyElement(startsWith('[output cleared to save context')));
+      expect(tools[0], contains('re-run read'));
+      expect(tools[1], contains('re-run bash'));
+      expect(tools.skip(5), everyElement(hasLength(30000)));
+      // Under the trigger now: nothing changes again (the cached prefix holds).
+      expect(clearOldToolOutput(messages), 0);
+    });
+
+    test('leaves the history alone under the trigger', () {
+      final messages = history(8);
+      final before = jsonEncode(messages);
+      expect(clearOldToolOutput(messages), 0);
+      expect(jsonEncode(messages), before);
+    });
+  });
+
+  test('the continuation message carries the plan, todos, files and skills before the recent turns', () {
+    final m = continuationMessage(
+      summary: '## Objective\nx',
+      recent: '[user]\nhi',
+      plan: '# Plan',
+      todos: '- [ ] one',
+      files: '<file path="a">a</file>',
+      skills: '<skill path="s">s</skill>',
+    );
+    final order = ['<summary>', '<approved-plan>', '<todos>', '<files>', '<skills>', '<recent-turns>'];
+    final at = [for (final t in order) m.indexOf(t)];
+    expect(at, everyElement(greaterThanOrEqualTo(0)));
+    expect([...at]..sort(), at);
+    expect(splitCompacted(m)?.summary, '## Objective\nx');
+    expect(continuationMessage(summary: 's', recent: ''), isNot(contains('<todos>')));
+  });
 }

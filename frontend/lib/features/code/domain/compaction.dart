@@ -322,6 +322,64 @@ List<Map<String, Object?>> summaryRequest(
   ];
 }
 
+/// What replaces a tool result cleared to save context.
+String clearedToolNote(String tool) =>
+    '[output cleared to save context — re-run ${tool.isEmpty ? 'the tool' : tool} if you need it]';
+
+/// Clears old tool output in [messages] (OpenAI chat format, changed in
+/// place) once the output older than the newest [keepTurns] model steps is
+/// over [triggerTokens]: the oldest results are replaced by a short note
+/// until what is left is under [targetTokens]. Tokens are estimated as
+/// characters / 4. Returns how many results were cleared (0: nothing
+/// changed, so the cached prefix is left alone). The gap between trigger and
+/// target means it changes the history rarely.
+int clearOldToolOutput(
+  List<Map<String, Object?>> messages, {
+  int triggerTokens = 40000,
+  int targetTokens = 20000,
+  int keepTurns = 3,
+}) {
+  // Where the newest [keepTurns] model steps start: nothing from there on is touched.
+  var steps = 0;
+  var boundary = messages.length;
+  for (var i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]['role'] == 'assistant') {
+      boundary = i;
+      if (++steps == keepTurns) break;
+    }
+  }
+  if (steps < keepTurns) return 0;
+  final names = <String, String>{};
+  final old = <int>[];
+  var chars = 0;
+  for (var i = 0; i < boundary; i++) {
+    final m = messages[i];
+    if (m['role'] == 'assistant') {
+      for (final c in m['tool_calls'] as List<Object?>? ?? const []) {
+        if (c case {'id': final String id, 'function': {'name': final String name}}) names[id] = name;
+      }
+    }
+    if (m['role'] != 'tool') continue;
+    final content = m['content'];
+    if (content is! String || content.startsWith('[output cleared to save context')) continue;
+    old.add(i);
+    chars += content.length;
+  }
+  if (chars / 4 <= triggerTokens) return 0;
+  var cleared = 0;
+  for (final i in old) {
+    if (chars / 4 <= targetTokens) break;
+    final m = messages[i];
+    final content = m['content']! as String;
+    final note = clearedToolNote(names[m['tool_call_id']] ?? '');
+    if (note.length >= content.length) continue;
+    messages[i] = {...m, 'content': note};
+    chars -= content.length;
+    cleared++;
+  }
+  return cleared;
+}
+
 /// The summarizer's reply, tidied: code fences around it removed. Null when
 /// it isn't a summary (empty, or missing most sections).
 String? cleanSummary(String reply) {
@@ -333,10 +391,21 @@ String? cleanSummary(String reply) {
   return found >= 3 ? s : null;
 }
 
-/// The first message of the continuation conversation: [summary], then the
-/// kept turns. With [resume] the agent is told to carry on; otherwise the
-/// conversation starts without running and the user's next message follows.
-String continuationMessage({required String summary, required String recent, bool resume = false}) {
+/// The first message of the continuation conversation: [summary], then what
+/// the agent was working from ([plan] the user approved, its [todos], the
+/// current text of the [files] it touched last, the [skills] it loaded),
+/// then the kept turns. With [resume] the agent is told to carry on;
+/// otherwise the conversation starts without running and the user's next
+/// message follows.
+String continuationMessage({
+  required String summary,
+  required String recent,
+  bool resume = false,
+  String plan = '',
+  String todos = '',
+  String files = '',
+  String skills = '',
+}) {
   final b = StringBuffer()
     ..writeln(compactedOpen)
     ..writeln(
@@ -347,6 +416,24 @@ String continuationMessage({required String summary, required String recent, boo
     ..writeln(_summaryOpen)
     ..writeln(summary.trim())
     ..writeln(_summaryClose);
+  void section(String tag, String lead, String body) {
+    if (body.trim().isEmpty) return;
+    b
+      ..writeln()
+      ..writeln(lead)
+      ..writeln('<$tag>')
+      ..writeln(body.trim())
+      ..writeln('</$tag>');
+  }
+
+  section('approved-plan', 'The plan the user approved, which still stands:', plan);
+  section('todos', 'Your checklist as you last wrote it:', todos);
+  section(
+    'files',
+    'The files you worked on most recently, as they are now (you have read them; edit them directly):',
+    files,
+  );
+  section('skills', 'Skills you loaded earlier in the session; follow them as before:', skills);
   if (recent.trim().isNotEmpty) {
     b
       ..writeln()

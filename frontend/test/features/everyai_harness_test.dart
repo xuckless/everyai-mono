@@ -312,6 +312,50 @@ void main() {
     expect((last[1]! as Map)['content'], contains('## Objective'));
   });
 
+  test('compaction re-injects the todos, the files touched last and loaded skills, and keeps them on disk', () async {
+    Directory('$work/skills/tidy').createSync(recursive: true);
+    File('$work/skills/tidy/SKILL.md').writeAsStringSync('# Tidy\nAlways sort imports.\n');
+    gateway
+      ..reply(
+        calls: [
+          ('read', {'file_path': 'skills/tidy/SKILL.md'}),
+          (
+            'todo_write',
+            {
+              'todos': [
+                {'content': 'Write hello.py', 'status': 'completed'},
+                {'content': 'Run it', 'status': 'in_progress'},
+              ],
+            },
+          ),
+          ('write', {'file_path': 'hello.py', 'content': 'print("hello")\n'}),
+        ],
+      )
+      ..reply(text: 'All done.');
+    final session = await harness.start(
+      SessionSpec(
+        workingDir: work,
+        model: 'm',
+        mode: AgentMode.fullAuto,
+        llmBaseUrl: gateway.baseUrl,
+        llmApiKey: 'k',
+        sessionTag: 't',
+        initialMessage: 'make hello.py',
+        maxInputTokens: 1000,
+      ),
+    );
+    await drive(session);
+    final last = gateway.requests.last['messages']! as List<Object?>;
+    final carried = (last[1]! as Map)['content']! as String;
+    expect(carried, contains('<todos>\n- [x] Write hello.py\n- [~] Run it\n</todos>'));
+    expect(carried, contains('<file path="$work/hello.py">\nprint("hello")'));
+    expect(carried, contains('Always sort imports.'));
+    expect(carried.indexOf('<files>'), lessThan(carried.indexOf('<skills>')));
+    final state = jsonDecode(File('${tmp.path}/data/everyai-sessions/${session.id}/state.json').readAsStringSync());
+    expect((state as Map)['touched'], contains('$work/hello.py'));
+    expect(state['skills'], ['$work/skills/tidy/SKILL.md']);
+  });
+
   test('monitor wakes when a background shell prints the line', () async {
     final shell = SessionShell(root: work, sessionTag: 't', scratchDir: '${tmp.path}/sh');
     final runner = ToolRunner(
@@ -793,6 +837,9 @@ for line in sys.stdin:
     expect(notes, [Phase.reproduce, Phase.triage, Phase.plan, Phase.fix, Phase.verify]);
     final tools = (gateway.requests.first['tools']! as List).map((t) => ((t as Map)['function'] as Map)['name']);
     expect(tools, contains('bug_check'));
+    // The approved plan is kept for compaction to re-inject.
+    final state = jsonDecode(File('${tmp.path}/data/everyai-sessions/${session.id}/state.json').readAsStringSync());
+    expect((state as Map)['approved_plan'], startsWith('# '));
   });
 
   group('per-call approvals', () {

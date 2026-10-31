@@ -10,6 +10,7 @@ import '../../domain/agent_mode.dart';
 import '../../domain/compaction.dart';
 import '../../domain/phases.dart';
 import '../../domain/shell_readonly.dart';
+import '../../domain/transcript.dart' show PlanProposal, planApprovedReason;
 import '../../domain/subagents.dart' show forkingTaskSpec, subagentRules, taskTool;
 import '../../settings/agent_prompt.dart' show forHeldClientTools;
 import '../events.dart';
@@ -231,6 +232,140 @@ final class EveryAISession
     }
   }
 
+  // ------------------------------------------------- what compaction keeps
+
+  /// The last plan (`present_plan`) the user approved, as Markdown.
+  String _approvedPlan = '';
+
+  /// The latest `todo_write` list.
+  List<Map<String, Object?>> _todos = const [];
+
+  /// Files read or changed, least recent first (at most [_maxTouched]).
+  final _touched = <String>[];
+  static const _maxTouched = 20;
+
+  /// SKILL.md files the agent read this session.
+  final _loadedSkills = <String>[];
+
+  File get _stateFile => File('${_dir.path}/state.json');
+
+  void _loadState() {
+    if (!_stateFile.existsSync()) return;
+    try {
+      final j = jsonDecode(_stateFile.readAsStringSync());
+      if (j is! Map<String, Object?>) return;
+      _approvedPlan = j['approved_plan'] as String? ?? '';
+      _todos = [...(j['todos'] as List<Object?>? ?? const []).whereType<Map<String, Object?>>()];
+      _touched
+        ..clear()
+        ..addAll((j['touched'] as List<Object?>? ?? const []).whereType<String>());
+      _loadedSkills
+        ..clear()
+        ..addAll((j['skills'] as List<Object?>? ?? const []).whereType<String>());
+    } on Object {
+      // A broken file only loses what compaction would re-inject.
+    }
+  }
+
+  void _saveState() => _stateFile.writeAsStringSync(
+    jsonEncode({'approved_plan': _approvedPlan, 'todos': _todos, 'touched': _touched, 'skills': _loadedSkills}),
+  );
+
+  /// Notes what a finished call means for compaction: the todo list, the
+  /// files it touched, the skills it loaded.
+  void _track(LlmToolCall call, ToolOutput out) {
+    final args = call.args;
+    if (args == null || out.isError) return;
+    var changed = false;
+    switch (call.name) {
+      case ToolNames.todo:
+        _todos = [...(args['todos'] as List<Object?>? ?? const []).whereType<Map<String, Object?>>()];
+        changed = true;
+      case ToolNames.read || ToolNames.write || ToolNames.edit:
+        final path = resolvePath(_spec.workingDir, args['file_path'] as String? ?? '');
+        _touch(path);
+        if (call.name == ToolNames.read && path.endsWith('/SKILL.md') && !_loadedSkills.contains(path)) {
+          _loadedSkills.add(path);
+        }
+        changed = true;
+    }
+    for (final path in (out.observation['paths'] as List<Object?>? ?? const []).whereType<String>()) {
+      _touch(path);
+      changed = true;
+    }
+    if (changed) _saveState();
+  }
+
+  void _touch(String path) {
+    _touched
+      ..remove(path)
+      ..add(path);
+    if (_touched.length > _maxTouched) _touched.removeAt(0);
+  }
+
+  /// Remembers [call] (a `present_plan`) as the approved plan.
+  void _planApproved(LlmToolCall call) {
+    final args = call.args;
+    if (args == null) return;
+    _approvedPlan = PlanProposal(
+      ActionCall(id: '', raw: const {}, toolName: presentPlanTool, toolCallId: call.id, action: args),
+    ).markdown;
+    _saveState();
+  }
+
+  /// The re-injected parts of a continuation message.
+  ({String plan, String todos, String files, String skills}) _carriedState() {
+    final todos = [
+      for (final t in _todos)
+        '- [${switch (t['status']) {
+          'completed' => 'x',
+          'in_progress' => '~',
+          _ => ' ',
+        }}] ${t['content'] ?? ''}',
+    ].join('\n');
+    // The newest files first, each and all capped (about 8K and 30K tokens).
+    const each = 32000, total = 120000;
+    final files = StringBuffer();
+    var used = 0;
+    var shown = 0;
+    for (final path in _touched.reversed) {
+      if (shown == 5 || used >= total) break;
+      final file = File(path);
+      if (!file.existsSync()) continue;
+      String text;
+      try {
+        text = file.readAsStringSync();
+      } on Object {
+        continue;
+      }
+      final room = (total - used).clamp(0, each);
+      final cut = text.length > room;
+      if (cut) {
+        text = '${text.substring(0, room)}\n[… ${text.length - room} more characters; read the rest if needed …]';
+      }
+      files
+        ..writeln('<file path="$path">')
+        ..writeln(text)
+        ..writeln('</file>');
+      used += text.length;
+      shown++;
+      // Its text is in front of the model again: it may be edited without a read.
+      if (!cut) _tools.markRead(path);
+    }
+    final skills = StringBuffer();
+    for (final path in _loadedSkills) {
+      final file = File(path);
+      if (!file.existsSync()) continue;
+      var text = file.readAsStringSync();
+      if (text.length > each) text = '${text.substring(0, each)}\n[… cut; read $path for the rest …]';
+      skills
+        ..writeln('<skill path="$path">')
+        ..writeln(text.trim())
+        ..writeln('</skill>');
+    }
+    return (plan: _approvedPlan, todos: todos, files: files.toString(), skills: skills.toString());
+  }
+
   /// For a fork: the parent's tool list, kept as it was so the cached prefix
   /// (tools, system prompt, history) matches.
   List<Map<String, Object?>>? _forkTools;
@@ -265,6 +400,12 @@ final class EveryAISession
     // whose tool calls have no results yet (the call that started the fork).
     final copy = [for (final m in parent._messages) Map.of(m)..remove('_eid')];
     _trimDangling(copy);
+    // What compaction re-injects carries over too.
+    _approvedPlan = parent._approvedPlan;
+    _todos = parent._todos;
+    _touched.addAll(parent._touched);
+    _loadedSkills.addAll(parent._loadedSkills);
+    _saveState();
     for (final m in copy) {
       _append(m);
     }
@@ -320,6 +461,7 @@ final class EveryAISession
     final before = s._messages.length;
     _trimDangling(s._messages);
     if (s._messages.length != before) s._rewriteMessages();
+    s._loadState();
     s.status = ExecutionStatus.idle;
     return s;
   }
@@ -861,6 +1003,8 @@ final class EveryAISession
   /// the older span summarized by the session's own model; the newest turns
   /// stay word for word. The transcript shows it as "Context compacted".
   Future<void> _maybeCompact() async {
+    // First the cheap step: old tool output goes (rarely, so the cached prefix holds).
+    if (clearOldToolOutput(_messages) > 0) _rewriteMessages();
     final window = _spec.maxInputTokens ?? 0;
     if (window <= 0 || _spec.autoCompactAt <= 0 || lastPromptTokens < window * _spec.autoCompactAt) return;
     await compact();
@@ -887,7 +1031,16 @@ final class EveryAISession
     };
     final summary = cleanSummary(text);
     if (summary == null) return false;
-    final message = continuationMessage(summary: summary, recent: renderTail(plan), resume: _looping);
+    final kept = _carriedState();
+    final message = continuationMessage(
+      summary: summary,
+      recent: renderTail(plan),
+      resume: _looping,
+      plan: kept.plan,
+      todos: kept.todos,
+      files: kept.files,
+      skills: kept.skills,
+    );
     final eid = _newId();
     _emit({
       'kind': 'MessageEvent',
@@ -1024,10 +1177,12 @@ final class EveryAISession
     for (final (n, w) in waiting.indexed) {
       final verdict = verdicts[n];
       if (verdict.accept) {
+        if (w.call.name == presentPlanTool) _planApproved(w.call);
         approved.add(w);
         continue;
       }
       final reason = verdict.reason ?? '';
+      if (w.call.name == presentPlanTool && reason.startsWith(planApprovedReason)) _planApproved(w.call);
       if (_flow?.onAnswer(w.call.name, w.call.args ?? const {}, reason) ?? false) moved = true;
       _emit({
         'kind': 'UserRejectObservation',
@@ -1074,6 +1229,7 @@ final class EveryAISession
       final outputs = await Future.wait([for (final w in batch) _execute(w.call, cancel.future)]);
       for (final (n, w) in batch.indexed) {
         _result(w.call, w.actionId, outputs[n]);
+        _track(w.call, outputs[n]);
       }
       i += batch.length;
     }

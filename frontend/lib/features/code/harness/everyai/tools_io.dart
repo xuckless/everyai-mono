@@ -432,6 +432,13 @@ final class ToolRunner {
   /// read, and a file changed since is read again first.
   final _read = <String, DateTime>{};
 
+  /// Counts [path] as read now (its text was put in front of the model some
+  /// other way, as after a compaction), so it can be edited without a read.
+  void markRead(String path) {
+    final file = File(path);
+    if (file.existsSync()) _read[path] = file.lastModifiedSync();
+  }
+
   String get spillDir => '$root/.everyai/spill';
 
   Future<ToolOutput> run(String tool, Map<String, Object?> raw, {Future<void>? cancel}) async {
