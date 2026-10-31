@@ -21,6 +21,8 @@ import '../features/billing/ui/billing_screen.dart';
 import '../features/agents/ui/agents_settings_screen.dart';
 import '../features/memory/ui/memory_screen.dart';
 import '../features/slash/custom/custom_commands_screen.dart';
+import '../core/platform/platform_kind.dart';
+import '../features/remote/ui/remote_code.dart';
 import '../features/remote/ui/remote_settings_screen.dart';
 import '../features/settings/ui/notices_screen.dart';
 import '../features/settings/ui/settings_screen.dart';
@@ -122,13 +124,16 @@ final routerProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: Routes.code,
-            pageBuilder: (_, _) => const NoTransitionPage(child: CodeHome()),
+            // Phones, tablets and the web follow a paired computer's sessions.
+            pageBuilder: (_, _) => NoTransitionPage(child: Host.isDesktop ? const CodeHome() : const RemoteCodeHome()),
           ),
           GoRoute(
             path: '/code/s/:id',
             pageBuilder: (_, state) => NoTransitionPage(
               key: ValueKey('code-${state.pathParameters['id']}'),
-              child: CodeSessionScreen(sessionId: state.pathParameters['id']!),
+              child: Host.isDesktop
+                  ? CodeSessionScreen(sessionId: state.pathParameters['id']!)
+                  : RemoteSessionScreen(sessionId: state.pathParameters['id']!),
             ),
           ),
           GoRoute(

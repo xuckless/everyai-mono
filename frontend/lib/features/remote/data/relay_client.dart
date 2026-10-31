@@ -43,11 +43,19 @@ final class RemoteUnavailable implements Exception {
   String toString() => message;
 }
 
+/// The host got the action but turned it down; [message] says why.
+final class RemoteRefused implements Exception {
+  const RemoteRefused(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
 /// A device's encrypted link to one paired host through the relay.
 ///
 /// It keeps the relay socket up (reconnecting with backoff), runs the
-/// handshake whenever the host comes online, and carries tunnel requests
-/// and event sockets (see [Tunnel]).
+/// handshake whenever the host comes online, and carries tunnel messages
+/// (see [Tunnel]): pushes arrive on [messages], actions go with [call].
 final class RemoteClient {
   RemoteClient({
     required this.hostId,
@@ -94,8 +102,8 @@ final class RemoteClient {
   static const _maxHandshakes = 8;
   SecureChannel? _secure;
   var _ready = Completer<void>();
-  final _pending = <int, Completer<({int status, String body})>>{};
-  final _sockets = <int, _TunnelSocket>{};
+  final _pending = <int, Completer<void>>{};
+  final _messages = StreamController<Map<String, Object?>>.broadcast();
   int _nextId = 1;
   bool _closed = false;
   bool _started = false;
@@ -296,25 +304,19 @@ final class RemoteClient {
   }
 
   void _dispatch(Map<String, Object?> m) {
-    final id = m['id'];
-    if (id is! int) return;
-    switch (m['t']) {
-      case Tunnel.response:
-        _pending.remove(id)?.complete((
-          status: (m['status'] as num?)?.toInt() ?? 502,
-          body: m['body'] as String? ?? '',
-        ));
-      case Tunnel.socketReady:
-        final s = _sockets[id];
-        if (s != null && !s._opened.isCompleted) s._opened.complete();
-      case Tunnel.socketData:
-        if (m['data'] case final String data) _sockets[id]?._receive(data);
-      case Tunnel.socketClosed:
-        _sockets.remove(id)?._remoteClosed(m['reason'] as String? ?? '');
+    if (m['t'] == Tunnel.done) {
+      final done = _pending.remove(m['id']);
+      if (m['error'] case final String error) {
+        done?.completeError(RemoteRefused(error));
+      } else {
+        done?.complete();
+      }
+      return;
     }
+    if (!_messages.isClosed) _messages.add(m);
   }
 
-  /// Ends the encrypted channel: requests fail with [error], sockets close.
+  /// Ends the encrypted channel: actions in flight fail with [error].
   void _dropChannel(RemoteUnavailable error) {
     _secure = null;
     _incoming.reset();
@@ -323,10 +325,6 @@ final class RemoteClient {
       c.completeError(error);
     }
     _pending.clear();
-    for (final s in [..._sockets.values]) {
-      s._remoteClosed(error.message);
-    }
-    _sockets.clear();
   }
 
   Future<void> _whenReady() async {
@@ -361,43 +359,30 @@ final class RemoteClient {
     }
   }
 
-  /// A REST call on the host ([path] relative, such as `api/conversations`).
-  Future<({int status, String body})> request(String method, String path, {String? body}) async {
+  /// What the host pushes (session lists, mirrored events and state). After
+  /// the link comes back ([statusChanges] is ready again) ask again: the host
+  /// forgot what this device followed.
+  Stream<Map<String, Object?>> get messages => _messages.stream;
+
+  /// Sends [message] once the link is up.
+  Future<void> send(Map<String, Object?> message) async {
+    await _whenReady();
+    _send(message);
+  }
+
+  /// Sends [message] (an `act`) with a fresh id and waits for the host's
+  /// `done`; a [RemoteRefused] when the host turned it down.
+  Future<void> call(Map<String, Object?> message) async {
     await _whenReady();
     final id = _nextId++;
-    final done = _pending[id] = Completer<({int status, String body})>();
-    _send({'t': Tunnel.request, 'id': id, 'method': method, 'path': path, 'body': ?body});
+    final done = _pending[id] = Completer<void>();
+    _send({...message, 'id': id});
     try {
       return await done.future.timeout(requestTimeout);
     } on TimeoutException {
       _pending.remove(id);
       throw const RemoteUnavailable("The host didn't answer in time.");
     }
-  }
-
-  /// The host's event socket at [path] (`sockets/events/<id>?…`).
-  Future<WebSocket> openSocket(String path) async {
-    await _whenReady();
-    final id = _nextId++;
-    final socket = _sockets[id] = _TunnelSocket(this, id);
-    _send({'t': Tunnel.socketOpen, 'id': id, 'path': path});
-    try {
-      await socket._opened.future.timeout(requestTimeout);
-    } on TimeoutException {
-      _sockets.remove(id);
-      throw const RemoteUnavailable("The host didn't open the event stream in time.");
-    }
-    return socket;
-  }
-
-  /// The projects the host offers.
-  Future<List<({String name, String path})>> projects() async {
-    final res = await request('GET', 'everyai/projects');
-    if (res.status != 200) throw RemoteUnavailable('The host answered ${res.status}.');
-    return [
-      for (final p in jsonDecode(res.body) as List<Object?>)
-        if (p case {'name': final String name, 'path': final String path}) (name: name, path: path),
-    ];
   }
 
   Future<void> close() async {
@@ -409,56 +394,6 @@ final class RemoteClient {
     _ws = null;
     await ws?.close().catchError((Object _) {});
     await _statusController.close();
-  }
-}
-
-/// An agent-server event socket carried through the tunnel.
-final class _TunnelSocket implements WebSocket {
-  _TunnelSocket(this._client, this._id);
-
-  final RemoteClient _client;
-  final int _id;
-  final _opened = Completer<void>();
-  final _events = StreamController<WebSocketEvent>();
-  bool _done = false;
-
-  void _receive(String text) {
-    if (!_done) _events.add(TextDataReceived(text));
-  }
-
-  void _remoteClosed(String reason) {
-    if (_done) return;
-    _done = true;
-    if (!_opened.isCompleted) _opened.completeError(RemoteUnavailable(reason.isEmpty ? 'The socket closed.' : reason));
-    _events.add(CloseReceived(1001, reason));
-    unawaited(_events.close());
-  }
-
-  @override
-  Stream<WebSocketEvent> get events => _events.stream;
-
-  @override
-  String get protocol => '';
-
-  @override
-  void sendText(String s) {
-    if (_done) throw WebSocketConnectionClosed();
-    _client._send({'t': Tunnel.socketData, 'id': _id, 'data': s});
-  }
-
-  @override
-  void sendBytes(Uint8List b) => throw UnsupportedError('The agent-server socket carries text only.');
-
-  @override
-  Future<void> close([int? code, String? reason]) async {
-    if (_done) throw WebSocketConnectionClosed();
-    _done = true;
-    _client._sockets.remove(_id);
-    try {
-      _client._send({'t': Tunnel.socketClose, 'id': _id});
-    } on RemoteUnavailable {
-      // The link is down already.
-    }
-    await _events.close();
+    await _messages.close();
   }
 }

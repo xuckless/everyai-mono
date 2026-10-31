@@ -4,28 +4,35 @@ import 'dart:typed_data';
 /// What travels inside the encrypted frames between a device and its host:
 /// one JSON object per frame, `t` naming the kind.
 ///
-/// The host bridges these to its local agent-server, so a device reaches the
-/// same REST and event socket a desktop session uses, without ever learning
-/// the server's address or key.
+/// The host runs every Code session; a device (phone, tablet, browser)
+/// mirrors them and sends the user's actions back. Nothing runs on the device.
 ///
 /// Device → host:
-/// - `{t:"req", id, method, path, body?}`: a REST call (`api/conversations…`)
-///   or a host route (`everyai/projects`).
-/// - `{t:"ws_open", id, path}`: open the event socket at `sockets/events/<id>…`.
-/// - `{t:"ws", id, data}`: a text frame on that socket.
-/// - `{t:"ws_close", id}`.
+/// - `{t:"list"}`: the host sends `sessions` now and again whenever they change.
+/// - `{t:"open", s}`: mirror session `s`: a `reset`, its log as `events`,
+///   then live `events` and `state`.
+/// - `{t:"close", s}`: stop mirroring it.
+/// - `{t:"act", id, s, kind, args}`: one of [MirrorAction] on session `s`;
+///   answered with `done`.
 ///
 /// Host → device:
-/// - `{t:"res", id, status, body}`.
-/// - `{t:"ws_ready", id}`, `{t:"ws", id, data}`, `{t:"ws_closed", id, reason?}`.
+/// - `{t:"sessions", host, projects:[{id, name}], sessions:[{…session, status}]}`.
+/// - `{t:"reset", s}`: the log starts over (opening, a compaction, a rewind).
+/// - `{t:"events", s, events:[…]}`: agent-server events, in order (deltas too).
+/// - `{t:"state", s, …}`: what the transcript doesn't carry (see `HostMirror`).
+/// - `{t:"gone", s, message}`: the session isn't on the host (any more).
+/// - `{t:"done", id, error?}`.
 abstract final class Tunnel {
-  static const request = 'req';
-  static const response = 'res';
-  static const socketOpen = 'ws_open';
-  static const socketReady = 'ws_ready';
-  static const socketData = 'ws';
-  static const socketClose = 'ws_close';
-  static const socketClosed = 'ws_closed';
+  static const list = 'list';
+  static const open = 'open';
+  static const close = 'close';
+  static const act = 'act';
+  static const sessions = 'sessions';
+  static const reset = 'reset';
+  static const events = 'events';
+  static const state = 'state';
+  static const gone = 'gone';
+  static const done = 'done';
 
   static Uint8List encode(Map<String, Object?> message) => utf8.encode(jsonEncode(message));
 
@@ -105,66 +112,6 @@ final class TunnelAssembler {
   }
 }
 
-/// [path] as an absolute path with `.` and `..` worked out and `/`
-/// separators (`\` too, for Windows); null when it is relative or climbs
-/// above its root.
-String? normalizeHostPath(String path) {
-  final unified = path.replaceAll(r'\', '/');
-  final drive = RegExp(r'^[A-Za-z]:/').firstMatch(unified);
-  final String root;
-  final String rest;
-  if (drive != null) {
-    root = unified.substring(0, 3);
-    rest = unified.substring(3);
-  } else if (unified.startsWith('/')) {
-    root = '/';
-    rest = unified.substring(1);
-  } else {
-    return null;
-  }
-  final out = <String>[];
-  for (final segment in rest.split('/')) {
-    if (segment.isEmpty || segment == '.') continue;
-    if (segment == '..') {
-      if (out.isEmpty) return null;
-      out.removeLast();
-    } else {
-      out.add(segment);
-    }
-  }
-  return root + out.join('/');
-}
-
-/// Whether [dir] is [root] or inside it, both normalized first; false when
-/// either isn't an absolute path.
-bool pathWithin(String dir, String root) {
-  final d = normalizeHostPath(dir);
-  final r = normalizeHostPath(root);
-  if (d == null || r == null) return false;
-  return d == r || d.startsWith(r.endsWith('/') ? r : '$r/');
-}
-
-/// The conversation a host route or event socket path is about, or null
-/// for the routes that aren't about one (`api/conversations` itself).
-String? conversationInPath(String path) {
-  final p = Uri.parse(path).path;
-  final m = RegExp(r'^(?:api/conversations|sockets/events)/([A-Za-z0-9_-]+)').firstMatch(p);
-  return m?.group(1);
-}
-
-/// Host routes a device may call: the agent-server's conversations API, its
-/// event sockets, and the host's own `everyai/…` answers.
-bool allowedRestPath(String path) {
-  final p = Uri.parse(path).path;
-  if (p.contains('..')) return false;
-  return p == 'api/conversations' || p.startsWith('api/conversations/') || p == 'everyai/projects';
-}
-
-bool allowedSocketPath(String path) {
-  final p = Uri.parse(path).path;
-  return !p.contains('..') && RegExp(r'^sockets/events/[A-Za-z0-9_-]+$').hasMatch(p);
-}
-
 // ------------------------------------------------------------------ pairing
 
 /// What the host's QR code carries: the code, the host, and its key's
@@ -224,20 +171,31 @@ String displayCode(String code) {
   return n.length == 8 ? '${n.substring(0, 4)}-${n.substring(4)}' : n;
 }
 
-// ------------------------------------------------------------------ remote projects
+/// What a device can ask the host to do in a session (`act`'s `kind`).
+abstract final class MirrorAction {
+  /// `{text, files?:[{name, mime, data (base64)}]}`: queued while the agent works.
+  static const send = 'send';
 
-/// Projects on a remote host are stored with this scheme: `remote://<host id>/<path on the host>`.
-const remoteScheme = 'remote://';
+  /// `{text, files?}`: interrupts and sends now.
+  static const steer = 'steer';
+  static const stop = 'stop';
 
-bool isRemotePath(String path) => path.startsWith(remoteScheme);
+  /// `{scope: once|session|always}` for the pending approval.
+  static const approve = 'approve';
 
-String remotePath(String hostId, String hostPath) => '$remoteScheme$hostId/$hostPath';
+  /// `{reason}`.
+  static const deny = 'deny';
 
-/// The host and the folder on it, or null for a local path.
-({String hostId, String path})? parseRemotePath(String path) {
-  if (!isRemotePath(path)) return null;
-  final rest = path.substring(remoteScheme.length);
-  final slash = rest.indexOf('/');
-  if (slash <= 0) return null;
-  return (hostId: rest.substring(0, slash), path: rest.substring(slash + 1));
+  /// `{call, answers:[{selected:[i], other}]}` for the question card of tool call `call`.
+  static const answer = 'answer';
+
+  /// `{mode}` (an `AgentMode` name).
+  static const mode = 'mode';
+
+  /// Plan mode's Start building.
+  static const build = 'build';
+  static const retry = 'retry';
+
+  /// `{index}` of a queued message.
+  static const unqueue = 'unqueue';
 }

@@ -25,8 +25,6 @@ import '../domain/agent_mode.dart';
 import '../domain/code_session.dart';
 import '../../slash/slash_command.dart' show CodeSlashHost;
 import '../morning_providers.dart';
-import '../../remote/domain/remote_protocol.dart' show isRemotePath;
-import '../../remote/ui/remote_projects.dart';
 import 'agent_menu.dart';
 import 'code_composer.dart';
 import 'transcript/aside_card.dart';
@@ -85,33 +83,22 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
   }
 
   /// A project on a paired host (remote mode).
-  void _addRemote(String path, String name) {
-    final project = ref.read(codeProjectsProvider.notifier).add(path, name: name);
-    setState(() => _projectId = project.id);
-  }
-
   void _addDemo() {
     final project = ref.read(codeProjectsProvider.notifier).add(demoProjectPath, name: 'counter-app (demo)');
     setState(() => _projectId = project.id);
   }
 
   /// The tier the new session runs on: the bar's pick, capped at Thorough
-  /// where the phased tiers can't run (another harness, a remote host).
+  /// where the phased tiers can't run (another harness).
   HarnessTier _tierFor(CodeProject project) {
     final tier = ref.read(codeSettingsProvider).tier;
-    final everyai =
-        !isDemoPath(project.path) &&
-        !isRemotePath(project.path) &&
-        ref.read(codeHarnessProvider) == CodeHarnessKind.everyai;
+    final everyai = !isDemoPath(project.path) && ref.read(codeHarnessProvider) == CodeHarnessKind.everyai;
     return tier.everyaiOnly && !everyai ? HarnessTier.thorough : tier;
   }
 
   /// Bug fix needs the EveryAI harness on this computer.
   HarnessMode _harnessModeFor(CodeProject project) {
-    final everyai =
-        !isDemoPath(project.path) &&
-        !isRemotePath(project.path) &&
-        ref.read(codeHarnessProvider) == CodeHarnessKind.everyai;
+    final everyai = !isDemoPath(project.path) && ref.read(codeHarnessProvider) == CodeHarnessKind.everyai;
     return everyai ? ref.read(codeSettingsProvider).harnessMode : HarnessMode.build;
   }
 
@@ -182,7 +169,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                 ),
                 const SizedBox(height: 24),
                 if (project == null)
-                  _NoProjects(onOpen: _openFolder, onSample: _addSample, onDemo: _addDemo, onRemote: _addRemote)
+                  _NoProjects(onOpen: _openFolder, onSample: _addSample, onDemo: _addDemo)
                 else ...[
                   if (ref.watch(morningBriefProvider) case final brief?)
                     Padding(
@@ -208,11 +195,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                     trailing: AgentMenu(
                       model: ref.watch(codeAgentProvider).model,
                       effort: ref.watch(codeAgentProvider).effort,
-                      harness: isDemoPath(project.path)
-                          ? CodeHarnessKind.demo
-                          : isRemotePath(project.path)
-                          ? CodeHarnessKind.openHands
-                          : ref.watch(codeHarnessProvider),
+                      harness: isDemoPath(project.path) ? CodeHarnessKind.demo : ref.watch(codeHarnessProvider),
                       onChanged: ref.read(codeAgentProvider.notifier).chooseModel,
                       tier: ref.watch(codeSettingsProvider.select((s) => s.tier)),
                       onTier: ref.read(codeSettingsProvider.notifier).setTier,
@@ -231,11 +214,10 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                       onOpen: _openFolder,
                       onSample: _addSample,
                       onDemo: _addDemo,
-                      onRemote: _addRemote,
                     ),
                   ),
                   const SizedBox(height: 10),
-                  if (!isDemoPath(project.path) && !isRemotePath(project.path))
+                  if (!isDemoPath(project.path))
                     _SessionOptions(
                       isolated: _isolated,
                       onIsolated: (v) => setState(() => _isolated = v),
@@ -247,8 +229,6 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                         ? 'Starting the agent…'
                         : isDemoPath(project.path)
                         ? 'A demo project with a scripted agent. ${mode.description}.'
-                        : isRemotePath(project.path)
-                        ? 'Runs on your paired computer, in the project folder itself. ${mode.description}.'
                         : _isolated
                         ? 'Works on its own branch in a separate worktree; merge or open a PR when it\'s done. '
                               '${mode.description}.'
@@ -316,30 +296,14 @@ class _SessionOptions extends StatelessWidget {
 }
 
 class _NoProjects extends StatelessWidget {
-  const _NoProjects({required this.onOpen, required this.onSample, required this.onDemo, required this.onRemote});
+  const _NoProjects({required this.onOpen, required this.onSample, required this.onDemo});
   final VoidCallback onOpen;
   final VoidCallback onSample;
   final VoidCallback onDemo;
-  final void Function(String path, String name) onRemote;
 
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    // Phones, tablets and the web have no agent of their own: a paired computer's projects.
-    if (!Host.isDesktop) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(
-            'Pick a project on your paired computer and describe what you want. The agent runs there.',
-            textAlign: TextAlign.center,
-            style: theme.type.body.copyWith(color: theme.textMuted, height: 1.45),
-          ),
-          const SizedBox(height: 12),
-          RemoteProjectRows(onAdd: onRemote),
-        ],
-      );
-    }
     return Column(
       children: [
         Text(
@@ -372,7 +336,6 @@ class _ProjectPicker extends StatelessWidget {
     required this.onOpen,
     required this.onSample,
     required this.onDemo,
-    required this.onRemote,
   });
 
   final CodeProject project;
@@ -381,7 +344,6 @@ class _ProjectPicker extends StatelessWidget {
   final VoidCallback onOpen;
   final VoidCallback onSample;
   final VoidCallback onDemo;
-  final void Function(String path, String name) onRemote;
 
   @override
   Widget build(BuildContext context) {
@@ -412,11 +374,7 @@ class _ProjectPicker extends StatelessWidget {
                         size: 12,
                         onPressed: () => ref.read(codeProjectsProvider.notifier).remove(p.id),
                       ),
-                      subtitle: isDemoPath(p.path)
-                          ? 'Scripted demo'
-                          : isRemotePath(p.path)
-                          ? 'On a paired computer'
-                          : p.path,
+                      subtitle: isDemoPath(p.path) ? 'Scripted demo' : p.path,
                       selected: p.id == project.id,
                       onTap: () {
                         close();
@@ -445,13 +403,6 @@ class _ProjectPicker extends StatelessWidget {
                 },
               ),
             ],
-            RemoteProjectRows(
-              added: {for (final p in projects) p.path},
-              onAdd: (path, name) {
-                close();
-                onRemote(path, name);
-              },
-            ),
             if (!projects.any((p) => isDemoPath(p.path)))
               PopoverRow(
                 leading: AdaptiveIcon(EveryIcon.add, size: 15, color: theme.textMuted),

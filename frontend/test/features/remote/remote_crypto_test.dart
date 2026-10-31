@@ -126,27 +126,8 @@ void main() {
       expect(displayCode('abcdefgh'), 'ABCD-EFGH');
     });
 
-    test('remote project paths keep the host path as is', () {
-      final p = remotePath('host-1', '/Users/me/app');
-      expect(p, 'remote://host-1//Users/me/app');
-      expect(parseRemotePath(p), (hostId: 'host-1', path: '/Users/me/app'));
-      expect(parseRemotePath(remotePath('h', r'C:\code\app'))?.path, r'C:\code\app');
-      expect(parseRemotePath('/Users/me/app'), isNull);
-    });
-
-    test('only the conversation API and event sockets are reachable', () {
-      expect(allowedRestPath('api/conversations'), isTrue);
-      expect(allowedRestPath('api/conversations?ids=a&ids=b'), isTrue);
-      expect(allowedRestPath('api/conversations/c1/events/search?limit=100'), isTrue);
-      expect(allowedRestPath('everyai/projects'), isTrue);
-      expect(allowedRestPath('api/bash/execute_bash_command'), isFalse);
-      expect(allowedRestPath('api/conversations/../file/download'), isFalse);
-      expect(allowedSocketPath('sockets/events/c1?resend_mode=all'), isTrue);
-      expect(allowedSocketPath('sockets/bash-events'), isFalse);
-    });
-
     test('tunnel messages round-trip and junk is ignored', () {
-      final m = {'t': Tunnel.request, 'id': 1, 'method': 'GET', 'path': 'api/conversations'};
+      final m = {'t': Tunnel.act, 'id': 1, 's': 'session-1', 'kind': MirrorAction.stop};
       expect(Tunnel.decode(Tunnel.encode(m)), m);
       expect(Tunnel.decode(utf8.encode('not json')), isNull);
       expect(Tunnel.decode(utf8.encode('{"id":1}')), isNull);

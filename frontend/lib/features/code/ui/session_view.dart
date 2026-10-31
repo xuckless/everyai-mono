@@ -197,7 +197,7 @@ class CodeSessionScreen extends ConsumerWidget {
                             if (showStartBuilding)
                               Padding(
                                 padding: const EdgeInsets.only(bottom: 8),
-                                child: _StartBuilding(onStart: controller.startBuilding),
+                                child: StartBuildingBar(onStart: controller.startBuilding),
                               ),
                             if (ref.watch(morningBriefProvider) case final brief?)
                               Padding(
@@ -476,8 +476,9 @@ class _Working extends StatelessWidget {
   }
 }
 
-class _StartBuilding extends StatelessWidget {
-  const _StartBuilding({required this.onStart});
+/// Plan mode's nudge once a plan is written: Start building switches to Auto-edit.
+class StartBuildingBar extends StatelessWidget {
+  const StartBuildingBar({super.key, required this.onStart});
   final VoidCallback onStart;
 
   @override

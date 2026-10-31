@@ -13,8 +13,6 @@ import '../agents/agents_providers.dart' show AgentDefinition, agentLibrarySetti
 import '../attachments/attachment.dart';
 import '../models/domain/model_catalog.dart';
 import '../models/models_providers.dart';
-import '../remote/domain/remote_protocol.dart' show isRemotePath, parseRemotePath;
-import '../remote/remote_providers.dart' show remoteLinksProvider;
 import '../skills/data/skill_import.dart' show findImportCandidates;
 import '../skills/data/skill_store.dart' show folderFiles;
 import '../skills/skills_providers.dart' show codeSkillsFor, installedSkillsProvider;
@@ -65,10 +63,9 @@ const demoScheme = 'demo://';
 
 bool isDemoPath(String path) => path.startsWith(demoScheme);
 
-/// Sessions whose folder isn't on this machine: the scripted demo, and
-/// projects on a paired remote host (`remote://…`). Local files, git and
-/// processes are skipped for them.
-bool noLocalFolder(String path) => isDemoPath(path) || isRemotePath(path);
+/// Sessions whose folder isn't on this machine (the scripted demo). Local
+/// files, git and processes are skipped for them.
+bool noLocalFolder(String path) => isDemoPath(path);
 
 /// The scripted harness for demo projects.
 final harnessProvider = Provider<Harness>((ref) => FakeHarness());
@@ -96,8 +93,6 @@ final sidecarProvider = Provider<Sidecar>((ref) {
 /// projects, else the sidecar (started, or restarted after a crash, on demand).
 Future<Harness> harnessFor(Ref ref, String workingDir, {String harness = 'openHands'}) async {
   if (isDemoPath(workingDir)) return ref.read(harnessProvider);
-  // A paired host's agent-server, through the encrypted relay.
-  if (parseRemotePath(workingDir) case (:final hostId, path: _)) return ref.read(remoteLinksProvider).harness(hostId);
   if (harness == CodeHarnessKind.everyai.name) return ref.read(everyaiHarnessProvider);
   return ref.read(_sidecarHarnessProvider);
 }
@@ -904,6 +899,16 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
   /// What the current conversation has seen (no deltas), for [compact].
   @override
   final _events = <HarnessEvent>[];
+
+  /// Every event as it is folded in (deltas too), for devices mirroring this
+  /// session (`HostMirror`); null means the log was folded again (a compaction
+  /// or rewind), so [mirrorEvents] should be sent over from the start.
+  final _mirror = StreamController<HarnessEvent?>.broadcast(sync: true);
+  Stream<HarnessEvent?> get mirrorTap => _mirror.stream;
+
+  /// What the transcript is folded from now (no deltas), for a device that
+  /// starts mirroring. Read it and listen to [mirrorTap] in the same turn.
+  List<HarnessEvent> get mirrorEvents => List.unmodifiable(_events);
   bool _compacting = false;
 
   /// Subagents this session waits on, by `run_subagent` call id: the child session,
@@ -929,6 +934,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
     ref.onDispose(() {
       _sub?.cancel();
+      unawaited(_mirror.close());
       _gitTimer?.cancel();
       _disposeBuiltins();
       for (final s in [..._childSubs.values, ..._researchSubs.values]) {
@@ -1100,6 +1106,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     final wasRunning = state.transcript.running;
     _trackContext(event);
     _builder.add(event);
+    if (!_mirror.isClosed) _mirror.add(event);
     final transcript = _builder.snapshot;
     state = state.copyWith(transcript: transcript);
     // Edits and commands change files: refresh Changes as they land, not just at turn end.
@@ -1457,6 +1464,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
       ref.read(_liveProvider)[sessionId] = live;
       _session = live;
       _events.clear();
+      if (!_mirror.isClosed) _mirror.add(null);
       _carried = _builder.snapshot.items;
       _answered = '';
       _doom.reset();
@@ -1557,6 +1565,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     _answered = '';
     _doom.reset();
     _doomOpen = false;
+    if (!_mirror.isClosed) _mirror.add(null);
     state = state.copyWith(transcript: _builder.snapshot, queued: const []);
   }
 

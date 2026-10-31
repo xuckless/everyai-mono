@@ -19,6 +19,7 @@ import '../../chat/domain/message.dart';
 import '../../code/code_providers.dart';
 import '../../code/ui/code_home.dart';
 import '../../remote/remote_providers.dart' show hasRemoteHostProvider;
+import '../../remote/ui/remote_code.dart' show RemoteSessionList;
 
 /// Width of the collapsed rail. macOS needs room for the traffic lights above it.
 double sidebarRailWidth(DesignLanguage design) => Host.hasTrafficLights ? 92 : 60;
@@ -108,7 +109,11 @@ class _SidebarState extends ConsumerState<Sidebar> {
     final codeMode = loc.startsWith(Routes.code);
     final destinations = codeMode
         ? <_Destination>[
-            _Destination(EveryIcon.add, 'New session', loc == Routes.code, Routes.code, accent: true),
+            // Sessions start on the computer; other devices list them.
+            if (Host.isDesktop)
+              _Destination(EveryIcon.add, 'New session', loc == Routes.code, Routes.code, accent: true)
+            else
+              _Destination(EveryIcon.projects, 'Sessions', loc == Routes.code, Routes.code),
             if (collapsed) _Destination(EveryIcon.chat, 'Chat', false, Routes.newChat, glyph: 'chat'),
             _Destination(EveryIcon.models, 'Models', loc == Routes.models, Routes.models, glyph: 'models'),
           ]
@@ -320,6 +325,7 @@ class _CodeRecents extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    if (!Host.isDesktop) return RemoteSessionList(location: location, onNavigate: onNavigate, dense: true);
     final theme = EveryTheme.of(context);
     final projects = ref.watch(codeProjectsProvider);
     // Subagents open from their parent's transcript.

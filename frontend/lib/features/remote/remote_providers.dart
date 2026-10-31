@@ -1,21 +1,21 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/platform/platform_kind.dart';
 import '../../core/providers.dart';
-import '../code/code_providers.dart'
-    show
-        codeHarnessProvider,
-        codeProjectsProvider,
-        codeSessionsProvider,
-        everyaiAgentServerProvider,
-        isDemoPath,
-        sidecarProvider;
-import '../code/domain/agent_menu.dart' show CodeHarnessKind;
+import '../attachments/attachment.dart';
 import '../auth/data/token_store.dart' show tokenStoreProvider;
+import '../code/code_providers.dart' show CodeSessionState, Outgoing;
+import '../code/domain/agent_mode.dart';
+import '../code/domain/code_session.dart';
+import '../code/domain/permissions.dart' show ApprovalScope;
+import '../code/domain/questions.dart';
+import '../code/domain/transcript.dart';
 import '../code/gateway_key.dart' show secretStoreProvider;
+import '../code/harness/events.dart';
 import 'data/host_bridge.dart';
 import 'data/host_link.dart';
 import 'data/relay_client.dart';
@@ -24,7 +24,7 @@ import 'data/remote_api.dart';
 import 'data/remote_store.dart';
 import 'domain/remote_crypto.dart';
 import 'domain/remote_protocol.dart';
-import 'relay_harness.dart';
+import 'host_mirror.dart';
 
 final remoteStoreProvider = Provider<RemoteStore>((ref) => RemoteStore(ref.watch(secretStoreProvider)));
 
@@ -84,6 +84,7 @@ final remoteHostingProvider = NotifierProvider<RemoteHosting, RemoteHostingState
 /// the relay socket, pairing codes, approvals and the device list.
 final class RemoteHosting extends Notifier<RemoteHostingState> {
   RemoteHostLink? _link;
+  HostMirror? _mirror;
   StreamSubscription<HostLinkState>? _linkSub;
 
   @override
@@ -176,27 +177,24 @@ final class RemoteHosting extends Notifier<RemoteHostingState> {
 
   Future<void> _startLink(HostRegistration host, RemoteIdentity identity) async {
     await _stopLink();
+    // Devices mirror this computer's sessions; everything runs here.
+    final mirror = _mirror = HostMirror(ref, hostName: host.name);
     final link = _link = RemoteHostLink(
       url: relayUrl(ref.read(appConfigProvider).apiBaseUrl, 'v1/remote/host'),
       token: host.token,
       connect: ref.read(relayConnectorProvider),
       approvedKey: (deviceId) => state.host?.devices[deviceId],
-      bridge: (send) => HostBridge(
-        identity: identity,
-        hostId: host.id,
-        send: send,
-        // Devices get the harness this host starts sessions on.
-        locate: () async {
-          if (ref.read(codeHarnessProvider) == CodeHarnessKind.everyai) {
-            final served = await ref.read(everyaiAgentServerProvider.future);
-            return (served.baseUrl, served.key);
-          }
-          final e = await ref.read(sidecarProvider).endpoint();
-          return (e.baseUrl, e.sessionApiKey);
-        },
-        projects: _projects,
-        allowedDir: _allowedDir,
-      ),
+      bridge: (send) {
+        final bridge = HostBridge(
+          identity: identity,
+          hostId: host.id,
+          send: send,
+          onMessage: mirror.receive,
+          onChannelClosed: mirror.channelClosed,
+        );
+        mirror.send = bridge.send;
+        return bridge;
+      },
     );
     _linkSub = link.changes.listen((s) {
       state = state.copyWith(link: s);
@@ -211,20 +209,9 @@ final class RemoteHosting extends Notifier<RemoteHostingState> {
     final link = _link;
     _link = null;
     await link?.close();
+    _mirror?.dispose();
+    _mirror = null;
   }
-
-  List<HostProject> _projects() => [
-    for (final p in ref.read(codeProjectsProvider))
-      if (!isDemoPath(p.path) && !isRemotePath(p.path)) (name: p.name, path: p.path),
-  ];
-
-  /// A device may start sessions in the host's projects and in the worktrees
-  /// of its sessions (paths compared normalized, so `..` can't climb out).
-  bool _allowedDir(String dir) => hostOffers(dir, [
-    for (final p in _projects()) p.path,
-    for (final s in ref.read(codeSessionsProvider))
-      if (s.workingDir.isNotEmpty && !isDemoPath(s.workingDir) && !isRemotePath(s.workingDir)) s.workingDir,
-  ]);
 
   /// A fresh single-use code (5 minutes) and the QR payload for it.
   Future<({PairingCode code, String qr})> newCode() async {
@@ -271,9 +258,6 @@ final class RemoteHosting extends Notifier<RemoteHostingState> {
     state = state.copyWith(host: updated);
   }
 }
-
-/// Whether [dir] is in one of [roots], all normalized first.
-bool hostOffers(String dir, Iterable<String> roots) => roots.any((root) => pathWithin(dir, root));
 
 // ------------------------------------------------------------------ device side
 
@@ -389,7 +373,6 @@ final class RemoteLinks {
 
   final Ref _ref;
   final _clients = <String, Future<RemoteClient>>{};
-  final _harnesses = <String, RelayHarness>{};
 
   Future<RemoteClient> client(String hostId) => _clients[hostId] ??= _open(hostId);
 
@@ -411,13 +394,7 @@ final class RemoteLinks {
     return client;
   }
 
-  Future<RelayHarness> harness(String hostId) async {
-    if (_harnesses[hostId] case final h?) return h;
-    return _harnesses[hostId] = RelayHarness(await client(hostId));
-  }
-
   Future<void> drop(String hostId) async {
-    _harnesses.remove(hostId);
     final client = _clients.remove(hostId);
     if (client != null) await (await client).close();
   }
@@ -435,3 +412,320 @@ final remoteLinkStatusProvider = StreamProvider.family<RemoteLinkStatus, String>
   yield client.status;
   yield* client.statusChanges;
 });
+
+// ------------------------------------------------------------------ mirrored sessions (device side)
+
+/// The paired host this device follows. One for now: a second computer's
+/// sessions would need their own list and routes.
+final remoteHostProvider = Provider<PairedHost?>(
+  (ref) => ref.watch(pairedHostsProvider).value?.where((h) => h.approved).firstOrNull,
+);
+
+/// One of the host's sessions in its list.
+@immutable
+final class RemoteSessionEntry {
+  const RemoteSessionEntry(this.info, this.status);
+  final CodeSessionInfo info;
+  final SessionStatus status;
+}
+
+@immutable
+final class RemoteSessionsState {
+  const RemoteSessionsState({
+    this.hostName = '',
+    this.projects = const [],
+    this.sessions = const [],
+    this.link = RemoteLinkStatus.connecting,
+    this.loaded = false,
+    this.paired = false,
+  });
+
+  final String hostName;
+  final List<CodeProject> projects;
+
+  /// Newest first; subagents too (their parent's transcript opens them).
+  final List<RemoteSessionEntry> sessions;
+  final RemoteLinkStatus link;
+
+  /// The host sent its list at least once.
+  final bool loaded;
+
+  /// This device is paired with a host at all.
+  final bool paired;
+
+  RemoteSessionEntry? byId(String id) => sessions.where((s) => s.info.id == id).firstOrNull;
+
+  RemoteSessionsState copyWith({
+    String? hostName,
+    List<CodeProject>? projects,
+    List<RemoteSessionEntry>? sessions,
+    RemoteLinkStatus? link,
+    bool? loaded,
+  }) => RemoteSessionsState(
+    hostName: hostName ?? this.hostName,
+    projects: projects ?? this.projects,
+    sessions: sessions ?? this.sessions,
+    link: link ?? this.link,
+    loaded: loaded ?? this.loaded,
+    paired: paired,
+  );
+}
+
+/// The host's Code sessions, kept current by the host while this device follows them.
+final remoteSessionsProvider = NotifierProvider<RemoteSessions, RemoteSessionsState>(RemoteSessions.new);
+
+final class RemoteSessions extends Notifier<RemoteSessionsState> {
+  final _subs = <StreamSubscription<Object?>>[];
+
+  @override
+  RemoteSessionsState build() {
+    final host = ref.watch(remoteHostProvider);
+    ref.onDispose(() {
+      for (final s in _subs) {
+        unawaited(s.cancel());
+      }
+      _subs.clear();
+    });
+    if (host == null) return const RemoteSessionsState(loaded: true);
+    unawaited(_follow(host));
+    return RemoteSessionsState(hostName: host.name, paired: true);
+  }
+
+  Future<void> _follow(PairedHost host) async {
+    final RemoteClient client;
+    try {
+      client = await ref.read(remoteLinksProvider).client(host.hostId);
+    } on Object {
+      return;
+    }
+    if (!ref.mounted) return;
+    void ask() => unawaited(client.send({'t': Tunnel.list}).catchError((Object _) {}));
+    _subs
+      ..add(
+        client.statusChanges.listen((s) {
+          state = state.copyWith(link: s);
+          // The host forgets what a device followed when the link drops.
+          if (s == RemoteLinkStatus.ready) ask();
+        }),
+      )
+      ..add(client.messages.where((m) => m['t'] == Tunnel.sessions).listen(_list));
+    state = state.copyWith(link: client.status);
+    ask();
+  }
+
+  void _list(Map<String, Object?> m) {
+    final sessions = <RemoteSessionEntry>[];
+    for (final raw in m['sessions'] as List<Object?>? ?? const []) {
+      if (raw is! Map<String, Object?>) continue;
+      try {
+        sessions.add(
+          RemoteSessionEntry(
+            CodeSessionInfo.fromJson(raw),
+            SessionStatus.values.asNameMap()[raw['status']] ?? SessionStatus.idle,
+          ),
+        );
+      } on Object {
+        // A session this build can't read; the rest still show.
+      }
+    }
+    sessions.sort((a, b) => b.info.createdAt.compareTo(a.info.createdAt));
+    state = state.copyWith(
+      hostName: m['host'] as String? ?? state.hostName,
+      projects: [
+        for (final p in m['projects'] as List<Object?>? ?? const [])
+          if (p case {'id': final String id, 'name': final String name}) CodeProject(id: id, name: name, path: ''),
+      ],
+      sessions: sessions,
+      loaded: true,
+    );
+  }
+}
+
+/// A mirrored session: what the host's controller shows, folded here from
+/// the same events, plus what the approval card needs.
+@immutable
+final class RemoteSessionState {
+  const RemoteSessionState({
+    this.session = const CodeSessionState(),
+    this.remember,
+    this.flags = const {},
+    this.link = RemoteLinkStatus.connecting,
+    this.loaded = false,
+    this.gone,
+  });
+
+  /// Transcript, mode, queue and status, as on the host.
+  final CodeSessionState session;
+
+  /// What "allow for this session / always" would remember, or null when it can't.
+  final List<String>? remember;
+
+  /// Pending calls the host's rules call dangerous, with why.
+  final Map<String, String> flags;
+  final RemoteLinkStatus link;
+
+  /// The host sent the session at least once.
+  final bool loaded;
+
+  /// Why the host can't show it (deleted there), or null.
+  final String? gone;
+
+  RemoteSessionState copyWith({
+    CodeSessionState? session,
+    List<String>? remember,
+    bool clearRemember = false,
+    Map<String, String>? flags,
+    RemoteLinkStatus? link,
+    bool? loaded,
+    String? gone,
+  }) => RemoteSessionState(
+    session: session ?? this.session,
+    remember: clearRemember ? null : remember ?? this.remember,
+    flags: flags ?? this.flags,
+    link: link ?? this.link,
+    loaded: loaded ?? this.loaded,
+    gone: gone ?? this.gone,
+  );
+}
+
+final remoteSessionProvider = NotifierProvider.autoDispose.family<RemoteSession, RemoteSessionState, String>(
+  RemoteSession.new,
+);
+
+/// Follows one of the host's sessions and sends the user's actions to it.
+/// The host runs them on its own controller; nothing is decided here.
+final class RemoteSession extends Notifier<RemoteSessionState> {
+  RemoteSession(this.sessionId);
+  final String sessionId;
+
+  RemoteClient? _client;
+  final _fold = MirrorFold();
+  final _subs = <StreamSubscription<Object?>>[];
+
+  @override
+  RemoteSessionState build() {
+    final host = ref.read(remoteHostProvider);
+    ref.onDispose(() {
+      for (final s in _subs) {
+        unawaited(s.cancel());
+      }
+      final client = _client;
+      if (client != null && client.status == RemoteLinkStatus.ready) {
+        unawaited(client.send({'t': Tunnel.close, 's': sessionId}).catchError((Object _) {}));
+      }
+    });
+    if (host == null) return const RemoteSessionState(gone: 'This device is not paired with a computer.');
+    unawaited(_follow(host));
+    return const RemoteSessionState();
+  }
+
+  Future<void> _follow(PairedHost host) async {
+    final RemoteClient client;
+    try {
+      client = _client = await ref.read(remoteLinksProvider).client(host.hostId);
+    } on Object catch (e) {
+      if (ref.mounted) state = state.copyWith(gone: '$e');
+      return;
+    }
+    if (!ref.mounted) return;
+    void open() => unawaited(client.send({'t': Tunnel.open, 's': sessionId}).catchError((Object _) {}));
+    _subs
+      ..add(
+        client.statusChanges.listen((s) {
+          state = state.copyWith(link: s);
+          if (s == RemoteLinkStatus.ready) open();
+        }),
+      )
+      ..add(client.messages.where((m) => m['s'] == sessionId).listen(_receive));
+    state = state.copyWith(link: client.status);
+    open();
+  }
+
+  void _receive(Map<String, Object?> m) => state = _fold.apply(state, m);
+
+  Future<void> _act(String kind, [Map<String, Object?> args = const {}]) async {
+    final client = _client;
+    if (client == null) throw const RemoteUnavailable('Not connected to the computer yet.');
+    await client.call({'t': Tunnel.act, 's': sessionId, 'kind': kind, 'args': args});
+  }
+
+  static List<Map<String, Object?>> _files(List<Attachment> files) => [
+    for (final f in files) {'name': f.name, 'mime': f.mime, 'data': base64Encode(f.bytes)},
+  ];
+
+  Future<void> send(String text, {List<Attachment> files = const []}) =>
+      _act(MirrorAction.send, {'text': text, if (files.isNotEmpty) 'files': _files(files)});
+
+  Future<void> steer(String text, {List<Attachment> files = const []}) =>
+      _act(MirrorAction.steer, {'text': text, if (files.isNotEmpty) 'files': _files(files)});
+
+  Future<void> stop() => _act(MirrorAction.stop);
+
+  Future<void> approve([ApprovalScope scope = ApprovalScope.once]) => _act(MirrorAction.approve, {'scope': scope.name});
+
+  Future<void> deny([String? reason]) => _act(MirrorAction.deny, {'reason': ?reason});
+
+  Future<void> answer(QuestionItem item, List<QuestionAnswer> answers) => _act(MirrorAction.answer, {
+    'call': item.call.id,
+    'answers': [
+      for (final a in answers) {'selected': (a.selected.toList()..sort()), 'other': a.other},
+    ],
+  });
+
+  Future<void> setMode(AgentMode mode) => _act(MirrorAction.mode, {'mode': mode.name});
+
+  Future<void> startBuilding() => _act(MirrorAction.build);
+
+  Future<void> retry() => _act(MirrorAction.retry);
+
+  Future<void> unqueue(int index) => _act(MirrorAction.unqueue, {'index': index});
+}
+
+/// Folds what the host sends about one session (`reset`, `events`, `state`,
+/// `gone`) into what this device shows: the same transcript builder the host
+/// runs, fed the same events.
+final class MirrorFold {
+  var _builder = TranscriptBuilder();
+
+  RemoteSessionState apply(RemoteSessionState state, Map<String, Object?> m) {
+    switch (m['t']) {
+      case Tunnel.reset:
+        _builder = TranscriptBuilder();
+        return state.copyWith(session: state.session.copyWith(transcript: _builder.snapshot));
+      case Tunnel.events:
+        for (final raw in m['events'] as List<Object?>? ?? const []) {
+          if (raw is Map<String, Object?>) _builder.add(HarnessEvent.decode(raw));
+        }
+        return state.copyWith(session: state.session.copyWith(transcript: _builder.snapshot), loaded: true);
+      case Tunnel.state:
+        final s = state.session;
+        return state.copyWith(
+          session: CodeSessionState(
+            transcript: s.transcript,
+            mode: AgentMode.values.asNameMap()[m['mode']] ?? s.mode,
+            queued: [
+              for (final q in m['queued'] as List<Object?>? ?? const [])
+                if (q is String) Outgoing(q),
+            ],
+            connected: m['connected'] == true,
+            error: m['error'] as String?,
+            subagentNeedsInput: m['subagent_needs_input'] == true,
+          ),
+          remember: [
+            for (final p in m['remember'] as List<Object?>? ?? const [])
+              if (p is String) p,
+          ],
+          clearRemember: m['remember'] == null,
+          flags: {
+            for (final e in (m['flags'] as Map<String, Object?>? ?? const {}).entries)
+              if (e.value case final String why) e.key: why,
+          },
+          loaded: true,
+        );
+      case Tunnel.gone:
+        return state.copyWith(gone: m['message'] as String? ?? 'This session is gone.');
+      default:
+        return state;
+    }
+  }
+}

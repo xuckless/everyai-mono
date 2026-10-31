@@ -41,6 +41,7 @@ class CodeComposer extends ConsumerStatefulWidget {
     this.model,
     this.slashHost,
     this.project,
+    this.attachKinds,
   });
 
   final bool busy;
@@ -70,6 +71,11 @@ class CodeComposer extends ConsumerStatefulWidget {
 
   /// The project folder: its own `/` commands show here.
   final String? project;
+
+  /// The kinds of file that can be attached; null for any. A session mirrored
+  /// from another computer takes pictures and text only, and photos are
+  /// scaled down before they travel.
+  final Set<AttachmentKind>? attachKinds;
 
   @override
   ConsumerState<CodeComposer> createState() => _CodeComposerState();
@@ -147,13 +153,22 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
 
   /// Any file can go to the agent: it is saved into the project.
   Future<void> _add(List<XFile> picked) async {
-    final added = await readAttachments(
+    final kinds = widget.attachKinds;
+    final read = await readAttachments(
       picked,
       alreadyBytes: _files.fold(0, (sum, a) => sum + a.size),
+      shrinkImages: kinds != null,
       onError: (message) {
         if (mounted) showAdaptiveToast(context, message);
       },
     );
+    final added = [
+      for (final a in read)
+        if (kinds == null || kinds.contains(a.kind)) a,
+    ];
+    if (added.length < read.length && mounted) {
+      showAdaptiveToast(context, 'Only pictures and text files can be sent here.');
+    }
     if (!mounted || added.isEmpty) return;
     setState(() => _files.addAll(added));
     _focus.requestFocus();
@@ -241,7 +256,7 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
                       icon: EveryIcon.attach,
                       tooltip: 'Attach files',
                       color: theme.textMuted,
-                      onPressed: () async => _add(await pickAttachmentFiles()),
+                      onPressed: () async => _add(await pickAttachmentFiles(allowed: widget.attachKinds)),
                     ),
                     ModeMenu(mode: widget.mode, onChanged: widget.onModeChanged),
                     // Both sides shrink on narrow composers (project first, it is
