@@ -37,6 +37,8 @@ Map<String, Object?> mirrorState(
   CodeSessionState state, {
   required List<String>? remember,
   required Map<String, String> flags,
+  Map<String, String> rememberBy = const {},
+  bool perCall = false,
 }) => {
   'mode': state.mode.name,
   'queued': [for (final q in state.queued) q.text],
@@ -45,6 +47,9 @@ Map<String, Object?> mirrorState(
   'subagent_needs_input': state.subagentNeedsInput,
   'remember': ?remember,
   'flags': flags,
+  'remember_by': rememberBy,
+  'per_call': perCall,
+  'decided': state.decided,
 };
 
 /// The host side of mirroring: devices list this computer's Code sessions,
@@ -182,6 +187,8 @@ final class HostMirror {
     return mirrorState(
       state,
       remember: controller.rememberable(),
+      rememberBy: controller.rememberBy(),
+      perCall: controller.perCall,
       flags: {
         for (final c in state.transcript.pending)
           if (controller.policy.decide(c, state.mode) case Decision(source: DecisionSource.dangerous, :final why))
@@ -212,9 +219,9 @@ final class HostMirror {
         case MirrorAction.stop:
           await c.stop();
         case MirrorAction.approve:
-          await c.approve(ApprovalScope.values.asNameMap()[args['scope']] ?? ApprovalScope.once);
+          await c.approve(ApprovalScope.values.asNameMap()[args['scope']] ?? ApprovalScope.once, _ids(args));
         case MirrorAction.deny:
-          await c.deny(args['reason'] as String?);
+          await c.deny(args['reason'] as String?, _ids(args));
         case MirrorAction.answer:
           final item = _ref
               .read(codeSessionProvider(s))
@@ -250,6 +257,12 @@ final class HostMirror {
     }
     send(channel, {'t': Tunnel.done, 'id': id, 'error': ?error});
   }
+
+  /// The calls a device answered one by one (`call_ids`), or null for all.
+  static List<String>? _ids(Map<String, Object?> args) => switch (args['call_ids']) {
+    final List<Object?> ids => [...ids.whereType<String>()],
+    _ => null,
+  };
 
   /// A device's attachments, checked as a picked file is: pictures and text only.
   static List<Attachment> _files(Object? raw) {

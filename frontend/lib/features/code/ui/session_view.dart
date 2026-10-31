@@ -180,6 +180,12 @@ class CodeSessionScreen extends ConsumerWidget {
                                   onDeny: controller.deny,
                                   onMode: controller.setMode,
                                   remember: controller.rememberable(),
+                                  decided: state.decided,
+                                  rememberBy: controller.rememberBy(),
+                                  onAllowCall: controller.perCall
+                                      ? (id, scope) => controller.approve(scope, [id])
+                                      : null,
+                                  onDenyCall: controller.perCall ? (id) => controller.deny(null, [id]) : null,
                                   flags: {
                                     for (final c in t.pending)
                                       if (controller.policy.decide(c, state.mode) case Decision(

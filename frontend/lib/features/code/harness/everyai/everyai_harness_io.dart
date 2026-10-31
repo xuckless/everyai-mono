@@ -9,6 +9,7 @@ import 'package:uuid/uuid.dart';
 import '../../domain/agent_mode.dart';
 import '../../domain/compaction.dart';
 import '../../domain/phases.dart';
+import '../../domain/shell_readonly.dart';
 import '../../domain/subagents.dart' show forkingTaskSpec, subagentRules, taskTool;
 import '../../settings/agent_prompt.dart' show forHeldClientTools;
 import '../events.dart';
@@ -94,7 +95,14 @@ const maxStepsPerRun = 400;
 /// One conversation: its history (OpenAI-style messages), its events, and the
 /// loop that calls the model and runs tools.
 final class EveryAISession
-    implements HarnessSession, AsksAside, HasBackgroundShells, CompactsInPlace, PhasedSession, RetriesModelCalls {
+    implements
+        HarnessSession,
+        AsksAside,
+        HasBackgroundShells,
+        CompactsInPlace,
+        PhasedSession,
+        RetriesModelCalls,
+        PerCallApprovals {
   EveryAISession._(this.id, this._spec, this._dir, http.Client? client)
     : _gateway = GatewayClient(baseUrl: _spec.llmBaseUrl, apiKey: _spec.llmApiKey, client: client),
       _shell = SessionShell(root: _spec.workingDir, sessionTag: _spec.sessionTag, scratchDir: '${_dir.path}/shell') {
@@ -143,7 +151,12 @@ final class EveryAISession
   /// Completes when a message lands in [_inbox]: cuts a sleep short.
   Completer<void> _arrived = Completer<void>();
 
-  Completer<({bool accept, String? reason})>? _decision;
+  /// The calls waiting for approval, by action id, each with its own answer.
+  final _decisions = <String, Completer<({bool accept, String? reason})>>{};
+
+  /// The user refused every call still undecided at once ("Deny all"): if
+  /// none was allowed, the run parks instead of carrying on.
+  bool _denyAll = false;
 
   bool _looping = false;
   bool _pauseRequested = false;
@@ -545,8 +558,10 @@ final class EveryAISession
 
   @override
   Future<void> interrupt() async {
-    _cancel?.complete();
-    if (_decision case final d? when !d.isCompleted) d.complete((accept: false, reason: 'The user stopped this.'));
+    if (_cancel case final c? when !c.isCompleted) c.complete();
+    for (final d in _decisions.values) {
+      if (!d.isCompleted) d.complete((accept: false, reason: 'The user stopped this.'));
+    }
     _pauseRequested = true;
   }
 
@@ -564,10 +579,13 @@ final class EveryAISession
   }
 
   @override
-  Future<void> respond({required bool accept, String? reason}) async {
-    final d = _decision;
-    if (d == null || d.isCompleted) return;
-    d.complete((accept: accept, reason: reason));
+  Future<void> respond({required bool accept, String? reason, List<String>? callIds}) async {
+    // Without ids: every call still undecided ("Allow all" / "Deny all").
+    if (callIds == null && !accept) _denyAll = true;
+    for (final id in callIds ?? [..._decisions.keys]) {
+      final d = _decisions[id];
+      if (d != null && !d.isCompleted) d.complete((accept: accept, reason: reason));
+    }
   }
 
   @override
@@ -990,54 +1008,68 @@ final class EveryAISession
     }
     say(trailing);
     if (waiting.isEmpty) return false;
-    final decision = _decision = Completer();
+    // One decision per call: the user (or the app's rules) can allow some and
+    // refuse others; the calls run once every one of them has an answer.
+    _denyAll = false;
+    _decisions
+      ..clear()
+      ..addAll({for (final w in waiting) w.actionId: Completer<({bool accept, String? reason})>()});
     _setStatus(ExecutionStatus.waitingForConfirmation);
-    final verdict = await decision.future;
-    _decision = null;
-    if (!verdict.accept) {
-      final reason = verdict.reason ?? '';
-      var moved = false;
-      for (final w in waiting) {
-        if (_flow?.onAnswer(w.call.name, w.call.args ?? const {}, reason) ?? false) moved = true;
-        _emit({
-          'kind': 'UserRejectObservation',
-          'id': _newId(),
-          'action_id': w.actionId,
-          'tool_name': w.call.name,
-          'rejection_reason': reason,
-        });
-        _messages.add({
-          'role': 'tool',
-          'tool_call_id': w.call.id,
-          'content': reason.isEmpty ? 'The user declined this call.' : reason,
-          '_eid': w.actionId,
-        });
-        File('${_dir.path}/messages.jsonl').writeAsStringSync('${jsonEncode(_messages.last)}\n', mode: FileMode.append);
+    final verdicts = await Future.wait([for (final w in waiting) _decisions[w.actionId]!.future]);
+    _decisions.clear();
+    final denyAll = _denyAll;
+    _denyAll = false;
+    final approved = <({LlmToolCall call, String actionId})>[];
+    var moved = false;
+    for (final (n, w) in waiting.indexed) {
+      final verdict = verdicts[n];
+      if (verdict.accept) {
+        approved.add(w);
+        continue;
       }
-      if (moved) _notePhase();
-      if (_flow != null) _saveFlow();
+      final reason = verdict.reason ?? '';
+      if (_flow?.onAnswer(w.call.name, w.call.args ?? const {}, reason) ?? false) moved = true;
+      _emit({
+        'kind': 'UserRejectObservation',
+        'id': _newId(),
+        'action_id': w.actionId,
+        'tool_name': w.call.name,
+        'rejection_reason': reason,
+      });
+      _append({
+        'role': 'tool',
+        'tool_call_id': w.call.id,
+        'content': reason.isEmpty ? 'The user declined this call.' : reason,
+        '_eid': w.actionId,
+      });
+    }
+    if (moved) _notePhase();
+    if (_flow != null && approved.length < waiting.length) _saveFlow();
+    if (approved.isEmpty && (denyAll || cancel.isCompleted)) {
       // Parked like the agent-server: a refusal the app decided is followed
-      // by resume(); the user's own "No" leaves it waiting for them.
+      // by resume(); the user's own "Deny all" leaves it waiting for them.
       _setStatus(ExecutionStatus.paused);
       return true;
     }
     _setStatus(ExecutionStatus.running);
-    // Calls that only look run together; the rest in order.
+    // Calls that only look run together (up to 8 at a time, results in
+    // order); the rest one by one.
     var i = 0;
-    while (i < waiting.length) {
+    while (i < approved.length) {
       if (cancel.isCompleted) {
-        for (final w in waiting.skip(i)) {
+        for (final w in approved.skip(i)) {
           _result(w.call, w.actionId, const ToolOutput('Not run: the user stopped the agent.', isError: true));
         }
         _flushImages();
         _setStatus(ExecutionStatus.paused);
         return true;
       }
-      final batch = [waiting[i]];
+      final batch = [approved[i]];
       while (_readOnly(batch.last.call) &&
-          i + batch.length < waiting.length &&
-          _readOnly(waiting[i + batch.length].call)) {
-        batch.add(waiting[i + batch.length]);
+          batch.length < maxParallelReads &&
+          i + batch.length < approved.length &&
+          _readOnly(approved[i + batch.length].call)) {
+        batch.add(approved[i + batch.length]);
       }
       final outputs = await Future.wait([for (final w in batch) _execute(w.call, cancel.future)]);
       for (final (n, w) in batch.indexed) {
@@ -1053,16 +1085,10 @@ final class EveryAISession
     return false;
   }
 
-  static const _readOnlyTools = {
-    ToolNames.read,
-    ToolNames.grep,
-    ToolNames.glob,
-    ToolNames.webFetch,
-    ToolNames.webSearch,
-    ToolNames.bashOutput,
-  };
+  /// Most read-only calls run at once.
+  static const maxParallelReads = 8;
 
-  bool _readOnly(LlmToolCall call) => _readOnlyTools.contains(call.name);
+  static bool _readOnly(LlmToolCall call) => runsInParallel(call);
 
   Future<ToolOutput> _execute(LlmToolCall call, Future<void> cancel) async {
     if (call.name == ToolNames.bash && isWaitCommand(call.args!['command'] as String? ?? '')) {
@@ -1225,6 +1251,29 @@ final class EveryAISession
     });
     _pendingImages.clear();
   }
+}
+
+/// Tools that only look at things.
+const _readOnlyTools = {
+  ToolNames.read,
+  ToolNames.grep,
+  ToolNames.glob,
+  ToolNames.webFetch,
+  ToolNames.webSearch,
+  ToolNames.bashOutput,
+};
+
+/// A call that only looks, so it may run beside other such calls: a reading
+/// tool, or a shell command the classifier vouches for (not `cd`, which
+/// moves the shell, nor a wait or a background job).
+bool runsInParallel(LlmToolCall call) {
+  if (_readOnlyTools.contains(call.name)) return true;
+  if (call.name != ToolNames.bash && call.name != 'terminal') return false;
+  final args = call.args;
+  if (args == null || args['run_in_background'] == true) return false;
+  final command = args['command'] as String? ?? '';
+  if (!isReadOnlyShell(command) || isWaitCommand(command)) return false;
+  return !(shellSegments(command) ?? const []).any((w) => w.isNotEmpty && w.first == 'cd');
 }
 
 /// Keeps the harness's own files (`.everyai/scratch`, `.everyai/spill`) out

@@ -142,8 +142,10 @@ abstract interface class HarnessSession {
   Future<void> pause();
   Future<void> resume();
 
-  /// Answers the pending action that needs approval.
-  Future<void> respond({required bool accept, String? reason});
+  /// Answers the pending actions that need approval: those in [callIds]
+  /// (action ids) or, without, all still undecided. Sessions that aren't
+  /// [PerCallApprovals] answer the whole batch whatever [callIds] says.
+  Future<void> respond({required bool accept, String? reason, List<String>? callIds});
 
   /// Changes the confirmation policy; [holdClientTools] as in [SessionSpec].
   Future<void> setMode(AgentMode mode, {bool holdClientTools = false});
@@ -177,6 +179,11 @@ abstract interface class PhasedSession {
   /// Starts ('max' or 'ultra', at research) or stops (null) the flow.
   Future<void> setPhaseFlow(String? flow);
 }
+
+/// A session that takes one answer per pending call (the EveryAI harness):
+/// allowed calls run, refused ones go back to the model as refusals, and the
+/// run carries on; only refusing every call at once (no [callIds]) parks it.
+abstract interface class PerCallApprovals {}
 
 /// A session that retries failed model calls itself (the EveryAI harness):
 /// the user can cut the wait before the next attempt short.

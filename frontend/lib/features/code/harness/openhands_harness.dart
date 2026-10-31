@@ -324,7 +324,7 @@ final class _OpenHandsSession implements HarnessSession {
   Future<void> resume() => _h._post('$_base/run');
 
   @override
-  Future<void> respond({required bool accept, String? reason}) =>
+  Future<void> respond({required bool accept, String? reason, List<String>? callIds}) =>
       _h._post('$_base/events/respond_to_confirmation', {'accept': accept, 'reason': ?reason});
 
   @override

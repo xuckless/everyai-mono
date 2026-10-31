@@ -177,7 +177,8 @@ final class FakeSession implements HarnessSession {
   }
 
   @override
-  Future<void> respond({required bool accept, String? reason}) async => _approval?.complete(accept);
+  Future<void> respond({required bool accept, String? reason, List<String>? callIds}) async =>
+      _approval?.complete(accept);
 
   @override
   Future<void> interrupt() async {

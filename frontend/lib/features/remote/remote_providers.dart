@@ -549,6 +549,8 @@ final class RemoteSessionState {
     this.session = const CodeSessionState(),
     this.remember,
     this.flags = const {},
+    this.rememberBy = const {},
+    this.perCall = false,
     this.link = RemoteLinkStatus.connecting,
     this.loaded = false,
     this.gone,
@@ -562,6 +564,12 @@ final class RemoteSessionState {
 
   /// Pending calls the host's rules call dangerous, with why.
   final Map<String, String> flags;
+
+  /// Per pending call, the rule "for this session / always" would store.
+  final Map<String, String> rememberBy;
+
+  /// The host's session takes one answer per call.
+  final bool perCall;
   final RemoteLinkStatus link;
 
   /// The host sent the session at least once.
@@ -575,6 +583,8 @@ final class RemoteSessionState {
     List<String>? remember,
     bool clearRemember = false,
     Map<String, String>? flags,
+    Map<String, String>? rememberBy,
+    bool? perCall,
     RemoteLinkStatus? link,
     bool? loaded,
     String? gone,
@@ -582,6 +592,8 @@ final class RemoteSessionState {
     session: session ?? this.session,
     remember: clearRemember ? null : remember ?? this.remember,
     flags: flags ?? this.flags,
+    rememberBy: rememberBy ?? this.rememberBy,
+    perCall: perCall ?? this.perCall,
     link: link ?? this.link,
     loaded: loaded ?? this.loaded,
     gone: gone ?? this.gone,
@@ -661,9 +673,11 @@ final class RemoteSession extends Notifier<RemoteSessionState> {
 
   Future<void> stop() => _act(MirrorAction.stop);
 
-  Future<void> approve([ApprovalScope scope = ApprovalScope.once]) => _act(MirrorAction.approve, {'scope': scope.name});
+  Future<void> approve([ApprovalScope scope = ApprovalScope.once, List<String>? callIds]) =>
+      _act(MirrorAction.approve, {'scope': scope.name, 'call_ids': ?callIds});
 
-  Future<void> deny([String? reason]) => _act(MirrorAction.deny, {'reason': ?reason});
+  Future<void> deny([String? reason, List<String>? callIds]) =>
+      _act(MirrorAction.deny, {'reason': ?reason, 'call_ids': ?callIds});
 
   Future<void> answer(QuestionItem item, List<QuestionAnswer> answers) => _act(MirrorAction.answer, {
     'call': item.call.id,
@@ -712,7 +726,16 @@ final class MirrorFold {
             connected: m['connected'] == true,
             error: m['error'] as String?,
             subagentNeedsInput: m['subagent_needs_input'] == true,
+            decided: {
+              for (final e in (m['decided'] as Map<String, Object?>? ?? const {}).entries)
+                if (e.value case final bool ok) e.key: ok,
+            },
           ),
+          rememberBy: {
+            for (final e in (m['remember_by'] as Map<String, Object?>? ?? const {}).entries)
+              if (e.value case final String rule) e.key: rule,
+          },
+          perCall: m['per_call'] == true,
           remember: [
             for (final p in m['remember'] as List<Object?>? ?? const [])
               if (p is String) p,

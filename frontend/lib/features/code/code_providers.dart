@@ -750,9 +750,15 @@ final class CodeSessionState {
     this.subagentNeedsInput = false,
     this.asides = const [],
     this.goal,
+    this.decided = const {},
   });
 
   final Transcript transcript;
+
+  /// Answers given so far to the calls waiting for approval (action id →
+  /// allowed), for sessions that take one answer per call: their rows on the
+  /// approval card are settled while the others still wait.
+  final Map<String, bool> decided;
 
   /// The standing objective set with `/goal`, if any.
   final Goal? goal;
@@ -793,7 +799,9 @@ final class CodeSessionState {
     Goal? goal,
     bool clearGoal = false,
     bool clearError = false,
+    Map<String, bool>? decided,
   }) => CodeSessionState(
+    decided: decided ?? this.decided,
     transcript: transcript ?? this.transcript,
     mode: mode ?? this.mode,
     queued: queued ?? this.queued,
@@ -1111,6 +1119,11 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     if (!_mirror.isClosed) _mirror.add(event);
     final transcript = _builder.snapshot;
     state = state.copyWith(transcript: transcript);
+    // The batch was answered and has moved on: its per-call answers go.
+    if (_decided.isNotEmpty && transcript.pending.isEmpty && transcript.held.isEmpty) {
+      _decided.clear();
+      state = state.copyWith(decided: const {});
+    }
     // Edits and commands change files: refresh Changes as they land, not just at turn end.
     if (event is ToolResult && editsFiles(event.toolName)) _refreshGitSoon();
     if (wasRunning && !transcript.running) {
@@ -1255,6 +1268,7 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     if (waiting.isEmpty) return;
     final key = waiting.map((c) => c.id).join(',');
     if (key == _answered) return;
+    if (perCall) return _autoRespondEach(waiting, t);
     // Before any mode's rules: a file a running subagent works on, or a
     // project file before a Max/Ultra plan is approved, is not touched.
     if (_mustWait(waiting, t) case final reason?) {
@@ -1279,6 +1293,41 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
       // the agent reads the refusal (Plan mode, the safety floor, a deny
       // rule) and carries on (a user's own "No" still stops it).
       unawaited(session?.respond(accept: false, reason: verdict.reason).then((_) => session.resume()));
+    }
+  }
+
+  /// Whether the session takes one answer per pending call.
+  bool get perCall => _session is PerCallApprovals;
+
+  /// Answers given to the calls waiting now (see [CodeSessionState.decided]).
+  final _decided = <String, bool>{};
+
+  void _markDecided(Iterable<String> ids, {required bool accept}) {
+    for (final id in ids) {
+      _decided[id] = accept;
+    }
+    state = state.copyWith(decided: Map.unmodifiable(_decided));
+  }
+
+  /// [_autoRespond] for sessions that take one answer per call: each call
+  /// the rules settle is answered at once, so the card only shows the rest.
+  void _autoRespondEach(List<ActionCall> waiting, Transcript t) {
+    final session = _session;
+    if (session == null) return;
+    for (final call in waiting) {
+      if (_decided.containsKey(call.id)) continue;
+      final verdict = switch (_mustWait([call], t)) {
+        final reason? => (accept: false, reason: reason),
+        null => policy.decideAll([call], state.mode),
+      };
+      if (verdict == null) continue;
+      // Over budget: nothing is approved on its own; the run stops instead.
+      if (verdict.accept && !_withinBudget()) {
+        unawaited(stop());
+        return;
+      }
+      _markDecided([call.id], accept: verdict.accept);
+      unawaited(session.respond(accept: verdict.accept, reason: verdict.reason, callIds: [call.id]));
     }
   }
 
@@ -2127,8 +2176,8 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
   /// The rules "allow for this session" / "always allow" would store for
   /// the pending actions, or null when any of them can't be remembered
   /// (compound commands, dangerous actions).
-  List<String>? rememberable() {
-    final pending = state.transcript.pending;
+  List<String>? rememberable([List<ActionCall>? calls]) {
+    final pending = calls ?? state.transcript.pending;
     if (pending.isEmpty) return null;
     final dir = policy.workingDir;
     final patterns = [for (final c in pending) rememberPattern(c, workingDir: dir)];
@@ -2136,11 +2185,27 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     return {for (final p in patterns) p!}.toList();
   }
 
-  /// Approves the pending actions; with [scope] session or always, also
-  /// what [rememberable] gives, so the same commands run without asking.
-  Future<void> approve([ApprovalScope scope = ApprovalScope.once]) async {
+  /// What "for this session" / "always" would store for each pending call
+  /// that can be remembered (call id → rule), for the card's per-call menus.
+  Map<String, String> rememberBy() {
+    final dir = policy.workingDir;
+    return {
+      for (final c in state.transcript.pending)
+        c.id: ?rememberPattern(c, workingDir: dir),
+    };
+  }
+
+  /// Approves the pending actions ([callIds], or every one not answered
+  /// yet); with [scope] session or always, also what [rememberable] gives,
+  /// so the same commands run without asking.
+  Future<void> approve([ApprovalScope scope = ApprovalScope.once, List<String>? callIds]) async {
+    final pending = state.transcript.pending;
+    final targets = [
+      for (final c in pending)
+        if (callIds == null ? !_decided.containsKey(c.id) : callIds.contains(c.id)) c,
+    ];
     if (scope != ApprovalScope.once) {
-      final patterns = rememberable() ?? const <String>[];
+      final patterns = rememberable(targets) ?? const <String>[];
       if (scope == ApprovalScope.session) {
         _sessionAllowed.addAll(patterns);
       } else {
@@ -2151,15 +2216,30 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
         }
       }
     }
-    _answered = state.transcript.pending.map((c) => c.id).join(',');
-    await _session?.respond(accept: true);
+    if (!perCall || callIds == null) _answered = pending.map((c) => c.id).join(',');
+    if (perCall) _markDecided([for (final c in targets) c.id], accept: true);
+    await _session?.respond(accept: true, callIds: perCall ? callIds : null);
+    // A rule just remembered may settle other calls in the batch.
+    if (perCall && callIds != null && scope != ApprovalScope.once) _autoRespond(state.transcript);
   }
 
-  /// Refuses the pending actions; the agent reads the fixed denial text
-  /// with [reason] word for word.
-  Future<void> deny([String? reason]) async {
-    _answered = state.transcript.pending.map((c) => c.id).join(',');
-    await _session?.respond(accept: false, reason: denialMessage(DenialKind.denied, reason: reason));
+  /// Refuses the pending actions ([callIds], or every one not answered yet,
+  /// which parks the run if none was allowed); the agent reads the fixed
+  /// denial text with [reason] word for word.
+  Future<void> deny([String? reason, List<String>? callIds]) async {
+    final pending = state.transcript.pending;
+    if (!perCall || callIds == null) _answered = pending.map((c) => c.id).join(',');
+    if (perCall) {
+      _markDecided([
+        for (final c in pending)
+          if (callIds == null ? !_decided.containsKey(c.id) : callIds.contains(c.id)) c.id,
+      ], accept: false);
+    }
+    await _session?.respond(
+      accept: false,
+      reason: denialMessage(DenialKind.denied, reason: reason),
+      callIds: perCall ? callIds : null,
+    );
   }
 
   /// Sends the card's answers: as the held call's result when the server is

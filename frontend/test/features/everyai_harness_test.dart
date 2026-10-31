@@ -794,4 +794,107 @@ for line in sys.stdin:
     final tools = (gateway.requests.first['tools']! as List).map((t) => ((t as Map)['function'] as Map)['name']);
     expect(tools, contains('bug_check'));
   });
+
+  group('per-call approvals', () {
+    /// Runs [session] until it settles; at the first approval [decide] answers
+    /// the waiting calls (action ids, in order).
+    Future<List<HarnessEvent>> settle(
+      HarnessSession session,
+      Future<void> Function(List<ActionCall> calls) decide,
+    ) async {
+      final events = <HarnessEvent>[];
+      final open = <ActionCall>[];
+      final done = Completer<void>();
+      var asked = false;
+      final sub = session.events.listen((e) async {
+        events.add(e);
+        if (e is ActionCall) open.add(e);
+        if (e is ToolResult) open.removeWhere((c) => c.id == e.actionId);
+        if (e is StateChange && e.executionStatus == ExecutionStatus.waitingForConfirmation && !asked) {
+          asked = true;
+          await decide([...open]);
+        }
+        if (e is StateChange &&
+            const {
+              ExecutionStatus.finished,
+              ExecutionStatus.error,
+              ExecutionStatus.paused,
+            }.contains(e.executionStatus)) {
+          if (!done.isCompleted) done.complete();
+        }
+      });
+      await done.future.timeout(const Duration(seconds: 20));
+      await sub.cancel();
+      return events;
+    }
+
+    test('allowing one call and refusing another runs the one and carries on', () async {
+      gateway
+        ..reply(
+          calls: [
+            ('write', {'file_path': 'a.txt', 'content': 'a\n'}),
+            ('write', {'file_path': 'b.txt', 'content': 'b\n'}),
+          ],
+        )
+        ..reply(text: 'Wrote a only.');
+      final session = await harness.start(spec('write two files', mode: AgentMode.ask));
+      expect(session, isA<PerCallApprovals>());
+      final events = await settle(session, (calls) async {
+        expect(calls, hasLength(2));
+        await session.respond(accept: false, reason: 'Not b.', callIds: [calls[1].id]);
+        await session.respond(accept: true, callIds: [calls[0].id]);
+      });
+      expect(File('$work/a.txt').existsSync(), isTrue);
+      expect(File('$work/b.txt').existsSync(), isFalse);
+      expect(events.whereType<StateChange>().last.executionStatus, ExecutionStatus.finished);
+      final rejected = events.whereType<ToolResult>().where((r) => r.outcome == ToolOutcome.rejected);
+      expect(rejected, hasLength(1));
+      final last = gateway.requests.last['messages']! as List<Object?>;
+      final tools = last.where((m) => (m! as Map)['role'] == 'tool').map((m) => (m! as Map)['content']).toList();
+      expect(tools, contains('Not b.'));
+      expect(tools, hasLength(2));
+    });
+
+    test('Deny all parks the run', () async {
+      gateway.reply(
+        calls: [
+          ('write', {'file_path': 'a.txt', 'content': 'a\n'}),
+          ('bash', {'command': 'touch c.txt'}),
+        ],
+      );
+      final session = await harness.start(spec('two things', mode: AgentMode.ask));
+      final events = await settle(session, (_) => session.respond(accept: false, reason: 'No.'));
+      expect(events.whereType<StateChange>().last.executionStatus, ExecutionStatus.paused);
+      expect(File('$work/a.txt').existsSync(), isFalse);
+      expect(gateway.requests, hasLength(1), reason: 'no model call after Deny all');
+    });
+
+    test('read-only shell commands run beside other reads; changes and cd do not', () {
+      LlmToolCall c(String name, Map<String, Object?> args) =>
+          LlmToolCall(id: 'x', name: name, arguments: jsonEncode(args));
+      expect(runsInParallel(c('read', {'file_path': 'a'})), isTrue);
+      expect(runsInParallel(c('bash', {'command': 'git status && ls -la'})), isTrue);
+      expect(runsInParallel(c('bash', {'command': 'rg foo lib | head'})), isTrue);
+      expect(runsInParallel(c('bash', {'command': 'cd lib && ls'})), isFalse);
+      expect(runsInParallel(c('bash', {'command': 'rm a.txt'})), isFalse);
+      expect(runsInParallel(c('bash', {'command': 'ls', 'run_in_background': true})), isFalse);
+      expect(runsInParallel(c('write', {'file_path': 'a', 'content': ''})), isFalse);
+    });
+
+    test('a batch of read-only commands runs together, results in order', () async {
+      for (var i = 0; i < 3; i++) {
+        File('$work/f$i.txt').writeAsStringSync('file $i\n');
+      }
+      gateway
+        ..reply(
+          calls: [
+            for (var i = 0; i < 3; i++) ('bash', {'command': 'cat f$i.txt'}),
+          ],
+        )
+        ..reply(text: 'Read them.');
+      final session = await harness.start(spec('read the files'));
+      final events = await drive(session);
+      expect([for (final r in events.whereType<ToolResult>()) r.text.trim()], ['file 0', 'file 1', 'file 2']);
+    });
+  });
 }

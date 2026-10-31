@@ -335,6 +335,12 @@ class RemoteSessionScreen extends ConsumerWidget {
                             onDeny: (reason) => act(() => controller.deny(reason)),
                             onMode: (mode) => act(() => controller.setMode(mode)),
                             remember: remote.remember,
+                            decided: state.decided,
+                            rememberBy: remote.rememberBy,
+                            onAllowCall: remote.perCall
+                                ? (id, scope) => act(() => controller.approve(scope, [id]))
+                                : null,
+                            onDenyCall: remote.perCall ? (id) => act(() => controller.deny(null, [id])) : null,
                             flags: remote.flags,
                           ),
                         )
