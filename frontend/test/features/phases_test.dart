@@ -1,6 +1,7 @@
 import 'package:every_ai/features/code/domain/phases.dart';
 import 'package:every_ai/features/code/domain/subagents.dart';
-import 'package:every_ai/features/code/domain/transcript.dart' show planApprovedReason;
+import 'package:every_ai/features/code/domain/transcript.dart'
+    show planApprovedMessage, planApprovedReason, planRevisionLead;
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -38,6 +39,16 @@ void main() {
     expect(f.phase, Phase.verify);
     expect(f.onTurnEnd(), isA<EndTurn>());
     expect(f.phase, Phase.done);
+  });
+
+  test('an approval sent as a message opens the plan gate too; a revision does not', () {
+    final f = PhaseFlow()..phase = Phase.plan;
+    expect(f.onAnswer('present_plan', {}, '$planRevisionLead see their next message.'), isFalse);
+    expect(f.onMessage('<everyai-mode name="fullAuto">Full auto.</everyai-mode>\n\nMake it blue.'), isFalse);
+    expect(f.phase, Phase.plan);
+    expect(f.onMessage('<everyai-mode name="fullAuto">Full auto.</everyai-mode>\n\n$planApprovedMessage'), isTrue);
+    expect(f.phase, Phase.build);
+    expect(f.gate('write', {'file_path': 'index.html'}, inScratch: (_) => false), isNull);
   });
 
   test('ending turns early earns two nudges, then the flow is stuck', () {

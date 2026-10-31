@@ -4,7 +4,7 @@ import 'agent_mode.dart' show askUserQuestionTool, presentPlanTool;
 import 'permissions.dart' show cancelledLead;
 import 'shell_readonly.dart';
 import 'subagents.dart' show SubagentReport, parseTaskNotification, taskTool;
-import 'transcript.dart' show planApprovedReason;
+import 'transcript.dart' show planApprovedMessage, planApprovedReason;
 
 /// The steps of a Max, Ultra or Bug fix session. The harness enforces
 /// them: a call the phase doesn't allow comes back as an error that names
@@ -320,8 +320,12 @@ final class PhaseFlow {
   }
 
   /// A user message arrived: a researcher's background report, or the
-  /// research workflow's reports, move research on.
+  /// research workflow's reports, move research on; the plan approval sent as
+  /// a message moves plan on.
   bool onMessage(String text) {
+    // "Start building" for a plan that wasn't held (or was closed by a reply)
+    // comes as a message; it approves the plan as much as the held answer does.
+    if (phase == Phase.plan && text.contains(planApprovedMessage)) return _advanceFrom(Phase.plan);
     if (ultra && text.trimLeft().startsWith('<$researchWorkflowTag')) {
       researchReports++;
       return _advanceFrom(Phase.research);

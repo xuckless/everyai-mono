@@ -1237,6 +1237,10 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     // the flow's questions; in other modes it waits for them.
     final plan = t.openPlan?.call;
     if (state.mode == AgentMode.fullAuto && t.phase?.phase == Phase.plan && plan != null && _autoPlanned != plan.id) {
+      // Not before the call is held (the status comes one event after it):
+      // approving earlier goes out as a message, which closes the held plan
+      // as "the user wants changes", so the flow never leaves plan.
+      if (_holds && !t.held.any((c) => c.id == plan.id)) return;
       _autoPlanned = plan.id;
       unawaited(startBuilding());
       return;
