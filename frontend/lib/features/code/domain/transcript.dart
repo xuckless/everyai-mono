@@ -641,7 +641,11 @@ String stepTitle(ActionCall call) {
       _ => 'Edited $path',
     },
     'ReadFileAction' => 'Read ${call.str('file_path').isEmpty ? path : call.str('file_path')}',
+    'WriteFileAction' when call.str('mode') == 'append' =>
+      'Added to ${call.str('file_path').isEmpty ? path : call.str('file_path')}',
     'WriteFileAction' => 'Wrote ${call.str('file_path').isEmpty ? path : call.str('file_path')}',
+    'BrowserAction' => browserStepTitle(call),
+    'ScreenshotAction' => call.str('app').isEmpty ? 'Took a screenshot' : 'Took a screenshot of ${call.str('app')}',
     'EditAction' when call.str('patch_op') == 'delete' => 'Deleted $path',
     'EditAction' when call.str('patch_op') == 'move' => 'Moved ${call.str('from')} to $path',
     'EditAction' => 'Edited ${call.str('file_path').isEmpty ? path : call.str('file_path')}',
@@ -653,6 +657,25 @@ String stepTitle(ActionCall call) {
     'MCPToolAction' => 'Used ${call.toolName}',
     'InvokeSkillAction' => 'Loaded the ${call.str('name')} skill',
     _ => call.summary.isNotEmpty ? call.summary : call.toolName,
+  };
+}
+
+/// A browser step in the user's words: "Opened localhost:5173", "Clicked #start".
+String browserStepTitle(ActionCall call) {
+  String sel() => call.str('selector').isNotEmpty ? call.str('selector') : '(${call.action['x']}, ${call.action['y']})';
+  return switch (call.str('action')) {
+    'open' => 'Opened ${call.str('url').replaceFirst(RegExp(r'^https?://'), '')}',
+    'click' => '${(call.action['count'] as num?) == 2 ? 'Double-clicked' : 'Clicked'} ${sel()}',
+    'type' => 'Typed into ${call.str('selector').isEmpty ? 'the page' : call.str('selector')}',
+    'press' => 'Pressed ${call.str('key')}',
+    'scroll' => 'Scrolled the page',
+    'wait' => call.str('selector').isEmpty ? 'Waited' : 'Waited for ${call.str('selector')}',
+    'eval' => 'Ran a script in the page',
+    'screenshot' => 'Took a screenshot of the page',
+    'console' => 'Read the page\'s console',
+    'resize' => 'Resized the page to ${call.action['width']}×${call.action['height']}',
+    'close' => 'Closed the browser',
+    _ => 'Used the browser',
   };
 }
 

@@ -16,6 +16,7 @@ import '../../settings/agent_prompt.dart' show forHeldClientTools;
 import '../events.dart';
 import '../harness.dart';
 import '../openhands_harness.dart' show HarnessError;
+import 'browser_io.dart';
 import 'llm.dart';
 import 'mcp_io.dart';
 import 'model_family.dart';
@@ -116,6 +117,7 @@ final class EveryAISession
       vision: _spec.vision,
       pathMap: _spec.pathMap,
       researchSites: _spec.researchSites,
+      browser: _browser,
     );
   }
 
@@ -125,6 +127,10 @@ final class EveryAISession
   final Directory _dir;
   GatewayClient _gateway;
   final SessionShell _shell;
+
+  /// The session's own headless browser (browser tool): started on first
+  /// use, closed when a run ends or is stopped.
+  late final HeadlessBrowser _browser = HeadlessBrowser(profileDir: '${_dir.path}/browser');
 
   /// The session's MCP servers (connected once, at start or first run).
   McpTools _mcp = McpTools.empty;
@@ -709,6 +715,7 @@ final class EveryAISession
 
   @override
   Future<void> interrupt() async {
+    unawaited(_browser.close());
     if (_cancel case final c? when !c.isCompleted) c.complete();
     for (final d in _decisions.values) {
       if (!d.isCompleted) d.complete((accept: false, reason: 'The user stopped this.'));
@@ -764,6 +771,7 @@ final class EveryAISession
       vision: _spec.vision,
       pathMap: _spec.pathMap,
       researchSites: _spec.researchSites,
+      browser: _browser,
     );
     _writeSpec();
   }
@@ -1004,6 +1012,7 @@ final class EveryAISession
     } finally {
       _looping = false;
       _cancel = null;
+      unawaited(_browser.close());
     }
   }
 

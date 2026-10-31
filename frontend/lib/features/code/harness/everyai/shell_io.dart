@@ -92,6 +92,20 @@ final class SessionShell {
   final _running = <Process>{};
 
   Iterable<BackgroundShell> get background => _background.values;
+
+  /// Processes this session started that are still alive: its commands and
+  /// background shells, and everything under them.
+  Future<Set<int>> processes() async {
+    final roots = [for (final p in _running) p.pid, for (final b in _background.values) b.pid];
+    final out = <int>{};
+    for (final r in roots) {
+      out
+        ..add(r)
+        ..addAll(await _descendants(r));
+    }
+    return out;
+  }
+
   BackgroundShell? backgroundShell(String id) => _background[id];
 
   Future<Map<String, String>> _env() async => {...(await ShellEnv.load()).env, sessionEnvVar: sessionTag};

@@ -7,8 +7,10 @@ import 'dart:typed_data';
 import 'package:image/image.dart' as img;
 
 import 'apply_patch.dart';
+import 'browser_io.dart';
 import 'llm.dart';
 import 'shell_io.dart';
+import 'window_capture_io.dart';
 import 'scrub.dart';
 
 // The tool set and its behaviour follow opencode's (MIT; see
@@ -30,6 +32,8 @@ abstract final class ToolNames {
   static const webFetch = 'web_fetch';
   static const webSearch = 'web_search';
   static const applyPatch = 'apply_patch';
+  static const browser = 'browser';
+  static const screenshot = 'screenshot';
 }
 
 /// The action `kind` each tool shows as in the transcript and is judged as by
@@ -48,6 +52,8 @@ const actionKinds = {
   ToolNames.webFetch: 'WebFetchAction',
   ToolNames.webSearch: 'WebSearchAction',
   ToolNames.applyPatch: 'ApplyPatchAction',
+  ToolNames.browser: 'BrowserAction',
+  ToolNames.screenshot: 'ScreenshotAction',
 };
 
 Map<String, Object?> _fn(String name, String description, Map<String, Object?> properties, List<String> required) => {
@@ -175,8 +181,8 @@ final _specs = [
     ToolNames.read,
     'Read a file. Returns numbered lines (cat -n style), at most 2000 from `offset` (1-based). Read a file '
     'before editing it. Read several files in one turn when you need them. Images (png, jpg, gif, webp) come back '
-    'as the picture itself, so you can look at screenshots of what you built (for example from headless Chrome '
-    '`--screenshot`, or `screencapture -x` on macOS) and check it visually.',
+    'as the picture itself, so you can look at images and diagrams; for screenshots use the browser and screenshot '
+    'tools.',
     {
       'file_path': {'type': 'string', 'description': 'Absolute path, or relative to the working directory'},
       'offset': {'type': 'integer', 'description': 'First line to read (1-based)'},
@@ -284,6 +290,63 @@ final _specs = [
       'query': {'type': 'string'},
     },
     ['query'],
+  ),
+  _fn(
+    ToolNames.browser,
+    'Use a web page the way the user would, in a headless browser of your own (its own profile: never the '
+    'user\'s browser, so never quit or kill theirs). Open what you built (http://localhost:PORT with the dev server '
+    'in the background, or file:///path/index.html), click and type on the real elements, then look.\n'
+    '- action: open {url} · click {selector, or x and y; count 2 = double-click} · type {text, selector?, submit?} '
+    '· press {key: Enter, Tab, Escape, ArrowUp…, or one character} · scroll {dy} · wait {selector? ms?} · '
+    'eval {script: a JS expression; its JSON value comes back} · screenshot {full_page?} · console · '
+    'resize {width, height} · close.\n'
+    '- Every action reports what the page logged since the last one (console errors, uncaught exceptions, '
+    'failed requests); console reads it alone. screenshot returns the picture: look at it before saying a UI works.\n'
+    '- Add screenshot: true to any action to see the page right after it.',
+    {
+      'action': {
+        'type': 'string',
+        'enum': [
+          'open',
+          'click',
+          'type',
+          'press',
+          'scroll',
+          'wait',
+          'eval',
+          'screenshot',
+          'console',
+          'resize',
+          'close',
+        ],
+      },
+      'url': {'type': 'string'},
+      'selector': {'type': 'string', 'description': 'A CSS selector'},
+      'x': {'type': 'number'},
+      'y': {'type': 'number'},
+      'count': {'type': 'integer'},
+      'text': {'type': 'string'},
+      'submit': {'type': 'boolean'},
+      'key': {'type': 'string'},
+      'dy': {'type': 'number'},
+      'ms': {'type': 'integer'},
+      'script': {'type': 'string'},
+      'full_page': {'type': 'boolean'},
+      'width': {'type': 'integer'},
+      'height': {'type': 'integer'},
+      'screenshot': {'type': 'boolean', 'description': 'Also return a screenshot after the action'},
+    },
+    ['action'],
+  ),
+  _fn(
+    ToolNames.screenshot,
+    'Take a screenshot of a desktop app\'s window that this session started (a native, Flutter or Electron app you '
+    'run here, or one built in this folder) and look at it. Other apps\' windows are the user\'s and are never '
+    'captured. macOS only for now; for web pages use browser instead.',
+    {
+      'app': {'type': 'string', 'description': 'App or window name to pick, when the session runs several'},
+    },
+    const [],
   ),
 ];
 
@@ -451,10 +514,14 @@ final class ToolRunner {
     this.vision = false,
     this.pathMap = const {},
     this.researchSites,
+    this.browser,
     Scrubber? scrubber,
   }) : scrubber = scrubber ?? Scrubber.forProject(root, extra: [gateway.apiKey]);
 
   final String root;
+
+  /// The session's headless browser; null (tests) means none.
+  final HeadlessBrowser? browser;
 
   /// Set for a research job: its sandbox (see [SessionSpec.researchSites]).
   final List<String>? researchSites;
@@ -470,6 +537,8 @@ final class ToolRunner {
   String? _researchRefusal(String tool, Map<String, Object?> args) {
     if (!research) return null;
     switch (tool) {
+      case ToolNames.browser || ToolNames.screenshot:
+        return 'Error: research jobs read the web with web_fetch and web_search only.';
       case ToolNames.bash || ToolNames.bashOutput || ToolNames.killShell || ToolNames.monitor:
         return 'Error: research jobs have no shell, so nothing downloaded can run. Read sources with web_fetch '
             '(raw.githubusercontent.com for files) and write your notes with write.';
@@ -547,6 +616,8 @@ final class ToolRunner {
         ToolNames.todo => const ToolOutput('Todos updated. Keep working through them.'),
         ToolNames.webFetch => await _webFetch(args),
         ToolNames.webSearch => await _webSearch(args),
+        ToolNames.browser => await _browse(args),
+        ToolNames.screenshot => await _screenshot(args),
         _ => ToolOutput('Error: there is no tool called $tool.', isError: true),
       };
     } on FileSystemException catch (e) {
@@ -554,6 +625,114 @@ final class ToolRunner {
     } on Object catch (e) {
       return ToolOutput('Error: $e', isError: true);
     }
+  }
+
+  Future<ToolOutput> _browse(Map<String, Object?> args) async {
+    final b = browser;
+    if (b == null) return const ToolOutput('Error: no browser in this session.', isError: true);
+    final action = args['action'] as String? ?? '';
+    String? str(String k) => (args[k] as String?)?.trim().isEmpty ?? true ? null : (args[k] as String).trim();
+    double? at(String k) => (args[k] as num?)?.toDouble();
+    var shot = args['screenshot'] == true;
+    try {
+      final String did;
+      switch (action) {
+        case 'open':
+          final url = str('url');
+          if (url == null) return const ToolOutput('Error: open needs a url.', isError: true);
+          // A bare path or localhost:port is what agents often pass.
+          final target = url.startsWith('/')
+              ? Uri.file(url).toString()
+              : RegExp(r'^[a-z][a-z0-9+.-]*:', caseSensitive: false).hasMatch(url) && !url.startsWith('localhost:')
+              ? url
+              : 'http://$url';
+          did = 'Opened ${await b.open(target)}';
+        case 'click':
+          final sel = str('selector');
+          if (sel == null && (at('x') == null || at('y') == null)) {
+            return const ToolOutput('Error: click needs a selector, or x and y.', isError: true);
+          }
+          did = await b.click(selector: sel, x: at('x'), y: at('y'), count: (args['count'] as num?)?.toInt() ?? 1);
+        case 'type':
+          final text = args['text'] as String?;
+          if (text == null) return const ToolOutput('Error: type needs text.', isError: true);
+          did = await b.type(text, selector: str('selector'), submit: args['submit'] == true);
+        case 'press':
+          did = await b.press(str('key') ?? 'Enter');
+        case 'scroll':
+          did = await b.scroll(at('dy') ?? 600, x: at('x'), y: at('y'));
+        case 'wait':
+          did = await b.wait(selector: str('selector'), ms: (args['ms'] as num?)?.toInt() ?? 5000);
+        case 'eval':
+          final script = args['script'] as String?;
+          if (script == null || script.trim().isEmpty) {
+            return const ToolOutput('Error: eval needs a script.', isError: true);
+          }
+          did = 'Result: ${_fit(const JsonEncoder.withIndent('  ').convert(await b.evaluate(script)), 'browser-eval')}';
+        case 'screenshot':
+          shot = true;
+          did = 'Screenshot of ${await b.describe()}';
+        case 'console':
+          did = 'Console since the last read:';
+        case 'resize':
+          did = await b.resize((args['width'] as num?)?.toInt() ?? 1280, (args['height'] as num?)?.toInt() ?? 800);
+        case 'close':
+          await b.close();
+          return const ToolOutput('Closed the browser.');
+        default:
+          return ToolOutput('Error: unknown browser action "$action".', isError: true);
+      }
+      final log = b.takeLog();
+      final text = [
+        did,
+        if (log.isNotEmpty) 'Page log:\n${log.join('\n')}' else if (action == 'console') '(nothing logged)',
+      ].join('\n');
+      if (!shot) return ToolOutput(text);
+      final png = await b.screenshot(fullPage: args['full_page'] == true);
+      final dir = Directory('$root/.everyai/scratch/screenshots')..createSync(recursive: true);
+      final path = '${dir.path}/browser-${DateTime.now().millisecondsSinceEpoch}.png';
+      File(path).writeAsBytesSync(png);
+      final url = imageDataUrl(png, 'png');
+      if (!vision || url == null) {
+        return ToolOutput('$text\nSaved the screenshot to $path (this model can\'t view images).');
+      }
+      return ToolOutput('$text\nScreenshot: $path', images: [(label: path, dataUrl: url)]);
+    } on BrowserError catch (e) {
+      final log = b.takeLog();
+      return ToolOutput('Error: ${e.message}${log.isEmpty ? '' : '\nPage log:\n${log.join('\n')}'}', isError: true);
+    }
+  }
+
+  Future<ToolOutput> _screenshot(Map<String, Object?> args) async {
+    if (!Platform.isMacOS) {
+      return const ToolOutput(
+        'Error: desktop screenshots work on macOS only for now. For web pages use browser.',
+        isError: true,
+      );
+    }
+    final app = (args['app'] as String?)?.trim();
+    final windows = await sessionWindows(sessionPids: await shell.processes(), root: root, app: app);
+    if (windows.isEmpty) {
+      return ToolOutput(
+        'Error: no window of an app this session started${app == null || app.isEmpty ? '' : ' matching "$app"'}. Start '
+        'the app from this session (bash with run_in_background) or open one built in this folder, wait for its '
+        'window, then try again. Other apps\' windows are the user\'s and are not captured. For web pages use browser.',
+        isError: true,
+      );
+    }
+    final w = windows.first;
+    final dir = Directory('$root/.everyai/scratch/screenshots')..createSync(recursive: true);
+    final path = '${dir.path}/window-${DateTime.now().millisecondsSinceEpoch}.png';
+    if (await captureWindow(w.id, path) case final problem?) return ToolOutput('Error: $problem', isError: true);
+    final label = '${w.owner}${w.title.isEmpty ? '' : ' — ${w.title}'} (${w.width}x${w.height})';
+    final others = windows.length > 1
+        ? ' ${windows.length - 1} other window(s) of this session\'s apps; pick with app.'
+        : '';
+    final url = imageDataUrl(File(path).readAsBytesSync(), 'png');
+    if (!vision || url == null) {
+      return ToolOutput('Saved a screenshot of $label to $path (this model can\'t view images).$others');
+    }
+    return ToolOutput('Screenshot of $label: $path.$others', images: [(label: path, dataUrl: url)]);
   }
 
   /// [text] cut to [maxToolText], the whole of it saved under `.everyai/spill/`.

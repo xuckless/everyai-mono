@@ -57,6 +57,8 @@ enum AgentMode {
     // The EveryAI harness: reading a background shell, waiting on it, stopping
     // one the session started, and reading the web.
     'BashOutputAction' || 'MonitorAction' || 'KillShellAction' || 'WebFetchAction' || 'WebSearchAction' => true,
+    // Its own headless browser (own profile) and screenshots of the session's own windows: no files change.
+    'BrowserAction' || 'ScreenshotAction' => true,
     // Returns a skill's instructions; the app escapes the inline commands it would run.
     'InvokeSkillAction' => true,
     // is_input sends keys to a running process.
