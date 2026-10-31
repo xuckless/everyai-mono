@@ -298,13 +298,14 @@ const _borrowed = ['node_modules', '.venv', 'venv'];
 
 Future<ForkCopy?> forkCopy(String dir, {required String worktreesDir, required String slug}) async {
   final root = await repoRoot(dir);
-  if (root == null || !await hasCommits(root)) return null;
-  final head = (await _out(root, ['rev-parse', 'HEAD'])).trim();
-  final view = SessionWorktree(repoRoot: root, path: dir, branch: '', baseBranch: '', baseCommit: head);
+  if (root == null) return null;
+  // A fresh `git init` with no commit yet still gets a fork: its base has no parent.
+  final head = await hasCommits(root) ? (await _out(root, ['rev-parse', 'HEAD'])).trim() : null;
+  final view = SessionWorktree(repoRoot: root, path: dir, branch: '', baseBranch: '', baseCommit: head ?? _emptyTree);
   final tree = await _withSnapshot(view, (env) async => (await _out(dir, ['write-tree'], env: env)).trim());
   final base = (await _out(root, [
     '-c', 'user.name=EveryAI', '-c', 'user.email=agent@everyai.invalid', //
-    'commit-tree', tree, '-p', head, '-m', 'EveryAI fork base',
+    'commit-tree', tree, if (head != null) ...['-p', head], '-m', 'EveryAI fork base',
   ])).trim();
   final wt = '$worktreesDir/$slug';
   await Directory(worktreesDir).create(recursive: true);

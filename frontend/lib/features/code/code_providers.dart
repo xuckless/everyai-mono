@@ -30,7 +30,8 @@ import 'domain/review.dart';
 import 'domain/rewind.dart';
 import 'domain/spill.dart';
 import 'domain/phases.dart'
-    show Phase, parseResearchAngles, researchAnglesQuestion, researchCallPrefix, researchWorkflowMessage;
+    show Phase, flowLabel, parseResearchAngles, researchAnglesQuestion, researchCallPrefix, researchWorkflowMessage;
+import 'domain/fork_files.dart';
 import 'domain/subagents.dart';
 import 'domain/questions.dart';
 import 'domain/session_commands.dart';
@@ -1253,6 +1254,14 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     if (waiting.isEmpty) return;
     final key = waiting.map((c) => c.id).join(',');
     if (key == _answered) return;
+    // Before any mode's rules: a file a running subagent works on, or a
+    // project file before a Max/Ultra plan is approved, is not touched.
+    if (_mustWait(waiting, t) case final reason?) {
+      _answered = key;
+      final session = _session;
+      unawaited(session?.respond(accept: false, reason: reason).then((_) => session.resume()));
+      return;
+    }
     final verdict = policy.decideAll(waiting, state.mode);
     if (verdict == null) return;
     // Over budget: nothing is approved on its own; the run stops instead.
@@ -1270,6 +1279,44 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
       // rule) and carries on (a user's own "No" still stops it).
       unawaited(session?.respond(accept: false, reason: verdict.reason).then((_) => session.resume()));
     }
+  }
+
+  /// Why the [waiting] actions are refused before the mode decides: one
+  /// changes a file a running subagent works on, or writes a project file in a
+  /// Max/Ultra phase before Build.
+  String? _mustWait(List<ActionCall> waiting, Transcript t) {
+    final dir = ref.read(codeSessionsProvider.notifier).byId(sessionId)?.workingDir;
+    if (dir == null) return null;
+    final p = t.phase;
+    final owned = _subagentFiles();
+    for (final call in waiting) {
+      if (p != null) {
+        if (refusedBeforeBuild(call, p.phase, flowLabel(p.flow), dir) case final reason?) return reason;
+      }
+      if (waitForSubagent(call, owned, dir) case final reason?) return reason;
+    }
+    return null;
+  }
+
+  /// The files each running subagent works on, by its title, relative to its
+  /// folder (which is this session's, or its own copy of it): the ones it has
+  /// written so far, and for a fork that builds, the ones its task names.
+  Map<String, Set<String>> _subagentFiles() {
+    final sessions = ref.read(codeSessionsProvider.notifier);
+    final out = <String, Set<String>>{};
+    for (final MapEntry(key: callId, value: childId) in _childOf.entries) {
+      final child = sessions.byId(childId);
+      if (child == null) continue;
+      final call = _calls[callId];
+      final task = call == null ? null : SubagentTask.of(call);
+      final files = {
+        if (ref.exists(codeSessionProvider(childId)))
+          ...filesWritten(ref.read(codeSessionProvider(childId).notifier).mirrorEvents, child.workingDir),
+        if (task != null && task.agent.isEmpty) ...filesNamed('${task.description}\n${task.prompt}'),
+      };
+      if (files.isNotEmpty) out.update(child.title, (f) => f..addAll(files), ifAbsent: () => files);
+    }
+    return out;
   }
 
   /// Snapshots the worktree before the next user turn, so "Restore files"
@@ -1766,6 +1813,8 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
       if (_holds && !t.held.any((c) => c.id == id)) continue;
       if (sessions.subagentFor(sessionId, id) case final child?) {
         _watch(id, child.id);
+      } else if (_notBeforeBuild(item.step.call, t) case final reason?) {
+        _ready(id, SubagentReport(SubagentStatus.notStarted, reason));
       } else if (_childOf.length + _spawning.length >= maxConcurrentSubagents) {
         _ready(
           id,
@@ -1781,6 +1830,12 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
     }
   }
 
+  /// Why a subagent [call] waits for Build in a Max/Ultra flow, or null.
+  static String? _notBeforeBuild(ActionCall call, Transcript t) => switch (t.phase) {
+    final p? => subagentBeforeBuild(SubagentTask.of(call).agent, p.phase, flowLabel(p.flow)),
+    null => null,
+  };
+
   Future<void> _spawn(String callId, ActionCall call, CodeSessionInfo parent, {bool onParentModel = false}) async {
     _spawning.add(callId);
     _calls[callId] = call;
@@ -1793,9 +1848,11 @@ final class CodeSessionController extends Notifier<CodeSessionState> with _Sessi
         return;
       }
       _spawning.remove(callId);
+      // It asked for its own copy and couldn't have one (no git repository here).
+      if (call.str('isolation') == 'worktree' && child.forkCopy == null) _fellBack[callId] = sharedFolderNote;
       if (call.action['run_in_background'] == true && !onParentModel) {
         _background[callId] = (childId: child.id, title: child.title);
-        _reports[callId] = backgroundStarted(child.id);
+        _reports[callId] = backgroundStarted(child.id, note: _fellBack.remove(callId));
         _deliver();
       }
       _watch(callId, child.id);

@@ -236,6 +236,23 @@ void main() {
     expect(await _git(repo, ['diff', '--cached', '--name-only']), isEmpty);
   });
 
+  test('a fork gets its own copy in a repository with no commit yet, and merges back', () async {
+    final fresh = '${tmp.path}/fresh-fork';
+    await Directory(fresh).create();
+    await _git(fresh, ['init', '-q', '-b', 'main']);
+    File('$fresh/index.html').writeAsStringSync('<html>one</html>\n');
+    final copy = (await GitService.forkCopy(fresh, worktreesDir: '${tmp.path}/forks', slug: 'f2'))!;
+    expect(File('${copy.path}/index.html').readAsStringSync(), '<html>one</html>\n');
+    File('${copy.path}/index.html').writeAsStringSync('<html>two</html>\n');
+    File('${copy.path}/games.js').writeAsStringSync('play()\n');
+    // Until it merges back, the parent's folder doesn't change.
+    expect(File('$fresh/games.js').existsSync(), isFalse);
+    final result = await GitService.mergeFork(copy, slug: 'f2');
+    expect(result.merged, unorderedEquals(['index.html', 'games.js']));
+    expect(File('$fresh/index.html').readAsStringSync(), '<html>two</html>\n');
+    expect(await GitService.hasCommits(fresh), isFalse);
+  });
+
   test('a repository with no commit yet still gets a baseline: everything new shows as added', () async {
     final fresh = '${tmp.path}/fresh';
     await Directory(fresh).create();

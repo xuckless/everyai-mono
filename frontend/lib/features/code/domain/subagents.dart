@@ -339,12 +339,18 @@ SubagentReport withMergeNote(SubagentReport report, ({List<String> merged, List<
   return SubagentReport(report.status, '${report.text}$note');
 }
 
-SubagentReport backgroundStarted(String childId) => SubagentReport(
+SubagentReport backgroundStarted(String childId, {String? note}) => SubagentReport(
   SubagentStatus.background,
-  'Started in the background as task $childId. Carry on with other work; its report arrives as a '
-  '<task-notification> message when it finishes. Do not wait or poll for it (no sleep), and do not do the same '
-  'work yourself. With nothing else to do, end your turn with a short note: the notification wakes you.',
+  '${note == null ? '' : '$note\n\n'}Started in the background as task $childId. Carry on with other work; its '
+  'report arrives as a <task-notification> message when it finishes. Do not wait or poll for it (no sleep), do '
+  'not do the same work yourself, and leave the files it works on alone until then. With nothing else to do, end '
+  'your turn with a short note: the notification wakes you.',
 );
+
+/// Told when a fork asked for its own worktree and runs in the parent's folder instead.
+const sharedFolderNote =
+    '[No worktree: this folder is not a git repository, so the fork works in your folder. Give parallel forks '
+    'different files.]';
 
 /// A background subagent's report, sent to its parent when it ends.
 String taskNotification(String childId, String title, SubagentReport report) =>
