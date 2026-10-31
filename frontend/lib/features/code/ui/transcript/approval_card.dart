@@ -75,7 +75,7 @@ class _ApprovalCardState extends State<ApprovalCard> {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final calls = widget.pending;
-    final edits = calls.every((c) => c.actionKind == 'FileEditorAction' && c.str('command') != 'view');
+    final edits = calls.every((c) => AgentMode.isFileEdit(c) && !AgentMode.isReadOnly(c));
     final remember = widget.remember;
     if (widget.onAllowCall != null && widget.onDenyCall != null && calls.length > 1) return _stacked(theme, edits);
     return CallbackShortcuts(
@@ -371,6 +371,13 @@ class _Preview extends StatelessWidget {
         maxLines: 24,
         language: languageForPath(call.str('path')),
       ),
+      // A patch: its text, the way the model wrote it.
+      'ApplyPatchAction' => Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(color: theme.codeBackground, borderRadius: BorderRadius.circular(8)),
+        child: Text(_clip(call.str('patch'), 60), style: mono.copyWith(color: theme.text)),
+      ),
       // An MCP server's tool: its name and the arguments it gets.
       'MCPToolAction' => Container(
         width: double.infinity,
@@ -437,6 +444,12 @@ class _Preview extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The first [max] lines of [text], with a note of how many more there are.
+String _clip(String text, int max) {
+  final lines = text.split('\n');
+  return lines.length <= max ? text : '${lines.take(max).join('\n')}\n… ${lines.length - max} more lines';
 }
 
 /// An MCP call's arguments as indented JSON, cut to [max] characters.

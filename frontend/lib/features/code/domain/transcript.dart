@@ -286,6 +286,9 @@ final class TranscriptBuilder {
   final _byAction = <String, int>{};
   final _byToolCall = <String, String>{};
   final _open = <String, ActionCall>{};
+
+  /// A patch's call id → its per-file step ids.
+  final _patchParts = <String, List<String>>{};
   final _streaming = StringBuffer();
   final _reasoning = StringBuffer();
   final _parts = <Object>[];
@@ -462,6 +465,36 @@ final class TranscriptBuilder {
         // Consecutive plan updates replace each other.
         if (_items.lastOrNull is PlanItem) _items.removeLast();
         _push(call.id, PlanItem(call.id, tasks));
+      // A patch shows as one edit step per file it changes.
+      case 'ApplyPatchAction':
+        if (call.thought.isNotEmpty) _items.add(AgentText('${call.id}-t', call.thought));
+        final files = [...(call.action['files'] as List<Object?>? ?? const []).whereType<Map<String, Object?>>()];
+        if (files.isEmpty) {
+          _push(call.id, StepItem(ToolStep(call)));
+          return;
+        }
+        final ids = <String>[];
+        for (final (i, f) in files.indexed) {
+          final path = '${f['to'] ?? f['path'] ?? ''}';
+          final part = ActionCall(
+            id: i == 0 ? call.id : '${call.id}#$i',
+            raw: call.raw,
+            toolName: call.toolName,
+            toolCallId: call.toolCallId,
+            summary: call.summary,
+            risk: call.risk,
+            action: {
+              'kind': f['op'] == 'add' ? 'WriteFileAction' : 'EditAction',
+              'path': path,
+              'file_path': path,
+              'patch_op': f['op'],
+              if (f['to'] != null) 'from': f['path'],
+            },
+          );
+          _push(part.id, StepItem(ToolStep(part)));
+          ids.add(part.id);
+        }
+        _patchParts[call.id] = ids;
       case 'ThinkAction':
         _items.add(AgentText(call.id, '', reasoning: call.str('thought')));
       case 'FinishAction':
@@ -493,6 +526,37 @@ final class TranscriptBuilder {
   void _result(ToolResult r) {
     final actionId = r.actionId.isNotEmpty ? r.actionId : (_byToolCall[r.toolCallId] ?? '');
     _open.remove(actionId);
+    if (_patchParts.remove(actionId) case final parts?) {
+      // Each file's step gets its own part of the result (its diff).
+      final files = [...(r.observation['files'] as List<Object?>? ?? const []).whereType<Map<String, Object?>>()];
+      for (final (i, id) in parts.indexed) {
+        final at = _byAction[id];
+        if (at == null) continue;
+        if (_items[at] case StepItem(:final step)) {
+          final file = i < files.length ? files[i] : null;
+          _items[at] = StepItem(
+            step.withResult(
+              ToolResult(
+                id: i == 0 ? r.id : '${r.id}#$i',
+                raw: r.raw,
+                actionId: id,
+                toolName: r.toolName,
+                outcome: r.outcome,
+                observation: {
+                  ...r.observation,
+                  if (file != null) ...{
+                    'path': file['path'],
+                    'old_content': file['old_content'],
+                    'new_content': file['new_content'],
+                  },
+                },
+              ),
+            ),
+          );
+        }
+      }
+      return;
+    }
     final i = _byAction[actionId];
     if (i == null) return;
     _items[i] = switch (_items[i]) {
@@ -578,7 +642,10 @@ String stepTitle(ActionCall call) {
     },
     'ReadFileAction' => 'Read ${call.str('file_path').isEmpty ? path : call.str('file_path')}',
     'WriteFileAction' => 'Wrote ${call.str('file_path').isEmpty ? path : call.str('file_path')}',
+    'EditAction' when call.str('patch_op') == 'delete' => 'Deleted $path',
+    'EditAction' when call.str('patch_op') == 'move' => 'Moved ${call.str('from')} to $path',
     'EditAction' => 'Edited ${call.str('file_path').isEmpty ? path : call.str('file_path')}',
+    'ApplyPatchAction' => 'Patched ${(call.action['paths'] as List<Object?>?)?.length ?? 0} files',
     'GrepAction' => 'Searched for ${call.str('pattern')}',
     'GlobAction' => 'Listed ${call.str('pattern')}',
     'ListDirectoryAction' => 'Listed ${call.str('dir_path').isEmpty ? path : call.str('dir_path')}',

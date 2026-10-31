@@ -41,14 +41,17 @@ String? relativeTo(String path, String dir) {
 /// its own copy of the parent's, or the parent's itself).
 Set<String> filesWritten(Iterable<HarnessEvent> events, String dir) => {
   for (final e in events)
-    if (e is ActionCall)
+    if (e is ActionCall) ...[
       if (writeTarget(e) case final path?) ?relativeTo(path, dir),
+      // A patch can write several files.
+      if (e.actionKind == 'ApplyPatchAction')
+        for (final p in e.action['paths'] as List<Object?>? ?? const [])
+          if (p is String) ?relativeTo(p, dir),
+    ],
 };
 
 /// File names a task's text mentions ("index.html", "src/games.js").
-Set<String> filesNamed(String text) => {
-  for (final m in _fileName.allMatches(text)) ?relativeTo(m[0]!, ''),
-};
+Set<String> filesNamed(String text) => {for (final m in _fileName.allMatches(text)) ?relativeTo(m[0]!, '')};
 
 final _fileName = RegExp(r'(?<![\w/.:@-])(?:\.?/)?(?:[\w-]+/)*[\w-]+\.[A-Za-z][A-Za-z0-9]{0,7}(?![\w/-])');
 

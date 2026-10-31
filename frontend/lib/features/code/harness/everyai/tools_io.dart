@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:image/image.dart' as img;
 
+import 'apply_patch.dart';
 import 'llm.dart';
 import 'shell_io.dart';
 import 'scrub.dart';
@@ -28,6 +29,7 @@ abstract final class ToolNames {
   static const todo = 'todo_write';
   static const webFetch = 'web_fetch';
   static const webSearch = 'web_search';
+  static const applyPatch = 'apply_patch';
 }
 
 /// The action `kind` each tool shows as in the transcript and is judged as by
@@ -45,6 +47,7 @@ const actionKinds = {
   ToolNames.todo: 'TaskTrackerAction',
   ToolNames.webFetch: 'WebFetchAction',
   ToolNames.webSearch: 'WebSearchAction',
+  ToolNames.applyPatch: 'ApplyPatchAction',
 };
 
 Map<String, Object?> _fn(String name, String description, Map<String, Object?> properties, List<String> required) => {
@@ -58,21 +61,59 @@ Map<String, Object?> _fn(String name, String description, Map<String, Object?> p
 
 /// The built-in tools, in OpenAI function format. [only] keeps a subset
 /// (a library agent's `tools`); names the agent-server used map across.
-List<Map<String, Object?>> builtInToolSpecs({List<String>? only}) {
+/// With [applyPatch] (GPT and Codex models, which are trained on that
+/// format), `apply_patch` takes the place of edit and write.
+List<Map<String, Object?>> builtInToolSpecs({List<String>? only, bool applyPatch = false}) {
   final keep = only == null
       ? null
       : {
           for (final t in only) ..._aliases[t] ?? {t},
         };
+  bool kept(String name) => keep == null || keep.contains(name);
   return [
     for (final spec in _specs)
-      if (keep == null || keep.contains((spec['function']! as Map)['name'])) spec,
+      if ((spec['function']! as Map)['name'] case final String name when kept(name))
+        if (!applyPatch || (name != ToolNames.write && name != ToolNames.edit))
+          spec
+        else if (name == ToolNames.edit)
+          _applyPatchSpec,
   ];
 }
 
+final _applyPatchSpec = _fn(
+  ToolNames.applyPatch,
+  'Create, change, rename and delete files with one patch. Read a file before you change it. The patch is plain '
+  'text in this envelope:\n'
+  '*** Begin Patch\n'
+  '*** Add File: <path>\n'
+  '+<every line of the new file, each starting with +>\n'
+  '*** Update File: <path>\n'
+  '*** Move to: <new path>   (only to rename)\n'
+  '@@ <a line just above the change, to place it>   (optional)\n'
+  ' <unchanged line, starting with a space>\n'
+  '-<line to remove>\n'
+  '+<line to add>\n'
+  '*** Delete File: <path>\n'
+  '*** End Patch\n'
+  'Give about three unchanged lines above and below each change, copied exactly from the file; start a new @@ '
+  'section for each separate place. Paths are relative to the working directory or absolute. Nothing is written '
+  'unless every change in the patch applies.',
+  {
+    'patch': {'type': 'string', 'description': 'The whole patch, from *** Begin Patch to *** End Patch'},
+  },
+  ['patch'],
+);
+
 const _aliases = {
   'terminal': {ToolNames.bash, ToolNames.bashOutput, ToolNames.killShell, ToolNames.monitor},
-  'file_editor': {ToolNames.read, ToolNames.write, ToolNames.edit, ToolNames.grep, ToolNames.glob},
+  'file_editor': {
+    ToolNames.read,
+    ToolNames.write,
+    ToolNames.edit,
+    ToolNames.applyPatch,
+    ToolNames.grep,
+    ToolNames.glob,
+  },
   'task_tracker': {ToolNames.todo},
 };
 
@@ -309,6 +350,7 @@ Map<String, Object?> actionFor(String tool, Map<String, Object?> args, String ro
       if (tool == ToolNames.edit) ...{'old_str': args['old_string'], 'new_str': args['new_string']},
       if (tool == ToolNames.write) 'file_text': args['content'],
     },
+    ToolNames.applyPatch => {'kind': kind, ...args, ...patchSummary(args['patch'] as String? ?? '', root)},
     ToolNames.grep || ToolNames.glob => {
       'kind': kind,
       ...args,
@@ -332,6 +374,36 @@ Map<String, Object?> actionFor(String tool, Map<String, Object?> args, String ro
     },
     _ => {'kind': kind, ...args},
   };
+}
+
+/// What a patch changes, for the transcript and the permission policy:
+/// `files` ({path, op: add|update|move|delete, to?}), `paths` (every file
+/// it writes or removes, absolute) and `path` (the first). Empty when the
+/// patch doesn't parse (the tool reports why).
+Map<String, Object?> patchSummary(String patch, String root) {
+  final List<PatchOp> ops;
+  try {
+    ops = parsePatch(patch);
+  } on PatchError {
+    return const {};
+  }
+  final files = [
+    for (final op in ops)
+      switch (op) {
+        AddFile() => {'path': resolvePath(root, op.path), 'op': 'add'},
+        DeleteFile() => {'path': resolvePath(root, op.path), 'op': 'delete'},
+        UpdateFile(:final moveTo?) => {
+          'path': resolvePath(root, op.path),
+          'op': 'move',
+          'to': resolvePath(root, moveTo),
+        },
+        UpdateFile() => {'path': resolvePath(root, op.path), 'op': 'update'},
+      },
+  ];
+  final paths = [
+    for (final f in files) ...[f['path']!, ?f['to']],
+  ];
+  return {'files': files, 'paths': paths, 'path': paths.first};
 }
 
 String resolvePath(String root, String path) {
@@ -453,6 +525,7 @@ final class ToolRunner {
         ToolNames.read => _readFile(args),
         ToolNames.write => _writeFile(args),
         ToolNames.edit => _editFile(args),
+        ToolNames.applyPatch => _applyPatch(args),
         ToolNames.grep => await _grep(args),
         ToolNames.glob => await _glob(args),
         ToolNames.todo => const ToolOutput('Todos updated. Keep working through them.'),
@@ -660,6 +733,110 @@ final class ToolRunner {
     return ToolOutput(
       'Edited $path${result.count > 1 ? ' (${result.count} places)' : ''}.',
       observation: {'path': path, 'old_content': before, 'new_content': result.text},
+    );
+  }
+
+  /// A V4A patch (see apply_patch.dart): every change is worked out first
+  /// with the same checks as edit and write (files changed must have been
+  /// read, and not changed since); nothing is written unless all apply.
+  ToolOutput _applyPatch(Map<String, Object?> args) {
+    final List<PatchOp> ops;
+    try {
+      ops = parsePatch(args['patch'] as String? ?? '');
+    } on PatchError catch (e) {
+      return ToolOutput('Error: $e', isError: true);
+    }
+    // path → new content (null: removed), in patch order; and what each file was.
+    final plan = <String, String?>{};
+    final before = <String, String>{};
+    final files = <Map<String, Object?>>[];
+    String current(String path) => plan.containsKey(path) ? plan[path] ?? '' : File(path).readAsStringSync();
+    bool exists(String path) => plan.containsKey(path) ? plan[path] != null : File(path).existsSync();
+    try {
+      for (final op in ops) {
+        final path = resolvePath(root, op.path);
+        if (research && !path.startsWith('$researchDir/')) {
+          return ToolOutput('Error: research jobs write only their notes, under $researchDir/.', isError: true);
+        }
+        switch (op) {
+          case AddFile(:final content):
+            if (exists(path)) {
+              return ToolOutput('Error: $path already exists. Use "*** Update File:" to change it.', isError: true);
+            }
+            before[path] = '';
+            plan[path] = content;
+            files.add({'path': path, 'op': 'add', 'old_content': '', 'new_content': content});
+          case DeleteFile():
+            if (!exists(path)) return ToolOutput('Error: $path does not exist.', isError: true);
+            if (!plan.containsKey(path)) {
+              if (_staleRead(path) case final problem?) return ToolOutput(problem, isError: true);
+            }
+            final old = current(path);
+            before.putIfAbsent(path, () => old);
+            plan[path] = null;
+            files.add({'path': path, 'op': 'delete', 'old_content': old, 'new_content': ''});
+          case UpdateFile(:final hunks, :final moveTo):
+            if (!exists(path)) {
+              return ToolOutput('Error: $path does not exist. Use "*** Add File:" to create it.', isError: true);
+            }
+            if (!plan.containsKey(path)) {
+              if (_staleRead(path) case final problem?) return ToolOutput(problem, isError: true);
+            }
+            final old = current(path);
+            before.putIfAbsent(path, () => old);
+            final text = applyHunks(old, hunks, path: path);
+            final to = moveTo == null ? path : resolvePath(root, moveTo);
+            if (to != path) {
+              if (research && !to.startsWith('$researchDir/')) {
+                return ToolOutput('Error: research jobs write only their notes, under $researchDir/.', isError: true);
+              }
+              if (exists(to)) return ToolOutput('Error: cannot move $path to $to: it already exists.', isError: true);
+              plan[path] = null;
+              before.putIfAbsent(to, () => '');
+            }
+            plan[to] = text;
+            files.add({
+              'path': to,
+              'op': to == path ? 'update' : 'move',
+              'from': path,
+              'old_content': old,
+              'new_content': text,
+            });
+        }
+      }
+    } on PatchError catch (e) {
+      return ToolOutput('Error: $e\nNothing was changed.', isError: true);
+    }
+    for (final MapEntry(key: path, value: text) in plan.entries) {
+      final file = File(path);
+      if (text == null) {
+        if (file.existsSync()) file.deleteSync();
+        _read.remove(path);
+      } else {
+        file.parent.createSync(recursive: true);
+        file.writeAsStringSync(text);
+        _read[path] = file.lastModifiedSync();
+      }
+    }
+    final summary = [
+      for (final f in files)
+        switch (f['op']) {
+          'add' => 'Created ${f['path']}',
+          'delete' => 'Deleted ${f['path']}',
+          'move' => 'Moved ${f['from']} to ${f['path']}',
+          _ => 'Updated ${f['path']}',
+        },
+    ];
+    final first = files.first;
+    return ToolOutput(
+      'Applied the patch:\n${summary.map((s) => '- $s').join('\n')}',
+      observation: {
+        'files': files,
+        'paths': [...plan.keys],
+        'path': first['path'],
+        'old_content': first['old_content'],
+        'new_content': first['new_content'],
+      },
     );
   }
 

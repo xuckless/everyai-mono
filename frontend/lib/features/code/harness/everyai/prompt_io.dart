@@ -1,7 +1,43 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'model_family.dart';
 import 'shell_io.dart';
+
+/// A few lines for a model family's habits, after [harnessRules] (constant
+/// per family, so the cached prefix holds). Claude and unknown models get
+/// none: the shared rules are written for them.
+String? familyRules(ModelFamily family) => switch (family) {
+  ModelFamily.gpt =>
+    '''
+<MODEL-NOTES>
+- Every file change goes through apply_patch: new files, edits, renames and deletions. There is no edit or write
+  tool here; never change files with shell redirection or sed either.
+- Read a file before you patch it, and copy the context lines from what you read, exactly.
+- Be terse: no preamble before tool calls, no restating the task, no closing offers. Say what changed and how you
+  checked it.
+- Run the tests or the program after a change instead of assuming it works.
+</MODEL-NOTES>''',
+  ModelFamily.gemini =>
+    '''
+<MODEL-NOTES>
+- Use absolute paths in tool calls.
+- When an edit succeeds, don't read the file again to check it: the result already says what changed.
+- One edit per place you change: several small edits rather than one old_string that spans distant parts of a file.
+- If an edit's old_string isn't found, read those lines again before retrying; don't guess at the text.
+</MODEL-NOTES>''',
+  ModelFamily.open =>
+    '''
+<MODEL-NOTES>
+- Call one tool at a time and wait for its result, unless every call in the turn is a read or a search (this is
+  stricter than the note on parallel calls above).
+- Tool arguments must be valid JSON: escape quotes and newlines inside strings, no trailing commas, no comments.
+- For edit, copy old_string exactly from the read output, without the line-number prefix, indentation included.
+- Stay on the user's request: no unrelated refactors or renames.
+- Never claim a command ran or a test passed unless you saw its output in a tool result.
+</MODEL-NOTES>''',
+  ModelFamily.claude || ModelFamily.other => null,
+};
 
 /// How the EveryAI harness wants the agent to use its tools and talk to the
 /// user. Placed before the persona; written in our own words after the

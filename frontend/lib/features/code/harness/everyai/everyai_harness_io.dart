@@ -18,6 +18,7 @@ import '../harness.dart';
 import '../openhands_harness.dart' show HarnessError;
 import 'llm.dart';
 import 'mcp_io.dart';
+import 'model_family.dart';
 import 'prompt_io.dart';
 import 'shell_io.dart';
 import 'tools_io.dart';
@@ -392,6 +393,7 @@ final class EveryAISession
 
   Future<void> _beginFork(EveryAISession parent) async {
     _forkTools = parent._toolSpecs;
+    family = parent.family;
     // Its own connections to the same servers: forks run side by side.
     await _ensureMcp();
     _writeSpec();
@@ -438,6 +440,7 @@ final class EveryAISession
     final specJson = jsonDecode(File('${dir.path}/spec.json').readAsStringSync()) as Map<String, Object?>;
     final spec = _specFromJson(specJson, key);
     final s = EveryAISession._(id, spec, dir, client);
+    if (ModelFamily.values.asNameMap()[specJson['family']] case final f?) s.family = f;
     final forkTools = File('${dir.path}/fork_tools.json');
     if (forkTools.existsSync()) {
       s._forkTools = (jsonDecode(forkTools.readAsStringSync()) as List<Object?>).cast<Map<String, Object?>>();
@@ -466,7 +469,12 @@ final class EveryAISession
     return s;
   }
 
-  void _writeSpec() => File('${_dir.path}/spec.json').writeAsStringSync(jsonEncode(_specToJson(_spec)));
+  void _writeSpec() =>
+      File('${_dir.path}/spec.json').writeAsStringSync(jsonEncode({..._specToJson(_spec), 'family': family.name}));
+
+  /// The model family the session was started for: its tools and rules
+  /// (fixed for the session, so the cached prefix holds after a model switch).
+  late ModelFamily family = familyOf(_spec.model);
 
   static Map<String, Object?> _specToJson(SessionSpec s) => {
     'working_dir': s.workingDir,
@@ -518,6 +526,7 @@ final class EveryAISession
     final suffix = spec.promptSuffix == null ? '' : forHeldClientTools(spec.promptSuffix!);
     final parts = [
       harnessRules,
+      ?familyRules(family),
       ?spec.persona,
       if (suffix.isNotEmpty) suffix,
       if (spec.subagent) subagentRules,
@@ -546,7 +555,7 @@ final class EveryAISession
   List<Map<String, Object?>> get _toolSpecs =>
       _forkTools ??
       [
-        ...builtInToolSpecs(only: _spec.tools),
+        ...builtInToolSpecs(only: _spec.tools, applyPatch: family == ModelFamily.gpt),
         ..._mcp.specs,
         if (!_spec.subagent && (_spec.phaseFlow?.startsWith('bugfix') ?? false))
           {

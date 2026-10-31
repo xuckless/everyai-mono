@@ -837,6 +837,10 @@ String approvalTitle(ActionCall call) => switch (call.actionKind) {
   'FileEditorAction' when call.str('command') == 'view' => 'Read ${call.str('path')}?',
   'FileEditorAction' when call.str('command') == 'create' => 'Create ${call.str('path')}?',
   'FileEditorAction' => 'Edit ${call.str('path')}?',
+  'ApplyPatchAction' => switch ((call.action['paths'] as List<Object?>?)?.length ?? 0) {
+    1 => 'Patch ${call.str('path')}?',
+    final n => 'Apply this patch to $n files?',
+  },
   'DelegateAction' || 'TaskAction' => 'Start a subagent?',
   _ => 'Allow ${call.toolName}?',
 };

@@ -356,6 +356,53 @@ void main() {
     expect(state['skills'], ['$work/skills/tidy/SKILL.md']);
   });
 
+  test('a GPT session gets apply_patch and its rules block; the patch lands as an edit', () async {
+    File('$work/a.txt').writeAsStringSync('one\n');
+    gateway
+      ..reply(
+        calls: [
+          ('read', {'file_path': 'a.txt'}),
+        ],
+      )
+      ..reply(
+        calls: [
+          ('apply_patch', {'patch': '*** Begin Patch\n*** Update File: a.txt\n@@\n-one\n+two\n*** End Patch'}),
+        ],
+      )
+      ..reply(text: 'Done.');
+    final session = await harness.start(
+      SessionSpec(
+        workingDir: work,
+        model: 'openai/gpt-6.1-sol',
+        mode: AgentMode.fullAuto,
+        llmBaseUrl: gateway.baseUrl,
+        llmApiKey: 'k',
+        sessionTag: 't',
+        initialMessage: 'change a.txt',
+      ),
+    );
+    final events = await drive(session);
+    expect(File('$work/a.txt').readAsStringSync(), 'two\n');
+    final first = gateway.requests.first;
+    final tools = [for (final t in first['tools']! as List) ((t as Map)['function'] as Map)['name']];
+    expect(tools, contains('apply_patch'));
+    expect(tools, isNot(contains('edit')));
+    final system = ((first['messages']! as List).first as Map)['content']! as String;
+    expect(system, contains('<MODEL-NOTES>'));
+    expect(system.indexOf('<HARNESS>'), lessThan(system.indexOf('<MODEL-NOTES>')));
+    expect(events.whereType<ActionCall>().last.actionKind, 'ApplyPatchAction');
+  });
+
+  test('a Claude session keeps edit and write and gets no rules block', () async {
+    gateway.reply(text: 'Hi.');
+    final session = await harness.start(spec('hi'));
+    await drive(session);
+    final first = gateway.requests.first;
+    final tools = [for (final t in first['tools']! as List) ((t as Map)['function'] as Map)['name']];
+    expect(tools, containsAll(['edit', 'write']));
+    expect(((first['messages']! as List).first as Map)['content'], isNot(contains('<MODEL-NOTES>')));
+  });
+
   test('monitor wakes when a background shell prints the line', () async {
     final shell = SessionShell(root: work, sessionTag: 't', scratchDir: '${tmp.path}/sh');
     final runner = ToolRunner(

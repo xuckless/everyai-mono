@@ -120,14 +120,12 @@ final class PermissionPolicy {
     final readOnly = AgentMode.isReadOnly(call);
     if (mode == AgentMode.plan && !readOnly) return const Decision(Verdict.deny, DecisionSource.plan);
     if (readOnly) return const Decision(Verdict.allow, DecisionSource.readOnly);
-    final edit = _editPath(call);
+    final edits = _editPaths(call);
     final danger = command != null
         ? dangerReason(command)
-        : edit != null
-        ? editDangerReason(edit, workingDir: workingDir)
-        : null;
+        : [for (final e in edits) ?editDangerReason(e, workingDir: workingDir)].firstOrNull;
     // Full auto covers the project, not the rest of the disk.
-    if (danger != null && (mode != AgentMode.fullAuto || (edit != null && danger == outsideProject))) {
+    if (danger != null && (mode != AgentMode.fullAuto || (edits.isNotEmpty && danger == outsideProject))) {
       return Decision(Verdict.ask, DecisionSource.dangerous, why: danger);
     }
     if (danger == null) {
@@ -137,7 +135,7 @@ final class PermissionPolicy {
     }
     final allowed = switch (mode) {
       AgentMode.fullAuto => true,
-      AgentMode.autoEdit => edit != null,
+      AgentMode.autoEdit => edits.isNotEmpty,
       AgentMode.ask || AgentMode.plan => false,
     };
     return Decision(allowed ? Verdict.allow : Verdict.ask, DecisionSource.mode, why: danger ?? '');
@@ -170,7 +168,7 @@ final class PermissionPolicy {
   String? _matching(ActionCall call, List<String> patterns, {required bool allowing}) {
     if (patterns.isEmpty) return null;
     final command = _command(call) ?? (allowing ? null : _typed(call));
-    final edit = _editPath(call);
+    final edits = _editPaths(call);
     final read = _readPath(call);
     for (final raw in patterns) {
       final rule = _Rule.parse(raw);
@@ -178,7 +176,11 @@ final class PermissionPolicy {
       final hit = switch (rule.kind) {
         _RuleKind.command when command != null =>
           allowing ? _allowsCommand(rule.glob, command) : _deniesCommand(rule.glob, command),
-        _RuleKind.edit when edit != null => _pathMatches(rule.glob, _relative(edit)),
+        // A patch is allowed only when the rule covers every file it writes, and denied when it covers any.
+        _RuleKind.edit when edits.isNotEmpty =>
+          allowing
+              ? edits.every((e) => _pathMatches(rule.glob, _relative(e)))
+              : edits.any((e) => _pathMatches(rule.glob, _relative(e))),
         _RuleKind.read when read != null => _pathMatches(rule.glob, _relative(read)),
         _RuleKind.read when !allowing && command != null => _commandReads(
           command,
@@ -252,8 +254,22 @@ List<String> _commandWrites(String command) => isReadOnlyShell(command) ? const 
 String? _editPath(ActionCall call) => switch (call.actionKind) {
   'FileEditorAction' when call.str('command') != 'view' => call.str('path'),
   'EditAction' || 'WriteFileAction' => call.str('path'),
+  // A patch to one file is an edit of it; to several, see [_editPaths].
+  'ApplyPatchAction' => switch (_patchPaths(call)) {
+    [final only] => only,
+    _ => null,
+  },
   _ => null,
 };
+
+/// Every file a write would change (a patch can change several).
+List<String> _editPaths(ActionCall call) =>
+    call.actionKind == 'ApplyPatchAction' ? _patchPaths(call) : [?_editPath(call)];
+
+List<String> _patchPaths(ActionCall call) => [
+  for (final p in call.action['paths'] as List<Object?>? ?? const [])
+    if (p is String && p.isNotEmpty) p,
+];
 
 String? _readPath(ActionCall call) => switch (call.actionKind) {
   'FileEditorAction' when call.str('command') == 'view' => call.str('path'),
@@ -934,7 +950,8 @@ const _blockedLead = 'Blocked, not run:';
 String policyDenial(List<(ActionCall, Decision)> blocked, {int batch = 1}) {
   final b = StringBuffer();
   for (final (call, d) in blocked) {
-    final what = _command(call) ?? _editPath(call) ?? _readPath(call) ?? call.toolName;
+    final edits = _editPaths(call);
+    final what = _command(call) ?? (edits.isEmpty ? null : edits.join(', ')) ?? _readPath(call) ?? call.toolName;
     b.write('$_blockedLead `${_short(what)}` ');
     if (d.source == DecisionSource.floor) {
       b.writeln('${d.why}. This is on the safety floor and never runs, in any mode.');

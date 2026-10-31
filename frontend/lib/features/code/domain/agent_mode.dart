@@ -47,7 +47,7 @@ enum AgentMode {
 
   /// Writes and edits of files (either harness's file tools).
   static bool isFileEdit(ActionCall call) =>
-      const {'FileEditorAction', 'EditAction', 'WriteFileAction'}.contains(call.actionKind);
+      const {'FileEditorAction', 'EditAction', 'WriteFileAction', 'ApplyPatchAction'}.contains(call.actionKind);
 
   /// Actions that only look: viewing files, listing, searching, planning.
   static bool isReadOnly(ActionCall call) => switch (call.actionKind) {
