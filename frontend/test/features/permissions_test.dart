@@ -87,6 +87,21 @@ void main() {
       }
     });
 
+    test("won't quit the user's own apps; the agent's own processes are its business", () {
+      for (final c in [
+        'pkill -f "Google Chrome"',
+        'killall Safari',
+        'killall Finder',
+        'pkill -9 -f chrome',
+        'sleep 1; pkill -f iTerm',
+      ]) {
+        expect(floorReason(c), isNotNull, reason: c);
+      }
+      for (final c in ['pkill -f "vite --port 5173"', 'killall node', 'kill 4242', 'pkill -f http.server']) {
+        expect(floorReason(c), isNull, reason: c);
+      }
+    });
+
     test('leaves ordinary commands alone, including look-alikes in text', () {
       for (final c in [
         'git commit -m "rm -rf /"',

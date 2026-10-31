@@ -38,8 +38,25 @@ String? relativeTo(String path, String dir) {
 }
 
 /// Files [events] wrote or edited, relative to [dir] (the subagent's folder:
-/// its own copy of the parent's, or the parent's itself).
-Set<String> filesWritten(Iterable<HarnessEvent> events, String dir) => {
+/// its own copy of the parent's, or the parent's itself). A call that was
+/// refused or failed wrote nothing, so it claims nothing; one still running
+/// does.
+Set<String> filesWritten(Iterable<HarnessEvent> events, String dir) {
+  final list = events.toList(growable: false);
+  final failed = <String>{
+    for (final e in list)
+      if (e is ToolResult && e.outcome != ToolOutcome.ok) ...[
+        if (e.actionId.isNotEmpty) e.actionId,
+        if (e.toolCallId.isNotEmpty) e.toolCallId,
+      ],
+  };
+  return _written(
+    list.where((e) => e is! ActionCall || !(failed.contains(e.id) || failed.contains(e.toolCallId))),
+    dir,
+  );
+}
+
+Set<String> _written(Iterable<HarnessEvent> events, String dir) => {
   for (final e in events)
     if (e is ActionCall) ...[
       if (writeTarget(e) case final path?) ?relativeTo(path, dir),

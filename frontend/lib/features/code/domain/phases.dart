@@ -217,7 +217,9 @@ final class PhaseFlow {
         if (bugfix) return null;
         final command = args['command'] as String? ?? '';
         if (args['run_in_background'] != true && isReadOnlyShell(command)) return null;
-        return 'Error ($where): only read-only commands run before the plan is approved. Next: ${next()}';
+        if (_scratchMkdir(command, inScratch)) return null;
+        return 'Error ($where): only read-only commands run before the plan is approved (write makes the folders '
+            'it needs under .everyai/scratch/). Next: ${next()}';
       case askUserQuestionTool:
         if (phase == Phase.research && !bugfix) {
           return 'Error ($where): ask once research has reported, so the questions are about what it found. '
@@ -227,6 +229,15 @@ final class PhaseFlow {
         if (phase != Phase.plan) return 'Error ($where): not yet. Next: ${next()}';
     }
     return null;
+  }
+
+  /// `mkdir [-p] dir…` where every dir is under .everyai/scratch/.
+  static bool _scratchMkdir(String command, bool Function(String path) inScratch) {
+    final m = RegExp(r'^\s*mkdir\s+(?:-p\s+)?((?:[\w./-]+\s*)+)$').firstMatch(command);
+    if (m == null) return false;
+    final dirs = m[1]!.trim().split(RegExp(r'\s+'));
+    // inScratch takes a file path; a folder counts when a file in it would.
+    return dirs.every((d) => inScratch('${d.replaceAll(RegExp(r'/+$'), '')}/x'));
   }
 
   String? _bugCheckGate(String action, String where) {

@@ -1141,6 +1141,13 @@ final class EveryAISession
         );
         continue;
       }
+      // A research job's shell or out-of-bounds write is refused here, not
+      // after it waited for an approval no one may be watching for.
+      final early = args == null ? null : _tools.refusalBeforeApproval(call.name, args);
+      if (early != null) {
+        _result(call, actionId, ToolOutput(early, isError: true));
+        continue;
+      }
       if (args != null && _flow != null) {
         _flow!.onCall(call.name, args);
         final refusal = _flow!.gate(

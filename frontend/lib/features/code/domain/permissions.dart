@@ -683,6 +683,9 @@ String? _floorOf(List<String> w, List<String> args, String part) {
       return 'shuts down or restarts the computer';
     case 'kill' when args.length >= 2 && args.skip(1).contains('-1'):
       return 'kills every process you own';
+    case 'pkill' || 'killall' when _userApp.hasMatch(targets.join(' ')):
+      return 'quits one of your own apps (a browser, Finder, a terminal or chat app); stop only processes you '
+          'started, by the PID you saved';
   }
   if (RegExp(r'^(mkfs(\.\w+)?|newfs(_\w+)?|wipefs|fdisk|sfdisk|gdisk|cfdisk|parted)$').hasMatch(w.first)) {
     return 'formats or repartitions a disk';
@@ -694,6 +697,15 @@ String? _floorOf(List<String> w, List<String> args, String part) {
   }
   return null;
 }
+
+/// Apps the user works in: an agent quitting them (a browser it wanted for
+/// screenshots, say) closes the user's own windows and tabs.
+final _userApp = RegExp(
+  r'google chrome|\bchrome\b|chromium|safari|firefox|\barc\b|brave|microsoft edge|\bedge\b|\bfinder\b|\bdock\b|'
+  r'terminal|iterm|warp|slack|discord|\bmail\b|messages|zoom|\bnotes\b|everyai|visual studio code|\bcode\b|'
+  r'cursor|xcode|windowserver|loginwindow|systemuiserver',
+  caseSensitive: false,
+);
 
 final _pipeToShell = RegExp(
   r'\b(curl|wget|fetch)\b[^|;&]*\|\s*(\S*/)?(ba|z|da|k|fi)?sh\b|'

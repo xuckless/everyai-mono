@@ -513,6 +513,10 @@ final class ToolRunner {
 
   String get spillDir => '$root/.everyai/spill';
 
+  /// Why a research job may not make this call at all, before it is shown
+  /// for approval: such a call is never run, so no one should be asked.
+  String? refusalBeforeApproval(String tool, Map<String, Object?> raw) => _researchRefusal(tool, _mapped(raw));
+
   Future<ToolOutput> run(String tool, Map<String, Object?> raw, {Future<void>? cancel}) async {
     final args = _mapped(raw);
     if (_researchRefusal(tool, args) case final refusal?) return ToolOutput(refusal, isError: true);

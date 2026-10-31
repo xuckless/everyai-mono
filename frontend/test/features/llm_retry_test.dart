@@ -160,6 +160,37 @@ void main() {
       expect((await call(g.client)).text, 'Fine');
     });
 
+    test('a provider rate limit sent only as a message is retried', () async {
+      final g = gateway([
+        ok([
+          'data: {"error":{"message":"Rate limit exceeded: new-account-rpm/google/gemini-3.8-flash. Please retry shortly."}}\n\n',
+        ]),
+        ok(['data: {"error":{"message":"The operation was aborted"}}\n\n']),
+        ok([textChunk('Fine'), 'data: [DONE]\n\n']),
+      ]);
+      expect((await call(g.client)).text, 'Fine');
+      expect(g.requests, hasLength(3));
+    });
+
+    test('an error while the gateway still holds a tool call is retried', () async {
+      final g = gateway([
+        ok([
+          ': progress [{"index":0,"name":"write","path":"index.html","chars":40000,"lines":900}]\n\n',
+          'data: {"error":{"message":"The operation was aborted"}}\n\n',
+        ]),
+        ok([toolChunk(), 'data: [DONE]\n\n']),
+      ]);
+      final reply = await call(g.client);
+      expect(reply.toolCalls.single.name, 'bash');
+    });
+
+    test('an unknown error is not retried', () async {
+      final g = gateway([
+        ok(['data: {"error":{"message":"Invalid schema for function"}}\n\n']),
+      ]);
+      await expectLater(call(g.client), throwsA(isA<LlmError>().having((e) => e.retryable, 'retryable', isFalse)));
+    });
+
     test('a 400 is not retried', () async {
       final g = gateway([
         (status: 400, headers: const {}, lines: ['{"error":{"message":"bad"}}'], dropAfter: null),

@@ -179,8 +179,10 @@ String forkBrief(SubagentTask task, {String? copyAt, String? parentDir, String? 
 String _forkBrief(SubagentTask task) =>
     '<fork>\nYou are now a fork of the agent above, started to do one task. The conversation so far is your context; '
     'the user is not reading along and you cannot ask them or the other agent anything, start subagents, or present a '
-    'plan. Do only this task, then end with one final message that is your report: what you found or changed (paths '
-    'and line numbers), how you checked it, and anything left open. That message is all the other agent gets back.\n'
+    'plan. Phase notes above (<everyai-phase>) were the other agent\'s flow, not yours: skip its research, '
+    'questions, plan and build steps unless this task is one of them. Do only '
+    'this task, then end with one final message that is your report: what you found or changed (paths and line '
+    'numbers), how you checked it, and anything left open. That message is all the other agent gets back.\n'
     '</fork>\n\nTask: ${task.title}\n\n${task.prompt.isEmpty ? task.description : task.prompt}';
 
 /// [taskSpec] for a session: with [held], the report is the call's result.

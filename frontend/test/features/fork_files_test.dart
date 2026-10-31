@@ -31,6 +31,21 @@ void main() {
     expect(filesWritten(events, '/forks/f1'), {'index.html', 'games.js', 'notes.md'});
   });
 
+  test('a refused or failed write claims nothing; one still running does', () {
+    ToolResult result(String id, ToolOutcome outcome) =>
+        ToolResult(id: 'r$id', raw: const {}, actionId: id, toolName: 'write', observation: const {}, outcome: outcome);
+    final events = <HarnessEvent>[
+      _call({'kind': 'WriteFileAction', 'file_path': '/p/os/.everyai/scratch/plan.md'}, 'w1'),
+      result('w1', ToolOutcome.rejected),
+      _call({'kind': 'WriteFileAction', 'file_path': '/p/os/index.html'}, 'w2'),
+      result('w2', ToolOutcome.error),
+      _call({'kind': 'WriteFileAction', 'file_path': '/p/os/games.js'}, 'w3'),
+      result('w3', ToolOutcome.ok),
+      _call({'kind': 'WriteFileAction', 'file_path': '/p/os/notes.md'}, 'w4'),
+    ];
+    expect(filesWritten(events, dir), {'games.js', 'notes.md'});
+  });
+
   test('file names in a task are found, URLs and versions are not', () {
     expect(
       filesNamed('Build the desktop in index.html and put the games in src/games.js (see https://x.dev/a.js, v1.2).'),

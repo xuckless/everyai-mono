@@ -103,16 +103,25 @@ final class LlmError implements Exception {
 /// server errors and Anthropic's 529 (overloaded).
 const retryableStatuses = {408, 409, 425, 429, 500, 502, 503, 504, 529};
 
+/// Words in a mid-stream error's message that mark it transient. Providers
+/// behind OpenRouter often send only a message ("Rate limit exceeded: …
+/// Please retry shortly", "The operation was aborted").
+final _transientMessage = RegExp(
+  r'rate.?limit|retry (shortly|later|again)|overloaded|temporarily|try again|timed? ?out|operation was aborted|'
+  r'upstream (error|connect)|connection (reset|closed)',
+  caseSensitive: false,
+);
+
 /// Whether a mid-stream `{"error": …}` is a transient one.
 bool retryableStreamError(Map<String, Object?> e) {
   final type = '${e['type'] ?? ''}'.toLowerCase();
   final code = '${e['code'] ?? ''}';
   return type.contains('overloaded') ||
       type.contains('rate_limit') ||
-      code == '429' ||
-      code == '529' ||
-      code == '503' ||
-      code == 'rate_limit_exceeded';
+      type.contains('timeout') ||
+      retryableStatuses.contains(int.tryParse(code)) ||
+      code == 'rate_limit_exceeded' ||
+      _transientMessage.hasMatch('${e['message'] ?? ''}');
 }
 
 /// The wait a response asks for: `retry-after-ms`, else `Retry-After` in
@@ -313,7 +322,9 @@ final class GatewayClient {
             for (final t in jsonDecode(line.substring(11)) as List<Object?>) {
               if (t case {'index': final num i}) {
                 final m = t as Map<String, Object?>;
-                toolStarted = true;
+                // Not toolStarted: the gateway holds the call until it is
+                // whole, so nothing of it has reached the harness yet and a
+                // retry is safe.
                 toolAt(i.toInt());
                 onToolProgress?.call((
                   index: i.toInt(),
