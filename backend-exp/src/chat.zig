@@ -82,6 +82,11 @@ pub const ChatRequest = struct {
     /// How hard a reasoning model thinks; ignored for models without
     /// reasoning, and null leaves the provider's default.
     effort: ?Effort = null,
+    /// The language replies and follow-ups must be written in ("French"),
+    /// from the app's settings; null or "auto" follows the user's message.
+    /// Sent as one line after the memory and skills blocks: it changes only
+    /// when the user changes the setting, so the cached prefix holds.
+    reply_language: ?[]const u8 = null,
     /// A tool the model must call first (the `/quiz`, `/slides`... commands).
     /// Only the first upstream call of the turn is forced, so the loop goes
     /// on normally after the tool ran. Must name a tool in `tools.definitions`.
@@ -420,6 +425,8 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
     if (body.memory) |m| if (std.mem.trim(u8, m, " \t\r\n").len > 0) try messages.append(arena, .{ .role = "user", .content = m });
     // The skill catalog: user content too (a skill may come from anywhere).
     if (body.skills) |k| if (std.mem.trim(u8, k, " \t\r\n").len > 0) try messages.append(arena, .{ .role = "user", .content = k });
+    // The user's fixed reply language: one line, stable while the setting is.
+    if (routing.fixedLanguage(body.reply_language)) |lang| try messages.append(arena, .{ .role = "user", .content = try routing.replyLanguageLine(arena, lang) });
     for (body.messages) |m| {
         const role = if (std.mem.eql(u8, m.role, "assistant")) "assistant" else "user";
         switch (m.content) {
@@ -1181,7 +1188,7 @@ fn followUps(app: *App, req: *anole.Request, who: auth.Identity, body: ChatReque
         \\
         \\Suggest 3 short follow-up questions the user is likely to ask next. {s}
         \\Reply with only a JSON array of 3 strings.
-    , .{ question[0..@min(question.len, 2000)], answer[0..@min(answer.len, 3000)], try routing.languageNote(req.arena, question) });
+    , .{ question[0..@min(question.len, 2000)], answer[0..@min(answer.len, 3000)], try routing.followUpLanguage(req.arena, body.reply_language, question) });
     const model = routing.modelFor(app.cfg, .followups);
     // Follow-ups are extra; a free-model turn with no credit left skips them.
     billing.preflight(app, req, who.user_id, app.catalog.facts(req.io, model).free) catch |err| switch (err) {

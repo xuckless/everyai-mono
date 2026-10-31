@@ -5,7 +5,6 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
-import '../../../core/ui/adaptive_page.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../code/code_providers.dart' show codeProjectsProvider;
 import '../../code/domain/code_session.dart';
@@ -17,8 +16,8 @@ import '../skills_providers.dart';
 /// skills or script skills, Chat) can use. Skills in the
 /// EveryAI library and `~/.agents/skills` are on unless turned off; skills
 /// that came with a project stay off until the user reviews and trusts them.
-class SkillsSettingsScreen extends ConsumerWidget {
-  const SkillsSettingsScreen({super.key});
+class SkillsSettingsBody extends ConsumerWidget {
+  const SkillsSettingsBody({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -50,55 +49,52 @@ class SkillsSettingsScreen extends ConsumerWidget {
           ],
         );
 
-    return AdaptivePage(
-      title: 'Skills',
-      body: ListView(
-        padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
-        children: [
-          Text(
-            'A skill is a folder with a SKILL.md: instructions, and sometimes scripts and reference files, that the '
-            'Code agent loads when a task calls for it. Chat can use the EveryAI and ~/.agents/skills ones too, '
-            'except skills that run programs. Only the name and description sit in the prompt until a skill is used.',
+    return ListView(
+      padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
+      children: [
+        Text(
+          'A skill is a folder with a SKILL.md: instructions, and sometimes scripts and reference files, that the '
+          'Code agent loads when a task calls for it. Chat can use the EveryAI and ~/.agents/skills ones too, '
+          'except skills that run programs. Only the name and description sit in the prompt until a skill is used.',
+          style: theme.type.caption.tint(theme.textMuted),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(top: 10, bottom: 4),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            children: [
+              _importMenu(context, ref, 'Import folder…', projects, zip: false),
+              _importMenu(context, ref, 'Import zip…', projects, zip: true),
+              AdaptiveButton(
+                label: 'Reload',
+                emphasis: ButtonEmphasis.secondary,
+                onPressed: ref.read(installedSkillsProvider.notifier).reload,
+              ),
+            ],
+          ),
+        ),
+        if (skills case AsyncError(:final error))
+          Text("Couldn't read the skills folders: $error", style: TextStyle(color: theme.danger)),
+        section('EveryAI library', [
+          ...all.where((s) => s.source == SkillSource.library),
+        ], empty: 'Nothing imported yet'),
+        section('Shared (~/.agents/skills)', [
+          ...all.where((s) => s.source == SkillSource.shared),
+        ], empty: 'No skills in ~/.agents/skills'),
+        for (final p in projects)
+          if (all.any((s) => s.projectId == p.id))
+            section(p.name, [...all.where((s) => s.projectId == p.id)], winners: winnersFor(all, p.id)),
+        Padding(
+          padding: const EdgeInsets.only(top: 16),
+          child: Text(
+            'Project skills live in <project>/.agents/skills. A skill that came with a repository stays off until '
+            'you review it, and goes off again if its files change. Lines like !`command` are shown to the agent '
+            'as text; they never run on their own.',
             style: theme.type.caption.tint(theme.textMuted),
           ),
-          Padding(
-            padding: const EdgeInsets.only(top: 10, bottom: 4),
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 6,
-              children: [
-                _importMenu(context, ref, 'Import folder…', projects, zip: false),
-                _importMenu(context, ref, 'Import zip…', projects, zip: true),
-                AdaptiveButton(
-                  label: 'Reload',
-                  emphasis: ButtonEmphasis.secondary,
-                  onPressed: ref.read(installedSkillsProvider.notifier).reload,
-                ),
-              ],
-            ),
-          ),
-          if (skills case AsyncError(:final error))
-            Text("Couldn't read the skills folders: $error", style: TextStyle(color: theme.danger)),
-          section('EveryAI library', [
-            ...all.where((s) => s.source == SkillSource.library),
-          ], empty: 'Nothing imported yet'),
-          section('Shared (~/.agents/skills)', [
-            ...all.where((s) => s.source == SkillSource.shared),
-          ], empty: 'No skills in ~/.agents/skills'),
-          for (final p in projects)
-            if (all.any((s) => s.projectId == p.id))
-              section(p.name, [...all.where((s) => s.projectId == p.id)], winners: winnersFor(all, p.id)),
-          Padding(
-            padding: const EdgeInsets.only(top: 16),
-            child: Text(
-              'Project skills live in <project>/.agents/skills. A skill that came with a repository stays off until '
-              'you review it, and goes off again if its files change. Lines like !`command` are shown to the agent '
-              'as text; they never run on their own.',
-              style: theme.type.caption.tint(theme.textMuted),
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 

@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:every_ai/app/shell.dart';
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/core/theme/every_theme.dart';
@@ -312,12 +311,7 @@ void main() {
         child: m.MaterialApp(
           home: EveryThemeScope(
             theme: EveryTheme.resolve(DesignLanguage.material, Brightness.light),
-            child: ShellScope(
-              sidebarVisible: true,
-              compact: false,
-              toggleSidebar: () {},
-              child: const AgentsSettingsScreen(),
-            ),
+            child: m.Material(child: AgentsSettingsBody()),
           ),
         ),
       ),

@@ -1,6 +1,5 @@
 import 'dart:convert';
 
-import 'package:every_ai/app/shell.dart';
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/core/theme/every_theme.dart';
@@ -315,12 +314,7 @@ void main() {
         child: m.MaterialApp(
           home: EveryThemeScope(
             theme: EveryTheme.resolve(DesignLanguage.material, Brightness.light),
-            child: ShellScope(
-              sidebarVisible: true,
-              compact: false,
-              toggleSidebar: () {},
-              child: const McpSettingsScreen(),
-            ),
+            child: m.Material(child: McpSettingsBody()),
           ),
         ),
       ),
@@ -333,7 +327,7 @@ void main() {
     expect(find.textContaining('not pinned'), findsOneWidget);
     await tester.tap(find.text('Allow'));
     await tester.pumpAndSettle();
-    final container = ProviderScope.containerOf(tester.element(find.byType(McpSettingsScreen)));
+    final container = ProviderScope.containerOf(tester.element(find.byType(McpSettingsBody)));
     expect(container.read(codeMcpServersProvider).mcpConfigFor(null).keys, ['playwright']);
   });
 }

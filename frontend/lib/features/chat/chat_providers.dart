@@ -20,6 +20,7 @@ import 'domain/ask_user.dart';
 import 'domain/chat_session.dart';
 import 'domain/message.dart';
 import 'domain/reasoning_effort.dart';
+import '../settings/reply_language.dart';
 
 final chatRepositoryProvider = Provider<ChatRepository>((ref) {
   final db = ref.watch(databaseProvider);
@@ -435,6 +436,7 @@ final class ChatController extends Notifier<ChatSessionState> {
             memory: ref.read(memoryProvider.notifier).snapshotFor(conversationId),
             skills: skillCatalogBlock(skills),
             effort: state.effort.wireFor(model),
+            replyLanguage: ref.read(replyLanguageProvider.notifier).wire,
             forceTool: state.toolsEnabled ? forceTool : null,
             researchDepth: state.researchDepth,
           ),

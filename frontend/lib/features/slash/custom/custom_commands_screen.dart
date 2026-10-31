@@ -4,7 +4,6 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
-import '../../../core/ui/adaptive_page.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../code/code_providers.dart';
 import 'command_store.dart';
@@ -13,8 +12,8 @@ import 'custom_commands_provider.dart';
 
 /// Settings → Custom commands: the Markdown prompts behind `/name`, global and
 /// per Code project. Editing opens the file in the user's text editor.
-class CustomCommandsScreen extends ConsumerWidget {
-  const CustomCommandsScreen({super.key});
+class CustomCommandsBody extends ConsumerWidget {
+  const CustomCommandsBody({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -111,53 +110,50 @@ class CustomCommandsScreen extends ConsumerWidget {
       ],
     );
 
-    return AdaptivePage(
-      title: 'Custom commands',
-      body: ListView(
-        padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Text(
-              'A command is a Markdown file. Type / in a composer to run it; \$ARGUMENTS in the file is replaced by '
-              'what you type after the name. Add description, args, mode and model lines between --- marks at the top.',
-              style: theme.type.caption.tint(theme.textMuted),
-            ),
+    return ListView(
+      padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Text(
+            'A command is a Markdown file. Type / in a composer to run it; \$ARGUMENTS in the file is replaced by '
+            'what you type after the name. Add description, args, mode and model lines between --- marks at the top.',
+            style: theme.type.caption.tint(theme.textMuted),
           ),
-          section('Global', null, [
-            for (final c in all)
-              if (c.isGlobal) c,
-          ]),
-          for (final p in projects)
-            section(
-              p.name,
-              (name: p.name, path: p.path),
-              [
-                for (final c in all)
-                  if (c.project == p.name && c.path?.startsWith(p.path) == true) c,
-              ],
-            ),
-          FutureBuilder<String?>(
-            future: globalCommandsDir(),
-            builder: (_, s) => s.data == null
-                ? const SizedBox.shrink()
-                : Padding(
-                    padding: const EdgeInsets.only(top: 16),
-                    child: Text(
-                      'Global folder: ${s.data}\nProject folders: <project>/.everyai/commands',
-                      style: theme.type.caption.tint(theme.textMuted),
-                    ),
+        ),
+        section('Global', null, [
+          for (final c in all)
+            if (c.isGlobal) c,
+        ]),
+        for (final p in projects)
+          section(
+            p.name,
+            (name: p.name, path: p.path),
+            [
+              for (final c in all)
+                if (c.project == p.name && c.path?.startsWith(p.path) == true) c,
+            ],
+          ),
+        FutureBuilder<String?>(
+          future: globalCommandsDir(),
+          builder: (_, s) => s.data == null
+              ? const SizedBox.shrink()
+              : Padding(
+                  padding: const EdgeInsets.only(top: 16),
+                  child: Text(
+                    'Global folder: ${s.data}\nProject folders: <project>/.everyai/commands',
+                    style: theme.type.caption.tint(theme.textMuted),
                   ),
+                ),
+        ),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: AdaptiveButton(label: 'Reload', emphasis: ButtonEmphasis.secondary, onPressed: ctl.reload),
           ),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: AdaptiveButton(label: 'Reload', emphasis: ButtonEmphasis.secondary, onPressed: ctl.reload),
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 

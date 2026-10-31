@@ -51,7 +51,27 @@ enum EveryIcon {
   image(c.CupertinoIcons.photo, f.FluentIcons.photo2, m.Icons.image_outlined),
   play(c.CupertinoIcons.play_circle, f.FluentIcons.play, m.Icons.play_circle_outline_rounded),
   pause(c.CupertinoIcons.pause_circle, f.FluentIcons.pause, m.Icons.pause_circle_outline_rounded),
-  drawing(c.CupertinoIcons.scribble, f.FluentIcons.pen_workspace, m.Icons.draw_outlined);
+  drawing(c.CupertinoIcons.scribble, f.FluentIcons.pen_workspace, m.Icons.draw_outlined),
+  devices(c.CupertinoIcons.device_laptop, f.FluentIcons.devices3, m.Icons.devices_rounded),
+  key(c.CupertinoIcons.lock_shield, f.FluentIcons.permissions, m.Icons.key_rounded),
+  card(c.CupertinoIcons.creditcard, f.FluentIcons.payment_card, m.Icons.credit_card_rounded),
+  usage(c.CupertinoIcons.chart_bar_square, f.FluentIcons.processing, m.Icons.bar_chart_rounded),
+  sun(c.CupertinoIcons.sun_max, f.FluentIcons.sunny, m.Icons.light_mode_outlined),
+  moon(c.CupertinoIcons.moon_stars, f.FluentIcons.clear_night, m.Icons.dark_mode_outlined),
+  display(c.CupertinoIcons.desktopcomputer, f.FluentIcons.t_v_monitor, m.Icons.brightness_auto_outlined),
+  help(c.CupertinoIcons.question_circle, f.FluentIcons.help, m.Icons.help_outline_rounded),
+  signOut(c.CupertinoIcons.square_arrow_right, f.FluentIcons.sign_out, m.Icons.logout_rounded),
+  language(c.CupertinoIcons.globe, f.FluentIcons.locale_language, m.Icons.translate_rounded),
+  info(c.CupertinoIcons.info_circle, f.FluentIcons.info, m.Icons.info_outline_rounded),
+  shield(c.CupertinoIcons.shield_lefthalf_fill, f.FluentIcons.shield, m.Icons.shield_outlined),
+  plug(c.CupertinoIcons.bolt_horizontal_circle, f.FluentIcons.plug_connected, m.Icons.power_outlined),
+  skill(c.CupertinoIcons.wand_stars, f.FluentIcons.puzzle, m.Icons.extension_outlined),
+  agents(c.CupertinoIcons.person_2, f.FluentIcons.contact, m.Icons.psychology_outlined),
+  command(c.CupertinoIcons.command, f.FluentIcons.command_prompt, m.Icons.terminal_rounded),
+  memory(c.CupertinoIcons.lightbulb, f.FluentIcons.lightbulb, m.Icons.lightbulb_outline_rounded),
+  wrench(c.CupertinoIcons.wrench, f.FluentIcons.repair, m.Icons.build_outlined),
+  general(c.CupertinoIcons.slider_horizontal_3, f.FluentIcons.settings, m.Icons.tune_rounded),
+  person(c.CupertinoIcons.person_crop_circle, f.FluentIcons.contact, m.Icons.account_circle_outlined);
 
   const EveryIcon(this._apple, this._fluent, this._material);
 

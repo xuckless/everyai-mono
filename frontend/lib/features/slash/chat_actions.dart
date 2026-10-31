@@ -19,6 +19,8 @@ import '../models/models_providers.dart';
 import 'chat_commands.dart';
 import 'skills/skill_draft.dart';
 import 'slash_command.dart';
+import '../settings/ui/settings_modal.dart';
+import '../settings/settings_registry.dart';
 
 /// The model best matching a typed name: an exact alias, else the first alias
 /// starting with it (`sonnet` finds the newest Sonnet in the catalog).
@@ -62,7 +64,7 @@ ChatSlashHost chatSlashHost(BuildContext context, WidgetRef ref, String conversa
       if (s.phase.busy) return toast('Wait for the answer to finish first.');
       s.phase is Failed ? controller().retry() : controller().regenerate();
     },
-    openMemory: () => context.push(Routes.memory),
+    openMemory: () => showSettings(context, section: SettingsSection.memory),
     exportChat: (format) => exportChat(context, ref, conversationId, format),
     saveAsSkill: (hint) => saveChatAsSkill(context, ref, conversationId, hint),
   );

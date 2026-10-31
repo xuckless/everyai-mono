@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
-import '../../../core/ui/adaptive_page.dart';
+import '../../../core/ui/segmented.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../billing/billing_providers.dart';
 import '../../models/domain/model_catalog.dart';
@@ -14,14 +14,14 @@ import '../usage_totals.dart';
 
 /// Settings → Usage: spend and tokens over time by model, kind or provider,
 /// cache savings, the provider split and the plan's included-usage bar.
-class UsageScreen extends ConsumerStatefulWidget {
-  const UsageScreen({super.key});
+class UsageBody extends ConsumerStatefulWidget {
+  const UsageBody({super.key});
 
   @override
-  ConsumerState<UsageScreen> createState() => _UsageScreenState();
+  ConsumerState<UsageBody> createState() => _UsageBodyState();
 }
 
-class _UsageScreenState extends ConsumerState<UsageScreen> {
+class _UsageBodyState extends ConsumerState<UsageBody> {
   var _range = UsageRange.week;
   var _by = UsageGroupBy.model;
   var _metric = UsageMetric.spend;
@@ -53,91 +53,86 @@ class _UsageScreenState extends ConsumerState<UsageScreen> {
       UsageGroupBy.provider => usageProviderLabel(key),
     };
 
-    return AdaptivePage(
-      title: 'Usage',
-      actions: [
-        AdaptiveIconButton(
-          icon: EveryIcon.retry,
-          tooltip: 'Refresh',
-          onPressed: () {
-            ref.invalidate(usageStatsProvider);
-            ref.invalidate(billingProvider);
-          },
-        ),
-      ],
-      body: ListView(
-        padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
-        children: [
-          if (billing case AsyncData(value: final b)) _QuotaCard(b),
-          Wrap(
-            spacing: 12,
-            runSpacing: 8,
-            children: [
-              _Segments(
-                values: UsageRange.values,
-                selected: _range,
-                label: (r) => r.label,
-                onSelected: (r) => setState(() => _range = r),
-              ),
-              _Segments(
-                values: UsageGroupBy.values,
-                selected: _by,
-                label: (b) => b.label,
-                onSelected: (b) => setState(() => _by = b),
-              ),
-              _Segments(
-                values: UsageMetric.values,
-                selected: _metric,
-                label: (m) => m.label,
-                onSelected: (m) => setState(() => _metric = m),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          switch (stats) {
-            AsyncData(value: final agg) => Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _Totals(agg.total),
-                _Card(
-                  children: [
-                    Text(
-                      '${_metric.label} by ${_by.label.toLowerCase()}, ${_range.weekly ? 'per week' : 'per day'}',
-                      style: theme.type.headline.tint(theme.text),
-                    ),
-                    const SizedBox(height: 12),
-                    _StackedBars(
-                      series: UsageSeries.from(agg, range: _range, now: DateTime.now(), metric: _metric),
-                      metric: _metric,
-                      weekly: _range.weekly,
-                      label: label,
-                    ),
-                  ],
-                ),
-                if (providers case AsyncData(value: final p) when p.keys.isNotEmpty) _ProviderSplit(p),
-                if (agg.keys.isNotEmpty) AdaptiveSectionHeader('By ${_by.label.toLowerCase()}'),
-                for (final (i, k) in agg.keys.indexed) _KeyTile(k, label: label(k.key), color: _colorFor(agg, i)),
-              ],
+    return ListView(
+      padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
+      children: [
+        if (billing case AsyncData(value: final b)) _QuotaCard(b),
+        Wrap(
+          spacing: 12,
+          runSpacing: 8,
+          children: [
+            AdaptiveSegmented(
+              values: UsageRange.values,
+              selected: _range,
+              label: (r) => r.label,
+              onSelected: (r) => setState(() => _range = r),
             ),
-            AsyncError(:final error) => Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
+            AdaptiveSegmented(
+              values: UsageGroupBy.values,
+              selected: _by,
+              label: (b) => b.label,
+              onSelected: (b) => setState(() => _by = b),
+            ),
+            AdaptiveSegmented(
+              values: UsageMetric.values,
+              selected: _metric,
+              label: (m) => m.label,
+              onSelected: (m) => setState(() => _metric = m),
+            ),
+            AdaptiveIconButton(
+              icon: EveryIcon.retry,
+              tooltip: 'Refresh',
+              onPressed: () {
+                ref.invalidate(usageStatsProvider);
+                ref.invalidate(billingProvider);
+              },
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        switch (stats) {
+          AsyncData(value: final agg) => Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _Totals(agg.total),
+              _Card(
                 children: [
-                  Text('Couldn’t load your usage.', style: theme.type.headline.tint(theme.text)),
-                  const SizedBox(height: 4),
-                  Text('$error', style: theme.type.callout.tint(theme.textMuted), textAlign: TextAlign.center),
+                  Text(
+                    '${_metric.label} by ${_by.label.toLowerCase()}, ${_range.weekly ? 'per week' : 'per day'}',
+                    style: theme.type.headline.tint(theme.text),
+                  ),
                   const SizedBox(height: 12),
-                  AdaptiveButton(label: 'Try again', onPressed: () => ref.invalidate(usageStatsProvider(query))),
+                  _StackedBars(
+                    series: UsageSeries.from(agg, range: _range, now: DateTime.now(), metric: _metric),
+                    metric: _metric,
+                    weekly: _range.weekly,
+                    label: label,
+                  ),
                 ],
               ),
+              if (providers case AsyncData(value: final p) when p.keys.isNotEmpty) _ProviderSplit(p),
+              if (agg.keys.isNotEmpty) AdaptiveSectionHeader('By ${_by.label.toLowerCase()}'),
+              for (final (i, k) in agg.keys.indexed) _KeyTile(k, label: label(k.key), color: _colorFor(agg, i)),
+            ],
+          ),
+          AsyncError(:final error) => Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              children: [
+                Text('Couldn’t load your usage.', style: theme.type.headline.tint(theme.text)),
+                const SizedBox(height: 4),
+                Text('$error', style: theme.type.callout.tint(theme.textMuted), textAlign: TextAlign.center),
+                const SizedBox(height: 12),
+                AdaptiveButton(label: 'Try again', onPressed: () => ref.invalidate(usageStatsProvider(query))),
+              ],
             ),
-            _ => const Padding(
-              padding: EdgeInsets.all(48),
-              child: Center(child: AdaptiveProgress()),
-            ),
-          },
-        ],
-      ),
+          ),
+          _ => const Padding(
+            padding: EdgeInsets.all(48),
+            child: Center(child: AdaptiveProgress()),
+          ),
+        },
+      ],
     );
   }
 
@@ -281,7 +276,7 @@ class _StackedBars extends StatelessWidget {
     final theme = EveryTheme.of(context);
     Color colorOf(int k) => series.keys[k] == UsageSeries.other
         ? theme.textMuted.withValues(alpha: 0.5)
-        : _UsageScreenState.palette[k % _UsageScreenState.palette.length];
+        : _UsageBodyState.palette[k % _UsageBodyState.palette.length];
     if (series.keys.isEmpty) {
       return SizedBox(
         height: 120,
@@ -524,59 +519,6 @@ class _KeyTile extends StatelessWidget {
       trailing: Text(
         k.chargedMicros == 0 ? 'Free' : _money(k.chargedMicros),
         style: TextStyle(color: theme.textMuted, fontFeatures: const [FontFeature.tabularFigures()]),
-      ),
-    );
-  }
-}
-
-/// A row of pill buttons choosing one value (inline, so no menus or sheets).
-class _Segments<T> extends StatelessWidget {
-  const _Segments({required this.values, required this.selected, required this.label, required this.onSelected});
-
-  final List<T> values;
-  final T selected;
-  final String Function(T) label;
-  final ValueChanged<T> onSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    return Container(
-      padding: const EdgeInsets.all(2),
-      decoration: BoxDecoration(
-        color: theme.surfaceRaised,
-        borderRadius: BorderRadius.circular(9),
-        border: Border.all(color: theme.border),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          for (final v in values)
-            Semantics(
-              button: true,
-              selected: v == selected,
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: () => onSelected(v),
-                child: MouseRegion(
-                  cursor: SystemMouseCursors.click,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: v == selected ? theme.accent.withValues(alpha: 0.16) : null,
-                      borderRadius: BorderRadius.circular(7),
-                    ),
-                    child: Text(
-                      label(v),
-                      style: (v == selected ? theme.type.callout.semibold : theme.type.callout.medium).tint(
-                        v == selected ? theme.text : theme.textMuted,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-        ],
       ),
     );
   }

@@ -21,6 +21,8 @@ import '../../models/models_providers.dart';
 import '../data/relay_client.dart';
 import '../host_mirror.dart' show mirroredFileKinds;
 import '../remote_providers.dart';
+import '../../settings/ui/settings_modal.dart';
+import '../../settings/settings_registry.dart';
 
 /// Code on a phone, tablet or browser: the paired computer's sessions. They
 /// start on the computer; here they are followed and steered.
@@ -87,7 +89,10 @@ class RemoteSessionList extends ConsumerWidget {
     if (!list.paired) {
       return message(
         'Pair this device with a computer running EveryAI to follow its Code sessions here.',
-        action: AdaptiveButton(label: 'Pair a computer', onPressed: () => onNavigate(Routes.remote)),
+        action: AdaptiveButton(
+          label: 'Pair a computer',
+          onPressed: () => showSettings(context, section: SettingsSection.remote),
+        ),
       );
     }
     final linkNote = switch (list.link) {

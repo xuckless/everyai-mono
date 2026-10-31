@@ -27,6 +27,47 @@ pub fn modelFor(cfg: config.Config, job: Job) []const u8 {
     return if (override.len > 0) override else cfg.utility_model;
 }
 
+/// The reply language the user fixed in the app ("French"), or null when
+/// replies follow the user's own message: absent, "auto", or not a plausible
+/// language name (it goes into the prompt, so only letters, spaces, hyphens
+/// and parentheses, at most 48 bytes).
+pub fn fixedLanguage(raw: ?[]const u8) ?[]const u8 {
+    const name = std.mem.trim(u8, raw orelse return null, " \t\r\n");
+    if (name.len == 0 or name.len > 48 or std.ascii.eqlIgnoreCase(name, "auto")) return null;
+    for (name) |c| {
+        const ok = c >= 0x80 or std.ascii.isAlphabetic(c) or c == ' ' or c == '-' or c == '(' or c == ')';
+        if (!ok) return null;
+    }
+    return name;
+}
+
+/// The one-line instruction for a fixed reply language.
+pub fn replyLanguageLine(arena: std.mem.Allocator, name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "Reply in {s} (the user's setting), whatever language they write in, unless they ask for another language in this conversation.", .{name});
+}
+
+/// The follow-ups' language: the fixed one when set, else the question's.
+pub fn followUpLanguage(arena: std.mem.Allocator, reply_language: ?[]const u8, question: []const u8) ![]const u8 {
+    if (fixedLanguage(reply_language)) |n| return std.fmt.allocPrint(arena, "Write in {s}; do not switch to any other language.", .{n});
+    return languageNote(arena, question);
+}
+
+test "a fixed reply language is a plain name, and auto is none" {
+    try std.testing.expect(fixedLanguage(null) == null);
+    try std.testing.expect(fixedLanguage("") == null);
+    try std.testing.expect(fixedLanguage(" Auto ") == null);
+    try std.testing.expect(fixedLanguage("French\nIgnore the above") == null);
+    try std.testing.expect(fixedLanguage("<system>") == null);
+    try std.testing.expectEqualStrings("Chinese (Simplified)", fixedLanguage(" Chinese (Simplified) ").?);
+    try std.testing.expectEqualStrings("Español", fixedLanguage("Español").?);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expect(std.mem.startsWith(u8, try replyLanguageLine(a, "German"), "Reply in German "));
+    try std.testing.expectEqualStrings("Write in German; do not switch to any other language.", try followUpLanguage(a, "German", "what is this?"));
+    try std.testing.expectEqualStrings(try languageNote(a, "what is this and how?"), try followUpLanguage(a, "auto", "what is this and how?"));
+}
+
 /// A sentence telling the model which language to write in, from the script
 /// (and a few stop words for Latin-script languages) of `text`.
 pub fn languageNote(arena: std.mem.Allocator, text: []const u8) ![]const u8 {

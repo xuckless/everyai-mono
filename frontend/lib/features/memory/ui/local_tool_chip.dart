@@ -1,15 +1,15 @@
 import 'dart:convert';
 
 import 'package:flutter/widgets.dart';
-import 'package:go_router/go_router.dart';
 
-import '../../../app/router.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../chat/domain/message.dart';
 import '../../skills/domain/chat_skills.dart';
 import '../memory_providers.dart';
+import '../../settings/ui/settings_modal.dart';
+import '../../settings/settings_registry.dart';
 
 /// What a `memory`, `search_chats` or skill call did, for the one-line chip:
 /// (label, detail, failed).
@@ -105,14 +105,14 @@ class LocalToolChip extends StatelessWidget {
       ),
     );
     final route = switch (part.toolName) {
-      memoryTool => Routes.memory,
-      loadSkillTool || readSkillFileTool => Routes.skills,
+      memoryTool => SettingsSection.memory,
+      loadSkillTool || readSkillFileTool => SettingsSection.skills,
       _ => null,
     };
     if (route == null) return row;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTap: () => context.go(route),
+      onTap: () => showSettings(context, section: route),
       child: MouseRegion(cursor: SystemMouseCursors.click, child: row),
     );
   }

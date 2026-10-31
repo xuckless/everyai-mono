@@ -1,4 +1,3 @@
-import 'package:every_ai/app/shell.dart';
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/theme/every_theme.dart';
 import 'package:every_ai/features/billing/billing_providers.dart';
@@ -133,7 +132,7 @@ void main() {
         child: m.MaterialApp(
           home: EveryThemeScope(
             theme: EveryTheme.resolve(DesignLanguage.material, Brightness.light),
-            child: ShellScope(sidebarVisible: true, compact: false, toggleSidebar: () {}, child: const UsageScreen()),
+            child: m.Material(child: UsageBody()),
           ),
         ),
       ),

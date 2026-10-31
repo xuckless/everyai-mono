@@ -23,6 +23,8 @@ import '../domain/message.dart';
 import '../domain/chat_session.dart';
 import 'composer.dart';
 import 'message_view.dart';
+import '../../settings/ui/settings_modal.dart';
+import '../../settings/settings_registry.dart';
 
 /// Readable line length for the transcript and composer on wide windows.
 const _maxContentWidth = 820.0;
@@ -117,7 +119,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   message: error.message,
                   retryable: error.retryable,
                   onRetry: controller.retry,
-                  onTopUp: error is HttpStatusError && error.outOfCredits ? () => context.go(Routes.billing) : null,
+                  onTopUp: error is HttpStatusError && error.outOfCredits
+                      ? () => showSettings(context, section: SettingsSection.billing, anchor: 'wallet')
+                      : null,
                 ),
               SafeArea(
                 top: false,

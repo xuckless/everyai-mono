@@ -3,15 +3,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
-import '../../../core/ui/adaptive_page.dart';
 import '../../../core/ui/every_icons.dart';
 import '../domain/memory.dart';
 import '../memory_providers.dart';
 
 /// Settings → Memory: turn memory on or off, and view, edit and clear what
 /// the model saved. Everything here stays on this device.
-class MemoryScreen extends ConsumerWidget {
-  const MemoryScreen({super.key});
+class MemoryBody extends ConsumerWidget {
+  const MemoryBody({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -82,48 +81,45 @@ class MemoryScreen extends ConsumerWidget {
       );
     }
 
-    return AdaptivePage(
-      title: 'Memory',
-      body: ListView(
-        padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
-        children: [
-          AdaptiveListTile(
-            title: const Text('Use memory'),
-            subtitle: const Text(
-              'EveryAI keeps short notes about you and can search your earlier chats. '
-              'Everything stays on this device.',
-            ),
-            trailing: AdaptiveSwitch(value: memory.enabled, onChanged: ctl.setEnabled),
+    return ListView(
+      padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
+      children: [
+        AdaptiveListTile(
+          title: const Text('Use memory'),
+          subtitle: const Text(
+            'EveryAI keeps short notes about you and can search your earlier chats. '
+            'Everything stays on this device.',
           ),
-          for (final t in MemoryTarget.values) note(t),
-          Padding(
-            padding: const EdgeInsets.only(top: 16, bottom: 8),
-            child: Text(
-              'Each chat keeps the notes it started with, so changes show up in your next chat.',
-              style: theme.type.caption.tint(theme.textMuted),
-            ),
+          trailing: AdaptiveSwitch(value: memory.enabled, onChanged: ctl.setEnabled),
+        ),
+        for (final t in MemoryTarget.values) note(t),
+        Padding(
+          padding: const EdgeInsets.only(top: 16, bottom: 8),
+          child: Text(
+            'Each chat keeps the notes it started with, so changes show up in your next chat.',
+            style: theme.type.caption.tint(theme.textMuted),
           ),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: AdaptiveButton(
-              label: 'Clear memory',
-              emphasis: ButtonEmphasis.destructive,
-              onPressed: memory.isEmpty
-                  ? null
-                  : () async {
-                      final ok = await showAdaptiveConfirm(
-                        context,
-                        title: 'Clear memory?',
-                        message: 'Both notes are emptied, and chats you already started stop using them.',
-                        confirmLabel: 'Clear',
-                        destructive: true,
-                      );
-                      if (ok) ctl.clear();
-                    },
-            ),
+        ),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: AdaptiveButton(
+            label: 'Clear memory',
+            emphasis: ButtonEmphasis.destructive,
+            onPressed: memory.isEmpty
+                ? null
+                : () async {
+                    final ok = await showAdaptiveConfirm(
+                      context,
+                      title: 'Clear memory?',
+                      message: 'Both notes are emptied, and chats you already started stop using them.',
+                      confirmLabel: 'Clear',
+                      destructive: true,
+                    );
+                    if (ok) ctl.clear();
+                  },
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

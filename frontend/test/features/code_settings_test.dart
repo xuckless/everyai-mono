@@ -1,6 +1,5 @@
 import 'dart:convert';
 
-import 'package:every_ai/app/shell.dart';
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/core/theme/every_theme.dart';
@@ -248,17 +247,12 @@ void main() {
         child: m.MaterialApp(
           home: EveryThemeScope(
             theme: EveryTheme.resolve(DesignLanguage.material, Brightness.light),
-            child: ShellScope(
-              sidebarVisible: true,
-              compact: false,
-              toggleSidebar: () {},
-              child: const CodeSettingsScreen(),
-            ),
+            child: m.Material(child: CodeSettingsBody()),
           ),
         ),
       ),
     );
-    final container = ProviderScope.containerOf(tester.element(find.byType(CodeSettingsScreen)));
+    final container = ProviderScope.containerOf(tester.element(find.byType(CodeSettingsBody)));
     final editor = find.byKey(const ValueKey('code-settings.editor.global.json'));
     expect(editor, findsOneWidget);
     expect(find.textContaining('"systemPrompt": ""'), findsOneWidget);

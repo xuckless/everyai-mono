@@ -11,14 +11,13 @@ import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/brand.dart';
 import '../../../core/ui/every_icons.dart';
-import '../../auth/auth_providers.dart';
-import '../../auth/domain/auth_state.dart';
 import '../../chat/chat_providers.dart';
 import '../../chat/data/chat_repository.dart';
 import '../../chat/domain/message.dart';
 import '../../code/code_providers.dart';
 import '../../code/ui/code_home.dart';
 import '../../remote/ui/remote_code.dart' show RemoteSessionList;
+import '../../settings/ui/account_menu.dart';
 
 /// Width of the collapsed rail. macOS needs room for the traffic lights above it.
 double sidebarRailWidth(DesignLanguage design) => Host.hasTrafficLights ? 92 : 60;
@@ -235,11 +234,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
               : _Recents(location: loc, matches: _matches, onNavigate: widget.onNavigate),
         ),
         Container(height: 1, color: theme.border),
-        _AccountRow(
-          collapsed: collapsed,
-          selected: loc == Routes.settings,
-          onTap: () => widget.onNavigate(Routes.settings),
-        ),
+        AccountRow(collapsed: collapsed),
       ],
     );
   }
@@ -648,72 +643,5 @@ class _ConversationTileState extends ConsumerState<ConversationTile> {
       destructive: true,
     );
     if (confirmed) await repo.delete(widget.conversation.id);
-  }
-}
-
-class _AccountRow extends ConsumerWidget {
-  const _AccountRow({required this.collapsed, required this.selected, required this.onTap});
-
-  final bool collapsed;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final theme = EveryTheme.of(context);
-    final (name, plan) = switch (ref.watch(authProvider)) {
-      Bypassed() => ('Guest', 'Developer mode'),
-      SignedIn() => ('Account', 'Free plan'),
-      _ => ('Signed out', ''),
-    };
-    final avatar = Container(
-      width: 30,
-      height: 30,
-      decoration: BoxDecoration(color: theme.accent.withValues(alpha: 0.25), shape: BoxShape.circle),
-      child: Center(child: Text(name[0], style: theme.type.callout.semibold.tint(theme.text))),
-    );
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.all(8),
-        child: Semantics(
-          button: true,
-          label: 'Settings',
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: onTap,
-            child: MouseRegion(
-              cursor: SystemMouseCursors.click,
-              child: Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: selected ? theme.text.withValues(alpha: 0.09) : null,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: collapsed
-                    ? Center(child: avatar)
-                    : Row(
-                        children: [
-                          avatar,
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(name, style: theme.type.body.semibold.tint(theme.text)),
-                                if (plan.isNotEmpty) Text(plan, style: theme.type.caption.tint(theme.textMuted)),
-                              ],
-                            ),
-                          ),
-                          AdaptiveIcon(EveryIcon.settings, size: 17, color: theme.textMuted),
-                        ],
-                      ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
   }
 }

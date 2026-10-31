@@ -9,32 +9,23 @@ import '../features/auth/domain/auth_state.dart';
 import '../features/auth/ui/sign_in_screen.dart';
 import '../features/chat/ui/chat_screen.dart';
 import '../features/code/ui/code_home.dart';
-import '../features/code/ui/code_settings_screen.dart';
-import '../features/code/code_settings_providers.dart' show SettingsScope;
-import '../features/code/ui/mcp_settings_screen.dart';
 import '../features/code/ui/session_view.dart';
 import '../features/history/ui/chats_screen.dart';
 import '../features/history/ui/projects_screen.dart';
 import '../features/models/ui/models_screen.dart';
 import '../features/settings/appearance.dart';
-import '../features/billing/ui/billing_screen.dart';
-import '../features/agents/ui/agents_settings_screen.dart';
-import '../features/memory/ui/memory_screen.dart';
-import '../features/slash/custom/custom_commands_screen.dart';
+import '../features/settings/settings_registry.dart';
 import '../core/platform/platform_kind.dart';
 import '../features/remote/ui/remote_code.dart';
-import '../features/remote/ui/remote_settings_screen.dart';
-import '../features/settings/ui/notices_screen.dart';
-import '../features/settings/ui/settings_screen.dart';
-import '../features/settings/ui/settings_shell.dart';
-import '../features/skills/ui/skills_settings_screen.dart';
-import '../features/usage/ui/usage_screen.dart';
 import 'shell.dart';
 
 abstract final class Routes {
   static const signIn = '/sign-in';
   static const signUp = '/sign-up';
   static const models = '/models';
+
+  /// Old Settings pages: each opens the Settings modal (see
+  /// [settingsTargetForLocation]); use `showSettings` in new code.
   static const settings = '/settings';
   static const billing = '/settings/billing';
   static const usage = '/settings/usage';
@@ -53,13 +44,17 @@ abstract final class Routes {
   static String chat(String id) => '/chat/$id';
   static String codeSession(String id) => '/code/s/$id';
   static const codeSettingsPath = '/code/settings';
+}
 
-  /// Code settings at [scope] (global, project, session) and [tab] (prompt,
-  /// json, effective).
-  static String codeSettings({String? projectId, String? sessionId, String? scope, String? tab}) => Uri(
-    path: codeSettingsPath,
-    queryParameters: {'project': ?projectId, 'session': ?sessionId, 'scope': ?scope, 'tab': ?tab},
-  ).toString();
+/// Asks the shell to open Settings at what [uri] stands for (after this
+/// frame: the router is mid-build) and returns where the user was.
+String _openSettings(Ref ref, Uri uri) {
+  final target = settingsTargetForLocation(uri);
+  if (target != null) {
+    WidgetsBinding.instance.addPostFrameCallback((_) => ref.read(pendingSettingsProvider.notifier).request(target));
+  }
+  final back = _lastLocation;
+  return settingsTargetForLocation(Uri.parse(back)) == null ? back : Routes.newChat;
 }
 
 /// Survives router rebuilds (switching design language swaps the app root and
@@ -100,6 +95,11 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: Routes.signUp,
         builder: (_, _) => const SignInScreen(mode: AuthMode.signUp),
       ),
+      // Settings is a modal now: its old pages stay where the user was and
+      // open the modal at the matching section.
+      GoRoute(path: Routes.settings, redirect: (_, state) => _openSettings(ref, state.uri)),
+      GoRoute(path: '${Routes.settings}/:section', redirect: (_, state) => _openSettings(ref, state.uri)),
+      GoRoute(path: Routes.codeSettingsPath, redirect: (_, state) => _openSettings(ref, state.uri)),
       ShellRoute(
         builder: (context, state, child) => AppShell(location: state.uri.path, child: child),
         routes: [
@@ -140,76 +140,13 @@ final routerProvider = Provider<GoRouter>((ref) {
             path: Routes.models,
             pageBuilder: (_, _) => const NoTransitionPage(child: ModelsScreen()),
           ),
-          // Every settings page sits in one shell: a section list beside it on
-          // wide windows, a back control on narrow ones.
-          ShellRoute(
-            builder: (context, state, child) => SettingsShell(location: state.uri.toString(), child: child),
-            routes: [
-              GoRoute(
-                path: Routes.codeSettingsPath,
-                pageBuilder: (_, state) {
-                  final q = state.uri.queryParameters;
-                  return NoTransitionPage(
-                    key: ValueKey('code-settings-${state.uri.query}'),
-                    child: CodeSettingsScreen(
-                      projectId: q['project'],
-                      sessionId: q['session'],
-                      scope: SettingsScope.parse(q['scope']),
-                      tab: CodeSettingsTab.parse(q['tab']),
-                    ),
-                  );
-                },
-              ),
-              GoRoute(
-                path: Routes.settings,
-                pageBuilder: (_, _) => const NoTransitionPage(child: SettingsScreen()),
-              ),
-              GoRoute(
-                path: Routes.billing,
-                pageBuilder: (_, _) => const NoTransitionPage(child: BillingScreen()),
-              ),
-              GoRoute(
-                path: Routes.usage,
-                pageBuilder: (_, _) => const NoTransitionPage(child: UsageScreen()),
-              ),
-              GoRoute(
-                path: Routes.mcpServers,
-                pageBuilder: (_, _) => const NoTransitionPage(child: McpSettingsScreen()),
-              ),
-              GoRoute(
-                path: Routes.skills,
-                pageBuilder: (_, _) => const NoTransitionPage(child: SkillsSettingsScreen()),
-              ),
-              GoRoute(
-                path: Routes.remote,
-                pageBuilder: (_, _) => const NoTransitionPage(child: RemoteSettingsScreen()),
-              ),
-              GoRoute(
-                path: Routes.notices,
-                pageBuilder: (_, _) => const NoTransitionPage(child: NoticesScreen()),
-              ),
-              GoRoute(
-                path: Routes.agents,
-                pageBuilder: (_, _) => const NoTransitionPage(child: AgentsSettingsScreen()),
-              ),
-              GoRoute(
-                path: Routes.memory,
-                pageBuilder: (_, _) => const NoTransitionPage(child: MemoryScreen()),
-              ),
-              GoRoute(
-                path: Routes.commands,
-                pageBuilder: (_, _) => const NoTransitionPage(child: CustomCommandsScreen()),
-              ),
-            ],
-          ),
         ],
       ),
     ],
   );
   void remember() {
     final now = router.routerDelegate.currentConfiguration.uri.toString();
-    ref.read(settingsReturnProvider.notifier).moved(_lastLocation, now);
-    _lastLocation = now;
+    if (settingsTargetForLocation(Uri.parse(now)) == null) _lastLocation = now;
   }
 
   router.routerDelegate.addListener(remember);

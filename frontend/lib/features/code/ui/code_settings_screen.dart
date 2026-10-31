@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
-import '../../../core/ui/adaptive_page.dart';
 import '../code_providers.dart';
 import '../../../core/ui/selection.dart';
 import '../code_settings_providers.dart';
@@ -26,8 +25,8 @@ enum CodeSettingsTab {
 /// editor per layer, the overarching system prompts, and the merged result.
 /// The layers are views of the app's stores (see [layerJson]); saving writes
 /// back into those stores.
-class CodeSettingsScreen extends ConsumerStatefulWidget {
-  const CodeSettingsScreen({
+class CodeSettingsBody extends ConsumerStatefulWidget {
+  const CodeSettingsBody({
     super.key,
     this.projectId,
     this.sessionId,
@@ -41,10 +40,10 @@ class CodeSettingsScreen extends ConsumerStatefulWidget {
   final CodeSettingsTab tab;
 
   @override
-  ConsumerState<CodeSettingsScreen> createState() => _CodeSettingsScreenState();
+  ConsumerState<CodeSettingsBody> createState() => _CodeSettingsBodyState();
 }
 
-class _CodeSettingsScreenState extends ConsumerState<CodeSettingsScreen> {
+class _CodeSettingsBodyState extends ConsumerState<CodeSettingsBody> {
   late String? _projectId = widget.projectId;
   late SettingsScope _scope = _available(widget.scope);
   late CodeSettingsTab _tab = widget.tab;
@@ -205,95 +204,83 @@ class _CodeSettingsScreenState extends ConsumerState<CodeSettingsScreen> {
             'Repository files (.everyai/settings.json) add project rules and deny rules on top.',
     };
 
-    return AdaptivePage(
-      title: 'Code settings',
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-        children: [
-          Wrap(
-            children: [
-              for (final s in SettingsScope.values)
-                chip(
-                  key: ValueKey('code-settings.scope.${s.name}'),
-                  s.label,
-                  _scope == s && _tab != CodeSettingsTab.effective,
-                  _available(s) == s && _tab != CodeSettingsTab.effective ? () => _go(scope: s) : null,
-                ),
-              const SizedBox(width: 12),
-              for (final t in CodeSettingsTab.values)
-                chip(key: ValueKey('code-settings.tab.${t.name}'), t.label, _tab == t, () => _go(tab: t)),
-            ],
-          ),
-          if (projects.isNotEmpty && _scope != SettingsScope.global)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: AdaptiveMenuButton(
-                actions: [
-                  for (final p in projects)
-                    MenuAction(
-                      label: p.name,
-                      checked: p.id == _projectId,
-                      onSelected: () => _go(projectId: p.id),
-                    ),
-                ],
-                child: MenuTrigger('Project: ${project?.name ?? 'choose…'}'),
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+      children: [
+        Wrap(
+          children: [
+            for (final s in SettingsScope.values)
+              chip(
+                key: ValueKey('code-settings.scope.${s.name}'),
+                s.label,
+                _scope == s && _tab != CodeSettingsTab.effective,
+                _available(s) == s && _tab != CodeSettingsTab.effective ? () => _go(scope: s) : null,
               ),
-            ),
+            const SizedBox(width: 12),
+            for (final t in CodeSettingsTab.values)
+              chip(key: ValueKey('code-settings.tab.${t.name}'), t.label, _tab == t, () => _go(tab: t)),
+          ],
+        ),
+        if (projects.isNotEmpty && _scope != SettingsScope.global)
           Padding(
-            padding: const EdgeInsets.only(bottom: 10),
-            child: Text(blurb, style: theme.type.callout.tint(theme.textMuted)),
-          ),
-          if (readOnly)
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                border: Border.all(color: theme.border),
-                borderRadius: BorderRadius.circular(theme.radius),
-              ),
-              child: AdaptiveSelectionArea(
-                child: Text(
-                  _text.text.isEmpty ? '(none)' : _text.text,
-                  style: theme.type.callout.mono.tint(theme.text),
-                ),
-              ),
-            )
-          else
-            DefaultTextStyle.merge(
-              style: _tab == CodeSettingsTab.json ? theme.type.callout.mono : theme.type.callout,
-              child: AdaptiveTextField(
-                key: ValueKey('code-settings.editor.${_scope.name}.${_tab.name}'),
-                controller: _text,
-                minLines: 12,
-                maxLines: 30,
-                keyboardType: TextInputType.multiline,
-                placeholder: _tab == CodeSettingsTab.prompt
-                    ? 'e.g. Answer in British English. Prefer small PRs.'
-                    : null,
-                onChanged: (_) => setState(() => _errors = const []),
-              ),
-            ),
-          for (final e in _errors)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text(e, style: theme.type.callout.tint(theme.danger)),
-            ),
-          if (!readOnly)
-            Padding(
-              padding: const EdgeInsets.only(top: 12),
-              child: Row(
-                children: [
-                  AdaptiveButton(key: const ValueKey('code-settings.save'), label: 'Save', onPressed: _save),
-                  const SizedBox(width: 8),
-                  AdaptiveButton(
-                    label: 'Revert',
-                    emphasis: ButtonEmphasis.secondary,
-                    onPressed: () => setState(_reload),
+            padding: const EdgeInsets.only(bottom: 6),
+            child: AdaptiveMenuButton(
+              actions: [
+                for (final p in projects)
+                  MenuAction(
+                    label: p.name,
+                    checked: p.id == _projectId,
+                    onSelected: () => _go(projectId: p.id),
                   ),
-                ],
-              ),
+              ],
+              child: MenuTrigger('Project: ${project?.name ?? 'choose…'}'),
             ),
-        ],
-      ),
+          ),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Text(blurb, style: theme.type.callout.tint(theme.textMuted)),
+        ),
+        if (readOnly)
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              border: Border.all(color: theme.border),
+              borderRadius: BorderRadius.circular(theme.radius),
+            ),
+            child: AdaptiveSelectionArea(
+              child: Text(_text.text.isEmpty ? '(none)' : _text.text, style: theme.type.callout.mono.tint(theme.text)),
+            ),
+          )
+        else
+          DefaultTextStyle.merge(
+            style: _tab == CodeSettingsTab.json ? theme.type.callout.mono : theme.type.callout,
+            child: AdaptiveTextField(
+              key: ValueKey('code-settings.editor.${_scope.name}.${_tab.name}'),
+              controller: _text,
+              minLines: 12,
+              maxLines: 30,
+              keyboardType: TextInputType.multiline,
+              placeholder: _tab == CodeSettingsTab.prompt ? 'e.g. Answer in British English. Prefer small PRs.' : null,
+              onChanged: (_) => setState(() => _errors = const []),
+            ),
+          ),
+        for (final e in _errors)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(e, style: theme.type.callout.tint(theme.danger)),
+          ),
+        if (!readOnly)
+          Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: Row(
+              children: [
+                AdaptiveButton(key: const ValueKey('code-settings.save'), label: 'Save', onPressed: _save),
+                const SizedBox(width: 8),
+                AdaptiveButton(label: 'Revert', emphasis: ButtonEmphasis.secondary, onPressed: () => setState(_reload)),
+              ],
+            ),
+          ),
+      ],
     );
   }
 }

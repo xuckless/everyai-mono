@@ -1,8 +1,6 @@
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 
-import '../../../app/router.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/anchored_popover.dart';
@@ -17,7 +15,8 @@ import '../code_providers.dart';
 import '../code_settings_providers.dart';
 import '../mcp_providers.dart';
 import '../permissions_providers.dart';
-import 'code_settings_screen.dart' show CodeSettingsTab;
+import '../../settings/settings_registry.dart';
+import '../../settings/ui/settings_modal.dart';
 
 /// How much of the session header fits, from the width the page really has
 /// (not the window: the sidebar and the panes take part of it).
@@ -141,13 +140,15 @@ class _SettingsChip extends ConsumerWidget {
     return AnchoredPopover(
       width: 320,
       builder: (context, close) {
-        void open(String location) {
+        void open(SettingsSection section, {String? anchor, SettingsScope? scope}) {
           close();
-          context.go(location);
+          showSettings(
+            context,
+            section: section,
+            anchor: anchor,
+            args: {if (scope != null) 'scope': scope.name, 'project': projectId, 'session': ?sessionId},
+          );
         }
-
-        String settingsAt(SettingsScope scope, CodeSettingsTab tab) =>
-            Routes.codeSettings(projectId: projectId, sessionId: sessionId, scope: scope.name, tab: tab.name);
 
         // Scrolls: the rows outgrow the popover's height cap on short windows.
         return SingleChildScrollView(
@@ -161,25 +162,25 @@ class _SettingsChip extends ConsumerWidget {
                 key: const ValueKey('top-bar.settings.permissions'),
                 title: 'Permissions',
                 subtitle: '${plural(rules.allow.length, 'allow rule')} · ${plural(rules.deny.length, 'deny rule')}',
-                onTap: () => open(settingsAt(SettingsScope.project, CodeSettingsTab.json)),
+                onTap: () => open(SettingsSection.code, anchor: 'permissions', scope: SettingsScope.project),
               ),
               PopoverRow(
                 key: const ValueKey('top-bar.settings.mcp'),
                 title: 'MCP servers',
                 subtitle: '${plural(mcp, 'server')} on',
-                onTap: () => open(Routes.mcpServers),
+                onTap: () => open(SettingsSection.mcp),
               ),
               PopoverRow(
                 key: const ValueKey('top-bar.settings.skills'),
                 title: 'Skills',
                 subtitle: '${plural(skills, 'skill')} on',
-                onTap: () => open(Routes.skills),
+                onTap: () => open(SettingsSection.skills),
               ),
               PopoverRow(
                 key: const ValueKey('top-bar.settings.prompt'),
                 title: 'System prompt',
                 subtitle: promptCount == 0 ? 'None' : 'Global and project · ${plural(promptCount, 'prompt')} set',
-                onTap: () => open(settingsAt(SettingsScope.project, CodeSettingsTab.prompt)),
+                onTap: () => open(SettingsSection.code, anchor: 'prompt', scope: SettingsScope.project),
               ),
               PopoverRow(
                 key: const ValueKey('top-bar.settings.compact'),
@@ -235,7 +236,11 @@ class _SettingsChip extends ConsumerWidget {
                 key: const ValueKey('top-bar.settings.json'),
                 title: 'settings.json…',
                 subtitle: 'Global, project and session layers as JSON',
-                onTap: () => open(settingsAt(SettingsScope.session, CodeSettingsTab.json)),
+                onTap: () => open(
+                  SettingsSection.code,
+                  anchor: 'json',
+                  scope: sessionId == null ? SettingsScope.project : SettingsScope.session,
+                ),
               ),
             ],
           ),

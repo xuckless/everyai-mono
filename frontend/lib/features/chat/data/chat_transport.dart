@@ -29,6 +29,7 @@ final class ChatRequest {
     this.memory,
     this.skills,
     this.effort,
+    this.replyLanguage,
     this.forceTool,
     this.researchDepth = ResearchDepth.standard,
   });
@@ -61,6 +62,10 @@ final class ChatRequest {
 
   /// Thinking effort (`low|medium|high|max`); null leaves the model's default.
   final String? effort;
+
+  /// The language replies and follow-ups must use ("French"); null follows
+  /// the user's own message.
+  final String? replyLanguage;
 
   /// A tool the model must call first (`make_quiz`…); later calls of the turn are free.
   final String? forceTool;
@@ -230,6 +235,7 @@ final class SseTransport implements ChatTransport {
       'memory': ?request.memory,
       'skills': ?request.skills,
       'effort': ?request.effort,
+      'reply_language': ?request.replyLanguage,
       'force_tool': ?request.forceTool,
       if (request.mode == ChatMode.research) 'research_depth': request.researchDepth.name,
       if (request.clientTools.isNotEmpty) 'client_tools': request.clientTools.toList(growable: false),

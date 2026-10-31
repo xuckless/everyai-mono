@@ -8,7 +8,6 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../../../core/platform/platform_kind.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
-import '../../../core/ui/adaptive_page.dart';
 import '../data/host_link.dart';
 import '../data/relay_client.dart';
 import '../data/remote_api.dart';
@@ -21,18 +20,15 @@ import 'qr_scanner.dart';
 /// Settings → Remote coding. On a desktop: host Code sessions for the
 /// account's other devices (pairing code + QR, approvals, paired devices).
 /// Everywhere: pair with a host by scanning its QR or typing its code.
-class RemoteSettingsScreen extends ConsumerWidget {
-  const RemoteSettingsScreen({super.key});
+class RemoteSettingsBody extends ConsumerWidget {
+  const RemoteSettingsBody({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return AdaptivePage(
-      title: 'Remote coding',
-      body: ListView(
-        padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
-        // A computer hosts its sessions; other devices pair with one to follow them.
-        children: [if (Host.isDesktop) const _HostSection() else const _PairedHostsSection()],
-      ),
+    return ListView(
+      padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
+      // A computer hosts its sessions; other devices pair with one to follow them.
+      children: [if (Host.isDesktop) const _HostSection() else const _PairedHostsSection()],
     );
   }
 }

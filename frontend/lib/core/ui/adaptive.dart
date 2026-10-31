@@ -841,10 +841,13 @@ Future<String?> showAdaptivePrompt(
   }
 }
 
-/// Transient message: toast-style on desktop, snack bar on Material.
+/// Transient message: toast-style on desktop, snack bar on Material pages.
 void showAdaptiveToast(BuildContext context, String message) {
   final theme = EveryTheme.of(context);
-  if (theme.design == DesignLanguage.material || theme.design == DesignLanguage.adwaita) {
+  // A snack bar needs a Scaffold under the caller; dialogs (Settings) have
+  // none, so they get the overlay toast, which shows above them.
+  if ((theme.design == DesignLanguage.material || theme.design == DesignLanguage.adwaita) &&
+      m.Scaffold.maybeOf(context) != null) {
     m.ScaffoldMessenger.maybeOf(context)?.showSnackBar(m.SnackBar(content: Text(message)));
     return;
   }
@@ -858,11 +861,15 @@ void showAdaptiveToast(BuildContext context, String message) {
       bottom: 32 + MediaQuery.paddingOf(context).bottom,
       child: IgnorePointer(
         child: Center(
-          child: GlassSurface(
-            level: GlassLevel.thick,
-            radius: 999,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            child: Text(message, style: theme.type.body.tint(theme.text)),
+          // The overlay may sit above the app's theme scope.
+          child: EveryThemeScope(
+            theme: theme,
+            child: GlassSurface(
+              level: GlassLevel.thick,
+              radius: 999,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Text(message, style: theme.type.body.tint(theme.text)),
+            ),
           ),
         ),
       ),

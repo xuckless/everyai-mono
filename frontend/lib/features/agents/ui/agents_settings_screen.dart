@@ -4,7 +4,6 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
-import '../../../core/ui/adaptive_page.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../code/code_providers.dart' show codeProjectsProvider;
 import '../../code/domain/code_session.dart';
@@ -17,14 +16,14 @@ import '../agents_providers.dart';
 /// `run_subagent`. Built-in ones ship with the app (customize one to edit a
 /// copy); global ones live in app support `agents/`; project ones in
 /// `<project>/.everyai/agents` stay off until the user trusts them.
-class AgentsSettingsScreen extends ConsumerStatefulWidget {
-  const AgentsSettingsScreen({super.key});
+class AgentsSettingsBody extends ConsumerStatefulWidget {
+  const AgentsSettingsBody({super.key});
 
   @override
-  ConsumerState<AgentsSettingsScreen> createState() => _AgentsSettingsScreenState();
+  ConsumerState<AgentsSettingsBody> createState() => _AgentsSettingsBodyState();
 }
 
-class _AgentsSettingsScreenState extends ConsumerState<AgentsSettingsScreen> {
+class _AgentsSettingsBodyState extends ConsumerState<AgentsSettingsBody> {
   /// The agent open in the editor, if any.
   AgentDefinition? _editing;
   final _text = TextEditingController();
@@ -92,59 +91,56 @@ class _AgentsSettingsScreenState extends ConsumerState<AgentsSettingsScreen> {
       ],
     );
 
-    return AdaptivePage(
-      title: 'Agents',
-      body: ListView(
-        padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
-        children: [
-          Text(
-            'An agent is a Markdown file: a description that tells the Code agent when to hand it work, optional '
-            'model, effort, tools and permissions lines, and its instructions. The Code agent starts one as a '
-            'subagent when a task fits its description. An agent can make a subagent more careful than the session '
-            'that starts it, never less.',
-            style: theme.type.caption.tint(theme.textMuted),
-          ),
-          Padding(
-            padding: const EdgeInsets.only(top: 10, bottom: 4),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: AdaptiveButton(
-                label: 'Reload',
-                emphasis: ButtonEmphasis.secondary,
-                onPressed: ref.read(agentLibraryProvider.notifier).reload,
-              ),
+    return ListView(
+      padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
+      children: [
+        Text(
+          'An agent is a Markdown file: a description that tells the Code agent when to hand it work, optional '
+          'model, effort, tools and permissions lines, and its instructions. The Code agent starts one as a '
+          'subagent when a task fits its description. An agent can make a subagent more careful than the session '
+          'that starts it, never less.',
+          style: theme.type.caption.tint(theme.textMuted),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(top: 10, bottom: 4),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: AdaptiveButton(
+              label: 'Reload',
+              emphasis: ButtonEmphasis.secondary,
+              onPressed: ref.read(agentLibraryProvider.notifier).reload,
             ),
           ),
-          if (library case AsyncError(:final error))
-            Text("Couldn't read the agent folders: $error", style: TextStyle(color: theme.danger)),
-          section('Built-in', [...all.where((a) => a.source == AgentSource.builtin)]),
+        ),
+        if (library case AsyncError(:final error))
+          Text("Couldn't read the agent folders: $error", style: TextStyle(color: theme.danger)),
+        section('Built-in', [...all.where((a) => a.source == AgentSource.builtin)]),
+        section(
+          'Global',
+          [...all.where((a) => a.source == AgentSource.global)],
+          empty: 'No agents of your own yet',
+          canCreate: true,
+        ),
+        for (final p in projects)
           section(
-            'Global',
-            [...all.where((a) => a.source == AgentSource.global)],
-            empty: 'No agents of your own yet',
+            p.name,
+            [...all.where((a) => a.projectId == p.id)],
+            empty: 'No agents in $projectAgentsDir',
+            winners: agentWinners(all, p.id),
+            newIn: p,
             canCreate: true,
           ),
-          for (final p in projects)
-            section(
-              p.name,
-              [...all.where((a) => a.projectId == p.id)],
-              empty: 'No agents in $projectAgentsDir',
-              winners: agentWinners(all, p.id),
-              newIn: p,
-              canCreate: true,
-            ),
-          Padding(
-            padding: const EdgeInsets.only(top: 16),
-            child: Text(
-              'Global agents live in the app support folder\'s agents/ and work in every project. Project agents live '
-              'in <project>/$projectAgentsDir; one that came with a repository stays off until you review it, and goes '
-              'off again if its file changes. A project agent takes the place of a global or built-in one of the same '
-              'name once trusted.',
-              style: theme.type.caption.tint(theme.textMuted),
-            ),
+        Padding(
+          padding: const EdgeInsets.only(top: 16),
+          child: Text(
+            'Global agents live in the app support folder\'s agents/ and work in every project. Project agents live '
+            'in <project>/$projectAgentsDir; one that came with a repository stays off until you review it, and goes '
+            'off again if its file changes. A project agent takes the place of a global or built-in one of the same '
+            'name once trusted.',
+            style: theme.type.caption.tint(theme.textMuted),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
@@ -153,45 +149,53 @@ class _AgentsSettingsScreenState extends ConsumerState<AgentsSettingsScreen> {
     final readOnly = a.path == null;
     final preview = AgentDefinition.parse(_text.text, fileName: '${a.name}.md', source: a.source);
     final problems = [...preview.errors, ...preview.warnings];
-    return AdaptivePage(
-      title: readOnly ? '${a.name} (built-in)' : a.name,
-      actions: [
-        AdaptiveButton(
-          label: readOnly ? 'Close' : 'Cancel',
-          emphasis: ButtonEmphasis.secondary,
-          onPressed: () => setState(() => _editing = null),
-        ),
-        if (readOnly)
-          AdaptiveButton(label: 'Customize', onPressed: () => _customize(a))
-        else
-          AdaptiveButton(label: 'Save', onPressed: () => _save(a)),
-      ],
-      body: ListView(
-        padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
-        children: [
-          Text(
-            readOnly
-                ? 'Built-in agents are read-only. Customize makes a copy in your global agents that you can edit; it '
-                      'takes the built-in\'s place.'
-                : a.path!,
-            style: theme.type.caption.tint(theme.textMuted),
-          ),
-          if (problems.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
+    return ListView(
+      padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
+      children: [
+        Row(
+          children: [
+            Expanded(
               child: Text(
-                problems.join('\n'),
-                style: theme.type.caption.tint(preview.usable ? theme.textMuted : theme.danger),
+                readOnly ? '${a.name} (built-in)' : a.name,
+                style: theme.type.headline.tint(theme.text),
+                overflow: TextOverflow.ellipsis,
               ),
             ),
+            AdaptiveButton(
+              label: readOnly ? 'Close' : 'Cancel',
+              emphasis: ButtonEmphasis.secondary,
+              onPressed: () => setState(() => _editing = null),
+            ),
+            const SizedBox(width: 8),
+            if (readOnly)
+              AdaptiveButton(label: 'Customize', onPressed: () => _customize(a))
+            else
+              AdaptiveButton(label: 'Save', onPressed: () => _save(a)),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Text(
+          readOnly
+              ? 'Built-in agents are read-only. Customize makes a copy in your global agents that you can edit; it '
+                    'takes the built-in\'s place.'
+              : a.path!,
+          style: theme.type.caption.tint(theme.textMuted),
+        ),
+        if (problems.isNotEmpty)
           Padding(
-            padding: const EdgeInsets.only(top: 10),
-            child: readOnly
-                ? Text(a.text, style: theme.type.callout.mono)
-                : AdaptiveTextField(controller: _text, minLines: 18, maxLines: null, onChanged: (_) => setState(() {})),
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              problems.join('\n'),
+              style: theme.type.caption.tint(preview.usable ? theme.textMuted : theme.danger),
+            ),
           ),
-        ],
-      ),
+        Padding(
+          padding: const EdgeInsets.only(top: 10),
+          child: readOnly
+              ? Text(a.text, style: theme.type.callout.mono)
+              : AdaptiveTextField(controller: _text, minLines: 18, maxLines: null, onChanged: (_) => setState(() {})),
+        ),
+      ],
     );
   }
 

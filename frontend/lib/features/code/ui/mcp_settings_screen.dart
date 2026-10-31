@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
-import '../../../core/ui/adaptive_page.dart';
 import '../../../core/ui/every_icons.dart';
 import '../code_providers.dart' show codeProjectsProvider;
 import '../mcp_providers.dart';
@@ -11,14 +10,14 @@ import '../mcp_providers.dart';
 /// Settings → MCP servers: the servers Code sessions get, for every project
 /// or one project. Local commands need the user's approval of the exact
 /// command before any session starts them.
-class McpSettingsScreen extends ConsumerStatefulWidget {
-  const McpSettingsScreen({super.key});
+class McpSettingsBody extends ConsumerStatefulWidget {
+  const McpSettingsBody({super.key});
 
   @override
-  ConsumerState<McpSettingsScreen> createState() => _McpSettingsScreenState();
+  ConsumerState<McpSettingsBody> createState() => _McpSettingsBodyState();
 }
 
-class _McpSettingsScreenState extends ConsumerState<McpSettingsScreen> {
+class _McpSettingsBodyState extends ConsumerState<McpSettingsBody> {
   /// Null: every project.
   String? _projectId;
 
@@ -141,124 +140,117 @@ class _McpSettingsScreenState extends ConsumerState<McpSettingsScreen> {
       ),
     );
 
-    return AdaptivePage(
-      title: 'MCP servers',
-      body: ListView(
-        padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-            child: Text(
-              'Tools from MCP servers for Code sessions. The agent server starts local servers and connects to '
-              'remote ones when a session starts. Every MCP tool asks before it runs, except in Full auto or when '
-              'you allow it.',
-              style: theme.type.callout.tint(theme.textMuted),
-            ),
+    return ListView(
+      padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+          child: Text(
+            'Tools from MCP servers for Code sessions. The agent server starts local servers and connects to '
+            'remote ones when a session starts. Every MCP tool asks before it runs, except in Full auto or when '
+            'you allow it.',
+            style: theme.type.callout.tint(theme.textMuted),
           ),
-          AdaptiveListTile(
-            title: const Text('Applies to'),
-            trailing: AdaptiveMenuButton(
-              actions: [
+        ),
+        AdaptiveListTile(
+          title: const Text('Applies to'),
+          trailing: AdaptiveMenuButton(
+            actions: [
+              MenuAction(
+                label: 'Every project',
+                checked: _projectId == null,
+                onSelected: () => setState(() {
+                  _projectId = null;
+                  _editing = null;
+                }),
+              ),
+              for (final p in projects)
                 MenuAction(
-                  label: 'Every project',
-                  checked: _projectId == null,
+                  label: p.name,
+                  checked: _projectId == p.id,
                   onSelected: () => setState(() {
-                    _projectId = null;
+                    _projectId = p.id;
                     _editing = null;
                   }),
                 ),
-                for (final p in projects)
-                  MenuAction(
-                    label: p.name,
-                    checked: _projectId == p.id,
-                    onSelected: () => setState(() {
-                      _projectId = p.id;
-                      _editing = null;
-                    }),
-                  ),
-              ],
-              child: MenuTrigger(_projectId == null ? 'Every project' : _scopeLabel(_projectId)),
-            ),
+            ],
+            child: MenuTrigger(_projectId == null ? 'Every project' : _scopeLabel(_projectId)),
           ),
-          AdaptiveSectionHeader(_projectId == null ? 'Every project' : 'Only ${_scopeLabel(_projectId)}'),
-          if (list.isEmpty && editing == null)
-            AdaptiveListTile(
-              title: Text('No servers yet', style: TextStyle(color: theme.textMuted)),
-            ),
-          for (final s in list)
-            if (editing != null && editing.original == s.name)
-              _ServerEditor(
-                key: ValueKey('edit-${s.name}'),
-                initial: s,
-                taken: names.difference({s.name}),
-                onCancel: () => setState(() => _editing = null),
-                onSave: (server) => _save(server, s.name),
-              )
-            else
-              tile(s),
-          if (editing != null && editing.original == null)
+        ),
+        AdaptiveSectionHeader(_projectId == null ? 'Every project' : 'Only ${_scopeLabel(_projectId)}'),
+        if (list.isEmpty && editing == null)
+          AdaptiveListTile(
+            title: Text('No servers yet', style: TextStyle(color: theme.textMuted)),
+          ),
+        for (final s in list)
+          if (editing != null && editing.original == s.name)
             _ServerEditor(
-              key: const ValueKey('edit-new'),
-              initial: editing.server,
-              taken: names,
+              key: ValueKey('edit-${s.name}'),
+              initial: s,
+              taken: names.difference({s.name}),
               onCancel: () => setState(() => _editing = null),
-              onSave: (server) => _save(server, null),
-            ),
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                AdaptiveButton(
-                  label: 'Add server',
-                  emphasis: ButtonEmphasis.secondary,
-                  icon: const AdaptiveIcon(EveryIcon.add, size: 14),
-                  onPressed: () => setState(() => _editing = (server: const McpServer(name: ''), original: null)),
-                ),
-                AdaptiveMenuButton(
-                  tooltip: 'Add a ready-made server',
-                  actions: [
-                    for (final p in mcpPresets)
-                      MenuAction(
-                        label: p.title,
-                        checked: names.contains(p.server.name),
-                        onSelected: () => _addPreset(p),
-                      ),
-                  ],
-                  child: const MenuTrigger('Add a preset'),
-                ),
-              ],
-            ),
+              onSave: (server) => _save(server, s.name),
+            )
+          else
+            tile(s),
+        if (editing != null && editing.original == null)
+          _ServerEditor(
+            key: const ValueKey('edit-new'),
+            initial: editing.server,
+            taken: names,
+            onCancel: () => setState(() => _editing = null),
+            onSave: (server) => _save(server, null),
           ),
-          if (inherited.isNotEmpty) ...[
-            const AdaptiveSectionHeader('Also from every project'),
-            for (final s in inherited)
-              AdaptiveListTile(
-                title: Text(s.name),
-                subtitle: Text(status(s), style: theme.type.caption.tint(theme.textMuted)),
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              AdaptiveButton(
+                label: 'Add server',
+                emphasis: ButtonEmphasis.secondary,
+                icon: const AdaptiveIcon(EveryIcon.add, size: 14),
+                onPressed: () => setState(() => _editing = (server: const McpServer(name: ''), original: null)),
               ),
-          ],
-          const AdaptiveSectionHeader('Presets'),
-          for (final p in mcpPresets)
-            AdaptiveListTile(
-              title: Text(p.title),
-              subtitle: Text(p.blurb, style: theme.type.caption.tint(theme.textMuted)),
-              trailing: names.contains(p.server.name)
-                  ? Text('Added', style: theme.type.caption.tint(theme.textMuted))
-                  : AdaptiveButton(label: 'Add', emphasis: ButtonEmphasis.secondary, onPressed: () => _addPreset(p)),
-            ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(4, 12, 4, 0),
-            child: Text(
-              'Allow an MCP tool for good from its approval card ("Always allow"), or add a rule such as '
-              'Mcp(browser_take_screenshot) or Mcp(playwright_*) to your permissions. A server asking for input '
-              'mid-call (elicitation) is not supported yet.',
-              style: theme.type.caption.tint(theme.textMuted),
-            ),
+              AdaptiveMenuButton(
+                tooltip: 'Add a ready-made server',
+                actions: [
+                  for (final p in mcpPresets)
+                    MenuAction(label: p.title, checked: names.contains(p.server.name), onSelected: () => _addPreset(p)),
+                ],
+                child: const MenuTrigger('Add a preset'),
+              ),
+            ],
           ),
+        ),
+        if (inherited.isNotEmpty) ...[
+          const AdaptiveSectionHeader('Also from every project'),
+          for (final s in inherited)
+            AdaptiveListTile(
+              title: Text(s.name),
+              subtitle: Text(status(s), style: theme.type.caption.tint(theme.textMuted)),
+            ),
         ],
-      ),
+        const AdaptiveSectionHeader('Presets'),
+        for (final p in mcpPresets)
+          AdaptiveListTile(
+            title: Text(p.title),
+            subtitle: Text(p.blurb, style: theme.type.caption.tint(theme.textMuted)),
+            trailing: names.contains(p.server.name)
+                ? Text('Added', style: theme.type.caption.tint(theme.textMuted))
+                : AdaptiveButton(label: 'Add', emphasis: ButtonEmphasis.secondary, onPressed: () => _addPreset(p)),
+          ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(4, 12, 4, 0),
+          child: Text(
+            'Allow an MCP tool for good from its approval card ("Always allow"), or add a rule such as '
+            'Mcp(browser_take_screenshot) or Mcp(playwright_*) to your permissions. A server asking for input '
+            'mid-call (elicitation) is not supported yet.',
+            style: theme.type.caption.tint(theme.textMuted),
+          ),
+        ),
+      ],
     );
   }
 }

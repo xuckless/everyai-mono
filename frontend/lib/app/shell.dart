@@ -14,6 +14,8 @@ import '../core/theme/every_theme.dart';
 import '../core/ui/adaptive.dart' show showAdaptiveToast;
 import '../features/history/ui/sidebar.dart';
 import '../features/remote/remote_providers.dart' show remoteHostingProvider;
+import '../features/settings/settings_registry.dart';
+import '../features/settings/ui/settings_modal.dart';
 import 'router.dart';
 
 /// Lets pages toggle the sidebar and know whether it is showing.
@@ -71,6 +73,27 @@ class _AppShellState extends ConsumerState<AppShell> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    // A settings link that came before the shell existed (the first location).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && ref.read(pendingSettingsProvider) != null) _openPendingSettings();
+    });
+  }
+
+  void _openSettings() {
+    setState(() => _drawerOpen = false);
+    showSettings(context);
+  }
+
+  void _openPendingSettings() {
+    final t = ref.read(pendingSettingsProvider.notifier).take();
+    if (t == null || !mounted) return;
+    setState(() => _drawerOpen = false);
+    showSettings(context, section: t.section, anchor: t.anchor, args: t.args);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final compact = WindowSize.of(context) == WindowSize.compact;
@@ -78,11 +101,15 @@ class _AppShellState extends ConsumerState<AppShell> {
     // a device asking to pair is announced wherever the user is.
     if (Host.isDesktop) {
       ref.listen(remoteHostingProvider.select((s) => s.link.pending.length), (before, now) {
-        if (now > (before ?? 0) && !widget.location.startsWith(Routes.remote)) {
-          showAdaptiveToast(context, 'A device wants to use Code here. Approve it in Settings → Remote coding.');
+        if (now > (before ?? 0)) {
+          showAdaptiveToast(context, 'A device wants to use Code here. Approve it in Settings → Remote.');
         }
       });
     }
+    // Old /settings links ask for the Settings modal; it opens over the page.
+    ref.listen(pendingSettingsProvider, (_, next) {
+      if (next != null) _openPendingSettings();
+    });
 
     Widget body = _SplitView(
       compact: compact,
@@ -115,7 +142,7 @@ class _AppShellState extends ConsumerState<AppShell> {
         SingleActivator(key, meta: apple, control: !apple, shift: shift);
     final shortcuts = <ShortcutActivator, VoidCallback>{
       shortcut(LogicalKeyboardKey.keyN): () => _navigate(Routes.newChat),
-      shortcut(LogicalKeyboardKey.comma): () => _navigate(Routes.settings),
+      shortcut(LogicalKeyboardKey.comma): _openSettings,
       shortcut(LogicalKeyboardKey.keyM, shift: true): () => _navigate(Routes.models),
       shortcut(LogicalKeyboardKey.keyS, shift: true): () => _toggle(compact),
     };
@@ -138,7 +165,7 @@ class _AppShellState extends ConsumerState<AppShell> {
                   PlatformMenuItem(
                     label: 'Settings…',
                     shortcut: shortcut(LogicalKeyboardKey.comma),
-                    onSelected: () => _navigate(Routes.settings),
+                    onSelected: _openSettings,
                   ),
                 ],
               ),
