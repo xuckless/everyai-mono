@@ -758,27 +758,31 @@ class ConfirmDetail extends StatelessWidget {
   }
 }
 
-/// Single-field text prompt (rename and similar). Returns null when cancelled.
+/// Single-field text prompt (rename and similar; [obscureText] for secrets).
+/// Returns null when cancelled.
 Future<String?> showAdaptivePrompt(
   BuildContext context, {
   required String title,
   required String confirmLabel,
   String initialValue = '',
+  bool obscureText = false,
+  String? placeholder,
 }) async {
   final theme = EveryTheme.of(context);
-  final controller = TextEditingController(text: initialValue)
-    ..selection = TextSelection(baseOffset: 0, extentOffset: initialValue.length);
+  // The field owns its controller, so it outlives the dialog's closing animation.
+  var text = initialValue;
   Widget field(BuildContext ctx) => Padding(
     padding: const EdgeInsets.only(top: 12),
-    child: AdaptiveTextField(
-      controller: controller,
-      autofocus: true,
-      textInputAction: TextInputAction.done,
+    child: _PromptField(
+      initialValue: initialValue,
+      obscureText: obscureText,
+      placeholder: placeholder,
+      onChanged: (v) => text = v,
       onSubmitted: (value) => Navigator.of(ctx).pop(value),
     ),
   );
   void cancel(BuildContext ctx) => Navigator.of(ctx).pop();
-  void confirm(BuildContext ctx) => Navigator.of(ctx).pop(controller.text);
+  void confirm(BuildContext ctx) => Navigator.of(ctx).pop(text);
 
   final Future<String?> result = switch (theme.design) {
     DesignLanguage.cupertino => c.showCupertinoDialog<String>(
@@ -834,11 +838,48 @@ Future<String?> showAdaptivePrompt(
       ),
     ),
   };
-  try {
-    return await result;
-  } finally {
-    controller.dispose();
+  return result;
+}
+
+class _PromptField extends StatefulWidget {
+  const _PromptField({
+    required this.initialValue,
+    required this.obscureText,
+    required this.placeholder,
+    required this.onChanged,
+    required this.onSubmitted,
+  });
+
+  final String initialValue;
+  final bool obscureText;
+  final String? placeholder;
+  final ValueChanged<String> onChanged;
+  final ValueChanged<String> onSubmitted;
+
+  @override
+  State<_PromptField> createState() => _PromptFieldState();
+}
+
+class _PromptFieldState extends State<_PromptField> {
+  late final _controller = TextEditingController(text: widget.initialValue)
+    ..selection = TextSelection(baseOffset: 0, extentOffset: widget.initialValue.length);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
   }
+
+  @override
+  Widget build(BuildContext context) => AdaptiveTextField(
+    controller: _controller,
+    autofocus: true,
+    obscureText: widget.obscureText,
+    placeholder: widget.placeholder,
+    textInputAction: TextInputAction.done,
+    onChanged: widget.onChanged,
+    onSubmitted: widget.onSubmitted,
+  );
 }
 
 /// Transient message: toast-style on desktop, snack bar on Material pages.

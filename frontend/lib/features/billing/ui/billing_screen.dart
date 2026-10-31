@@ -6,7 +6,10 @@ import '../../../core/ui/adaptive.dart';
 import '../../models/domain/model_catalog.dart';
 import '../../models/models_providers.dart';
 import '../../usage/usage_totals.dart';
+import '../../settings/settings_registry.dart';
+import '../../settings/ui/settings_modal.dart';
 import '../billing_providers.dart';
+import 'plans_preview.dart';
 
 /// Plan, monthly included usage, wallet balance, top-ups and recent usage.
 class BillingBody extends ConsumerWidget {
@@ -23,10 +26,10 @@ class BillingBody extends ConsumerWidget {
       if (context.mounted) showAdaptiveToast(context, message);
     }
 
-    return switch (billing) {
-      AsyncData(value: final b) => ListView(
-        padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
-        children: [
+    return ListView(
+      padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
+      children: [
+        if (billing case AsyncData(value: final b)) ...[
           _Card(
             children: [
               Row(
@@ -60,41 +63,46 @@ class BillingBody extends ConsumerWidget {
               ),
             ],
           ),
-          _Card(
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Wallet', style: theme.type.headline.tint(theme.text)),
-                        Text(
-                          'Used after the included usage runs out.',
-                          style: theme.type.caption.tint(theme.textMuted),
-                        ),
-                      ],
+          SettingsAnchor(
+            section: SettingsSection.billing,
+            id: 'wallet',
+            child: _Card(
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Wallet', style: theme.type.headline.tint(theme.text)),
+                          Text(
+                            'Used after the included usage runs out.',
+                            style: theme.type.caption.tint(theme.textMuted),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                  Text(formatMicros(b.walletMicros), style: theme.type.title.tint(theme.text)),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final dollars in const [10, 25, 50])
-                    AdaptiveButton(
-                      label: 'Add \$$dollars',
-                      emphasis: ButtonEmphasis.secondary,
-                      onPressed: () => run(() => ctl.topUp(dollars * 100)),
-                    ),
-                ],
-              ),
-            ],
+                    Text(formatMicros(b.walletMicros), style: theme.type.title.tint(theme.text)),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final dollars in const [10, 25, 50])
+                      AdaptiveButton(
+                        label: 'Add \$$dollars',
+                        emphasis: ButtonEmphasis.secondary,
+                        onPressed: () => run(() => ctl.topUp(dollars * 100)),
+                      ),
+                  ],
+                ),
+              ],
+            ),
           ),
-          const AdaptiveSectionHeader('Plans'),
+          const SettingsAnchor(section: SettingsSection.billing, id: 'plans', child: PlansPreview()),
+          const AdaptiveSectionHeader('Plans on this server'),
           for (final p in b.plans)
             AdaptiveListTile(
               title: Text(p.priceCents == 0 ? p.name : '${p.name} · \$${p.priceCents ~/ 100}/month'),
@@ -118,25 +126,29 @@ class BillingBody extends ConsumerWidget {
           ),
           if (b.recent.isNotEmpty) const AdaptiveSectionHeader('Recent usage'),
           for (final r in b.recent) _UsageTile(r),
+        ] else ...[
+          if (billing case AsyncError(:final error))
+            Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                children: [
+                  Text('Couldn’t load your plan.', style: theme.type.headline.tint(theme.text)),
+                  const SizedBox(height: 4),
+                  Text('$error', style: theme.type.callout.tint(theme.textMuted), textAlign: TextAlign.center),
+                  const SizedBox(height: 12),
+                  AdaptiveButton(label: 'Try again', onPressed: ctl.reload),
+                ],
+              ),
+            )
+          else
+            const Padding(
+              padding: EdgeInsets.all(24),
+              child: Center(child: AdaptiveProgress()),
+            ),
+          const SettingsAnchor(section: SettingsSection.billing, id: 'plans', child: PlansPreview()),
         ],
-      ),
-      AsyncError(:final error) => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('Couldn’t load your plan.', style: theme.type.headline.tint(theme.text)),
-              const SizedBox(height: 4),
-              Text('$error', style: theme.type.callout.tint(theme.textMuted), textAlign: TextAlign.center),
-              const SizedBox(height: 12),
-              AdaptiveButton(label: 'Try again', onPressed: ctl.reload),
-            ],
-          ),
-        ),
-      ),
-      _ => const Center(child: AdaptiveProgress()),
-    };
+      ],
+    );
   }
 
   static String _date(DateTime d) {

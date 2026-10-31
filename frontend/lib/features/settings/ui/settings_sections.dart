@@ -28,6 +28,7 @@ import '../dev_upstream.dart';
 import '../reply_language.dart';
 import '../settings_registry.dart';
 import 'account_menu.dart';
+import 'api_keys_section.dart';
 import 'notices_screen.dart';
 import 'settings_modal.dart';
 
@@ -35,7 +36,7 @@ import 'settings_modal.dart';
 Widget settingsSectionBody(SettingsSection section, Map<String, String> args) => switch (section) {
   SettingsSection.general => const GeneralSection(),
   SettingsSection.account => const AccountSection(),
-  SettingsSection.apiKeys => const _ComingSoon('Bring your own provider keys. Coming soon.'),
+  SettingsSection.apiKeys => const ApiKeysSection(),
   SettingsSection.billing => const BillingBody(),
   SettingsSection.usage => const UsageBody(),
   SettingsSection.models => const ModelsSection(),
@@ -347,21 +348,6 @@ class _AboutSectionState extends ConsumerState<AboutSection> {
           ),
         ),
       ],
-    );
-  }
-}
-
-class _ComingSoon extends StatelessWidget {
-  const _ComingSoon(this.text);
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    return ListView(
-      padding: _listPadding,
-      children: [Text(text, style: theme.type.callout.tint(theme.textMuted))],
     );
   }
 }
