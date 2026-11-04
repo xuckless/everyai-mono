@@ -158,6 +158,79 @@ void main() {
     });
   });
 
+  group('turn work box', () {
+    final c1 = done(call('1', 'TerminalAction', {'command': 'ls'}));
+    final c2 = done(call('2', 'TerminalAction', {'command': 'pwd'}));
+    final running = ToolStep(call('5', 'TerminalAction', {'command': 'dart test'}));
+    final ask = QuestionItem(call('q', 'MCPToolAction', {}, tool: 'ask_user_question'), const []);
+
+    test('a finished turn folds its work and lifts the closing reply out', () {
+      final out = groupTurnWork([
+        const UserTurn('u', 'go'),
+        const AgentText('a1', 'Looking around'),
+        StepItem(c1),
+        StepItem(c2),
+        const AgentText('a2', 'All done'),
+      ], active: false);
+      expect(out[0], isA<UserTurn>());
+      final work = out[1] as TurnWork;
+      expect(work.live, isFalse);
+      expect(work.items.map((i) => i.key), ['a1', '1', '2']);
+      expect(turnWorkSummary(work), 'Worked · 2 steps');
+      expect((out[2] as AgentText).text, 'All done');
+    });
+
+    test('a running turn keeps everything in one live box, key stable as it grows', () {
+      final first = groupTurnWork([const UserTurn('u', 'go'), StepItem(c1)], active: true);
+      final later = groupTurnWork([
+        const UserTurn('u', 'go'),
+        StepItem(c1),
+        const AgentText('a', 'now this'),
+        StepItem(c2),
+      ], active: true);
+      expect((later[1] as TurnWork).live, isTrue);
+      expect((later[1] as TurnWork).items, hasLength(3));
+      expect((later[1] as TurnWork).key, (first[1] as TurnWork).key);
+    });
+
+    test('cards, running steps and turns without steps stay outside', () {
+      final out = groupTurnWork([
+        const UserTurn('u', 'go'),
+        StepItem(c1),
+        ask,
+        StepItem(running),
+        const UserTurn('u2', 'hi'),
+        const AgentText('a', 'hello'),
+      ], active: false);
+      expect(out.map((o) => o.runtimeType), [UserTurn, TurnWork, QuestionItem, StepItem, UserTurn, AgentText]);
+    });
+
+    testWidgets('folded when done, opens on tap, and remembers the choice', (tester) async {
+      final work = TurnWork([StepItem(c1)], live: false);
+      final shown = ValueNotifier(true);
+      await tester.pumpWidget(
+        host(
+          ValueListenableBuilder<bool>(
+            valueListenable: shown,
+            builder: (_, on, _) =>
+                on ? TurnWorkView(work: work, children: const [Text('inner row')]) : const SizedBox(),
+          ),
+        ),
+      );
+      expect(find.text('Worked · 1 step'), findsOneWidget);
+      expect(find.text('inner row'), findsNothing);
+      await tester.tap(find.text('Worked · 1 step'));
+      await tester.pump();
+      expect(find.text('inner row'), findsOneWidget);
+      // Scrolled away and back: a fresh state reads the choice from the page.
+      shown.value = false;
+      await tester.pump();
+      shown.value = true;
+      await tester.pump();
+      expect(find.text('inner row'), findsOneWidget);
+    });
+  });
+
   group('chat tool steps', () {
     test('labels follow the tool and its progress', () {
       expect(toolStepLabel('web_fetch', ToolRunStatus.running), 'Reading');
