@@ -193,16 +193,73 @@ void main() {
       expect((later[1] as TurnWork).key, (first[1] as TurnWork).key);
     });
 
-    test('cards, running steps and turns without steps stay outside', () {
+    test('cards, refused steps and turns without steps stay outside', () {
+      final refused = done(call('6', 'TerminalAction', {'command': 'rm -rf x'}), outcome: ToolOutcome.rejected);
       final out = groupTurnWork([
         const UserTurn('u', 'go'),
         StepItem(c1),
         ask,
-        StepItem(running),
+        StepItem(refused),
         const UserTurn('u2', 'hi'),
         const AgentText('a', 'hello'),
       ], active: false);
       expect(out.map((o) => o.runtimeType), [UserTurn, TurnWork, QuestionItem, StepItem, UserTurn, AgentText]);
+    });
+
+    test('a running command stays in the live box, so earlier work does not fold mid-turn', () {
+      final out = groupTurnWork([const UserTurn('u', 'go'), StepItem(c1), StepItem(running)], active: true);
+      expect(out.map((o) => o.runtimeType), [UserTurn, TurnWork]);
+      final work = out[1] as TurnWork;
+      expect(work.live, isTrue);
+      expect(work.items.map((i) => i.key), ['1', '5']);
+    });
+
+    test('the closing reply stays out when the turn ends on a notice or delivered files', () {
+      final files = FilesDelivered(
+        call('f', 'ClientToolAction', {
+          'files': ['a.md'],
+        }, tool: 'present_files'),
+      );
+      final out = groupTurnWork([
+        const UserTurn('u', 'go'),
+        StepItem(c1),
+        const AgentText('a', 'Here is the report'),
+        files,
+        const NoticeItem('n', 'Done'),
+      ], active: false);
+      expect(out.map((o) => o.runtimeType), [UserTurn, TurnWork, AgentText, FilesDelivered, NoticeItem]);
+      expect((out[1] as TurnWork).items.map((i) => i.key), ['1']);
+    });
+
+    test('the text that introduces a question card stays next to it', () {
+      final out = groupTurnWork([
+        const UserTurn('u', 'go'),
+        StepItem(c1),
+        const AgentText('a', 'Two things to settle first:'),
+        ask,
+      ], active: false);
+      expect(out.map((o) => o.runtimeType), [UserTurn, TurnWork, AgentText, QuestionItem]);
+    });
+
+    test('an earlier turn lifts its own closing reply, not narration before its last step', () {
+      final out = groupTurnWork([
+        const UserTurn('u', 'go'),
+        const AgentText('a1', 'Checking'),
+        StepItem(c1),
+        const AgentText('a2', 'Answer one'),
+        const UserTurn('u2', 'again'),
+        StepItem(c2),
+      ], active: true);
+      expect(out.map((o) => o.runtimeType), [UserTurn, TurnWork, AgentText, UserTurn, TurnWork]);
+      expect((out[2] as AgentText).key, 'a2');
+      expect((out[4] as TurnWork).live, isTrue);
+    });
+
+    testWidgets('a box with a command that never finished says stopped, not done', (tester) async {
+      await tester.pumpWidget(
+        host(TurnWorkView(work: TurnWork([StepItem(c1), StepItem(running)], live: false), children: const [])),
+      );
+      expect(find.text('stopped'), findsOneWidget);
     });
 
     testWidgets('folded when done, opens on tap, and remembers the choice', (tester) async {

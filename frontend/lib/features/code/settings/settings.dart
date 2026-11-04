@@ -3,7 +3,7 @@ import 'agent_settings.dart';
 import 'settings_stub.dart' if (dart.library.io) 'settings_io.dart' as impl;
 
 export 'agent_settings.dart';
-export 'agent_prompt.dart' show HarnessMode, HarnessTier, bugFixRules, tierChangeNote;
+export 'agent_prompt.dart' show HarnessTier, tierChangeNote;
 
 /// Project settings committed with the repo.
 const projectSettingsPath = '.everyai/settings.json';
@@ -42,7 +42,8 @@ Future<CommitStyle> resolveCommitStyle(String projectDir, CommitStyle style) =>
     impl.resolveCommitStyle(projectDir, style);
 
 /// Adds [patterns] to the repository's `info/exclude` (shared by its
-/// worktrees). Does nothing outside a git repository.
+/// worktrees). A pattern starting with `/` is relative to [workingDir], which
+/// may be a subfolder of the repository. Does nothing outside a git repository.
 Future<void> excludeFromGit(String workingDir, List<String> patterns) => impl.excludeFromGit(workingDir, patterns);
 
 /// The persona and system-prompt suffix for a session in [projectDir], from
@@ -55,19 +56,11 @@ Future<({String persona, String suffix})> agentPromptFor(
   HarnessTier tier = HarnessTier.efficient,
   bool forks = false,
   Map<String, String> models = const {},
-  HarnessMode harnessMode = HarnessMode.build,
 }) async {
   final settings = await loadAgentSettings(projectDir);
   final style = await resolveCommitStyle(projectDir, settings.commitStyle);
   return (
     persona: agentPersona(style: style, attribution: settings.attribution, isolated: isolated),
-    suffix: agentPromptSuffix(
-      settings,
-      agents: agents,
-      tier: tier,
-      forks: forks,
-      models: models,
-      harnessMode: harnessMode,
-    ),
+    suffix: agentPromptSuffix(settings, agents: agents, tier: tier, forks: forks, models: models),
   );
 }

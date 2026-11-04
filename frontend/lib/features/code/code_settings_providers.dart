@@ -45,11 +45,12 @@ final class CodeSettings extends Notifier<StoredCodeSettings> {
 
   void setTier(HarnessTier tier) => _set(state.withTier(tier));
 
-  void setHarnessMode(HarnessMode mode) => _set(state.withHarnessMode(mode));
-
   void setResearchSites(List<String> sites) => _set(state.withResearchSites(sites));
 
   void setForksIsolated(bool on) => _set(state.withForksIsolated(on));
+
+  /// Lets driver [driverId] run the user's own installed CLI (or stops it).
+  void setOwnCli(String driverId, bool on) => _set(state.withOwnCli(driverId, on));
 
   /// Caps session [sessionId]'s spending at [usd] dollars (null: no cap).
   void setBudget(String sessionId, double? usd) => _set(state.withBudget(sessionId, usd));

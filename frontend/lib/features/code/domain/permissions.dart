@@ -2,6 +2,7 @@
 
 import 'package:flutter/foundation.dart';
 
+import '../drivers/driver_policy.dart' show hostToolOf, trustedHostTools;
 import '../harness/events.dart';
 import 'agent_mode.dart';
 import 'shell_readonly.dart';
@@ -85,10 +86,26 @@ final class PermissionRules {
   Map<String, Object?> toJson() => {'allow': allow, 'deny': deny};
 }
 
+/// Outside harnesses' own calls that end their plan mode with a plan for the
+/// user to approve (Claude Code's `ExitPlanMode`). Plan mode asks about them
+/// instead of refusing, or the harness could never leave plan.
+const planExitTools = {'ExitPlanMode'};
+
 /// Decides what happens to the agent's actions in one session.
 @immutable
 final class PermissionPolicy {
-  const PermissionPolicy({this.rules = PermissionRules.none, this.session = const {}, this.workingDir});
+  const PermissionPolicy({
+    this.rules = PermissionRules.none,
+    this.session = const {},
+    this.workingDir,
+    this.hostTools = false,
+  });
+
+  /// The session runs on an outside agent, whose MCP calls to the app's own
+  /// host ([trustedHostTools]) run without asking: they only show a card or
+  /// keep the project's notes. Off for the EveryAI harness, where an MCP
+  /// server called "everyai" is the user's own.
+  final bool hostTools;
 
   /// Settings and stored rules (global, then project).
   final PermissionRules rules;
@@ -99,15 +116,20 @@ final class PermissionPolicy {
   /// The session's folder; paths in rules are relative to it.
   final String? workingDir;
 
-  Decision decide(ActionCall call, AgentMode mode) {
+  /// [floor]: false skips the safety floor, so an outside harness can see
+  /// what the rest of the policy says about a floor hit (see floor_advice.dart).
+  Decision decide(ActionCall call, AgentMode mode, {bool floor = true}) {
     if (isClientTool(call)) return const Decision(Verdict.allow, DecisionSource.clientTool);
     final command = _command(call);
     // Keys typed into a running shell are checked like a command.
-    if (command ?? _typed(call) case final text?) {
+    if (floor ? command ?? _typed(call) : null case final text?) {
       if (floorReason(text) case final why?) return Decision(Verdict.deny, DecisionSource.floor, why: why);
     }
     if (_matching(call, rules.deny, allowing: false) case final rule?) {
       return Decision(Verdict.deny, DecisionSource.rule, rule: rule);
+    }
+    if (hostTools && trustedHostTools.contains(hostToolOf(call))) {
+      return const Decision(Verdict.allow, DecisionSource.clientTool);
     }
     // MCP tools: never read-only; an allow rule or Full auto runs them, and
     // every other mode (Plan included) asks.
@@ -122,6 +144,10 @@ final class PermissionPolicy {
     final readOnly = AgentMode.isReadOnly(call);
     // Plan mode refuses changes; looking things up (gh reads, git fetch, curl to stdout) asks like Ask mode.
     final lookup = command != null && call.action['is_input'] != true && isPlanningShell(command);
+    // Leaving plan with a plan (Claude's ExitPlanMode) is the user's call, as present_plan is.
+    if (mode == AgentMode.plan && planExitTools.contains(call.toolName)) {
+      return const Decision(Verdict.ask, DecisionSource.mode);
+    }
     if (mode == AgentMode.plan && !readOnly && !lookup) return const Decision(Verdict.deny, DecisionSource.plan);
     if (readOnly) return const Decision(Verdict.allow, DecisionSource.readOnly);
     final edits = _editPaths(call);
@@ -217,8 +243,8 @@ String relativeTo(String path, String? dir) {
 /// The shell command of a terminal action (not keystrokes to a running process).
 String? _command(ActionCall call) => call.actionKind == 'TerminalAction' && call.action['is_input'] != true
     ? call.str('command')
-    // Bug fix mode's repro runs a command too, checked the same way.
-    : call.toolName == 'bug_check' && call.str('command').isNotEmpty
+    // Bug fix mode's repro runs a command too (the host's for an outside agent), checked the same way.
+    : (call.toolName == 'bug_check' || hostToolOf(call) == 'bug_check') && call.str('command').isNotEmpty
     ? call.str('command')
     : null;
 
@@ -957,7 +983,18 @@ String denialMessage(DenialKind kind, {String? reason}) {
         ? '$head If you cannot continue without it, end your turn and say what you needed and why.'
         : head;
   }
-  return '$head\n\nThe user\'s reason, word for word (follow it if it asks for something else):\n$said';
+  return '$head\n\n$_reasonLead$said';
+}
+
+const _reasonLead = "The user's reason, word for word (follow it if it asks for something else):\n";
+
+/// The words the user typed in a [denialMessage], or null when [message]
+/// holds only the fixed text (or is some other refusal).
+String? typedReason(String? message) {
+  final at = message?.indexOf(_reasonLead) ?? -1;
+  if (at < 0) return null;
+  final said = message!.substring(at + _reasonLead.length).trim();
+  return said.isEmpty ? null : said;
 }
 
 const deniedLead = 'The user did NOT consent to this action, and it was not run.';

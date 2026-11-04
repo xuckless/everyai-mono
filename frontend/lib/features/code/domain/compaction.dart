@@ -6,7 +6,9 @@ import 'package:flutter/foundation.dart';
 
 import '../harness/events.dart';
 import '../settings/context_files.dart' show splitContextNotes;
+import '../workflows/workflow_notes.dart' show splitWorkflowNotes;
 import 'agent_mode.dart';
+import 'rewind.dart' show splitRewindNote;
 
 // Compaction for Code sessions.
 //
@@ -32,6 +34,23 @@ const _summaryOpen = '<summary>';
 const _summaryClose = '</summary>';
 const _recentOpen = '<recent-turns>';
 const _recentClose = '</recent-turns>';
+
+/// Opens and closes a handoff message, the facts a new lead of a session
+/// gets (see `handoffMessage`).
+const handoffOpen = '<everyai-handoff';
+const handoffClose = '</everyai-handoff>';
+
+/// [text] (mode and context notes already split off) without the handoff
+/// block it starts with: (the block or null, the rest). A driver records the
+/// handoff it sent as a user message, so the next handoff and the transcript
+/// read only what the user wrote.
+(String?, String) splitHandoff(String text) {
+  final t = text.trimLeft();
+  if (!t.startsWith(handoffOpen)) return (null, text);
+  final end = t.indexOf(handoffClose);
+  if (end < 0) return (t, '');
+  return (t.substring(0, end + handoffClose.length), t.substring(end + handoffClose.length).trim());
+}
 
 /// Shown in place of tool output the summary doesn't need.
 const clearedOutput = '[old tool output cleared]';
@@ -102,22 +121,24 @@ String _between(String text, String open, String close) {
   return text.substring(start + open.length, end < 0 ? text.length : end).trim();
 }
 
-/// The user's text of a message: mode and context notes split off.
-String userTextOf(String raw) => splitContextNotes(splitModeNote(raw).$2).$2;
+/// The user's text of a message: session block, mode, context, workflow and rewind notes split off.
+String userTextOf(String raw) =>
+    splitRewindNote(splitWorkflowNotes(splitContextNotes(splitModeNote(splitSessionBlock(raw).$2).$2).$2).$2);
 
 String _userText(String raw) => userTextOf(raw);
 
 bool _isUser(HarnessEvent e) => e is ChatMessage && e.fromUser;
 
 /// Whether [e] is part of what the model saw (not state or socket events).
-bool _counts(HarnessEvent e) => e is ChatMessage || e is ActionCall || e is ToolResult || e is ConversationFailure;
+bool countsForModel(HarnessEvent e) =>
+    e is ChatMessage || e is ActionCall || e is ToolResult || e is ConversationFailure;
 
 /// Splits [events] (one conversation, oldest first) into a span to summarize
 /// and a tail kept word for word: whole turns when they fit in the budget,
 /// else the newest steps of the current turn. Null when there's nothing to
 /// summarize.
 CompactionPlan? planCompaction(List<HarnessEvent> events, {CompactionBudget budget = const CompactionBudget()}) {
-  final all = events.where(_counts).toList();
+  final all = events.where(countsForModel).toList();
   var previous = '';
   var carried = '';
   var start = 0;
@@ -194,7 +215,7 @@ String renderTail(CompactionPlan plan, {CompactionBudget budget = const Compacti
 String renderSessionRecord(List<HarnessEvent> events, {int maxChars = 60000}) {
   final text = [
     for (final e in events)
-      if (_counts(e)) _render(e, outputCap: 800, argsCap: 600),
+      if (countsForModel(e)) _render(e, outputCap: 800, argsCap: 600),
   ].where((p) => p.isNotEmpty).join('\n\n');
   if (text.length <= maxChars) return text;
   final cut = text.indexOf('\n\n', text.length - maxChars);
@@ -203,6 +224,12 @@ String renderSessionRecord(List<HarnessEvent> events, {int maxChars = 60000}) {
 
 /// One event as a line of the transcript the summarizer (or the next agent)
 /// reads. An [outputCap] of 0 clears tool output.
+/// One step of [renderSessionRecord] as text: a message, a tool call (its
+/// arguments cut to [argsCap]) or a result (cut to [outputCap]); '' for
+/// events the model never saw.
+String renderStep(HarnessEvent e, {int outputCap = 800, int argsCap = 600}) =>
+    _render(e, outputCap: outputCap, argsCap: argsCap);
+
 String _render(HarnessEvent e, {required int outputCap, required int argsCap}) => switch (e) {
   ChatMessage(fromUser: true, :final text) => '[user]\n${_userText(text).trim()}',
   ChatMessage(:final text, :final reasoning) =>
@@ -222,6 +249,8 @@ String _render(HarnessEvent e, {required int outputCap, required int argsCap}) =
 const _noiseArgs = {'kind', 'security_risk', 'summary'};
 
 String _renderCall(ActionCall call, int argsCap) {
+  // The harness's plan is its own text: never cut like arguments.
+  if (call.actionKind == 'ProposedPlanAction') return '[agent]\n${call.str('body').trim()}';
   final args = {
     for (final MapEntry(:key, :value) in call.action.entries)
       if (!(call.actionKind.isNotEmpty && _noiseArgs.contains(key)) && value != null && value != '' && value != false)
@@ -448,6 +477,28 @@ String? cleanSummary(String reply) {
   return found >= 3 ? s : null;
 }
 
+/// Writes [body] to [b] inside `<tag>` with [lead] on the line above, after a
+/// blank line; nothing when [body] is blank.
+void writeTaggedBlock(StringBuffer b, String tag, String lead, String body) {
+  if (body.trim().isEmpty) return;
+  b
+    ..writeln()
+    ..writeln(lead)
+    ..writeln('<$tag>')
+    ..writeln(body.trim())
+    ..writeln('</$tag>');
+}
+
+/// A to-do list as Markdown checkboxes: `[x]` done, `[~]` in progress.
+String checklist(Iterable<({String title, String status})> items) => [
+  for (final t in items)
+    '- [${switch (t.status) {
+      'completed' || 'done' => 'x',
+      'in_progress' => '~',
+      _ => ' ',
+    }}] ${t.title}',
+].join('\n');
+
 /// The first message of the continuation conversation: [summary], then what
 /// the agent was working from ([plan] the user approved, its [todos], the
 /// current text of the [files] it touched last, the [skills] it loaded),
@@ -473,15 +524,7 @@ String continuationMessage({
     ..writeln(_summaryOpen)
     ..writeln(summary.trim())
     ..writeln(_summaryClose);
-  void section(String tag, String lead, String body) {
-    if (body.trim().isEmpty) return;
-    b
-      ..writeln()
-      ..writeln(lead)
-      ..writeln('<$tag>')
-      ..writeln(body.trim())
-      ..writeln('</$tag>');
-  }
+  void section(String tag, String lead, String body) => writeTaggedBlock(b, tag, lead, body);
 
   section('approved-plan', 'The plan the user approved, which still stands:', plan);
   section('todos', 'Your checklist as you last wrote it:', todos);

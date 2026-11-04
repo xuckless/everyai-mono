@@ -29,8 +29,14 @@ final _monoSmall = EveryType.resolve().caption.mono.copyWith(height: 1.45);
 
 /// The user's message, right-aligned like chat.
 class UserTurnView extends StatelessWidget {
-  const UserTurnView({super.key, required this.text, this.mode, this.onRewind});
+  const UserTurnView({super.key, required this.text, this.mode, this.lead = '', this.workflow = '', this.onRewind});
   final String text;
+
+  /// What its workflow notes said ("Started Bug fix"), '' for none.
+  final String workflow;
+
+  /// The harness that got it, shown when the session had more than one ('' hides it).
+  final String lead;
 
   /// Restores the files to before this message.
   final VoidCallback? onRewind;
@@ -47,10 +53,17 @@ class UserTurnView extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          if (mode case final mode?)
+          if (mode != null || lead.isNotEmpty || workflow.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(bottom: 4, right: 4),
-              child: Text('${mode.label} mode', style: theme.type.caption.medium.tint(theme.textMuted)),
+              child: Text(
+                [
+                  if (lead.isNotEmpty) lead,
+                  if (mode != null) '${mode!.label} mode',
+                  if (workflow.isNotEmpty) workflow,
+                ].join(' · '),
+                style: theme.type.caption.medium.tint(theme.textMuted),
+              ),
             ),
           if (files.isNotEmpty)
             Padding(
@@ -303,6 +316,23 @@ class _ToolView extends StatelessWidget {
 /// A row's title with its path or command colored: "Edited lib/**main.dart**",
 /// "\$ git status".
 TextSpan stepTitleSpan(BuildContext context, ActionCall call, TextStyle base) {
+  final span = _titleSpan(context, call, base);
+  if (!call.native || call.nativeName.isEmpty || span.toPlainText().contains(call.nativeName)) return span;
+  // An outside harness's own word for the tool (Bash, apply_patch), before our title.
+  final theme = EveryTheme.of(context);
+  return TextSpan(
+    style: base,
+    children: [
+      TextSpan(
+        text: '${call.nativeName}  ',
+        style: _mono.copyWith(color: theme.textMuted, fontSize: (base.fontSize ?? 13) - 1),
+      ),
+      span,
+    ],
+  );
+}
+
+TextSpan _titleSpan(BuildContext context, ActionCall call, TextStyle base) {
   final theme = EveryTheme.of(context);
   final title = stepTitle(call);
   if (call.actionKind == 'TerminalAction') {
@@ -644,16 +674,27 @@ class PlanView extends StatelessWidget {
                   Padding(padding: const EdgeInsets.only(top: 2), child: _TaskMark(t.status)),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text(
-                      t.title,
-                      style: theme.type.callout.copyWith(
-                        color: t.status == 'done' ? theme.textMuted : theme.text,
-                        decoration: t.status == 'done' ? TextDecoration.lineThrough : null,
-                        decorationColor: theme.textMuted,
-                        fontWeight: t.status == 'in_progress' ? FontWeight.w600 : FontWeight.w400,
-                      ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          // The harness's own wording of what it is doing, while it does it.
+                          t.status == 'in_progress' && t.active.isNotEmpty ? t.active : t.title,
+                          style: theme.type.callout.copyWith(
+                            color: t.status == 'done' ? theme.textMuted : theme.text,
+                            decoration: t.status == 'done' ? TextDecoration.lineThrough : null,
+                            decorationColor: theme.textMuted,
+                            fontWeight: t.status == 'in_progress' ? FontWeight.w600 : FontWeight.w400,
+                          ),
+                        ),
+                        if (t.notes.isNotEmpty) Text(t.notes, style: theme.type.caption.tint(theme.textMuted)),
+                      ],
                     ),
                   ),
+                  if (t.priority.isNotEmpty) ...[
+                    const SizedBox(width: 8),
+                    Text(t.priority, style: theme.type.caption.tint(theme.textMuted)),
+                  ],
                 ],
               ),
             ),
@@ -704,41 +745,87 @@ class _TaskMark extends StatelessWidget {
   }
 }
 
-class NoticeView extends StatelessWidget {
-  const NoticeView({super.key, required this.item, this.onRetry});
+class NoticeView extends StatefulWidget {
+  const NoticeView({super.key, required this.item, this.onRetry, this.onChange});
   final NoticeItem item;
   final VoidCallback? onRetry;
+
+  /// Change on an automatic handoff: the picker again.
+  final VoidCallback? onChange;
+
+  @override
+  State<NoticeView> createState() => _NoticeViewState();
+}
+
+class _NoticeViewState extends State<NoticeView> {
+  /// The detail (a compaction's summary, a handoff's facts) is shown.
+  bool _open = false;
 
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
+    final item = widget.item;
     final color = item.error ? theme.danger : theme.textMuted;
+    final detail = item.detail.trim();
     return Container(
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(color: color.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(8)),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (!item.error) ...[const BrandAvatar(size: 18), const SizedBox(width: 8)],
-          Expanded(child: Text(item.message, style: theme.type.callout.tint(color))),
-          // Out of credits: the two ways on, then Retry (or a new message) resumes.
-          if (item.error && isOutOfCredits(item.message)) ...[
-            const SizedBox(width: 8),
-            AdaptiveButton(
-              label: 'Top up',
-              emphasis: ButtonEmphasis.secondary,
-              onPressed: () => showSettings(context, section: SettingsSection.billing),
+          Row(
+            children: [
+              if (!item.error) ...[const BrandAvatar(size: 18), const SizedBox(width: 8)],
+              Expanded(child: Text(item.message, style: theme.type.callout.tint(color))),
+              if (detail.isNotEmpty) ...[
+                const SizedBox(width: 8),
+                AdaptiveButton(
+                  key: const ValueKey('notice.detail'),
+                  label: _open ? 'Hide' : 'Show',
+                  emphasis: ButtonEmphasis.secondary,
+                  onPressed: () => setState(() => _open = !_open),
+                ),
+              ],
+              // Out of credits: the two ways on, then Retry (or a new message) resumes.
+              if (item.error && isOutOfCredits(item.message)) ...[
+                const SizedBox(width: 8),
+                AdaptiveButton(
+                  label: 'Top up',
+                  emphasis: ButtonEmphasis.secondary,
+                  onPressed: () => showSettings(context, section: SettingsSection.billing),
+                ),
+                const SizedBox(width: 6),
+                AdaptiveButton(
+                  label: 'Use my own key',
+                  emphasis: ButtonEmphasis.secondary,
+                  onPressed: () => showSettings(context, section: SettingsSection.apiKeys),
+                ),
+              ],
+              if (widget.onRetry != null) ...[
+                const SizedBox(width: 8),
+                AdaptiveButton(label: 'Retry', emphasis: ButtonEmphasis.secondary, onPressed: widget.onRetry),
+              ],
+              if (widget.onChange != null) ...[
+                const SizedBox(width: 8),
+                AdaptiveButton(
+                  key: const ValueKey('notice.change'),
+                  label: 'Change',
+                  emphasis: ButtonEmphasis.secondary,
+                  onPressed: widget.onChange,
+                ),
+              ],
+            ],
+          ),
+          if (_open && detail.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 360),
+                child: SingleChildScrollView(
+                  child: Text(detail, style: _monoSmall.copyWith(color: theme.text)),
+                ),
+              ),
             ),
-            const SizedBox(width: 6),
-            AdaptiveButton(
-              label: 'Use my own key',
-              emphasis: ButtonEmphasis.secondary,
-              onPressed: () => showSettings(context, section: SettingsSection.apiKeys),
-            ),
-          ],
-          if (onRetry != null) ...[
-            const SizedBox(width: 8),
-            AdaptiveButton(label: 'Retry', emphasis: ButtonEmphasis.secondary, onPressed: onRetry),
-          ],
         ],
       ),
     );
@@ -956,7 +1043,7 @@ String approvalTitle(ActionCall call) => switch (call.actionKind) {
     final n => 'Apply this patch to $n files?',
   },
   'DelegateAction' || 'TaskAction' => 'Start a subagent?',
-  _ => 'Allow ${call.toolName}?',
+  _ => 'Allow ${call.nativeName.isEmpty ? call.toolName : call.nativeName}?',
 };
 
 /// Three or more consecutive finished commands or tool calls, shown as one
@@ -1051,55 +1138,77 @@ final class TurnWork {
 }
 
 /// Wraps each turn's work in a [TurnWork]. Anything the user needs to see
-/// stays outside, in order: cards, notices, delivered files, subagents, and
-/// steps that are running or refused. The agent's closing reply is lifted out
-/// once the turn is over ([active] false). A stretch with no steps in it
-/// stays as it is.
+/// stays outside, in order: cards, notices, delivered files, subagents and
+/// refused steps. Text kept outside too: a finished turn's closing reply (its
+/// last words after its last step, even when a notice or delivered files
+/// follow them) and the words that introduce a question or plan card. The
+/// newest stretch of a running turn ([active]) is one live box, running
+/// commands included, so earlier work doesn't fold and unfold as each command
+/// starts and ends. A stretch with no steps in it stays as it is.
 List<Object> groupTurnWork(List<TranscriptItem> items, {required bool active}) {
-  final out = <Object>[];
-  var buffer = <TranscriptItem>[];
+  bool isWork(TranscriptItem i) => i is StepItem || i is ExploreGroup;
 
-  void flush({bool endOfTurn = false, bool live = false}) {
-    AgentText? closing;
-    if (endOfTurn && !live && buffer.isNotEmpty) {
-      final last = buffer.last;
-      if (last is AgentText && last.text.trim().isNotEmpty) {
-        closing = last;
-        buffer = buffer.sublist(0, buffer.length - 1);
+  // The texts that stay outside a box.
+  final lifted = <String>{};
+  var turnStart = 0;
+  void closeTurn(int end, {required bool live}) {
+    if (live) return;
+    for (var i = end - 1; i >= turnStart; i--) {
+      final item = items[i];
+      if (isWork(item)) return;
+      if (item is AgentText && item.text.trim().isNotEmpty) {
+        lifted.add(item.key);
+        return;
       }
     }
-    final hasSteps = buffer.any((i) => i is StepItem || i is ExploreGroup);
-    if (hasSteps) {
-      out.add(TurnWork(buffer, live: live));
-    } else {
-      out.addAll(buffer);
-    }
-    if (closing != null) out.add(closing);
-    buffer = [];
   }
 
   for (var i = 0; i < items.length; i++) {
     final item = items[i];
-    final lastItem = i == items.length - 1;
-    final pinned = switch (item) {
-      UserTurn() ||
-      QuestionItem() ||
-      PlanProposal() ||
-      PlanItem() ||
-      NoticeItem() ||
-      FilesDelivered() ||
-      SubagentItem() => true,
-      StepItem(:final step) => !step.done || step.rejected,
-      _ => false,
-    };
+    if (item is UserTurn) {
+      closeTurn(i, live: false);
+      turnStart = i + 1;
+    }
+    if ((item is QuestionItem || item is PlanProposal) && i > 0) {
+      final before = items[i - 1];
+      if (before is AgentText && before.text.trim().isNotEmpty) lifted.add(before.key);
+    }
+  }
+  closeTurn(items.length, live: active);
+
+  final out = <Object>[];
+  var buffer = <TranscriptItem>[];
+  void flush({bool live = false}) {
+    if (buffer.any(isWork)) {
+      out.add(TurnWork(buffer, live: live));
+    } else {
+      out.addAll(buffer);
+    }
+    buffer = [];
+  }
+
+  for (final item in items) {
+    final pinned =
+        lifted.contains(item.key) ||
+        switch (item) {
+          UserTurn() ||
+          QuestionItem() ||
+          PlanProposal() ||
+          PlanItem() ||
+          NoticeItem() ||
+          FilesDelivered() ||
+          SubagentItem() => true,
+          StepItem(:final step) => step.rejected,
+          _ => false,
+        };
     if (pinned) {
-      flush(endOfTurn: item is UserTurn);
+      flush();
       out.add(item);
     } else {
       buffer.add(item);
     }
-    if (lastItem) flush(endOfTurn: true, live: active);
   }
+  flush(live: active);
   return out;
 }
 
@@ -1133,6 +1242,8 @@ class _TurnWorkViewState extends State<TurnWorkView> {
     final theme = EveryTheme.of(context);
     final work = widget.work;
     final failed = work.steps.where((s) => s.failed).length;
+    // A command cut off by Stop or an error never got its result: no tick for that.
+    final unfinished = !work.live && work.steps.any((s) => !s.done);
     final last = work.steps.isEmpty ? null : work.steps.last;
     return _Disclosure(
       icon: EveryIcon.code,
@@ -1148,6 +1259,8 @@ class _TurnWorkViewState extends State<TurnWorkView> {
           ? Text('$failed failed', style: theme.type.caption.tint(theme.danger))
           : work.live
           ? null
+          : unfinished
+          ? Text('stopped', style: theme.type.caption.tint(theme.textMuted))
           : AdaptiveIcon(EveryIcon.check, size: 13, color: theme.success),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: widget.children),
     );

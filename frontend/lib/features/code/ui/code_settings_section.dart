@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../resume/resume_providers.dart' show resumeUnsupportedProvider;
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/anchored_popover.dart';
@@ -18,6 +21,9 @@ import '../code_providers.dart';
 import '../code_settings_providers.dart';
 import '../domain/agent_mode.dart';
 import '../domain/code_session.dart';
+import '../drivers/driver.dart' show DriverStatus;
+import '../drivers/driver_registry.dart';
+import '../drivers/registry_install/ui/add_agent_list.dart' show AddAgentEntry;
 import '../permissions_providers.dart';
 import '../settings/setting_defs.dart';
 import '../settings/settings.dart' as files;
@@ -359,6 +365,9 @@ class _CodeSettingsSectionState extends ConsumerState<CodeSettingsSection> {
           raw: l.raw,
           onWrite: (edit) => _writeFile(l, edit),
         );
+      case SettingKind.harnesses:
+        block = true;
+        control = const HarnessesSetting();
       case SettingKind.link:
         control = AdaptiveButton(
           label: 'Open',
@@ -537,6 +546,147 @@ final class _Layer {
   final Map<String, Object?> below;
   final StoredCodeSettings prefs;
 }
+
+/// Settings → Code → Harnesses: each driver with what was found on this
+/// computer, the consent switch for subscription CLIs, and Refresh.
+class HarnessesSetting extends ConsumerWidget {
+  const HarnessesSetting({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = EveryTheme.of(context);
+    final statuses = ref.watch(driverStatusesProvider);
+    final own = ref.watch(codeSettingsProvider.select((s) => s.ownClis));
+    final drivers = ref.watch(driverRegistryProvider).listed.toList();
+    final consent = [
+      for (final d in drivers)
+        if (d.info.needsConsent) d.info.label,
+    ];
+    final handoff = ref.watch(codeLeadProvider.select((l) => l.handoff));
+    final resumeUnsupported = ref.watch(resumeUnsupportedProvider);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (final d in drivers)
+          Padding(
+            key: ValueKey('code-settings.harness.${d.info.id}'),
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(d.info.label, style: theme.type.callout.medium.tint(theme.text)),
+                      Text(switch (statuses) {
+                        AsyncValue(:final value?) when value[d.info.id] != null => harnessStatusLine(
+                          d.info.id,
+                          value[d.info.id]!,
+                        ),
+                        AsyncError() => "Couldn't check",
+                        _ => 'Checking…',
+                      }, style: theme.type.caption.tint(theme.textMuted)),
+                      if (statuses.value?[d.info.id] case DriverStatus(installed: false)
+                          when d.info.installHint != null)
+                        AdaptiveSelectionArea(
+                          child: Text(
+                            'To install: ${d.info.installHint}',
+                            key: ValueKey('code-settings.harness.${d.info.id}.hint'),
+                            style: theme.type.caption.mono.tint(theme.textMuted),
+                          ),
+                        ),
+                      // A harness whose earlier sessions can't be listed or loaded isn't offered on New session.
+                      if (resumeUnsupported(d.info.id) case final why?)
+                        Text(
+                          'Earlier sessions: not available for ${d.info.label}${why.isEmpty ? '' : ' ($why)'}',
+                          key: ValueKey('code-settings.harness.${d.info.id}.resume'),
+                          style: theme.type.caption.tint(theme.textMuted),
+                        ),
+                    ],
+                  ),
+                ),
+                if (d.info.needsConsent) ...[
+                  Text('Use my own installed CLI', style: theme.type.caption.tint(theme.textMuted)),
+                  const SizedBox(width: 8),
+                  AdaptiveSwitch(
+                    key: ValueKey('code-settings.own-cli.${d.info.id}'),
+                    value: own.contains(d.info.consentId),
+                    onChanged: (v) => ref.read(codeSettingsProvider.notifier).setOwnCli(d.info.consentId, v),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        if (consent.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Text(
+            '${consent.join(' and ')} run the copy installed on this computer, signed in to your own account, so '
+            'what they do counts against your plan with that company. They stay off until you turn them on.',
+            style: theme.type.caption.tint(theme.textMuted),
+          ),
+        ],
+        // Where a usage limit moves on to by itself (picked on the "switch to:" card).
+        if (handoff.isNotEmpty)
+          Padding(
+            key: const ValueKey('code-settings.handoff-default'),
+            padding: const EdgeInsets.only(top: 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Default handoff: ${ref.read(driverRegistryProvider).resolve(handoff)?.info.label ?? handoff}',
+                    style: theme.type.callout.tint(theme.text),
+                  ),
+                ),
+                AdaptiveButton(
+                  key: const ValueKey('code-settings.handoff-default.clear'),
+                  label: 'Clear',
+                  emphasis: ButtonEmphasis.secondary,
+                  onPressed: ref.read(codeLeadProvider.notifier).clearHandoff,
+                ),
+              ],
+            ),
+          ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            AdaptiveButton(
+              key: const ValueKey('code-settings.harnesses.refresh'),
+              label: 'Refresh',
+              emphasis: ButtonEmphasis.secondary,
+              onPressed: () {
+                unawaited(ref.read(driverStatusesProvider.notifier).refresh(reloadShell: true));
+                ref.invalidate(driverModelsProvider);
+              },
+            ),
+            if (ref.read(driverStatusesProvider.notifier).checkedAt case final at?) ...[
+              const SizedBox(width: 10),
+              Text(checkedAgo(DateTime.now().difference(at)), style: theme.type.caption.tint(theme.textMuted)),
+            ],
+          ],
+        ),
+        const SizedBox(height: 8),
+        const AddAgentEntry(),
+      ],
+    );
+  }
+}
+
+/// When the harnesses were last checked, in plain words.
+String checkedAgo(Duration ago) => switch (ago.inMinutes) {
+  < 1 => 'Checked just now',
+  1 => 'Checked 1 min ago',
+  < 60 => 'Checked ${ago.inMinutes} min ago',
+  _ => ago.inHours == 1 ? 'Checked 1 hour ago' : 'Checked ${ago.inHours} hours ago',
+};
+
+/// One driver's status in plain words: the version or "Not installed",
+/// whether it is signed in (when known) and what is in the way.
+String harnessStatusLine(String id, DriverStatus s) => [
+  if (id == everyaiHarnessName) 'Built in' else if (s.installed) s.version ?? 'Installed' else 'Not installed',
+  if (s.signedIn case final signed?) signed ? 'signed in' : 'not signed in',
+  if (s.problem case final p? when p.isNotEmpty) p.endsWith('.') ? p.substring(0, p.length - 1) : p,
+].join(' · ');
 
 /// A wrap of removable chips and an add chip.
 class _Chips extends StatelessWidget {
@@ -718,7 +868,7 @@ class _FullPromptState extends ConsumerState<_FullPrompt> {
 
   Future<String> _load() async {
     final s = ref.read(codeSettingsProvider);
-    final p = await files.agentPromptFor(widget.projectDir, tier: s.tier, harnessMode: s.harnessMode);
+    final p = await files.agentPromptFor(widget.projectDir, tier: s.tier);
     final suffix = withSystemPrompts(p.suffix, global: s.globalPrompt, project: s.promptFor(widget.projectId));
     return '${p.persona}\n\n$suffix'.trim();
   }

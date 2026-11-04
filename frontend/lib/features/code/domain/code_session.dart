@@ -3,7 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../git/git_models.dart';
 
 import 'agent_mode.dart';
-import '../settings/agent_prompt.dart' show HarnessMode, HarnessTier;
+import '../settings/agent_prompt.dart' show HarnessTier;
 
 /// A folder the agent works in.
 @immutable
@@ -39,6 +39,27 @@ const everyaiHarnessName = 'everyai';
 /// The stored harness name of sessions from the removed OpenHands harness.
 const openHandsHarnessName = 'openHands';
 
+/// A harness that led a session before and may lead it again: its
+/// conversation (reopened with only what it missed, when its driver can
+/// resume) and the model it ran on.
+@immutable
+final class LeadRecord {
+  const LeadRecord({required this.conversationId, this.model = '', this.effort = ''});
+
+  /// '' when there is none to reopen (it gets the whole handoff again).
+  final String conversationId;
+  final String model;
+  final String effort;
+
+  factory LeadRecord.fromJson(Map<String, Object?> json) => LeadRecord(
+    conversationId: json['conversation_id'] as String? ?? '',
+    model: json['model'] as String? ?? '',
+    effort: json['effort'] as String? ?? '',
+  );
+
+  Map<String, Object?> toJson() => {'conversation_id': conversationId, 'model': model, 'effort': effort};
+}
+
 @immutable
 final class CodeSessionInfo {
   const CodeSessionInfo({
@@ -63,7 +84,12 @@ final class CodeSessionInfo {
     this.ownTag = false,
     this.forkCopy,
     this.tier = HarnessTier.efficient,
-    this.harnessMode = HarnessMode.build,
+    this.leads = const {},
+    this.pendingHandoff = '',
+    this.nativeMode = '',
+    this.pendingRewind = '',
+    this.workflow,
+    this.toldWorkflow,
   });
 
   final String id;
@@ -93,6 +119,25 @@ final class CodeSessionInfo {
   /// removed (they can't reopen).
   final String harness;
 
+  /// The harnesses that led this session before the current one ([harness],
+  /// whose conversation, model and effort are the fields above), by driver
+  /// id. Empty for a session that never switched.
+  final Map<String, LeadRecord> leads;
+
+  /// A handoff to the current lead not sent yet (the user switched from the
+  /// menu): it goes out with their next message. '' when none.
+  final String pendingHandoff;
+
+  /// The lead's own mode, picked by its name (`NativeModes`), resent when the
+  /// session reopens; '' for none (the EveryAI harness, or not picked). A
+  /// lead switch clears it.
+  final String nativeMode;
+
+  /// The note telling a lead that kept the conversation that the files were
+  /// rewound: it goes out with the next message, even after a restart. ''
+  /// when none.
+  final String pendingRewind;
+
   /// Started on a harness the app no longer has.
   bool get removedHarness => harness == openHandsHarnessName;
 
@@ -106,9 +151,17 @@ final class CodeSessionInfo {
   /// The model's reasoning effort ('' for the server default).
   final String effort;
 
-  /// How hard it works (the tier bar); a fork keeps its parent's.
+  /// How hard it works (the effort level); a fork keeps its parent's.
   final HarnessTier tier;
-  final HarnessMode harnessMode;
+
+  /// The session-long workflow that is on ('max', the Max approach skill), or
+  /// null. Script workflows run once and aren't kept here.
+  final String? workflow;
+
+  /// The session-long workflow the current lead was last told is on (see
+  /// `maxWorkflowNote`), or null: when it differs from [workflow], the next
+  /// message carries a note. A new lead hasn't been told anything.
+  final String? toldWorkflow;
 
   /// Question cards and plans are answered inside the held tool call (see
   /// `SessionSpec.holdClientTools`). Off for sessions started before it.
@@ -146,8 +199,16 @@ final class CodeSessionInfo {
     String? model,
     String? effort,
     HarnessTier? tier,
-    HarnessMode? harnessMode,
+    String? harness,
+    Map<String, LeadRecord>? leads,
+    String? pendingHandoff,
+    String? nativeMode,
+    String? pendingRewind,
     bool merged = false,
+    String? workflow,
+    bool clearWorkflow = false,
+    String? toldWorkflow,
+    bool clearToldWorkflow = false,
   }) => CodeSessionInfo(
     id: id,
     projectId: projectId,
@@ -160,7 +221,7 @@ final class CodeSessionInfo {
     branch: branch ?? this.branch,
     worktree: worktree,
     baseline: baseline,
-    harness: harness,
+    harness: harness ?? this.harness,
     mainAgent: mainAgent,
     effort: effort ?? this.effort,
     holdClientTools: holdClientTools,
@@ -171,7 +232,13 @@ final class CodeSessionInfo {
     // Once merged back, the copy is gone.
     forkCopy: merged ? null : forkCopy,
     tier: tier ?? this.tier,
-    harnessMode: harnessMode ?? this.harnessMode,
+    leads: leads ?? this.leads,
+    pendingHandoff: pendingHandoff ?? this.pendingHandoff,
+    // Another lead's modes have other names.
+    nativeMode: nativeMode ?? (harness != null && harness != this.harness ? '' : this.nativeMode),
+    pendingRewind: pendingRewind ?? this.pendingRewind,
+    workflow: clearWorkflow ? null : workflow ?? this.workflow,
+    toldWorkflow: clearToldWorkflow ? null : toldWorkflow ?? this.toldWorkflow,
   );
 
   factory CodeSessionInfo.fromJson(Map<String, Object?> json) => CodeSessionInfo(
@@ -203,8 +270,20 @@ final class CodeSessionInfo {
     // Ultra children saved before the flag was kept billed under their own id too.
     ownTag: json['own_tag'] == true || (json['parent_call_id'] as String? ?? '').startsWith('ultra-'),
     forkCopy: ForkCopy.fromJson(json['fork_copy']),
-    tier: HarnessTier.parse(json['tier']),
-    harnessMode: HarnessMode.parse(json['harness_mode']),
+    // Max and Ultra were tiers, and Bug fix a mode: Max is a workflow now, kept on the session; Ultra and Bug
+    // fix run once, so those sessions go on as Thorough with none.
+    tier: json['harness_mode'] == 'bugFix' ? HarnessTier.thorough : HarnessTier.parse(json['tier']),
+    leads: {
+      if (json['leads'] case final Map<String, Object?> leads)
+        for (final MapEntry(:key, :value) in leads.entries)
+          if (value case final Map<String, Object?> lead) key: LeadRecord.fromJson(lead),
+    },
+    pendingHandoff: json['pending_handoff'] as String? ?? '',
+    nativeMode: json['native_mode'] as String? ?? '',
+    pendingRewind: json['pending_rewind'] as String? ?? '',
+    workflow: json['workflow'] as String? ?? (json['tier'] == 'max' ? 'max' : null),
+    // An old Max session's lead never heard of the workflow, so it is told on the next message.
+    toldWorkflow: json['told_workflow'] as String?,
   );
 
   Map<String, Object?> toJson() => {
@@ -229,6 +308,11 @@ final class CodeSessionInfo {
     if (ownTag) 'own_tag': true,
     if (forkCopy case final f?) 'fork_copy': f.toJson(),
     'tier': tier.name,
-    if (harnessMode != HarnessMode.build) 'harness_mode': harnessMode.name,
+    if (leads.isNotEmpty) 'leads': {for (final MapEntry(:key, :value) in leads.entries) key: value.toJson()},
+    if (pendingHandoff.isNotEmpty) 'pending_handoff': pendingHandoff,
+    if (nativeMode.isNotEmpty) 'native_mode': nativeMode,
+    if (pendingRewind.isNotEmpty) 'pending_rewind': pendingRewind,
+    'workflow': ?workflow,
+    'told_workflow': ?toldWorkflow,
   };
 }

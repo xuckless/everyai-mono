@@ -7,10 +7,10 @@ import '../domain/agent_mode.dart';
 import '../domain/mcp_servers.dart';
 import '../domain/permissions.dart';
 import '../harness/everyai/research_sites.dart' show defaultResearchSites;
-import 'agent_prompt.dart' show HarnessMode, HarnessTier;
+import 'agent_prompt.dart' show HarnessTier;
 import 'script_caps.dart' show ScriptLevel;
 
-export 'agent_prompt.dart' show HarnessMode, HarnessTier;
+export 'agent_prompt.dart' show HarnessTier;
 import '../permissions_providers.dart' show StoredPermissions;
 
 /// Where a Code setting lives. Later layers win: global, then the project,
@@ -46,17 +46,19 @@ final class StoredCodeSettings {
     this.tier = HarnessTier.efficient,
     this.forksIsolated = true,
     this.researchSites = defaultResearchSites,
-    this.harnessMode = HarnessMode.build,
     this.scripts = ScriptLevel.byTier,
+    this.ownClis = const {},
   });
+
+  /// "Use my own installed CLIs": the drivers (by id) that need the user's
+  /// consent and have it. Global and kept in the app only, so no project file
+  /// can turn one on. Empty (the default): none.
+  final Set<String> ownClis;
 
   /// run_script for sessions started from now on: by tier, or one level.
   final ScriptLevel scripts;
 
-  /// Build or Bug fix, for sessions started from now on.
-  final HarnessMode harnessMode;
-
-  /// The only sites research jobs (Max and Ultra) may fetch from.
+  /// The only sites research jobs (researcher subagents) may fetch from.
   final List<String> researchSites;
 
   /// Efficiency ↔ Quality, for sessions started from now on.
@@ -94,11 +96,12 @@ final class StoredCodeSettings {
 
   StoredCodeSettings withTier(HarnessTier tier) => _copy(tier: tier);
 
-  StoredCodeSettings withHarnessMode(HarnessMode mode) => _copy(harnessMode: mode);
-
   StoredCodeSettings withForksIsolated(bool on) => _copy(forksIsolated: on);
 
   StoredCodeSettings withScripts(ScriptLevel level) => _copy(scripts: level);
+
+  StoredCodeSettings withOwnCli(String driverId, bool on) =>
+      _copy(ownClis: on ? {...ownClis, driverId} : ({...ownClis}..remove(driverId)));
 
   /// [sites] cleaned up (no schemes or paths, lower case); empty restores the defaults.
   StoredCodeSettings withResearchSites(List<String> sites) {
@@ -119,10 +122,10 @@ final class StoredCodeSettings {
     HarnessTier? tier,
     bool? forksIsolated,
     List<String>? researchSites,
-    HarnessMode? harnessMode,
     ScriptLevel? scripts,
+    Set<String>? ownClis,
   }) => StoredCodeSettings(
-    harnessMode: harnessMode ?? this.harnessMode,
+    ownClis: ownClis ?? this.ownClis,
     scripts: scripts ?? this.scripts,
     researchSites: researchSites ?? this.researchSites,
     tier: tier ?? this.tier,
@@ -153,8 +156,11 @@ final class StoredCodeSettings {
         _ => HarnessTier.efficient,
       },
       forksIsolated: !(global is Map<String, Object?> && global['forksIsolated'] == false),
-      harnessMode: HarnessMode.parse(global is Map<String, Object?> ? global['harnessMode'] : null),
       scripts: ScriptLevel.parse(global is Map<String, Object?> ? global['scripts'] : null),
+      ownClis: switch (global) {
+        {'ownClis': final List<Object?> ids} => {...ids.whereType<String>()},
+        _ => const {},
+      },
       researchSites: switch (global) {
         {'researchSites': final List<Object?> sites} when sites.isNotEmpty => [...sites.whereType<String>()],
         _ => defaultResearchSites,
@@ -182,8 +188,8 @@ final class StoredCodeSettings {
       if (autoCompactPercent != defaultAutoCompactPercent) 'autoCompactPercent': autoCompactPercent,
       if (tier != HarnessTier.efficient) 'harnessTier': tier.name,
       if (!forksIsolated) 'forksIsolated': false,
-      if (harnessMode != HarnessMode.build) 'harnessMode': harnessMode.name,
       if (scripts != ScriptLevel.byTier) 'scripts': scripts.name,
+      if (ownClis.isNotEmpty) 'ownClis': [...ownClis]..sort(),
       if (!listEquals(researchSites, defaultResearchSites)) 'researchSites': researchSites,
     },
     'projects': {

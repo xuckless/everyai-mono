@@ -5,6 +5,7 @@ import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/core/theme/every_theme.dart';
 import 'package:every_ai/features/code/code_settings_providers.dart';
+import 'package:every_ai/features/code/drivers/driver_registry.dart';
 import 'package:every_ai/features/code/permissions_providers.dart';
 import 'package:every_ai/features/code/settings/setting_defs.dart';
 import 'package:every_ai/features/code/settings/settings.dart' as files;
@@ -121,7 +122,7 @@ void main() {
       expect(s.projectPrompts, isEmpty);
 
       expect(isSetInPrefs(tier, s, null), isFalse);
-      s = writePrefsValue(tier, s, null, HarnessTier.max);
+      s = writePrefsValue(tier, s, null, HarnessTier.thorough);
       expect(isSetInPrefs(tier, s, null), isTrue);
       expect(clearPrefsValue(tier, s, null).tier, HarnessTier.efficient);
 
@@ -156,6 +157,8 @@ void main() {
         overrides: [
           preferencesProvider.overrideWithValue(Preferences.inMemory()),
           userSettingsPathProvider.overrideWith((ref) async => path),
+          // No real CLIs are looked for.
+          driverRegistryProvider.overrideWithValue(DriverRegistry(const {})),
         ],
         child: m.MaterialApp(
           builder: (context, child) =>

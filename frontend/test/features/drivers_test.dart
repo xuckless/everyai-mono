@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/drivers/acp/acp_driver.dart';
@@ -94,7 +95,14 @@ final class _Detecting implements HarnessDriver {
 void main() {
   group('registry', () {
     late ProviderContainer container;
-    setUp(() => container = ProviderContainer(overrides: [harnessProvider.overrideWithValue(FakeHarness())]));
+    setUp(
+      () => container = ProviderContainer(
+        overrides: [
+          harnessProvider.overrideWithValue(FakeHarness()),
+          preferencesProvider.overrideWithValue(Preferences.inMemory()),
+        ],
+      ),
+    );
     tearDown(() => container.dispose());
 
     test('every planned driver is registered under its stored name', () {
@@ -105,18 +113,93 @@ void main() {
       expect(r.resolve('opencode'), isA<OpenCodeDriver>());
       final gemini = r.resolve('gemini')! as AcpDriver;
       expect((gemini.info.needsConsent, gemini.command), (true, 'gemini'));
-      expect(gemini.args, ['--acp']);
+      expect(gemini.info.label, 'Gemini CLI (API key or enterprise)');
+      expect(gemini.resolved.args, ['--acp', '--approval-mode', 'default']);
       expect(r.resolve('claude-code')!.info.needsConsent, isTrue);
       expect(r.resolve('codex')!.info.needsConsent, isFalse);
       final acp = r.resolve('acp:goose')!;
       expect(acp, isA<AcpDriver>());
       expect((acp.info.id, (acp as AcpDriver).command), ('acp:goose', 'goose'));
+      expect(acp.resolved.args, ['acp']);
       expect(identical(r.resolve('acp:goose'), acp), isTrue);
       expect(r.resolve('terminal:aider'), isA<TerminalDriver>());
       expect(r.resolve('terminal:aider')!.info.id, 'terminal:aider');
       expect(r.resolve('acp:'), isNull);
       expect(r.resolve('nope'), isNull);
-      expect([for (final d in r.listed) d.info.id], ['everyai', 'claude-code', 'codex', 'opencode', 'gemini']);
+      expect(
+        [for (final d in r.listed) d.info.id],
+        [
+          'everyai',
+          'claude-code',
+          'codex',
+          'opencode',
+          'antigravity',
+          'gemini',
+          'github-copilot-cli',
+          'kiro',
+          'kimi',
+          'qwen-code',
+          'cline',
+          'goose',
+          'mistral-vibe',
+          'auggie',
+          'factory-droid',
+          'cursor',
+          'grok',
+        ],
+      );
+    });
+
+    test(
+      'each ACP agent is listed with its command, label and install hint; only Google and Cursor ask for consent',
+      () {
+        final r = container.read(driverRegistryProvider);
+        const want = {
+          'antigravity': ('agy', 'Antigravity CLI'),
+          'gemini': ('gemini', 'Gemini CLI (API key or enterprise)'),
+          'github-copilot-cli': ('copilot', 'GitHub Copilot CLI'),
+          'kiro': ('kiro-cli', 'Kiro CLI'),
+          'kimi': ('kimi', 'Kimi Code CLI'),
+          'qwen-code': ('qwen', 'Qwen Code'),
+          'cline': ('cline', 'Cline CLI'),
+          'goose': ('goose', 'goose'),
+          'mistral-vibe': ('vibe-acp', 'Mistral Vibe'),
+          'auggie': ('auggie', 'Auggie'),
+          'factory-droid': ('droid', 'Factory Droid'),
+          'cursor': ('cursor-agent', 'Cursor CLI'),
+          'grok': ('grok', 'Grok Build'),
+        };
+        for (final MapEntry(key: id, value: (command, label)) in want.entries) {
+          final d = r.resolve(id)! as AcpDriver;
+          expect((d.command, d.info.label), (command, label), reason: id);
+          expect(d.info.installHint, isNotEmpty, reason: id);
+          expect(d.info.needsConsent, id == 'gemini' || id == 'cursor', reason: id);
+        }
+        expect(r.resolve('github-copilot-cli')!.info.installHint, 'npm i -g @github/copilot');
+      },
+    );
+
+    test("an acp: driver for a listed agent's program runs on that agent's consent switch", () {
+      final r = container.read(driverRegistryProvider);
+      final agy = r.resolve('acp:agy')!;
+      // Antigravity ships on consumer logins: no consent switch (owner, 2026-11-04).
+      expect((agy.info.needsConsent, agy.info.consentId), (false, 'antigravity'));
+      expect(consentProblem(agy.info, const {}), isNull);
+      final gem = r.resolve('acp:gemini')!;
+      expect(consentProblem(gem.info, const {}), contains("Turn on 'Use my own installed CLIs'"));
+      expect(consentProblem(gem.info, const {'gemini'}), isNull);
+      expect(r.resolve('acp:/opt/bin/gemini --sandbox')!.info.consentId, 'gemini');
+      expect(r.resolve('acp:dsh')!.info.consentId, 'acp:dsh');
+      // Cursor installs as `cursor-agent` and `agent`: either shares the listed entry's switch.
+      final cursor = r.resolve('cursor')!;
+      expect((cursor.info.needsConsent, cursor.info.consentId), (true, 'cursor'));
+      expect(consentProblem(cursor.info, const {}), contains("Turn on 'Use my own installed CLIs' for Cursor CLI"));
+      expect(consentProblem(cursor.info, const {'cursor'}), isNull);
+      expect(r.resolve('acp:agent')!.info.consentId, 'cursor');
+      expect(
+        leadBlocked(cursor.info, const DriverStatus(installed: true, signedIn: true), consented: false),
+        'Turn on in Settings',
+      );
     });
 
     test('harnessFor goes through the registry; the demo and removed harnesses are unchanged', () async {
@@ -134,44 +217,68 @@ void main() {
       );
     });
 
-    test('stub drivers say they are not built yet and refuse to start', () async {
-      final stubs = <HarnessDriver>[
-        ClaudeDriver(which: _nowhere),
-        CodexDriver(which: _nowhere),
-        OpenCodeDriver(which: _nowhere),
-        AcpDriver(id: 'acp:x', label: 'x', command: 'x', which: _nowhere),
-        TerminalDriver(id: 'terminal:x', label: 'x', command: 'x', which: _nowhere),
-      ];
-      for (final d in stubs) {
-        final s = await d.detect();
-        expect((s.installed, s.problem), (false, 'Not built yet.'), reason: d.info.id);
-        await expectLater(d.start(_spec('/p')), throwsA(isA<HarnessError>()), reason: d.info.id);
-        await expectLater(d.attach('c'), throwsA(isA<HarnessError>()), reason: d.info.id);
-        expect(await d.statuses(['c']), isEmpty);
-      }
+    test('ACP agents: a command with spaces is split, OpenCode gets acp, each profile its caps', () async {
+      final r = container.read(driverRegistryProvider);
+      final dsh = r.resolve('acp:dsh --profile acp')! as AcpDriver;
+      expect((dsh.resolved.executable, dsh.info.id), ('dsh', 'acp:dsh --profile acp'));
+      expect(dsh.resolved.args, ['--profile', 'acp']);
+      expect((r.resolve('acp:opencode')! as AcpDriver).resolved.args, ['acp']);
+      final gemini = r.resolve('gemini')!;
+      expect((gemini as AcpDriver).resolved.args, ['--acp', '--approval-mode', 'default']);
+      expect(dsh.caps, {DriverCap.resume, DriverCap.approvals, DriverCap.perCallApprovals});
+      expect(gemini.caps.containsAll({DriverCap.mcp, DriverCap.images, DriverCap.switchModel}), isTrue);
+      expect(gemini.caps.intersection({DriverCap.usage, DriverCap.effort, DriverCap.steer}), isEmpty);
+      final oc = r.resolve('acp:opencode')!;
+      expect(oc.caps.containsAll({DriverCap.usage, DriverCap.effort, DriverCap.subagents}), isTrue);
+      expect(oc.caps.intersection({DriverCap.steer, DriverCap.fork, DriverCap.rewind}), isEmpty);
+    });
+
+    test('an ACP agent reports whether it is signed in, and a missing one says so', () async {
+      final d = AcpDriver(
+        id: 'gemini',
+        label: 'Gemini CLI',
+        command: 'gemini',
+        which: (_) async => '/bin/echo',
+        signedIn: () async => false,
+      );
+      final s = await d.detect();
+      expect((s.installed, s.signedIn), (true, false));
+      expect(s.problem, startsWith('Not signed in. Set GEMINI_API_KEY, or sign in with a Code Assist'));
+      final missing = await AcpDriver(id: 'acp:x', label: 'x', command: 'x', which: _nowhere).detect();
+      expect((missing.installed, missing.problem), (false, null));
+    });
+
+    test('an ACP conversation with its files is idle; one without is unknown', () async {
+      final tmp = await Directory.systemTemp.createTemp('acp-statuses');
+      addTearDown(() => tmp.delete(recursive: true));
+      Directory('${tmp.path}/acp-sessions/c1').createSync(recursive: true);
+      File('${tmp.path}/acp-sessions/c1/meta.json').writeAsStringSync('{"acpSessionId":"a","cwd":"/w"}');
+      final d = AcpDriver(id: 'acp:x', label: 'x', command: 'x', dataDir: () async => tmp.path);
+      expect(await d.statuses(['c1', 'c2']), {'c1': ExecutionStatus.idle});
+      await expectLater(d.attach('c2'), throwsA(isA<HarnessError>()));
     });
 
     test('a found CLI reports its path and version', () async {
-      final s = await ClaudeDriver(which: (_) async => '/bin/echo').detect();
+      final s = await notBuiltYet('claude', which: (_) async => '/bin/echo');
       expect((s.installed, s.path, s.version, s.problem), (true, '/bin/echo', '--version', 'Not built yet.'));
     });
 
-    test('statuses are looked up once, kept, and again after invalidating', () async {
+    test('statuses are looked up once, kept, and again on refresh', () async {
       final ok = _Detecting('a', () async => const DriverStatus(installed: true, version: '1.0'));
       final broken = _Detecting('b', () async => throw StateError('no PATH'));
       final c = ProviderContainer(
         overrides: [
           driverRegistryProvider.overrideWithValue(DriverRegistry({'a': ok, 'b': broken})),
+          preferencesProvider.overrideWithValue(Preferences.inMemory()),
         ],
       );
       addTearDown(c.dispose);
       final first = await c.read(driverStatusesProvider.future);
       expect(first['a']!.version, '1.0');
-      expect(first['b']!.problem, contains('no PATH'));
+      expect(first['b']!.problem, "Couldn't check: Bad state: no PATH");
       await c.read(driverStatusesProvider.future);
       expect(ok.detects, 1);
-      c.invalidate(driverStatusesProvider);
-      await c.read(driverStatusesProvider.future);
+      await c.read(driverStatusesProvider.notifier).refresh();
       expect(ok.detects, 2);
     });
   });
@@ -279,4 +386,74 @@ void main() {
     await pumpEventQueue();
     await p.close();
   });
+
+  group('outside leads', () {
+    ActionCall mcp(String name) => actionEvent(id: 'a', toolName: name, kind: 'MCPToolAction');
+
+    test('host tool calls are known by name in every CLI\'s style', () {
+      for (final name in [
+        'mcp__everyai__ask_user_question',
+        'everyai__ask_user_question',
+        'everyai.ask_user_question',
+        'everyai/ask_user_question',
+      ]) {
+        expect(hostToolOf(mcp(name)), askUserQuestionTool, reason: name);
+      }
+      expect(hostToolOf(mcp('mcp__everyai__saved_plans')), 'saved_plans');
+      // Another server's tool, an unknown tool of ours, or a plain tool with our name are not ours.
+      expect(hostToolOf(mcp('mcp__github__ask_user_question')), isNull);
+      expect(hostToolOf(mcp('mcp__everyai__rm')), isNull);
+      expect(hostToolOf(actionEvent(id: 'a', toolName: 'everyai__memory', kind: 'TerminalAction')), isNull);
+      // The call's own arguments can't make a foreign tool ours.
+      final spoof = actionEvent(
+        id: 'a',
+        toolName: 'mcp__evil__x',
+        kind: 'MCPToolAction',
+        args: {'server': 'everyai', 'tool': 'memory'},
+      );
+      expect(hostToolOf(spoof), isNull);
+    });
+
+    test('a lead is blocked for the first reason in order', () {
+      const plain = DriverInfo(id: 'codex', label: 'Codex');
+      const paid = DriverInfo(id: 'claude-code', label: 'Claude Code', needsConsent: true);
+      String? b(DriverInfo i, DriverStatus? s, {bool consented = false}) => leadBlocked(i, s, consented: consented);
+      expect(b(const DriverInfo(id: 'everyai', label: 'EveryAI'), null), isNull);
+      expect(b(plain, null), 'Checking…');
+      expect(b(plain, const DriverStatus(installed: true, problem: notBuiltProblem)), 'Not built yet');
+      expect(b(plain, const DriverStatus()), 'Not installed');
+      expect(b(plain, const DriverStatus(installed: true, signedIn: false)), 'Not signed in');
+      expect(b(paid, const DriverStatus(installed: true, signedIn: true)), 'Turn on in Settings');
+      expect(b(paid, const DriverStatus(installed: true), consented: true), isNull);
+      expect(b(plain, const DriverStatus(installed: true, problem: 'Too old')), 'Too old');
+    });
+
+    test('the fidelity line says how far the mode holds', () {
+      expect(
+        fidelityNote(_Explaining(caps: const {DriverCap.approvals}), AgentMode.plan),
+        'Plan on X: enforced by its sandbox',
+      );
+      expect(
+        fidelityNote(_Explaining(caps: const {DriverCap.approvals}, how: null), AgentMode.ask),
+        'Ask on X: approvals only for what X asks about',
+      );
+      expect(fidelityNote(_Explaining(how: null), AgentMode.plan), 'Plan on X: not enforced, X acts without asking');
+      expect(fidelityNote(EveryAIDriver(FakeHarness()), AgentMode.plan), isNull);
+    });
+  });
+}
+
+final class _Explaining extends _Detecting implements ExplainsModes {
+  _Explaining({this.caps = const {}, this.how = 'enforced by its sandbox'})
+    : super('x', () async => const DriverStatus(installed: true));
+
+  @override
+  final Set<DriverCap> caps;
+  final String? how;
+
+  @override
+  DriverInfo get info => const DriverInfo(id: 'x', label: 'X');
+
+  @override
+  String? howEnforced(AgentMode mode) => how;
 }

@@ -24,12 +24,18 @@ import '../domain/agent_mode.dart';
 import '../domain/code_session.dart';
 import '../../slash/slash_command.dart' show CodeSlashHost;
 import '../morning_providers.dart';
+import '../workflows/workflow_library.dart' show WorkflowOrigin;
+import '../workflows/workflow_picker.dart';
 import 'agent_menu.dart';
 import 'code_composer.dart';
 import 'transcript/aside_card.dart';
 import 'session_view.dart';
 import 'code_top_bar.dart' show CodeDraftBar;
 import '../code_settings_providers.dart';
+import '../drivers/driver_registry.dart' show driverRegistryProvider;
+import '../harness/events.dart' show HarnessEvent;
+import '../resume/past_sessions.dart';
+import '../resume/resume_providers.dart';
 
 /// Where demo sessions "run" (the mock harness ignores the folder).
 const demoProjectPath = '${demoScheme}counter-app';
@@ -47,9 +53,15 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
   AgentMode? _picked;
   bool _isolated = false;
 
+  /// The workflow picked for the new session, or null for none.
+  WorkflowPick? _workflow;
+
   /// A spending cap for the new session (dollars), or null for none.
   double? _budget;
   bool _starting = false;
+
+  /// The earlier session being picked up (`harness|id`), while its history is read.
+  String? _resuming;
 
   /// The mode last used in [projectId]; Auto-edit the first time.
   AgentMode _modeFor(String? projectId) {
@@ -87,20 +99,22 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
     setState(() => _projectId = project.id);
   }
 
-  /// The tier the new session runs on: the bar's pick, capped at Thorough
-  /// for the scripted demo (it has no phase flow).
-  HarnessTier _tierFor(CodeProject project) {
-    final tier = ref.read(codeSettingsProvider).tier;
-    return tier.phased && isDemoPath(project.path) ? HarnessTier.thorough : tier;
-  }
+  /// The lead the new session runs on: the pick, except that the scripted demo always runs its own.
+  String _leadFor(CodeProject project) =>
+      isDemoPath(project.path) ? everyaiHarnessName : ref.read(codeLeadProvider).harness;
 
-  /// Bug fix isn't in the scripted demo.
-  HarnessMode _harnessModeFor(CodeProject project) =>
-      isDemoPath(project.path) ? HarnessMode.build : ref.read(codeSettingsProvider).harnessMode;
+  /// The model and effort for [harness]: an outside lead's own pick, else the EveryAI harness's.
+  ({String model, String effort}) _modelFor(String harness) => harness == everyaiHarnessName
+      ? (model: ref.read(codeAgentProvider).model, effort: ref.read(codeAgentProvider).effort)
+      : ref.read(codeLeadProvider).of(harness);
 
   Future<void> _start(CodeProject project, String prompt, List<Attachment> files) async {
     final mode = _modeFor(project.id);
     ref.read(preferencesProvider)[lastModeKey(project.id)] = mode.name;
+    final harness = _leadFor(project);
+    final (:model, :effort) = _modelFor(harness);
+    // The scripted demo runs no workflows.
+    final workflow = isDemoPath(project.path) ? null : _workflow;
     setState(() => _starting = true);
     try {
       final info = await ref
@@ -108,20 +122,44 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
           .start(
             project: project,
             prompt: prompt,
-            model: ref.read(codeAgentProvider).model,
-            effort: ref.read(codeAgentProvider).effort,
+            model: model,
+            effort: effort,
             mode: mode,
             files: files,
             isolated: _isolated,
-            tier: _tierFor(project),
-            harnessMode: _harnessModeFor(project),
+            tier: ref.read(codeSettingsProvider).tier,
+            harness: harness,
+            workflow: workflow,
           );
       if (_budget case final usd?) ref.read(codeSettingsProvider.notifier).setBudget(info.id, usd);
+      if (mounted) setState(() => _workflow = null);
       if (mounted) context.go(Routes.codeSession(info.id));
     } on Object catch (e) {
       if (mounted) showAdaptiveToast(context, 'Couldn\'t start the session: $e');
     } finally {
       if (mounted) setState(() => _starting = false);
+    }
+  }
+
+  /// Picks up [past] on its own harness: its history is read from the harness's files, then the session opens.
+  Future<void> _resume(CodeProject project, PastSession past) async {
+    setState(() => _resuming = '${past.harness}|${past.nativeId}');
+    try {
+      final source = sourceOf(ref.read(pastSessionSourcesProvider), past);
+      var history = const <HarnessEvent>[];
+      try {
+        history = await source?.history(past) ?? const [];
+      } on Object {
+        // The harness still has the whole conversation; only our copy of its earlier turns is missing.
+      }
+      final info = await ref
+          .read(codeSessionsProvider.notifier)
+          .resumePast(project: project, past: past, mode: _modeFor(project.id), history: history);
+      if (mounted) context.go(Routes.codeSession(info.id));
+    } on Object catch (e) {
+      if (mounted) showAdaptiveToast(context, "Couldn't resume the session: $e");
+    } finally {
+      if (mounted) setState(() => _resuming = null);
     }
   }
 
@@ -131,11 +169,8 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
     final projects = ref.watch(codeProjectsProvider);
     final project = projects.where((p) => p.id == _projectId).firstOrNull ?? projects.firstOrNull;
     final mode = _modeFor(project?.id);
-    final sessions = ref
-        .watch(codeSessionsProvider)
-        .where((s) => s.projectId == project?.id && !s.isSubagent)
-        .take(8)
-        .toList();
+    final lead = project == null || isDemoPath(project.path) ? everyaiHarnessName : ref.watch(codeLeadProvider).harness;
+    final earlier = project == null ? const <EarlierSession>[] : ref.watch(earlierSessionsProvider(project.id));
 
     return AdaptivePage(
       title: '',
@@ -189,14 +224,23 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                     onModeChanged: (m) => _pickMode(m, project.id),
                     onSend: (text, files) => _start(project, text, files),
                     trailing: AgentMenu(
-                      model: ref.watch(codeAgentProvider).model,
-                      effort: ref.watch(codeAgentProvider).effort,
+                      harness: lead,
+                      onHarness: isDemoPath(project.path) ? null : ref.read(codeLeadProvider.notifier).chooseHarness,
+                      model: lead == everyaiHarnessName
+                          ? ref.watch(codeAgentProvider).model
+                          : ref.watch(codeLeadProvider).of(lead).model,
+                      effort: lead == everyaiHarnessName
+                          ? ref.watch(codeAgentProvider).effort
+                          : ref.watch(codeLeadProvider).of(lead).effort,
                       demo: isDemoPath(project.path),
-                      onChanged: ref.read(codeAgentProvider.notifier).chooseModel,
-                      tier: ref.watch(codeSettingsProvider.select((s) => s.tier)),
-                      onTier: ref.read(codeSettingsProvider.notifier).setTier,
-                      harnessMode: ref.watch(codeSettingsProvider.select((s) => s.harnessMode)),
-                      onHarnessMode: ref.read(codeSettingsProvider.notifier).setHarnessMode,
+                      onChanged: lead == everyaiHarnessName
+                          ? ref.read(codeAgentProvider.notifier).chooseModel
+                          : (model, effort) => ref.read(codeLeadProvider.notifier).chooseModel(lead, model, effort),
+                      level: ref.watch(codeSettingsProvider.select((s) => s.tier)),
+                      onLevel: ref.read(codeSettingsProvider.notifier).setTier,
+                      workflow: _workflow,
+                      onWorkflow: (w) => setState(() => _workflow = w),
+                      projectDir: project.path,
                       budget: _budget,
                       onBudget: (v) => setState(() => _budget = v),
                     ),
@@ -206,6 +250,8 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                       onPick: (p) => setState(() {
                         _projectId = p.id;
                         _picked = null;
+                        // Another project's own workflows aren't this one's.
+                        if (_workflow?.entry?.origin == WorkflowOrigin.project) _workflow = null;
                       }),
                       onOpen: _openFolder,
                       onSample: _addSample,
@@ -232,11 +278,28 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                     textAlign: TextAlign.center,
                     style: theme.type.callout.tint(theme.textMuted),
                   ),
-                  if (sessions.isNotEmpty) ...[
+                  // This folder's earlier sessions: EveryAI's own (marked) and every installed harness's.
+                  if (earlier.isNotEmpty) ...[
                     const SizedBox(height: 28),
-                    Text('Recent sessions', style: theme.type.caption.semibold.tint(theme.textMuted)),
+                    Text('Earlier sessions', style: theme.type.caption.semibold.tint(theme.textMuted)),
                     const SizedBox(height: 6),
-                    for (final s in sessions) SessionTile(info: s, onOpen: () => context.go(Routes.codeSession(s.id))),
+                    for (final row in earlier)
+                      if (row.ours case final s?)
+                        SessionTile(
+                          key: ValueKey('code-home.earlier.${s.id}'),
+                          info: s,
+                          badge: 'EveryAI',
+                          onOpen: () => context.go(Routes.codeSession(s.id)),
+                        )
+                      else if (row.past case final p?)
+                        PastSessionTile(
+                          key: ValueKey('code-home.earlier.${p.harness}.${p.nativeId}'),
+                          past: p,
+                          label: ref.read(driverRegistryProvider).resolve(p.harness)?.info.label ?? p.harness,
+                          blocked: row.blocked,
+                          busy: _resuming == '${p.harness}|${p.nativeId}',
+                          onOpen: _resuming != null || _starting ? null : () => _resume(project, p),
+                        ),
                   ],
                 ],
               ],
@@ -437,9 +500,19 @@ class _ProjectPicker extends StatelessWidget {
 
 /// A session in a list: status dot, title, age.
 class SessionTile extends ConsumerStatefulWidget {
-  const SessionTile({super.key, required this.info, required this.onOpen, this.selected = false, this.dense = false});
+  const SessionTile({
+    super.key,
+    required this.info,
+    required this.onOpen,
+    this.selected = false,
+    this.dense = false,
+    this.badge,
+  });
 
   final CodeSessionInfo info;
+
+  /// A small mark after the title ("EveryAI" in a list that mixes in other harnesses' sessions).
+  final String? badge;
   final VoidCallback onOpen;
   final bool selected;
   final bool dense;
@@ -492,6 +565,10 @@ class _SessionTileState extends ConsumerState<SessionTile> {
                     style: theme.type.callout.tint(theme.text),
                   ),
                 ),
+                if (widget.badge case final b?) ...[
+                  Text(b, style: theme.type.caption.medium.tint(theme.accent)),
+                  const SizedBox(width: 8),
+                ],
                 if (!widget.dense) Text(_age(widget.info.createdAt), style: theme.type.caption.tint(theme.textMuted)),
                 Opacity(
                   opacity: _hover || widget.selected || Host.isMobile ? 1 : 0,
@@ -561,7 +638,7 @@ class _SessionTileState extends ConsumerState<SessionTile> {
     final selected = widget.selected;
     try {
       if (w == null) {
-        ref.read(codeSessionsProvider.notifier).remove(widget.info.id);
+        await ref.read(codeSessionsProvider.notifier).remove(widget.info.id);
       } else {
         await ref.read(codeGitProvider(widget.info.id).notifier).discard();
       }
@@ -578,5 +655,103 @@ class _SessionTileState extends ConsumerState<SessionTile> {
     if (d.inHours < 1) return '${d.inMinutes}m';
     if (d.inDays < 1) return '${d.inHours}h';
     return '${d.inDays}d';
+  }
+}
+
+/// One of a harness's own earlier sessions for the folder (started in its CLI, or one EveryAI no longer lists):
+/// harness and model, title, when and how long, branch. Picking it resumes it on that harness; one that can't
+/// resume yet is greyed with what is in the way ([blocked]).
+class PastSessionTile extends StatefulWidget {
+  const PastSessionTile({
+    super.key,
+    required this.past,
+    required this.label,
+    required this.onOpen,
+    this.blocked,
+    this.busy = false,
+  });
+
+  final PastSession past;
+
+  /// The harness's name.
+  final String label;
+  final String? blocked;
+  final bool busy;
+  final VoidCallback? onOpen;
+
+  @override
+  State<PastSessionTile> createState() => _PastSessionTileState();
+}
+
+class _PastSessionTileState extends State<PastSessionTile> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final p = widget.past;
+    final enabled = widget.blocked == null && widget.onOpen != null;
+    final meta = [
+      [widget.label, if (p.model case final m? when m.isNotEmpty) m].join(' · '),
+      _SessionTileState._age(p.lastActive),
+      if (p.turns case final t?) t == 1 ? '1 turn' : '$t turns',
+      if (p.branch case final b? when b.isNotEmpty) b,
+    ].join(' · ');
+    final title = p.title.length > 90 ? '${p.title.substring(0, 89)}…' : p.title;
+    return MouseRegion(
+      cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: FocusableActionDetector(
+        enabled: enabled,
+        actions: {ActivateIntent: CallbackAction<ActivateIntent>(onInvoke: (_) => widget.onOpen?.call())},
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: enabled ? widget.onOpen : null,
+          child: Semantics(
+            button: true,
+            enabled: enabled,
+            label: '$title, ${widget.label}${widget.blocked == null ? '' : ', ${widget.blocked}'}',
+            child: Opacity(
+              opacity: widget.blocked == null ? 1 : 0.5,
+              child: Container(
+                margin: const EdgeInsets.symmetric(vertical: 1),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: _hover && enabled ? theme.text.withValues(alpha: 0.05) : null,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    AdaptiveIcon(EveryIcon.command, size: 14, color: theme.textMuted),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.type.callout.tint(theme.text),
+                          ),
+                          Text(
+                            widget.blocked ?? meta,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.type.caption.tint(theme.textMuted),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (widget.busy) Text('Opening…', style: theme.type.caption.tint(theme.textMuted)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

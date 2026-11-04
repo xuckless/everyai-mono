@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:fluent_ui/fluent_ui.dart' as f;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -9,10 +11,16 @@ import 'package:macos_window_utils/widgets/transparent_macos_sidebar.dart';
 import 'package:material_ui/material_ui.dart' as m;
 
 import '../core/platform/platform_kind.dart';
+import '../core/net/api_client.dart' show ServerStatus;
 import '../core/preferences.dart';
+import '../core/providers.dart' show apiClientProvider, serverStatusProvider;
 import '../core/theme/every_theme.dart';
-import '../core/ui/adaptive.dart' show showAdaptiveToast;
+import '../core/ui/adaptive.dart' show AdaptiveButton, AdaptiveProgress, GlassSurface, GlassLevel, showAdaptiveToast;
+import '../features/code/code_providers.dart' show driverShutdownProvider;
+import '../features/code/drivers/driver_registry.dart' show driverStatusesProvider;
 import '../features/history/ui/sidebar.dart';
+import '../features/onboarding/onboarding_providers.dart';
+import '../features/onboarding/ui/onboarding_screen.dart';
 import '../features/remote/remote_providers.dart' show remoteHostingProvider;
 import '../features/settings/byok_keys.dart' show modelBillingProvider;
 import '../features/settings/settings_registry.dart';
@@ -73,13 +81,29 @@ class _AppShellState extends ConsumerState<AppShell> {
     context.go(location);
   }
 
+  AppLifecycleListener? _lifecycle;
+
   @override
   void initState() {
     super.initState();
     // A settings link that came before the shell existed (the first location).
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && ref.read(pendingSettingsProvider) != null) _openPendingSettings();
+      // Which coding CLIs are installed: the last check at once, a new one in
+      // the background, and again when the app comes back after a while.
+      if (mounted && Host.isDesktop) ref.read(driverStatusesProvider);
     });
+    if (Host.isDesktop) {
+      _lifecycle = AppLifecycleListener(
+        onResume: () => unawaited(ref.read(driverStatusesProvider.notifier).refreshIfStale()),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _lifecycle?.dispose();
+    super.dispose();
   }
 
   void _openSettings() {
@@ -104,6 +128,8 @@ class _AppShellState extends ConsumerState<AppShell> {
     // Hosting for remote devices runs app-wide (when the user turned it on);
     // a device asking to pair is announced wherever the user is.
     if (Host.isDesktop) {
+      // Outside coding CLIs end with the app, whichever way they were started.
+      ref.listen(driverShutdownProvider, (_, _) {});
       ref.listen(remoteHostingProvider.select((s) => s.link.pending.length), (before, now) {
         if (now > (before ?? 0)) {
           showAdaptiveToast(context, 'A device wants to use Code here. Approve it in Settings → Remote.');
@@ -114,6 +140,14 @@ class _AppShellState extends ConsumerState<AppShell> {
     ref.listen(pendingSettingsProvider, (_, next) {
       if (next != null) _openPendingSettings();
     });
+
+    // The pre-alpha entry screen, once per build version, before anything else.
+    if (!ref.watch(onboardingAcceptedProvider)) {
+      const tour = OnboardingScreen();
+      return theme.design == DesignLanguage.material || theme.design == DesignLanguage.adwaita
+          ? m.Material(color: theme.background, child: tour)
+          : tour;
+    }
 
     Widget body = _SplitView(
       compact: compact,
@@ -219,11 +253,62 @@ class _AppShellState extends ConsumerState<AppShell> {
       );
     }
 
+    // A deployed backend may still be starting: say so instead of failing quietly.
+    final server = ref.watch(serverStatusProvider).value;
+    if (server == ServerStatus.waking || server == ServerStatus.unreachable) {
+      body = Stack(
+        children: [
+          body,
+          Positioned(
+            top: 12,
+            left: 0,
+            right: 0,
+            child: Center(child: _ServerBanner(status: server!)),
+          ),
+        ],
+      );
+    }
+
     // Material widgets need a Material ancestor for ink and text styles.
     if (theme.design == DesignLanguage.material || theme.design == DesignLanguage.adwaita) {
       body = m.Material(color: theme.background, child: body);
     }
     return body;
+  }
+}
+
+/// "Waking up the EveryAI server…" while it starts; Retry when it didn't come up.
+class _ServerBanner extends ConsumerWidget {
+  const _ServerBanner({required this.status});
+
+  final ServerStatus status;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = EveryTheme.of(context);
+    final waking = status == ServerStatus.waking;
+    return GlassSurface(
+      level: GlassLevel.thick,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (waking) const SizedBox.square(dimension: 16, child: AdaptiveProgress()),
+          if (waking) const SizedBox(width: 10),
+          Text(
+            waking ? 'Waking up the EveryAI server…' : "Can't reach the EveryAI server.",
+            style: theme.type.callout.copyWith(color: theme.text),
+          ),
+          if (!waking) ...[
+            const SizedBox(width: 10),
+            AdaptiveButton(
+              label: 'Retry',
+              onPressed: () => ref.read(apiClientProvider).awaitOnline().catchError((Object _) {}),
+            ),
+          ],
+        ],
+      ),
+    );
   }
 }
 
