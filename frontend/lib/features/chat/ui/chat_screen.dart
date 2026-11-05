@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../app/router.dart';
+import '../../../core/links/app_link.dart';
+import '../../../core/links/link_providers.dart';
 import '../../../core/net/api_error.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
@@ -72,6 +74,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         }
       }
     });
+
+    // A prompt from an everyai:// link fills the new-chat box; it is never sent.
+    if (home && ref.watch(pendingPromptProvider)?.mode == PromptTarget.chat) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final link = mounted ? ref.read(pendingPromptProvider.notifier).take() : null;
+        if (link == null) return;
+        _composer.currentState?.prefill(link.text);
+        showAdaptiveToast(context, 'From a link. Review before you send.');
+      });
+    }
 
     final composer = Composer(
       key: _composer,

@@ -461,3 +461,9 @@ STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
 IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
 ```
+
+## app_links 7.2.2 (llfbandit/app_links)
+
+- **What:** the `app_links` Dart package, used as a dependency (no code copied) to receive `everyai://prompt` links.
+- **Where:** `frontend/pubspec.yaml`; resolved from pub.dev.
+- **License:** Apache-2.0

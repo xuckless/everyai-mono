@@ -10,6 +10,10 @@ import 'package:macos_ui/macos_ui.dart' as mac;
 import 'package:macos_window_utils/widgets/transparent_macos_sidebar.dart';
 import 'package:material_ui/material_ui.dart' as m;
 
+import 'package:app_links/app_links.dart';
+
+import '../core/links/app_link.dart';
+import '../core/links/link_providers.dart';
 import '../core/platform/platform_kind.dart';
 import '../core/net/api_client.dart' show ServerStatus;
 import '../core/preferences.dart';
@@ -83,10 +87,31 @@ class _AppShellState extends ConsumerState<AppShell> {
   }
 
   AppLifecycleListener? _lifecycle;
+  StreamSubscription<Uri>? _links;
+
+  /// An `everyai://prompt` link: open the page whose box takes the text (it fills the box; nothing is sent).
+  void _onLink(Uri uri) {
+    switch (parseAppLink(uri)) {
+      case final PromptLink link:
+        ref.read(pendingPromptProvider.notifier).offer(link);
+        final to = routeForPrompt(link, desktop: Host.isDesktop, chat: Routes.newChat, code: Routes.code);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) context.go(to);
+        });
+      case OversizedLink():
+        showAdaptiveToast(context, 'That link\'s text is too long.');
+      case null:
+        break;
+    }
+  }
 
   @override
   void initState() {
     super.initState();
+    if (!kIsWeb) {
+      // Also delivers the link the app was started with.
+      _links = AppLinks().uriLinkStream.listen(_onLink, onError: (Object _) {});
+    }
     // A settings link that came before the shell existed (the first location).
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && ref.read(pendingSettingsProvider) != null) _openPendingSettings();
@@ -106,6 +131,7 @@ class _AppShellState extends ConsumerState<AppShell> {
   @override
   void dispose() {
     _lifecycle?.dispose();
+    unawaited(_links?.cancel());
     super.dispose();
   }
 
