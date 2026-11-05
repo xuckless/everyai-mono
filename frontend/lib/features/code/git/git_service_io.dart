@@ -1,8 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path_provider/path_provider.dart';
 
+import 'git_env.dart';
 import 'git_guard.dart';
 import 'git_models.dart';
 import 'git_service.dart' show GitError;
@@ -13,18 +15,67 @@ export 'repo_check_io.dart' show checkRepo;
 /// or the index can fire a hook set in config (`hook.<name>.command`), which only [repoGuard] turns off.
 const _plain = {'rev-parse', 'check-ref-format', 'show-ref', 'for-each-ref', 'rev-list', 'log', 'check-ignore'};
 
+/// Where git for [dir] runs: inside its environment (a WSL distro's own files, see [gitRunsInside]), or null for
+/// this computer.
+Future<GitInside?> _insideFor(String dir) async {
+  final inside = await gitInsideOf?.call(dir);
+  return inside != null && gitRunsInside(inside.env, dir) ? inside : null;
+}
+
+/// The null device as the git for [dir] names it.
+Future<String> _devNull(String dir) async => Platform.isWindows && await _insideFor(dir) == null ? 'NUL' : '/dev/null';
+
+/// The one place EveryAI starts git (and the few programs next to it) for [dir] (`-C`'s, unless given): on this
+/// computer, or for a folder inside an environment through its bridge, with the host paths among [args] and [env]'s
+/// values (`GIT_INDEX_FILE`) as it sees them.
+Future<ProcessResult> _proc(
+  List<String> args, {
+  String exe = 'git',
+  String? dir,
+  Map<String, String>? env,
+  Encoding? stdoutEncoding = systemEncoding,
+}) async {
+  final cmd = await _command(exe, args, dir: dir, env: env);
+  return Process.run(cmd.exe, cmd.args, environment: cmd.env, stdoutEncoding: stdoutEncoding);
+}
+
+/// [_proc] for a process the caller feeds on stdin.
+Future<Process> _start(List<String> args) async {
+  final cmd = await _command('git', args);
+  return Process.start(cmd.exe, cmd.args, environment: cmd.env);
+}
+
+/// What [_proc] starts for [exe] [args] (tests).
+@visibleForTesting
+Future<({String exe, List<String> args, Map<String, String>? env})> gitCommand(
+  String exe,
+  List<String> args, {
+  String? dir,
+  Map<String, String>? env,
+}) => _command(exe, args, dir: dir, env: env);
+
+Future<({String exe, List<String> args, Map<String, String>? env})> _command(
+  String exe,
+  List<String> args, {
+  String? dir,
+  Map<String, String>? env,
+}) async {
+  final at = dir ?? (args.length > 1 && args.first == '-C' ? args[1] : null);
+  final inside = at == null ? null : await _insideFor(at);
+  if (inside == null) return (exe: exe, args: args, env: env);
+  final e = inside.env;
+  final w = e.wrap(
+    exe,
+    [for (final a in args) envArg(e, a)],
+    env: {for (final v in (env ?? const {}).entries) v.key: envArg(e, v.value)},
+  );
+  return (exe: w.executable, args: w.args, env: w.environment);
+}
+
 /// The repository's guard for [dir]: [guardFlags] plus [repoGuard]'s overrides, and its refusal.
 Future<({List<String> args, String? refusal})> _guard(String dir, {Map<String, String>? env}) async {
-  final fixed = guardFlags(Platform.isWindows ? 'NUL' : '/dev/null');
-  final res = await Process.run('git', [
-    '-C',
-    dir,
-    ...fixed,
-    'config',
-    '--list',
-    '--show-scope',
-    '-z',
-  ], environment: env);
+  final fixed = guardFlags(await _devNull(dir));
+  final res = await _proc(['-C', dir, ...fixed, 'config', '--list', '--show-scope', '-z'], env: env);
   if (res.exitCode != 0) {
     final err = '${res.stderr}'.trim();
     // --show-scope came in git 2.26; without it the repository's config can't be told from the user's.
@@ -43,7 +94,7 @@ Future<List<String>> guardedArgs(String dir, List<String> args, {Map<String, Str
   final call = [
     if (cmd == 'diff' || cmd == 'show') ...[cmd, ...diffFlags, ...args.skip(1)] else ...args,
   ];
-  if (_plain.contains(cmd)) return ['-C', dir, ...guardFlags(Platform.isWindows ? 'NUL' : '/dev/null'), ...call];
+  if (_plain.contains(cmd)) return ['-C', dir, ...guardFlags(await _devNull(dir)), ...call];
   final guard = await _guard(dir, env: env);
   if (guard.refusal case final why? when storesFiles(cmd)) throw GitError(why);
   return ['-C', dir, ...guard.args, ...call];
@@ -51,7 +102,7 @@ Future<List<String>> guardedArgs(String dir, List<String> args, {Map<String, Str
 
 /// Runs git in [dir] the way EveryAI's own calls do: nothing the repository defines runs (see `git_guard.dart`).
 Future<ProcessResult> runGit(String dir, List<String> args, {Map<String, String>? env}) async =>
-    Process.run('git', await guardedArgs(dir, args, env: env), environment: env);
+    _proc(await guardedArgs(dir, args, env: env), env: env);
 
 /// [base] (the app's environment when null) plus the guard as `GIT_CONFIG_*` variables, for a program that runs
 /// git itself in [dir] (a shell, gh). Diffs it runs still need [diffFlags]. Never throws: without a readable
@@ -85,7 +136,9 @@ Future<List<String>> worktrees(String dir) async {
   try {
     final res = await _git(dir, ['worktree', 'list', '--porcelain'], check: false);
     if (res.exitCode != 0) return const [];
-    return worktreePaths('${res.stdout}');
+    final paths = worktreePaths('${res.stdout}');
+    final inside = await _insideFor(dir);
+    return inside == null ? paths : [for (final p in paths) inside.env.toHostPath(p) ?? p];
   } on Object {
     return const [];
   }
@@ -110,6 +163,10 @@ Future<String?> repoRoot(String dir) async {
     final root = '${res.stdout}'.trim();
     // A dotfiles repo at the home folder or above isn't the project's: snapshots
     // and worktrees of it would copy the whole home folder.
+    if (await _insideFor(dir) case final inside?) {
+      if (root == '/' || RegExp(r'^/(?:root|home/[^/]+)/?$').hasMatch(root)) return null;
+      return inside.env.toHostPath(root);
+    }
     final home = Platform.environment['HOME'];
     if (home != null && home.isNotEmpty && (home == root || home.startsWith('$root/'))) return null;
     return root;
@@ -154,7 +211,7 @@ Future<SessionWorktree> createWorktree({
 /// agent's own git commands: EveryAI's calls run no hooks (`git_guard.dart`).
 Future<void> _installHooks(SessionWorktree w, String hooksDir) async {
   // Without guardFlags, whose hooksPath would come back (`git config` runs nothing).
-  final configured = await Process.run('git', ['-C', w.repoRoot, 'config', '--get', 'core.hooksPath']);
+  final configured = await _proc(['-C', w.repoRoot, 'config', '--get', 'core.hooksPath']);
   final common = await _out(w.repoRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
   final custom = '${configured.stdout}'.trim();
   // A relative hooksPath (husky) is relative to the checkout the hook runs in.
@@ -177,7 +234,7 @@ Future<void> _installHooks(SessionWorktree w, String hooksDir) async {
       '[ -x "\$orig" ] && exec "\$orig" "\$@"\n'
       'exit 0\n',
     );
-    await Process.run('chmod', ['+x', f.path]);
+    await _proc(['+x', f.path], exe: 'chmod', dir: w.repoRoot);
   }
   await _git(w.repoRoot, ['config', 'extensions.worktreeConfig', 'true']);
   await _git(w.path, ['config', '--worktree', 'core.hooksPath', dir.path]);
@@ -302,7 +359,7 @@ Future<bool> ghReady(String dir) async {
 Future<Set<String>> ignoredAmong(String dir, List<String> paths) async {
   if (paths.isEmpty) return const {};
   try {
-    final p = await Process.start('git', await guardedArgs(dir, ['check-ignore', '--stdin', '-z']));
+    final p = await _start(await guardedArgs(dir, ['check-ignore', '--stdin', '-z']));
     p.stdin.write('${paths.join('\x00')}\x00');
     await p.stdin.close();
     final (out, _, code) = await (p.stdout.transform(utf8.decoder).join(), p.stderr.drain<void>(), p.exitCode).wait;
@@ -318,7 +375,7 @@ Future<Set<String>> ignoredAmong(String dir, List<String> paths) async {
 }
 
 Future<void> revertHunk(SessionWorktree w, FileDiff file, int hunk) async {
-  final p = await Process.start('git', await guardedArgs(w.path, ['apply', '-R', '--whitespace=nowarn', '-']));
+  final p = await _start(await guardedArgs(w.path, ['apply', '-R', '--whitespace=nowarn', '-']));
   p.stdin.write(file.patchFor(hunk));
   await p.stdin.close();
   final err = await p.stderr.transform(utf8.decoder).join();
@@ -545,7 +602,7 @@ Future<ForkCopy?> forkCopy(String dir, {required String worktreesDir, required S
 }
 
 Future<List<int>?> _blob(String root, String rev, String path) async {
-  final res = await Process.run('git', await guardedArgs(root, ['show', '$rev:$path']), stdoutEncoding: null);
+  final res = await _proc(await guardedArgs(root, ['show', '$rev:$path']), stdoutEncoding: null);
   return res.exitCode == 0 ? res.stdout as List<int> : null;
 }
 
@@ -602,8 +659,8 @@ Future<ForkMerge> mergeFork(ForkCopy copy, {required String slug, bool merge = t
         } else {
           final b = File('${tmp.path}/base')..writeAsBytesSync(base ?? const []);
           final t = File('${tmp.path}/theirs')..writeAsBytesSync(theirs);
-          final res = await Process.run('git', [
-            ...guardFlags(Platform.isWindows ? 'NUL' : '/dev/null'),
+          final res = await _proc(dir: copy.repoRoot, [
+            ...guardFlags(await _devNull(copy.repoRoot)),
             'merge-file',
             '-p',
             '-L',

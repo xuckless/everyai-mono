@@ -59,6 +59,7 @@ import 'handoff/handoff_git.dart';
 import 'handoff/handoff_store.dart';
 import 'handoff/lead_timeline.dart';
 import 'handoff/native_import.dart';
+import 'git/git_env.dart';
 import 'git/git_service.dart';
 import 'domain/transcript_export.dart';
 import 'drivers/acp/acp_driver.dart' show AcpDriver;
@@ -535,11 +536,36 @@ final _liveProvider = Provider<Map<String, HarnessSession>>((ref) => {});
 /// Folders the user opened as projects (stored in preferences).
 final codeProjectsProvider = NotifierProvider<CodeProjects, List<CodeProject>>(CodeProjects.new);
 
+/// Sets [gitInsideOf] for this app: a folder in a WSL distro's own files
+/// (`\\wsl.localhost\<distro>\…`) runs git in that distro, found among the
+/// environments by name, with worktrees under its `~/.local/share/everyai`.
+/// Nothing is looked for until such a folder comes.
+final gitInsideProvider = Provider<void>((ref) {
+  Future<GitInside?> resolve(String dir) async {
+    final distro = wslDistroOf(dir)?.toLowerCase();
+    if (distro == null) return null;
+    final env = (await ref.read(environmentsProvider.future))
+        .where((e) => e.kind == EnvKind.wsl && e.id.toLowerCase() == 'wsl:$distro')
+        .firstOrNull;
+    if (env == null) return null;
+    final home = (await ref.read(environmentScanProvider(env.id).future)).home;
+    final data = home == null ? null : env.toHostPath('$home/.local/share/everyai');
+    return data == null ? null : (env: env, dataDir: data);
+  }
+
+  gitInsideOf = resolve;
+  ref.onDispose(() {
+    if (identical(gitInsideOf, resolve)) gitInsideOf = null;
+  });
+});
+
 final class CodeProjects extends Notifier<List<CodeProject>> {
   static const _key = 'code.projects';
 
   @override
   List<CodeProject> build() {
+    // Projects in a WSL distro's own files run git there.
+    ref.read(gitInsideProvider);
     final raw = ref.read(preferencesProvider)[_key];
     if (raw == null) return const [];
     return [for (final p in jsonDecode(raw) as List<Object?>) CodeProject.fromJson(p! as Map<String, Object?>)];
@@ -1571,7 +1597,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
   static Future<SessionWorktree?> _worktreeFor(CodeProject project, String title, String id) async {
     final root = await GitService.repoRoot(project.path);
     if (root == null || !await GitService.hasCommits(root)) return null;
-    final data = await GitService.dataDir();
+    final data = await gitDataDirInside(root) ?? await GitService.dataDir();
     final repoName = root.split('/').last;
     return GitService.createWorktree(
       repoRoot: root,
@@ -1583,7 +1609,8 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
 
   static Future<void> _dropWorktree(SessionWorktree w) async {
     try {
-      await GitService.removeWorktree(w, hooksDir: '${await GitService.dataDir()}/git-hooks');
+      final data = await gitDataDirInside(w.repoRoot) ?? await GitService.dataDir();
+      await GitService.removeWorktree(w, hooksDir: '$data/git-hooks');
     } on Object {
       // Left behind, it is only disk space and a branch.
     }
@@ -6144,7 +6171,7 @@ base class CodeGit extends AsyncNotifier<GitSnapshot> {
   /// Removes the session, its worktree, branch and checkpoints.
   Future<void> discard() async {
     final w = _w;
-    final data = await GitService.dataDir();
+    final data = await gitDataDirInside(w.repoRoot) ?? await GitService.dataDir();
     await ref.read(codeSessionsProvider.notifier).remove(sessionId);
     await GitService.removeWorktree(w, hooksDir: '$data/git-hooks');
   }
