@@ -138,6 +138,8 @@ final class HeadlessBrowser {
     }, onError: (Object _) {});
     unawaited(
       process.exitCode.then((_) {
+        // Not killed later: its pid may be another program's by then.
+        if (identical(_process, process)) _process = null;
         if (!endpoint.isCompleted) endpoint.completeError(const BrowserError('The browser exited at start.'));
         _closed();
       }),

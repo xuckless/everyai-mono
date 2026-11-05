@@ -81,6 +81,9 @@ final class ProcessRow {
   bool get isTerminalHost => _exe == 'tmux';
 
   /// A shell (`bash -c …`, a login `-zsh`): how coding CLIs run tool commands.
+  /// Not `cmd`: on Windows it is mostly a wrapper for `.cmd` shims, and the
+  /// CLIs start their MCP and LSP servers through it (`cmd /c npx …`), which
+  /// Stop must spare. A tool command under a `cmd` is still found through it.
   bool get isShell => const {
     'sh',
     'bash',
@@ -88,7 +91,6 @@ final class ProcessRow {
     'fish',
     'dash',
     'ksh',
-    'cmd',
     'powershell',
     'pwsh',
   }.contains(_exe.replaceFirst('-', '').toLowerCase());
@@ -129,23 +131,39 @@ final class ProcessTable {
   }
 
   /// Parses PowerShell's `Get-CimInstance Win32_Process | Select-Object
-  /// ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json` (Windows):
-  /// an array, or one object when there is one row. Windows doesn't show
-  /// other processes' environments, so there are no tags.
+  /// ProcessId,ParentProcessId,Name,CommandLine,Created | ConvertTo-Json`
+  /// (Windows): an array, or one object when there is one row. `Created` is
+  /// the start time as a FILETIME (0 when unknown). Windows keeps a dead
+  /// parent's pid as ParentProcessId and reuses pids, so a process that
+  /// started before its claimed parent isn't its child: it becomes a root.
+  /// Windows doesn't show other processes' environments, so there are no tags.
   factory ProcessTable.parseCim(String json) {
     final decoded = jsonDecode(json.trim().isEmpty ? '[]' : json);
-    return ProcessTable([
+    final rows = <({int pid, int ppid, int created, String command})>[
       for (final r in decoded is List ? decoded : [decoded])
         if (r case {'ProcessId': final int pid, 'ParentProcessId': final int ppid})
-          ProcessRow(
+          (
             pid: pid,
             ppid: ppid,
+            created: switch (r['Created']) {
+              final int c => c,
+              _ => 0,
+            },
             command: switch (r['CommandLine']) {
               final String c when c.trim().isNotEmpty => c,
               _ => '${r['Name'] ?? ''}',
             },
-            envVisible: false,
           ),
+    ];
+    final created = {for (final r in rows) r.pid: r.created};
+    bool stale(int ppid, int child) {
+      final parent = created[ppid] ?? 0;
+      return parent > 0 && child > 0 && child < parent;
+    }
+
+    return ProcessTable([
+      for (final r in rows)
+        ProcessRow(pid: r.pid, ppid: stale(r.ppid, r.created) ? 0 : r.ppid, command: r.command, envVisible: false),
     ]);
   }
 

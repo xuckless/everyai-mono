@@ -149,14 +149,15 @@ void main() {
     test('knows Windows shells by their exe names', () {
       bool shell(String cmd) => _row(1, 0, cmd).isShell;
       expect(shell(r'"C:\Program Files\Git\bin\bash.exe" -c "npm test"'), isTrue);
-      expect(shell(r'C:\Windows\System32\cmd.exe /d /s /c "dir"'), isTrue);
+      // cmd wraps .cmd shims and MCP servers; it is walked through, not taken.
+      expect(shell(r'C:\Windows\System32\cmd.exe /d /s /c "dir"'), isFalse);
       expect(shell(r'C:\Program Files\PowerShell\7\pwsh.EXE -NoProfile'), isFalse); // unquoted path with a space
       expect(shell(r'"C:\Program Files\PowerShell\7\pwsh.EXE" -NoProfile'), isTrue);
       expect(shell('powershell.exe -Command ls'), isTrue);
       expect(shell(r'"C:\nodejs\node.exe" server.js'), isFalse);
     });
 
-    test("a driver root's tool shells are taken, the CLI and its MCP child spared", () {
+    test("a driver root's tool shells are taken, the CLI and its MCP servers spared", () {
       final t = ProcessTable.parseCim(
         '[{"ProcessId":5,"ParentProcessId":1,"Name":"EveryAI.exe","CommandLine":"EveryAI.exe"},'
         '{"ProcessId":50,"ParentProcessId":5,"Name":"claude.exe","CommandLine":"claude.exe -p"},'
@@ -164,10 +165,34 @@ void main() {
         '{"ProcessId":52,"ParentProcessId":51,"Name":"bash.exe","CommandLine":"bash.exe -c \\"npm run dev\\""},'
         '{"ProcessId":53,"ParentProcessId":52,"Name":"node.exe","CommandLine":"node.exe vite"},'
         '{"ProcessId":54,"ParentProcessId":51,"Name":"node.exe","CommandLine":"node.exe mcp-server.js"},'
+        // How Windows starts an npx MCP server: under a cmd wrapper.
+        '{"ProcessId":55,"ParentProcessId":51,"Name":"cmd.exe",'
+        '"CommandLine":"C:\\\\Windows\\\\system32\\\\cmd.exe /d /s /c \\"npx -y @playwright/mcp\\""},'
+        '{"ProcessId":56,"ParentProcessId":55,"Name":"node.exe","CommandLine":"node.exe playwright-mcp"},'
+        // A tool command through cmd still reaches its shell.
+        '{"ProcessId":57,"ParentProcessId":51,"Name":"cmd.exe","CommandLine":"cmd.exe /c build.cmd"},'
+        '{"ProcessId":58,"ParentProcessId":57,"Name":"powershell.exe","CommandLine":"powershell.exe -File b.ps1"},'
         '{"ProcessId":60,"ParentProcessId":5,"Name":"codex.exe","CommandLine":"codex.exe app-server"},'
-        '{"ProcessId":61,"ParentProcessId":60,"Name":"cmd.exe","CommandLine":"cmd.exe /c dir"}]',
+        '{"ProcessId":61,"ParentProcessId":60,"Name":"pwsh.exe","CommandLine":"pwsh.exe -c dir"}]',
       );
-      expect(t.sessionProcesses(tag: 'a', workingDir: r'C:\w\a', ownsDir: true, roots: {50}), [52, 53]);
+      expect(t.sessionProcesses(tag: 'a', workingDir: r'C:\w\a', ownsDir: true, roots: {50}), [52, 53, 58]);
+    });
+
+    test("a process older than its claimed parent isn't its child (stale ParentProcessId)", () {
+      // userinit (pid 50) exited at logon; claude.exe got pid 50 hours later.
+      final t = ProcessTable.parseCim(
+        '[{"ProcessId":50,"ParentProcessId":5,"Name":"claude.exe","CommandLine":"claude.exe -p","Created":900},'
+        '{"ProcessId":70,"ParentProcessId":50,"Name":"explorer.exe","CommandLine":"explorer.exe","Created":100},'
+        '{"ProcessId":71,"ParentProcessId":70,"Name":"powershell.exe","CommandLine":"powershell.exe","Created":200},'
+        '{"ProcessId":52,"ParentProcessId":50,"Name":"bash.exe","CommandLine":"bash.exe -c ls","Created":950},'
+        '{"ProcessId":4,"ParentProcessId":0,"Name":"System","CommandLine":null,"Created":0},'
+        '{"ProcessId":80,"ParentProcessId":4,"Name":"smss.exe","CommandLine":null,"Created":10}]',
+      );
+      expect(t.rows[70]!.ppid, 0);
+      expect(t.rows[52]!.ppid, 50);
+      expect(t.rows[80]!.ppid, 4); // a parent without a start time keeps its children
+      expect(t.descendants(50), [52]);
+      expect(t.sessionProcesses(tag: 'a', workingDir: r'C:\w\a', ownsDir: true, roots: {50}), [52]);
     });
 
     test('killTree runs taskkill from System32 on the whole tree', () async {

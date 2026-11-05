@@ -7,7 +7,6 @@ import 'dart:io';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import '../session_processes.dart' show sessionEnvVar;
-import '../session_processes_io.dart' show windowsProcessTable;
 import 'git_bash.dart';
 
 export 'git_bash.dart' show gitBashMissingMessage;
@@ -326,8 +325,9 @@ final class SessionShell {
     ]);
     if (exit == null) await killTree(process.pid);
     final code = exit ?? await process.exitCode.timeout(const Duration(seconds: 3), onTimeout: () => -9);
-    await done.future.timeout(const Duration(seconds: 2), onTimeout: () {});
+    // Gone (or past saving): killAll mustn't reach its pid, which may be reused.
     _running.remove(process);
+    await done.future.timeout(const Duration(seconds: 2), onTimeout: () {});
     _delete(script);
     _readCwd(id);
     return CommandResult(output: out.text, exitCode: code, timedOut: timedOut, cancelled: cancelled);
@@ -452,13 +452,17 @@ typedef KillRunner = Future<ProcessResult> Function(String executable, List<Stri
 /// `Process.killPid` ends one process only. That is what VS Code and
 /// tree-kill do; a Job Object would also catch processes whose parent has
 /// already exited, but needs FFI handles in every spawner.
+///
+/// Only for a process that is still running: Windows soon gives a dead
+/// process's pid to another one, and `/T` would end that one's tree.
 Future<void> killTree(int pid, {bool? windows, KillRunner run = Process.run}) async {
   if (windows ?? Platform.isWindows) {
     // By its full path, so a taskkill.exe in the project can't stand in.
     final root = Platform.environment['SystemRoot'] ?? r'C:\Windows';
     try {
       final res = await run('$root\\System32\\taskkill.exe', ['/PID', '$pid', '/T', '/F']);
-      if (res.exitCode == 0) return;
+      // 128: no such process, so nothing for the fallback either.
+      if (res.exitCode == 0 || res.exitCode == 128) return;
     } on Object {
       // No taskkill: at least the process itself.
     }
@@ -477,7 +481,8 @@ Future<void> killTree(int pid, {bool? windows, KillRunner run = Process.run}) as
 }
 
 Future<List<int>> _descendants(int root) async {
-  if (Platform.isWindows) return (await windowsProcessTable())?.descendants(root) ?? const [];
+  // Not used on Windows: killTree has taskkill there, and processes() feeds the macOS-only screenshot tool.
+  if (Platform.isWindows) return const [];
   try {
     final res = await Process.run('ps', ['-A', '-o', 'pid=,ppid=']);
     final children = <int, List<int>>{};

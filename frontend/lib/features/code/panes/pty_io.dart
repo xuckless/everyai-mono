@@ -90,8 +90,11 @@ Future<ShellPty?> startProgram({
 }
 
 final class _Pty implements ShellPty {
-  _Pty(this._pty);
+  _Pty(this._pty) {
+    unawaited(_pty.exitCode.then((_) => _exited = true));
+  }
   final Pty _pty;
+  var _exited = false;
 
   @override
   int get pid => _pty.pid;
@@ -105,8 +108,9 @@ final class _Pty implements ShellPty {
   void resize(int rows, int columns) => _pty.resize(rows, columns);
   @override
   void kill() {
-    // The whole tree, not only the CLI: what it started may have left its process group.
-    unawaited(killTree(pid));
+    // The whole tree, not only the CLI: what it started may have left its
+    // process group. Not once it has exited: its pid may be reused.
+    if (!_exited) unawaited(killTree(pid));
     _pty.kill(ProcessSignal.sighup);
   }
 }

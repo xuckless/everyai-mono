@@ -36,8 +36,9 @@ bool get _listable => Platform.isMacOS || Platform.isLinux || Platform.isWindows
 
 Future<(ProcessTable, List<int>)> _scan(String tag, String dir, bool ownsDir, Set<int> roots) async {
   if (Platform.isWindows) {
-    // No environments and no working directories here: only what the driver roots run.
-    final table = await windowsProcessTable() ?? ProcessTable(const []);
+    // No environments and no working directories here: only what the driver
+    // roots run. Without one there is nothing to find, so no PowerShell.
+    final table = roots.isEmpty ? ProcessTable(const []) : await windowsProcessTable() ?? ProcessTable(const []);
     return (table, table.sessionProcesses(tag: tag, workingDir: dir, ownsDir: ownsDir, roots: roots)..remove(pid));
   }
   final table = Platform.isLinux ? _procTable() : await _psTable();
@@ -64,10 +65,14 @@ Future<(ProcessTable, List<int>)?> findSessionProcesses({
 }
 
 /// The PowerShell line behind [windowsProcessTable]: a constant, in UTF-8
-/// (PowerShell 5.1 writes the OEM code page otherwise).
+/// (PowerShell 5.1 writes the OEM code page otherwise). `Created` is the
+/// start time as a FILETIME number (PowerShell 5.1 writes dates as
+/// `/Date(ms)/` strings), 0 for the few system processes without one.
 const _cimCommand =
     '[Console]::OutputEncoding=[Text.Encoding]::UTF8; '
-    'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress';
+    'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,'
+    "@{n='Created';e={if (\$_.CreationDate) { \$_.CreationDate.ToFileTimeUtc() } else { 0 }}} "
+    '| ConvertTo-Json -Compress';
 
 /// Every process on this Windows machine, with its parent (wmic is gone
 /// from new Windows installs; PowerShell 5.1 ships with all of them). Null

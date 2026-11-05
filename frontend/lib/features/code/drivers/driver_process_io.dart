@@ -4,6 +4,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_pty/flutter_pty.dart';
 
 import '../harness/everyai/shell_io.dart' show ShellEnv, killTree;
@@ -33,6 +34,10 @@ Future<DriverProcess> spawnDriver({
 }
 
 final _live = <DriverProcess>{};
+
+/// Ends a driver process's tree on close; tests watch it.
+@visibleForTesting
+Future<void> Function(int pid) killDriverTree = killTree;
 
 Future<void> closeAllDriverProcesses() => Future.wait([for (final p in _live.toList()) p.close()]);
 
@@ -270,7 +275,8 @@ final class _TtyProcess implements DriverProcess {
     _closed = true;
     _live.remove(this);
     unregisterDriverRoot(_tag, pid);
-    await killTree(pid);
+    // Not once it has exited: its pid may be another program's by now.
+    if (!_exited) await killDriverTree(pid);
     await _unblock();
     await _release();
   }
@@ -333,7 +339,8 @@ final class _Process implements DriverProcess {
     _closed = true;
     _live.remove(this);
     unregisterDriverRoot(_tag, pid);
-    await killTree(pid);
+    // Not once it has exited: its pid may be another program's by now.
+    if (!_exited) await killDriverTree(pid);
   }
 }
 
