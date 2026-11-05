@@ -7,6 +7,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import '../session_processes.dart' show sessionEnvVar;
+import '../session_processes_io.dart' show windowsProcessTable;
 import 'git_bash.dart';
 
 export 'git_bash.dart' show gitBashMissingMessage;
@@ -442,9 +443,28 @@ final class BackgroundShell {
   }
 }
 
+/// Runs a program and waits for it; [killTree] uses it for `taskkill`.
+typedef KillRunner = Future<ProcessResult> Function(String executable, List<String> arguments);
+
 /// Signals [pid] and every process below it: TERM, then KILL for whatever
-/// is left a moment later.
-Future<void> killTree(int pid) async {
+/// is left a moment later. On Windows ([windows], this host by default)
+/// `taskkill /T /F` ends the tree: signals don't exist there, and
+/// `Process.killPid` ends one process only. That is what VS Code and
+/// tree-kill do; a Job Object would also catch processes whose parent has
+/// already exited, but needs FFI handles in every spawner.
+Future<void> killTree(int pid, {bool? windows, KillRunner run = Process.run}) async {
+  if (windows ?? Platform.isWindows) {
+    // By its full path, so a taskkill.exe in the project can't stand in.
+    final root = Platform.environment['SystemRoot'] ?? r'C:\Windows';
+    try {
+      final res = await run('$root\\System32\\taskkill.exe', ['/PID', '$pid', '/T', '/F']);
+      if (res.exitCode == 0) return;
+    } on Object {
+      // No taskkill: at least the process itself.
+    }
+    Process.killPid(pid);
+    return;
+  }
   final pids = await _descendants(pid);
   final all = [pid, ...pids];
   for (final p in all.reversed) {
@@ -457,7 +477,7 @@ Future<void> killTree(int pid) async {
 }
 
 Future<List<int>> _descendants(int root) async {
-  if (Platform.isWindows) return const [];
+  if (Platform.isWindows) return (await windowsProcessTable())?.descendants(root) ?? const [];
   try {
     final res = await Process.run('ps', ['-A', '-o', 'pid=,ppid=']);
     final children = <int, List<int>>{};

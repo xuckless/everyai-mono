@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 
 import 'session_processes_stub.dart' if (dart.library.io) 'session_processes_io.dart' as impl;
@@ -64,9 +66,14 @@ final class ProcessRow {
   /// The value of [sessionEnvVar], when set and visible.
   final String? tag;
 
+  /// The program's name: no folder, and no `.exe` on Windows, where the
+  /// path may be quoted (`"C:\Program Files\Git\bin\bash.exe" -c …`).
   String get _exe {
-    final first = command.trimLeft().split(RegExp(r'\s')).first;
-    return first.substring(first.lastIndexOf('/') + 1);
+    final line = command.trimLeft();
+    final quoted = line.startsWith('"') && line.indexOf('"', 1) > 0;
+    final first = quoted ? line.substring(1, line.indexOf('"', 1)) : line.split(RegExp(r'\s')).first;
+    final name = first.substring(first.lastIndexOf(RegExp(r'[/\\]')) + 1);
+    return name.toLowerCase().endsWith('.exe') ? name.substring(0, name.length - 4) : name;
   }
 
   /// A tmux server: its children may be shells running the agent's
@@ -74,7 +81,17 @@ final class ProcessRow {
   bool get isTerminalHost => _exe == 'tmux';
 
   /// A shell (`bash -c …`, a login `-zsh`): how coding CLIs run tool commands.
-  bool get isShell => const {'sh', 'bash', 'zsh', 'fish', 'dash', 'ksh'}.contains(_exe.replaceFirst('-', ''));
+  bool get isShell => const {
+    'sh',
+    'bash',
+    'zsh',
+    'fish',
+    'dash',
+    'ksh',
+    'cmd',
+    'powershell',
+    'pwsh',
+  }.contains(_exe.replaceFirst('-', '').toLowerCase());
 }
 
 /// The process table, and which processes belong to a session.
@@ -107,6 +124,27 @@ final class ProcessTable {
             command: cmd,
             envVisible: rest.length > cmd.length,
             tag: rest.length > cmd.length ? _envTag.firstMatch(rest.substring(cmd.length))?.group(1) : null,
+          ),
+    ]);
+  }
+
+  /// Parses PowerShell's `Get-CimInstance Win32_Process | Select-Object
+  /// ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json` (Windows):
+  /// an array, or one object when there is one row. Windows doesn't show
+  /// other processes' environments, so there are no tags.
+  factory ProcessTable.parseCim(String json) {
+    final decoded = jsonDecode(json.trim().isEmpty ? '[]' : json);
+    return ProcessTable([
+      for (final r in decoded is List ? decoded : [decoded])
+        if (r case {'ProcessId': final int pid, 'ParentProcessId': final int ppid})
+          ProcessRow(
+            pid: pid,
+            ppid: ppid,
+            command: switch (r['CommandLine']) {
+              final String c when c.trim().isNotEmpty => c,
+              _ => '${r['Name'] ?? ''}',
+            },
+            envVisible: false,
           ),
     ]);
   }

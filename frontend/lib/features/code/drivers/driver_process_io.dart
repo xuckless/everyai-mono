@@ -68,6 +68,10 @@ Future<DriverProcess> spawnDriverTty({
   Map<String, String> env = const {},
   TtyStart start = _ptyStart,
 }) async {
+  // Not reached on Windows: the only caller is the ACP fallback for a CLI that
+  // fails opening /dev/tty (Grok's ENXIO), which Windows doesn't have. The
+  // pipes below (mkfifo, /bin/sh) have no cheap Windows equivalent, and
+  // ConPTY rewrites output, so JSON can't go over the terminal itself.
   if (Platform.isWindows) {
     throw const HarnessError("This agent needs a terminal, which the app can't give it on Windows.");
   }

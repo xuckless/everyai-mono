@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'session_processes.dart';
@@ -8,7 +9,7 @@ Future<List<int>> killSessionProcesses({
   required bool ownsDir,
   Set<int> roots = const {},
 }) async {
-  if (tag.isEmpty || !(Platform.isMacOS || Platform.isLinux)) return const [];
+  if (tag.isEmpty || !_listable) return const [];
   try {
     final dir = Directory(workingDir).absolute.resolveSymbolicLinksSync();
     final pids = await _find(tag, dir, ownsDir, roots);
@@ -31,7 +32,14 @@ Future<List<int>> killSessionProcesses({
 Future<List<int>> _find(String tag, String dir, bool ownsDir, Set<int> roots) async =>
     (await _scan(tag, dir, ownsDir, roots)).$2;
 
+bool get _listable => Platform.isMacOS || Platform.isLinux || Platform.isWindows;
+
 Future<(ProcessTable, List<int>)> _scan(String tag, String dir, bool ownsDir, Set<int> roots) async {
+  if (Platform.isWindows) {
+    // No environments and no working directories here: only what the driver roots run.
+    final table = await windowsProcessTable() ?? ProcessTable(const []);
+    return (table, table.sessionProcesses(tag: tag, workingDir: dir, ownsDir: ownsDir, roots: roots)..remove(pid));
+  }
   final table = Platform.isLinux ? _procTable() : await _psTable();
   final cwds = Platform.isLinux ? _procCwds(table.needsCwd()) : await _lsofCwds(table.needsCwd());
   return (
@@ -46,10 +54,35 @@ Future<(ProcessTable, List<int>)?> findSessionProcesses({
   required bool ownsDir,
   Set<int> roots = const {},
 }) async {
-  if (!(Platform.isMacOS || Platform.isLinux)) return null;
+  if (!_listable) return null;
   try {
     final dir = Directory(workingDir).absolute.resolveSymbolicLinksSync();
     return await _scan(tag, dir, ownsDir, roots);
+  } on Object {
+    return null;
+  }
+}
+
+/// The PowerShell line behind [windowsProcessTable]: a constant, in UTF-8
+/// (PowerShell 5.1 writes the OEM code page otherwise).
+const _cimCommand =
+    '[Console]::OutputEncoding=[Text.Encoding]::UTF8; '
+    'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress';
+
+/// Every process on this Windows machine, with its parent (wmic is gone
+/// from new Windows installs; PowerShell 5.1 ships with all of them). Null
+/// when PowerShell can't be run.
+Future<ProcessTable?> windowsProcessTable() async {
+  try {
+    final root = Platform.environment['SystemRoot'] ?? r'C:\Windows';
+    final res = await Process.run('$root\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      _cimCommand,
+    ], stdoutEncoding: utf8);
+    if (res.exitCode != 0) return null;
+    return ProcessTable.parseCim('${res.stdout}');
   } on Object {
     return null;
   }
