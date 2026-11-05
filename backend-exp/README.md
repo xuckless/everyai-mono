@@ -29,6 +29,7 @@ Anole comes from its release tag (url + hash in `build.zig.zon`).
 | Decide | `POST /v1/aux/decide` `{job?, text, instructions?, questions: [{id, kind: bool\|choice\|score, prompt, choices?}]}` (1-64 questions, 2-64 choices, text up to 200K characters, else 413): a cheap model (`AUX_DECIDE_MODEL`, else the utility model) answers under a strict JSON schema. Returns `{answers: [{id, value}], model, charged_micros}`; `value` is a bool, one of the choices, a number 0-1, or `"unsure"` (also for anything the model got wrong). JWT or `sk-eai-` key, metered as kind `decide` under `X-EveryAI-Session`; 402 preflight, 502 when the upstream fails | `decide.zig` |
 | Billing | `GET /v1/plans`, `GET /v1/billing`, `GET /v1/usage`, `POST /v1/billing/checkout`, `POST /v1/billing/webhook` | `billing.zig` |
 | Remote hosts | `POST/GET /v1/remote/hosts`, `DELETE /v1/remote/hosts/:id`, `DELETE /v1/remote/devices/:id`, `POST /v1/remote/pair`, `POST /v1/remote/pair/redeem`, `GET /v1/remote/pair/:id`, `POST /v1/remote/pair/:id/approve\|deny`; WebSockets `/v1/remote/host` and `/v1/remote/client/:host_id` relay end-to-end encrypted frames (contract in the `remote.zig` header) | `remote.zig` |
+| Webhooks | `POST/GET /v1/hooks`, `DELETE /v1/hooks/:id` (JWT; `{name, host_id}` returns `{id, name, host_id, url, secret}`, the `whk_` secret shown once; 10 per account). `POST /v1/hooks/:id` (public, 30/min per hook, 1 MiB): a signed delivery is queued for the hook's host and relayed to it as a `webhook` notice (not end-to-end encrypted; see "Webhooks" below) | `hooks.zig` |
 
 ## Chat stream
 
@@ -117,3 +118,30 @@ to HTTPS; `RATE_LIMIT_PER_MINUTE` (600, 0 = off) limits every route per client a
 Outbound SSE parsing uses `anole.sse.Parser` and migrations use
 `anole.db.migrate` (Anole 0.5.1). The migration list lives in
 `src/migrations.zig`; the SQL files are in `src/migrations/`.
+
+## Webhooks
+
+A hook belongs to one paired host (a desktop with hosting on); a delivery starts a Code session there through
+the app's webhook automations. Sign each POST in one of two forms:
+
+- EveryAI: `X-EveryAI-Timestamp: <unix seconds>` and `X-EveryAI-Signature: sha256=<hex HMAC-SHA256(secret,
+  timestamp + "." + body)>`, within 5 minutes of the server's clock.
+- GitHub: paste the URL and secret into the repository's webhook settings (content type `application/json`);
+  `X-Hub-Signature-256` is checked and `X-GitHub-Delivery` stops replays. GitHub's `ping` is answered, not queued.
+
+```
+body='{"task":"triage"}'; ts=$(date +%s)
+sig=$(printf '%s.%s' "$ts" "$body" | openssl dgst -sha256 -hmac "$secret" -hex | sed 's/^.* //')
+curl -X POST "$url" -H 'Content-Type: application/json' -H "X-EveryAI-Timestamp: $ts" \
+  -H "X-EveryAI-Signature: sha256=$sig" --data "$body"
+```
+
+Replies: 202 `{delivery_id}`; 200 `{ok, duplicate: true}` for a delivery accepted before; 401 for a missing, wrong
+or stale signature; 413 over 1 MiB; 503 `host_backlog` (with `Retry-After`) while the host has 20 deliveries (or 8
+MiB) from this hook it hasn't picked up. The host gets `{"type":"webhook", delivery_id, hook_id, hook_name,
+received_at, headers, body_b64}` on its relay socket (only `content-type`, `user-agent`, `x-github-event`,
+`x-github-delivery`, `x-github-hook-id` and `x-everyai-event` are passed on) and answers `{"type":"webhook_ack",
+delivery_id}`. Deliveries for an offline host wait a day and are sent after its next `hello`, oldest first. The
+server reads and stores the body until the ack, so unlike the rest of the relay this notice is not end-to-end
+encrypted. Secrets are stored as they are (an HMAC needs them); delete the hook to revoke one. On the dev server
+(`DEV_AUTH=true`) everyone shares the dev account, so anyone there can list and delete its hooks.

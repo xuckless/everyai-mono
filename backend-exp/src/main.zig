@@ -27,6 +27,7 @@ pub const devtools = @import("devtools.zig");
 pub const safe_fetch = @import("net/safe_fetch.zig");
 pub const tool_wait = @import("tool_wait.zig");
 pub const remote = @import("remote.zig");
+pub const hooks = @import("hooks.zig");
 pub const byok = @import("byok.zig");
 pub const decide = @import("decide.zig");
 
@@ -165,6 +166,7 @@ pub fn routes(app: *anole.Server(App), state: *App) !void {
     devtools.routes(app, state);
     agents.routes(app, state);
     remote.routes(app, state);
+    hooks.routes(app, state);
 }
 
 /// Schema and seed data; run before serving.
@@ -176,13 +178,14 @@ pub fn prepare(state: *App, ctx: anytype) !void {
     try pruneExpired(state, ctx);
 }
 
-/// Drops refresh tokens and pairing codes nobody can use any more (expired
-/// or revoked); they pile up otherwise. Runs at each start.
+/// Drops refresh tokens, pairing codes and webhook deliveries nobody can use
+/// any more (expired or revoked); they pile up otherwise. Runs at each start.
 fn pruneExpired(state: *App, ctx: anytype) !void {
     const now = util.now(ctx.io);
     _ = try state.db.exec(ctx, "DELETE FROM refresh_tokens WHERE expires_at < ? OR revoked = 1", .{now});
     // A decided pairing stays a day for its status poll.
     _ = try state.db.exec(ctx, "DELETE FROM remote_pairings WHERE expires_at < ? AND (decide_by IS NULL OR decide_by < ?)", .{ now - 86_400, now - 86_400 });
+    try hooks.prune(state, ctx);
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -314,6 +317,7 @@ test {
     _ = tool_wait;
     _ = polish;
     _ = remote;
+    _ = hooks;
     _ = byok;
     _ = decide;
     // Modules the app reaches only through others: listed so their tests run too.
