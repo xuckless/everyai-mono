@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
 import '../../agents/domain/agent_definition.dart' show agentEfforts, agentNamePattern, parseAgentMode;
+import '../../skills/domain/hidden_instructions.dart' show scanInstructions;
 import '../../slash/custom/custom_command.dart';
 import '../domain/agent_mode.dart' show AgentMode;
 import '../domain/mcp_servers.dart';
@@ -197,13 +198,16 @@ McpTransport? _remoteKind(String? type) => switch (type) {
   _ => null,
 };
 
+/// A JSON value as text, or null when it is anything else (the files are other tools' and may be malformed).
+String? _str(Object? v) => v is String ? v : null;
+
 List<ImportItem> _claudeServers(Object? servers, String? scope, String tool) {
   if (servers is! Map<String, Object?>) return const [];
   final out = <ImportItem>[];
   for (final e in servers.entries) {
     final v = e.value;
     if (v is! Map<String, Object?>) continue;
-    final type = v['type'] as String?;
+    final type = _str(v['type']);
     final dropped = [
       for (final k in const ['headersHelper', 'oauth', 'cwd', 'timeout', 'envFile'])
         if (v.containsKey(k)) k,
@@ -215,7 +219,7 @@ List<ImportItem> _claudeServers(Object? servers, String? scope, String tool) {
           name: e.key,
           scope: scope,
           transport: McpTransport.stdio,
-          command: v['command'] as String? ?? '',
+          command: _str(v['command']) ?? '',
           args: _strList(v['args']),
           env: _strMap(v['env']),
           dropped: dropped,
@@ -229,7 +233,7 @@ List<ImportItem> _claudeServers(Object? servers, String? scope, String tool) {
           name: e.key,
           scope: scope,
           transport: kind,
-          url: v['url'] as String? ?? '',
+          url: _str(v['url']) ?? '',
           headers: _strMap(v['headers']),
           dropped: dropped,
           unsupported: type == 'ws' ? 'Not supported (WebSocket).' : 'Not supported ($type).',
@@ -287,21 +291,21 @@ List<ImportItem> parseCursorMcp(String text, {String? project}) {
           name: e.key,
           scope: project,
           transport: McpTransport.stdio,
-          command: v['command']! as String,
+          command: _str(v['command']) ?? '',
           args: _strList(v['args']),
           env: _strMap(v['env']),
           dropped: dropped,
         ),
       );
     } else {
-      final type = v['type'] as String?;
+      final type = _str(v['type']);
       out.add(
         _mcpItem(
           tool: toolCursor,
           name: e.key,
           scope: project,
           transport: _remoteKind(type),
-          url: v['url'] as String? ?? '',
+          url: _str(v['url']) ?? '',
           headers: _strMap(v['headers']),
           dropped: dropped,
           unsupported: 'Not supported ($type).',
@@ -374,7 +378,7 @@ List<ImportItem> parseOpenCodeMcp(String text, {String? project}) {
           name: e.key,
           scope: project,
           transport: McpTransport.http,
-          url: v['url'] as String? ?? '',
+          url: _str(v['url']) ?? '',
           headers: _strMap(v['headers']),
           enabled: v['enabled'] != false,
           dropped: dropped,
@@ -412,7 +416,7 @@ List<ImportItem> parseCodexMcp(String text) {
           name: e.key,
           scope: null,
           transport: McpTransport.stdio,
-          command: v['command']! as String,
+          command: _str(v['command']) ?? '',
           args: _strList(v['args']),
           env: _strMap(v['env']),
           enabled: v['enabled'] != false,
@@ -519,6 +523,8 @@ List<ImportItem> mergeMcpItems(List<ImportItem> items) {
       final path = close < 0 ? null : _tomlKey(line.substring(1, close));
       if (path == null || path.isEmpty) {
         table = null;
+      } else if (path.length == 1 && path.first == 'mcp_servers') {
+        table = const []; // `name = { … }` lines, one server each
       } else if (path.first == 'mcp_servers' && path.length >= 2) {
         table = path.sublist(1);
         servers.putIfAbsent(table.first, () => {});
@@ -538,6 +544,19 @@ List<ImportItem> mergeMcpItems(List<ImportItem> items) {
       line = '$line ${_tomlStrip(lines[i++]).trim()}';
     }
     final eq = _tomlEquals(line);
+    if (table.isEmpty) {
+      // A plain [mcp_servers] table: each key is a server given as an inline table.
+      final name = eq < 0 ? null : _tomlKey(line.substring(0, eq));
+      final value = eq < 0 ? _bad : _TomlValue(line.substring(eq + 1).trim()).read();
+      if (name == null || name.length != 1) {
+        continue;
+      } else if (value is Map<String, Object?>) {
+        servers[name.first] = value;
+      } else {
+        bad.add(name.first);
+      }
+      continue;
+    }
     if (eq < 0) {
       bad.add(table.first);
       continue;
@@ -938,6 +957,8 @@ ImportItem mapClaudeAgent(String fileName, String text, {String? project}) {
   ];
   if (lost.isNotEmpty) notes.add('Left out (no equivalent): ${lost.join(', ')}.');
   final file = '---\n${head.join('\n')}\n---\n${body.trim()}\n';
+  final hidden = scanInstructions(text, file: fileName).isNotEmpty;
+  if (hidden) notes.add('Has hidden or suspicious text; look at it before importing.');
   return ImportItem(
     kind: ImportKind.agent,
     source: toolClaude,
@@ -945,7 +966,7 @@ ImportItem mapClaudeAgent(String fileName, String text, {String? project}) {
     scope: project,
     detail: description.length > 100 ? '${description.substring(0, 97)}...' : description,
     notes: notes,
-    checked: project == null,
+    checked: project == null && !hidden,
     agentName: name,
     agentText: file,
   );
@@ -956,6 +977,15 @@ ImportItem mapClaudeAgent(String fileName, String text, {String? project}) {
 /// Rules files among [paths] (full paths), listed as found. Nothing is copied: the row says whether EveryAI reads
 /// the file as it is.
 List<ImportItem> findRuleFiles(Iterable<String> paths, {String? project}) {
+  // EveryAI reads one of these per folder, the first in [contextFileNames] order, and only inside a project; the
+  // user-level file (no project) is not read at all.
+  final first = <String, String>{};
+  for (final name in contextFileNames) {
+    for (final p in paths) {
+      final norm = p.replaceAll('\\', '/');
+      if (norm.split('/').last == name) first.putIfAbsent(norm.substring(0, norm.lastIndexOf('/') + 1), () => p);
+    }
+  }
   final out = <ImportItem>[];
   for (final p in paths) {
     final norm = p.replaceAll('\\', '/');
@@ -969,14 +999,21 @@ List<ImportItem> findRuleFiles(Iterable<String> paths, {String? project}) {
       _ => null,
     };
     if (tool == null) continue;
-    final used = contextFileNames.contains(base);
+    final named = contextFileNames.contains(base);
+    final used = named && project != null && first[norm.substring(0, norm.lastIndexOf('/') + 1)] == p;
     out.add(
       ImportItem(
         kind: ImportKind.rule,
         source: tool,
         title: norm.split('/').reversed.take(norm.contains('.cursor/rules/') ? 3 : 1).toList().reversed.join('/'),
         scope: project,
-        detail: used ? 'EveryAI reads it where it is.' : 'EveryAI does not read it.',
+        detail: used
+            ? 'EveryAI reads it where it is.'
+            : named && project == null
+            ? 'EveryAI does not read this one; copy what you need into a project\'s AGENTS.md.'
+            : named
+            ? 'Skipped: another rules file in this folder is read instead.'
+            : 'EveryAI does not read it.',
         path: p,
         used: used,
         checked: false,

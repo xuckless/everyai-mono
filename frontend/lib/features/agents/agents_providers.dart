@@ -64,12 +64,13 @@ base class AgentLibrary extends AsyncNotifier<List<AgentDefinition>> {
 
   /// Creates `<name>.md` in the global folder, or in [projectPath]'s
   /// `.everyai/agents`, from [text] (a template by default). What the user
-  /// makes is theirs, so a new project agent is trusted at once.
-  Future<AgentDefinition?> create(String name, {String? projectPath, String? text}) async {
+  /// makes is theirs, so a new project agent is trusted at once, unless
+  /// [trust] is false (text that came from somewhere else goes through the review).
+  Future<AgentDefinition?> create(String name, {String? projectPath, String? text, bool trust = true}) async {
     final dir = projectPath == null ? (await agentRoots(const [])).global : '$projectPath/$projectAgentsDir';
     if (dir == null) throw StateError('Agents need a file system.');
     final path = await createAgentFile(dir, name, text: text);
-    return _afterWrite(path);
+    return _afterWrite(path, trust: trust);
   }
 
   /// A copy of built-in [a] in the global folder, where it can be edited and
@@ -93,10 +94,10 @@ base class AgentLibrary extends AsyncNotifier<List<AgentDefinition>> {
     await reload();
   }
 
-  Future<AgentDefinition?> _afterWrite(String path) async {
+  Future<AgentDefinition?> _afterWrite(String path, {bool trust = true}) async {
     await reload();
     final added = (state.value ?? const []).where((a) => a.path == path).firstOrNull;
-    if (added != null && added.source == AgentSource.project && added.usable) {
+    if (trust && added != null && added.source == AgentSource.project && added.usable) {
       ref.read(agentLibrarySettingsProvider.notifier).trust(added);
     }
     return added;

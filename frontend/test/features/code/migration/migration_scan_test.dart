@@ -194,15 +194,41 @@ void main() {
         '/p/.cursor/rules/style.mdc',
         '/p/.cursorrules',
         '/p/README.md',
-      ]);
+      ], project: '/p');
       expect(items.map((i) => (i.title, i.used)), [
-        ('CLAUDE.md', true),
+        ('CLAUDE.md', false), // AGENTS.md in the same folder wins
         ('AGENTS.md', true),
         ('GEMINI.md', false),
         ('.cursor/rules/style.mdc', false),
         ('.cursorrules', false),
       ]);
       expect(items.every((i) => !i.selectable), isTrue);
+    });
+
+    test('the user-level CLAUDE.md is not read', () {
+      final item = findRuleFiles(['/home/u/.claude/CLAUDE.md']).single;
+      expect(item.used, isFalse);
+      expect(item.detail, contains('AGENTS.md'));
+    });
+  });
+
+  group('malformed input', () {
+    test('a list-valued command or numeric url does not throw', () {
+      const json = '{"mcpServers":{"a":{"command":["npx","x"]},"b":{"type":1,"url":5},"ok":{"command":"npx"}}}';
+      final items = parseProjectMcpJson(json, project: '/p');
+      expect(items.map((i) => i.title), containsAll(['a', 'b', 'ok']));
+      expect(parseCursorMcp(json).length, 3);
+    });
+
+    test('an inline [mcp_servers] table is read', () {
+      final p = parseCodexToml('[mcp_servers]\nc7 = { command = "npx", args = ["-y", "x"] }\n');
+      expect(p.servers['c7']!['command'], 'npx');
+    });
+
+    test('an agent with hidden text is flagged and unticked', () {
+      final item = mapClaudeAgent('a.md', '---\nname: a\ndescription: d\n---\nhi\u200B there', project: '/p');
+      expect(item.notes.join(' '), contains('hidden'));
+      expect(item.checked, isFalse);
     });
   });
 }

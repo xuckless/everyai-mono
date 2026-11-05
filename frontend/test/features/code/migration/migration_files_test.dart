@@ -101,7 +101,7 @@ void main() {
       expect(items.any((i) => i.title == 'notes'), isFalse);
       expect(items.where((i) => i.title == '/ship').single.scope, project);
       final rules = items.where((i) => i.kind == ImportKind.rule).map((i) => (i.title, i.used)).toList();
-      expect(rules, containsAll([('CLAUDE.md', true), ('AGENTS.md', true), ('GEMINI.md', false)]));
+      expect(rules, containsAll([('CLAUDE.md', false), ('AGENTS.md', true), ('GEMINI.md', false)]));
       expect(rules.any((r) => r.$1.endsWith('style.mdc')), isTrue);
     });
 

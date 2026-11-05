@@ -5,7 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../agents/agents_providers.dart';
 import '../../skills/data/skill_import.dart';
 import '../../skills/data/skill_store.dart' show folderFiles;
+import '../../skills/skills_providers.dart' show installedSkillsProvider;
 import '../../slash/custom/command_store.dart';
+import '../../slash/custom/custom_commands_provider.dart';
 import '../code_providers.dart';
 import '../mcp_providers.dart';
 import '../resume/resume_files.dart';
@@ -29,9 +31,17 @@ final migrationScanProvider = FutureProvider.autoDispose<List<ImportItem>>((ref)
   final mcp = ref.read(codeMcpServersProvider);
   String? idOf(String? scope) => scope == null ? null : projects.where((p) => p.path == scope).firstOrNull?.id;
   final commands = await loadCustomCommands([for (final p in projects) (name: p.name, path: p.path)]);
+  final agents = ref.read(agentLibraryProvider).value ?? const [];
+  final skills = ref.read(installedSkillsProvider).value ?? const [];
   return [
     for (final i in items)
-      if (i.mcp != null && mcp.listFor(idOf(i.scope)).any((s) => s.name == i.mcp!.name))
+      if (i.kind == ImportKind.agent &&
+          i.agentName != null &&
+          agents.any((a) => a.name == i.agentName && a.projectId == idOf(i.scope)))
+        i.copyWith(unavailable: 'Already in EveryAI.')
+      else if (i.kind == ImportKind.skill && skills.any((s) => s.dirName == i.title && s.projectId == idOf(i.scope)))
+        i.copyWith(unavailable: 'Already in EveryAI.')
+      else if (i.mcp != null && mcp.listFor(idOf(i.scope)).any((s) => s.name == i.mcp!.name))
         i.copyWith(unavailable: 'Already in EveryAI.')
       else if (i.command != null && commands.any((c) => c.name == i.command!.name && c.projectDir == i.scope))
         i.copyWith(unavailable: 'Already in EveryAI.')
@@ -48,6 +58,7 @@ typedef SkillImporter = Future<List<String>?> Function(List<ImportCandidate> can
 final importApplierProvider = Provider<Future<List<String>> Function(List<ImportItem> chosen, {SkillImporter? skills})>(
   (ref) => (chosen, {skills}) async {
     final lines = <String>[];
+    var wroteCommand = false;
     final projects = ref.read(codeProjectsProvider);
     for (final item in chosen) {
       if (!item.selectable) continue;
@@ -68,16 +79,21 @@ final importApplierProvider = Provider<Future<List<String>> Function(List<Import
               lines.add(
                 '${item.title}: imported.'
                 '${server.transport.remote ? '' : ' You approve the command in MCP servers before it runs.'}'
-                '${server.enabled ? '' : ' It is switched off until you fix its variables.'}',
+                '${server.enabled
+                    ? ''
+                    : item.notes.any((n) => n.contains('variables'))
+                    ? ' It is switched off until you fix its variables.'
+                    : ' It was switched off in ${item.source}, so it stays off.'}',
               );
             }
           case ImportKind.command:
             await writeCustomCommand(item.command!, projectPath: project?.path);
+            wroteCommand = true;
             lines.add('${item.title}: imported.');
           case ImportKind.agent:
             await ref
                 .read(agentLibraryProvider.notifier)
-                .create(item.agentName!, projectPath: project?.path, text: item.agentText);
+                .create(item.agentName!, projectPath: project?.path, text: item.agentText, trust: false);
             lines.add('${item.title}: imported.');
           case ImportKind.skill:
             final found = await findImportCandidates(await folderFiles(item.path!), fallbackName: item.title);
@@ -92,6 +108,7 @@ final importApplierProvider = Provider<Future<List<String>> Function(List<Import
         lines.add('${item.title}: $e');
       }
     }
+    if (wroteCommand) await ref.read(customCommandsProvider.notifier).reload();
     return lines;
   },
 );

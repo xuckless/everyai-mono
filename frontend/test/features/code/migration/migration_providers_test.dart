@@ -1,6 +1,8 @@
 import 'dart:io';
 
 import 'package:every_ai/core/preferences.dart';
+import 'package:every_ai/features/agents/agents_providers.dart';
+import 'package:every_ai/features/slash/custom/custom_commands_provider.dart';
 import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/mcp_providers.dart';
 import 'package:every_ai/features/code/migration/migration_files.dart';
@@ -106,6 +108,7 @@ void main() {
   test('a command is written once, then reported as already there', () async {
     final cmd = (await scan()).firstWhere((i) => i.title == '/review');
     expect(await apply([cmd]), ['/review: imported.']);
+    expect((await c.read(customCommandsProvider.future)).map((x) => x.name), contains('review'));
     final written = File('$project/.everyai/commands/review.md').readAsStringSync();
     expect(written, contains(r'Review $1 with focus on $2.'));
     expect(await apply([cmd]), ['/review: already there.']);
@@ -119,6 +122,23 @@ void main() {
     expect(await apply([agent]), ['code-reviewer: imported.']);
     expect(File('$project/.everyai/agents/code-reviewer.md').readAsStringSync(), contains('permissions: plan'));
     expect(await apply([agent]), ['code-reviewer: already there.']);
+  });
+
+  test('an imported project agent still needs the normal trust review', () async {
+    final agent = (await scan()).firstWhere((i) => i.kind == ImportKind.agent);
+    await apply([agent]);
+    final a = (await c.read(agentLibraryProvider.future)).firstWhere((x) => x.name == 'code-reviewer');
+    expect(c.read(agentLibrarySettingsProvider).trustedNow(a), isFalse);
+    c.invalidate(migrationScanProvider);
+    expect((await scan()).firstWhere((i) => i.kind == ImportKind.agent).unavailable, 'Already in EveryAI.');
+  });
+
+  test('a skill folder that is a link is listed', () async {
+    final real = '${tmp.path}/store/linked';
+    put('$real/SKILL.md', '---\nname: linked\ndescription: d\n---\nbody');
+    Directory('$home/.claude/skills').createSync(recursive: true);
+    Link('$home/.claude/skills/linked').createSync(real);
+    expect((await scan()).where((i) => i.kind == ImportKind.skill).map((i) => i.title), contains('linked'));
   });
 
   test('the other tools\' folders are byte for byte the same after an import', () async {

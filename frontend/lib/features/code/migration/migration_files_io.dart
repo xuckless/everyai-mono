@@ -70,7 +70,9 @@ Future<List<ImportItem>> _skills(String? dir) async {
   final out = <ImportItem>[];
   try {
     await for (final e in Directory(dir).list(followLinks: false)) {
-      if (e is! Directory || !File('${e.path}/SKILL.md').existsSync()) continue;
+      // Skill installers link the folders in; the strict check on import still looks inside.
+      final isDir = e is Directory || e is Link && FileSystemEntity.isDirectorySync(e.path);
+      if (!isDir || !File('${e.path}/SKILL.md').existsSync()) continue;
       final name = e.uri.pathSegments.where((s) => s.isNotEmpty).last;
       out.add(ImportItem(kind: ImportKind.skill, source: toolClaude, title: name, path: e.path, checked: true));
     }
