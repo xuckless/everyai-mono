@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:xterm/xterm.dart';
 
+import '../drivers/terminal/terminal_session.dart' show TerminalSession;
 import '../environments/exec_env.dart';
 import 'pty.dart';
 
@@ -51,27 +52,50 @@ ShellPty? _startHostShell({required String workingDir, int rows = 24, int column
 /// The starter the setup dialog uses; tests replace it.
 final setupShellStarterProvider = Provider<SetupShellStarter>((ref) => startSetupShell);
 
+/// The wait for a fresh shell to reach its prompt before a line is typed; tests replace it.
+final setupSettleProvider = Provider<Future<void> Function()>((ref) => TerminalSession.defaultSettle);
+
 /// A shell for setting a CLI up, outside any session: an xterm buffer fed by a login shell in [home]. The app only
 /// types the lines it is given ([type]); it never presses Enter, and what the user types (passwords included) goes
 /// from the terminal view straight to the shell.
 final class SetupTerminal {
-  SetupTerminal({required this.env, required this.starter, required this.home});
+  SetupTerminal({
+    required this.env,
+    required this.starter,
+    required this.home,
+    this.settle = TerminalSession.defaultSettle,
+  });
 
   final ExecEnv env;
   final SetupShellStarter starter;
   final String home;
 
+  /// The wait before [start] types its first line: typed while the login shell is still loading its profile, the
+  /// line would be echoed twice, the first copy above the profile's output.
+  final Future<void> Function() settle;
+
   final terminal = Terminal(maxLines: 5000);
   ShellPty? _pty;
   StreamSubscription<String>? _sub;
+  var _disposed = false;
 
   /// Whether a shell is running.
   bool get running => _pty != null;
 
   /// Starts the shell, then types [first] (no Enter) if given.
   Future<void> start({String? first}) async {
-    if (_pty != null) return;
-    final pty = await starter(env, home, terminal.viewHeight, terminal.viewWidth);
+    if (_pty != null || _disposed) return;
+    final ShellPty? pty;
+    try {
+      pty = await starter(env, home, terminal.viewHeight, terminal.viewWidth);
+    } on Object catch (e) {
+      if (!_disposed) terminal.write("Couldn't start a shell: $e\r\n");
+      return;
+    }
+    if (_disposed) {
+      pty?.kill();
+      return;
+    }
     if (pty == null) {
       terminal.write('No shell on this platform.\r\n');
       return;
@@ -86,7 +110,10 @@ final class SetupTerminal {
         terminal.write('\r\n[Process exited with code $code]\r\n');
       }),
     );
-    if (first != null) type(first);
+    if (first != null) {
+      await settle();
+      if (!_disposed) type(first);
+    }
   }
 
   /// Types [text] at the prompt without Enter.
@@ -94,6 +121,7 @@ final class SetupTerminal {
 
   /// Ends the shell and what it started.
   void dispose() {
+    _disposed = true;
     _sub?.cancel();
     _sub = null;
     _pty?.kill();

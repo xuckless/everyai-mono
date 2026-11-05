@@ -7,6 +7,7 @@ import 'package:every_ai/core/theme/every_theme.dart';
 import 'package:every_ai/features/code/code_settings_providers.dart';
 import 'package:every_ai/features/code/drivers/detection/desktop_apps.dart';
 import 'package:every_ai/features/code/drivers/driver.dart';
+import 'package:every_ai/features/code/drivers/driver_process.dart' show noAnswerProblem;
 import 'package:every_ai/features/code/drivers/driver_registry.dart';
 import 'package:every_ai/features/code/environments/exec_env.dart';
 import 'package:every_ai/features/code/panes/pty.dart';
@@ -55,6 +56,7 @@ Widget _app(
         var reloads = 0;
         return DriverStatuses(scanApps: _noApps, loadShell: () async {}, reloadShell: () async => onReload(++reloads));
       }),
+      setupSettleProvider.overrideWithValue(() async {}),
       ...extra,
     ],
     child: m.MaterialApp(
@@ -116,6 +118,40 @@ void main() {
         expect(find.text('Set up'), findsOneWidget);
         await tester.tap(find.text('Set up'));
         expect(opened, [('codex', HostEnv.instance)]);
+      }),
+    );
+
+    testWidgets(
+      'a check that failed is not a missing CLI: no Set up on a guess',
+      _mac((tester) async {
+        for (final problem in [noAnswerProblem, "Couldn't check: boom"]) {
+          await pumpButton(tester, FakeLeadDriver('codex'), status: DriverStatus(problem: problem));
+          expect(find.text('Set up'), findsNothing);
+        }
+        // A CLI that is there but broken is still offered a fix.
+        await pumpButton(
+          tester,
+          FakeLeadDriver('codex'),
+          status: const DriverStatus(installed: true, path: '/bin/codex', problem: 'Too old'),
+        );
+        expect(find.text('Set up'), findsOneWidget);
+      }),
+    );
+
+    testWidgets(
+      'onboarding offers a missing CLI only where the vendor app was found',
+      _mac((tester) async {
+        final d = FakeLeadDriver('codex');
+        await tester.pumpWidget(
+          _app(
+            SetupButton(driver: d, status: const DriverStatus(), offerMissing: false),
+            driver: d,
+            onReload: (_) {},
+            extra: [],
+          ),
+        );
+        await tester.pump();
+        expect(find.text('Set up'), findsNothing);
       }),
     );
 
@@ -217,6 +253,34 @@ void main() {
         await tester.pump();
         expect(pty.kills, 1);
         expect(reloads, 3);
+      }),
+    );
+
+    testWidgets(
+      'inside another environment on Windows: the Linux line, no host check, no Sign in',
+      _on(TargetPlatform.windows, (tester) async {
+        tester.view.physicalSize = const Size(1000, 900);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.reset);
+        final pty = _Pty();
+        // The host check finds a signed-out Windows CLI; it must not leak into the distro.
+        final d = FakeLeadDriver(
+          'codex',
+          status: const DriverStatus(installed: true, path: r'C:\Users\a\codex.exe', signedIn: false),
+        );
+        await tester.pumpWidget(
+          _app(
+            SetupTerminalDialog(driver: d, env: _Wsl()),
+            driver: d,
+            onReload: (_) {},
+            extra: [setupShellStarterProvider.overrideWithValue((env, home, rows, columns) async => pty)],
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+        expect(pty.writes.single, 'curl -fsSL https://chatgpt.com/codex/install.sh | sh');
+        expect(find.byKey(const ValueKey('setup.check')), findsNothing);
+        expect(find.byKey(const ValueKey('setup.sign-in')), findsNothing);
       }),
     );
 

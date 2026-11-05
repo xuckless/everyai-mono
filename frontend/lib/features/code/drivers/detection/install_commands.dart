@@ -17,6 +17,10 @@ enum SetupOs {
   };
 }
 
+/// The system a shell in [env] runs: the host's own, or Linux inside any other environment (a WSL distro, a
+/// container, a VM, an SSH remote). Null where the host has no terminal.
+SetupOs? setupOsFor(bool isHost, TargetPlatform host) => isHost ? SetupOs.of(host) : SetupOs.linux;
+
 /// The vendor's own way to install one coding CLI on one system, and its own sign-in. The app types [install] into a
 /// terminal and never runs it: the user presses Enter, and any password is typed in that terminal.
 @immutable

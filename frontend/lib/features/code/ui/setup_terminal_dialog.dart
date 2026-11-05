@@ -13,6 +13,7 @@ import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../../core/ui/selection.dart';
+import '../drivers/detection/cli_state.dart';
 import '../drivers/detection/install_commands.dart';
 import '../drivers/driver.dart';
 import '../drivers/driver_registry.dart';
@@ -58,9 +59,14 @@ class _SetupTerminalDialogState extends ConsumerState<SetupTerminalDialog> {
   @override
   void initState() {
     super.initState();
-    _os = SetupOs.of(defaultTargetPlatform) ?? SetupOs.linux;
+    _os = setupOsFor(widget.env.isHost, defaultTargetPlatform) ?? SetupOs.linux;
     _commands = setupCommandsFor(widget.driver.info.id, _os);
-    _shell = SetupTerminal(env: widget.env, starter: ref.read(setupShellStarterProvider), home: home.homeDir() ?? '.');
+    _shell = SetupTerminal(
+      env: widget.env,
+      starter: ref.read(setupShellStarterProvider),
+      home: home.homeDir() ?? '.',
+      settle: ref.read(setupSettleProvider),
+    );
     // After the first layout, so the shell starts at the view's size.
     WidgetsBinding.instance.endOfFrame.then((_) {
       if (mounted) unawaited(_shell.start(first: _commands?.install));
@@ -112,8 +118,10 @@ class _SetupTerminalDialogState extends ConsumerState<SetupTerminalDialog> {
     final theme = EveryTheme.of(context);
     final id = widget.driver.info.id;
     final status = ref.watch(driverStatusesProvider.select((s) => s.value?[id]));
-    final ready = status != null && status.installed && status.signedIn != false && status.problem == null;
-    final canSignIn = status != null && status.installed && status.signedIn == false && status.path != null;
+    // The check runs on this computer, so it says nothing about another environment: the user signs in there by hand.
+    final state = status == null || !widget.env.isHost ? null : cliStateOf(status);
+    final ready = state == CliState.ready;
+    final canSignIn = state == CliState.signIn && status!.path != null;
     final commands = _commands;
     return CallbackShortcuts(
       bindings: {const SingleActivator(LogicalKeyboardKey.escape): _close},
@@ -219,18 +227,21 @@ class _SetupTerminalDialogState extends ConsumerState<SetupTerminalDialog> {
                                         ? 'Ready: ${widget.driver.info.label} is set up.'
                                         : canSignIn
                                         ? 'Installed. Sign in next.'
+                                        : !widget.env.isHost
+                                        ? 'When the install is done, sign in by typing the CLI there.'
                                         : 'When the install is done, check again.',
                                     key: const ValueKey('setup.state'),
                                     style: theme.type.caption.tint(ready ? theme.success : theme.textMuted),
                                   ),
                                 ),
-                                AdaptiveButton(
-                                  key: const ValueKey('setup.check'),
-                                  label: 'Check again',
-                                  emphasis: ButtonEmphasis.secondary,
-                                  busy: _checking,
-                                  onPressed: _checking ? null : _check,
-                                ),
+                                if (widget.env.isHost)
+                                  AdaptiveButton(
+                                    key: const ValueKey('setup.check'),
+                                    label: 'Check again',
+                                    emphasis: ButtonEmphasis.secondary,
+                                    busy: _checking,
+                                    onPressed: _checking ? null : _check,
+                                  ),
                                 if (canSignIn) ...[
                                   const SizedBox(width: 8),
                                   AdaptiveButton(

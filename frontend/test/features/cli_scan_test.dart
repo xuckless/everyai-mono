@@ -114,6 +114,18 @@ void main() {
       expect(found, r'C:\L\Programs\Tool\bin\tool.EXE');
     });
 
+    test("Windows finds Codex in its installer's folder, which only the registry PATH names", () async {
+      final found = await findCli(
+        'codex',
+        loadEnv: () async => {'Path': r'C:\Windows', 'LOCALAPPDATA': r'C:\L'},
+        windows: true,
+        isFile: {r'C:\L\Programs\OpenAI\Codex\bin\codex.EXE'}.contains,
+        list: (_) => [],
+        npmPrefix: (_) async => null,
+      );
+      expect(found, r'C:\L\Programs\OpenAI\Codex\bin\codex.EXE');
+    });
+
     test('Windows ignores an app GUI exe in the Programs folder itself', () async {
       final found = await find(
         {r'C:\L\Programs\Tool\tool.exe'},

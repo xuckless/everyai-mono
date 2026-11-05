@@ -43,6 +43,9 @@ Future<String?> findCli(
       final dirs = [
         for (final child in entries(programs))
           if (isFile != null || Directory('$programs\\$child\\bin').existsSync()) '$programs\\$child\\bin',
+        // Codex's installer puts its exe two levels down and adds the folder to the user PATH only (registry), which
+        // a running app does not see.
+        if (isFile != null || Directory('$programs\\OpenAI\\Codex\\bin').existsSync()) '$programs\\OpenAI\\Codex\\bin',
       ];
       final hit = findOnPath(command, dirs.join(';'), windows: true, isFile: isFile);
       if (hit != null) return hit;

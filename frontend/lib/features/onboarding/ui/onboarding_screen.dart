@@ -674,7 +674,7 @@ class _HarnessRow extends StatelessWidget {
               ],
             ),
           ),
-          SetupButton(driver: driver, status: checking ? null : status),
+          SetupButton(driver: driver, status: checking ? null : status, offerMissing: false),
           // A subscription CLI is set up only once the user has agreed to use it, so the choice comes first.
           if (driver.info.needsConsent)
             AdaptiveButton(

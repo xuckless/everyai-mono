@@ -50,7 +50,12 @@ final class _WslEnv extends ExecEnv {
 void main() {
   test('the command is typed without Enter, output reaches the terminal, and the shell is killed on dispose', () async {
     final pty = _Pty();
-    final t = SetupTerminal(env: HostEnv.instance, starter: (_, _, _, _) async => pty, home: '/home/a');
+    final t = SetupTerminal(
+      env: HostEnv.instance,
+      starter: (_, _, _, _) async => pty,
+      home: '/home/a',
+      settle: () async {},
+    );
     await t.start(first: 'curl -fsSL https://x.test/i.sh | bash');
     expect(pty.writes, ['curl -fsSL https://x.test/i.sh | bash']);
     expect(pty.writes.single, isNot(contains('\n')));
@@ -68,9 +73,73 @@ void main() {
     expect(t.running, isFalse);
   });
 
+  test('the first line waits for the shell to settle', () async {
+    final pty = _Pty();
+    final settled = Completer<void>();
+    final t = SetupTerminal(
+      env: HostEnv.instance,
+      starter: (_, _, _, _) async => pty,
+      home: '/h',
+      settle: () => settled.future,
+    );
+    final started = t.start(first: 'curl x | bash');
+    await pumpEventQueue();
+    expect(pty.writes, isEmpty);
+    settled.complete();
+    await started;
+    expect(pty.writes, ['curl x | bash']);
+    t.dispose();
+  });
+
+  test('closing while the shell is still starting kills it and types nothing', () async {
+    final pty = _Pty();
+    final starting = Completer<ShellPty?>();
+    final t = SetupTerminal(
+      env: HostEnv.instance,
+      starter: (_, _, _, _) => starting.future,
+      home: '/h',
+      settle: () async {},
+    );
+    final started = t.start(first: 'x');
+    t.dispose();
+    starting.complete(pty);
+    await started;
+    expect(pty.kills, 1);
+    expect(pty.writes, isEmpty);
+    expect(t.running, isFalse);
+  });
+
+  test('closing while the line waits to be typed types nothing', () async {
+    final pty = _Pty();
+    final settled = Completer<void>();
+    final t = SetupTerminal(
+      env: HostEnv.instance,
+      starter: (_, _, _, _) async => pty,
+      home: '/h',
+      settle: () => settled.future,
+    );
+    final started = t.start(first: 'x');
+    await pumpEventQueue();
+    t.dispose();
+    settled.complete();
+    await started;
+    expect(pty.writes, isEmpty);
+  });
+
+  test('a shell that cannot start is said in the terminal, not thrown', () async {
+    final t = SetupTerminal(
+      env: HostEnv.instance,
+      starter: (_, _, _, _) async => throw StateError('no wsl.exe'),
+      home: '/h',
+    );
+    await t.start(first: 'x');
+    expect(t.terminal.buffer.getText(), contains('no wsl.exe'));
+    expect(t.running, isFalse);
+  });
+
   test('keys typed in the terminal go straight to the shell', () async {
     final pty = _Pty();
-    final t = SetupTerminal(env: HostEnv.instance, starter: (_, _, _, _) async => pty, home: '/h');
+    final t = SetupTerminal(env: HostEnv.instance, starter: (_, _, _, _) async => pty, home: '/h', settle: () async {});
     await t.start();
     t.terminal.textInput('secret');
     expect(pty.writes.join(), 'secret');
