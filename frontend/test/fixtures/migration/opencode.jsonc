@@ -1,0 +1,8 @@
+{
+  // global config
+  "mcp": {
+    "sentry": {"type": "remote", "url": "https://mcp.sentry.dev/mcp", "enabled": true,}, /* trailing */
+    "local-one": {"type": "local", "command": ["bun", "x", "my-mcp"], "environment": {"A": "1"}, "enabled": false}
+  },
+  "note": "see http://example.com//path"
+}

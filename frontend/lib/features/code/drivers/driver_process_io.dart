@@ -11,6 +11,7 @@ import '../harness/everyai/shell_io.dart' show ShellEnv, killTree;
 import '../harness/harness.dart' show HarnessError;
 import '../harness/session_processes.dart' show registerDriverRoot, sessionEnvVar, unregisterDriverRoot;
 import 'driver.dart';
+import 'detection/cli_scan.dart' show findCli;
 import 'driver_process.dart';
 
 Future<DriverProcess> spawnDriver({
@@ -349,7 +350,7 @@ Future<DriverStatus> detectCli(
   List<String> versionArgs = const ['--version'],
   Future<String?> Function(String command)? which,
 }) async {
-  final path = await (which ?? _which)(command);
+  final path = await (which ?? findCli)(command);
   if (path == null) return const DriverStatus();
   try {
     final shell = await ShellEnv.load();
@@ -377,12 +378,6 @@ Future<void> reloadShellEnv() => ShellEnv.reload();
 
 Future<void> loadShellEnv() => ShellEnv.load();
 
-Future<String?> _which(String command) async =>
-    findOnPath(command, (await ShellEnv.load()).env[Platform.isWindows ? _windowsPathKey : 'PATH'] ?? '');
-
-String get _windowsPathKey =>
-    Platform.environment.keys.firstWhere((k) => k.toUpperCase() == 'PATH', orElse: () => 'Path');
-
 /// The first file named [command] in the directories of [path] (or
 /// [command] itself when it is a path), without starting a process. On
 /// Windows each [pathExt] extension is tried too. [isFile] tells a file
@@ -391,9 +386,11 @@ String? findOnPath(String command, String path, {bool? windows, String? pathExt,
   final win = windows ?? Platform.isWindows;
   final runs = isFile ?? (win ? (p) => File(p).existsSync() : _isExecutable);
   final sep = win ? '\\' : '/';
+  // cmd.exe runs `claude.cmd`, never npm's extensionless shell shim beside it.
+  final bare = win && RegExp(r'\.[A-Za-z0-9]{1,4}$').hasMatch(command);
   final exts = win
       ? [
-          '',
+          if (bare) '',
           ...(pathExt ?? Platform.environment['PATHEXT'] ?? '.COM;.EXE;.BAT;.CMD')
               .split(';')
               .where((e) => e.isNotEmpty),

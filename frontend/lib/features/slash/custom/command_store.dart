@@ -16,4 +16,8 @@ Future<String?> globalCommandsDir() => impl.globalDir();
 Future<CustomCommand> createCustomCommand({required String name, String? projectPath, String? projectName}) =>
     impl.create(name, projectPath, projectName);
 
+/// Writes [command] as it is (an imported one) into the global folder, or into [projectPath]'s `.everyai/commands`.
+/// Throws [StateError] when a file of that name is there.
+Future<void> writeCustomCommand(CustomCommand command, {String? projectPath}) => impl.write(command, projectPath);
+
 Future<void> deleteCustomCommand(CustomCommand command) => impl.delete(command);
