@@ -26,17 +26,30 @@ const maxPromptLinkBytes = 32 * 1024;
 /// Reads [uri] as a prompt link; null for anything else (other schemes and hosts, no text).
 AppLink? parseAppLink(Uri uri) {
   if (uri.scheme != 'everyai' || uri.host != 'prompt') return null;
-  // Control characters (except newline and tab) have no place in a prompt box.
-  final text = (uri.queryParameters['text'] ?? '').replaceAll(RegExp(r'[\u0000-\u0008\u000B-\u001F\u007F]'), '');
+  final Map<String, String> query;
+  try {
+    query = uri.queryParameters;
+  } on FormatException {
+    return null; // bad percent-encoding or UTF-8
+  }
+  final text = (query['text'] ?? '').replaceAll(_invisible, '');
   if (text.trim().isEmpty) return null;
   if (_utf8Length(text) > maxPromptLinkBytes) return const OversizedLink();
-  final project = uri.queryParameters['project']?.trim();
+  final project = query['project']?.trim();
   return PromptLink(
     text: text,
-    mode: uri.queryParameters['mode'] == 'code' ? PromptTarget.code : PromptTarget.chat,
+    mode: query['mode'] == 'code' ? PromptTarget.code : PromptTarget.chat,
     projectId: project == null || project.isEmpty ? null : project,
   );
 }
+
+/// What has no place in a prompt box the user is meant to review: control characters (newline and tab stay), C1
+/// controls, zero-width and bidi characters, and the Unicode tag block that can hide a whole instruction.
+final _invisible = RegExp(
+  r'[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]'
+  r'|[\u{E0000}-\u{E007F}]',
+  unicode: true,
+);
 
 int _utf8Length(String s) {
   var n = 0;
@@ -55,3 +68,7 @@ int _utf8Length(String s) {
 /// The app route a link opens. Off desktop there is no Code composer, so a code link goes to Chat.
 String routeForPrompt(PromptLink link, {required bool desktop, required String chat, required String code}) =>
     link.mode == PromptTarget.code && desktop ? code : chat;
+
+/// The link as the page it opens will take it: off desktop a code link opens Chat, so it becomes a chat link.
+PromptLink linkForHost(PromptLink link, {required bool desktop}) =>
+    link.mode == PromptTarget.code && !desktop ? PromptLink(text: link.text) : link;

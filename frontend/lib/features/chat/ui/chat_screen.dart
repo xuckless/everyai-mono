@@ -80,7 +80,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         final link = mounted ? ref.read(pendingPromptProvider.notifier).take() : null;
         if (link == null) return;
-        _composer.currentState?.prefill(link.text);
+        _composer.currentState?.prefill(link.text, keep: true);
         showAdaptiveToast(context, 'From a link. Review before you send.');
       });
     }

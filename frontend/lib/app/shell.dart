@@ -88,15 +88,35 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   AppLifecycleListener? _lifecycle;
   StreamSubscription<Uri>? _links;
+  PromptLink? _awaitingLink;
+
+  @override
+  void didUpdateWidget(AppShell old) {
+    super.didUpdateWidget(old);
+    if (widget.location != old.location && _awaitingLink != null) {
+      final link = _awaitingLink!;
+      _awaitingLink = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) ref.read(pendingPromptProvider.notifier).offer(link);
+      });
+    }
+  }
 
   /// An `everyai://prompt` link: open the page whose box takes the text (it fills the box; nothing is sent).
   void _onLink(Uri uri) {
     switch (parseAppLink(uri)) {
       case final PromptLink link:
-        ref.read(pendingPromptProvider.notifier).offer(link);
-        final to = routeForPrompt(link, desktop: Host.isDesktop, chat: Routes.newChat, code: Routes.code);
+        final offered = linkForHost(link, desktop: Host.isDesktop);
+        final to = routeForPrompt(offered, desktop: Host.isDesktop, chat: Routes.newChat, code: Routes.code);
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) context.go(to);
+          if (!mounted) return;
+          if (to == widget.location) {
+            ref.read(pendingPromptProvider.notifier).offer(offered); // the page is already showing
+          } else {
+            // Offered once the new page is up: the page being left must not take it.
+            _awaitingLink = offered;
+            context.go(to);
+          }
         });
       case OversizedLink():
         showAdaptiveToast(context, 'That link\'s text is too long.');

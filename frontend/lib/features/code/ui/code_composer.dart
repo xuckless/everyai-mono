@@ -175,10 +175,14 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
     if (!identical(old.commands, widget.commands)) _slash.update(_controller.value, _commands);
   }
 
-  void _setDraft(String text) => _controller.value = TextEditingValue(
-    text: text,
-    selection: TextSelection.collapsed(offset: text.length),
-  );
+  /// Puts a link's prompt in the box, after anything already typed there.
+  void _setDraft(String text) {
+    if (_controller.text.trim().isNotEmpty) text = '${_controller.text.trimRight()}\n\n$text';
+    _controller.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+  }
 
   @override
   void dispose() {

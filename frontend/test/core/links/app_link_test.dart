@@ -76,6 +76,19 @@ void main() {
       expect(_prompt('everyai://prompt?text=a%00b%1Bc%0Dd%0Ae%7F')!.text, 'abcd\ne');
     });
 
+    test('invisible and bidi characters, C1 controls and tag characters are stripped', () {
+      final hidden = String.fromCharCodes([0x200B, 0x202E, 0x2066, 0xFEFF, 0x85, 0xE0041, 0xE0042, 0xE007F]);
+      final uri = Uri(scheme: 'everyai', host: 'prompt', queryParameters: {'text': 'Fix${hidden}it'});
+      expect(parseAppLink(uri), isA<PromptLink>().having((l) => l.text, 'text', 'Fixit'));
+      // Only hidden characters is no text at all.
+      expect(parseAppLink(Uri(scheme: 'everyai', host: 'prompt', queryParameters: {'text': hidden})), isNull);
+    });
+
+    test('bad percent-encoded UTF-8 is no link, not a throw', () {
+      expect(parseAppLink(Uri.parse('everyai://prompt?text=a%FFb')), isNull);
+      expect(parseAppLink(Uri.parse('everyai://prompt?text=%E0%A4')), isNull);
+    });
+
     test('32 KiB of UTF-8 is the cap', () {
       final ok = Uri(scheme: 'everyai', host: 'prompt', queryParameters: {'text': 'a' * maxPromptLinkBytes});
       expect(parseAppLink(ok), isA<PromptLink>());
@@ -92,6 +105,13 @@ void main() {
       String r(PromptLink l, bool d) => routeForPrompt(l, desktop: d, chat: '/chat', code: '/code');
       expect([r(code, true), r(code, false), r(chat, true), r(chat, false)], ['/code', '/chat', '/chat', '/chat']);
     });
+  });
+
+  test('off desktop a code link becomes a chat link; on desktop it stays', () {
+    const code = PromptLink(text: 't', mode: PromptTarget.code, projectId: 'p');
+    expect(linkForHost(code, desktop: false).mode, PromptTarget.chat);
+    expect(linkForHost(code, desktop: false).projectId, isNull);
+    expect(linkForHost(code, desktop: true), same(code));
   });
 
   test('a pending prompt is taken once; a newer link replaces it', () {
@@ -168,6 +188,27 @@ void main() {
       expect(draft(tester), 'Draft an email');
       expect(container.read(pendingPromptProvider), isNull);
       expect(requests, 0);
+      await finish(tester);
+    });
+
+    testWidgets('a link offered after the screen changed lands in the new screen, not the old one', (tester) async {
+      Future<void> show(String id) => pump(tester, ChatScreen(key: ValueKey(id), conversationId: id));
+      await show('a');
+      await show('b'); // the shell went to a new chat
+      container.read(pendingPromptProvider.notifier).offer(const PromptLink(text: 'Hello'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(draft(tester), 'Hello');
+      await finish(tester);
+    });
+
+    testWidgets('a link offered to a mounted chat home fills it, after what was typed', (tester) async {
+      await pump(tester, const ChatScreen(conversationId: 'new'));
+      await tester.enterText(find.byType(EditableText).first, 'my draft');
+      container.read(pendingPromptProvider.notifier).offer(const PromptLink(text: 'From link'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(draft(tester), 'my draft\n\nFrom link');
       await finish(tester);
     });
 
