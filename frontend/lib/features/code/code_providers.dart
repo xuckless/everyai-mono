@@ -5382,8 +5382,9 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// holding it, else as a new user message.
   ///
   /// [files] ride as a trailing `[Attached: …]` note after the answers (saved into the project like a
-  /// message's attachments); pictures go as images only in a user message. The app's own cards ignore
-  /// them. False when the files couldn't be saved: the card stays open.
+  /// message's attachments); pictures go as images only in a user message, so a held call or a host wait
+  /// carries the path only (the agent can read the file). The app's own cards take no files
+  /// ([acceptsFiles]). False when the files couldn't be saved: the card stays open.
   Future<bool> answer(QuestionItem item, List<QuestionAnswer> answers, {List<Attachment> files = const []}) async {
     final id = item.call.id;
     if (_localAsks.containsKey(id)) {
@@ -5400,6 +5401,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         : answersMessage(item.questions, answers);
     final out = files.isEmpty || own ? Outgoing(base) : await _outgoing(base, files);
     if (out == null) return false;
+    // Stopped or closed while the files were saved: nothing is waiting for the answer any more.
+    if (host != null ? _hostFor(id) == null : held && !_isHeld(item.call)) return true;
     if (host != null) {
       _answerHost(host, out.text);
       _builder.settleLocal(id, answers);
@@ -5419,6 +5422,12 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       await session.send(_noted(out.text), images: out.images);
     }
     return true;
+  }
+
+  /// Whether the card can carry files: the app's own cards (bug questions, loop guards, host consents) can't.
+  bool acceptsFiles(QuestionItem item) {
+    final id = item.call.id;
+    return !id.startsWith('bugask-') && !id.startsWith('doom-') && !_localAsks.containsKey(id);
   }
 
   bool _isHeld(ActionCall call) => state.transcript.held.any((c) => c.id == call.id);

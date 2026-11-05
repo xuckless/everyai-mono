@@ -218,6 +218,7 @@ class CodeSessionScreen extends ConsumerWidget {
                               transcript: t,
                               onAnswer: controller.answer,
                               onAnswerWithFiles: (item, a, files) => controller.answer(item, a, files: files),
+                              acceptsFiles: controller.acceptsFiles,
                               model: ref.watch(modelCatalogProvider)[ModelId(info.model)],
                               mode: state.mode,
                               onApprovePlan: controller.startBuilding,
@@ -559,6 +560,7 @@ class TranscriptList extends StatelessWidget {
     required this.onRevisePlan,
     required this.onRetry,
     this.onAnswerWithFiles,
+    this.acceptsFiles,
     this.model,
     this.sessionId,
     this.workingDir = '',
@@ -591,6 +593,9 @@ class TranscriptList extends StatelessWidget {
 
   /// Set, question cards take files with their answers; [model] is who reads them.
   final Future<bool> Function(QuestionItem, List<QuestionAnswer>, List<Attachment>)? onAnswerWithFiles;
+
+  /// Which cards take files; null means all (when [onAnswerWithFiles] is set).
+  final bool Function(QuestionItem)? acceptsFiles;
   final ModelSpec? model;
 
   /// Restores the files to before user turn n (1-based); null without git.
@@ -698,7 +703,8 @@ class TranscriptList extends StatelessWidget {
       answers: item.answers,
       enabled: item == transcript.openQuestion,
       onSubmit: (answers) => onAnswer(item, answers),
-      onSubmitWithFiles: onAnswerWithFiles == null
+      attachKinds: const {AttachmentKind.image, AttachmentKind.text},
+      onSubmitWithFiles: onAnswerWithFiles == null || !(acceptsFiles?.call(item) ?? true)
           ? null
           : (answers, files) => onAnswerWithFiles!(item, answers, files),
       model: model,

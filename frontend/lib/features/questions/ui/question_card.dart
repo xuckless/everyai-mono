@@ -145,7 +145,7 @@ class _QuestionCardState extends State<QuestionCard> {
 
   Future<void> _attach() async {
     final picked = await widget.pickFiles(allowed: widget.attachKinds);
-    if (!mounted) return;
+    if (!mounted || !_enabled) return;
     final added = await readPicked(
       picked,
       alreadyBytes: _files.fold(0, (sum, a) => sum + a.size),
@@ -154,7 +154,8 @@ class _QuestionCardState extends State<QuestionCard> {
         if (mounted) showAdaptiveToast(context, message);
       },
     );
-    if (mounted && added.isNotEmpty) setState(() => _files.addAll(added));
+    // A card submitted or closed meanwhile has sent its files already.
+    if (mounted && _enabled && added.isNotEmpty) setState(() => _files.addAll(added));
   }
 
   Map<ShortcutActivator, VoidCallback> get _shortcuts => {

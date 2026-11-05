@@ -39,10 +39,21 @@ class _FixedCatalog extends CatalogController {
 
 final class _Session implements HarnessSession {
   final sent = <({String text, List<String> images})>[];
+  final responses = <String?>[];
+  var resumed = 0;
+  final _events = StreamController<HarnessEvent>.broadcast();
+  void emit(Map<String, Object?> event) => _events.add(HarnessEvent.decode(event));
   @override
   String get id => 'c1';
   @override
-  Stream<HarnessEvent> get events => const Stream.empty();
+  Stream<HarnessEvent> get events => _events.stream;
+  @override
+  Future<void> respond({required bool accept, String? reason, List<String>? callIds}) async {
+    if (!accept) responses.add(reason);
+  }
+
+  @override
+  Future<void> resume() async => resumed++;
   @override
   Future<void> send(String text, {bool run = true, List<String> images = const []}) async =>
       sent.add((text: text, images: images));
@@ -237,6 +248,53 @@ void main() {
       await c.answer(_item, _answers, files: [_png]);
       expect(session.sent.single.images, isEmpty);
       expect(splitAttachedNote(session.sent.single.text).$2, hasLength(1));
+    });
+
+    Map<String, Object?> status(String value) => {
+      'kind': 'ConversationStateUpdateEvent',
+      'key': 'execution_status',
+      'value': value,
+    };
+
+    Future<void> hold() async {
+      session.emit(status('waiting_for_confirmation'));
+      session.emit({'kind': 'ActionEvent', 'id': 'q', 'tool_name': 'ask_user_question', 'action': _args});
+      await pumpEventQueue();
+    }
+
+    test('a held question gets the note in the call result and no images', () async {
+      final c = await open(seeing);
+      await hold();
+      expect(await c.answer(_item, _answers, files: [_png]), isTrue);
+      expect(session.sent, isEmpty);
+      final (_, paths) = splitAttachedNote(session.responses.single!);
+      expect(paths.single, startsWith('$uploadsDir/'));
+      expect(session.resumed, 1);
+    });
+
+    test('a call closed while the files were saved is not answered or resumed', () async {
+      final c = await open(seeing);
+      await hold();
+      final done = c.answer(_item, _answers, files: [_png]);
+      session.emit(status('idle'));
+      expect(await done, isTrue);
+      expect(session.responses, isEmpty);
+      expect(session.resumed, 0);
+    });
+
+    test("the app's own cards take no files", () async {
+      final c = await open(seeing);
+      expect(c.acceptsFiles(_item), isTrue);
+      final bug = QuestionItem(
+        HarnessEvent.decode({
+          'kind': 'ActionEvent',
+          'id': 'bugask-1',
+          'tool_name': 'ask_user_question',
+          'action': _args,
+        }) as ActionCall,
+        _item.questions,
+      );
+      expect(c.acceptsFiles(bug), isFalse);
     });
 
     test('no files: the message is as before', () async {
