@@ -371,6 +371,7 @@ void main() {
         '/opt/homebrew/bin',
         '/usr/local/bin',
         '/h/.local/bin',
+        '/h/.claude/local',
         '/h/.npm-global/bin',
         '/h/.npm-pkgs/bin',
         '/h/.nvm/versions/node/v20.11.1/bin',
@@ -379,6 +380,7 @@ void main() {
         '/h/.volta/bin',
         '/h/.deno/bin',
         '/h/.cursor/bin',
+        '/h/.opencode/bin',
       ]);
       // nvm's default alias wins over the newest version.
       files['/h/.nvm/alias/default'] = '18.2.0\n';

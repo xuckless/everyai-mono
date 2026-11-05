@@ -160,6 +160,7 @@ List<String> commonDirs(
     '/opt/homebrew/bin',
     '/usr/local/bin',
     '$home/.local/bin',
+    '$home/.claude/local',
     '$home/.npm-global/bin',
     if (npmPrefix() case final p?) '$p/bin',
     ?nvmBin(),
@@ -168,6 +169,7 @@ List<String> commonDirs(
     '$home/.volta/bin',
     '$home/.deno/bin',
     '$home/.cursor/bin',
+    '$home/.opencode/bin',
   ];
 }
 

@@ -10,6 +10,7 @@ import '../harness/everyai/shell_io.dart' show ShellEnv, killTree;
 import '../harness/harness.dart' show HarnessError;
 import '../harness/session_processes.dart' show registerDriverRoot, sessionEnvVar, unregisterDriverRoot;
 import 'driver.dart';
+import 'detection/cli_scan.dart' show findCli;
 import 'driver_process.dart';
 
 Future<DriverProcess> spawnDriver({
@@ -338,7 +339,7 @@ Future<DriverStatus> detectCli(
   List<String> versionArgs = const ['--version'],
   Future<String?> Function(String command)? which,
 }) async {
-  final path = await (which ?? _which)(command);
+  final path = await (which ?? findCli)(command);
   if (path == null) return const DriverStatus();
   try {
     final shell = await ShellEnv.load();
@@ -365,12 +366,6 @@ const versionTimeout = Duration(seconds: 4);
 Future<void> reloadShellEnv() => ShellEnv.reload();
 
 Future<void> loadShellEnv() => ShellEnv.load();
-
-Future<String?> _which(String command) async =>
-    findOnPath(command, (await ShellEnv.load()).env[Platform.isWindows ? _windowsPathKey : 'PATH'] ?? '');
-
-String get _windowsPathKey =>
-    Platform.environment.keys.firstWhere((k) => k.toUpperCase() == 'PATH', orElse: () => 'Path');
 
 /// The first file named [command] in the directories of [path] (or
 /// [command] itself when it is a path), without starting a process. On
