@@ -32,6 +32,9 @@ import 'code_top_bar.dart' show CodeDraftBar;
 import 'console/session_actions.dart';
 import '../code_settings_providers.dart';
 import '../drivers/driver_registry.dart' show driverRegistryProvider;
+import '../environments/environment_label.dart';
+import '../environments/environment_picker.dart';
+import '../environments/environment_providers.dart';
 import '../harness/events.dart' show HarnessEvent;
 import '../resume/past_sessions.dart';
 import '../resume/resume_providers.dart';
@@ -242,6 +245,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                       projectDir: project.path,
                       budget: _budget,
                       onBudget: (v) => setState(() => _budget = v),
+                      environment: project.environment,
                     ),
                     leading: _ProjectPicker(
                       project: project,
@@ -263,6 +267,8 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                       isolated: _isolated,
                       onIsolated: (v) => setState(() => _isolated = v),
                       projectId: project.id,
+                      environment: project.environment,
+                      onEnvironment: (id) => ref.read(codeProjectsProvider.notifier).setEnvironment(project.id, id),
                     ),
                   const SizedBox(height: 8),
                   Text(
@@ -294,7 +300,10 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                         PastSessionTile(
                           key: ValueKey('code-home.earlier.${p.harness}.${p.nativeId}'),
                           past: p,
-                          label: ref.read(driverRegistryProvider).resolve(p.harness)?.info.label ?? p.harness,
+                          label: harnessLabel(
+                            ref.read(driverRegistryProvider).resolve(p.harness)?.info.label ?? p.harness,
+                            watchEnvironment(ref, project.environment),
+                          ),
                           blocked: row.blocked,
                           busy: _resuming == '${p.harness}|${p.nativeId}',
                           onOpen: _resuming != null || _starting ? null : () => _resume(project, p),
@@ -315,11 +324,21 @@ String lastModeKey(String projectId) => 'code.lastMode.$projectId';
 
 /// Below the composer: where the session works, and the project's settings.
 class _SessionOptions extends StatelessWidget {
-  const _SessionOptions({required this.isolated, required this.onIsolated, required this.projectId});
+  const _SessionOptions({
+    required this.isolated,
+    required this.onIsolated,
+    required this.projectId,
+    required this.environment,
+    required this.onEnvironment,
+  });
 
   final bool isolated;
   final ValueChanged<bool> onIsolated;
   final String projectId;
+
+  /// Where the project runs ("Runs in"); the chip changes the project's.
+  final String environment;
+  final ValueChanged<String> onEnvironment;
 
   @override
   Widget build(BuildContext context) {
@@ -346,6 +365,7 @@ class _SessionOptions extends StatelessWidget {
       children: [
         option('In place', !isolated, () => onIsolated(false)),
         option('Isolated worktree', isolated, () => onIsolated(true)),
+        if (Host.isDesktop) EnvironmentChip(envId: environment, onPick: onEnvironment),
         // The settings popover for the session about to start.
         CodeDraftBar(projectId: projectId),
       ],

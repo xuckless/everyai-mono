@@ -427,13 +427,16 @@ final class ColimaEnv extends ExecEnv {
 /// A remote the user added: an alias from `~/.ssh/config`, or user@host with
 /// an optional port. Keys and the agent only: never a password prompt.
 final class SshRemote {
-  const SshRemote.alias(String this.alias) : user = null, host = null, port = null;
-  const SshRemote.host({required String this.user, required String this.host, this.port}) : alias = null;
+  const SshRemote.alias(String this.alias, {this.name}) : user = null, host = null, port = null;
+  const SshRemote.host({required String this.user, required String this.host, this.port, this.name}) : alias = null;
 
   final String? alias;
   final String? user;
   final String? host;
   final int? port;
+
+  /// What the user calls it (shown instead of the host), or null.
+  final String? name;
 
   /// What ssh connects to.
   String get destination => alias ?? '$user@$host';
@@ -451,16 +454,18 @@ final class SshRemote {
 
   String get key => alias ?? '$user@$host${port == null ? '' : ':$port'}';
 
-  Map<String, Object?> toJson() =>
-      alias != null ? {'alias': alias} : {'user': user, 'host': host, if (port != null) 'port': port};
+  Map<String, Object?> toJson() => {
+    if (alias != null) 'alias': alias else ...{'user': user, 'host': host, if (port != null) 'port': port},
+    if (name != null) 'name': name,
+  };
 
   static SshRemote? fromJson(Object? json) {
     if (json is! Map) return null;
-    final alias = json['alias'];
-    if (alias is String) return SshRemote.alias(alias);
+    final alias = json['alias'], name = json['name'] is String ? json['name'] as String : null;
+    if (alias is String) return SshRemote.alias(alias, name: name);
     final user = json['user'], host = json['host'], port = json['port'];
     if (user is! String || host is! String) return null;
-    return SshRemote.host(user: user, host: host, port: port is int ? port : null);
+    return SshRemote.host(user: user, host: host, port: port is int ? port : null, name: name);
   }
 
   @override
@@ -491,7 +496,7 @@ final class SshEnv extends ExecEnv {
   EnvKind get kind => EnvKind.ssh;
 
   @override
-  String get label => '${remote.alias ?? remote.host} (SSH)';
+  String get label => '${remote.name ?? remote.alias ?? remote.host} (SSH)';
 
   @override
   WrappedCommand wrap(String executable, List<String> args, {String? cwd, Map<String, String> env = const {}}) {

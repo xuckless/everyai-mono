@@ -92,3 +92,8 @@ ExecEnv? environmentById(List<ExecEnv> all, String id) {
   }
   return null;
 }
+
+/// The environment with [id] for a label, or null for this computer (the host's discovery isn't started for it) and
+/// while the list loads or the environment is gone.
+ExecEnv? watchEnvironment(WidgetRef ref, String id) =>
+    id == 'host' ? null : environmentById(ref.watch(environmentsProvider).value ?? const [], id);

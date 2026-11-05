@@ -31,6 +31,7 @@ import 'domain/code_session.dart';
 import 'environments/env_paths.dart';
 import 'environments/env_processes.dart';
 import 'environments/environment_providers.dart';
+import 'environments/environment_statuses.dart';
 import 'environments/exec_env.dart';
 import 'domain/compaction.dart';
 import 'domain/floor_advice.dart';
@@ -631,6 +632,12 @@ final class CodeProjects extends Notifier<List<CodeProject>> {
       for (final p in state)
         if (p.id != id) p,
     ];
+    _save();
+  }
+
+  /// Where [id]'s sessions run from now on ([envId] from `ExecEnv.id`). Sessions already started keep theirs.
+  void setEnvironment(String id, String envId) {
+    state = [for (final p in state) p.id == id ? p.withEnvironment(envId) : p];
     _save();
   }
 }
@@ -3648,7 +3655,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     try {
       final Map<String, DriverStatus> statuses;
       try {
-        statuses = await ref.read(driverStatusesProvider.future);
+        // Where the session runs: the harness must be installed there.
+        statuses = await ref.read(driverStatusesInProvider(info.environment).future);
       } on Object catch (e) {
         return LeadSwitchOutcome.failed('$e');
       }

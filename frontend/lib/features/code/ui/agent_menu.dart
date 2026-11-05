@@ -19,6 +19,9 @@ import '../domain/code_session.dart' show everyaiHarnessName;
 import '../drivers/driver.dart';
 import '../drivers/driver_policy.dart' show leadFix, offeredAsLead;
 import '../drivers/driver_registry.dart';
+import '../environments/environment_label.dart';
+import '../environments/environment_providers.dart';
+import '../environments/environment_statuses.dart';
 import '../settings/agent_prompt.dart' show HarnessTier;
 import '../settings/code_settings.dart' show budgetPresets;
 import '../workflows/workflow_library.dart';
@@ -88,7 +91,12 @@ class AgentMenu extends ConsumerWidget {
     this.harness = everyaiHarnessName,
     this.onHarness,
     this.switchesLive = false,
+    this.environment = 'host',
   });
+
+  /// The id of the environment the project (or session) runs in: the harnesses found there are offered, named
+  /// with it when it isn't this computer.
+  final String environment;
 
   /// The lead harness (a driver id).
   final String harness;
@@ -139,7 +147,9 @@ class AgentMenu extends ConsumerWidget {
     final groups = ref.watch(_menuGroupsProvider(model));
     final current = [for (final (_, ms) in groups) ...ms].where((m) => m.model == model).firstOrNull;
     final registry = ref.watch(driverRegistryProvider);
-    final lead = registry.resolve(harness)?.info ?? DriverInfo(id: harness, label: harness);
+    final env = watchEnvironment(ref, environment);
+    DriverInfo named(DriverInfo i) => env == null || env.isHost ? i : i.labelled(harnessLabel(i.label, env));
+    final lead = named(registry.resolve(harness)?.info ?? DriverInfo(id: harness, label: harness));
     final outside = harness != everyaiHarnessName;
     // EveryAI and the harnesses installed here, with what is in their way and
     // its fix, when the lead can be picked; else only its own.
@@ -147,9 +157,15 @@ class AgentMenu extends ConsumerWidget {
     if (onHarness == null) {
       leads = [(info: lead, blocked: null, detail: '')];
     } else {
-      final statuses = ref.watch(driverStatusesProvider).value;
+      // Inside another environment: what its scan found (the host's check stays the host's).
+      final statuses = environment == 'host'
+          ? ref.watch(driverStatusesProvider).value
+          : ref.watch(driverStatusesInProvider(environment)).value;
       final own = ref.watch(codeSettingsProvider.select((s) => s.ownClis));
-      leads = leadOptions([for (final d in registry.listed) d.info], statuses, own, current: harness);
+      leads = [
+        for (final l in leadOptions([for (final d in registry.listed) d.info], statuses, own, current: harness))
+          (info: named(l.info), blocked: l.blocked, detail: l.detail),
+      ];
     }
     final driverModels = outside ? ref.watch(driverModelsProvider(harness)).value ?? const <DriverModel>[] : null;
     final workflows = onWorkflow == null || demo || projectDir.isEmpty
@@ -316,7 +332,9 @@ class AgentMenuPart extends ConsumerWidget {
               },
         onCheckAgain: m.onHarness == null
             ? null
-            : () => unawaited(ref.read(driverStatusesProvider.notifier).refresh(reloadShell: true)),
+            : m.environment == 'host'
+            ? () => unawaited(ref.read(driverStatusesProvider.notifier).refresh(reloadShell: true))
+            : () => rescanEnvironments(ref),
         driverModels: r.driverModels,
       ),
       child: semantic,
