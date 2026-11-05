@@ -23,13 +23,14 @@ Future<DriverProcess> spawnDriver({
   Map<String, String> env = const {},
 }) async {
   final shell = await ShellEnv.load();
+  // Before the start: it is the working directory of an environment's bridge.
+  File(logPath).parent.createSync(recursive: true);
   final process = await Process.start(
     executable,
     args,
     workingDirectory: cwd,
     environment: {...shell.env, ...env, sessionEnvVar: sessionTag},
   );
-  File(logPath).parent.createSync(recursive: true);
   registerDriverRoot(sessionTag, process.pid);
   return _Process(process, sessionTag, File(logPath).openWrite(mode: FileMode.append));
 }

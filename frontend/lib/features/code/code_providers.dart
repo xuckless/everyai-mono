@@ -28,6 +28,11 @@ import '../usage/usage_totals.dart';
 import 'domain/agent_mode.dart';
 import 'domain/approval_reason.dart';
 import 'domain/code_session.dart';
+import 'environments/env_paths.dart';
+import 'environments/env_processes.dart';
+import 'environments/environment_providers.dart';
+import 'environments/environment_statuses.dart';
+import 'environments/exec_env.dart';
 import 'domain/compaction.dart';
 import 'domain/floor_advice.dart';
 import 'domain/doom_loop.dart';
@@ -53,6 +58,7 @@ import 'handoff/handoff_git.dart';
 import 'handoff/handoff_store.dart';
 import 'handoff/lead_timeline.dart';
 import 'handoff/native_import.dart';
+import 'git/git_env.dart';
 import 'git/git_service.dart';
 import 'domain/transcript_export.dart';
 import 'drivers/acp/acp_driver.dart' show AcpDriver;
@@ -61,8 +67,9 @@ import 'drivers/briefing/session_skill.dart';
 import 'drivers/briefing/skill_export.dart';
 import 'drivers/briefing/skill_render.dart' show defuseInlineCommands;
 import 'drivers/driver.dart';
+import 'drivers/driver_env.dart';
 import 'drivers/driver_policy.dart';
-import 'drivers/driver_process.dart' show DriverProcess, closeAllDriverProcesses;
+import 'drivers/driver_process.dart' show DriverProcess, closeAllDriverProcesses, insidePathOf;
 import 'drivers/driver_registry.dart';
 import 'drivers/lead_skills.dart';
 import 'drivers/terminal/terminal_driver.dart';
@@ -123,12 +130,77 @@ final harnessProvider = Provider<Harness>((ref) => FakeHarness());
 /// The harness a session in [workingDir] runs on: the scripted one for demo
 /// projects, else the driver stored as [harness] (see `driver_registry.dart`).
 /// Sessions from the removed OpenHands harness can't reopen.
-Future<Harness> harnessFor(Ref ref, String workingDir, {String harness = everyaiHarnessName}) async {
+///
+/// In an [environment] other than the host, the driver's copy bound there
+/// (`DriverRegistry.resolve`): the EveryAI harness and terminal agents run on
+/// this computer only.
+Future<Harness> harnessFor(
+  Ref ref,
+  String workingDir, {
+  String harness = everyaiHarnessName,
+  String environment = 'host',
+}) async {
   if (isDemoPath(workingDir)) return ref.read(harnessProvider);
   if (harness == openHandsHarnessName) throw const HarnessError(removedHarnessNotice);
-  return ref.read(driverRegistryProvider).resolve(harness) ??
-      (throw HarnessError("This session ran on $harness, which this version of the app doesn't have."));
+  final env = await execEnvFor(ref, environment);
+  if (!env.isHost && harness == everyaiHarnessName) {
+    throw HarnessError('The EveryAI harness runs on this computer only; pick an agent installed in ${env.label}.');
+  }
+  // Its files have no path on this computer yet (no sshfs-style map), so nothing could start there.
+  if (env.kind == EnvKind.ssh) {
+    throw HarnessError("Agents can't run on ${env.label} yet: EveryAI can't see that computer's files.");
+  }
+  final registry = ref.read(driverRegistryProvider);
+  if (registry.resolve(harness, env: env) case final d?) return d;
+  if (!env.isHost) {
+    if (registry.resolve(harness) case final d?) throw HarnessError("${d.info.label} can't run inside ${env.label}.");
+  }
+  throw HarnessError("This session ran on $harness, which this version of the app doesn't have.");
 }
+
+/// The environment stored as [id] (`CodeProject.environment`,
+/// `CodeSessionInfo.environment`): the host, or the one with exactly that id
+/// found on this computer. Never the host instead: a project set to run in a
+/// distro or container must not run its agent here.
+Future<ExecEnv> execEnvFor(Ref ref, String id) async {
+  if (id == HostEnv.instance.id) return HostEnv.instance;
+  return environmentById(await ref.read(environmentsProvider.future), id) ??
+      (throw const HarnessError(
+        "This project's environment isn't on this computer any more (or isn't running). Start it, or set the project "
+        'to run on this computer.',
+      ));
+}
+
+/// What starting an isolated session says when [env] (its name) can't write to the app's worktrees.
+String isolatedUnreachable(String env) =>
+    "Isolated sessions can't run in $env yet: the agent there can't write to EveryAI's worktree folder. Turn "
+    'Isolated off to work in the project folder.';
+
+/// Whether the agent in environment [id] can write under [hostDir] (a fork copy under the app's data). False for
+/// an environment that's gone, so a fork shares the folder instead.
+Future<bool> _writableFrom(Ref ref, String id, String hostDir) async {
+  if (id == HostEnv.instance.id) return true;
+  try {
+    return (await execEnvFor(ref, id)).writableInside(hostDir);
+  } on Object {
+    return false;
+  }
+}
+
+/// [hostPath] (a project folder or worktree) as [env] sees it; throws when
+/// it can't.
+String envPathOf(ExecEnv env, String hostPath) => env.isHost
+    ? hostPath
+    : env.toEnvPath(hostPath) ?? (throw HarnessError("This folder isn't visible inside ${env.label}: $hostPath"));
+
+/// The outside sessions whose environment can't reach EveryAI's host, by session id, with that environment's
+/// name: briefed without the host's token and tools, and told once when they open.
+final _hostUnreachedProvider = Provider<Map<String, String>>((ref) => {});
+
+/// Ends what runs inside an environment under a session's tag (tests replace it).
+final endInsideProvider = Provider<Future<List<int>> Function(ExecEnv env, String tag, {bool toolsOnly})>(
+  (ref) => endInside,
+);
 
 /// What a session from the removed OpenHands harness shows instead of its history.
 const removedHarnessNotice =
@@ -171,6 +243,11 @@ List<({DriverInfo info, String? blocked})> handoffChoices(
 const hostToolsExpired =
     "This session's EveryAI tools (question cards, plans, project memory) expired after a long idle time. Start a "
     'new session to use them again.';
+
+/// The note a session shows when its agent runs in an environment ([env], its name) that can't reach EveryAI.
+String hostUnreachedNotice(String env) =>
+    "EveryAI's tools (question cards, plans, project memory) can't be reached from $env, so this agent runs "
+    'without them.';
 
 /// Where the app keeps its data (`GitService.dataDir`); outside sessions'
 /// briefings go under `<it>/driver-sessions/<session id>`. Tests point it
@@ -481,11 +558,55 @@ final _liveProvider = Provider<Map<String, HarnessSession>>((ref) => {});
 /// Folders the user opened as projects (stored in preferences).
 final codeProjectsProvider = NotifierProvider<CodeProjects, List<CodeProject>>(CodeProjects.new);
 
+/// Sets [gitInsideOf] for this app: a folder in a WSL distro's own files
+/// (`\\wsl.localhost\<distro>\…`) runs git in that distro, found among the
+/// environments by name, with worktrees under its `~/.local/share/everyai`.
+/// Nothing is looked for until such a folder comes.
+final gitInsideProvider = Provider<void>((ref) {
+  Future<GitInside?> resolve(String dir) async {
+    final distro = wslDistroOf(dir)?.toLowerCase();
+    if (distro == null) return null;
+    final env = (await ref.read(environmentsProvider.future))
+        .where((e) => e.kind == EnvKind.wsl && e.id.toLowerCase() == 'wsl:$distro')
+        .firstOrNull;
+    if (env == null) return null;
+    final home = (await ref.read(environmentScanProvider(env.id).future)).home;
+    final data = home == null ? null : env.toHostPath('$home/.local/share/everyai');
+    return data == null ? null : (env: env, dataDir: data);
+  }
+
+  gitInsideOf = resolve;
+  ref.onDispose(() {
+    if (identical(gitInsideOf, resolve)) gitInsideOf = null;
+  });
+});
+
+/// Sets [insidePathOf] for this app: a CLI started inside an environment
+/// gets the PATH that environment's scan read from the login shell (the one
+/// it was found with).
+final insidePathProvider = Provider<void>((ref) {
+  Future<String?> resolve(ExecEnv env) async {
+    try {
+      return (await ref.read(environmentScanProvider(env.id).future)).path;
+    } on Object {
+      return null;
+    }
+  }
+
+  insidePathOf = resolve;
+  ref.onDispose(() {
+    if (identical(insidePathOf, resolve)) insidePathOf = null;
+  });
+});
+
 final class CodeProjects extends Notifier<List<CodeProject>> {
   static const _key = 'code.projects';
 
   @override
   List<CodeProject> build() {
+    // Projects in a WSL distro's own files run git there, and CLIs inside get the login shell's PATH.
+    ref.read(gitInsideProvider);
+    ref.read(insidePathProvider);
     final raw = ref.read(preferencesProvider)[_key];
     if (raw == null) return const [];
     return [for (final p in jsonDecode(raw) as List<Object?>) CodeProject.fromJson(p! as Map<String, Object?>)];
@@ -511,6 +632,12 @@ final class CodeProjects extends Notifier<List<CodeProject>> {
       for (final p in state)
         if (p.id != id) p,
     ];
+    _save();
+  }
+
+  /// Where [id]'s sessions run from now on ([envId] from `ExecEnv.id`). Sessions already started keep theirs.
+  void setEnvironment(String id, String envId) {
+    state = [for (final p in state) p.id == id ? p.withEnvironment(envId) : p];
     _save();
   }
 }
@@ -552,7 +679,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     // to be isolated (then a worktree on its own branch). A remote host's
     // folder can't be branched or snapshotted from here.
     final local = !noLocalFolder(project.path);
-    final runner = await harnessFor(ref, project.path, harness: harness);
+    final runner = await harnessFor(ref, project.path, harness: harness, environment: project.environment);
     final driver = runner is HarnessDriver && isOutsideLead(harness, project.path) ? runner : null;
     // Before anything is made for the session.
     if (driver != null) {
@@ -564,7 +691,9 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       if (prompt.trim().isEmpty) throw HarnessError('${script.title} needs a task: type what it should work on.');
       if (await _workflowProblem(ref, project.path, script) case final why?) throw HarnessError(why);
     }
-    final worktree = local && isolated ? await _worktreeFor(project, title, id) : null;
+    final worktree = local && isolated
+        ? await _worktreeFor(project, title, id, env: driver == null ? HostEnv.instance : _envOf(driver))
+        : null;
     final baseline = local && worktree == null ? await _baselineFor(project.path) : null;
     final workingDir = worktree?.path ?? project.path;
     tier ??= ref.read(codeSettingsProvider).tier;
@@ -608,6 +737,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
             tier: tier,
             harness: harness,
             briefing: briefing,
+            environment: project.environment,
           ),
         );
       } on Object {
@@ -640,6 +770,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       tier: tier,
       workflow: workflow?.isMax ?? false ? maxWorkflowId : null,
       toldWorkflow: workflow?.isMax ?? false ? maxWorkflowId : null,
+      environment: project.environment,
     );
     state = [info, ...state];
     _save();
@@ -658,7 +789,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     required AgentMode mode,
     List<HarnessEvent> history = const [],
   }) async {
-    final runner = await harnessFor(ref, past.cwd, harness: past.harness);
+    final runner = await harnessFor(ref, past.cwd, harness: past.harness, environment: project.environment);
     if (runner is! HarnessDriver || runner is! AdoptsNativeSession || !isOutsideLead(past.harness, past.cwd)) {
       throw HarnessError("This harness can't resume its sessions here.");
     }
@@ -699,6 +830,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       effort: effort ?? '',
       holdClientTools: true,
       tier: ref.read(codeSettingsProvider).tier,
+      environment: project.environment,
     );
     state = [info, ...state];
     _save();
@@ -730,8 +862,14 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     List<String>? researchSites,
     String? harness,
     DriverBriefing? briefing,
+    String? environment,
   }) async {
     final demo = isDemoPath(projectDir);
+    // Where its agent runs: the folder goes over as that environment sees it (pathMap is the EveryAI harness's,
+    // which runs on this computer only).
+    final execEnv = demo
+        ? HostEnv.instance
+        : await execEnvFor(ref, environment ?? byId(sessionId)?.environment ?? 'host');
     // An outside agent brings its own prompt, model, keys and skill loading: none of the EveryAI harness's parts apply.
     final outside = isOutsideLead(harness ?? byId(sessionId)?.harness ?? everyaiHarnessName, projectDir);
     // A session's own effort level; a new one's comes from the caller, else the default.
@@ -767,7 +905,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     // The Max skill too in a main session: the Max note asks the lead to load it.
     final skills = !local ? const <Map<String, Object?>>[] : await codeSkillsFor(ref, projectId, max: !subagent);
     return SessionSpec(
-      workingDir: workingDir,
+      workingDir: envPathOf(execEnv, workingDir),
       model: model,
       mode: mode,
       llmBaseUrl: demo || outside ? '' : gatewayBaseUrl(ref),
@@ -836,6 +974,17 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     final forward = _forwardTo(id, projectDir, ready, workflows: hostOnly == null);
     final token = await host.mint(id, forward, only: hostOnly);
     try {
+      // Inside an environment the agent gets the host's address from there, and the skills as it sees them
+      // (none when it can't see the app's data). Where it can't reach this computer it gets neither the token
+      // nor the host tools in its text, and the session says so once.
+      final env = _envOf(driver);
+      final url = env.isHost ? token.url : await _hostUrlFrom(env, token);
+      final unreached = ref.read(_hostUnreachedProvider);
+      if (url == null) {
+        unreached[id] = env.label;
+      } else {
+        unreached.remove(id);
+      }
       final export = await _exportBriefing(
         id,
         projectDir: projectDir,
@@ -843,13 +992,13 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         driver: driver,
         model: model,
         asFork: asFork,
-        hostOnly: hostOnly,
+        hostOnly: url == null ? const {} : hostOnly,
       );
       tokens[id] = token.token;
       final briefing = DriverBriefing(
-        mcpUrl: '${token.url}',
-        mcpToken: token.token,
-        skillDir: export.skillDir,
+        mcpUrl: '${url ?? token.url}',
+        mcpToken: url == null ? '' : token.token,
+        skillDir: env.isHost ? export.skillDir : env.toEnvPath(export.skillDir),
         sessionSkill: export.text,
         host: forward,
       );
@@ -887,14 +1036,17 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
   }) async {
     final projectId = ref.read(codeProjectsProvider).where((p) => p.path == projectDir).firstOrNull?.id;
     final notes = await hostProjectNotes(workingDir);
+    // The folders as the agent sees them.
+    final env = _envOf(driver);
+    String inside(String p) => env.isHost ? p : env.toEnvPath(p) ?? p;
     // A fork gets no notices; the others keep one nonce for the session's whole life.
     final nonce = asFork ? '' : await sessionNoticeNonce(await _driverDir(id), newNoticeNonce);
     ref.read(_noticeNoncesProvider)[id] = nonce;
     final text = [
       sessionBriefing(
         SessionSkillInput(
-          worktree: workingDir,
-          projectRoot: projectDir,
+          worktree: inside(workingDir),
+          projectRoot: inside(projectDir),
           lead: (name: driver.info.label, model: model.isEmpty ? 'its default model' : model),
           noticeNonce: nonce,
           hostTools: hostOnly != null
@@ -951,6 +1103,36 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
 
   Future<String> _driverDir(String id) async => '${await ref.read(driverDataDirProvider)()}/driver-sessions/$id';
 
+  /// The MCP host's address as [env] reaches it, served there for [token]
+  /// only ([HostServer.reachFrom]). WSL in NAT mode reaches Windows at its
+  /// default gateway (from the distro's scan). Where the environment can't
+  /// reach this computer (an ssh remote, a VM without a host name, an
+  /// address that can't be listened on), null: the agent runs without
+  /// EveryAI's tools. Never the host's loopback, which inside is the
+  /// environment's own.
+  Future<Uri?> _hostUrlFrom(ExecEnv env, HostToken token) async {
+    var url = env.hostUrl(token.url);
+    if (url == null && env.kind == EnvKind.wsl) {
+      try {
+        final gateway = (await ref.read(environmentScanProvider(env.id).future)).hostAddress;
+        if (gateway != null && gateway.isNotEmpty) url = token.url.replace(host: gateway);
+      } on Object {
+        // No scan: no address.
+      }
+    }
+    if (url == null) return null;
+    try {
+      return await ref.read(hostServerProvider).reachFrom(token.token, url);
+    } on Object {
+      // That address can't be listened on (taken, or gone): no tools rather than no session.
+      return null;
+    }
+  }
+
+  /// Where [driver]'s CLI runs: its environment when it is bound to one.
+  static ExecEnv _envOf(HarnessDriver driver) =>
+      driver is RunsInEnvironments ? (driver as RunsInEnvironments).execEnv : HostEnv.instance;
+
   /// Where session [id] keeps what earlier leads did (the timeline journal)
   /// and the handoffs between them.
   Future<String> timelineDir(String id) async => '${await ref.read(driverDataDirProvider)()}/code-timelines/$id';
@@ -970,7 +1152,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     String? initialMessage,
     Future<void>? ready,
   }) async {
-    final runner = await harnessFor(ref, info.workingDir, harness: harness);
+    final runner = await harnessFor(ref, info.workingDir, harness: harness, environment: info.environment);
     final driver = runner is HarnessDriver && isOutsideLead(harness, info.workingDir) ? runner : null;
     final projectDir = ref.read(codeProjectsProvider).where((p) => p.id == info.projectId).firstOrNull?.path;
     final briefing = driver == null
@@ -1021,6 +1203,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
   Future<void> _unbrief(String id) async {
     ref.read(_hostTokensProvider).remove(id);
     ref.read(_briefingTextsProvider).remove(id);
+    ref.read(_hostUnreachedProvider).remove(id);
     ref.read(_noticeNoncesProvider).remove(id);
     try {
       await ref.read(hostServerProvider).revokeSession(id);
@@ -1037,7 +1220,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
   /// a workflow agent gets its restricted host again ([_attachWorkflowAgent]).
   /// With [keepCurrent] (a lead switch) the session's current token stays.
   Future<HarnessSession> attachSession(CodeSessionInfo info, {bool keepCurrent = false}) async {
-    final harness = await harnessFor(ref, info.workingDir, harness: info.harness);
+    final harness = await harnessFor(ref, info.workingDir, harness: info.harness, environment: info.environment);
     final project = ref.read(codeProjectsProvider).where((p) => p.id == info.projectId).firstOrNull;
     // The user's approved MCP servers, as at start (specFor) but as they are now: the app's list for the
     // project found by its folder, never repository files.
@@ -1233,11 +1416,15 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     ForkCopy? copy;
     if (isolate) {
       try {
-        copy = await GitService.forkCopy(
-          parent.workingDir,
-          worktreesDir: '${await GitService.dataDir()}/forks',
-          slug: sessionSlug(task.title, const Uuid().v7()),
-        );
+        final forks = '${await GitService.dataDir()}/forks';
+        // An agent in an environment that can't write the app's data shares the folder too.
+        if (await _writableFrom(ref, parent.environment, forks)) {
+          copy = await GitService.forkCopy(
+            parent.workingDir,
+            worktreesDir: forks,
+            slug: sessionSlug(task.title, const Uuid().v7()),
+          );
+        }
       } on Object {
         copy = null; // Shares the folder instead.
       }
@@ -1309,7 +1496,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     projectDir ??=
         ref.read(codeProjectsProvider).where((p) => p.id == parent.projectId).firstOrNull?.path ?? parent.workingDir;
     workingDir ??= forkCopy?.path ?? parent.workingDir;
-    final runner = await harnessFor(ref, parent.workingDir, harness: harness);
+    final runner = await harnessFor(ref, parent.workingDir, harness: harness, environment: parent.environment);
     // A driver that can't fork can't start one from the parent's history yet.
     if (runner case final HarnessDriver d when fork && !d.caps.contains(DriverCap.fork)) throw forkUnavailable(d.info);
     // A briefed outside child gets its own host token, so it can ask (a Max fork's question reaches its lead).
@@ -1371,6 +1558,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         // The child isn't saved yet, so its harness can't be looked up by id.
         harness: harness,
         briefing: briefing,
+        environment: parent.environment,
       ),
     );
     ref.read(_liveProvider)[id] = live;
@@ -1394,6 +1582,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       tier: parent.tier,
       // The parent's own mode (Claude's `auto` over Accept edits) when the child runs as it does.
       nativeMode: mode == parent.mode && harness == parent.harness ? parent.nativeMode : '',
+      environment: parent.environment,
     );
     state = [...state, info];
     _save();
@@ -1448,22 +1637,32 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
 
   /// A worktree for the session when [project] is a git repository with a commit to branch from. A fresh
   /// `git init` has none, so its session runs in the folder itself, like a folder outside git.
-  static Future<SessionWorktree?> _worktreeFor(CodeProject project, String title, String id) async {
+  /// Refused, before anything is made, when the agent's [env] can't write there (a container that doesn't
+  /// mount the app's data, Lima's read-only home).
+  Future<SessionWorktree?> _worktreeFor(
+    CodeProject project,
+    String title,
+    String id, {
+    ExecEnv env = HostEnv.instance,
+  }) async {
     final root = await GitService.repoRoot(project.path);
     if (root == null || !await GitService.hasCommits(root)) return null;
-    final data = await GitService.dataDir();
+    final data = await gitDataDirInside(root) ?? await ref.read(driverDataDirProvider)();
     final repoName = root.split('/').last;
+    final dir = '$data/worktrees/$repoName-${project.id.substring(project.id.length - 6)}';
+    if (!env.isHost && !env.writableInside(dir)) throw HarnessError(isolatedUnreachable(env.label));
     return GitService.createWorktree(
       repoRoot: root,
       slug: sessionSlug(title, id),
-      worktreesDir: '$data/worktrees/$repoName-${project.id.substring(project.id.length - 6)}',
+      worktreesDir: dir,
       hooksDir: '$data/git-hooks',
     );
   }
 
-  static Future<void> _dropWorktree(SessionWorktree w) async {
+  Future<void> _dropWorktree(SessionWorktree w) async {
     try {
-      await GitService.removeWorktree(w, hooksDir: '${await GitService.dataDir()}/git-hooks');
+      final data = await gitDataDirInside(w.repoRoot) ?? await ref.read(driverDataDirProvider)();
+      await GitService.removeWorktree(w, hooksDir: '$data/git-hooks');
     } on Object {
       // Left behind, it is only disk space and a branch.
     }
@@ -2222,6 +2421,9 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     final text = ref.read(_briefingTextsProvider)[sessionId];
     if (text == null || text.isEmpty) return;
     _builder.addNotice(NoticeItem('briefing-${_timeline.length}', briefingNotice, detail: text));
+    if (ref.read(_hostUnreachedProvider)[sessionId] case final env?) {
+      _builder.addNotice(NoticeItem('host-unreached-${_timeline.length}', hostUnreachedNotice(env)));
+    }
     _carried = _builder.snapshot.items;
     state = state.copyWith(transcript: _builder.snapshot);
   }
@@ -2433,6 +2635,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     }
     final looped = event is ActionCall && _doom.add(event) && _live;
     event = _spilled(event);
+    if (event is ActionCall) event = _toHost(event);
     // Live only, like deltas: a retry note is not part of what the session replays.
     if (event is! StreamDelta && event is! RetryState) _events.add(event);
     // A state change refreshes the meter; the cost lives in our ledger, or an outside driver reports it.
@@ -2517,6 +2720,15 @@ final class CodeSessionController extends Notifier<CodeSessionState>
 
   /// [event] with a result over the output limits cut to a preview; the whole
   /// text goes to `.everyai/spill/` in the project.
+  /// [call] from a CLI inside an environment, with its paths as this computer
+  /// sees them (the rules, rows and diffs read host paths).
+  ActionCall _toHost(ActionCall call) {
+    final id = ref.read(codeSessionsProvider.notifier).byId(sessionId)?.environment ?? HostEnv.instance.id;
+    if (id == HostEnv.instance.id) return call;
+    final env = environmentById(ref.read(environmentsProvider).value ?? const [], id);
+    return env == null ? call : actionToHost(call, env.toHostPath);
+  }
+
   HarnessEvent _spilled(HarnessEvent event) {
     if (event is! ToolResult) return event;
     final spill = spillOf(event);
@@ -3220,7 +3432,12 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         runInitial: resume,
         isolated: info.worktree != null,
       );
-      final live = await (await harnessFor(ref, info.workingDir, harness: info.harness)).start(spec);
+      final live = await (await harnessFor(
+        ref,
+        info.workingDir,
+        harness: info.harness,
+        environment: info.environment,
+      )).start(spec);
       if (!ref.mounted) {
         unawaited(live.close());
         return const CompactOutcome.failed('The session was closed.');
@@ -3438,7 +3655,9 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     try {
       final Map<String, DriverStatus> statuses;
       try {
-        statuses = await ref.read(driverStatusesProvider.future);
+        // Where the session runs: the harness must be installed there.
+        await execEnvFor(ref, info.environment); // says when the environment is gone
+        statuses = await ref.read(driverStatusesInProvider(info.environment).future);
       } on Object catch (e) {
         return LeadSwitchOutcome.failed('$e');
       }
@@ -4181,7 +4400,18 @@ final class CodeSessionController extends Notifier<CodeSessionState>
           workingDir: info.workingDir,
           ownsDir: ownsWorkingDir(info, parent: ref.read(codeSessionsProvider.notifier).byId(info.parentId ?? '')),
         ),
+      // The host's process walk can't see inside an environment.
+      if (info != null && killsOwnProcesses(info) && info.environment != HostEnv.instance.id) _endInside(info),
     ]);
+  }
+
+  /// Stop inside [info]'s environment: what the CLI's shells run there ends; the CLI stays.
+  Future<void> _endInside(CodeSessionInfo info) async {
+    try {
+      await ref.read(endInsideProvider)(await execEnvFor(ref, info.environment), info.id, toolsOnly: true);
+    } on Object {
+      // The environment is gone, or nothing was left running.
+    }
   }
 
   /// Starts a child conversation for each new `run_subagent` call, or picks up the
@@ -5060,11 +5290,15 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       ForkCopy? copy;
       if (isolate) {
         try {
-          copy = await GitService.forkCopy(
-            info.workingDir,
-            worktreesDir: '${await ref.read(driverDataDirProvider)()}/forks',
-            slug: sessionSlug(title, const Uuid().v7()),
-          );
+          final forks = '${await ref.read(driverDataDirProvider)()}/forks';
+          // An agent in an environment that can't write the app's data shares the folder too.
+          if (await _writableFrom(ref, info.environment, forks)) {
+            copy = await GitService.forkCopy(
+              info.workingDir,
+              worktreesDir: forks,
+              slug: sessionSlug(title, const Uuid().v7()),
+            );
+          }
         } on Object {
           copy = null; // Shares the folder instead.
         }
@@ -5998,7 +6232,7 @@ base class CodeGit extends AsyncNotifier<GitSnapshot> {
   /// Removes the session, its worktree, branch and checkpoints.
   Future<void> discard() async {
     final w = _w;
-    final data = await GitService.dataDir();
+    final data = await gitDataDirInside(w.repoRoot) ?? await GitService.dataDir();
     await ref.read(codeSessionsProvider.notifier).remove(sessionId);
     await GitService.removeWorktree(w, hooksDir: '$data/git-hooks');
   }
@@ -6100,7 +6334,7 @@ final class _WorkflowLauncher implements AgentLauncher {
     if (harness != parent.harness && !registry.listed.any((d) => d.info.id == harness)) {
       throw HarnessError("$harness isn't one of the harnesses set up in this app.");
     }
-    final runner = await harnessFor(_ref, parent.workingDir, harness: harness);
+    final runner = await harnessFor(_ref, parent.workingDir, harness: harness, environment: parent.environment);
     if (runner is HarnessDriver) {
       // A terminal agent can't say when its turn ends, so nothing could wait for it.
       if (runner is TerminalDriver) throw HarnessError("Workflow agents can't run in ${runner.info.label}.");

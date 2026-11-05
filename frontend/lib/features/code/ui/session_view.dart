@@ -112,6 +112,7 @@ class CodeSessionScreen extends ConsumerWidget {
           ? null
           : (harness) => _switchLead(context, ref, harness, run: false),
       switchesLive: true,
+      environment: info.environment,
       onChanged: (model, effort) => switchCodeAgent(
         context,
         ref,

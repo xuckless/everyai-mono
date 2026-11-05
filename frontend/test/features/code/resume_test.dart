@@ -229,6 +229,22 @@ void main() {
     },
   );
 
+  test('inside another environment the host-stored sessions are listed but not openable', () async {
+    sources = [
+      _Source('alpha', [past('alpha', 'a2', at: DateTime(2026, 11, 2))]),
+    ];
+    container.invalidate(pastSessionSourcesProvider);
+    await listed();
+    prefs['code.projects'] = jsonEncode([
+      CodeProject(id: 'p1', name: 'P', path: project.path, environment: 'wsl:Ubuntu').toJson(),
+    ]);
+    container.dispose();
+    container = make();
+    await listed();
+    final row = container.read(earlierSessionsProvider('p1')).single;
+    expect(row.blocked, startsWith('Ran on this computer'));
+  });
+
   test('resuming runs on its own harness in the folder it ran in, reopened by its id, with its history once', () async {
     final worktree = await Directory('${tmp.path}/wt').create();
     final history = [userMessageEvent('h-u', 'Fix the login'), agentMessageEvent('h-a', 'Fixed it.')];

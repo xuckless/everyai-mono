@@ -314,4 +314,12 @@ final class FakeHost implements HostServer {
 
   @override
   Future<void> stop() async {}
+
+  /// What [reachFrom] was asked, as `token url`.
+  final reached = <String>[];
+  @override
+  Future<Uri> reachFrom(String token, Uri url) async {
+    reached.add('$token $url');
+    return url;
+  }
 }

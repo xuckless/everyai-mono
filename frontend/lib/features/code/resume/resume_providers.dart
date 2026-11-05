@@ -125,7 +125,14 @@ final earlierSessionsProvider = Provider.autoDispose.family<List<EarlierSession>
   final registry = ref.watch(driverRegistryProvider);
   final statuses = ref.watch(driverStatusesProvider).value;
   final own = ref.watch(codeSettingsProvider.select((s) => s.ownClis));
+  // The sources read this computer's files, so inside another environment these can't be resumed.
+  final elsewhere =
+      ref.watch(
+        codeProjectsProvider.select((ps) => ps.where((p) => p.id == projectId).firstOrNull?.environment ?? 'host'),
+      ) !=
+      'host';
   String? blocked(String harness) {
+    if (elsewhere) return 'Ran on this computer; set the project to run here to open it';
     final d = registry.resolve(harness);
     if (d == null) return 'Not available in this version';
     if (d is! AdoptsNativeSession) return "${d.info.label} can't resume its sessions here";

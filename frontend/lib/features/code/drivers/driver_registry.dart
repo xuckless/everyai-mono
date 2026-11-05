@@ -8,6 +8,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/preferences.dart';
 import '../code_providers.dart' show everyaiHarnessProvider;
 import '../domain/code_session.dart' show everyaiHarnessName;
+import '../environments/environment_providers.dart' show environmentScanProvider;
+import '../environments/exec_env.dart';
 import 'acp/acp_agents.dart' show acpCommand;
 import 'acp/acp_driver.dart';
 import 'claude/claude_driver.dart';
@@ -15,6 +17,7 @@ import 'codex/codex_driver.dart';
 import 'detection/desktop_apps.dart';
 import 'detection/desktop_apps_stub.dart' if (dart.library.io) 'detection/desktop_apps_io.dart' as here;
 import 'driver.dart';
+import 'driver_env.dart';
 import 'lead_skills.dart';
 import 'driver_process.dart' show loadShellEnv, noAnswerProblem, reloadShellEnv;
 import 'everyai_driver.dart';
@@ -31,13 +34,20 @@ final class DriverRegistry {
     this.fixed, {
     HarnessDriver Function(String command)? acp,
     HarnessDriver Function(String command)? terminal,
-  }) : _acp = acp ?? ((c) => AcpDriver(id: 'acp:$c', label: c, command: c, consentId: _listedFor(fixed, c))),
+    EnvFind Function(ExecEnv env)? envFind,
+  }) : _envFind =
+           envFind ??
+           ((_) =>
+               (_) async => const DriverStatus()),
+       _acp = acp ?? ((c) => AcpDriver(id: 'acp:$c', label: c, command: c, consentId: _listedFor(fixed, c))),
        _terminal = terminal ?? ((c) => TerminalDriver(id: 'terminal:$c', label: c, command: c));
 
   final Map<String, HarnessDriver> fixed;
   final HarnessDriver Function(String command) _acp;
   final HarnessDriver Function(String command) _terminal;
   final _made = <String, HarnessDriver>{};
+  final EnvFind Function(ExecEnv env) _envFind;
+  final _inEnv = <(String, String), HarnessDriver>{};
 
   /// The agents added from the ACP registry, by id; see [setInstalled].
   Map<String, HarnessDriver> get installed => Map.unmodifiable(_installed);
@@ -56,8 +66,21 @@ final class DriverRegistry {
     _installedKeys = {for (final e in drivers.entries) e.key: e.value.key};
   }
 
-  /// The driver stored as [id], or null when this app doesn't have it.
-  HarnessDriver? resolve(String id) {
+  /// The driver stored as [id], or null when this app doesn't have it. In an
+  /// [env] other than the host: its copy bound there (one per driver and
+  /// environment id, so its CLI path, models and open sessions stay its
+  /// own), or null when it can't run there (the EveryAI harness, a terminal).
+  /// An environment found again (a container made again keeps its id but not
+  /// its container id or mounts) gets a new copy; open sessions keep theirs.
+  HarnessDriver? resolve(String id, {ExecEnv env = HostEnv.instance}) {
+    if (env.isHost) return _onHost(id);
+    if (_inEnv[(id, env.id)] case final RunsInEnvironments d when identical(d.execEnv, env)) return d as HarnessDriver;
+    final base = _onHost(id);
+    if (base is! RunsInEnvironments) return null;
+    return _inEnv[(id, env.id)] = (base as RunsInEnvironments).inEnv(env, _envFind(env));
+  }
+
+  HarnessDriver? _onHost(String id) {
     if (fixed[id] case final d?) return d;
     if (_installed[id] case final d?) return d;
     for (final (prefix, make) in [('acp:', _acp), ('terminal:', _terminal)]) {
@@ -87,19 +110,25 @@ final class DriverRegistry {
 /// Every planned driver. All but the EveryAI harness are stubs until their
 /// own files are built.
 final driverRegistryProvider = Provider<DriverRegistry>((ref) {
-  final registry = DriverRegistry({
-    everyaiHarnessName: EveryAIDriver(ref.read(everyaiHarnessProvider)),
-    'claude-code': ClaudeDriver(
-      onSkills: (names) => ref.read(leadSkillsProvider.notifier).sawSkills('claude-code', names),
-    ),
-    'codex': CodexDriver(),
-    'opencode': OpenCodeDriver(),
-    // ACP agents, by their ACP registry ids (cdn.agentclientprotocol.com
-    // registry v1), so a registry-driven list can take these as overrides.
-    // Whether one needs the user's consent comes from its profile.
-    for (final (id, label, command, hint) in _acpAgents)
-      id: AcpDriver(id: id, label: label, command: command, installHint: hint),
-  });
+  final registry = DriverRegistry(
+    {
+      everyaiHarnessName: EveryAIDriver(ref.read(everyaiHarnessProvider)),
+      'claude-code': ClaudeDriver(
+        onSkills: (names) => ref.read(leadSkillsProvider.notifier).sawSkills('claude-code', names),
+      ),
+      'codex': CodexDriver(),
+      'opencode': OpenCodeDriver(),
+      // ACP agents, by their ACP registry ids (cdn.agentclientprotocol.com
+      // registry v1), so a registry-driven list can take these as overrides.
+      // Whether one needs the user's consent comes from its profile.
+      for (final (id, label, command, hint) in _acpAgents)
+        id: AcpDriver(id: id, label: label, command: command, installHint: hint),
+    },
+    // Inside an environment a CLI is where its scan found it (looked for once, kept in memory).
+    envFind: (env) =>
+        (command) async =>
+            (await ref.read(environmentScanProvider(env.id).future)).found[command] ?? const DriverStatus(),
+  );
   // Read here, so the first check and its kept copy already list them.
   return registry..setInstalled(installedDrivers(readInstalledAgents(ref.read(preferencesProvider)), registry.fixed));
 });
