@@ -74,4 +74,14 @@ void main() {
       expect(next('0 9 * * *', DateTime.utc(2026, 11, 5, 9)), DateTime.utc(2026, 11, 6, 9));
     });
   });
+
+  test('next is always after the instant it was asked from, also when clocks go back', () {
+    final spec = CronSpec.parse('*/5 * * * *');
+    final hourly = CronSpec.parse('45 1 * * *');
+    // Hourly steps over a year cover every local DST change; run with TZ=America/New_York to be sure.
+    for (var t = DateTime(2026, 1, 1); t.year == 2026; t = t.add(const Duration(minutes: 37))) {
+      expect(spec.next(t)!.isAfter(t), isTrue, reason: '$t');
+      expect(hourly.next(t)!.isAfter(t), isTrue, reason: '$t');
+    }
+  });
 }

@@ -95,8 +95,11 @@ final class CronSpec {
         t = at(t.year, t.month, t.day, t.hour + 1);
       } else if (!_minutes.contains(t.minute)) {
         t = at(t.year, t.month, t.day, t.hour, t.minute + 1);
-      } else {
+      } else if (t.isAfter(after)) {
         return t;
+      } else {
+        // The repeated hour when clocks go back: a wall time can resolve to its earlier occurrence.
+        t = at(t.year, t.month, t.day, t.hour, t.minute + 1);
       }
     }
     return null;

@@ -28,10 +28,13 @@ final scheduleStarterProvider = Provider<Future<CodeSessionInfo> Function(Schedu
 /// Whether the session [id] (started by a task in this run of the app) is still working.
 final scheduleSessionActiveProvider = Provider<bool Function(String)>(
   (ref) =>
-      (id) => switch (ref.read(codeSessionProvider(id)).status) {
-        SessionStatus.starting || SessionStatus.running || SessionStatus.needsInput => true,
-        _ => false,
-      },
+      // A session nobody has open has no controller, and reading one here would build it just to ask.
+      (id) =>
+          ref.exists(codeSessionProvider(id)) &&
+          switch (ref.read(codeSessionProvider(id)).status) {
+            SessionStatus.starting || SessionStatus.running || SessionStatus.needsInput => true,
+            _ => false,
+          },
 );
 
 /// Starts a normal Code session for [task], so the consent, permission and floor checks of every session apply.
@@ -54,6 +57,9 @@ Future<CodeSessionInfo> startTaskSession(Ref ref, ScheduledTask task) async {
   );
   final titled = info.copyWith(title: task.name);
   sessions.update(titled);
+  // The controller answers the harness's approvals for the mode, notifies and enforces the budget; the session
+  // view builds it for a session started by hand, and nobody opens this one. The provider keeps it alive.
+  ref.read(codeSessionProvider(info.id));
   return titled;
 }
 
@@ -74,24 +80,32 @@ final class ScheduledTasks extends Notifier<List<ScheduledTask>> {
     final now = ref.read(scheduleClockProvider)();
     final missed = <String, DateTime>{};
     final tasks = <ScheduledTask>[];
+    var unreadable = false;
     try {
       for (final j in jsonDecode(raw) as List<Object?>) {
-        var t = ScheduledTask.fromJson(j! as Map<String, Object?>);
-        if (t.enabled && (t.nextRun == null || !t.nextRun!.isAfter(now))) {
-          if (t.nextRun != null) missed[t.id] = t.nextRun!;
-          t = t.copyWith(nextRun: t.schedule.next(now));
+        try {
+          var t = ScheduledTask.fromJson(j! as Map<String, Object?>);
+          if (t.enabled && (t.nextRun == null || !t.nextRun!.isAfter(now))) {
+            if (t.nextRun != null) missed[t.id] = t.nextRun!;
+            t = t.copyWith(nextRun: t.schedule.next(now));
+          }
+          tasks.add(t);
+        } on Object {
+          // One entry this build can't read (maybe from a newer one): skip it.
+          unreadable = true;
         }
-        tasks.add(t);
       }
     } on Object {
-      // A damaged list: start with none rather than fail the app.
+      unreadable = true;
     }
     this.missed = missed;
-    ref.read(preferencesProvider)[_key] = jsonEncode([for (final t in tasks) t.toJson()]);
+    // Stored entries that couldn't be read stay as they are until the user changes the list.
+    if (!unreadable) _save(tasks);
     return tasks;
   }
 
-  void _save() => ref.read(preferencesProvider)[_key] = jsonEncode([for (final t in state) t.toJson()]);
+  void _save([List<ScheduledTask>? tasks]) =>
+      ref.read(preferencesProvider)[_key] = jsonEncode([for (final t in tasks ?? state) t.toJson()]);
 
   ScheduledTask? byId(String id) => state.where((t) => t.id == id).firstOrNull;
 
@@ -119,7 +133,14 @@ final class ScheduledTasks extends Notifier<List<ScheduledTask>> {
   /// Adds [task] or replaces the one with its id; an enabled task gets its next run from now.
   void put(ScheduledTask task) {
     final now = ref.read(scheduleClockProvider)();
-    final planned = task.copyWith(nextRun: task.enabled ? task.schedule.next(now) : null);
+    // The last run is the runner's: a form opened before it finished must not bring back an older one.
+    final old = byId(task.id);
+    final planned = task.copyWith(
+      nextRun: task.enabled ? task.schedule.next(now) : null,
+      lastRun: old?.lastRun ?? task.lastRun,
+      lastSessionId: old == null ? task.lastSessionId : old.lastSessionId,
+      lastError: old == null ? task.lastError : old.lastError,
+    );
     missed = {...missed}..remove(task.id);
     state = state.any((t) => t.id == task.id)
         ? [for (final t in state) t.id == task.id ? planned : t]
@@ -154,6 +175,10 @@ final scheduleRunnerProvider = NotifierProvider<ScheduleRunner, Set<String>>(Sch
 final class ScheduleRunner extends Notifier<Set<String>> {
   /// Task id → the session its last run in this app run started.
   final _started = <String, String>{};
+  bool _ticking = false;
+
+  /// A run later than this after its time counts as missed (a few ticks of slack).
+  static const missedAfter = Duration(minutes: 3);
 
   @override
   Set<String> build() {
@@ -169,9 +194,25 @@ final class ScheduleRunner extends Notifier<Set<String>> {
 
   /// Runs every enabled task that is due.
   Future<void> tick() async {
-    final now = ref.read(scheduleClockProvider)();
-    for (final t in ref.read(scheduledTasksProvider)) {
-      if (t.enabled && t.nextRun != null && !t.nextRun!.isAfter(now)) await _run(t, now, scheduled: true);
+    if (_ticking) return;
+    _ticking = true;
+    try {
+      final tasks = ref.read(scheduledTasksProvider.notifier);
+      final now = ref.read(scheduleClockProvider)();
+      for (final id in [for (final t in ref.read(scheduledTasksProvider)) t.id]) {
+        // Read again: an earlier start can take a while, and the task may have been edited or removed since.
+        final t = tasks.byId(id);
+        if (t == null || !t.enabled || t.nextRun == null || t.nextRun!.isAfter(now)) continue;
+        if (now.difference(t.nextRun!) > missedAfter) {
+          // Due long ago (the computer slept): offer Run now, as after a restart, instead of starting by itself.
+          tasks.missed = {...tasks.missed, id: t.nextRun!};
+          tasks.patch(id, (t) => t.copyWith(nextRun: t.schedule.next(now)));
+          continue;
+        }
+        await _run(t, now, scheduled: true);
+      }
+    } finally {
+      _ticking = false;
     }
   }
 
@@ -188,7 +229,7 @@ final class ScheduleRunner extends Notifier<Set<String>> {
     if (scheduled) tasks.patch(task.id, (t) => t.copyWith(nextRun: t.schedule.next(now)));
     if (state.contains(task.id)) return;
     if (_started[task.id] case final sid? when ref.read(scheduleSessionActiveProvider)(sid)) {
-      if (scheduled) tasks.patch(task.id, (t) => t.copyWith(lastError: 'Skipped: the last run is still working.'));
+      tasks.patch(task.id, (t) => t.copyWith(lastError: 'Skipped: the last run is still working.'));
       return;
     }
     state = {...state, task.id};
