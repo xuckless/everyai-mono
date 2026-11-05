@@ -98,7 +98,9 @@ void main() {
           onReload: (_) {},
           extra: [
             if (opened != null)
-              setupOpenerProvider.overrideWithValue((context, driver, env) async => opened.add((driver.info.id, env))),
+              setupOpenerProvider.overrideWithValue(
+                (context, driver, env, {signIn = false}) async => opened.add((driver.info.id, env)),
+              ),
           ],
         ),
       );
@@ -253,6 +255,40 @@ void main() {
         await tester.pump();
         expect(pty.kills, 1);
         expect(reloads, 3);
+      }),
+    );
+
+    testWidgets(
+      'opened for sign-in, it types the login command with the found path, not the install line',
+      _mac((tester) async {
+        tester.view.physicalSize = const Size(1000, 900);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.reset);
+        final pty = _Pty();
+        final d = FakeLeadDriver(
+          'claude-code',
+          label: 'Claude Code',
+          status: const DriverStatus(installed: true, path: '/x/claude', signedIn: false),
+        );
+        await tester.pumpWidget(
+          _app(
+            // Built once the first check has an answer, as the row's button only shows after it.
+            Consumer(
+              builder: (context, ref, _) => ref.watch(driverStatusesProvider).hasValue
+                  ? SetupTerminalDialog(driver: d, env: HostEnv.instance, signIn: true)
+                  : const SizedBox.shrink(),
+            ),
+            driver: d,
+            onReload: (_) {},
+            extra: [setupShellStarterProvider.overrideWithValue((env, home, rows, columns) async => pty)],
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+        expect(pty.writes.single, '/x/claude auth login');
+        expect(find.byKey(const ValueKey('setup.command')), findsNothing);
+        expect(find.text('Sign in to Claude Code'), findsOneWidget);
       }),
     );
 

@@ -22,16 +22,21 @@ import '../panes/setup_terminal.dart';
 import '../settings/context_files_stub.dart' if (dart.library.io) '../settings/context_files_io.dart' as home;
 
 /// Opens the setup terminal for [driver]: the vendor's install line for this system typed at a prompt (not run),
-/// and, once the CLI is there, its own sign-in. [env] is where the shell runs.
-Future<void> showSetupTerminal(BuildContext context, {required HarnessDriver driver, ExecEnv env = HostEnv.instance}) =>
-    showGeneralDialog<void>(
-      context: context,
-      useRootNavigator: true,
-      barrierDismissible: false,
-      barrierLabel: 'Close setup',
-      barrierColor: const Color(0x66000000),
-      pageBuilder: (_, _, _) => SetupTerminalDialog(driver: driver, env: env),
-    );
+/// and, once the CLI is there, its own sign-in. [env] is where the shell runs. With [signIn] (the CLI is installed
+/// but signed out) the login command is typed instead, as long as the last check knows where the CLI is.
+Future<void> showSetupTerminal(
+  BuildContext context, {
+  required HarnessDriver driver,
+  ExecEnv env = HostEnv.instance,
+  bool signIn = false,
+}) => showGeneralDialog<void>(
+  context: context,
+  useRootNavigator: true,
+  barrierDismissible: false,
+  barrierLabel: 'Close setup',
+  barrierColor: const Color(0x66000000),
+  pageBuilder: (_, _, _) => SetupTerminalDialog(driver: driver, env: env, signIn: signIn),
+);
 
 /// [path] as one word for the shell of [os].
 String shellWord(String path, SetupOs os) {
@@ -40,10 +45,11 @@ String shellWord(String path, SetupOs os) {
 }
 
 class SetupTerminalDialog extends ConsumerStatefulWidget {
-  const SetupTerminalDialog({super.key, required this.driver, required this.env});
+  const SetupTerminalDialog({super.key, required this.driver, required this.env, this.signIn = false});
 
   final HarnessDriver driver;
   final ExecEnv env;
+  final bool signIn;
 
   @override
   ConsumerState<SetupTerminalDialog> createState() => _SetupTerminalDialogState();
@@ -55,6 +61,7 @@ class _SetupTerminalDialogState extends ConsumerState<SetupTerminalDialog> {
   late final SetupOs _os;
   late final SetupCommands? _commands;
   var _checking = false;
+  late final bool _startsSignedIn;
 
   @override
   void initState() {
@@ -67,9 +74,13 @@ class _SetupTerminalDialogState extends ConsumerState<SetupTerminalDialog> {
       home: home.homeDir() ?? '.',
       settle: ref.read(setupSettleProvider),
     );
+    final status = ref.read(driverStatusesProvider).value?[widget.driver.info.id];
+    final path = widget.env.isHost ? status?.path : null;
+    _startsSignedIn = widget.signIn && path != null && _commands != null;
+    final first = _startsSignedIn ? _loginLine(path!) : _commands?.install;
     // After the first layout, so the shell starts at the view's size.
     WidgetsBinding.instance.endOfFrame.then((_) {
-      if (mounted) unawaited(_shell.start(first: _commands?.install));
+      if (mounted) unawaited(_shell.start(first: first));
     });
   }
 
@@ -101,8 +112,10 @@ class _SetupTerminalDialogState extends ConsumerState<SetupTerminalDialog> {
   void _signIn(DriverStatus status) {
     final path = status.path;
     if (path == null) return;
-    _shell.type([shellWord(path, _os), ...?_commands?.login].join(' '));
+    _shell.type(_loginLine(path));
   }
+
+  String _loginLine(String path) => [shellWord(path, _os), ...?_commands?.login].join(' ');
 
   Future<void> _copyOrPaste() async {
     if (_view.selection case final selection?) {
@@ -150,7 +163,12 @@ class _SetupTerminalDialogState extends ConsumerState<SetupTerminalDialog> {
                             padding: const EdgeInsets.fromLTRB(20, 14, 12, 6),
                             child: Row(
                               children: [
-                                Expanded(child: Text('Set up ${widget.driver.info.label}', style: theme.type.title)),
+                                Expanded(
+                                  child: Text(
+                                    '${_startsSignedIn ? 'Sign in to' : 'Set up'} ${widget.driver.info.label}',
+                                    style: theme.type.title,
+                                  ),
+                                ),
                                 AdaptiveIconButton(
                                   key: const ValueKey('setup.close'),
                                   icon: EveryIcon.close,
@@ -172,13 +190,15 @@ class _SetupTerminalDialogState extends ConsumerState<SetupTerminalDialog> {
                                     style: theme.type.caption.tint(theme.textMuted),
                                   ),
                                 Text(
-                                  commands == null
+                                  _startsSignedIn
+                                      ? "This is the CLI's own sign-in. It is typed below but not run: press Enter to run it."
+                                      : commands == null
                                       ? 'No install line for this system. Install it yourself, then check again.'
                                       : "This is the vendor's own install line. It is typed below but not run: press "
                                             'Enter to run it. If it asks for a password, type it in the terminal.',
                                   style: theme.type.caption.tint(theme.textMuted),
                                 ),
-                                if (commands != null) ...[
+                                if (commands != null && !_startsSignedIn) ...[
                                   const SizedBox(height: 6),
                                   AdaptiveSelectionArea(
                                     child: Text(

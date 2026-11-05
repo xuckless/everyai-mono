@@ -38,6 +38,9 @@ class HarnessRow {
 
   String get id => driver.info.id;
   String get title => rowTitle(driver.info.label, env);
+
+  /// Ends the widget keys of a row that is not on this computer, so one harness in two environments stays distinct.
+  String get keySuffix => env.isHost ? '' : '.${env.id}';
 }
 
 /// "Claude Code", or "Claude Code · Ubuntu (WSL)" when it is not on this computer.
@@ -45,13 +48,14 @@ String rowTitle(String label, ExecEnv env) => env.isHost ? label : '$label · ${
 
 /// The rows to show: the built-in agent first, then the host's, then each other environment, each in registry order.
 /// [found] has no entry for a harness not checked yet (row state `checking`). [appFound] says a missing CLI has a
-/// desktop app to set up from. [hideAbsent] drops harnesses with nothing found (the setup step; Settings keeps them
+/// desktop app to set up from (on this computer only: other environments report their own). [builtInBlocked] (Git for Windows missing) makes the built-in agent a row to set up, not a Ready one. [hideAbsent] drops harnesses with nothing found (the setup step; Settings keeps them
 /// for their install line).
 List<HarnessRow> harnessRows(
   List<HarnessDriver> drivers,
   List<EnvStatus> found, {
   required bool hideAbsent,
   bool Function(String driverId) appFound = _never,
+  bool builtInBlocked = false,
 }) {
   final envs = <ExecEnv>[HostEnv.instance];
   for (final f in found) {
@@ -64,7 +68,14 @@ List<HarnessRow> harnessRows(
         for (final f in found)
           if (f.env.isHost && f.driverId == d.info.id) f.status,
       ].firstOrNull;
-      rows.add(HarnessRow(env: HostEnv.instance, driver: d, status: status, state: RowState.ready));
+      rows.add(
+        HarnessRow(
+          env: HostEnv.instance,
+          driver: d,
+          status: status,
+          state: builtInBlocked ? RowState.setUp : RowState.ready,
+        ),
+      );
     }
   }
   for (final env in envs) {
@@ -76,7 +87,7 @@ List<HarnessRow> harnessRows(
       ].firstOrNull;
       // A non-host environment only lists what it was checked for.
       if (status == null && !env.isHost) continue;
-      final state = stateOf(status, appFound: appFound(d.info.id));
+      final state = stateOf(status, appFound: env.isHost && appFound(d.info.id));
       if (hideAbsent && state == RowState.absent) continue;
       rows.add(HarnessRow(env: env, driver: d, status: status, state: state));
     }

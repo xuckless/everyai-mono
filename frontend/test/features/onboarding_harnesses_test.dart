@@ -25,7 +25,7 @@ Future<AppScan> _noApps() async => const AppScan();
 
 EnvStatus _on(String id, DriverStatus s, [ExecEnv env = HostEnv.instance]) => (env: env, driverId: id, status: s);
 
-Widget _app(Widget home, {List<EnvStatus> found = const [], bool done = true, List<Override> extra = const []}) {
+Widget _app(Widget home, {List<EnvStatus> found = const [], List<Override> extra = const []}) {
   return ProviderScope(
     key: UniqueKey(),
     overrides: [
@@ -42,7 +42,6 @@ Widget _app(Widget home, {List<EnvStatus> found = const [], bool done = true, Li
         () => DriverStatuses(scanApps: _noApps, loadShell: () async {}, reloadShell: () async {}),
       ),
       harnessEnvStatusesProvider.overrideWithValue(found),
-      harnessChecksDoneProvider.overrideWithValue(done),
       ...extra,
     ],
     child: m.MaterialApp(
@@ -87,7 +86,12 @@ void main() {
             _on('codex', const DriverStatus(installed: true, version: '0.9', signedIn: true)),
             _on('opencode', const DriverStatus()),
           ],
-          extra: [setupOpenerProvider.overrideWithValue((context, driver, env) async => opened.add(driver.info.id))],
+          extra: [
+            setupOpenerProvider.overrideWithValue(
+              (context, driver, env, {signIn = false}) async =>
+                  opened.add('${driver.info.id}${signIn ? ':signIn' : ''}'),
+            ),
+          ],
         ),
       );
       await tester.pumpAndSettle();
@@ -104,7 +108,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('In use ✓'), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('setup.claude-code')));
-      expect(opened, ['claude-code']);
+      expect(opened, ['claude-code:signIn']);
       expect(find.byKey(const ValueKey('onboarding.import')), findsOneWidget);
     });
   });
@@ -140,10 +144,7 @@ void main() {
     });
   });
 
-  testWidgets('the Git for Windows notice shows only when Git is missing, and Set up is the bound action', (
-    tester,
-  ) async {
-    var calls = 0;
+  testWidgets('the Git for Windows notice shows only when Git is missing', (tester) async {
     await tester.pumpWidget(
       _app(
         const m.SingleChildScrollView(child: GitForWindowsNotice()),
@@ -160,18 +161,17 @@ void main() {
     );
     expect(find.textContaining('needs Git for Windows'), findsOneWidget);
     expect(find.text('To install: $gitForWindowsInstallLine'), findsOneWidget);
-    expect(find.byKey(const ValueKey('harness.git-for-windows.setup')), findsNothing);
+  });
 
-    await tester.pumpWidget(
-      _app(
-        const m.SingleChildScrollView(child: GitForWindowsNotice()),
-        extra: [
-          gitBashMissingProvider.overrideWithValue(true),
-          gitForWindowsSetUpProvider.overrideWithValue(() => calls++),
-        ],
-      ),
-    );
-    await tester.tap(find.byKey(const ValueKey('harness.git-for-windows.setup')));
-    expect(calls, 1);
+  testWidgets('without Git for Windows the built-in agent is not Ready', (tester) async {
+    await _mac(tester, () async {
+      await tester.pumpWidget(
+        _app(const OnboardingScreen(desktop: true), extra: [gitBashMissingProvider.overrideWithValue(true)]),
+      );
+      await tester.pumpAndSettle();
+      await _toHarnessStep(tester);
+      expect(find.byKey(const ValueKey('harness.ready.everyai')), findsNothing);
+      expect(find.text('Needs Git for Windows to run commands'), findsOneWidget);
+    });
   });
 }

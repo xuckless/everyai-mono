@@ -21,6 +21,7 @@ import '../../settings/byok_keys.dart';
 import '../../settings/domain/byok_providers.dart';
 import '../../settings/domain/key_check.dart';
 import '../domain/harness_rows.dart';
+import '../git_bash_stub.dart';
 import '../onboarding_harness_providers.dart';
 import '../onboarding_providers.dart';
 
@@ -588,19 +589,16 @@ class _CodeHarnesses extends ConsumerWidget {
     final drivers = ref.watch(driverRegistryProvider).listed.toList();
     ref.watch(driverStatusesProvider);
     final scan = ref.read(driverStatusesProvider.notifier).appScan;
-    final done = ref.watch(harnessChecksDoneProvider);
+    final done = ref.watch(driverStatusesProvider).hasValue;
+    final gitMissing = ref.watch(gitBashMissingProvider);
     final rows = harnessRows(
       drivers,
       ref.watch(harnessEnvStatusesProvider),
       hideAbsent: true,
       appFound: scan.offersSetUp,
+      builtInBlocked: gitMissing,
     );
-    // Until the first check ends every harness reads "Checking…"; after it, a harness with no answer is absent.
-    final shown = [
-      for (final r in rows)
-        if (r.id == everyaiHarnessName || done || r.state == RowState.checking) r,
-    ];
-    final checking = !done;
+    // Until the first check ends there are no statuses, so every harness reads "Checking…".
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -611,20 +609,23 @@ class _CodeHarnesses extends ConsumerWidget {
         ),
         const SizedBox(height: 14),
         const GitForWindowsNotice(),
-        for (final r in shown)
+        for (final r in rows)
           HarnessSetupRow(
-            key: ValueKey('onboarding.harness.${r.id}${r.env.isHost ? '' : '.${r.env.id}'}'),
+            key: ValueKey('onboarding.harness.${r.id}${r.keySuffix}'),
             row: r,
             title: r.id == everyaiHarnessName ? "EveryAI's own agent" : null,
-            statusLine: r.id == everyaiHarnessName ? 'Runs on the key from the last step' : null,
+            statusLine: r.id == everyaiHarnessName
+                ? (gitMissing ? 'Needs Git for Windows to run commands' : 'Runs on the key from the last step')
+                : null,
+            unknownLine: "Couldn't check. You can check again in Settings → Code → Harnesses.",
             offerMissing: false,
             trailing: [
               // A subscription CLI is set up only once the user has agreed to use it, so the choice comes first.
-              if (r.driver.info.needsConsent)
+              if (r.driver.info.needsConsent && r.env.isHost)
                 Padding(
                   padding: const EdgeInsets.only(left: 8),
                   child: AdaptiveButton(
-                    key: ValueKey('onboarding.consent.${r.id}'),
+                    key: ValueKey('onboarding.consent.${r.id}${r.keySuffix}'),
                     label: own.contains(r.driver.info.consentId)
                         ? 'In use ✓'
                         : (r.state == RowState.ready ? 'Use it' : 'Allow'),
@@ -636,7 +637,7 @@ class _CodeHarnesses extends ConsumerWidget {
                 ),
             ],
           ),
-        if (!checking && shown.every((r) => r.id == everyaiHarnessName))
+        if (done && rows.every((r) => r.id == everyaiHarnessName))
           Padding(
             key: const ValueKey('onboarding.none-found'),
             padding: const EdgeInsets.only(top: 4),

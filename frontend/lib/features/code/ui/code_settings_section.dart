@@ -32,6 +32,7 @@ import '../settings/settings.dart' as files;
 import '../migration/ui/bring_over_sheet.dart';
 import 'code_slash_host.dart' show switchCodeAgent;
 import '../../onboarding/domain/harness_rows.dart';
+import '../../onboarding/git_bash_stub.dart';
 import '../../onboarding/onboarding_harness_providers.dart';
 import 'harness_setup_row.dart';
 
@@ -586,7 +587,14 @@ class HarnessesSetting extends ConsumerWidget {
       for (final d in drivers)
         if (d.info.needsConsent) d.info.label,
     ];
-    final rows = harnessRows(drivers, ref.watch(harnessEnvStatusesProvider), hideAbsent: false);
+    final rows = harnessRows(
+      drivers,
+      ref.watch(harnessEnvStatusesProvider),
+      hideAbsent: false,
+      // The button offers Set up for a missing CLI here, so the dot says the same.
+      appFound: (_) => true,
+      builtInBlocked: ref.watch(gitBashMissingProvider),
+    );
     final handoff = ref.watch(codeLeadProvider.select((l) => l.handoff));
     final resumeUnsupported = ref.watch(resumeUnsupportedProvider);
     return Column(
@@ -595,16 +603,20 @@ class HarnessesSetting extends ConsumerWidget {
         const GitForWindowsNotice(),
         for (final r in rows)
           KeyedSubtree(
-            key: ValueKey('code-settings.harness.${r.id}${r.env.isHost ? '' : '.${r.env.id}'}'),
+            key: ValueKey('code-settings.harness.${r.id}${r.keySuffix}'),
             child: HarnessSetupRow(
               row: r,
-              statusLine: statuses.hasError ? "Couldn't check" : null,
+              statusLine: statuses.hasError
+                  ? "Couldn't check"
+                  : r.id == everyaiHarnessName && r.state == RowState.setUp
+                  ? 'Needs Git for Windows to run commands'
+                  : null,
               footer: [
                 if (r.status case DriverStatus(installed: false) when _installLine(r.driver.info) != null)
                   AdaptiveSelectionArea(
                     child: Text(
                       'To install: ${_installLine(r.driver.info)}',
-                      key: ValueKey('code-settings.harness.${r.id}.hint'),
+                      key: ValueKey('code-settings.harness.${r.id}${r.keySuffix}.hint'),
                       style: theme.type.caption.mono.tint(theme.textMuted),
                     ),
                   ),
@@ -612,12 +624,12 @@ class HarnessesSetting extends ConsumerWidget {
                 if (resumeUnsupported(r.id) case final why?)
                   Text(
                     'Earlier sessions: not available for ${r.driver.info.label}${why.isEmpty ? '' : ' ($why)'}',
-                    key: ValueKey('code-settings.harness.${r.id}.resume'),
+                    key: ValueKey('code-settings.harness.${r.id}${r.keySuffix}.resume'),
                     style: theme.type.caption.tint(theme.textMuted),
                   ),
               ],
               trailing: [
-                if (r.driver.info.needsConsent) ...[
+                if (r.driver.info.needsConsent && r.env.isHost) ...[
                   const SizedBox(width: 8),
                   Text('Use my own installed CLI', style: theme.type.caption.tint(theme.textMuted)),
                   const SizedBox(width: 8),
@@ -670,6 +682,7 @@ class HarnessesSetting extends ConsumerWidget {
               onPressed: () {
                 unawaited(ref.read(driverStatusesProvider.notifier).refresh(reloadShell: true));
                 ref.invalidate(driverModelsProvider);
+                ref.invalidate(gitBashMissingProvider);
               },
             ),
             if (ref.read(driverStatusesProvider.notifier).checkedAt case final at?) ...[

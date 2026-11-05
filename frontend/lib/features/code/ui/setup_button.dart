@@ -16,11 +16,11 @@ import '../panes/pty.dart' show shellSupported;
 import 'setup_terminal_dialog.dart';
 
 /// Opens the setup terminal; tests replace it.
-typedef SetupOpener = Future<void> Function(BuildContext context, HarnessDriver driver, ExecEnv env);
+typedef SetupOpener = Future<void> Function(BuildContext context, HarnessDriver driver, ExecEnv env, {bool signIn});
 
 final setupOpenerProvider = Provider<SetupOpener>(
   (ref) =>
-      (context, driver, env) => showSetupTerminal(context, driver: driver, env: env),
+      (context, driver, env, {signIn = false}) => showSetupTerminal(context, driver: driver, env: env, signIn: signIn),
 );
 
 /// "Set up" (the CLI is missing or broken) or "Sign in" (it says it is signed out) on a harness row; nothing where
@@ -60,7 +60,7 @@ class SetupButton extends ConsumerWidget {
     final info = driver.info;
     final scan = ref.watch(driverStatusesProvider.notifier).appScan;
     ref.watch(driverStatusesProvider);
-    final label = labelFor(status, appFound: offerMissing || scan.offersSetUp(info.id));
+    final label = labelFor(status, appFound: offerMissing || (env.isHost && scan.offersSetUp(info.id)));
     final os = setupOsFor(env.isHost, defaultTargetPlatform);
     if (label == null || os == null || !shellSupported || info.id == everyaiHarnessName) return const SizedBox.shrink();
     if (setupCommandsFor(info.id, os) == null) return const SizedBox.shrink();
@@ -70,10 +70,10 @@ class SetupButton extends ConsumerWidget {
     return Padding(
       padding: const EdgeInsets.only(left: 8),
       child: AdaptiveButton(
-        key: ValueKey('setup.${info.id}'),
+        key: ValueKey('setup.${info.id}${env.isHost ? '' : '.${env.id}'}'),
         label: label,
         emphasis: ButtonEmphasis.secondary,
-        onPressed: () => ref.read(setupOpenerProvider)(context, driver, env),
+        onPressed: () => ref.read(setupOpenerProvider)(context, driver, env, signIn: label == 'Sign in'),
       ),
     );
   }

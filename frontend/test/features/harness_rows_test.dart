@@ -68,4 +68,20 @@ void main() {
     expect(rows.map((r) => r.title), ['EveryAI', 'Claude Code', 'Codex', 'OpenCode', 'Claude Code · Ubuntu (WSL)']);
     expect(rows.last.env.id, 'wsl:Ubuntu');
   });
+
+  test("the host's desktop app does not make a missing CLI in WSL a row", () {
+    final rows = harnessRows(
+      drivers,
+      [_on('codex', const DriverStatus()), _on('codex', const DriverStatus(), const FakeWslEnv())],
+      hideAbsent: true,
+      appFound: (_) => true,
+    );
+    expect(rows.where((r) => !r.env.isHost), isEmpty);
+    expect(rows.firstWhere((r) => r.id == 'codex').state, RowState.setUp);
+  });
+
+  test('a blocked built-in agent is a row to set up, not Ready', () {
+    final rows = harnessRows(drivers, const [], hideAbsent: true, builtInBlocked: true);
+    expect(rows.first.state, RowState.setUp);
+  });
 }

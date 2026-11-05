@@ -4,7 +4,6 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/every_theme.dart';
-import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/selection.dart';
 import '../../onboarding/domain/harness_rows.dart';
 import '../../onboarding/git_bash_stub.dart';
@@ -21,6 +20,7 @@ class HarnessSetupRow extends ConsumerWidget {
     required this.row,
     this.title,
     this.statusLine,
+    this.unknownLine = "Couldn't check. Try Refresh.",
     this.offerMissing = true,
     this.trailing = const [],
     this.footer = const [],
@@ -33,6 +33,9 @@ class HarnessSetupRow extends ConsumerWidget {
 
   /// Replaces the default status line (the built-in agent's).
   final String? statusLine;
+
+  /// The line for a check that timed out; a screen without Refresh says where to check again.
+  final String unknownLine;
 
   /// Passed to [SetupButton.offerMissing].
   final bool offerMissing;
@@ -47,7 +50,7 @@ class HarnessSetupRow extends ConsumerWidget {
         statusLine ??
         switch (row.state) {
           RowState.checking => 'Checking…',
-          RowState.unknown => "Couldn't check. Try Refresh.",
+          RowState.unknown => unknownLine,
           _ => status == null ? 'Built in' : harnessStatusLine(row.id, status),
         };
     return Padding(
@@ -87,7 +90,7 @@ class HarnessSetupRow extends ConsumerWidget {
           ),
           if (row.state == RowState.ready)
             Padding(
-              key: ValueKey('harness.ready.${row.id}'),
+              key: ValueKey('harness.ready.${row.id}${row.keySuffix}'),
               padding: const EdgeInsets.only(left: 8),
               child: Text('Ready ✓', style: theme.type.caption.tint(theme.success)),
             ),
@@ -99,7 +102,8 @@ class HarnessSetupRow extends ConsumerWidget {
   }
 }
 
-/// Windows only: the built-in agent runs its commands in Git Bash, which Git for Windows brings.
+/// Windows only: the built-in agent runs its commands in Git Bash, which Git for Windows brings. It shows the
+/// install line to copy; a Set up button that types it in d3's terminal is still to do (the terminal takes a driver).
 class GitForWindowsNotice extends ConsumerWidget {
   const GitForWindowsNotice({super.key});
 
@@ -107,7 +111,6 @@ class GitForWindowsNotice extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     if (!ref.watch(gitBashMissingProvider)) return const SizedBox.shrink();
     final theme = EveryTheme.of(context);
-    final setUp = ref.watch(gitForWindowsSetUpProvider);
     return Padding(
       key: const ValueKey('harness.git-for-windows'),
       padding: const EdgeInsets.only(bottom: 12),
@@ -131,16 +134,6 @@ class GitForWindowsNotice extends ConsumerWidget {
               ],
             ),
           ),
-          if (setUp != null)
-            Padding(
-              padding: const EdgeInsets.only(left: 8),
-              child: AdaptiveButton(
-                key: const ValueKey('harness.git-for-windows.setup'),
-                label: 'Set up',
-                emphasis: ButtonEmphasis.secondary,
-                onPressed: setUp,
-              ),
-            ),
         ],
       ),
     );

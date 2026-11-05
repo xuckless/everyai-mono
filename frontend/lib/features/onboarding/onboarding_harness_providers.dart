@@ -14,13 +14,5 @@ final harnessEnvStatusesProvider = Provider<List<EnvStatus>>((ref) {
   return [for (final e in statuses.entries) (env: HostEnv.instance, driverId: e.key, status: e.value)];
 });
 
-/// Whether the first check has finished.
-final harnessChecksDoneProvider = Provider<bool>((ref) => ref.watch(driverStatusesProvider).hasValue);
-
-/// Opens the vendor's Git for Windows install in a terminal. Unbound: the notice shows the command to copy.
-typedef GitSetUp = void Function();
-
-final gitForWindowsSetUpProvider = Provider<GitSetUp?>((ref) => null);
-
 /// The line the Git for Windows notice shows.
 const gitForWindowsInstallLine = 'winget install --id Git.Git -e';
