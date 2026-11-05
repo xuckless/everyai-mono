@@ -50,11 +50,25 @@ void main() {
       expect(controller.text, 'hello');
     }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
+    test('pastedTextFile: boundaries by UTF-8 bytes', () {
+      String name() => 'pasted-1.txt';
+      expect(pastedTextFile(null, name), isNull);
+      expect(pastedTextFile('short', name), isNull);
+      expect(pastedTextFile('a' * pasteAttachThreshold, name), isNull);
+      expect(pastedTextFile('a' * (pasteAttachThreshold + 1), name)?.name, 'pasted-1.txt');
+      // 3-byte characters: under the limit in characters, over in bytes.
+      expect(pastedTextFile('\u20ac' * 11000, name), isNotNull);
+      expect(pastedTextFile('\u20ac' * 10000, name), isNull);
+      // Past the attachment limit it still becomes one, so the size error shows.
+      expect(pastedTextFile('a' * (300 * 1024), name), isNotNull);
+    });
+
     for (final c in [
-      (name: '40 KiB becomes an attachment', size: 40 * 1024, attached: 1),
-      (name: 'exactly 32 KiB pastes as text', size: 32 * 1024, attached: 0),
-      (name: 'a short paste stays text', size: 10, attached: 0),
-      (name: 'over 256 KiB pastes as text', size: 300 * 1024, attached: 0),
+      (name: '40 KiB becomes attachments', size: 40 * 1024, attach: true, attached: 2),
+      (name: 'exactly 32 KiB pastes as text', size: 32 * 1024, attach: true, attached: 0),
+      (name: 'a short paste stays text', size: 10, attach: true, attached: 0),
+      (name: 'over 256 KiB becomes an attachment (size error shows)', size: 300 * 1024, attach: true, attached: 2),
+      (name: 'attachLongText off pastes as text', size: 40 * 1024, attach: false, attached: 0),
     ]) {
       testWidgets('long paste: ${c.name}', (tester) async {
         final text = 'a' * c.size;
@@ -73,28 +87,36 @@ void main() {
             home: Scaffold(
               body: AttachmentDropZone(
                 onFiles: got.addAll,
+                attachLongText: c.attach,
+                readFiles: () async => const [],
+                readText: () async => text,
                 child: TextField(controller: controller, autofocus: true),
               ),
             ),
           ),
         );
         await tester.pump();
-        for (var i = 0; i < (c.attached == 1 ? 2 : 1); i++) {
+        for (var i = 0; i < 2; i++) {
           await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
           await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
           await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
-          await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 200)));
-          await tester.pumpAndSettle();
+          await tester.pump();
         }
-        if (c.attached == 1) {
+        if (c.attached > 0) {
           expect([for (final f in got) f.name], ['pasted-1.txt', 'pasted-2.txt']);
           expect(controller.text, isEmpty);
-          final read = await tester.runAsync(() => readAttachments(got.take(1), onError: (_) {}));
-          expect(read!.single.kind, AttachmentKind.text);
-          expect(read.single.bytes.length, c.size);
+          final errors = <String>[];
+          final read = await tester.runAsync(() => readAttachments(got.take(1), onError: errors.add));
+          if (c.size <= AttachmentKind.text.maxBytes) {
+            expect(read!.single.kind, AttachmentKind.text);
+            expect(read.single.bytes.length, c.size);
+          } else {
+            expect(read, isEmpty);
+            expect(errors.single, contains('too large'));
+          }
         } else {
           expect(got, isEmpty);
-          expect(controller.text.length, c.size);
+          expect(controller.text.length, c.size * 2);
         }
       }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
     }

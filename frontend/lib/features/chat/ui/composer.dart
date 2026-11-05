@@ -276,6 +276,8 @@ class ComposerState extends ConsumerState<Composer> {
           ),
         AttachmentDropZone(
           onFiles: addFiles,
+          // Answering a question card sends text only: a long reply stays in the field.
+          attachLongText: !(widget.busy && widget.replying),
           child: GlassSurface(
             radius: radius,
             padding: const EdgeInsets.fromLTRB(16, 14, 10, 10),
