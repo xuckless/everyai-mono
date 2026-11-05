@@ -1,0 +1,5 @@
+{"mcpServers": {
+  "fs": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]},
+  "github": {"command": "node", "args": ["gh.js"]},
+  "remote": {"url": "https://r.example.com/mcp", "headers": {"Authorization": "Bearer abc"}}
+}}
