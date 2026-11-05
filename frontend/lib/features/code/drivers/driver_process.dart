@@ -1,5 +1,12 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import 'dart:async';
+
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
+import '../environments/env_processes.dart';
+import '../environments/exec_env.dart';
+import '../harness/session_processes.dart' show sessionEnvVar;
 import 'driver.dart';
 import 'driver_process_stub.dart' if (dart.library.io) 'driver_process_io.dart' as impl;
 import 'json_rpc.dart';
@@ -15,6 +22,12 @@ abstract interface class DriverProcess implements LineChannel {
 /// session's worktree, with the login shell's environment plus [env] and
 /// `EVERYAI_SESSION` = [sessionTag], so Stop and the Processes pane own what
 /// it runs. stderr goes to [logPath]. Closing it ends its whole process tree.
+///
+/// With an [execEnv] other than the host, [executable] and [cwd] are paths
+/// inside it: the host runs the environment's bridge ([ExecEnv.wrap]) from
+/// [logPath]'s folder, the tag goes inside too, and closing it (or its end)
+/// also ends what still runs inside under that tag ([endInside]), since a
+/// bridge's death doesn't reach the processes behind it.
 Future<DriverProcess> spawnDriver({
   required String executable,
   required List<String> args,
@@ -22,8 +35,80 @@ Future<DriverProcess> spawnDriver({
   required String sessionTag,
   required String logPath,
   Map<String, String> env = const {},
-}) =>
-    impl.spawnDriver(executable: executable, args: args, cwd: cwd, sessionTag: sessionTag, logPath: logPath, env: env);
+  ExecEnv execEnv = HostEnv.instance,
+}) async {
+  if (execEnv.isHost) {
+    return impl.spawnDriver(
+      executable: executable,
+      args: args,
+      cwd: cwd,
+      sessionTag: sessionTag,
+      logPath: logPath,
+      env: env,
+    );
+  }
+  final w = execEnv.wrap(executable, args, cwd: cwd, env: {...env, sessionEnvVar: sessionTag});
+  final cut = logPath.lastIndexOf(RegExp(r'[\\/]'));
+  final process = await impl.spawnDriver(
+    executable: w.executable,
+    args: w.args,
+    cwd: cut <= 0 ? logPath : logPath.substring(0, cut),
+    sessionTag: sessionTag,
+    logPath: logPath,
+    env: w.environment,
+  );
+  return _InsideProcess(process, execEnv, sessionTag);
+}
+
+/// Ends what runs in [env] under a session's tag once its bridge is closed
+/// or gone (tests replace it).
+@visibleForTesting
+Future<void> Function(ExecEnv env, String tag) endInsideOf = endInside;
+
+/// A CLI behind an environment's bridge: the bridge process, plus an end of
+/// the processes inside when it is closed or exits. Tracked for the app's
+/// quit, which otherwise closes only the bridge.
+final class _InsideProcess implements DriverProcess {
+  _InsideProcess(this._bridge, this._env, this._tag) {
+    trackDriverClose(close);
+    unawaited(_bridge.exitCode.then((_) => _end(), onError: (Object _) => _end()));
+  }
+
+  final DriverProcess _bridge;
+  final ExecEnv _env;
+  final String _tag;
+  Future<void>? _ended;
+
+  Future<void> _end() => _ended ??= () async {
+    untrackDriverClose(close);
+    try {
+      await endInsideOf(_env, _tag);
+    } on Object {
+      // Nothing left to end, or the environment is gone.
+    }
+  }();
+
+  @override
+  Stream<String> get lines => _bridge.lines;
+
+  @override
+  void send(String line) => _bridge.send(line);
+
+  @override
+  String get lastError => _bridge.lastError;
+
+  @override
+  int get pid => _bridge.pid;
+
+  @override
+  Future<int> get exitCode => _bridge.exitCode;
+
+  @override
+  Future<void> close() async {
+    await _bridge.close();
+    await _end();
+  }
+}
 
 /// [spawnDriver] for a CLI that needs a terminal of its own (Grok Build
 /// opens `/dev/tty` and exits without one): it runs under a pty, which is
