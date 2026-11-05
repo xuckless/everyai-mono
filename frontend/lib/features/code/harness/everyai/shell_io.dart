@@ -4,7 +4,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import '../session_processes.dart' show sessionEnvVar;
+import 'git_bash.dart';
+
+export 'git_bash.dart' show gitBashMissingMessage;
 
 /// The user's login shell, and the environment it sets up (PATH from
 /// `~/.zshrc` and friends: pyenv, nvm, Homebrew), captured once per app run
@@ -12,13 +17,28 @@ import '../session_processes.dart' show sessionEnvVar;
 /// the way the user's own terminal would run them, not in the app's launchd
 /// environment. The usual install directories ([commonDirs]) go after the
 /// shell's PATH, so a CLI is found even when the rc files don't add them.
+///
+/// On Windows the shell is Git Bash ([findGitBash]; empty when it isn't
+/// installed, see [missing]) and the environment is the app's own: a Windows
+/// app gets the user's full PATH, and Git Bash would hand it back in POSIX
+/// form, which the native CLIs started with it can't read.
 final class ShellEnv {
   ShellEnv._(this.shell, this.env);
+
+  @visibleForTesting
+  ShellEnv.test(this.shell, this.env);
 
   final String shell;
   final Map<String, String> env;
 
+  /// No shell to run commands in (Windows without Git Bash).
+  bool get missing => shell.isEmpty;
+
   static Future<ShellEnv>? _cached;
+
+  /// Makes [load] return [env] (null: capture again).
+  @visibleForTesting
+  static void debugUse(ShellEnv? env) => _cached = env == null ? null : Future.value(env);
 
   static Future<ShellEnv> load() => _cached ??= _capture();
 
@@ -28,7 +48,8 @@ final class ShellEnv {
     return load();
   }
 
-  static String get _defaultShell {
+  static String? get _defaultShell {
+    if (Platform.isWindows) return findGitBash(Platform.environment, (f) => File(f).existsSync());
     final s = Platform.environment['SHELL'];
     if (s != null && s.isNotEmpty && File(s).existsSync()) return s;
     return Platform.isMacOS ? '/bin/zsh' : '/bin/bash';
@@ -38,6 +59,9 @@ final class ShellEnv {
 
   static Future<ShellEnv> _capture() async {
     final shell = _defaultShell;
+    if (Platform.isWindows || shell == null) {
+      return ShellEnv._(shell ?? '', _withCommonDirs(_clean(Map.of(Platform.environment))));
+    }
     try {
       // Interactive + login, so rc files that set PATH run; output before the
       // marker (banners, prompts) is skipped.
@@ -225,35 +249,46 @@ final class SessionShell {
 
   BackgroundShell? backgroundShell(String id) => _background[id];
 
-  Future<Map<String, String>> _env() async => {...(await ShellEnv.load()).env, sessionEnvVar: sessionTag};
-
   String _cwdFile(String id) => '$scratchDir/.cwd-$id';
 
-  /// The script run for [command]: in the current directory, and it records
-  /// the directory it ends in.
-  String _wrap(String command, String cwdFile) {
-    final quoted = cwd.replaceAll("'", r"'\''");
-    return "cd '$quoted' 2>/dev/null || cd ~\n"
-        '{\n$command\n} < /dev/null 2>&1\n'
-        '__everyai_status=\$?\n'
-        "pwd -P > '${cwdFile.replaceAll("'", r"'\''")}' 2>/dev/null\n"
-        'exit \$__everyai_status\n';
+  /// Writes the wrapper for [command] to a file in [scratchDir] (a long
+  /// command doesn't fit on a Windows command line, and Git Bash would parse
+  /// its quotes again) and starts the shell on it.
+  Future<(Process, File)> _spawn(String id, String command) async {
+    final env = await ShellEnv.load();
+    if (env.missing) throw const ShellMissing();
+    Directory(scratchDir).createSync(recursive: true);
+    final windows = Platform.isWindows;
+    final script = File('$scratchDir/.cmd-$id.sh')
+      ..writeAsStringSync(wrapScript(command, cwd: cwd, cwdFile: _cwdFile(id), windows: windows));
+    try {
+      final process = await Process.start(
+        env.shell,
+        [if (windows) script.path.replaceAll('\\', '/') else script.path],
+        environment: {...env.env, sessionEnvVar: sessionTag},
+        workingDirectory: Directory(cwd).existsSync() ? cwd : root,
+      );
+      return (process, script);
+    } on Object {
+      _delete(script);
+      rethrow;
+    }
+  }
+
+  void _readCwd(String id) {
+    final ended = File(_cwdFile(id));
+    if (!ended.existsSync()) return;
+    final dir = cwdFromFile(ended.readAsStringSync(), windows: Platform.isWindows);
+    if (dir.isNotEmpty && Directory(dir).existsSync()) cwd = dir;
+    _delete(ended);
   }
 
   /// Runs [command] to completion, or until [timeout] (then the whole
   /// process tree is killed) or [cancel] completes.
   Future<CommandResult> run(String command, {required Duration timeout, Future<void>? cancel}) async {
-    Directory(scratchDir).createSync(recursive: true);
+    if ((await ShellEnv.load()).missing) return const CommandResult(output: gitBashMissingMessage, exitCode: 127);
     final id = '${DateTime.now().microsecondsSinceEpoch}';
-    final cwdFile = _cwdFile(id);
-    final env = await _env();
-    final shell = (await ShellEnv.load()).shell;
-    final process = await Process.start(
-      shell,
-      ['-c', _wrap(command, cwdFile)],
-      environment: env,
-      workingDirectory: Directory(cwd).existsSync() ? cwd : root,
-    );
+    final (process, script) = await _spawn(id, command);
     _running.add(process);
     final out = _CappedBuffer(4 * 1024 * 1024);
     final done = Completer<void>();
@@ -281,28 +316,17 @@ final class SessionShell {
     final code = exit ?? await process.exitCode.timeout(const Duration(seconds: 3), onTimeout: () => -9);
     await done.future.timeout(const Duration(seconds: 2), onTimeout: () {});
     _running.remove(process);
-    final ended = File(cwdFile);
-    if (ended.existsSync()) {
-      final dir = ended.readAsStringSync().trim();
-      if (dir.isNotEmpty && Directory(dir).existsSync()) cwd = dir;
-      ended.deleteSync();
-    }
+    _delete(script);
+    _readCwd(id);
     return CommandResult(output: out.text, exitCode: code, timedOut: timedOut, cancelled: cancelled);
   }
 
   /// Starts [command] in the background; its output collects in the
   /// returned shell until it ends or is killed.
   Future<BackgroundShell> start(String command, {String description = ''}) async {
-    Directory(scratchDir).createSync(recursive: true);
     final id = 'bg_${_nextBg++}';
-    final env = await _env();
-    final shell = (await ShellEnv.load()).shell;
-    final process = await Process.start(
-      shell,
-      ['-c', _wrap(command, _cwdFile(id))],
-      environment: env,
-      workingDirectory: Directory(cwd).existsSync() ? cwd : root,
-    );
+    final (process, script) = await _spawn(id, command);
+    unawaited(process.exitCode.then((_) => _delete(script)));
     final bg = BackgroundShell._(id, command, description, process);
     _background[id] = bg;
     return bg;
@@ -317,6 +341,41 @@ final class SessionShell {
       await b.kill();
     }
   }
+}
+
+/// Thrown when a command is started with no shell to run it in.
+final class ShellMissing implements Exception {
+  const ShellMissing();
+  @override
+  String toString() => gitBashMissingMessage;
+}
+
+void _delete(File f) {
+  try {
+    f.deleteSync();
+  } on Object {
+    // Gone already, or still open on Windows; the scratch folder is the session's own.
+  }
+}
+
+/// The script run for [command]: in [cwd], and it records the directory it
+/// ends in to [cwdFile]. On Windows (Git Bash) paths go in with forward
+/// slashes and `pwd -W` writes `C:/…` instead of `/c/…`.
+@visibleForTesting
+String wrapScript(String command, {required String cwd, required String cwdFile, required bool windows}) {
+  String quote(String s) => "'${(windows ? s.replaceAll('\\', '/') : s).replaceAll("'", r"'\''")}'";
+  return 'cd ${quote(cwd)} 2>/dev/null || cd ~\n'
+      '{\n$command\n} < /dev/null 2>&1\n'
+      '__everyai_status=\$?\n'
+      '${windows ? '{ pwd -W 2>/dev/null || pwd -P; }' : 'pwd -P'} > ${quote(cwdFile)} 2>/dev/null\n'
+      'exit \$__everyai_status\n';
+}
+
+/// The directory a [wrapScript] wrote, in this platform's form.
+@visibleForTesting
+String cwdFromFile(String text, {required bool windows}) {
+  final dir = text.trim();
+  return windows ? dir.replaceAll('/', '\\') : dir;
 }
 
 /// A command left running in the background.

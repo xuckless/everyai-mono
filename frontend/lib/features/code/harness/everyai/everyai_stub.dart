@@ -5,6 +5,9 @@ import 'package:http/http.dart' as http;
 import '../events.dart';
 import '../harness.dart';
 
+/// Only Windows needs Git Bash.
+bool gitBashMissing() => false;
+
 /// The EveryAI harness needs a desktop: it runs commands and edits files.
 final class EveryAIHarness implements Harness, ForksSessions {
   EveryAIHarness({required this.dataDir, required this.gatewayKey, http.Client? client});

@@ -13,6 +13,10 @@ Harness everyAIHarness({
   http.Client? client,
 }) => impl.EveryAIHarness(dataDir: dataDir, gatewayKey: gatewayKey, client: client);
 
+/// True on Windows when Git Bash isn't installed, so the EveryAI harness
+/// can't run commands (see `git_bash.dart`).
+bool gitBashMissing() => impl.gitBashMissing();
+
 /// Starts [spec] as a fork of [parentConversationId] when [harness] can fork
 /// (the EveryAI harness, or a driver around it); null otherwise.
 Future<HarnessSession>? forkSession(Harness harness, String parentConversationId, SessionSpec spec) =>
