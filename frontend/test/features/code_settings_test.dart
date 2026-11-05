@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:drift/native.dart';
+import 'package:every_ai/features/code/drivers/detection/desktop_apps.dart';
 import 'package:every_ai/core/db/app_database.dart';
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/preferences.dart';
@@ -193,7 +194,7 @@ void main() {
         preferencesProvider.overrideWithValue(prefs),
         driverRegistryProvider.overrideWithValue(DriverRegistry({'claude-code': claude, 'codex': codex})),
         driverStatusesProvider.overrideWith(
-          () => DriverStatuses(loadShell: () async {}, reloadShell: () async => reloads++),
+          () => DriverStatuses(scanApps: _noApps, loadShell: () async {}, reloadShell: () async => reloads++),
         ),
       ],
     );
@@ -246,7 +247,9 @@ void main() {
         databaseProvider.overrideWithValue(db),
         preferencesProvider.overrideWithValue(prefs),
         driverRegistryProvider.overrideWithValue(DriverRegistry({'codex': codex})),
-        driverStatusesProvider.overrideWith(() => DriverStatuses(loadShell: () async {}, reloadShell: () async {})),
+        driverStatusesProvider.overrideWith(
+          () => DriverStatuses(scanApps: _noApps, loadShell: () async {}, reloadShell: () async {}),
+        ),
       ],
     );
     await tester.pumpWidget(
@@ -272,3 +275,5 @@ void main() {
     await tester.runAsync(db.close);
   });
 }
+
+Future<AppScan> _noApps() async => const AppScan();

@@ -1,5 +1,7 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'desktop_apps.dart';
@@ -21,8 +23,18 @@ String? _readFile(String path) {
 }
 
 Future<String> _reg(String executable, List<String> args) async {
-  final r = await Process.run(executable, args).timeout(const Duration(seconds: 3));
-  return r.exitCode == 0 ? '${r.stdout}' : '';
+  final proc = await Process.start(executable, args);
+  final out = proc.stdout.transform(utf8.decoder).join();
+  unawaited(proc.stderr.drain<void>());
+  // Killed when it runs out (`Process.run(...).timeout` would leave it running).
+  final code = await proc.exitCode.timeout(
+    const Duration(seconds: 3),
+    onTimeout: () {
+      proc.kill();
+      return -1;
+    },
+  );
+  return code == 0 ? await out : '';
 }
 
 String get _home => Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'] ?? '';

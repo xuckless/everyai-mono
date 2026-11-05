@@ -86,7 +86,10 @@ Future<AppScan> scanDesktopApps({
   void match(String dir, String sep) {
     for (final entry in list(dir)) {
       for (final MapEntry(key: app, value: names) in _names.entries) {
-        if (!apps.containsKey(app) && names.contains(entry)) apps[app] = '$dir$sep$entry';
+        // Windows folder names have no fixed case (`cursor` vs `Cursor`).
+        if (!apps.containsKey(app) && names.any((n) => n.toLowerCase() == entry.toLowerCase())) {
+          apps[app] = '$dir$sep$entry';
+        }
       }
     }
   }
@@ -111,7 +114,7 @@ Future<AppScan> scanDesktopApps({
       ]) {
         match(dir, '\\');
       }
-      if (apps.isEmpty) await _registry(apps, run);
+      if (apps.length < DesktopApp.values.length) await _registry(apps, run);
     default:
       final read = readFile;
       for (final dir in [
@@ -137,7 +140,7 @@ Future<AppScan> scanDesktopApps({
 }
 
 /// The uninstall list (`reg query`), for an app installed somewhere unusual.
-/// Only tried when the folders found nothing.
+/// Tried when some app is still missing after the folders.
 Future<void> _registry(Map<DesktopApp, String> apps, Future<String> Function(String, List<String>) run) async {
   const key = r'\Software\Microsoft\Windows\CurrentVersion\Uninstall';
   for (final hive in ['HKCU', 'HKLM']) {
@@ -174,7 +177,10 @@ Set<String> _extensionsIn(ListDir list, String home, String sep) => {
 /// Numeric compare of dotted versions (2.1.10 > 2.1.9); a folder that does not
 /// start with a version sorts last.
 int compareVersions(String a, String b) {
-  List<int> parts(String v) => [for (final m in RegExp(r'\d+').allMatches(v.split('-').first)) int.parse(m.group(0)!)];
+  // The first dotted run: `anthropic.claude-code-2.1.10-darwin-arm64` -> 2.1.10.
+  List<int> parts(String v) => [
+    for (final m in RegExp(r'\d+').allMatches(RegExp(r'\d+(\.\d+)+').stringMatch(v) ?? '')) int.parse(m.group(0)!),
+  ];
   final x = parts(a), y = parts(b);
   for (var i = 0; i < x.length || i < y.length; i++) {
     final c = (i < x.length ? x[i] : 0).compareTo(i < y.length ? y[i] : 0);

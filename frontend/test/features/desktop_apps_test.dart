@@ -60,26 +60,55 @@ void main() {
       expect(scan.apps.keys, {DesktopApp.cursor, DesktopApp.vscode, DesktopApp.antigravity});
     });
 
-    test('Windows: reg query only when the folders found nothing', () async {
+    test('Windows: reg query fills in what the folders missed', () async {
       final calls = <List<String>>[];
       Future<String> run(String exe, List<String> args) async {
         calls.add(args);
-        return '    DisplayName    REG_SZ    Cursor (User)\n    DisplayName    REG_SZ    Microsoft Visual Studio Code\n';
+        return '    DisplayName    REG_SZ    Cursor (User)\n    DisplayName    REG_SZ    Claude\n';
       }
 
       final none = await _scan(_Disk({}), 'windows', env: {'LOCALAPPDATA': r'C:\L'}, run: run);
-      expect(none.apps.keys, {DesktopApp.cursor, DesktopApp.vscode});
-      expect(calls, isNotEmpty);
-      calls.clear();
-      await _scan(
+      expect(none.apps.keys, {DesktopApp.cursor, DesktopApp.claude});
+      // One folder hit (VS Code) does not hide the apps only the registry knows.
+      final some = await _scan(
         _Disk({
-          r'C:\L\Programs': ['Claude'],
+          r'C:\L\Programs': ['Microsoft VS Code'],
         }),
         'windows',
         env: {'LOCALAPPDATA': r'C:\L'},
         run: run,
       );
-      expect(calls, isEmpty);
+      expect(some.apps.keys, {DesktopApp.vscode, DesktopApp.cursor, DesktopApp.claude});
+    });
+
+    test('Windows: folder names match in any case', () async {
+      final d = _Disk({
+        r'C:\L\Programs': ['cursor'],
+      });
+      final scan = await _scan(d, 'windows', env: {'LOCALAPPDATA': r'C:\L'});
+      expect(scan.apps.keys, {DesktopApp.cursor});
+    });
+
+    test('compareVersions reads the version inside an extension folder name', () {
+      expect(
+        compareVersions('anthropic.claude-code-2.1.10-darwin-arm64', 'anthropic.claude-code-2.1.9-darwin-arm64'),
+        greaterThan(0),
+      );
+      expect(compareVersions('2.1.10', '2.1.9'), greaterThan(0));
+      expect(compareVersions('junk', '1.0.0'), lessThan(0));
+    });
+
+    test('bundledCliPaths puts the newest extension version first', () {
+      const ext = '/home/a/.vscode/extensions';
+      final d = _Disk(
+        {
+          ext: ['openai.chatgpt-0.4.0', 'openai.chatgpt-0.10.0'],
+          '$ext/openai.chatgpt-0.4.0/bin': ['p'],
+          '$ext/openai.chatgpt-0.10.0/bin': ['p'],
+        },
+        {'$ext/openai.chatgpt-0.4.0/bin/p/codex': '', '$ext/openai.chatgpt-0.10.0/bin/p/codex': ''},
+      );
+      expect(_bundled(d, 'codex').first, '$ext/openai.chatgpt-0.10.0/bin/p/codex');
     });
 
     test('Linux: reads Name= of plausible desktop files only', () async {
