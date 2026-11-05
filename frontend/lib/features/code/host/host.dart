@@ -80,6 +80,14 @@ abstract interface class HostServer {
 
   /// Ends every token and closes the server.
   Future<void> stop();
+
+  /// Lets [token] reach the server at [url], the address an environment uses
+  /// for it (`ExecEnv.hostUrl`): requests naming that host in their `Host`
+  /// header are served for that token only. When [url]'s host is an IP that
+  /// isn't loopback (the host's side of WSL's or a VM's virtual network), the
+  /// server also listens on that one address, on the same port, until the
+  /// last token using it ends. Never on every address. Returns [url].
+  Future<Uri> reachFrom(String token, Uri url);
 }
 
 /// The server: [idleLimit] without use ends a token (the server closes with

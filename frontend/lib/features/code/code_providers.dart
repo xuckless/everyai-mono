@@ -905,7 +905,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       // data), and the host's address from there.
       final env = _envOf(driver);
       final briefing = DriverBriefing(
-        mcpUrl: '${env.isHost ? token.url : env.hostUrl(token.url) ?? token.url}',
+        mcpUrl: '${env.isHost ? token.url : await _hostUrlFrom(env, token)}',
         mcpToken: token.token,
         skillDir: env.isHost ? export.skillDir : env.toEnvPath(export.skillDir),
         sessionSkill: export.text,
@@ -1011,6 +1011,30 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
   }
 
   Future<String> _driverDir(String id) async => '${await ref.read(driverDataDirProvider)()}/driver-sessions/$id';
+
+  /// The MCP host's address as [env] reaches it, served there for [token]
+  /// only ([HostServer.reachFrom]). WSL in NAT mode reaches Windows at its
+  /// default gateway (from the distro's scan). Where the environment can't
+  /// reach this computer (an ssh remote, a VM without a host name), the
+  /// loopback URL stays: the agent runs without EveryAI's tools.
+  Future<Uri> _hostUrlFrom(ExecEnv env, HostToken token) async {
+    var url = env.hostUrl(token.url);
+    if (url == null && env.kind == EnvKind.wsl) {
+      try {
+        final gateway = (await ref.read(environmentScanProvider(env.id).future)).hostAddress;
+        if (gateway != null && gateway.isNotEmpty) url = token.url.replace(host: gateway);
+      } on Object {
+        // No scan: no address.
+      }
+    }
+    if (url == null) return token.url;
+    try {
+      return await ref.read(hostServerProvider).reachFrom(token.token, url);
+    } on Object {
+      // That address can't be listened on (taken, or gone): no tools rather than no session.
+      return token.url;
+    }
+  }
 
   /// Where [driver]'s CLI runs: its environment when it is bound to one.
   static ExecEnv _envOf(HarnessDriver driver) =>

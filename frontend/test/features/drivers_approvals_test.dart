@@ -137,6 +137,9 @@ final class _Host implements HostServer {
   Future<void> revokeSession(String sessionId) async {}
   @override
   Future<void> stop() async {}
+
+  @override
+  Future<Uri> reachFrom(String token, Uri url) async => url;
 }
 
 final class _TestDriver implements HarnessDriver {

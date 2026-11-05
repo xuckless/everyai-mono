@@ -15,6 +15,7 @@ import 'package:every_ai/features/code/drivers/driver_env.dart';
 import 'package:every_ai/features/code/drivers/driver_events.dart';
 import 'package:every_ai/features/code/drivers/driver_registry.dart';
 import 'package:every_ai/features/code/environments/environment_providers.dart';
+import 'package:every_ai/features/code/environments/environment_scan.dart' show EnvScan;
 import 'package:every_ai/features/code/environments/exec_env.dart';
 import 'package:every_ai/features/code/harness/events.dart';
 import 'package:every_ai/features/code/harness/harness.dart';
@@ -84,6 +85,7 @@ void main() {
   late List<String> used;
   late List<String> ended;
   late FakeEnv ubuntu;
+  late FakeHost host;
   late ProviderContainer container;
 
   setUp(() async {
@@ -91,6 +93,7 @@ void main() {
     tmp = await Directory.systemTemp.createTemp('code-env');
     await Directory('${tmp.path}/project').create();
     session = FakeLeadSession();
+    host = FakeHost();
     fake = FakeLeadDriver('test', session: session);
     used = [];
     ended = [];
@@ -101,7 +104,7 @@ void main() {
     );
     final prefs = await Preferences.load(db);
     prefs['code.projects'] = jsonEncode([
-      for (final (id, env) in [('p1', 'wsl:Ubuntu'), ('p2', 'docker:gone')])
+      for (final (id, env) in [('p1', 'wsl:Ubuntu'), ('p2', 'docker:gone'), ('p3', 'wsl:Nat')])
         CodeProject(id: id, name: id, path: '${tmp.path}/project', environment: env).toJson(),
     ]);
     container = ProviderContainer(
@@ -113,9 +116,17 @@ void main() {
         driverRegistryProvider.overrideWithValue(
           DriverRegistry({'test': _EnvDriver(fake, used), everyaiHarnessName: FakeLeadDriver(everyaiHarnessName)}),
         ),
-        hostServerProvider.overrideWithValue(FakeHost()),
+        hostServerProvider.overrideWithValue(host),
         driverDataDirProvider.overrideWithValue(() async => '${tmp.path}/data'),
-        environmentsProvider.overrideWith((ref) async => [HostEnv.instance, ubuntu]),
+        environmentsProvider.overrideWith(
+          (ref) async => [
+            HostEnv.instance,
+            ubuntu,
+            // NAT networking: no name for the host inside; its scan found the default gateway.
+            FakeEnv(id: 'wsl:Nat', label: 'Nat (WSL)', hostRoot: tmp.path, envRoot: '/home/u', urls: (_) => null),
+          ],
+        ),
+        environmentScanProvider('wsl:Nat').overrideWith((ref) async => const EnvScan(hostAddress: '172.20.0.1')),
         endInsideProvider.overrideWithValue((env, tag, {toolsOnly = false}) async {
           ended.add('${env.id} $tag $toolsOnly');
           return const [];
@@ -149,8 +160,17 @@ void main() {
     expect(spec.workingDir, '/home/u/project');
     expect(spec.briefing!.skillDir, '/home/u/data/driver-sessions/${info.id}/briefing/skills');
     expect(spec.briefing!.mcpUrl, 'http://host.docker.internal:9/mcp');
+    // Served there for this session's token only.
+    expect(host.reached, ['${spec.briefing!.mcpToken} http://host.docker.internal:9/mcp']);
     expect(spec.briefing!.sessionSkill, contains('/home/u/project'));
     expect(CodeSessionInfo.fromJson(info.toJson()).environment, 'wsl:Ubuntu');
+  });
+
+  test("WSL in NAT mode reaches the MCP host at the distro's default gateway", () async {
+    await start('p3');
+    final b = fake.specs.single.briefing!;
+    expect(b.mcpUrl, 'http://172.20.0.1:9/mcp');
+    expect(host.reached, ['${b.mcpToken} http://172.20.0.1:9/mcp']);
   });
 
   test('reopening goes to the copy bound to the environment', () async {

@@ -426,6 +426,75 @@ void main() {
     await expectLater(Socket.connect(InternetAddress.loopbackIPv4, t.url.port), throwsA(isA<SocketException>()));
   });
 
+  group('reached from an environment', () {
+    /// A POST to [url] (the main listener) naming [host] in its Host header.
+    Future<int> named(Uri url, String host, String token) async {
+      final c = HttpClient();
+      addTearDown(c.close);
+      final req = await c.postUrl(url);
+      req.headers
+        ..host = host.split(':').first
+        ..port = int.parse(host.split(':').last)
+        ..set('authorization', 'Bearer $token')
+        ..contentType = ContentType.json;
+      req.write(jsonEncode(rpc('ping')));
+      final res = await req.close();
+      await res.drain<void>();
+      return res.statusCode;
+    }
+
+    test('a host name is served for its own token only; loopback is as before', () async {
+      final port = tok.url.port;
+      final other = await server.mint('s2', tools);
+      final url = tok.url.replace(host: 'host.docker.internal');
+      expect(await server.reachFrom(tok.token, url), url);
+      expect(await named(tok.url, 'host.docker.internal:$port', tok.token), 200);
+      expect(await named(tok.url, 'host.docker.internal:$port', other.token), 403);
+      expect(await named(tok.url, 'evil.example:$port', tok.token), 403);
+      expect((await post(rpc('ping'), token: other.token)).statusCode, 200);
+    });
+
+    test('an IP beyond loopback gets a listener of its own, closed with the last token', () async {
+      final asked = <String>[];
+      final opened = <HttpServer>[];
+      final s = io.createHostServer(
+        idleLimit: const Duration(hours: 1),
+        heldLimit: held,
+        keepAlive: const Duration(seconds: 15),
+        bindAt: (address, port) async {
+          asked.add('${address.address}:$port');
+          // A stand-in: this machine has no WSL network to listen on.
+          final l = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+          opened.add(l);
+          return l;
+        },
+      );
+      addTearDown(s.stop);
+      final a = await s.mint('a', tools);
+      final b = await s.mint('b', tools);
+      final url = a.url.replace(host: '172.20.0.1');
+      await s.reachFrom(a.token, url);
+      await s.reachFrom(b.token, url);
+      expect(asked, ['172.20.0.1:${a.url.port}']);
+      // Served through the extra listener, for those tokens.
+      final extraPort = opened.single.port;
+      final extra = Uri.parse('http://127.0.0.1:$extraPort/mcp');
+      expect(await named(extra, '172.20.0.1:${a.url.port}', a.token), 200);
+      await s.revoke(a.token);
+      expect(await named(extra, '172.20.0.1:${a.url.port}', b.token), 200);
+      await s.revoke(b.token);
+      await expectLater(Socket.connect(InternetAddress.loopbackIPv4, extraPort), throwsA(isA<SocketException>()));
+    });
+
+    test('an unknown token, or another port, is refused', () async {
+      await expectLater(server.reachFrom('nope', tok.url), throwsA(isA<StateError>()));
+      await expectLater(
+        server.reachFrom(tok.token, tok.url.replace(host: 'host.docker.internal', port: 1)),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+  });
+
   test('a foreign Host or Origin is a 403 (DNS rebinding)', () async {
     expect((await post(rpc('ping'), headers: {'Origin': 'http://evil.example'})).statusCode, 403);
     expect((await post(rpc('ping'), headers: {'Origin': 'http://localhost:${tok.url.port}'})).statusCode, 200);
