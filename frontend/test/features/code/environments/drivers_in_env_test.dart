@@ -55,7 +55,7 @@ void main() {
       final inside = r.resolve('claude-code', env: ubuntu);
       expect(inside, isA<ClaudeDriver>());
       expect((inside! as RunsInEnvironments).execEnv, same(ubuntu));
-      expect(r.resolve('claude-code', env: FakeEnv()), same(inside));
+      expect(r.resolve('claude-code', env: ubuntu), same(inside));
       expect(
         r.resolve(
           'claude-code',
@@ -65,6 +65,17 @@ void main() {
       );
       expect((await inside.detect()).path, '/env/bin/claude');
       expect(looked, ['wsl:Ubuntu claude']);
+    });
+
+    test('an environment found again (a container made again, same id) gets a new copy bound to it', () {
+      final r = registry();
+      final before = FakeEnv(id: 'devcontainer:/p', kind: EnvKind.container);
+      final after = FakeEnv(id: 'devcontainer:/p', kind: EnvKind.container);
+      final old = r.resolve('claude-code', env: before)!;
+      final fresh = r.resolve('claude-code', env: after)!;
+      expect(fresh, isNot(same(old)));
+      expect((fresh as RunsInEnvironments).execEnv, same(after));
+      expect(r.resolve('claude-code', env: after), same(fresh));
     });
 
     test("terminal agents and unknown ids don't run inside", () {

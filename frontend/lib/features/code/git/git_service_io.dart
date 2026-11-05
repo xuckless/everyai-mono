@@ -64,10 +64,16 @@ Future<({String exe, List<String> args, Map<String, String>? env})> _command(
   final inside = at == null ? null : await _insideFor(at);
   if (inside == null) return (exe: exe, args: args, env: env);
   final e = inside.env;
+  // Only git's own variables (GIT_INDEX_FILE, GIT_CONFIG_*) go inside: a caller's env may be the app's whole
+  // environment (guardedEnv), whose Windows names (`ProgramFiles(x86)`) no bridge can carry and whose values
+  // (keys among them) don't belong in the distro.
   final w = e.wrap(
     exe,
     [for (final a in args) envArg(e, a)],
-    env: {for (final v in (env ?? const {}).entries) v.key: envArg(e, v.value)},
+    env: {
+      for (final v in (env ?? const {}).entries)
+        if (v.key.startsWith('GIT_')) v.key: envArg(e, v.value),
+    },
   );
   return (exe: w.executable, args: w.args, env: w.environment);
 }
@@ -138,7 +144,7 @@ Future<List<String>> worktrees(String dir) async {
     if (res.exitCode != 0) return const [];
     final paths = worktreePaths('${res.stdout}');
     final inside = await _insideFor(dir);
-    return inside == null ? paths : [for (final p in paths) inside.env.toHostPath(p) ?? p];
+    return inside == null ? paths : [for (final p in paths) hostLike(inside.env.toHostPath(p) ?? p, dir)];
   } on Object {
     return const [];
   }
@@ -165,7 +171,8 @@ Future<String?> repoRoot(String dir) async {
     // and worktrees of it would copy the whole home folder.
     if (await _insideFor(dir) case final inside?) {
       if (root == '/' || RegExp(r'^/(?:root|home/[^/]+)/?$').hasMatch(root)) return null;
-      return inside.env.toHostPath(root);
+      final host = inside.env.toHostPath(root);
+      return host == null ? null : hostLike(host, dir);
     }
     final home = Platform.environment['HOME'];
     if (home != null && home.isNotEmpty && (home == root || home.startsWith('$root/'))) return null;

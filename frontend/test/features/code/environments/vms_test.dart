@@ -179,4 +179,21 @@ void main() {
     expect(found.problems.keys, ['lima']);
     expect(const MountMap([]).toEnv('/x'), isNull);
   });
+
+  test("a worktree under a read-only share, or outside every share, isn't writable inside", () {
+    const lima = LimaEnv(
+      cli: '/l',
+      name: 'default',
+      home: '/Users/a',
+      mounts: MountMap([
+        (host: '/Users/a', env: '/Users/a', writable: false),
+        (host: '/tmp/lima', env: '/tmp/lima', writable: true),
+      ]),
+    );
+    expect(lima.writableInside('/Users/a/Library/Application Support/x/worktrees'), isFalse);
+    expect(lima.writableInside('/tmp/lima/w'), isTrue);
+    expect(lima.writableInside('/opt/x'), isFalse);
+    const colima = ColimaEnv(cli: '/c', profile: 'default', home: '/Users/a');
+    expect(colima.writableInside('/Users/a/Library/x'), isTrue);
+  });
 }

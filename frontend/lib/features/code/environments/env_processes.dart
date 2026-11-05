@@ -2,17 +2,22 @@
 
 import 'dart:convert';
 
-import '../harness/session_processes.dart' show ProcessRow, ProcessTable;
+import '../harness/session_processes.dart' show ProcessRow, ProcessTable, sessionEnvVar;
 import 'discovery.dart' show RunCommand;
 import 'environment_io_stub.dart' if (dart.library.io) 'environment_io_io.dart' as io;
 import 'exec_env.dart';
 
-/// Run by `/bin/sh -c` inside an environment with a session's tag as `$1`:
-/// prints `pid ppid tagged name` for each process in `/proc` (tagged is 1
-/// when its environment holds `EVERYAI_SESSION=<tag>`; only the user's own
-/// processes have a readable one). A constant: the tag is only ever an
-/// argument. Needs a Linux `/proc` (WSL, containers, Linux VMs and hosts).
-const tagLister = r'''t="EVERYAI_SESSION=$1"
+/// The variable that marks one CLI the app started inside an environment
+/// (and what it runs), next to the session's `EVERYAI_SESSION`.
+const procEnvVar = 'EVERYAI_PROC';
+
+/// Run by `/bin/sh -c` inside an environment with a variable's name as `$1`
+/// and a value as `$2` (`EVERYAI_SESSION` and a session's tag): prints `pid
+/// ppid tagged name` for each process in `/proc` (tagged is 1 when its
+/// environment holds `$1=$2`; only the user's own processes have a readable
+/// one). A constant: the tag is only ever an argument. Needs a Linux `/proc`
+/// (WSL, containers, Linux VMs and hosts).
+const tagLister = r'''t="$1=$2"
 for d in /proc/[0-9]*; do
   p=${d#/proc/}
   [ "$p" = "$$" ] && continue
@@ -65,15 +70,22 @@ List<int> insideTargets(ProcessTable table, String tag, {bool toolsOnly = false}
   return {for (final r in roots) ...table.toolTrees(r)}.where((p) => !roots.contains(p)).toList()..sort();
 }
 
-/// Ends what runs inside [env] under session [tag] (see [insideTargets]):
-/// one exec lists the processes, a second signals them. The host's own
-/// process walk (`killSessionProcesses`) can't see inside, and a bridge's
-/// death (docker exec, ssh, wsl.exe) doesn't end the processes behind it.
-/// Returns the pids signalled; none for the host or when the list fails.
-Future<List<int>> endInside(ExecEnv env, String tag, {bool toolsOnly = false, RunCommand? run}) async {
+/// Ends what runs inside [env] under session [tag] (see [insideTargets]), or
+/// with [variable] [procEnvVar] under one CLI's marker: one exec lists the
+/// processes, a second signals them. The host's own process walk
+/// (`killSessionProcesses`) can't see inside, and a bridge's death (docker
+/// exec, ssh, wsl.exe) doesn't end the processes behind it. Returns the pids
+/// signalled; none for the host or when the list fails.
+Future<List<int>> endInside(
+  ExecEnv env,
+  String tag, {
+  bool toolsOnly = false,
+  RunCommand? run,
+  String variable = sessionEnvVar,
+}) async {
   if (env.isHost || tag.isEmpty) return const [];
   final runner = run ?? io.platformEnvironmentIo().run;
-  final list = env.wrap('/bin/sh', ['-c', tagLister, 'sh', tag]);
+  final list = env.wrap('/bin/sh', ['-c', tagLister, 'sh', variable, tag]);
   final res = await runner(
     list.executable,
     list.args,

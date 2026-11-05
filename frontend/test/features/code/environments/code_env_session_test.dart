@@ -1,5 +1,6 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -10,6 +11,7 @@ import 'package:every_ai/core/providers.dart';
 import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
+import 'package:every_ai/features/code/domain/transcript.dart' show NoticeItem;
 import 'package:every_ai/features/code/drivers/driver.dart';
 import 'package:every_ai/features/code/drivers/driver_env.dart';
 import 'package:every_ai/features/code/drivers/driver_events.dart';
@@ -19,6 +21,8 @@ import 'package:every_ai/features/code/environments/environment_scan.dart' show 
 import 'package:every_ai/features/code/environments/exec_env.dart';
 import 'package:every_ai/features/code/harness/events.dart';
 import 'package:every_ai/features/code/harness/harness.dart';
+import 'package:every_ai/features/code/host/host.dart';
+import 'package:every_ai/features/code/host/host_max_tools.dart' show forkHostTool;
 import 'package:every_ai/features/code/host/host_providers.dart';
 import 'package:every_ai/features/models/models_providers.dart';
 import 'package:every_ai/features/usage/usage_totals.dart';
@@ -104,7 +108,14 @@ void main() {
     );
     final prefs = await Preferences.load(db);
     prefs['code.projects'] = jsonEncode([
-      for (final (id, env) in [('p1', 'wsl:Ubuntu'), ('p2', 'docker:gone'), ('p3', 'wsl:Nat')])
+      for (final (id, env) in [
+        ('p1', 'wsl:Ubuntu'),
+        ('p2', 'docker:gone'),
+        ('p3', 'wsl:Nat'),
+        ('p4-devbox', 'docker:dev'),
+        ('p5', 'ssh:box'),
+        ('p6', 'multipass:vm'),
+      ])
         CodeProject(id: id, name: id, path: '${tmp.path}/project', environment: env).toJson(),
     ]);
     container = ProviderContainer(
@@ -124,6 +135,25 @@ void main() {
             ubuntu,
             // NAT networking: no name for the host inside; its scan found the default gateway.
             FakeEnv(id: 'wsl:Nat', label: 'Nat (WSL)', hostRoot: tmp.path, envRoot: '/home/u', urls: (_) => null),
+            FakeEnv(id: 'ssh:box', kind: EnvKind.ssh, label: 'box (SSH)'),
+            // A VM with no name for the host inside.
+            FakeEnv(
+              id: 'multipass:vm',
+              kind: EnvKind.vm,
+              label: 'vm (Multipass)',
+              hostRoot: '${tmp.path}/project',
+              envRoot: '/workspace',
+              urls: (_) => null,
+            ),
+            // A container that mounts only the project.
+            FakeEnv(
+              id: 'docker:dev',
+              kind: EnvKind.container,
+              label: 'dev (Container)',
+              hostRoot: '${tmp.path}/project',
+              envRoot: '/workspace',
+              urls: (u) => u.replace(host: 'host.docker.internal'),
+            ),
           ],
         ),
         environmentScanProvider('wsl:Nat').overrideWith((ref) async => const EnvScan(hostAddress: '172.20.0.1')),
@@ -141,7 +171,7 @@ void main() {
     await tmp.delete(recursive: true);
   });
 
-  Future<CodeSessionInfo> start(String projectId, {String harness = 'test'}) => container
+  Future<CodeSessionInfo> start(String projectId, {String harness = 'test', bool isolated = false}) => container
       .read(codeSessionsProvider.notifier)
       .start(
         project: container.read(codeProjectsProvider).firstWhere((p) => p.id == projectId),
@@ -149,6 +179,7 @@ void main() {
         model: '',
         mode: AgentMode.ask,
         harness: harness,
+        isolated: isolated,
       );
 
   test('a session in an environment gets its paths and the host address as seen from inside', () async {
@@ -188,6 +219,15 @@ void main() {
     expect(used, isEmpty);
   });
 
+  test("an ssh remote is refused before it's briefed: its files have no path here yet", () async {
+    await expectLater(
+      start('p5'),
+      throwsA(isA<HarnessError>().having((e) => e.message, 'message', contains("can't run on box (SSH) yet"))),
+    );
+    expect(host.minted, isEmpty);
+    expect(fake.specs, isEmpty);
+  });
+
   test('the EveryAI harness stays on this computer', () async {
     await expectLater(
       start('p1', harness: everyaiHarnessName),
@@ -213,5 +253,63 @@ void main() {
     await pumpEventQueue();
     final call = container.read(codeSessionProvider(info.id).notifier).mirrorEvents.whereType<ActionCall>().single;
     expect(call.str('path'), '${tmp.path}/project/lib/a.dart');
+  });
+
+  test("where the host can't be reached from inside, the agent gets no token and no host tools, and is told", () async {
+    final info = await start('p6');
+    final b = fake.specs.single.briefing!;
+    expect(fake.specs.single.workingDir, '/workspace');
+    expect(b.mcpToken, isEmpty);
+    expect(host.reached, isEmpty);
+    expect(b.sessionSkill, contains('None are connected in this session.'));
+    container.listen(codeSessionProvider(info.id), (_, _) {});
+    await whenValue(container, codeSessionProvider(info.id).select((s) => s.connected), (bool c) => c);
+    final notes = [
+      for (final i in container.read(codeSessionProvider(info.id)).transcript.items)
+        if (i is NoticeItem) i.message,
+    ];
+    expect(notes, contains(hostUnreachedNotice('vm (Multipass)')));
+  });
+
+  Future<void> gitInit() async {
+    for (final a in [
+      ['init', '-q', '-b', 'main'],
+      ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'x'],
+    ]) {
+      expect((await Process.run('git', a, workingDirectory: '${tmp.path}/project')).exitCode, 0);
+    }
+  }
+
+  test("a fork asked for its own worktree shares the folder where the agent can't write the app's data", () async {
+    await gitInit();
+    final info = await start('p4-devbox');
+    container.listen(codeSessionProvider(info.id), (_, _) {});
+    await whenValue(container, codeSessionProvider(info.id).select((s) => s.connected), (bool c) => c);
+    final r = await host.tools[info.id]!.call(
+      HostCall(
+        id: 'h1',
+        sessionId: info.id,
+        name: forkHostTool,
+        args: const {'task': 'Add b.txt', 'worktree': true},
+        ended: Completer<HostEnd>().future,
+      ),
+    );
+    expect(r.isError, isFalse, reason: r.text);
+    final child = container.read(codeSessionsProvider).where((s) => s.parentId == info.id).single;
+    expect(child.forkCopy, isNull);
+    expect(child.workingDir, '${tmp.path}/project');
+    expect(Directory('${tmp.path}/data/forks').existsSync(), isFalse);
+  });
+
+  test("an isolated session is refused before anything is made where the agent can't write the worktree", () async {
+    final dir = '${tmp.path}/project';
+    await gitInit();
+    await expectLater(
+      start('p4-devbox', isolated: true),
+      throwsA(isA<HarnessError>().having((e) => e.message, 'message', isolatedUnreachable('dev (Container)'))),
+    );
+    expect(Directory('${tmp.path}/data/worktrees').existsSync(), isFalse);
+    expect((await Process.run('git', ['branch', '--list', 'everyai/*'], workingDirectory: dir)).stdout, isEmpty);
+    expect(fake.specs, isEmpty);
   });
 }

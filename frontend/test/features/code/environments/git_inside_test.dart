@@ -68,6 +68,38 @@ void main() {
     );
   });
 
+  test("only git's own variables go inside, whatever else the caller's environment holds", () async {
+    gitInsideOf = (dir) async => (env: ubuntu, dataDir: '');
+    final cmd = await io.gitCommand(
+      'git',
+      ['-C', r'\\wsl.localhost\Ubuntu\home\u\p', 'config', '--list'],
+      env: {
+        'ProgramFiles(x86)': r'C:\Program Files (x86)',
+        'Path': r'C:\Windows',
+        'OPENAI_API_KEY': 'sk-x',
+        'GIT_CONFIG_COUNT': '1',
+        'GIT_CONFIG_KEY_0': 'core.hooksPath',
+        'GIT_CONFIG_VALUE_0': '/dev/null',
+      },
+    );
+    expect(cmd.env, {
+      'GIT_CONFIG_COUNT': '1',
+      'GIT_CONFIG_KEY_0': 'core.hooksPath',
+      'GIT_CONFIG_VALUE_0': '/dev/null',
+      'WSLENV': 'GIT_CONFIG_COUNT/u:GIT_CONFIG_KEY_0/u:GIT_CONFIG_VALUE_0/u',
+    });
+  });
+
+  test('host paths from inside keep the distro prefix the project was opened with', () {
+    expect(hostLike(r'\\wsl.localhost\Ubuntu\home\u\p', r'\\wsl$\ubuntu\home\u\p'), r'\\wsl$\ubuntu\home\u\p');
+    expect(
+      hostLike(r'\\wsl.localhost\Ubuntu\home\u\wt', r'\\wsl.localhost\Ubuntu\home\u\p'),
+      r'\\wsl.localhost\Ubuntu\home\u\wt',
+    );
+    expect(hostLike(r'\\wsl.localhost\Debian\x', r'\\wsl$\Ubuntu\p'), r'\\wsl.localhost\Debian\x');
+    expect(hostLike(r'C:\code\p', r'\\wsl$\Ubuntu\p'), r'C:\code\p');
+  });
+
   test("a folder on this computer's drives, or an environment that isn't WSL, keeps this computer's git", () async {
     gitInsideOf = (dir) async => (env: ubuntu, dataDir: '');
     final onC = await io.gitCommand('git', ['-C', r'C:\code\p', 'status']);

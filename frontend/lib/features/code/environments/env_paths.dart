@@ -10,17 +10,23 @@ const _listKey = 'paths';
 /// sees them, via [toHost] (`ExecEnv.toHostPath`), so the permission rules,
 /// file rows and diffs read the project's own folder. A path [toHost] can't
 /// map (relative, or outside every shared folder) stays as it was: the rules
-/// then read it as outside the project and ask. Tool output and Markdown
-/// links in the agent's text aren't rewritten.
+/// then read it as outside the project and ask. So does one that maps to a
+/// Windows path (`C:\…`, `\\wsl.localhost\…`): the rules read only `/`
+/// paths as absolute, so they would take it for a path inside the project.
+/// Tool output and Markdown links in the agent's text aren't rewritten.
 ActionCall actionToHost(ActionCall call, String? Function(String envPath) toHost) {
+  String? posix(String p) => switch (toHost(p)) {
+    final h? when h.startsWith('/') && !h.startsWith('//') => h,
+    _ => null,
+  };
   final changes = <String, Object?>{};
   for (final k in _pathKeys) {
     if (call.action[k] case final String p when p.isNotEmpty) {
-      if (toHost(p) case final h? when h != p) changes[k] = h;
+      if (posix(p) case final h? when h != p) changes[k] = h;
     }
   }
   if (call.action[_listKey] case final List<Object?> list) {
-    final mapped = [for (final p in list) p is String && p.isNotEmpty ? toHost(p) ?? p : p];
+    final mapped = [for (final p in list) p is String && p.isNotEmpty ? posix(p) ?? p : p];
     for (var i = 0; i < list.length; i++) {
       if (mapped[i] != list[i]) {
         changes[_listKey] = mapped;

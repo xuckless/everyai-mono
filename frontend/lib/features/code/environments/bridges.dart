@@ -186,6 +186,9 @@ final class DockerEnv extends ExecEnv {
   String? toHostPath(String envPath) => mounts.toHost(envPath);
 
   @override
+  bool writableInside(String hostPath) => mounts.writableAt(hostPath) ?? false;
+
+  @override
   Uri? hostUrl(Uri loopback) => _viaHostName(loopback, hostName);
 }
 
@@ -246,6 +249,9 @@ final class LimaEnv extends ExecEnv {
 
   @override
   String? toHostPath(String envPath) => mounts.toHost(envPath);
+
+  @override
+  bool writableInside(String hostPath) => mounts.writableAt(hostPath) ?? false;
 
   @override
   Uri? hostUrl(Uri loopback) => _viaHostName(loopback, 'host.lima.internal');
@@ -362,6 +368,9 @@ final class MultipassEnv extends ExecEnv {
 
   @override
   String? toHostPath(String envPath) => mounts.toHost(envPath);
+
+  @override
+  bool writableInside(String hostPath) => mounts.writableAt(hostPath) ?? false;
 
   // No name for the host inside; the MCP host would need a bridged address.
   @override

@@ -68,9 +68,11 @@ final class DriverRegistry {
   /// [env] other than the host: its copy bound there (one per driver and
   /// environment id, so its CLI path, models and open sessions stay its
   /// own), or null when it can't run there (the EveryAI harness, a terminal).
+  /// An environment found again (a container made again keeps its id but not
+  /// its container id or mounts) gets a new copy; open sessions keep theirs.
   HarnessDriver? resolve(String id, {ExecEnv env = HostEnv.instance}) {
     if (env.isHost) return _onHost(id);
-    if (_inEnv[(id, env.id)] case final d?) return d;
+    if (_inEnv[(id, env.id)] case final RunsInEnvironments d when identical(d.execEnv, env)) return d as HarnessDriver;
     final base = _onHost(id);
     if (base is! RunsInEnvironments) return null;
     return _inEnv[(id, env.id)] = (base as RunsInEnvironments).inEnv(env, _envFind(env));

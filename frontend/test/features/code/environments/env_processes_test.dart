@@ -26,7 +26,7 @@ void main() {
     expect(t.rows[12]!.command, 'bash');
     expect(t.rows[12]!.isShell, isTrue);
     expect([for (final r in t.rows.values) r.tag], [null, 's1', 's1', 's1', 's1', null]);
-    expect(tagLister, contains('$sessionEnvVar=\$1'));
+    expect(tagLister, contains(r't="$1=$2"'));
   });
 
   test('Stop spares the CLI and its other children, and ends what its shells run', () {
@@ -50,9 +50,20 @@ void main() {
       },
     );
     expect(env.wraps.first.executable, '/bin/sh');
-    expect(env.wraps.first.args, ['-c', tagLister, 'sh', 's1; rm -rf ~']);
+    expect(env.wraps.first.args, ['-c', tagLister, 'sh', sessionEnvVar, 's1; rm -rf ~']);
     expect(pids, [12, 13]);
     expect(calls[1], ['/usr/bin/bridge', '/bin/sh', '-c', contains('kill -TERM'), 'sh', '12', '13']);
+  });
+
+  test("one CLI's end looks for its own marker, not the session's tag", () async {
+    final env = FakeEnv();
+    await endInside(
+      env,
+      'p1',
+      variable: procEnvVar,
+      run: (exe, args, {timeout = Duration.zero, environment = const {}}) async => ok(''),
+    );
+    expect(env.wraps.first.args, ['-c', tagLister, 'sh', procEnvVar, 'p1']);
   });
 
   test('nothing runs for the host, or when the list fails', () async {

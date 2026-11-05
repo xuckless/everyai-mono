@@ -216,7 +216,7 @@ final class _HostServer implements HostServer {
     if (address != null && !address.isLoopback) {
       final key = address.address;
       final extra = _extra[key] ??= (
-        server: bindAt(address, port).then((s) => s..listen((req) => unawaited(_handle(port, req)))),
+        server: bindAt(address, port).then((s) => s..listen((req) => unawaited(_handle(port, req, via: key)))),
         tokens: <String>{},
       );
       try {
@@ -315,9 +315,10 @@ final class _HostServer implements HostServer {
     return hit;
   }
 
-  Future<void> _handle(int port, HttpRequest req) async {
+  /// [via] is the address of the extra listener [req] came in on; null for loopback.
+  Future<void> _handle(int port, HttpRequest req, {String? via}) async {
     try {
-      await _serve(port, req);
+      await _serve(port, req, via: via);
     } on Object {
       // A client that left mid-answer.
       try {
@@ -329,7 +330,7 @@ final class _HostServer implements HostServer {
     if (_grants.isEmpty) unawaited(_closeIfIdle());
   }
 
-  Future<void> _serve(int port, HttpRequest req) async {
+  Future<void> _serve(int port, HttpRequest req, {String? via}) async {
     if (req.uri.path != '/mcp') return _reply(req, 404, _error(null, -32601, 'Not found'));
     // DNS rebinding: a web page can reach a loopback port, but its Host or Origin names its own site. Beyond
     // loopback, only the names a live token was given (reachFrom), and only with that token.
@@ -346,7 +347,8 @@ final class _HostServer implements HostServer {
     final auth = req.headers.value('authorization') ?? '';
     final grant = auth.startsWith('Bearer ') ? _find(auth.substring(7).trim()) : null;
     if (grant == null) return _unauthorized(req);
-    if (!local.contains(host) && !grant.hosts.contains(host)) {
+    // An extra listener serves only the tokens it was opened for, whatever the Host header names.
+    if (!local.contains(host) && !grant.hosts.contains(host) || via != null && !grant.addresses.contains(via)) {
       return _reply(req, 403, _error(null, -32600, 'Forbidden host'));
     }
     _used(grant);

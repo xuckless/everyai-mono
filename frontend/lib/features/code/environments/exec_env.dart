@@ -57,6 +57,10 @@ abstract class ExecEnv {
   String? toEnvPath(String hostPath);
   String? toHostPath(String envPath);
 
+  /// Whether a program inside can write under [hostPath] (a worktree EveryAI
+  /// makes there): it is visible inside and its share isn't read-only.
+  bool writableInside(String hostPath) => toEnvPath(hostPath) != null;
+
   /// How a loopback URL served on the host (the MCP host) is reached from
   /// inside, or null when it can't be. Identity on the host.
   Uri? hostUrl(Uri loopback) => loopback;

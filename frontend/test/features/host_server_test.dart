@@ -480,6 +480,10 @@ void main() {
       final extraPort = opened.single.port;
       final extra = Uri.parse('http://127.0.0.1:$extraPort/mcp');
       expect(await named(extra, '172.20.0.1:${a.url.port}', a.token), 200);
+      // A loopback Host header doesn't open it to a token that stays on this computer.
+      final hostOnly = await s.mint('c', tools);
+      expect(await named(extra, '127.0.0.1:${a.url.port}', hostOnly.token), 403);
+      expect(await named(extra, '127.0.0.1:${a.url.port}', a.token), 200);
       await s.revoke(a.token);
       expect(await named(extra, '172.20.0.1:${a.url.port}', b.token), 200);
       await s.revoke(b.token);

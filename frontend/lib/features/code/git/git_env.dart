@@ -18,6 +18,18 @@ final _wslNative = RegExp(r'^[\\/]{2}(?:wsl\$|wsl\.localhost)[\\/]([^\\/]+)', ca
 /// `\\wsl$\<distro>\…`), or null.
 String? wslDistroOf(String hostPath) => _wslNative.firstMatch(hostPath)?.group(1);
 
+/// The `\\wsl.localhost\<distro>` or `\\wsl$\<distro>` part of [hostPath], as written, or null.
+String? wslPrefixOf(String hostPath) => _wslNative.firstMatch(hostPath)?.group(0);
+
+/// [hostPath] (a distro path as this computer sees it, `\\wsl.localhost\<distro>\…`) with the distro prefix
+/// [dir] was given in (`\\wsl$\Ubuntu`, another case), so it still matches the project's own path.
+String hostLike(String hostPath, String dir) {
+  final from = wslPrefixOf(hostPath), to = wslPrefixOf(dir);
+  if (from == null || to == null || from == to) return hostPath;
+  if (wslDistroOf(from)!.toLowerCase() != wslDistroOf(to)!.toLowerCase()) return hostPath;
+  return '$to${hostPath.substring(from.length)}';
+}
+
 /// Whether git for [hostPath] runs inside [env]: only a WSL distro's own
 /// files, where Windows git over the network share is slow and gets file
 /// modes and line endings wrong. `/mnt/c` projects, bind mounts, shared
