@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:every_ai/core/preferences.dart';
-import 'package:every_ai/features/code/automations/schedule_providers.dart' show scheduleSessionActiveProvider;
+import 'package:every_ai/features/code/automations/schedule_providers.dart' show scheduleTickProvider;
 import 'package:every_ai/features/code/automations/webhook.dart';
 import 'package:every_ai/features/code/automations/webhook_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
@@ -56,7 +56,8 @@ final class _Rig {
       overrides: [
         preferencesProvider.overrideWithValue(prefs),
         systemNotifierProvider.overrideWithValue(notices),
-        scheduleSessionActiveProvider.overrideWithValue(active.contains),
+        scheduleTickProvider.overrideWithValue(null),
+        webhookSessionBusyProvider.overrideWithValue(active.contains),
         webhookStarterProvider.overrideWithValue((a, prompt) async {
           started.add((a, prompt));
           await hold;
@@ -130,7 +131,7 @@ void main() {
     expect(seen.last, 'x204');
   });
 
-  test('off, another event, or the last run still going: skipped with a note, acked', () async {
+  test('off or another event: skipped with a note, acked', () async {
     final off = _Rig([_auto(enabled: false)]);
     addTearDown(off.container.dispose);
     await off.deliver(_delivery('d1'));
@@ -146,29 +147,64 @@ void main() {
     await filtered.deliver(_delivery('d2', event: 'issues'));
     expect(filtered.started, hasLength(1));
     expect(filtered.acked, ['d1', 'd2']);
-
-    final busy = _Rig([_auto()]);
-    addTearDown(busy.container.dispose);
-    await busy.deliver(_delivery('d1'));
-    busy.active.add('s1');
-    await busy.deliver(_delivery('d2'));
-    expect(busy.started, hasLength(1));
-    expect(busy.only.lastError, contains('still working'));
-    expect(busy.acked, ['d1', 'd2']);
   });
 
-  test('a second delivery while the first session is starting is skipped', () async {
+  test('deliveries while the last session works wait unacked, then start one by one', () async {
+    // The desktop woke up: the relay sends three in a burst while the first session runs.
+    final rig = _Rig([_auto()]);
+    addTearDown(rig.container.dispose);
+    await rig.deliver(_delivery('d1'));
+    rig.active.add('s1');
+    await rig.deliver(_delivery('d2'));
+    await rig.deliver(_delivery('d3'));
+    expect(rig.started, hasLength(1));
+    // Not acked: the backend keeps them.
+    expect(rig.acked, ['d1']);
+    expect(rig.only.lastError, isNull);
+    // Sent again after a reconnect while they wait: still one each.
+    await rig.deliver(_delivery('d2'));
+    await rig.runner.pump();
+    expect(rig.started, hasLength(1));
+
+    rig.active.remove('s1');
+    rig.active.add('s2');
+    await rig.runner.pump();
+    expect(rig.started, hasLength(2));
+    expect(rig.acked, ['d1', 'd2']);
+    expect(rig.only.lastSessionId, 's2');
+
+    rig.active.clear();
+    await rig.runner.pump();
+    expect(rig.started, hasLength(3));
+    expect(rig.acked, ['d1', 'd2', 'd3']);
+    await rig.runner.pump();
+    expect(rig.started, hasLength(3));
+  });
+
+  test('a skipped delivery does not wait behind a working session', () async {
+    final rig = _Rig([_auto(event: 'issues')]);
+    addTearDown(rig.container.dispose);
+    await rig.deliver(_delivery('d1', event: 'issues'));
+    rig.active.add('s1');
+    await rig.deliver(_delivery('d2', event: 'push'));
+    expect(rig.acked, ['d1', 'd2']);
+    expect(rig.only.lastError, contains('Skipped a push'));
+  });
+
+  test('a second delivery while the first session is starting waits for it, then starts', () async {
     final rig = _Rig([_auto()]);
     addTearDown(rig.container.dispose);
     final gate = Completer<void>();
     rig.hold = gate.future;
     final first = rig.deliver(_delivery('d1'));
     await rig.deliver(_delivery('d2'));
-    expect(rig.acked, ['d2']);
+    expect(rig.acked, isEmpty);
+    expect(rig.started, hasLength(1));
     gate.complete();
     await first;
-    expect(rig.started, hasLength(1));
-    expect(rig.acked, ['d2', 'd1']);
+    // s1 isn't working in this rig, so d2 goes right after.
+    expect(rig.started, hasLength(2));
+    expect(rig.acked, ['d1', 'd2']);
   });
 
   test('a start error is kept on the automation; an unknown hook is acked and ignored', () async {

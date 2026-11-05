@@ -220,6 +220,15 @@ test "hooks: deliveries need a valid, fresh signature, and replays are recognise
     defer gh_again.deinit();
     try gh_again.expectStatus(.ok);
     try std.testing.expect((try gh_again.json(Duplicate)).duplicate);
+    // A captured one replayed under another (unsigned) delivery id and event: still the same delivery.
+    var gh_relabelled = try env.t.post(path, .{ .headers = &.{
+        .{ "X-Hub-Signature-256", try mac(a, hook.secret, &.{gh_body}) },
+        .{ "X-GitHub-Delivery", "x1" },
+        .{ "X-GitHub-Event", "push" },
+    }, .body = gh_body });
+    defer gh_relabelled.deinit();
+    try gh_relabelled.expectStatus(.ok);
+    try std.testing.expect((try gh_relabelled.json(Duplicate)).duplicate);
 
     // GitHub's ping when the hook is set up: answered, not queued.
     var ping = try env.t.post(path, .{ .headers = &.{
@@ -330,7 +339,7 @@ fn expectNotice(ws: *anole.websocket.Client, a: std.mem.Allocator, want: []const
     return error.NoSuchNotice;
 }
 
-test "hooks: deliveries wait for an offline host, arrive in order after hello, and go once acked" {
+test "hooks: deliveries wait for an offline host and arrive one per hook, each after the ack of the one before" {
     var env: Env = undefined;
     try start(&env, true);
     defer env.deinit();
@@ -382,15 +391,18 @@ test "hooks: deliveries wait for an offline host, arrive in order after hello, a
             const io = srv.io();
             const port = srv.addresses()[0].ip.getPort();
 
-            // The host is away: both are kept.
+            // The host is away: all three are kept.
             const d1 = try post(io, ar, port, h, "{\"n\":1}");
             const d2 = try post(io, ar, port, h, "{\"n\":2}");
+            const d3 = try post(io, ar, port, h, "{\"n\":3}");
 
+            // After hello only the oldest; each ack sends the next.
             var ws = try connect(io, ar, port, h_info.host_token);
             _ = try expectNotice(&ws, ar, "hello");
             const n1 = try expectNotice(&ws, ar, "webhook");
-            const n2 = try expectNotice(&ws, ar, "webhook");
             try std.testing.expectEqualStrings(d1, n1.object.get("delivery_id").?.string);
+            try ws.send(.text, try ackText(ar, d1));
+            const n2 = try expectNotice(&ws, ar, "webhook");
             try std.testing.expectEqualStrings(d2, n2.object.get("delivery_id").?.string);
             try std.testing.expectEqualStrings(h.id, n1.object.get("hook_id").?.string);
             try std.testing.expectEqualStrings("CI", n1.object.get("hook_name").?.string);
@@ -404,8 +416,7 @@ test "hooks: deliveries wait for an offline host, arrive in order after hello, a
             try std.testing.expect(headers.get("authorization") == null);
             try std.testing.expect(headers.get("x-everyai-signature") == null);
 
-            // Only the first is acked; the other comes again on the next connect.
-            try ws.send(.text, try ackText(ar, d1));
+            // d2 isn't acked: it comes again on the next connect, and d3 waits behind it.
             hangUp(&ws);
             ws.deinit();
 
@@ -421,11 +432,22 @@ test "hooks: deliveries wait for an offline host, arrive in order after hello, a
             _ = try expectNotice(&again, ar, "hello");
             const resent = try expectNotice(&again, ar, "webhook");
             try std.testing.expectEqualStrings(d2, resent.object.get("delivery_id").?.string);
+            try again.send(.text, try ackText(ar, d2));
+            const third = try expectNotice(&again, ar, "webhook");
+            try std.testing.expectEqualStrings(d3, third.object.get("delivery_id").?.string);
+            // Acking one twice sends nothing more.
+            try again.send(.text, try ackText(ar, d2));
 
-            // Online: a new delivery arrives as it comes.
-            const d3 = try post(io, ar, port, h, "{\"n\":3}");
+            // Online: a delivery behind an unacked one waits for its ack; then it comes.
+            const d4 = try post(io, ar, port, h, "{\"n\":4}");
+            try again.send(.text, try ackText(ar, d3));
+            const fourth = try expectNotice(&again, ar, "webhook");
+            try std.testing.expectEqualStrings(d4, fourth.object.get("delivery_id").?.string);
+            // With nothing in flight, a new delivery arrives as it comes.
+            try again.send(.text, try ackText(ar, d4));
+            const d5 = try post(io, ar, port, h, "{\"n\":5}");
             const live = try expectNotice(&again, ar, "webhook");
-            try std.testing.expectEqualStrings(d3, live.object.get("delivery_id").?.string);
+            try std.testing.expectEqualStrings(d5, live.object.get("delivery_id").?.string);
             hangUp(&again);
         }
     };

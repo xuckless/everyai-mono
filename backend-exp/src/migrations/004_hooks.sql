@@ -15,8 +15,7 @@ CREATE INDEX hooks_user ON hooks(user_id);
 
 -- Accepted deliveries, kept until the host acks them (at most a day). `body`
 -- is cleared on the ack; the row stays 7 days so a replay of the same
--- delivery is recognised (`dedup_key`: the GitHub delivery id, else the
--- signature).
+-- delivery is recognised (`dedup_key`: `sig:` and the signature's MAC).
 CREATE TABLE hook_deliveries (
     id          TEXT PRIMARY KEY,
     hook_id     TEXT NOT NULL REFERENCES hooks(id) ON DELETE CASCADE,

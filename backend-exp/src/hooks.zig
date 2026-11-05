@@ -10,7 +10,7 @@
 //!
 //! The secret (`whk_…`) is shown once, at creation. At most 10 hooks per account.
 //!
-//! Delivery (public; 30 requests a minute per hook):
+//! Delivery (public; 30 requests a minute per hook and sender address):
 //!
 //!   POST /v1/hooks/:id        the sender's raw body, at most 1 MiB (413)
 //!
@@ -21,10 +21,15 @@
 //!     must be within 5 minutes of the server's clock. The MAC covers the
 //!     timestamp, so a captured request can't be replayed with a fresh one.
 //!   - GitHub's `X-Hub-Signature-256: sha256=<hex HMAC-SHA256(secret, body)>`.
-//!     It has no timestamp: replays are caught by `X-GitHub-Delivery`.
+//!     It has no timestamp, so replays are caught by the MAC itself: the same
+//!     signed body is accepted once while its row is kept (7 days). After
+//!     that, a captured GitHub delivery can be replayed undetected. The
+//!     unsigned `X-GitHub-Delivery` is not the key (changing it would get a
+//!     replay past), and `X-GitHub-Event` is unsigned too: the app uses it
+//!     only as a filter hint.
 //!
 //! Replies: 202 `{delivery_id}`; 200 `{ok, duplicate: true}` for a delivery
-//! already accepted (same GitHub delivery id, or the same signature); 200
+//! already accepted (the same signature); 200
 //! `{ok}` for GitHub's `ping` (nothing is queued); 404 for an unknown hook;
 //! 503 `{code: "host_backlog"}` with `Retry-After` while the host has 20
 //! unacked deliveries (or 8 MiB) from this hook.
@@ -34,10 +39,15 @@
 //! {content-type?, user-agent?, x-github-event?, x-github-delivery?,
 //! x-github-hook-id?, x-everyai-event?}, body_b64}`. This notice is **not**
 //! end-to-end encrypted: the server reads the body and stores it until the
-//! host acks (`{"type":"webhook_ack","delivery_id"}`), a day at most. A host
-//! that was offline gets its unacked deliveries of the last day after its
-//! `hello`, oldest first; a delivery can arrive twice (the app keeps the ids
-//! it has seen).
+//! host acks (`{"type":"webhook_ack","delivery_id"}`), a day at most.
+//!
+//! Flow: the host has at most one delivery per hook in flight, the oldest
+//! unacked one. It goes out live when it is the oldest, after `hello` (one
+//! per hook), and after the ack of the one before it, so a backlog arrives
+//! one by one and never floods the relay queue. The host acks a delivery once
+//! it has started its session (or decided not to), and holds it unacked while
+//! the hook's last session still runs. A delivery can arrive twice (the app
+//! keeps the ids it has seen and queued).
 const std = @import("std");
 const anole = @import("anole");
 const App = @import("main.zig").App;
@@ -69,7 +79,6 @@ pub const Signed = struct {
     everyai: ?[]const u8 = null,
     timestamp: ?[]const u8 = null,
     github: ?[]const u8 = null,
-    github_delivery: ?[]const u8 = null,
 };
 
 /// Whether `header` (`sha256=<hex>`) is the MAC of `parts` under `secret`,
@@ -90,19 +99,19 @@ fn macMatches(secret: []const u8, parts: []const []const u8, header: []const u8)
 }
 
 /// Checks a delivery's signature at `now` (unix seconds) and returns its
-/// dedup key (written to `buf`): `gh:<delivery id>` for GitHub deliveries
-/// that name one, else `sig:<hex MAC>`.
+/// dedup key (written to `buf`): `sig:<hex MAC>`, which only the secret's
+/// holder can make for a given body (and timestamp).
 pub fn verify(secret: []const u8, s: Signed, body: []const u8, now: i64, buf: []u8) SignatureError![]const u8 {
     if (s.everyai) |sig| {
         const ts_text = s.timestamp orelse return error.MissingSignature;
         const ts = std.fmt.parseInt(i64, std.mem.trim(u8, ts_text, " "), 10) catch return error.BadTimestamp;
-        if (@abs(now - ts) > tolerance_seconds) return error.Stale;
+        // No arithmetic on `ts`: a sender's value near i64's ends would overflow.
+        if (ts < now - tolerance_seconds or ts > now + tolerance_seconds) return error.Stale;
         const mac = try macMatches(secret, &.{ std.mem.trim(u8, ts_text, " "), ".", body }, sig);
         return std.fmt.bufPrint(buf, "sig:{s}", .{&mac}) catch error.BadSignature;
     }
     const sig = s.github orelse return error.MissingSignature;
     const mac = try macMatches(secret, &.{body}, sig);
-    if (s.github_delivery) |d| if (d.len > 0 and d.len <= 128) return std.fmt.bufPrint(buf, "gh:{s}", .{d}) catch error.BadSignature;
     return std.fmt.bufPrint(buf, "sig:{s}", .{&mac}) catch error.BadSignature;
 }
 
@@ -150,26 +159,42 @@ fn notice(arena: std.mem.Allocator, d: Delivery) ![]const u8 {
     }, .{ .emit_null_optional_fields = false });
 }
 
-/// Sends `host_id` its unacked deliveries of the last day, oldest first; run
-/// once its socket is registered (after `hello`). Also drops what is too old
-/// to keep. Never under the relay mutex: it reads the database.
+/// Sends `host_id` the oldest unacked delivery of `hook_id`, if there is one:
+/// the only one of that hook in flight (see Flow above). From a scratch arena
+/// freed here, since a host socket's own arena lives as long as the socket.
+fn sendOldest(app: *App, io: std.Io, host_id: []const u8, hook_id: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(app.gpa);
+    defer arena.deinit();
+    var ctx: anole.db.Ctx = .{ .io = io, .arena = arena.allocator() };
+    const d = try app.db.optional(Delivery, &ctx,
+        \\SELECT d.id, d.hook_id, h.name AS hook_name, d.headers, d.body, d.created_at
+        \\FROM hook_deliveries d JOIN hooks h ON h.id = d.hook_id
+        \\WHERE d.hook_id = ? AND d.host_id = ? AND d.acked_at IS NULL AND d.body IS NOT NULL AND d.created_at > ?
+        \\ORDER BY d.created_at, d.rowid LIMIT 1
+    , .{ hook_id, host_id, util.now(io) - keep_pending_seconds }) orelse return;
+    app.relay.notifyHost(io, host_id, try notice(arena.allocator(), d));
+}
+
+/// Sends `host_id` the oldest unacked delivery of each of its hooks, run once
+/// its socket is registered (after `hello`); the rest follow ack by ack. Also
+/// drops what is too old to keep. Never under the relay mutex: it reads the
+/// database.
 pub fn resendPending(app: *App, req: *anole.Request, host_id: []const u8) !void {
     const now = util.now(req.io);
     _ = try app.db.exec(req, "DELETE FROM hook_deliveries WHERE host_id = ? AND created_at < ?", .{ host_id, now - keep_seen_seconds });
     _ = try app.db.exec(req, "UPDATE hook_deliveries SET body = NULL WHERE host_id = ? AND body IS NOT NULL AND created_at < ?", .{ host_id, now - keep_pending_seconds });
-    const pending = try app.db.all(Delivery, req,
-        \\SELECT d.id, d.hook_id, h.name AS hook_name, d.headers, d.body, d.created_at
-        \\FROM hook_deliveries d JOIN hooks h ON h.id = d.hook_id
-        \\WHERE d.host_id = ? AND d.acked_at IS NULL AND d.body IS NOT NULL
-        \\ORDER BY d.created_at, d.rowid LIMIT 200
+    const hook_ids = try app.db.all([]const u8, req,
+        \\SELECT DISTINCT hook_id FROM hook_deliveries
+        \\WHERE host_id = ? AND acked_at IS NULL AND body IS NOT NULL ORDER BY hook_id
     , .{host_id});
-    for (pending) |d| app.relay.notifyHost(req.io, host_id, try notice(req.arena, d));
+    for (hook_ids) |hook_id| try sendOldest(app, req.io, host_id, hook_id);
 }
 
-/// The host took `delivery_id`: its body goes. Only that host's own
-/// deliveries; anything else changes nothing.
+/// The host took `delivery_id`: its body goes, and the next one of its hook
+/// is sent. Only that host's own deliveries; anything else changes nothing.
 pub fn ack(app: *App, req: *anole.Request, host_id: []const u8, delivery_id: []const u8) !void {
-    _ = try app.db.exec(req, "UPDATE hook_deliveries SET body = NULL, acked_at = ? WHERE id = ? AND host_id = ? AND acked_at IS NULL", .{ util.now(req.io), delivery_id, host_id });
+    const hook_id = try app.db.optional([]const u8, req, "UPDATE hook_deliveries SET body = NULL, acked_at = ? WHERE id = ? AND host_id = ? AND acked_at IS NULL RETURNING hook_id", .{ util.now(req.io), delivery_id, host_id }) orelse return;
+    try sendOldest(app, req.io, host_id, hook_id);
 }
 
 /// Drops deliveries too old to matter; run at start (main.pruneExpired).
@@ -180,6 +205,10 @@ pub fn prune(app: *App, ctx: anytype) !void {
 }
 
 fn deliver(app: *App, req: *anole.Request, res: *anole.Response) !void {
+    // The hook first: an unknown one is answered without reading the body.
+    const id = req.param("id") orelse return res.fail(.not_found, "no such webhook");
+    const hook = try app.db.optional(struct { host_id: []const u8, name: []const u8, secret: []const u8 }, req, "SELECT host_id, name, secret FROM hooks WHERE id = ?", .{id}) orelse
+        return res.fail(.not_found, "no such webhook");
     if ((req.content_length orelse 0) > max_body) return res.fail(.payload_too_large, "the body is over 1 MiB");
     const body = (req.body() catch |err| switch (err) {
         error.BodyTooBig => return res.fail(.payload_too_large, "the body is over 1 MiB"),
@@ -187,17 +216,12 @@ fn deliver(app: *App, req: *anole.Request, res: *anole.Response) !void {
     }) orelse "";
     if (body.len > max_body) return res.fail(.payload_too_large, "the body is over 1 MiB");
 
-    const id = req.param("id") orelse return res.fail(.not_found, "no such webhook");
-    const hook = try app.db.optional(struct { host_id: []const u8, name: []const u8, secret: []const u8 }, req, "SELECT host_id, name, secret FROM hooks WHERE id = ?", .{id}) orelse
-        return res.fail(.not_found, "no such webhook");
-
     const now = util.now(req.io);
     var key_buf: [160]u8 = undefined;
     const dedup = verify(hook.secret, .{
         .everyai = req.headers.get("X-EveryAI-Signature"),
         .timestamp = req.headers.get("X-EveryAI-Timestamp"),
         .github = req.headers.get("X-Hub-Signature-256"),
-        .github_delivery = req.headers.get("X-GitHub-Delivery"),
     }, body, now, &key_buf) catch |err| {
         req.log().info("webhook refused", .{ .hook = id, .reason = @errorName(err) });
         return res.fail(.unauthorized, "invalid signature");
@@ -225,7 +249,13 @@ fn deliver(app: *App, req: *anole.Request, res: *anole.Response) !void {
     if (inserted == null) return res.json(.{ .ok = true, .duplicate = true });
     _ = try app.db.exec(req, "UPDATE hooks SET last_delivery_at = ? WHERE id = ?", .{ now, id });
 
-    app.relay.notifyHost(req.io, hook.host_id, try notice(req.arena, .{
+    // Live only when it is the hook's oldest unacked one; otherwise it waits
+    // its turn (the ack of the one before it sends it).
+    const oldest = try app.db.optional([]const u8, req,
+        \\SELECT id FROM hook_deliveries WHERE hook_id = ? AND acked_at IS NULL AND body IS NOT NULL AND created_at > ?
+        \\ORDER BY created_at, rowid LIMIT 1
+    , .{ id, now - keep_pending_seconds });
+    if (oldest) |o| if (std.mem.eql(u8, o, delivery_id)) app.relay.notifyHost(req.io, hook.host_id, try notice(req.arena, .{
         .id = delivery_id,
         .hook_id = id,
         .hook_name = hook.name,
@@ -301,9 +331,13 @@ fn deleteHook(app: *App, req: *anole.Request, in: anole.In(.{ .path = struct { i
 
 // ------------------------------------------------------------------ routes
 
-/// One rate-limit bucket per hook, whoever sends.
+/// One rate-limit bucket per hook and sender address, counted before the
+/// signature is checked: someone without the secret who floods the URL fills
+/// only their own bucket, not the real sender's.
 fn byHook(req: *anole.Request, buf: []u8) []const u8 {
-    return std.fmt.bufPrint(buf, "hook:{s}", .{req.param("id") orelse ""}) catch "hook:?";
+    var addr_buf: [64]u8 = undefined;
+    const addr = anole.ratelimit.clientAddress(req, &addr_buf);
+    return std.fmt.bufPrint(buf, "hook:{s}:{s}", .{ req.param("id") orelse "", addr }) catch "hook:?";
 }
 
 pub fn routes(app: *anole.Server(App), state: *App) void {
@@ -322,10 +356,9 @@ test "verify: GitHub's documented example" {
         .github = "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17",
     }, "Hello, World!", 0, &buf);
     try std.testing.expectEqualStrings("sig:757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17", key);
-    // Upper-case hex is the same MAC; the delivery id names the dedup key.
-    try std.testing.expectEqualStrings("gh:72d3162e", try verify("It's a Secret to Everybody", .{
+    // Upper-case hex is the same MAC, and the same key.
+    try std.testing.expectEqualStrings("sig:757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17", try verify("It's a Secret to Everybody", .{
         .github = "sha256=757107EA0EB2509FC211221CCE984B8A37570B6D7586C22C46F4379C8B043E17",
-        .github_delivery = "72d3162e",
     }, "Hello, World!", 0, &buf));
     try std.testing.expectError(error.BadSignature, verify("It's a Secret to Everybody", .{
         .github = "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e18",
@@ -367,4 +400,7 @@ test "verify: the EveryAI form covers the timestamp, within 5 minutes" {
     try std.testing.expectError(error.BadSignature, verify("whk_s", .{ .everyai = &early, .timestamp = "1800000000" }, "{}", now, &buf));
     try std.testing.expectError(error.MissingSignature, verify("whk_s", .{ .everyai = &at_now }, "{}", now, &buf));
     try std.testing.expectError(error.BadTimestamp, verify("whk_s", .{ .everyai = &at_now, .timestamp = "soon" }, "{}", now, &buf));
+    // i64's ends are stale, not an overflow (which panics the server in ReleaseSafe).
+    try std.testing.expectError(error.Stale, verify("whk_s", .{ .everyai = "sha256=00", .timestamp = "-9223372036854775808" }, "{}", now, &buf));
+    try std.testing.expectError(error.Stale, verify("whk_s", .{ .everyai = "sha256=00", .timestamp = "9223372036854775807" }, "{}", now, &buf));
 }
