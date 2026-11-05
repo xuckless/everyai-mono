@@ -88,7 +88,11 @@ class _EnvironmentPanelState extends ConsumerState<EnvironmentPanel> {
               key: ValueKey('environment.${e.id}'),
               leading: AdaptiveIcon(environmentIcon(e), size: 15, color: theme.textMuted),
               title: e.label,
-              subtitle: e.running ? e.note ?? (e.isHost ? null : e.kind.label) : 'Stopped',
+              subtitle: !e.running
+                  ? 'Stopped'
+                  : e.kind == EnvKind.ssh
+                  ? "Agents can't run here yet"
+                  : e.note ?? (e.isHost ? null : e.kind.label),
               selected: e.id == widget.envId,
               trailing: check(e.id == widget.envId),
               onTap: () {
@@ -125,7 +129,8 @@ class EnvironmentChip extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = EveryTheme.of(context);
-    final env = environmentById(ref.watch(environmentsProvider).value ?? const [], envId);
+    // The host never starts environment discovery just to be labelled.
+    final env = watchEnvironment(ref, envId);
     // The id stands in while the list is loading or the environment is gone.
     final label = env?.label ?? (envId == 'host' ? EnvKind.host.label : envId);
     return Row(

@@ -3656,6 +3656,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       final Map<String, DriverStatus> statuses;
       try {
         // Where the session runs: the harness must be installed there.
+        await execEnvFor(ref, info.environment); // says when the environment is gone
         statuses = await ref.read(driverStatusesInProvider(info.environment).future);
       } on Object catch (e) {
         return LeadSwitchOutcome.failed('$e');

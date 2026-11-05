@@ -19,6 +19,7 @@ import '../domain/code_session.dart' show everyaiHarnessName;
 import '../drivers/driver.dart';
 import '../drivers/driver_policy.dart' show leadFix, offeredAsLead;
 import '../drivers/driver_registry.dart';
+import '../environments/exec_env.dart';
 import '../environments/environment_label.dart';
 import '../environments/environment_providers.dart';
 import '../environments/environment_statuses.dart';
@@ -164,7 +165,13 @@ class AgentMenu extends ConsumerWidget {
       final own = ref.watch(codeSettingsProvider.select((s) => s.ownClis));
       leads = [
         for (final l in leadOptions([for (final d in registry.listed) d.info], statuses, own, current: harness))
-          (info: named(l.info), blocked: l.blocked, detail: l.detail),
+          // EveryAI runs on this computer only, and nothing starts on an ssh remote yet (see harnessFor).
+          if (env != null && env.kind == EnvKind.ssh)
+            (info: named(l.info), blocked: "Agents can't run here yet", detail: '')
+          else if (env != null && !env.isHost && l.info.id == everyaiHarnessName)
+            (info: l.info, blocked: 'Runs on this computer only', detail: '')
+          else
+            (info: named(l.info), blocked: l.blocked, detail: l.detail),
       ];
     }
     final driverModels = outside ? ref.watch(driverModelsProvider(harness)).value ?? const <DriverModel>[] : null;

@@ -32,9 +32,7 @@ import 'code_top_bar.dart' show CodeDraftBar;
 import 'console/session_actions.dart';
 import '../code_settings_providers.dart';
 import '../drivers/driver_registry.dart' show driverRegistryProvider;
-import '../environments/environment_label.dart';
 import '../environments/environment_picker.dart';
-import '../environments/environment_providers.dart';
 import '../harness/events.dart' show HarnessEvent;
 import '../resume/past_sessions.dart';
 import '../resume/resume_providers.dart';
@@ -300,10 +298,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                         PastSessionTile(
                           key: ValueKey('code-home.earlier.${p.harness}.${p.nativeId}'),
                           past: p,
-                          label: harnessLabel(
-                            ref.read(driverRegistryProvider).resolve(p.harness)?.info.label ?? p.harness,
-                            watchEnvironment(ref, project.environment),
-                          ),
+                          label: ref.read(driverRegistryProvider).resolve(p.harness)?.info.label ?? p.harness,
                           blocked: row.blocked,
                           busy: _resuming == '${p.harness}|${p.nativeId}',
                           onOpen: _resuming != null || _starting ? null : () => _resume(project, p),

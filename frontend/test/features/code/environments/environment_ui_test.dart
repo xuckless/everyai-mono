@@ -46,6 +46,7 @@ Widget _app(Widget child, {List<Override> overrides = const []}) => ProviderScop
 
 final _ubuntu = FakeEnv();
 final _debian = FakeEnv(id: 'wsl:Debian', label: 'Debian (WSL)');
+final _box = FakeEnv(id: 'ssh:box', kind: EnvKind.ssh, label: 'box (SSH)');
 
 void main() {
   group('labels and the ssh target', () {
@@ -194,6 +195,19 @@ void main() {
     });
   });
 
+  test('adding a remote again takes the new label and keeps its place', () {
+    final prefs = Preferences.inMemory();
+    final c = ProviderContainer(overrides: [preferencesProvider.overrideWithValue(prefs)]);
+    addTearDown(c.dispose);
+    final notifier = c.read(sshRemotesProvider.notifier);
+    notifier.add(const SshRemote.alias('a'));
+    notifier.add(const SshRemote.alias('devbox'));
+    notifier.add(const SshRemote.alias('devbox', name: 'Build box'));
+    final remotes = c.read(sshRemotesProvider);
+    expect([for (final r in remotes) r.name], [null, 'Build box']);
+    expect(remotes.length, 2);
+  });
+
   group('the ssh form', () {
     testWidgets('a target is required; the label is optional; keys only is said', (tester) async {
       final saved = <SshRemote>[];
@@ -237,7 +251,7 @@ void main() {
             preferencesProvider.overrideWithValue(Preferences.inMemory()),
             modelCatalogProvider.overrideWith(FixedCatalog.new),
             agentCatalogProvider.overrideWithBuild((ref, _) => AgentCatalog.builtIn),
-            environmentsProvider.overrideWith((ref) async => [HostEnv.instance, _ubuntu, _debian]),
+            environmentsProvider.overrideWith((ref) async => [HostEnv.instance, _ubuntu, _debian, _box]),
             driverRegistryProvider.overrideWithValue(
               DriverRegistry({
                 'everyai': FakeLeadDriver('everyai', label: 'EveryAI'),
@@ -249,6 +263,8 @@ void main() {
             driverStatusesInProvider('wsl:Ubuntu')
                 .overrideWith((ref) async => {'alpha': const DriverStatus(installed: true, version: '1.0')}),
             driverStatusesInProvider('wsl:Debian').overrideWith((ref) async => const {}),
+            driverStatusesInProvider('ssh:box')
+                .overrideWith((ref) async => {'alpha': const DriverStatus(installed: true, version: '1.0')}),
           ],
         ),
       );
@@ -264,7 +280,15 @@ void main() {
       await openLeads(tester, 'wsl:Ubuntu');
       expect(find.byKey(const ValueKey('agent-menu.harness.alpha')), findsOneWidget);
       expect(find.text('Alpha CLI · Ubuntu (WSL)'), findsOneWidget);
-      expect(find.text('EveryAI · Ubuntu (WSL)'), findsOneWidget);
+      // EveryAI runs on this computer only: named plainly and greyed with why.
+      expect(find.text('EveryAI'), findsOneWidget);
+      expect(find.text('EveryAI · Ubuntu (WSL)'), findsNothing);
+      expect(find.text('Runs on this computer only'), findsOneWidget);
+    });
+
+    testWidgets('an ssh remote greys every lead, since nothing starts there yet', (tester) async {
+      await openLeads(tester, 'ssh:box');
+      expect(find.text("Agents can't run here yet"), findsNWidgets(2));
     });
 
     testWidgets('one not installed in the distro is left out', (tester) async {

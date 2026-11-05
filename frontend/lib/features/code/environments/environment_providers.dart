@@ -25,10 +25,13 @@ final class SshRemotes extends Notifier<List<SshRemote>> {
     ref.read(preferencesProvider)[sshRemotesKey] = encodeSshRemotes(next);
   }
 
-  /// Adds [remote] unless it's there already or [SshRemote.problem] objects.
+  /// Adds [remote] unless [SshRemote.problem] objects; one already there is replaced (a new label).
   void add(SshRemote remote) {
-    if (remote.problem != null || state.contains(remote)) return;
-    _set([...state, remote]);
+    if (remote.problem != null) return;
+    final at = state.indexOf(remote);
+    // The same destination again: keep its place, take the new label.
+    if (at < 0) return _set([...state, remote]);
+    _set([...state]..[at] = remote);
   }
 
   void remove(SshRemote remote) => _set([...state.where((r) => r != remote)]);
