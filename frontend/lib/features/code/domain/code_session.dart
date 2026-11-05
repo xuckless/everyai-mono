@@ -8,16 +8,31 @@ import '../settings/agent_prompt.dart' show HarnessTier;
 /// A folder the agent works in.
 @immutable
 final class CodeProject {
-  const CodeProject({required this.id, required this.name, required this.path});
+  const CodeProject({required this.id, required this.name, required this.path, this.environment = 'host'});
 
   final String id;
   final String name;
   final String path;
 
-  factory CodeProject.fromJson(Map<String, Object?> json) =>
-      CodeProject(id: json['id']! as String, name: json['name']! as String, path: json['path']! as String);
+  /// The `ExecEnv.id` its commands, CLIs and git run in ('host' = this computer).
+  final String environment;
 
-  Map<String, Object?> toJson() => {'id': id, 'name': name, 'path': path};
+  CodeProject withEnvironment(String environment) =>
+      CodeProject(id: id, name: name, path: path, environment: environment);
+
+  factory CodeProject.fromJson(Map<String, Object?> json) => CodeProject(
+    id: json['id']! as String,
+    name: json['name']! as String,
+    path: json['path']! as String,
+    environment: json['environment'] as String? ?? 'host',
+  );
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'name': name,
+    'path': path,
+    if (environment != 'host') 'environment': environment,
+  };
 }
 
 enum SessionStatus {
