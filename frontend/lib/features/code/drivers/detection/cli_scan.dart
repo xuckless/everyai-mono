@@ -36,8 +36,10 @@ Future<String?> findCli(
     if (local != null && local.isNotEmpty) {
       final programs = '$local\\Programs';
       final entries = list ?? _entries;
+      // Only `<app>\bin`: an app's own folder holds its GUI exe, which is not the CLI.
       final dirs = [
-        for (final child in entries(programs)) ...['$programs\\$child\\bin', '$programs\\$child'],
+        for (final child in entries(programs))
+          if (isFile != null || Directory('$programs\\$child\\bin').existsSync()) '$programs\\$child\\bin',
       ];
       final hit = findOnPath(command, dirs.join(';'), windows: true, isFile: isFile);
       if (hit != null) return hit;
@@ -65,15 +67,8 @@ Future<String?> _npmPrefixOnce(Map<String, String> shell, Future<String?> Functi
 
 Future<String?> _npmConfigPrefix(Map<String, String> shell) async {
   try {
-    final res = await Process.run(
-      'npm',
-      ['config', 'get', 'prefix'],
-      environment: shell,
-      runInShell: Platform.isWindows,
-      stdoutEncoding: utf8,
-    ).timeout(const Duration(seconds: 4));
-    if (res.exitCode != 0) return null;
-    final line = '${res.stdout}'.split('\n').map((l) => l.trim()).firstWhere((l) => l.isNotEmpty, orElse: () => '');
+    final out = await _runKilling('npm', ['config', 'get', 'prefix'], const Duration(seconds: 4), shell);
+    final line = out.split('\n').map((l) => l.trim()).firstWhere((l) => l.isNotEmpty, orElse: () => '');
     return line.isEmpty ? null : line;
   } on Object {
     return null;
@@ -81,27 +76,64 @@ Future<String?> _npmConfigPrefix(Map<String, String> shell) async {
 }
 
 /// The usual install folders, relative to $HOME, as a shell would check them.
-const _homeDirs = ['.claude/local', '.local/bin', '.npm-global/bin', '.bun/bin', '.opencode/bin', '.cargo/bin'];
+/// The `*` ones are globs (nvm keeps a folder per Node version).
+const _homeDirs = [
+  '.claude/local',
+  '.local/bin',
+  '.npm-global/bin',
+  '.bun/bin',
+  '.opencode/bin',
+  '.cargo/bin',
+  '.volta/bin',
+  '.deno/bin',
+  '.nvm/versions/node/*/bin',
+];
+
+const _marker = '__EVERYAI_CLI__';
+
+/// The shell line [_findIn] runs: PATH first, then the folders above, then
+/// npm's prefix. It prints [_marker] and the path, so a banner from
+/// /etc/profile or ~/.profile is never taken for the answer. A login `sh`
+/// (dash) skips ~/.bashrc, where nvm puts itself, hence the explicit folders.
+String envLookupScript() {
+  final dirs = ['/opt/homebrew/bin', '/usr/local/bin', for (final d in _homeDirs) '\$HOME/$d'];
+  return 'found() { printf "%s\\n%s\\n" "$_marker" "\$1"; exit 0; }; '
+      r'p=$(command -v "$1" 2>/dev/null); case "$p" in /*) found "$p";; esac; '
+      'for d in ${dirs.map((d) => '"$d"').join(' ')}; do '
+      r'[ -x "$d/$1" ] && found "$d/$1"; done; '
+      r'n=$(npm config get prefix 2>/dev/null); [ -n "$n" ] && [ -x "$n/bin/$1" ] && found "$n/bin/$1"; exit 1';
+}
 
 Future<String?> _findIn(ExecEnv env, String command, Future<String> Function(String, List<String>) run) async {
-  const name = r'"$1"';
-  final dirs = ['/opt/homebrew/bin', '/usr/local/bin', for (final d in _homeDirs) '\$HOME/$d'];
-  final script =
-      'command -v $name 2>/dev/null && exit 0; '
-      'for d in ${dirs.map((d) => '"$d"').join(' ')}; do '
-      '[ -x "\$d/$name" ] && { echo "\$d/$name"; exit 0; }; done; exit 1';
-  final cmd = env.wrap('sh', ['-lc', script, 'sh', command]);
+  final cmd = env.wrap('sh', ['-lc', envLookupScript(), 'sh', command]);
   try {
-    final out = await run(cmd.executable, cmd.args);
-    final first = out.split('\n').map((l) => l.trim()).firstWhere((l) => l.isNotEmpty, orElse: () => '');
-    return first.isEmpty ? null : first;
+    final lines = (await run(cmd.executable, cmd.args)).split('\n').map((l) => l.trim()).toList();
+    final at = lines.indexOf(_marker);
+    if (at < 0 || at + 1 >= lines.length) return null;
+    final path = lines[at + 1];
+    return path.startsWith('/') ? path : null;
   } on Object {
     return null;
   }
 }
 
-Future<String> _runOnHost(String executable, List<String> args) async {
-  final res = await Process.run(executable, args, stdoutEncoding: utf8).timeout(const Duration(seconds: 8));
-  if (res.exitCode != 0) throw ProcessException(executable, args, 'not found', res.exitCode);
-  return '${res.stdout}';
+/// Runs [executable] and returns its stdout, killing it when [limit] passes
+/// (`Process.run(...).timeout` would leave it running). Throws on a failure.
+Future<String> _runKilling(String executable, List<String> args, Duration limit, [Map<String, String>? env]) async {
+  final proc = await Process.start(executable, args, environment: env, runInShell: Platform.isWindows);
+  final out = proc.stdout.transform(utf8.decoder).join();
+  unawaited(proc.stderr.drain<void>());
+  final code = await proc.exitCode.timeout(
+    limit,
+    onTimeout: () {
+      proc.kill();
+      throw TimeoutException('$executable did not answer', limit);
+    },
+  );
+  if (code != 0) throw ProcessException(executable, args, 'exit $code', code);
+  return out;
 }
+
+/// A cold WSL distro can take a while to start.
+Future<String> _runOnHost(String executable, List<String> args) =>
+    _runKilling(executable, args, const Duration(seconds: 25));

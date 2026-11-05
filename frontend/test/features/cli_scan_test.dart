@@ -38,8 +38,20 @@ void main() {
       expect(cliStateOf(const DriverStatus(installed: true, signedIn: false)), CliState.signIn);
       expect(cliStateOf(const DriverStatus(installed: true, signedIn: true)), CliState.ready);
       expect(cliStateOf(const DriverStatus(installed: true)), CliState.ready);
-      expect(cliStateOf(const DriverStatus(installed: true, problem: 'too old')), CliState.ready);
       expect(cliStateOf(const DriverStatus(installed: true), appFound: true), CliState.ready);
+    });
+
+    test('a CLI that cannot lead is Set up, never Ready', () {
+      for (final problem in ['too old', 'This `agent` is another program, not Cursor CLI.', "Couldn't run x: boom"]) {
+        expect(cliStateOf(DriverStatus(installed: true, problem: problem)), CliState.setUp);
+      }
+      expect(cliStateOf(const DriverStatus(installed: true, problem: 'Not built yet.')), CliState.absent);
+      // Signed out stays Sign in, with the problem as text beside it.
+      expect(cliStateOf(const DriverStatus(installed: true, signedIn: false, problem: 'x')), CliState.signIn);
+    });
+
+    test('a check that failed is not offered, even with the app', () {
+      expect(cliStateOf(const DriverStatus(problem: "Didn't answer in 30 s."), appFound: true), CliState.absent);
     });
   });
 
@@ -101,6 +113,27 @@ void main() {
       );
       expect(found, r'C:\L\Programs\Tool\bin\tool.EXE');
     });
+
+    test('Windows ignores an app GUI exe in the Programs folder itself', () async {
+      final found = await find(
+        {r'C:\L\Programs\Tool\tool.exe'},
+        env: {'Path': r'C:\Windows', 'LOCALAPPDATA': r'C:\L'},
+        windows: true,
+        list: (_) => ['Tool'],
+        npm: (_) async => null,
+      );
+      expect(found, isNull);
+    });
+
+    test('Windows takes npm\'s .cmd, not the extensionless shim beside it', () async {
+      final found = await find(
+        {r'C:\npm\tool', r'C:\npm\tool.CMD'},
+        env: {'Path': r'C:\npm'},
+        windows: true,
+        list: (_) => [],
+      );
+      expect(found, r'C:\npm\tool.CMD');
+    });
   });
 
   group('findCli in another environment', () {
@@ -111,7 +144,7 @@ void main() {
         env: const _Wsl(),
         run: (exe, args) async {
           ran.add([exe, ...args]);
-          return '/home/u/.claude/local/claude\n';
+          return '__EVERYAI_CLI__\n/home/u/.claude/local/claude\n';
         },
       );
       expect(found, '/home/u/.claude/local/claude');
@@ -119,6 +152,28 @@ void main() {
       expect(ran.single.take(6), ['wsl.exe', '-d', 'Ubuntu', '--', 'sh', '-lc']);
       expect(ran.single.last, 'claude');
       expect(ran.single.join(' '), allOf(contains('command -v'), contains(r'$HOME/.opencode/bin')));
+    });
+
+    test('the script covers nvm, volta, deno and the npm prefix', () {
+      expect(
+        envLookupScript(),
+        allOf(
+          contains(r'$HOME/.nvm/versions/node/*/bin'),
+          contains('.volta/bin'),
+          contains('.deno/bin'),
+          contains('npm config get prefix'),
+        ),
+      );
+    });
+
+    test('a banner before the marker is not the path; an alias is not a path', () async {
+      Future<String?> with_(String out) => findCli('x', env: const _Wsl(), run: (_, _) async => out);
+      expect(
+        await with_('Welcome!\n__EVERYAI_CLI__\n/home/u/.nvm/versions/node/v22/bin/x\n'),
+        '/home/u/.nvm/versions/node/v22/bin/x',
+      );
+      expect(await with_('/etc/motd line\n'), isNull);
+      expect(await with_('__EVERYAI_CLI__\nalias x=y\n'), isNull);
     });
 
     test('a miss or a failure is null', () async {

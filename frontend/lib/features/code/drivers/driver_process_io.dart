@@ -375,9 +375,11 @@ String? findOnPath(String command, String path, {bool? windows, String? pathExt,
   final win = windows ?? Platform.isWindows;
   final runs = isFile ?? (win ? (p) => File(p).existsSync() : _isExecutable);
   final sep = win ? '\\' : '/';
+  // cmd.exe runs `claude.cmd`, never npm's extensionless shell shim beside it.
+  final bare = win && RegExp(r'\.[A-Za-z0-9]{1,4}$').hasMatch(command);
   final exts = win
       ? [
-          '',
+          if (bare) '',
           ...(pathExt ?? Platform.environment['PATHEXT'] ?? '.COM;.EXE;.BAT;.CMD')
               .split(';')
               .where((e) => e.isNotEmpty),

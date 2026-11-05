@@ -1,6 +1,7 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
 import '../driver.dart';
+import '../driver_process.dart' show notBuiltProblem;
 
 /// What to offer for one harness, decided by its CLI alone.
 enum CliState {
@@ -22,10 +23,14 @@ enum CliState {
 }
 
 /// The state of [status]. Only the CLI decides: [appFound] (the desktop app
-/// is installed) merely makes a missing CLI offerable. A sign-in nobody
-/// could check is not a prompt, and a `problem` (too old, a foreign
-/// install) stays text beside the state.
+/// is installed) merely makes a missing CLI offerable. A check that failed
+/// (`problem` on a status that is not installed) is never offered on a guess.
+/// A CLI that is there but cannot lead (another program of the same name, one
+/// that will not run, too old) is Set up, to fix or update it, so Ready always
+/// means [leadBlocked] has nothing to say about the CLI.
 CliState cliStateOf(DriverStatus status, {bool appFound = false}) {
-  if (!status.installed) return appFound ? CliState.setUp : CliState.absent;
-  return status.signedIn == false ? CliState.signIn : CliState.ready;
+  if (!status.installed) return appFound && status.problem == null ? CliState.setUp : CliState.absent;
+  if (status.problem == notBuiltProblem) return CliState.absent;
+  if (status.signedIn == false) return CliState.signIn;
+  return status.problem == null ? CliState.ready : CliState.setUp;
 }
