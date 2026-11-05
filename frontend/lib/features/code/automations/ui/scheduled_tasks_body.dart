@@ -13,6 +13,7 @@ import '../../domain/code_session.dart' show everyaiHarnessName;
 import '../../drivers/driver_registry.dart' show driverRegistryProvider;
 import '../schedule.dart';
 import '../schedule_providers.dart';
+import 'webhooks_part.dart';
 
 const _months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -151,6 +152,7 @@ class _ScheduledTasksBodyState extends ConsumerState<ScheduledTasksBody> {
             padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
             child: Text('Open a project in Code first.', style: theme.type.caption.tint(theme.textMuted)),
           ),
+        const WebhooksPart(),
       ],
     );
   }

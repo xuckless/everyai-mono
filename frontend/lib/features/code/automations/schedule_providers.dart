@@ -38,24 +38,46 @@ final scheduleSessionActiveProvider = Provider<bool Function(String)>(
 );
 
 /// Starts a normal Code session for [task], so the consent, permission and floor checks of every session apply.
-/// An empty model or effort means what is picked for that lead now. Also the entry point other triggers can use.
-Future<CodeSessionInfo> startTaskSession(Ref ref, ScheduledTask task) async {
-  final project = ref.read(codeProjectsProvider).where((p) => p.id == task.projectId).firstOrNull;
+/// An empty model or effort means what is picked for that lead now.
+Future<CodeSessionInfo> startTaskSession(Ref ref, ScheduledTask task) => startCodeTask(
+  ref,
+  projectId: task.projectId,
+  title: task.name,
+  prompt: task.prompt,
+  harness: task.harness,
+  model: task.model,
+  effort: task.effort,
+  mode: task.mode,
+);
+
+/// The start path every trigger shares (schedules, webhooks): a normal Code session in [projectId] titled [title].
+/// An empty [model] or [effort] means what is picked for [harness] now.
+Future<CodeSessionInfo> startCodeTask(
+  Ref ref, {
+  required String projectId,
+  required String title,
+  required String prompt,
+  required String harness,
+  required String model,
+  required String effort,
+  required AgentMode mode,
+}) async {
+  final project = ref.read(codeProjectsProvider).where((p) => p.id == projectId).firstOrNull;
   if (project == null) throw StateError('The project is gone. Pick another one for this task.');
-  if (noLocalFolder(project.path)) throw StateError('Scheduled tasks run on this computer only.');
-  final picked = task.harness == everyaiHarnessName
+  if (noLocalFolder(project.path)) throw StateError('Schedules and webhooks run on this computer only.');
+  final picked = harness == everyaiHarnessName
       ? (model: ref.read(codeAgentProvider).model, effort: ref.read(codeAgentProvider).effort)
-      : ref.read(codeLeadProvider).of(task.harness);
+      : ref.read(codeLeadProvider).of(harness);
   final sessions = ref.read(codeSessionsProvider.notifier);
   final info = await sessions.start(
     project: project,
-    prompt: task.prompt,
-    model: task.model.isEmpty ? picked.model : task.model,
-    effort: task.effort.isEmpty ? picked.effort : task.effort,
-    mode: task.mode,
-    harness: task.harness,
+    prompt: prompt,
+    model: model.isEmpty ? picked.model : model,
+    effort: effort.isEmpty ? picked.effort : effort,
+    mode: mode,
+    harness: harness,
   );
-  final titled = info.copyWith(title: task.name);
+  final titled = info.copyWith(title: title);
   sessions.update(titled);
   // The controller answers the harness's approvals for the mode, notifies and enforces the budget; the session
   // view builds it for a session started by hand, and nobody opens this one. The provider keeps it alive.
