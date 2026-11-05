@@ -7,11 +7,13 @@ import 'package:flutter/foundation.dart' show listEquals;
 import 'package:uuid/uuid.dart';
 
 import '../../domain/agent_mode.dart';
+import '../../environments/exec_env.dart';
 import '../../git/git_service.dart';
 import '../../harness/events.dart';
 import '../../harness/harness.dart';
 import '../briefing/briefing_types.dart';
 import '../driver.dart';
+import '../driver_env.dart';
 import '../driver_events.dart';
 import '../driver_policy.dart';
 import '../driver_process.dart';
@@ -40,8 +42,41 @@ typedef ClaudeSpawn = Future<LineChannel> Function(
 /// continues it with `--resume`. It doesn't print history back, so the
 /// journal is the transcript.
 final class ClaudeDriver
-    implements HarnessDriver, AttachesBriefed, ChecksResume, StartsInNativeMode, AdoptsNativeSession {
-  ClaudeDriver({this.which, this.dataDir = GitService.dataDir, this.spawn, this.run, this.configDir, this.onSkills});
+    implements
+        HarnessDriver,
+        AttachesBriefed,
+        ChecksResume,
+        StartsInNativeMode,
+        AdoptsNativeSession,
+        RunsInEnvironments {
+  ClaudeDriver({
+    this.which,
+    this.dataDir = GitService.dataDir,
+    this.spawn,
+    this.run,
+    this.configDir,
+    this.onSkills,
+    this.execEnv = HostEnv.instance,
+    this.find,
+  });
+
+  @override
+  final ExecEnv execEnv;
+
+  /// Finds the CLI inside [execEnv] (its scan); null on the host.
+  final EnvFind? find;
+
+  @override
+  ClaudeDriver inEnv(ExecEnv env, EnvFind find) => ClaudeDriver(
+    which: which,
+    dataDir: dataDir,
+    spawn: spawn,
+    run: run,
+    configDir: configDir,
+    onSkills: onSkills,
+    execEnv: env,
+    find: find,
+  );
 
   /// Told the skill names the CLI lists when it starts (its `initialize` reply and `system/init`), for the
   /// per-project switches in Settings.
@@ -105,6 +140,8 @@ final class ClaudeDriver
   /// kept, never the account fields it prints with it.
   @override
   Future<DriverStatus> detect() async {
+    // Inside an environment: what its scan found (no sign-in check yet).
+    if (!execEnv.isHost) return find!('claude');
     final found = await detectCli('claude', which: which);
     final path = found.path;
     if (!found.installed || path == null) return found;
@@ -137,7 +174,7 @@ final class ClaudeDriver
       await makeDir(dir);
       final c = await _spawn(
         claudeProbeArgs,
-        cwd: dir,
+        cwd: envCwd(execEnv, dir),
         env: const {},
         sessionTag: 'claude-models',
         logPath: '$dir/models.log',
@@ -237,6 +274,8 @@ final class ClaudeDriver
   @override
   Future<String?> resumeProblem(String conversationId) async {
     if (_live.containsKey(conversationId)) return null;
+    // Its files are inside the environment; the CLI says so itself when it can't resume.
+    if (!execEnv.isHost) return null;
     final raw = await readTextFile('${await _dir()}/$conversationId.json');
     final json = raw == null ? null : _json(raw);
     if (json == null) return "This Claude Code session's record is gone.";
@@ -297,7 +336,9 @@ final class ClaudeDriver
   Future<_Briefed?> _briefing(DriverBriefing? b) async {
     if (b == null) return null;
     final skills = b.skillDir;
-    final text = skills == null ? '' : await readTextFile('${briefingRootOf(skills)}/$sessionFileName') ?? '';
+    final text = skills == null
+        ? ''
+        : await readTextFile('${briefingRootOf(hostSide(execEnv, skills))}/$sessionFileName') ?? '';
     return (Set<String> off) => claudeDelivery(b, sessionText: text, skillsOff: off);
   }
 
@@ -309,12 +350,24 @@ final class ClaudeDriver
     required String logPath,
   }) async {
     if (spawn case final s?) return s(args, cwd: cwd, env: env, sessionTag: sessionTag, logPath: logPath);
-    final path = await (_path ??= detectCli('claude', which: which).then((s) => s.path));
+    final path = await (_path ??= (execEnv.isHost ? detectCli('claude', which: which) : find!('claude')).then(
+      (s) => s.path,
+    ));
     if (path == null) {
       _path = null;
-      throw const HarnessError("Claude Code isn't installed on this computer.");
+      throw HarnessError(
+        execEnv.isHost ? "Claude Code isn't installed on this computer." : notInstalledIn('Claude Code', execEnv),
+      );
     }
-    return spawnDriver(executable: path, args: args, cwd: cwd, sessionTag: sessionTag, logPath: logPath, env: env);
+    return spawnDriver(
+      executable: path,
+      args: args,
+      cwd: cwd,
+      sessionTag: sessionTag,
+      logPath: logPath,
+      env: env,
+      execEnv: execEnv,
+    );
   }
 }
 

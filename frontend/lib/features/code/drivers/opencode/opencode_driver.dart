@@ -3,10 +3,12 @@
 import 'dart:convert';
 
 import '../../domain/agent_mode.dart';
+import '../../environments/exec_env.dart';
 import '../../git/git_service.dart';
 import '../../harness/events.dart';
 import '../../harness/harness.dart';
 import '../driver.dart';
+import '../driver_env.dart';
 import '../driver_process.dart';
 import 'opencode_host.dart';
 import 'opencode_server.dart';
@@ -19,15 +21,69 @@ import 'opencode_session.dart';
 /// reopening one reads its message list back. What [attach] needs besides
 /// the id (the folder, the session's tag) is kept in
 /// `<data>/driver-sessions/opencode/<id>.json`.
-final class OpenCodeDriver implements HarnessDriver, AttachesBriefed, StartsInNativeMode, AdoptsNativeSession {
+final class OpenCodeDriver
+    implements HarnessDriver, AttachesBriefed, StartsInNativeMode, AdoptsNativeSession, RunsInEnvironments {
   OpenCodeDriver({
     this.which,
     OpenCodeLauncher? launch,
     this._run,
     Future<String> Function()? dataDir,
     this.reconnectDelay = const Duration(seconds: 1),
-  }) : _launch = launch ?? launchOpenCode,
+    this.execEnv = HostEnv.instance,
+    this.find,
+  }) : _launchGiven = launch,
+       _dataDirGiven = dataDir,
+       _launch = launch ?? _launchIn(execEnv),
        _dataDir = dataDir ?? GitService.dataDir;
+
+  @override
+  final ExecEnv execEnv;
+
+  /// Finds the CLI inside [execEnv] (its scan); null on the host.
+  final EnvFind? find;
+
+  final OpenCodeLauncher? _launchGiven;
+  final Future<String> Function()? _dataDirGiven;
+
+  /// OpenCode in [env]. Only WSL can run `opencode serve`: its server listens
+  /// on loopback inside, which Windows reaches through WSL's localhost
+  /// forwarding. A container would need a published port from its creation,
+  /// a VM or ssh remote a forward, so those refuse and point at OpenCode's
+  /// ACP entry (stdio, which works anywhere).
+  @override
+  OpenCodeDriver inEnv(ExecEnv env, EnvFind find) => OpenCodeDriver(
+    which: which,
+    launch: _launchGiven,
+    run: _run,
+    dataDir: _dataDirGiven,
+    reconnectDelay: reconnectDelay,
+    execEnv: env,
+    find: find,
+  );
+
+  static OpenCodeLauncher _launchIn(ExecEnv execEnv) =>
+      ({
+        required String executable,
+        required String cwd,
+        required String sessionTag,
+        required String logPath,
+        Map<String, String> env = const {},
+      }) => launchOpenCode(
+        executable: executable,
+        cwd: cwd,
+        sessionTag: sessionTag,
+        logPath: logPath,
+        env: env,
+        execEnv: execEnv,
+      );
+
+  /// Why it can't run in [execEnv], or null.
+  String? get _refusal => execEnv.isHost || execEnv.kind == EnvKind.wsl
+      ? null
+      : "Use OpenCode (ACP) in ${execEnv.label}: OpenCode's own server can only be reached inside WSL.";
+
+  /// Where `opencode` is: on this computer, or inside [execEnv].
+  Future<DriverStatus> _found() => execEnv.isHost ? detectCli('opencode', which: which) : find!('opencode');
 
   /// Replaces the PATH lookup in [detect] (tests).
   final Future<String?> Function(String command)? which;
@@ -76,7 +132,8 @@ final class OpenCodeDriver implements HarnessDriver, AttachesBriefed, StartsInNa
   /// (`opencode auth list`, which shows no secrets). No model is called.
   @override
   Future<DriverStatus> detect() async {
-    final status = await detectCli('opencode', which: which);
+    if (_refusal case final why?) return DriverStatus(problem: why);
+    final status = await _found();
     final path = status.path;
     if (!status.installed || path == null || status.problem != null) return status;
     _path = path;
@@ -319,14 +376,19 @@ final class OpenCodeDriver implements HarnessDriver, AttachesBriefed, StartsInNa
   Future<CliRun> _cli(String exe, List<String> args) async {
     if (_run case final run?) return run(exe, args);
     // In the app's own folder, so no project's config changes the answer.
-    return runOpenCodeCli(exe, args, cwd: await _dataDir());
+    if (execEnv.isHost) return runOpenCodeCli(exe, args, cwd: await _dataDir());
+    final w = execEnv.wrap(exe, args, cwd: envCwd(execEnv, await _dataDir()));
+    return runOpenCodeCli(w.executable, w.args);
   }
 
   Future<String> _executable() async {
     if (_path case final p?) return p;
-    final status = await detectCli('opencode', which: which);
+    if (_refusal case final why?) throw HarnessError(why);
+    final status = await _found();
     final path = status.path;
-    if (!status.installed || path == null) throw const HarnessError('OpenCode is not installed.');
+    if (!status.installed || path == null) {
+      throw HarnessError(execEnv.isHost ? 'OpenCode is not installed.' : notInstalledIn('OpenCode', execEnv));
+    }
     return _path = path;
   }
 
