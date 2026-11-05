@@ -6,6 +6,7 @@ import 'dart:math';
 
 import 'package:http/http.dart' as http;
 
+import '../../environments/exec_env.dart';
 import '../../harness/harness.dart';
 import '../briefing/recipes.dart';
 import '../driver_process.dart';
@@ -170,16 +171,28 @@ Future<OpenCodeServer> launchOpenCode({
   })?
   spawn,
   http.Client? client,
+  ExecEnv execEnv = HostEnv.instance,
 }) async {
   final password = _password();
-  final process = await (spawn ?? spawnDriver)(
-    executable: executable,
-    args: openCodeServeArgs,
-    cwd: cwd,
-    sessionTag: sessionTag,
-    logPath: logPath,
-    env: {...env, ...openCodeServeEnv, 'OPENCODE_PASSWORD': password},
-  );
+  final serveEnv = {...env, ...openCodeServeEnv, 'OPENCODE_PASSWORD': password};
+  final process = await (spawn != null
+      ? spawn(
+          executable: executable,
+          args: openCodeServeArgs,
+          cwd: cwd,
+          sessionTag: sessionTag,
+          logPath: logPath,
+          env: serveEnv,
+        )
+      : spawnDriver(
+          executable: executable,
+          args: openCodeServeArgs,
+          cwd: cwd,
+          sessionTag: sessionTag,
+          logPath: logPath,
+          env: serveEnv,
+          execEnv: execEnv,
+        ));
   OpenCodeServer? server;
   try {
     final url = await process.lines

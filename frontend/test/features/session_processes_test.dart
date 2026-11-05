@@ -1,3 +1,6 @@
+import 'dart:io';
+
+import 'package:every_ai/features/code/harness/everyai/shell_io.dart' show killTree;
 import 'package:every_ai/features/code/harness/session_processes.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -124,5 +127,87 @@ void main() {
   test('reads the tag from /proc environ', () {
     expect(ProcessTable.tagInEnviron('A=1\x00EVERYAI_SESSION=xyz\x00B=2'), 'xyz');
     expect(ProcessTable.tagInEnviron('A=1\x00B=2'), isNull);
+  });
+
+  group('Windows', () {
+    test('parses the CIM table: an array or one object, no tags', () {
+      final t = ProcessTable.parseCim(
+        '[{"ProcessId":4,"ParentProcessId":0,"Name":"System","CommandLine":null},'
+        r'{"ProcessId":900,"ParentProcessId":4,"Name":"node.exe","CommandLine":"\"C:\\nodejs\\node.exe\" cli.js"}]',
+      );
+      expect(t.rows.keys, unorderedEquals([4, 900]));
+      expect(t.rows[4]!.command, 'System');
+      expect(t.rows[900]!.command, r'"C:\nodejs\node.exe" cli.js');
+      expect(t.rows[900]!.ppid, 4);
+      expect(t.rows[900]!.envVisible, isFalse);
+      expect(t.rows[900]!.tag, isNull);
+      final one = ProcessTable.parseCim('{"ProcessId":7,"ParentProcessId":1,"Name":"cmd.exe","CommandLine":""}');
+      expect(one.rows[7]!.command, 'cmd.exe');
+      expect(ProcessTable.parseCim('').rows, isEmpty);
+    });
+
+    test('knows Windows shells by their exe names', () {
+      bool shell(String cmd) => _row(1, 0, cmd).isShell;
+      expect(shell(r'"C:\Program Files\Git\bin\bash.exe" -c "npm test"'), isTrue);
+      // cmd wraps .cmd shims and MCP servers; it is walked through, not taken.
+      expect(shell(r'C:\Windows\System32\cmd.exe /d /s /c "dir"'), isFalse);
+      expect(shell(r'C:\Program Files\PowerShell\7\pwsh.EXE -NoProfile'), isFalse); // unquoted path with a space
+      expect(shell(r'"C:\Program Files\PowerShell\7\pwsh.EXE" -NoProfile'), isTrue);
+      expect(shell('powershell.exe -Command ls'), isTrue);
+      expect(shell(r'"C:\nodejs\node.exe" server.js'), isFalse);
+    });
+
+    test("a driver root's tool shells are taken, the CLI and its MCP servers spared", () {
+      final t = ProcessTable.parseCim(
+        '[{"ProcessId":5,"ParentProcessId":1,"Name":"EveryAI.exe","CommandLine":"EveryAI.exe"},'
+        '{"ProcessId":50,"ParentProcessId":5,"Name":"claude.exe","CommandLine":"claude.exe -p"},'
+        '{"ProcessId":51,"ParentProcessId":50,"Name":"node.exe","CommandLine":"node.exe cli.js"},'
+        '{"ProcessId":52,"ParentProcessId":51,"Name":"bash.exe","CommandLine":"bash.exe -c \\"npm run dev\\""},'
+        '{"ProcessId":53,"ParentProcessId":52,"Name":"node.exe","CommandLine":"node.exe vite"},'
+        '{"ProcessId":54,"ParentProcessId":51,"Name":"node.exe","CommandLine":"node.exe mcp-server.js"},'
+        // How Windows starts an npx MCP server: under a cmd wrapper.
+        '{"ProcessId":55,"ParentProcessId":51,"Name":"cmd.exe",'
+        '"CommandLine":"C:\\\\Windows\\\\system32\\\\cmd.exe /d /s /c \\"npx -y @playwright/mcp\\""},'
+        '{"ProcessId":56,"ParentProcessId":55,"Name":"node.exe","CommandLine":"node.exe playwright-mcp"},'
+        // A tool command through cmd still reaches its shell.
+        '{"ProcessId":57,"ParentProcessId":51,"Name":"cmd.exe","CommandLine":"cmd.exe /c build.cmd"},'
+        '{"ProcessId":58,"ParentProcessId":57,"Name":"powershell.exe","CommandLine":"powershell.exe -File b.ps1"},'
+        '{"ProcessId":60,"ParentProcessId":5,"Name":"codex.exe","CommandLine":"codex.exe app-server"},'
+        '{"ProcessId":61,"ParentProcessId":60,"Name":"pwsh.exe","CommandLine":"pwsh.exe -c dir"}]',
+      );
+      expect(t.sessionProcesses(tag: 'a', workingDir: r'C:\w\a', ownsDir: true, roots: {50}), [52, 53, 58]);
+    });
+
+    test("a process older than its claimed parent isn't its child (stale ParentProcessId)", () {
+      // userinit (pid 50) exited at logon; claude.exe got pid 50 hours later.
+      final t = ProcessTable.parseCim(
+        '[{"ProcessId":50,"ParentProcessId":5,"Name":"claude.exe","CommandLine":"claude.exe -p","Created":900},'
+        '{"ProcessId":70,"ParentProcessId":50,"Name":"explorer.exe","CommandLine":"explorer.exe","Created":100},'
+        '{"ProcessId":71,"ParentProcessId":70,"Name":"powershell.exe","CommandLine":"powershell.exe","Created":200},'
+        '{"ProcessId":52,"ParentProcessId":50,"Name":"bash.exe","CommandLine":"bash.exe -c ls","Created":950},'
+        '{"ProcessId":4,"ParentProcessId":0,"Name":"System","CommandLine":null,"Created":0},'
+        '{"ProcessId":80,"ParentProcessId":4,"Name":"smss.exe","CommandLine":null,"Created":10}]',
+      );
+      expect(t.rows[70]!.ppid, 0);
+      expect(t.rows[52]!.ppid, 50);
+      expect(t.rows[80]!.ppid, 4); // a parent without a start time keeps its children
+      expect(t.descendants(50), [52]);
+      expect(t.sessionProcesses(tag: 'a', workingDir: r'C:\w\a', ownsDir: true, roots: {50}), [52]);
+    });
+
+    test('killTree runs taskkill from System32 on the whole tree', () async {
+      final calls = <List<String>>[];
+      await killTree(
+        42,
+        windows: true,
+        run: (exe, args) async {
+          calls.add([exe, ...args]);
+          return ProcessResult(0, 0, '', '');
+        },
+      );
+      expect(calls, hasLength(1));
+      expect(calls.single.first, endsWith(r'\System32\taskkill.exe'));
+      expect(calls.single.skip(1), ['/PID', '42', '/T', '/F']);
+    });
   });
 }

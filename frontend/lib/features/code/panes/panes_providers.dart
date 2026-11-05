@@ -181,7 +181,8 @@ final class SessionTerminal extends Notifier<TerminalStatus> {
   }
 }
 
-/// The session's processes and their ports, polled every 2 s while watched.
+/// The session's processes and their ports, polled every 2 s while watched
+/// (5 s on Windows, where each scan starts PowerShell).
 final sessionProcessesProvider = StreamProvider.autoDispose.family<List<SessionProcess>, String>((ref, id) async* {
   var alive = true;
   ref.onDispose(() => alive = false);
@@ -200,7 +201,7 @@ final sessionProcessesProvider = StreamProvider.autoDispose.family<List<SessionP
       agentRoots: {?app},
       terminalShells: {if (shell.running) shell.pid!},
     );
-    await Future<void>.delayed(const Duration(seconds: 2));
+    await Future<void>.delayed(Duration(seconds: defaultTargetPlatform == TargetPlatform.windows ? 5 : 2));
   }
 });
 

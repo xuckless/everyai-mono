@@ -29,6 +29,9 @@ enum SettingKind {
 
   /// The coding agents the app can drive, with their status and consent.
   harnesses,
+
+  /// A button that opens the "Bring over from other tools" checklist.
+  migration,
 }
 
 /// Where a setting's value lives.
@@ -265,6 +268,15 @@ const settingDefs = <SettingDef>[
     help: 'SKILL.md folders the agent loads when a task needs them, and which of Claude Code\'s are on per project.',
     scopes: _gp,
     kind: SettingKind.link,
+    store: SettingStore.none,
+    addable: false,
+  ),
+  SettingDef(
+    key: 'bring-over',
+    title: 'Bring over from other tools',
+    help: 'Copy MCP servers, commands, agents and skills from Claude Code, Cursor, Codex and OpenCode. You pick each one.',
+    scopes: _g,
+    kind: SettingKind.migration,
     store: SettingStore.none,
     addable: false,
   ),

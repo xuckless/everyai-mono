@@ -3,6 +3,7 @@
 import 'dart:convert';
 
 import '../../domain/agent_mode.dart';
+import '../../environments/exec_env.dart';
 import '../../git/git_service.dart';
 import '../../harness/events.dart';
 import '../../harness/harness.dart';
@@ -10,6 +11,7 @@ import '../briefing/briefing_types.dart';
 import '../briefing/recipes.dart' as recipes;
 import '../driver_policy.dart' show hostRunTools;
 import '../driver.dart';
+import '../driver_env.dart';
 import '../driver_process.dart';
 import '../event_journal.dart';
 import '../json_rpc.dart';
@@ -35,8 +37,22 @@ typedef CodexSpawn = Future<LineChannel> Function({
 /// It keeps `<data>/drivers/codex/`: `threads/<id>.json` (what [attach]
 /// needs to start it again), `journal/<id>.jsonl` (the transcript) and
 /// `logs/<session>.log` (stderr).
-final class CodexDriver implements HarnessDriver, AttachesBriefed, StartsInNativeMode, AdoptsNativeSession {
-  CodexDriver({this.which, this.spawn, this.dataDir});
+final class CodexDriver
+    implements HarnessDriver, AttachesBriefed, StartsInNativeMode, AdoptsNativeSession, RunsInEnvironments {
+  CodexDriver({this.which, this.spawn, this.dataDir, this.execEnv = HostEnv.instance, this.find});
+
+  @override
+  final ExecEnv execEnv;
+
+  /// Finds the CLI inside [execEnv] (its scan); null on the host.
+  final EnvFind? find;
+
+  @override
+  CodexDriver inEnv(ExecEnv env, EnvFind find) =>
+      CodexDriver(which: which, spawn: spawn, dataDir: dataDir, execEnv: env, find: find);
+
+  /// Where `codex` is: on this computer, or inside [execEnv].
+  Future<DriverStatus> _found() => execEnv.isHost ? detectCli('codex', which: which) : find!('codex');
 
   /// Replaces the PATH lookup in [detect] (tests).
   final Future<String?> Function(String command)? which;
@@ -73,15 +89,15 @@ final class CodexDriver implements HarnessDriver, AttachesBriefed, StartsInNativ
     DriverCap.nativeModes,
   };
 
-  static const _notInstalled = HarnessError(
-    "Codex isn't installed. Install it, sign in with codex login, then try again.",
-  );
+  HarnessError get _notInstalled => execEnv.isHost
+      ? const HarnessError("Codex isn't installed. Install it, sign in with codex login, then try again.")
+      : HarnessError(notInstalledIn('Codex', execEnv));
 
   /// Installed, and signed in when it has an account or needs none (a
   /// provider of its own in its config), asked without a model call.
   @override
   Future<DriverStatus> detect() async {
-    final found = await detectCli('codex', which: which);
+    final found = await _found();
     if (!found.installed || found.path == null || found.problem != null) return found;
     try {
       final account = await _probe(found.path!, (_, account) async => account);
@@ -99,7 +115,7 @@ final class CodexDriver implements HarnessDriver, AttachesBriefed, StartsInNativ
   /// Its own model list (`model/list`), without the hidden ones.
   @override
   Future<List<DriverModel>> models() async {
-    final found = await detectCli('codex', which: which);
+    final found = await _found();
     if (!found.installed || found.path == null) return const [];
     return _probe(found.path!, (peer, _) async {
       final out = <DriverModel>[];
@@ -132,7 +148,7 @@ final class CodexDriver implements HarnessDriver, AttachesBriefed, StartsInNativ
 
   @override
   Future<HarnessSession> start(SessionSpec spec) async {
-    final found = await detectCli('codex', which: which);
+    final found = await _found();
     if (!found.installed || found.path == null) throw _notInstalled;
     final launch = await _launch(spec.briefing);
     final session = CodexSession(
@@ -178,7 +194,7 @@ final class CodexDriver implements HarnessDriver, AttachesBriefed, StartsInNativ
     required AgentMode mode,
     required List<Map<String, Object?>> items,
   }) async {
-    final found = await detectCli('codex', which: which);
+    final found = await _found();
     if (!found.installed || found.path == null) throw _notInstalled;
     final session = CodexSession(
       await _spawn(found.path!, args: const [], cwd: cwd, env: const {}, tag: sessionTag),
@@ -254,7 +270,7 @@ final class CodexDriver implements HarnessDriver, AttachesBriefed, StartsInNativ
     final saved = await readText(_metaPath(data, conversationId));
     if (saved == null) throw const HarnessError("This Codex session can't be reopened: its details are gone.");
     final meta = jsonDecode(saved) as Map<String, Object?>;
-    final found = await detectCli('codex', which: which);
+    final found = await _found();
     if (!found.installed || found.path == null) throw _notInstalled;
     final cwd = meta['cwd'] as String? ?? '';
     final tag = meta['sessionTag'] as String? ?? '';
@@ -361,12 +377,19 @@ final class CodexDriver implements HarnessDriver, AttachesBriefed, StartsInNativ
       sessionTag: tag,
       logPath: '${await _data()}/logs/$tag.log',
       env: env,
+      execEnv: execEnv,
     );
   }
 
   /// A short-lived app server for [body] (detect, models).
   Future<T> _probe<T>(String path, Future<T> Function(JsonRpcPeer peer, Map<String, Object?> account) body) async {
-    final channel = await _spawn(path, args: const [], cwd: await _home(), env: const {}, tag: 'codex-probe');
+    final channel = await _spawn(
+      path,
+      args: const [],
+      cwd: envCwd(execEnv, await _home()),
+      env: const {},
+      tag: 'codex-probe',
+    );
     final peer = JsonRpcPeer(channel, writeVersion: false);
     try {
       return await body(peer, await codexHandshake(peer));
@@ -385,7 +408,9 @@ final class CodexDriver implements HarnessDriver, AttachesBriefed, StartsInNativ
   Future<_Launch> _launch(DriverBriefing? b) async {
     if (b == null) return _noBriefing;
     final skillDir = b.skillDir ?? '';
-    final text = skillDir.isEmpty ? '' : await readText('${briefingRootOf(skillDir)}/$sessionFileName') ?? '';
+    final text = skillDir.isEmpty
+        ? ''
+        : await readText('${briefingRootOf(hostSide(execEnv, skillDir))}/$sessionFileName') ?? '';
     final d = recipes.codex((mcpUrl: Uri.parse(b.mcpUrl), mcpToken: b.mcpToken, skillDir: skillDir, sessionText: text));
     return (
       args: [

@@ -8,3 +8,6 @@ Future<CustomCommand> create(String name, String? projectPath, String? projectNa
     throw StateError('Custom commands need a file system.');
 
 Future<void> delete(CustomCommand command) async {}
+
+Future<void> write(CustomCommand command, String? projectPath) =>
+    throw StateError('Custom commands need a file system.');

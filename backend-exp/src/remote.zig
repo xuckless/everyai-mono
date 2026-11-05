@@ -28,14 +28,21 @@
 //! come from or go to. Notices to the host: `hello {host_id, clients}`,
 //! `client_open {channel, device_id, device_name, public_key}`,
 //! `client_close {channel}`, `pair_request {pairing_id, device}`,
+//! `webhook {delivery_id, hook_id, hook_name, received_at, headers, body_b64}`,
 //! `replaced`, `revoked`. Notices to a client: `hello {channel,
 //! host_online}`, `host_online`, `host_offline`, `closed`, `revoked`. The
-//! host may send `{"type":"close_channel","channel":N}` to drop a client.
+//! host may send `{"type":"close_channel","channel":N}` to drop a client and
+//! `{"type":"webhook_ack","delivery_id":"…"}` once it took a webhook.
+//!
+//! The `webhook` notice is the exception to "never parses a payload": it
+//! carries a webhook sender's body, which the server reads, verifies and
+//! queues until the ack (hooks.zig). It is not end-to-end encrypted.
 const std = @import("std");
 const anole = @import("anole");
 const App = @import("main.zig").App;
 const auth = @import("auth.zig");
 const util = @import("util.zig");
+const hooks = @import("hooks.zig");
 const websocket = anole.websocket;
 
 pub const host_token_prefix = "rh_";
@@ -544,6 +551,8 @@ fn serveHost(app: *App, ws: *websocket.Socket, req: *anole.Request, host: HostRo
         relay.mutex.unlock(io);
         _ = app.db.exec(req, "UPDATE remote_hosts SET last_seen_at = ? WHERE id = ?", .{ util.now(io), host.id }) catch {};
     }
+    // Webhooks that came while it was away, behind the hello.
+    try hooks.resendPending(app, req, host.id);
 
     while (try ws.next()) |msg| {
         switch (msg.type) {
@@ -557,8 +566,13 @@ fn serveHost(app: *App, ws: *websocket.Socket, req: *anole.Request, host: HostRo
                 if (routed) relay.toClient(frame.channel, .binary, frame.payload);
             },
             .text => {
-                const Control = struct { type: []const u8, channel: u32 = 0 };
+                const Control = struct { type: []const u8, channel: u32 = 0, delivery_id: []const u8 = "" };
                 const c = std.json.parseFromSliceLeaky(Control, req.arena, msg.data, .{ .ignore_unknown_fields = true }) catch continue;
+                // A database call: before the mutex.
+                if (std.mem.eql(u8, c.type, "webhook_ack")) {
+                    try hooks.ack(app, req, host.id, c.delivery_id);
+                    continue;
+                }
                 if (!std.mem.eql(u8, c.type, "close_channel")) continue;
                 relay.mutex.lockUncancelable(io);
                 defer relay.mutex.unlock(io);

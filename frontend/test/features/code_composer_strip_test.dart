@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:drift/native.dart';
+import 'package:every_ai/features/code/drivers/detection/desktop_apps.dart';
 import 'package:every_ai/core/db/app_database.dart';
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/preferences.dart';
@@ -104,7 +105,9 @@ void main() {
               'alpha': FakeLeadDriver('alpha', label: 'Alpha CLI'),
             }),
           ),
-          driverStatusesProvider.overrideWith(() => DriverStatuses(loadShell: () async {}, reloadShell: () async {})),
+          driverStatusesProvider.overrideWith(
+            () => DriverStatuses(scanApps: _noApps, loadShell: () async {}, reloadShell: () async {}),
+          ),
         ],
         child: m.MaterialApp(
           builder: (context, child) =>
@@ -277,3 +280,5 @@ void main() {
     });
   });
 }
+
+Future<AppScan> _noApps() async => const AppScan();

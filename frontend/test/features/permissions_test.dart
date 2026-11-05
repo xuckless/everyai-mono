@@ -88,6 +88,33 @@ void main() {
       }
     });
 
+    test('knows Windows drives and home folders (Git Bash, Cygwin, drive letters)', () {
+      for (final c in [
+        'rm -rf /c',
+        'rm -rf /c/',
+        'rm -rf /c/*',
+        'rm -rf /c/Users/x',
+        'rm -rf /c/users/x/*',
+        'rm -rf /c/Windows',
+        'rm -rf "/c/Program Files"',
+        'rm -rf /d',
+        'rm -rf /cygdrive/c/Users/x',
+        'rm -rf C:/',
+        'rm -rf C:',
+        r"rm -rf 'C:\'",
+        r"rm -rf 'C:\Users\x'",
+        'rm -rf c:/programdata',
+        r'rm -rf "$USERPROFILE"',
+        r'rm -rf ${USERPROFILE}/*',
+        'chmod -R 777 /c/Windows',
+      ]) {
+        expect(floorReason(c), isNotNull, reason: c);
+      }
+      for (final c in ['rm -rf /c/Users/x/proj/build', 'rm -rf C:/Users/x/proj/node_modules', 'rm -rf /c/tmp/x']) {
+        expect(floorReason(c), isNull, reason: c);
+      }
+    });
+
     test("won't quit the user's own apps; the agent's own processes are its business", () {
       for (final c in [
         'pkill -f "Google Chrome"',

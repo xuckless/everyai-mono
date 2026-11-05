@@ -9,6 +9,7 @@ import '../../../app/router.dart';
 import '../../../core/platform/platform_kind.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
+import '../../../core/ui/anchored_popover.dart';
 import '../../../core/ui/brand.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../chat/chat_providers.dart';
@@ -16,6 +17,9 @@ import '../../chat/data/chat_repository.dart';
 import '../../chat/domain/message.dart';
 import '../../code/code_providers.dart';
 import '../../code/domain/code_session.dart';
+import '../../code/environments/environment_picker.dart';
+import '../../code/environments/environment_providers.dart';
+import '../../code/environments/exec_env.dart';
 import '../../code/ui/code_home.dart';
 import '../../remote/ui/remote_code.dart' show RemoteSessionList;
 import '../../settings/ui/account_menu.dart';
@@ -446,22 +450,7 @@ class CodeSessionList extends ConsumerWidget {
         ],
         for (final p in projects)
           if (!searching || groups.recent.any((s) => s.projectId == p.id)) ...[
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
-              child: Row(
-                children: [
-                  AdaptiveIcon(EveryIcon.projects, size: 13, color: theme.textMuted),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      p.name,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.type.caption.semibold.tint(theme.textMuted),
-                    ),
-                  ),
-                ],
-              ),
-            ),
+            _ProjectHeader(key: ValueKey('sidebar.project.${p.id}'), project: p),
             for (final s in groups.recent.where((s) => s.projectId == p.id))
               SessionTile(
                 info: s,
@@ -471,6 +460,130 @@ class CodeSessionList extends ConsumerWidget {
               ),
           ],
       ],
+    );
+  }
+}
+
+/// A project's name in the Code list, with where it runs when that isn't this computer, and a ⋯ (on hover) to
+/// change that or remove the project from the list.
+class _ProjectHeader extends ConsumerStatefulWidget {
+  const _ProjectHeader({super.key, required this.project});
+
+  final CodeProject project;
+
+  @override
+  ConsumerState<_ProjectHeader> createState() => _ProjectHeaderState();
+}
+
+class _ProjectHeaderState extends ConsumerState<_ProjectHeader> {
+  var _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final p = widget.project;
+    final env = watchEnvironment(ref, p.environment);
+    // The id stands in while the list loads or when the environment is gone.
+    final where = p.environment == 'host' ? null : env?.label ?? p.environment;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 8, 2),
+        child: Row(
+          children: [
+            AdaptiveIcon(EveryIcon.projects, size: 13, color: theme.textMuted),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                p.name,
+                overflow: TextOverflow.ellipsis,
+                style: theme.type.caption.semibold.tint(theme.textMuted),
+              ),
+            ),
+            if (where != null) ...[
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  where,
+                  key: ValueKey('sidebar.project.${p.id}.environment'),
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.type.caption.tint(theme.textMuted),
+                ),
+              ),
+            ],
+            const Spacer(),
+            Opacity(
+              opacity: _hover || Host.isMobile ? 1 : 0,
+              child: AnchoredPopover(
+                width: 300,
+                builder: (context, close) => _ProjectOptions(project: p, close: close),
+                child: Padding(
+                  key: ValueKey('sidebar.project.${p.id}.options'),
+                  padding: const EdgeInsets.all(4),
+                  child: AdaptiveIcon(EveryIcon.more, size: 14, color: theme.textMuted),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The ⋯ popover: Environment (opens the list in place), Remove from list.
+class _ProjectOptions extends ConsumerStatefulWidget {
+  const _ProjectOptions({required this.project, required this.close});
+
+  final CodeProject project;
+  final VoidCallback close;
+
+  @override
+  ConsumerState<_ProjectOptions> createState() => _ProjectOptionsState();
+}
+
+class _ProjectOptionsState extends ConsumerState<_ProjectOptions> {
+  var _environment = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final p = widget.project;
+    if (_environment) {
+      return EnvironmentPanel(
+        envId: p.environment,
+        close: widget.close,
+        onPick: (id) => ref.read(codeProjectsProvider.notifier).setEnvironment(p.id, id),
+      );
+    }
+    final env = watchEnvironment(ref, p.environment);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          PopoverRow(
+            key: const ValueKey('sidebar.project.environment'),
+            leading: AdaptiveIcon(EveryIcon.command, size: 15, color: theme.textMuted),
+            title: 'Environment',
+            subtitle: env?.label ?? (p.environment == 'host' ? EnvKind.host.label : p.environment),
+            onTap: () => setState(() => _environment = true),
+          ),
+          PopoverRow(
+            key: const ValueKey('sidebar.project.remove'),
+            leading: AdaptiveIcon(EveryIcon.delete, size: 15, color: theme.danger),
+            title: 'Remove from list',
+            subtitle: 'The folder stays',
+            destructive: true,
+            onTap: () {
+              widget.close();
+              ref.read(codeProjectsProvider.notifier).remove(p.id);
+            },
+          ),
+        ],
+      ),
     );
   }
 }

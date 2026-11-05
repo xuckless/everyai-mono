@@ -8,16 +8,31 @@ import '../settings/agent_prompt.dart' show HarnessTier;
 /// A folder the agent works in.
 @immutable
 final class CodeProject {
-  const CodeProject({required this.id, required this.name, required this.path});
+  const CodeProject({required this.id, required this.name, required this.path, this.environment = 'host'});
 
   final String id;
   final String name;
   final String path;
 
-  factory CodeProject.fromJson(Map<String, Object?> json) =>
-      CodeProject(id: json['id']! as String, name: json['name']! as String, path: json['path']! as String);
+  /// The `ExecEnv.id` its commands, CLIs and git run in ('host' = this computer).
+  final String environment;
 
-  Map<String, Object?> toJson() => {'id': id, 'name': name, 'path': path};
+  CodeProject withEnvironment(String environment) =>
+      CodeProject(id: id, name: name, path: path, environment: environment);
+
+  factory CodeProject.fromJson(Map<String, Object?> json) => CodeProject(
+    id: json['id']! as String,
+    name: json['name']! as String,
+    path: json['path']! as String,
+    environment: json['environment'] as String? ?? 'host',
+  );
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'name': name,
+    'path': path,
+    if (environment != 'host') 'environment': environment,
+  };
 }
 
 enum SessionStatus {
@@ -94,10 +109,15 @@ final class CodeSessionInfo {
     this.pendingRewind = '',
     this.workflow,
     this.toldWorkflow,
+    this.environment = 'host',
   });
 
   final String id;
   final String projectId;
+
+  /// Where its agent runs (an `ExecEnv` id): the project's when it started,
+  /// kept even if the project moves; its children run there too.
+  final String environment;
   final String title;
 
   /// The harness's conversation id.
@@ -272,6 +292,7 @@ final class CodeSessionInfo {
     pendingRewind: pendingRewind ?? this.pendingRewind,
     workflow: clearWorkflow ? null : workflow ?? this.workflow,
     toldWorkflow: clearToldWorkflow ? null : toldWorkflow ?? this.toldWorkflow,
+    environment: environment,
   );
 
   factory CodeSessionInfo.fromJson(Map<String, Object?> json) => CodeSessionInfo(
@@ -321,6 +342,7 @@ final class CodeSessionInfo {
     workflow: json['workflow'] as String? ?? (json['tier'] == 'max' ? 'max' : null),
     // An old Max session's lead never heard of the workflow, so it is told on the next message.
     toldWorkflow: json['told_workflow'] as String?,
+    environment: json['environment'] as String? ?? 'host',
   );
 
   Map<String, Object?> toJson() => {
@@ -355,5 +377,6 @@ final class CodeSessionInfo {
     if (pendingRewind.isNotEmpty) 'pending_rewind': pendingRewind,
     'workflow': ?workflow,
     'told_workflow': ?toldWorkflow,
+    if (environment != 'host') 'environment': environment,
   };
 }

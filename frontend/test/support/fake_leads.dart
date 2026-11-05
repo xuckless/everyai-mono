@@ -176,7 +176,9 @@ final class FakeLeadDriver implements HarnessDriver, AttachesBriefed, AttachesWi
   final FakeLeadSession? session;
   final bool needsConsent;
   final String label;
-  final DriverStatus status;
+
+  /// What [detect] answers; a test may change it.
+  DriverStatus status;
   @override
   final Set<DriverCap> caps;
   final specs = <SessionSpec>[];
@@ -312,4 +314,12 @@ final class FakeHost implements HostServer {
 
   @override
   Future<void> stop() async {}
+
+  /// What [reachFrom] was asked, as `token url`.
+  final reached = <String>[];
+  @override
+  Future<Uri> reachFrom(String token, Uri url) async {
+    reached.add('$token $url');
+    return url;
+  }
 }

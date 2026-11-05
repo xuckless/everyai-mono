@@ -6,4 +6,5 @@ pub const all = [_]anole.db.Migration{
     .{ .version = 1, .name = "init", .sql = @embedFile("migrations/001_init.sql") },
     .{ .version = 2, .name = "upstreams", .sql = @embedFile("migrations/002_upstreams.sql") },
     .{ .version = 3, .name = "remote", .sql = @embedFile("migrations/003_remote.sql") },
+    .{ .version = 4, .name = "hooks", .sql = @embedFile("migrations/004_hooks.sql") },
 };

@@ -4,12 +4,14 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_pty/flutter_pty.dart';
 
 import '../harness/everyai/shell_io.dart' show ShellEnv, killTree;
 import '../harness/harness.dart' show HarnessError;
 import '../harness/session_processes.dart' show registerDriverRoot, sessionEnvVar, unregisterDriverRoot;
 import 'driver.dart';
+import 'detection/cli_scan.dart' show findCli;
 import 'driver_process.dart';
 
 Future<DriverProcess> spawnDriver({
@@ -21,18 +23,23 @@ Future<DriverProcess> spawnDriver({
   Map<String, String> env = const {},
 }) async {
   final shell = await ShellEnv.load();
+  // Before the start: it is the working directory of an environment's bridge.
+  File(logPath).parent.createSync(recursive: true);
   final process = await Process.start(
     executable,
     args,
     workingDirectory: cwd,
     environment: {...shell.env, ...env, sessionEnvVar: sessionTag},
   );
-  File(logPath).parent.createSync(recursive: true);
   registerDriverRoot(sessionTag, process.pid);
   return _Process(process, sessionTag, File(logPath).openWrite(mode: FileMode.append));
 }
 
 final _live = <DriverProcess>{};
+
+/// Ends a driver process's tree on close; tests watch it.
+@visibleForTesting
+Future<void> Function(int pid) killDriverTree = killTree;
 
 Future<void> closeAllDriverProcesses() => Future.wait([for (final p in _live.toList()) p.close()]);
 
@@ -68,6 +75,10 @@ Future<DriverProcess> spawnDriverTty({
   Map<String, String> env = const {},
   TtyStart start = _ptyStart,
 }) async {
+  // Not reached on Windows: the only caller is the ACP fallback for a CLI that
+  // fails opening /dev/tty (Grok's ENXIO), which Windows doesn't have. The
+  // pipes below (mkfifo, /bin/sh) have no cheap Windows equivalent, and
+  // ConPTY rewrites output, so JSON can't go over the terminal itself.
   if (Platform.isWindows) {
     throw const HarnessError("This agent needs a terminal, which the app can't give it on Windows.");
   }
@@ -266,7 +277,8 @@ final class _TtyProcess implements DriverProcess {
     _closed = true;
     _live.remove(this);
     unregisterDriverRoot(_tag, pid);
-    await killTree(pid);
+    // Not once it has exited: its pid may be another program's by now.
+    if (!_exited) await killDriverTree(pid);
     await _unblock();
     await _release();
   }
@@ -329,7 +341,8 @@ final class _Process implements DriverProcess {
     _closed = true;
     _live.remove(this);
     unregisterDriverRoot(_tag, pid);
-    await killTree(pid);
+    // Not once it has exited: its pid may be another program's by now.
+    if (!_exited) await killDriverTree(pid);
   }
 }
 
@@ -338,7 +351,7 @@ Future<DriverStatus> detectCli(
   List<String> versionArgs = const ['--version'],
   Future<String?> Function(String command)? which,
 }) async {
-  final path = await (which ?? _which)(command);
+  final path = await (which ?? findCli)(command);
   if (path == null) return const DriverStatus();
   try {
     final shell = await ShellEnv.load();
@@ -366,12 +379,6 @@ Future<void> reloadShellEnv() => ShellEnv.reload();
 
 Future<void> loadShellEnv() => ShellEnv.load();
 
-Future<String?> _which(String command) async =>
-    findOnPath(command, (await ShellEnv.load()).env[Platform.isWindows ? _windowsPathKey : 'PATH'] ?? '');
-
-String get _windowsPathKey =>
-    Platform.environment.keys.firstWhere((k) => k.toUpperCase() == 'PATH', orElse: () => 'Path');
-
 /// The first file named [command] in the directories of [path] (or
 /// [command] itself when it is a path), without starting a process. On
 /// Windows each [pathExt] extension is tried too. [isFile] tells a file
@@ -380,9 +387,11 @@ String? findOnPath(String command, String path, {bool? windows, String? pathExt,
   final win = windows ?? Platform.isWindows;
   final runs = isFile ?? (win ? (p) => File(p).existsSync() : _isExecutable);
   final sep = win ? '\\' : '/';
+  // cmd.exe runs `claude.cmd`, never npm's extensionless shell shim beside it.
+  final bare = win && RegExp(r'\.[A-Za-z0-9]{1,4}$').hasMatch(command);
   final exts = win
       ? [
-          '',
+          if (bare) '',
           ...(pathExt ?? Platform.environment['PATHEXT'] ?? '.COM;.EXE;.BAT;.CMD')
               .split(';')
               .where((e) => e.isNotEmpty),

@@ -9,6 +9,7 @@ import '../../../../core/security/untrusted.dart';
 import 'browser_io.dart';
 import 'exfil.dart';
 import 'tools_io.dart' show ToolOutput, imageDataUrl;
+import 'window_ax_io.dart';
 import 'window_capture_io.dart';
 
 // The browser and screenshot tools' work, shared by the EveryAI harness's
@@ -236,20 +237,37 @@ String browserErrorText(String action, String message, List<String> log) {
   return 'Error: ${stripHidden(message)}${logText.isEmpty ? '' : '\n${untrusted(logText, source: _page)}'}';
 }
 
+/// [text] with the window's accessibility tree [ax] after it, in an untrusted block (labels are the app's text).
+/// A note instead of a tree (permission off) is our own line and stays outside the block.
+String withAx(String text, String ax) {
+  final isNote = axNotes.contains(ax);
+  return '$text\n\nWindow accessibility tree:\n${isNote ? ax : untrusted(ax, source: 'window accessibility')}';
+}
+
 /// Captures window [w] to `.everyai/scratch/screenshots/` under [root] and
 /// returns its picture; [others] more windows matched, which the text
-/// mentions.
-Future<ToolOutput> captureFor(ScreenWindow w, {required String root, required bool vision, int others = 0}) async {
+/// mentions. On macOS the window's accessibility tree ([ax]) follows the text.
+Future<ToolOutput> captureFor(
+  ScreenWindow w, {
+  required String root,
+  required bool vision,
+  int others = 0,
+  Future<String> Function(ScreenWindow w) ax = windowAxTree,
+}) async {
   final dir = Directory('$root/.everyai/scratch/screenshots')..createSync(recursive: true);
   final path = '${dir.path}/window-${DateTime.now().millisecondsSinceEpoch}.png';
   if (await captureWindow(w.id, path) case final problem?) return ToolOutput('Error: $problem', isError: true);
   final label = windowLabel(w);
   final more = others > 0 ? ' $others other window(s) of this session\'s apps; pick with app.' : '';
-  final url = await _pngDataUrl(File(path).readAsBytesSync());
+  final (url, tree) = await (
+    _pngDataUrl(File(path).readAsBytesSync()),
+    Platform.isMacOS ? ax(w) : Future<String?>.value(),
+  ).wait;
+  String text(String t) => tree == null ? t : withAx(t, tree);
   if (!vision || url == null) {
-    return ToolOutput('Saved a screenshot of $label to $path (this model can\'t view images).$more');
+    return ToolOutput(text('Saved a screenshot of $label to $path (this model can\'t view images).$more'));
   }
-  return ToolOutput('Screenshot of $label: $path.$more', images: [(label: path, dataUrl: url)]);
+  return ToolOutput(text('Screenshot of $label: $path.$more'), images: [(label: path, dataUrl: url)]);
 }
 
 /// [imageDataUrl] for a PNG, off the calling isolate: shrinking a Retina

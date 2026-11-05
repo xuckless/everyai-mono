@@ -35,6 +35,8 @@ typedef AcpConnect = Future<LineChannel> Function({
 });
 
 /// What a session needs from its driver.
+String _same(String path) => path;
+
 final class AcpLauncher {
   const AcpLauncher({
     required this.info,
@@ -48,6 +50,7 @@ final class AcpLauncher {
     required this.replayQuiet,
     required this.offered,
     required this.closed,
+    this.toHost = _same,
   });
 
   final DriverInfo info;
@@ -76,6 +79,10 @@ final class AcpLauncher {
 
   /// The session closed.
   final void Function(String conversationId) closed;
+
+  /// A path the agent was given (the briefing folder) as this computer reads
+  /// it: unchanged on the host, translated back from inside an environment.
+  final String Function(String path) toHost;
 }
 
 /// One conversation with an ACP agent (agentclientprotocol.com). The agent
@@ -503,7 +510,7 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
       skillDir: b.skillDir!,
       sessionText: b.sessionSkill!,
     );
-    return _profile.deliver(input, await listSkills(b.skillDir!));
+    return _profile.deliver(input, await listSkills(_launcher.toHost(b.skillDir!)));
   }
 
   /// The session's MCP servers for `session/new`: ours over HTTP when the

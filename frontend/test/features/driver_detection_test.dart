@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:every_ai/features/code/drivers/detection/desktop_apps.dart';
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/features/code/drivers/driver.dart';
 import 'package:every_ai/features/code/drivers/driver_policy.dart';
@@ -48,7 +49,7 @@ ProviderContainer _container(
     overrides: [
       driverRegistryProvider.overrideWithValue(DriverRegistry(drivers)),
       preferencesProvider.overrideWithValue(prefs ?? Preferences.inMemory()),
-      driverStatusesProvider.overrideWith(notifier ?? () => DriverStatuses(loadShell: _noShell)),
+      driverStatusesProvider.overrideWith(notifier ?? () => DriverStatuses(scanApps: _noApps, loadShell: _noShell)),
     ],
   );
   addTearDown(c.dispose);
@@ -66,6 +67,20 @@ String _cache(Map<String, DriverStatus> statuses, {DateTime? at}) => jsonEncode(
 
 void main() {
   group('the scan', () {
+    test('the app scan is kept on the notifier; a failed scan is no apps', () async {
+      const found = AppScan(apps: {DesktopApp.cursor: '/Applications/Cursor.app'});
+      for (final (scan, expected) in <(Future<AppScan> Function(), AppScan)>[
+        (() async => found, found),
+        (() async => throw StateError('no disk'), const AppScan()),
+      ]) {
+        final c = _container({
+          'a': _Fake('a', () async => const DriverStatus()),
+        }, notifier: () => DriverStatuses(scanApps: scan, loadShell: _noShell));
+        await c.read(driverStatusesProvider.future);
+        expect(c.read(driverStatusesProvider.notifier).appScan.apps, expected.apps);
+      }
+    });
+
     test('installed, missing, a throw and no answer each become a status', () async {
       final never = Completer<DriverStatus>();
       final c = _container({
@@ -73,7 +88,7 @@ void main() {
         'b': _Fake('b', () async => const DriverStatus()),
         'c': _Fake('c', () async => throw StateError('broken')),
         'd': _Fake('d', () => never.future),
-      }, notifier: () => DriverStatuses(loadShell: _noShell, timeout: Duration.zero));
+      }, notifier: () => DriverStatuses(scanApps: _noApps, loadShell: _noShell, timeout: Duration.zero));
       final s = await c.read(driverStatusesProvider.future);
       expect((s['a']!.installed, s['a']!.version), (true, '1.2'));
       expect(s['b']!.installed, isFalse);
@@ -85,7 +100,7 @@ void main() {
     test('the login shell is read before any driver starts, on the launch scan too', () async {
       final shell = Completer<void>();
       final a = _Fake('a', () async => const DriverStatus(installed: true));
-      final c = _container({'a': a}, notifier: () => DriverStatuses(loadShell: () => shell.future));
+      final c = _container({'a': a}, notifier: () => DriverStatuses(scanApps: _noApps, loadShell: () => shell.future));
       final done = c.read(driverStatusesProvider.future);
       await pumpEventQueue();
       expect(a.detects, 0);
@@ -99,7 +114,7 @@ void main() {
       final a = _Fake('a', () => gate.future);
       final c = _container({
         'a': a,
-      }, notifier: () => DriverStatuses(loadShell: _noShell, reloadShell: () async => reloads++));
+      }, notifier: () => DriverStatuses(scanApps: _noApps, loadShell: _noShell, reloadShell: () async => reloads++));
       final first = c.read(driverStatusesProvider.future);
       final n = c.read(driverStatusesProvider.notifier);
       final again = n.refresh(reloadShell: true);
@@ -122,10 +137,15 @@ void main() {
       final hung = Completer<DriverStatus>();
       final a = _Fake('a', () => hung.future);
       final b = _Fake('b', () async => const DriverStatus(installed: true));
-      final c = _container({
-        'a': a,
-        'b': b,
-      }, notifier: () => DriverStatuses(loadShell: _noShell, timeout: const Duration(seconds: 30), concurrency: 1));
+      final c = _container(
+        {'a': a, 'b': b},
+        notifier: () => DriverStatuses(
+          scanApps: _noApps,
+          loadShell: _noShell,
+          timeout: const Duration(seconds: 30),
+          concurrency: 1,
+        ),
+      );
       Map<String, DriverStatus>? s;
       unawaited(c.read(driverStatusesProvider.future).then((v) => s = v));
       await tester.pump(const Duration(seconds: 31));
@@ -138,10 +158,15 @@ void main() {
       // One that never settles frees its slot one more timeout later.
       final never = _Fake('n', () => Completer<DriverStatus>().future);
       final d = _Fake('d', () async => const DriverStatus(installed: true));
-      final c2 = _container({
-        'n': never,
-        'd': d,
-      }, notifier: () => DriverStatuses(loadShell: _noShell, timeout: const Duration(seconds: 30), concurrency: 1));
+      final c2 = _container(
+        {'n': never, 'd': d},
+        notifier: () => DriverStatuses(
+          scanApps: _noApps,
+          loadShell: _noShell,
+          timeout: const Duration(seconds: 30),
+          concurrency: 1,
+        ),
+      );
       unawaited(c2.read(driverStatusesProvider.future));
       await tester.pump(const Duration(seconds: 31));
       expect(d.detects, 0);
@@ -197,7 +222,7 @@ void main() {
       };
       final c = _container(
         drivers,
-        notifier: () => DriverStatuses(loadShell: _noShell, reloadShell: () async => reloads++),
+        notifier: () => DriverStatuses(scanApps: _noApps, loadShell: _noShell, reloadShell: () async => reloads++),
       );
       await c.read(driverStatusesProvider.future);
       expect(reloads, 0);
@@ -312,7 +337,7 @@ void main() {
       final c = _container(
         {'a': _Fake('a', () => Completer<DriverStatus>().future)},
         prefs: prefs,
-        notifier: () => DriverStatuses(loadShell: _noShell, timeout: Duration.zero),
+        notifier: () => DriverStatuses(scanApps: _noApps, loadShell: _noShell, timeout: Duration.zero),
       );
       await c.read(driverStatusesProvider.future);
       final s = await c.read(driverStatusesProvider.notifier).refresh();
@@ -371,6 +396,7 @@ void main() {
         '/opt/homebrew/bin',
         '/usr/local/bin',
         '/h/.local/bin',
+        '/h/.claude/local',
         '/h/.npm-global/bin',
         '/h/.npm-pkgs/bin',
         '/h/.nvm/versions/node/v20.11.1/bin',
@@ -379,6 +405,7 @@ void main() {
         '/h/.volta/bin',
         '/h/.deno/bin',
         '/h/.cursor/bin',
+        '/h/.opencode/bin',
       ]);
       // nvm's default alias wins over the newest version.
       files['/h/.nvm/alias/default'] = '18.2.0\n';
@@ -439,3 +466,5 @@ void main() {
     });
   });
 }
+
+Future<AppScan> _noApps() async => const AppScan();

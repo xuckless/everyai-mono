@@ -134,6 +134,7 @@ Map<String, Object?> _resultOf(Map<String, Object?> reply) {
 /// the user's login-shell environment so `npx` and friends resolve.
 final class _StdioMcp extends McpConnection {
   _StdioMcp._(super.name, this._process) {
+    unawaited(_process.exitCode.then((_) => _exited = true));
     _process.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen(_line, onDone: _closed);
     // Drained so a chatty server can't block on a full pipe; the tail helps errors.
     _process.stderr.transform(utf8.decoder).listen((s) {
@@ -151,6 +152,8 @@ final class _StdioMcp extends McpConnection {
   final _pending = <int, Completer<Map<String, Object?>>>{};
   final _stderr = StringBuffer();
   var _done = false;
+  var _exited = false;
+  var _shut = false;
 
   static Future<_StdioMcp> start(String name, String command, List<String> args, Map<String, String> env) async {
     final shellEnv = await ShellEnv.load();
@@ -220,9 +223,11 @@ final class _StdioMcp extends McpConnection {
 
   @override
   Future<void> close() async {
-    if (_done) return;
-    _done = true;
-    await killTree(_process.pid);
+    if (_shut) return;
+    _shut = _done = true;
+    // A server that closed its output may still run; one that exited may have
+    // left its pid to another program.
+    if (!_exited) await killTree(_process.pid);
   }
 }
 

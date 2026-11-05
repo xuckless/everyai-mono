@@ -1,3 +1,4 @@
+import 'package:every_ai/features/questions/domain/questions.dart';
 import 'package:every_ai/features/code/domain/transcript.dart' show planApprovedReason, planRevisionLead;
 import 'package:every_ai/features/code/drivers/acp/acp_agents.dart';
 import 'package:every_ai/features/code/drivers/acp/acp_cursor.dart';
@@ -634,6 +635,16 @@ void main() {
         ],
       };
       expect(cursorAnswerReply(params, (text: 'Whatever', isError: false)), cursorSkipped('Whatever'));
+      // Attached files ride in a note the reply has no slot for, even when every answer is a pick.
+      final picked = answersReason(
+        [Question.listFrom(cursorQuestionArgs(params)).single],
+        [
+          const QuestionAnswer(selected: {0}),
+        ],
+      );
+      expect(cursorAnswerReply(params, (text: picked, isError: false))['outcome'], containsPair('outcome', 'answered'));
+      final noted = '$picked\n\n[Attached: .everyai/uploads/a.png]';
+      expect(cursorAnswerReply(params, (text: noted, isError: false)), cursorSkipped(noted));
       expect(cursorQuestionProblem(params), isNull);
       expect(cursorQuestionProblem(const {}), isNotNull);
     });
