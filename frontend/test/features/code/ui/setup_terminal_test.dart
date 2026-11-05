@@ -350,12 +350,8 @@ final class _Wsl extends ExecEnv {
   @override
   String get label => 'Ubuntu (WSL)';
   @override
-  ({String executable, List<String> args}) wrap(
-    String executable,
-    List<String> args, {
-    String? cwd,
-    Map<String, String> env = const {},
-  }) => (executable: executable, args: args);
+  WrappedCommand wrap(String executable, List<String> args, {String? cwd, Map<String, String> env = const {}}) =>
+      (executable: executable, args: args, environment: const {});
   @override
   String? toEnvPath(String hostPath) => null;
   @override

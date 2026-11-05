@@ -10,12 +10,8 @@ final class FakeWslEnv extends ExecEnv {
   @override
   String get label => 'Ubuntu (WSL)';
   @override
-  ({String executable, List<String> args}) wrap(
-    String executable,
-    List<String> args, {
-    String? cwd,
-    Map<String, String> env = const {},
-  }) => (executable: 'wsl.exe', args: ['-d', 'Ubuntu', '--', executable, ...args]);
+  WrappedCommand wrap(String executable, List<String> args, {String? cwd, Map<String, String> env = const {}}) =>
+      (executable: 'wsl.exe', args: ['-d', 'Ubuntu', '--', executable, ...args], environment: const {});
   @override
   String? toEnvPath(String hostPath) => null;
   @override
