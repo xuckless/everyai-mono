@@ -7,6 +7,7 @@ import 'dart:io';
 import '../../environments/exec_env.dart';
 import '../../harness/everyai/shell_io.dart' show ShellEnv;
 import '../driver_process_io.dart' show findOnPath;
+import 'desktop_apps_io.dart' show bundledHere;
 
 /// Where [findCli] looks for [command]: the login shell's PATH (which already
 /// holds the usual install folders), then the folders a vendor's installer
@@ -24,6 +25,8 @@ Future<String?> findCli(
   List<String> Function(String dir)? list,
   Future<String?> Function(Map<String, String> env)? npmPrefix,
   Future<String> Function(String executable, List<String> args)? run,
+  List<String> Function(String command)? bundled,
+  Future<bool> Function(String path)? starts,
 }) async {
   if (!env.isHost) return _findIn(env, command, run ?? _runOnHost);
   final shell = await (loadEnv ?? () async => (await ShellEnv.load()).env)();
@@ -46,8 +49,22 @@ Future<String?> findCli(
     }
   }
   final prefix = await _npmPrefixOnce(shell, npmPrefix ?? _npmConfigPrefix);
-  if (prefix == null) return null;
-  return findOnPath(command, win ? prefix : '$prefix/bin', windows: win, isFile: isFile);
+  final inNpm = prefix == null ? null : findOnPath(command, win ? prefix : '$prefix/bin', windows: win, isFile: isFile);
+  if (inNpm != null) return inNpm;
+  // Last: a CLI a desktop app brought along. Only one that starts counts.
+  for (final path in (bundled ?? (c) => bundledHere(c, isFile: isFile))(command)) {
+    if (await (starts ?? _startsWithVersion)(path)) return path;
+  }
+  return null;
+}
+
+Future<bool> _startsWithVersion(String path) async {
+  try {
+    await _runKilling(path, ['--version'], const Duration(seconds: 4));
+    return true;
+  } on Object {
+    return false;
+  }
 }
 
 List<String> _entries(String dir) {

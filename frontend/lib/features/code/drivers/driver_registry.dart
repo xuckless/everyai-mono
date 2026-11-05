@@ -12,6 +12,8 @@ import 'acp/acp_agents.dart' show acpCommand;
 import 'acp/acp_driver.dart';
 import 'claude/claude_driver.dart';
 import 'codex/codex_driver.dart';
+import 'detection/desktop_apps.dart';
+import 'detection/desktop_apps_stub.dart' if (dart.library.io) 'detection/desktop_apps_io.dart' as here;
 import 'driver.dart';
 import 'lead_skills.dart';
 import 'driver_process.dart' show loadShellEnv, noAnswerProblem, reloadShellEnv;
@@ -136,7 +138,9 @@ final class DriverStatuses extends AsyncNotifier<Map<String, DriverStatus>> {
     this.concurrency = 4,
     Future<void> Function()? loadShell,
     Future<void> Function()? reloadShell,
-  }) : _loadShell = loadShell ?? loadShellEnv,
+    Future<AppScan> Function()? scanApps,
+  }) : _scanApps = scanApps ?? here.scanHere,
+       _loadShell = loadShell ?? loadShellEnv,
        _reloadShell = reloadShell ?? reloadShellEnv;
 
   /// How long one driver's check may take: above the longest a driver's
@@ -149,6 +153,12 @@ final class DriverStatuses extends AsyncNotifier<Map<String, DriverStatus>> {
   final int concurrency;
   final Future<void> Function() _loadShell;
   final Future<void> Function() _reloadShell;
+  final Future<AppScan> Function() _scanApps;
+
+  /// The desktop apps the last check saw. They only make a missing CLI offerable
+  /// (`AppScan.offersSetUp`); they never make a harness Ready.
+  AppScan get appScan => _appScan;
+  AppScan _appScan = const AppScan();
 
   /// When the last check finished; null before the first.
   DateTime? get checkedAt => _checkedAt;
@@ -218,6 +228,8 @@ final class DriverStatuses extends AsyncNotifier<Map<String, DriverStatus>> {
     await (reloadShell ? _reloadShell() : _loadShell()).then((_) {}, onError: (_) {});
     final drivers = ref.read(driverRegistryProvider).listed.toList();
     final previous = _last;
+    // A few directory listings; a failure is no apps.
+    final apps = _scanApps().then((s) => s, onError: (Object _) => const AppScan());
     final found = [for (final _ in drivers) Completer<DriverStatus>()];
     var next = 0;
     Future<void> worker() async {
@@ -239,7 +251,9 @@ final class DriverStatuses extends AsyncNotifier<Map<String, DriverStatus>> {
 
     unawaited(Future.wait([for (var w = 0; w < concurrency && w < drivers.length; w++) worker()]));
     final results = await Future.wait([for (final f in found) f.future]);
+    final scan = await apps;
     if (!ref.mounted) return {for (final (i, d) in drivers.indexed) d.info.id: results[i]};
+    _appScan = scan;
     // Drivers added or removed while this ran ([recheck] has the added ones).
     final now = {for (final d in ref.read(driverRegistryProvider).listed) d.info.id};
     final checked = {for (final d in drivers) d.info.id};
