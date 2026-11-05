@@ -14,6 +14,8 @@ final _contexts = [
   {'Name': 'default', 'Current': false, 'DockerEndpoint': 'unix:///var/run/docker.sock'},
   {'Name': 'desktop-linux', 'Current': true, 'DockerEndpoint': 'unix:///Users/a/.docker/run/docker.sock'},
   {'Name': 'desktop-alias', 'Current': false, 'DockerEndpoint': 'unix:///Users/a/.docker/run/docker.sock'},
+  {'Name': 'work', 'Current': false, 'DockerEndpoint': 'ssh://work'},
+  {'Name': 'ci', 'Current': false, 'DockerEndpoint': 'tcp://10.0.0.5:2376'},
 ].map(jsonEncode).join('\n');
 
 final _inspect = jsonEncode([
@@ -52,7 +54,7 @@ final _inspect = jsonEncode([
 ]);
 
 void main() {
-  test('contexts: the current first, one per endpoint', () {
+  test('contexts: the current first, one per endpoint, local ones only', () {
     expect(parseDockerContexts(_contexts), ['desktop-linux', 'default']);
   });
 
@@ -99,6 +101,72 @@ void main() {
       ['host', 'devcontainer:/Users/a/proj', 'docker:desktop-linux/web'],
     );
     expect(found.problems, isEmpty);
+    expect(runner.calls.where((c) => c.contains('work') || c.contains('--context ci')), isEmpty);
+  });
+
+  test('one daemon behind two contexts lists each container once', () async {
+    final runner = FakeRunner({
+      '$_docker context ls --format {{json .}}': ok(_contexts),
+      '$_docker --context desktop-linux ps -q': ok('aaaaaaaaaaaa\n'),
+      '$_docker --context desktop-linux inspect aaaaaaaaaaaa': ok(_inspect),
+      '$_docker --context default ps -q': ok('aaaaaaaaaaaa\n'),
+      '$_docker --context default inspect aaaaaaaaaaaa': ok(_inspect),
+    });
+    final found = await discoverEnvironments(fakeIo(runner, clis: {'docker': _docker}));
+    expect(
+      [for (final e in found.environments) e.id],
+      ['host', 'devcontainer:/Users/a/proj', 'docker:desktop-linux/web'],
+    );
+  });
+
+  test('only remote contexts: nothing is listed, nothing connects', () async {
+    final runner = FakeRunner({
+      '$_docker context ls --format {{json .}}': ok(
+        jsonEncode({'Name': 'work', 'Current': true, 'DockerEndpoint': 'ssh://work'}),
+      ),
+    });
+    final found = await discoverEnvironments(fakeIo(runner, clis: {'docker': _docker}));
+    expect(found.environments.length, 1);
+    expect(runner.calls, ['$_docker context ls --format {{json .}}']);
+  });
+
+  test('a Windows dev container: the project maps in, whatever the Source form', () {
+    for (final source in [r'C:\Users\a\proj', 'c:/Users/a/proj', '/run/desktop/mnt/host/c/Users/a/proj']) {
+      final env = parseDockerInspect(
+        jsonEncode([
+          {
+            'Id': 'cccccccccccc',
+            'Name': '/vsc-proj',
+            'Config': {
+              'Labels': {'devcontainer.local_folder': r'c:\Users\a\proj'},
+            },
+            'Mounts': [
+              {'Type': 'bind', 'Source': source, 'Destination': '/workspaces/proj', 'RW': true},
+            ],
+          },
+        ]),
+        cli: 'docker',
+      ).single;
+      expect(env.toEnvPath(r'C:\Users\a\proj'), '/workspaces/proj', reason: source);
+      expect(env.toEnvPath(r'C:\Users\A\Proj\src\x.ts'), '/workspaces/proj/src/x.ts', reason: source);
+      expect(env.toEnvPath(r'C:\Users\a\project'), isNull, reason: source);
+      expect(env.toEnvPath('/Users/a/proj'), isNull, reason: source);
+      expect(env.toHostPath('/workspaces/proj/src/x.ts'), r'C:\Users\a\proj\src\x.ts', reason: source);
+    }
+  });
+
+  test(r'MountMap: a `..` segment never climbs out of a share', () {
+    const m = MountMap([(host: '/Users/a/proj', env: '/workspaces/proj', writable: true)]);
+    expect(m.toHost('/workspaces/proj/../../../Users/a/.ssh/id_rsa'), isNull);
+    expect(m.toEnv('/Users/a/proj/../.ssh'), isNull);
+    expect(m.writableAt('/Users/a/proj/../x'), isNull);
+    expect(m.toHost('/workspaces/proj/..x/y'), '/Users/a/proj/..x/y');
+    const w = MountMap([(host: r'C:\p', env: '/p', writable: true)]);
+    expect(w.toEnv(r'C:\p\..\secret'), isNull);
+    expect(w.toEnv(r'C:\'), isNull);
+    const root = MountMap([(host: r'C:\', env: '/c', writable: true)]);
+    expect(root.toHost('/c'), r'C:\');
+    expect(root.toEnv(r'C:\x'), '/c/x');
   });
 
   test("a daemon that isn't running is a problem, not an error", () async {

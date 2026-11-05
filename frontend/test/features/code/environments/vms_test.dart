@@ -67,6 +67,45 @@ void main() {
     expect(w.args, ['-m', 'ubuntu', 'sh', '-c', "cd /home/u/p && exec env 'K=v' claude 'a b'"]);
     const viaCtl = OrbEnv(cli: '/usr/local/bin/orbctl', machine: 'ubuntu', home: _home, viaOrbctl: true);
     expect(viaCtl.wrap('ls', const []).args, ['run', '-m', 'ubuntu', 'sh', '-c', 'exec ls']);
+    expect(orb.toHostPath('/home/u/../../../Users/a/.ssh'), isNull);
+    expect(orb.toEnvPath('$_home/OrbStack/ubuntu/../x'), isNull);
+  });
+
+  test("OrbStack: quit, it's left quit (only `status` runs)", () async {
+    const orbctl = '/usr/local/bin/orbctl';
+    final runner = FakeRunner({'$orbctl status': ok('Stopped\n', code: 1)});
+    final found = await discoverEnvironments(fakeIo(runner, clis: {'orbctl': orbctl}));
+    expect(runner.calls, ['$orbctl status']);
+    expect(found.problems['orb'], contains("isn't running"));
+
+    final up = FakeRunner({
+      '$orbctl status': ok('Running\n'),
+      '$orbctl list --format json': ok(
+        jsonEncode([
+          {'name': 'ubuntu', 'state': 'running'},
+        ]),
+      ),
+    });
+    final listed = await discoverEnvironments(fakeIo(up, clis: {'orbctl': orbctl}));
+    expect([for (final e in listed.environments) e.id], ['host', 'orb:ubuntu']);
+  });
+
+  test('Multipass on Windows: a C:/ share maps a C:\\ project', () {
+    final mounts = parseMultipassMounts(
+      jsonEncode({
+        'info': {
+          'primary': {
+            'mounts': {
+              '/home/ubuntu/code': {'source_path': 'C:/Users/me/code'},
+            },
+          },
+        },
+      }),
+    );
+    final env = MultipassEnv(cli: 'multipass', name: 'primary', mounts: mounts['primary']!);
+    expect(env.toEnvPath(r'C:\Users\me\code\app'), '/home/ubuntu/code/app');
+    expect(env.toEnvPath(r'c:\users\ME\Code'), '/home/ubuntu/code');
+    expect(env.toHostPath('/home/ubuntu/code/app/x.ts'), r'C:\Users\me\code\app\x.ts');
   });
 
   test('Multipass: list, mounts from info, and wrap', () async {

@@ -82,6 +82,53 @@ void main() {
     expect(stopped.problem, contains('is stopped'));
   });
 
+  test('a stopped WSL distro is scanned anyway: wsl.exe starts it', () async {
+    const wsl = WslEnv(cli: 'C:/wsl.exe', distro: 'Ubuntu', running: false);
+    final key = ['C:/wsl.exe', '-d', 'Ubuntu', '--exec', '/bin/sh', '-c', scanBootstrap, 'sh', scanProbe, 'claude'];
+    final scan = await scanEnvironment(wsl, commands: ['claude'], run: FakeRunner({key.join(' '): ok(_output)}).call);
+    expect(scan.problem, isNull);
+    expect(scan.found['claude']!.installed, isTrue);
+  });
+
+  test("a CLI found only on a Windows drive isn't an install inside WSL", () {
+    final scan = parseScanOutput(
+      '\n__EVERYAI_SCAN__\nWINCLI\tcodex\t/mnt/c/Users/me/AppData/Roaming/npm/codex\nCLI\tcodex\t\t\n',
+      ['codex'],
+    )!;
+    expect(scan.found['codex']!.installed, isFalse);
+    expect(scan.found['codex']!.problem, contains('Only the Windows install'));
+  });
+
+  test('a real /bin/sh: the probe skips PATH hits under the WSL drive root', () {
+    final tmp = Directory.systemTemp.createTempSync('everyai-scan');
+    addTearDown(() => tmp.deleteSync(recursive: true));
+    final bin = Directory('${tmp.path}/bin')..createSync();
+    final winNpm = Directory('${tmp.path}/mnt/c/npm')..createSync(recursive: true);
+    final home = Directory('${tmp.path}/home')..createSync();
+    Directory('${home.path}/.local/bin').createSync(recursive: true);
+    void script(String path, String body) {
+      File(path).writeAsStringSync('#!/bin/sh\n$body\n');
+      Process.runSync('chmod', ['+x', path]);
+    }
+
+    script('${bin.path}/wslpath', 'echo ${tmp.path}/mnt/c/');
+    script('${winNpm.path}/codex', 'echo windows');
+    script('${winNpm.path}/claude', 'echo windows');
+    script('${home.path}/.local/bin/claude', 'echo 2.0 linux');
+    final r = Process.runSync(
+      '/bin/sh',
+      ['-c', scanProbe, 'sh', 'codex', 'claude'],
+      environment: {'PATH': '${bin.path}:${winNpm.path}:/usr/bin:/bin', 'HOME': home.path},
+      includeParentEnvironment: false,
+    );
+    final scan = parseScanOutput(r.stdout as String, ['codex', 'claude'])!;
+    expect(scan.wslRoot, '${tmp.path}/mnt/');
+    expect(scan.found['codex']!.installed, isFalse);
+    expect(scan.found['codex']!.problem, contains('${winNpm.path}/codex'));
+    expect(scan.found['claude']!.path, '${home.path}/.local/bin/claude');
+    expect(scan.found['claude']!.version, '2.0 linux');
+  }, skip: Platform.isWindows);
+
   test('a real /bin/sh: fish falls back to sh, and names are never run as code', () {
     final r = Process.runSync(
       '/bin/sh',

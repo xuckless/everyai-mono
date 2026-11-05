@@ -46,13 +46,19 @@ const scanBootstrap =
 
 /// Prints the marker, then tab-separated facts, then `CLI name path version`
 /// per command: `command -v`, else the usual install folders under $HOME
-/// (and the newest nvm Node), with `--version` capped at 4 s.
+/// (and the newest nvm Node), with `--version` capped at 4 s. Inside WSL the
+/// PATH holds the Windows one too (`appendWindowsPath`): a hit on a Windows
+/// drive isn't an install inside the distro, so it's skipped and, when
+/// nothing else is found, reported as `WINCLI name path`.
 const scanProbe = r'''printf '\n__EVERYAI_SCAN__\n'
 printf 'PATH\t%s\n' "$PATH"
 printf 'HOME\t%s\n' "$HOME"
 printf 'OS\t%s\n' "$(uname -sm 2>/dev/null)"
+r=
 if command -v wslpath >/dev/null 2>&1; then
-  printf 'WSLROOT\t%s\n' "$(wslpath -u 'C:\' 2>/dev/null)"
+  w=$(wslpath -u 'C:\' 2>/dev/null)
+  printf 'WSLROOT\t%s\n' "$w"
+  r=${w%/}; r=${r%?}
   printf 'GATEWAY\t%s\n' "$(ip route show default 2>/dev/null | awk '{print $3; exit}')"
 fi
 t=
@@ -61,11 +67,14 @@ n=$(ls -dt "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | head -n 1)
 for c in "$@"; do
   p=$(command -v "$c" 2>/dev/null)
   case "$p" in /*) ;; *) p= ;; esac
+  win=
+  if [ -n "$r" ]; then case "$p" in "$r"?/*) win=$p; p= ;; esac; fi
   if [ -z "$p" ]; then
     for d in "$HOME/.local/bin" "$HOME/.npm-global/bin" "$HOME/.claude/local" "$HOME/.opencode/bin" "$HOME/.bun/bin" "$HOME/.cargo/bin" "$n"; do
       if [ -n "$d" ] && [ -x "$d/$c" ]; then p=$d/$c; break; fi
     done
   fi
+  if [ -z "$p" ] && [ -n "$win" ]; then printf 'WINCLI\t%s\t%s\n' "$c" "$win"; fi
   v=
   if [ -n "$p" ]; then v=$($t "$p" --version </dev/null 2>/dev/null | head -n 1); fi
   printf 'CLI\t%s\t%s\t%s\n' "$c" "$p" "$v"
@@ -73,16 +82,20 @@ done
 ''';
 
 /// Looks inside [env] for [commands] in one round trip, through its bridge
-/// and its login shell (so the PATH its rc files set applies). A stopped
-/// environment isn't started; one that doesn't answer within [timeout] is
-/// given up on (the bridge process is killed).
+/// and its login shell (so the PATH its rc files set applies). A stopped VM
+/// isn't started; a WSL distro is (WSL stops idle distros within seconds, and
+/// wsl.exe starts one in about a second, so stopped is its usual state). One
+/// that doesn't answer within [timeout] is given up on (the bridge process is
+/// killed).
 Future<EnvScan> scanEnvironment(
   ExecEnv env, {
   List<String> commands = defaultScanCommands,
   RunCommand? run,
   Duration timeout = const Duration(seconds: 15),
 }) async {
-  if (!env.running) return EnvScan(problem: '${env.label} is stopped. Start it, then check again.');
+  if (!env.running && env.kind != EnvKind.wsl) {
+    return EnvScan(problem: '${env.label} is stopped. Start it, then check again.');
+  }
   final names = [
     for (final c in commands)
       if (safeName(c) && !c.contains('/')) c,
@@ -114,6 +127,7 @@ EnvScan? parseScanOutput(String out, List<String> commands) {
   if (at < 0) return null;
   final facts = <String, String>{};
   final found = <String, DriverStatus>{};
+  final windowsOnly = <String, String>{};
   for (final raw in const LineSplitter().convert(out.substring(at + _marker.length + 1))) {
     final line = raw.endsWith('\r') ? raw.substring(0, raw.length - 1) : raw;
     final parts = line.split('\t');
@@ -123,6 +137,8 @@ EnvScan? parseScanOutput(String out, List<String> commands) {
       found[parts[1]] = path.isEmpty
           ? const DriverStatus()
           : DriverStatus(installed: true, path: path, version: version.isEmpty ? null : version);
+    } else if (parts.first == 'WINCLI' && parts.length >= 3) {
+      windowsOnly[parts[1]] = parts[2].trim();
     } else if (parts.length >= 2) {
       facts[parts.first] = parts.sublist(1).join('\t').trim();
     }
@@ -134,7 +150,16 @@ EnvScan? parseScanOutput(String out, List<String> commands) {
     os: fact('OS'),
     wslRoot: _wslRoot(fact('WSLROOT')),
     hostAddress: fact('GATEWAY'),
-    found: {for (final c in commands) c: found[c] ?? const DriverStatus()},
+    found: {
+      for (final c in commands)
+        c: switch ((found[c], windowsOnly[c])) {
+          (final DriverStatus f, _) when f.installed => f,
+          (_, final String win) => DriverStatus(
+            problem: 'Only the Windows install was found ($win). Install it inside the distro to run it there.',
+          ),
+          (final f, _) => f ?? const DriverStatus(),
+        },
+    },
   );
 }
 

@@ -1,5 +1,7 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import 'dart:convert';
+
 import 'exec_env.dart';
 import 'path_maps.dart';
 import 'shell_quote.dart';
@@ -298,7 +300,7 @@ final class OrbEnv extends ExecEnv {
 
   @override
   String? toEnvPath(String hostPath) {
-    if (!hostPath.startsWith('/')) return null;
+    if (!hostPath.startsWith('/') || hostPath.split('/').contains('..')) return null;
     // The machine's own files first: they are under /Users too.
     final own = '$home/OrbStack/$machine';
     if (hostPath == own) return '/';
@@ -309,7 +311,7 @@ final class OrbEnv extends ExecEnv {
 
   @override
   String? toHostPath(String envPath) {
-    if (!envPath.startsWith('/')) return null;
+    if (!envPath.startsWith('/') || envPath.split('/').contains('..')) return null;
     if (_same.any((p) => envPath == p || envPath.startsWith('$p/'))) return envPath;
     if (envPath == '/mnt/mac') return '/';
     if (envPath.startsWith('/mnt/mac/')) return envPath.substring('/mnt/mac'.length);
@@ -460,9 +462,13 @@ final class SshRemote {
 }
 
 /// An ssh remote: `ssh -T -o BatchMode=yes -o ConnectTimeout=5 [-p N] --
-/// DEST 'cd CWD && exec …'`. ssh joins the remote command into one line
-/// for the remote login shell, so it goes as one quoted string. The project
-/// lives on the remote: no path maps either way.
+/// DEST LINE`. ssh hands the remote command to the remote user's login
+/// shell, which may be fish or csh: their quoting differs from sh's (csh
+/// allows no newline inside quotes, fish reads `\'` and `\\` there). So the
+/// line is `exec /bin/sh -c 'eval "$(printf %s B64 | base64 -d)"'`, with
+/// the `cd CWD && exec …` script base64-encoded: no backslash, newline or
+/// quote inside the quotes, read the same by sh, fish and csh. stdin stays
+/// the program's. The project lives on the remote: no path maps either way.
 final class SshEnv extends ExecEnv {
   const SshEnv({required this.cli, required this.remote});
 
@@ -492,7 +498,7 @@ final class SshEnv extends ExecEnv {
         if (remote.port != null) ...['-p', '${remote.port}'],
         '--',
         remote.destination,
-        bridgeScript(executable, args, cwd: cwd, env: env),
+        sshRemoteLine(bridgeScript(executable, args, cwd: cwd, env: env)),
       ],
       environment: const {},
     );
@@ -507,3 +513,8 @@ final class SshEnv extends ExecEnv {
   @override
   Uri? hostUrl(Uri loopback) => _viaHostName(loopback, null);
 }
+
+/// [script] as one remote command line any login shell parses the same way
+/// (see [SshEnv]).
+String sshRemoteLine(String script) =>
+    "exec /bin/sh -c 'eval \"\$(printf %s ${base64.encode(utf8.encode(script))} | base64 -d)\"'";

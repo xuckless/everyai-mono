@@ -72,12 +72,8 @@ final class _Problem implements Exception {
 
 /// Looks for every kind whose CLI is on this computer, all at once, each
 /// call capped at [timeout]. Nothing is installed or started; a kind that
-/// fails only adds its problem.
-Future<EnvDiscovery> discoverEnvironments(
-  EnvironmentIo io, {
-  List<SshRemote> ssh = const [],
-  Duration timeout = const Duration(seconds: 3),
-}) async {
+/// fails only adds its problem. ssh remotes come from [sshEnvironments].
+Future<EnvDiscovery> discoverEnvironments(EnvironmentIo io, {Duration timeout = const Duration(seconds: 3)}) async {
   final kinds = <String, Future<List<ExecEnv>> Function()>{
     'wsl': () => _wsl(io, timeout),
     'docker': () => _docker(io, timeout),
@@ -85,7 +81,6 @@ Future<EnvDiscovery> discoverEnvironments(
     'orb': () => _orb(io, timeout),
     'multipass': () => _multipass(io, timeout),
     'colima': () => _colima(io, timeout),
-    'ssh': () => _ssh(io, ssh),
   };
   final results = await Future.wait([
     for (final find in kinds.values)
@@ -189,16 +184,19 @@ Future<List<ExecEnv>> _wsl(EnvironmentIo io, Duration timeout) async {
 
 // ---- Docker and dev containers ----
 
-/// Context names from `docker context ls --format '{{json .}}'`, the current
-/// one first; contexts on the same endpoint as an earlier one are dropped
-/// (they list the same containers).
+/// Local context names from `docker context ls --format '{{json .}}'`, the
+/// current one first; contexts on the same endpoint as an earlier one are
+/// dropped (they list the same containers). Contexts on another machine
+/// (`ssh://`, `tcp://`) are left out: discovery never connects to a machine
+/// the user didn't add, and their bind mounts aren't this computer's folders.
 List<String> parseDockerContexts(String text) {
   final all = _objects(text)..sort((a, b) => (b['Current'] == true ? 1 : 0) - (a['Current'] == true ? 1 : 0));
   final endpoints = <String>{};
   return [
     for (final c in all)
       if (c['Name'] case final String name when safeName(name))
-        if (endpoints.add('${c['DockerEndpoint'] ?? name}')) name,
+        if (c['DockerEndpoint'] case final Object? e when e == null || '$e'.startsWith(RegExp('unix://|npipe://')))
+          if (endpoints.add('${e ?? name}')) name,
   ];
 }
 
@@ -258,7 +256,10 @@ Future<List<ExecEnv>> _docker(EnvironmentIo io, Duration timeout) async {
   final cli = await io.which('docker');
   if (cli == null) return const [];
   final listed = await io.run(cli, const ['context', 'ls', '--format', '{{json .}}'], timeout: timeout);
-  final contexts = <String?>[if (listed != null && listed.code == 0) ...parseDockerContexts(_text(listed.stdout))];
+  final known = listed != null && listed.code == 0;
+  final contexts = <String?>[if (known) ...parseDockerContexts(_text(listed.stdout))];
+  // Only contexts on other machines: nothing local to list.
+  if (known && contexts.isEmpty && _objects(_text(listed.stdout)).isNotEmpty) return const [];
   if (contexts.isEmpty) contexts.add(null);
   final hostName = io.os == HostOs.linux ? null : 'host.docker.internal';
   var answered = 0;
@@ -279,11 +280,14 @@ Future<List<ExecEnv>> _docker(EnvironmentIo io, Duration timeout) async {
       }(),
   ]);
   if (answered == 0) throw const _Problem("Docker isn't running, or didn't answer.");
+  // Two contexts can reach one daemon by different paths (Docker Desktop's
+  // `default` and `desktop-linux`): one entry per container, the current
+  // context's.
   final seen = <String>{};
   final all = [
     for (final list in found)
       for (final e in list)
-        if (seen.add(e.id)) e,
+        if (seen.add(e.container)) e,
   ];
   // Dev containers first: they belong to a project.
   return [...all.where((e) => e.devcontainerFolder != null), ...all.where((e) => e.devcontainerFolder == null)];
@@ -430,6 +434,11 @@ Future<List<ExecEnv>> _orb(EnvironmentIo io, Duration timeout) async {
   final orbctl = await io.which('orbctl');
   final lister = orbctl ?? orb;
   if (lister == null) return const [];
+  // Any other orb command starts OrbStack when it's quit; `status` doesn't.
+  final status = await io.run(lister, const ['status'], timeout: timeout);
+  if (status == null || _text(status.stdout).trim().toLowerCase() != 'running') {
+    throw const _Problem("OrbStack isn't running. Open it to use its machines, then check again.");
+  }
   final json = await io.run(lister, const ['list', '--format', 'json'], timeout: timeout);
   final text = json != null && json.code == 0
       ? _text(json.stdout)
@@ -491,14 +500,16 @@ String encodeSshRemotes(List<SshRemote> remotes) => jsonEncode({
   'remotes': [for (final r in remotes) r.toJson()],
 });
 
-Future<List<ExecEnv>> _ssh(EnvironmentIo io, List<SshRemote> remotes) async {
-  if (remotes.isEmpty) return const [];
-  final cli = await io.which(io.os == HostOs.windows ? 'ssh.exe' : 'ssh');
-  if (cli == null) throw const _Problem("ssh isn't installed on this computer.");
-  return [
+/// The ssh remotes the user added as environments, given ssh's path on this
+/// computer ([cli], null when it isn't installed). Nothing is run: a remote
+/// is only reached when it's scanned.
+EnvDiscovery sshEnvironments(List<SshRemote> remotes, {required String? cli}) {
+  if (remotes.isEmpty) return const EnvDiscovery([]);
+  if (cli == null) return const EnvDiscovery([], {'ssh': "ssh isn't installed on this computer."});
+  return EnvDiscovery([
     for (final r in remotes)
       if (r.problem == null) SshEnv(cli: cli, remote: r),
-  ];
+  ]);
 }
 
 /// The `Host` names in an ssh config [text], to suggest in the add form:

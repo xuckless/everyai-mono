@@ -72,6 +72,18 @@ void main() {
     expect(found.problems['ssh'], contains("ssh isn't installed"));
   });
 
+  test("adding an ssh remote doesn't look for the other kinds again", () async {
+    final runner = FakeRunner({
+      '/l list --json': ok(jsonEncode({'name': 'default', 'status': 'Running'})),
+    });
+    final c = container(runner, {'limactl': '/l', 'ssh': '/s'});
+    expect([for (final e in await c.read(environmentsProvider.future)) e.id], ['host', 'lima:default']);
+    final before = runner.calls.length;
+    c.read(sshRemotesProvider.notifier).add(const SshRemote.alias('box'));
+    expect([for (final e in await c.read(environmentsProvider.future)) e.id], ['host', 'lima:default', 'ssh:box']);
+    expect(runner.calls.length, before);
+  });
+
   test('environmentById is null for a gone id, never the host', () {
     const all = [HostEnv.instance, LimaEnv(cli: '/l', name: 'dev', home: '/h')];
     expect(environmentById(all, 'lima:dev')?.label, 'dev (Lima)');
