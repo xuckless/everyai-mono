@@ -29,6 +29,7 @@ import '../drivers/registry_install/ui/add_agent_list.dart' show AddAgentEntry;
 import '../permissions_providers.dart';
 import '../settings/setting_defs.dart';
 import '../settings/settings.dart' as files;
+import '../migration/ui/bring_over_sheet.dart';
 import 'code_slash_host.dart' show switchCodeAgent;
 import 'setup_button.dart';
 
@@ -372,6 +373,13 @@ class _CodeSettingsSectionState extends ConsumerState<CodeSettingsSection> {
       case SettingKind.harnesses:
         block = true;
         control = const HarnessesSetting();
+      case SettingKind.migration:
+        control = AdaptiveButton(
+          key: const ValueKey('code-settings.bring-over'),
+          label: 'Choose what to bring over',
+          emphasis: ButtonEmphasis.secondary,
+          onPressed: () => showBringOver(context),
+        );
       case SettingKind.link:
         control = AdaptiveButton(
           label: 'Open',
