@@ -15,6 +15,7 @@ import '../../auth/auth_providers.dart';
 import '../../auth/domain/auth_state.dart';
 import '../../auth/profile.dart';
 import '../../billing/ui/billing_screen.dart';
+import '../../code/automations/ui/scheduled_tasks_body.dart';
 import '../../code/code_settings_providers.dart' show SettingsScope;
 import '../../code/ui/code_settings_section.dart';
 import '../../code/ui/mcp_settings_screen.dart';
@@ -51,6 +52,7 @@ Widget settingsSectionBody(SettingsSection section, Map<String, String> args) =>
     scope: args['scope'] == null ? null : SettingsScope.parse(args['scope']),
   ),
   SettingsSection.permissions => const PermissionsSection(),
+  SettingsSection.schedules => const ScheduledTasksBody(),
   SettingsSection.mcp => McpSettingsBody(projectId: args['project']),
   SettingsSection.skills => SkillsSettingsBody(projectId: args['project']),
   SettingsSection.agents => const AgentsSettingsBody(),

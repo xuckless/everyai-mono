@@ -17,6 +17,7 @@ import '../core/providers.dart' show apiClientProvider, serverStatusProvider;
 import '../features/updates/update_providers.dart' show updateProvider;
 import '../core/theme/every_theme.dart';
 import '../core/ui/adaptive.dart' show AdaptiveButton, AdaptiveProgress, GlassSurface, GlassLevel, showAdaptiveToast;
+import '../features/code/automations/schedule_providers.dart' show scheduleRunnerProvider;
 import '../features/code/code_providers.dart' show driverShutdownProvider;
 import '../features/code/drivers/driver_registry.dart' show driverStatusesProvider;
 import '../features/history/ui/sidebar.dart';
@@ -133,6 +134,8 @@ class _AppShellState extends ConsumerState<AppShell> {
     if (Host.isDesktop) {
       // Outside coding CLIs end with the app, whichever way they were started.
       ref.listen(driverShutdownProvider, (_, _) {});
+      // Scheduled tasks start their sessions while the app is open.
+      ref.listen(scheduleRunnerProvider, (_, _) {});
       ref.listen(remoteHostingProvider.select((s) => s.link.pending.length), (before, now) {
         if (now > (before ?? 0)) {
           showAdaptiveToast(context, 'A device wants to use Code here. Approve it in Settings → Remote.');
