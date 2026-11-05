@@ -14,6 +14,7 @@ import '../../../core/ui/every_icons.dart';
 import '../../../core/ui/selection.dart';
 import '../../models/domain/model_catalog.dart';
 import '../../models/models_providers.dart';
+import '../../attachments/attachment.dart';
 import '../../questions/ui/question_card.dart';
 import '../../usage/usage_totals.dart';
 import '../code_providers.dart';
@@ -216,6 +217,8 @@ class CodeSessionScreen extends ConsumerWidget {
                               onRewind: (turn) => _rewind(context, ref, turn),
                               transcript: t,
                               onAnswer: controller.answer,
+                              onAnswerWithFiles: (item, a, files) => controller.answer(item, a, files: files),
+                              model: ref.watch(modelCatalogProvider)[ModelId(info.model)],
                               mode: state.mode,
                               onApprovePlan: controller.startBuilding,
                               onRevisePlan: controller.send,
@@ -555,6 +558,8 @@ class TranscriptList extends StatelessWidget {
     required this.onApprovePlan,
     required this.onRevisePlan,
     required this.onRetry,
+    this.onAnswerWithFiles,
+    this.model,
     this.sessionId,
     this.workingDir = '',
     this.trailing = const [],
@@ -583,6 +588,10 @@ class TranscriptList extends StatelessWidget {
   final Transcript transcript;
   final AgentMode mode;
   final void Function(QuestionItem, List<QuestionAnswer>) onAnswer;
+
+  /// Set, question cards take files with their answers; [model] is who reads them.
+  final Future<bool> Function(QuestionItem, List<QuestionAnswer>, List<Attachment>)? onAnswerWithFiles;
+  final ModelSpec? model;
 
   /// Restores the files to before user turn n (1-based); null without git.
   final void Function(int turn)? onRewind;
@@ -689,6 +698,10 @@ class TranscriptList extends StatelessWidget {
       answers: item.answers,
       enabled: item == transcript.openQuestion,
       onSubmit: (answers) => onAnswer(item, answers),
+      onSubmitWithFiles: onAnswerWithFiles == null
+          ? null
+          : (answers, files) => onAnswerWithFiles!(item, answers, files),
+      model: model,
     ),
     PlanProposal() => PlanCard(
       key: ValueKey(item.key),

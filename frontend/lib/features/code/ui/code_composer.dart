@@ -259,22 +259,14 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
 
   /// Any file can go to the agent: it is saved into the project.
   Future<void> _add(List<XFile> picked) async {
-    final kinds = widget.attachKinds;
-    final read = await readAttachments(
+    final added = await readPicked(
       picked,
       alreadyBytes: _files.fold(0, (sum, a) => sum + a.size),
-      shrinkImages: kinds != null,
-      onError: (message) {
+      kinds: widget.attachKinds,
+      onMessage: (message) {
         if (mounted) showAdaptiveToast(context, message);
       },
     );
-    final added = [
-      for (final a in read)
-        if (kinds == null || kinds.contains(a.kind)) a,
-    ];
-    if (added.length < read.length && mounted) {
-      showAdaptiveToast(context, 'Only pictures and text files can be sent here.');
-    }
     if (!mounted || added.isEmpty) return;
     setState(() => _files.addAll(added));
     _focus.requestFocus();

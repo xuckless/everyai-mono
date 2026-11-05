@@ -30,6 +30,28 @@ Future<List<XFile>> pickAttachmentFiles({Set<AttachmentKind>? allowed}) {
   );
 }
 
+/// Reads picked files for a composer or card and keeps the kinds in [kinds]
+/// (null = any). Reports read errors and dropped kinds through [onMessage].
+Future<List<Attachment>> readPicked(
+  Iterable<XFile> picked, {
+  required int alreadyBytes,
+  required Set<AttachmentKind>? kinds,
+  required void Function(String message) onMessage,
+}) async {
+  final read = await readAttachments(
+    picked,
+    alreadyBytes: alreadyBytes,
+    shrinkImages: kinds != null,
+    onError: onMessage,
+  );
+  final added = [
+    for (final a in read)
+      if (kinds == null || kinds.contains(a.kind)) a,
+  ];
+  if (added.length < read.length) onMessage('Only pictures and text files can be sent here.');
+  return added;
+}
+
 String _extOf(String name) => name.contains('.') ? name.substring(name.lastIndexOf('.') + 1).toLowerCase() : '';
 
 /// Reads picked or dropped files. Files over a size limit (per kind, or the

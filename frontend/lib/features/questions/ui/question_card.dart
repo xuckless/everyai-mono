@@ -5,6 +5,13 @@ import '../../../core/platform/platform_kind.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/every_icons.dart';
+import '../../attachments/attachment.dart';
+import '../../attachments/attachment_input.dart';
+import '../../attachments/ui/attachment_tray.dart';
+import '../../models/domain/model_catalog.dart';
+
+import 'package:file_selector/file_selector.dart' show XFile;
+
 import '../domain/questions.dart';
 
 /// A question card, shared by Code's `ask_user_question` and Chat's
@@ -20,6 +27,10 @@ class QuestionCard extends StatefulWidget {
     this.enabled = true,
     this.closedLabel = 'Answered in chat',
     this.reply,
+    this.onSubmitWithFiles,
+    this.attachKinds,
+    this.model,
+    this.pickFiles = pickAttachmentFiles,
   });
 
   final List<Question> questions;
@@ -35,6 +46,17 @@ class QuestionCard extends StatefulWidget {
   /// What the user wrote instead of picking options, for the answered summary.
   final String? reply;
 
+  /// Set, the "Other" field gets an attach button and a submit goes here with the
+  /// files instead of to [onSubmit]. False means it didn't go through: the card opens again.
+  final Future<bool> Function(List<QuestionAnswer>, List<Attachment>)? onSubmitWithFiles;
+
+  /// What the picker offers (null = any file) and the model the files go to, for the blind-model hint.
+  final Set<AttachmentKind>? attachKinds;
+  final ModelSpec? model;
+
+  /// Opens the file picker (a test injects its own).
+  final Future<List<XFile>> Function({Set<AttachmentKind>? allowed}) pickFiles;
+
   @override
   State<QuestionCard> createState() => _QuestionCardState();
 }
@@ -46,6 +68,7 @@ class _QuestionCardState extends State<QuestionCard> {
   final _focus = FocusNode(debugLabel: 'question card');
   int _page = 0;
   bool _sent = false;
+  final _files = <Attachment>[];
 
   @override
   void dispose() {
@@ -111,7 +134,27 @@ class _QuestionCardState extends State<QuestionCard> {
       return;
     }
     setState(() => _sent = true);
+    if (widget.onSubmitWithFiles case final submit?) {
+      submit(_answers, List.unmodifiable(_files)).then((ok) {
+        if (!ok && mounted) setState(() => _sent = false);
+      });
+      return;
+    }
     widget.onSubmit(_answers);
+  }
+
+  Future<void> _attach() async {
+    final picked = await widget.pickFiles(allowed: widget.attachKinds);
+    if (!mounted) return;
+    final added = await readPicked(
+      picked,
+      alreadyBytes: _files.fold(0, (sum, a) => sum + a.size),
+      kinds: widget.attachKinds,
+      onMessage: (message) {
+        if (mounted) showAdaptiveToast(context, message);
+      },
+    );
+    if (mounted && added.isNotEmpty) setState(() => _files.addAll(added));
   }
 
   Map<ShortcutActivator, VoidCallback> get _shortcuts => {
@@ -221,9 +264,18 @@ class _QuestionCardState extends State<QuestionCard> {
                     onPick: (oi) => _pick(page, oi),
                     onOther: (t) => _typeOther(page, t),
                     onOtherSubmitted: _advance,
+                    onAttach: widget.onSubmitWithFiles == null ? null : _attach,
                   ),
                 ),
               ),
+              if (_files.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                AttachmentTray(
+                  attachments: _files,
+                  model: widget.model,
+                  onRemove: (a) => setState(() => _files.remove(a)),
+                ),
+              ],
               const SizedBox(height: 12),
               Row(
                 children: [
@@ -282,6 +334,7 @@ class _QuestionPage extends StatelessWidget {
     required this.onPick,
     required this.onOther,
     required this.onOtherSubmitted,
+    this.onAttach,
   });
 
   final Question question;
@@ -293,6 +346,7 @@ class _QuestionPage extends StatelessWidget {
   final ValueChanged<int> onPick;
   final ValueChanged<String> onOther;
   final VoidCallback onOtherSubmitted;
+  final VoidCallback? onAttach;
 
   @override
   Widget build(BuildContext context) {
@@ -330,6 +384,7 @@ class _QuestionPage extends StatelessWidget {
           enabled: enabled,
           onChanged: onOther,
           onSubmitted: onOtherSubmitted,
+          onAttach: enabled ? onAttach : null,
         ),
       ],
     );
@@ -521,8 +576,10 @@ class _OtherRow extends StatelessWidget {
     required this.enabled,
     required this.onChanged,
     required this.onSubmitted,
+    this.onAttach,
   });
 
+  final VoidCallback? onAttach;
   final TextEditingController controller;
   final FocusNode focusNode;
   final VoidCallback onSubmitted;
@@ -567,6 +624,13 @@ class _OtherRow extends StatelessWidget {
               ),
             ),
           ),
+          if (onAttach != null)
+            AdaptiveIconButton(
+              icon: EveryIcon.attach,
+              tooltip: 'Attach files',
+              color: theme.textMuted,
+              onPressed: onAttach,
+            ),
         ],
       ),
     );

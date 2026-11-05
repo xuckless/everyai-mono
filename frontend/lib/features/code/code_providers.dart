@@ -5380,23 +5380,45 @@ final class CodeSessionController extends Notifier<CodeSessionState>
 
   /// Sends the card's answers: as the held call's result when the server is
   /// holding it, else as a new user message.
-  Future<void> answer(QuestionItem item, List<QuestionAnswer> answers) async {
-    if (_localAsks.containsKey(item.call.id)) return _settleLocalAsk(item.call.id, answers);
-    if (_hostFor(item.call.id) case final wait?) {
-      _answerHost(wait, answersReason(item.questions, answers));
-      _builder.settleLocal(item.call.id, answers);
-      state = state.copyWith(transcript: _builder.snapshot);
-      return;
+  ///
+  /// [files] ride as a trailing `[Attached: …]` note after the answers (saved into the project like a
+  /// message's attachments); pictures go as images only in a user message. The app's own cards ignore
+  /// them. False when the files couldn't be saved: the card stays open.
+  Future<bool> answer(QuestionItem item, List<QuestionAnswer> answers, {List<Attachment> files = const []}) async {
+    final id = item.call.id;
+    if (_localAsks.containsKey(id)) {
+      _settleLocalAsk(id, answers);
+      return true;
     }
-    if (item.call.id.startsWith('bugask-')) return _answerBugAsk(item, answers);
+    final host = _hostFor(id);
     final session = _session;
-    if (session == null) return;
-    if (item.call.id.startsWith('doom-')) return _answerDoomLoop(item, answers);
-    if (_isHeld(item.call)) {
-      await _replyInCall(session, answersReason(item.questions, answers));
-    } else {
-      await session.send(_noted(answersMessage(item.questions, answers)));
+    final own = id.startsWith('bugask-') || id.startsWith('doom-');
+    final held = !own && host == null && _isHeld(item.call);
+    // Held calls and host waits take text only; the rest is a user message.
+    final base = host != null || held
+        ? answersReason(item.questions, answers)
+        : answersMessage(item.questions, answers);
+    final out = files.isEmpty || own ? Outgoing(base) : await _outgoing(base, files);
+    if (out == null) return false;
+    if (host != null) {
+      _answerHost(host, out.text);
+      _builder.settleLocal(id, answers);
+      state = state.copyWith(transcript: _builder.snapshot);
+      return true;
     }
+    if (id.startsWith('bugask-')) {
+      await _answerBugAsk(item, answers);
+      return true;
+    }
+    if (session == null) return true;
+    if (id.startsWith('doom-')) {
+      await _answerDoomLoop(item, answers);
+    } else if (held) {
+      await _replyInCall(session, out.text);
+    } else {
+      await session.send(_noted(out.text), images: out.images);
+    }
+    return true;
   }
 
   bool _isHeld(ActionCall call) => state.transcript.held.any((c) => c.id == call.id);
