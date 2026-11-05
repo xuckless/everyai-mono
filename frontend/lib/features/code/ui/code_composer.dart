@@ -65,6 +65,7 @@ class CodeComposer extends ConsumerStatefulWidget {
     this.onNativeBypass,
     this.harnessLabel = '',
     this.sessionId,
+    this.prefill,
   });
 
   final bool busy;
@@ -136,6 +137,9 @@ class CodeComposer extends ConsumerStatefulWidget {
   /// The open session: text other views send its way ([composerInsertProvider]) lands at the caret.
   final String? sessionId;
 
+  /// Text to put in the box (from a link); a new [seq] replaces what is there. Never sent for the user.
+  final ({String text, int seq})? prefill;
+
   @override
   ConsumerState<CodeComposer> createState() => _CodeComposerState();
 }
@@ -150,6 +154,7 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
   void initState() {
     super.initState();
     _slash.project = widget.project;
+    if (widget.prefill case final p?) _setDraft(p.text);
     _controller.addListener(() {
       _slash.update(_controller.value, _commands);
       setState(() {});
@@ -165,8 +170,18 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
   void didUpdateWidget(CodeComposer old) {
     super.didUpdateWidget(old);
     _slash.project = widget.project;
+    if (widget.prefill case final p? when p.seq != old.prefill?.seq) _setDraft(p.text);
     // The harness listed its commands again while the menu may be open.
     if (!identical(old.commands, widget.commands)) _slash.update(_controller.value, _commands);
+  }
+
+  /// Puts a link's prompt in the box, after anything already typed there.
+  void _setDraft(String text) {
+    if (_controller.text.trim().isNotEmpty) text = '${_controller.text.trimRight()}\n\n$text';
+    _controller.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
   }
 
   @override
@@ -244,22 +259,14 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
 
   /// Any file can go to the agent: it is saved into the project.
   Future<void> _add(List<XFile> picked) async {
-    final kinds = widget.attachKinds;
-    final read = await readAttachments(
+    final added = await readPicked(
       picked,
       alreadyBytes: _files.fold(0, (sum, a) => sum + a.size),
-      shrinkImages: kinds != null,
-      onError: (message) {
+      kinds: widget.attachKinds,
+      onMessage: (message) {
         if (mounted) showAdaptiveToast(context, message);
       },
     );
-    final added = [
-      for (final a in read)
-        if (kinds == null || kinds.contains(a.kind)) a,
-    ];
-    if (added.length < read.length && mounted) {
-      showAdaptiveToast(context, 'Only pictures and text files can be sent here.');
-    }
     if (!mounted || added.isEmpty) return;
     setState(() => _files.addAll(added));
     _focus.requestFocus();

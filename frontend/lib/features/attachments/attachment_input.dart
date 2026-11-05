@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
@@ -26,6 +28,28 @@ Future<List<XFile>> pickAttachmentFiles({Set<AttachmentKind>? allowed}) {
         const XTypeGroup(label: 'Audio', extensions: audioExtensions, uniformTypeIdentifiers: ['public.audio']),
     ],
   );
+}
+
+/// Reads picked files for a composer or card and keeps the kinds in [kinds]
+/// (null = any). Reports read errors and dropped kinds through [onMessage].
+Future<List<Attachment>> readPicked(
+  Iterable<XFile> picked, {
+  required int alreadyBytes,
+  required Set<AttachmentKind>? kinds,
+  required void Function(String message) onMessage,
+}) async {
+  final read = await readAttachments(
+    picked,
+    alreadyBytes: alreadyBytes,
+    shrinkImages: kinds != null,
+    onError: onMessage,
+  );
+  final added = [
+    for (final a in read)
+      if (kinds == null || kinds.contains(a.kind)) a,
+  ];
+  if (added.length < read.length) onMessage('Only pictures and text files can be sent here.');
+  return added;
 }
 
 String _extOf(String name) => name.contains('.') ? name.substring(name.lastIndexOf('.') + 1).toLowerCase() : '';
@@ -112,34 +136,76 @@ Future<List<XFile>> clipboardFiles({
 
 Future<String?> _clipboardText() async => (await Clipboard.getData(Clipboard.kTextPlain))?.text;
 
+/// Text pasted past this size becomes a `pasted-N.txt` attachment instead of filling the field. Bigger than the text
+/// attachment limit it still does, so the size error shows and the field stays usable.
+const pasteAttachThreshold = 32 * 1024;
+
+/// The file for a paste of [text], or null when it should go into the field (short, or empty).
+XFile? pastedTextFile(String? text, String Function() nextName) {
+  // 3 bytes per UTF-16 unit is the most it can take: cheap check before encoding.
+  if (text == null || text.length * 3 <= pasteAttachThreshold) return null;
+  final bytes = utf8.encode(text);
+  if (bytes.length <= pasteAttachThreshold) return null;
+  final name = nextName();
+  return XFile.fromData(Uint8List.fromList(bytes), name: name, path: name, mimeType: 'text/plain');
+}
+
 /// Takes over paste (Cmd/Ctrl+V and the Edit menu) in the text field below it: files and images on the clipboard
-/// become attachments, anything else pastes as text as before.
+/// become attachments, as does very long text when [attachLongText]; anything else pastes as text as before. The
+/// field's own context menu and toolbar paste bypass this (known gap).
 class _PasteAction extends Action<PasteTextIntent> {
-  _PasteAction(this.onFiles);
+  _PasteAction(this.onFiles, this.nextTextName, this.attachLongText, this.readFiles, this.readText);
 
   final ValueChanged<List<XFile>> onFiles;
+
+  /// The file name for the next pasted text (the drop zone numbers them).
+  final String Function() nextTextName;
+  final bool attachLongText;
+  final Future<List<XFile>> Function()? readFiles;
+  final Future<String?> Function()? readText;
 
   @override
   Future<void> invoke(PasteTextIntent intent) async {
     // The text field's own paste action is only set while invoke runs synchronously; take it before awaiting.
     final textPaste = callingAction;
-    final files = await clipboardFiles();
+    final files = await (readFiles ?? clipboardFiles)();
     if (files.isNotEmpty) {
       onFiles(files);
-    } else {
-      textPaste?.invoke(intent);
+      return;
     }
+    if (attachLongText) {
+      try {
+        if (pastedTextFile(await (readText ?? _clipboardText)(), nextTextName) case final file?) {
+          onFiles([file]);
+          return;
+        }
+      } catch (_) {}
+    }
+    textPaste?.invoke(intent);
   }
 }
 
 /// Accepts files dragged onto [child], highlighting it while they hover, and files or images pasted into a text
 /// field inside it.
 class AttachmentDropZone extends StatefulWidget {
-  const AttachmentDropZone({super.key, required this.onFiles, required this.child, this.enabled = true});
+  const AttachmentDropZone({
+    super.key,
+    required this.onFiles,
+    required this.child,
+    this.enabled = true,
+    this.attachLongText = true,
+    @visibleForTesting this.readFiles,
+    @visibleForTesting this.readText,
+  });
 
   final ValueChanged<List<XFile>> onFiles;
   final Widget child;
   final bool enabled;
+
+  /// Whether a very long text paste becomes an attachment. Off where the composer can't send attachments.
+  final bool attachLongText;
+  final Future<List<XFile>> Function()? readFiles;
+  final Future<String?> Function()? readText;
 
   @override
   State<AttachmentDropZone> createState() => _AttachmentDropZoneState();
@@ -147,6 +213,7 @@ class AttachmentDropZone extends StatefulWidget {
 
 class _AttachmentDropZoneState extends State<AttachmentDropZone> {
   bool _hovering = false;
+  int _pastes = 0;
 
   @override
   Widget build(BuildContext context) {
@@ -159,7 +226,16 @@ class _AttachmentDropZoneState extends State<AttachmentDropZone> {
         if (details.files.isNotEmpty) widget.onFiles(details.files);
       },
       child: Actions(
-        actions: {if (widget.enabled) PasteTextIntent: _PasteAction(widget.onFiles)},
+        actions: {
+          if (widget.enabled)
+            PasteTextIntent: _PasteAction(
+              widget.onFiles,
+              () => 'pasted-${++_pastes}.txt',
+              widget.attachLongText,
+              widget.readFiles,
+              widget.readText,
+            ),
+        },
         child: AnimatedOpacity(
           duration: const Duration(milliseconds: 120),
           opacity: _hovering ? 0.7 : 1,

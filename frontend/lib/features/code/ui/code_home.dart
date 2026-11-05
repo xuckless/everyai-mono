@@ -7,6 +7,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../app/router.dart';
+import '../../../core/links/app_link.dart';
+import '../../../core/links/link_providers.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/adaptive_page.dart';
@@ -59,6 +61,24 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
   /// A spending cap for the new session (dollars), or null for none.
   double? _budget;
   bool _starting = false;
+
+  /// A prompt from an everyai:// link, put in the box for the user to review.
+  ({String text, int seq})? _prefill;
+
+  /// Takes a pending link prompt: the project it names (else the one showing) and its text. Never starts a session.
+  void _takeLinkPrompt() {
+    final link = mounted ? ref.read(pendingPromptProvider.notifier).take() : null;
+    if (link == null) return;
+    final named = ref.read(codeProjectsProvider).where((p) => p.id == link.projectId).firstOrNull;
+    setState(() {
+      if (named != null) {
+        _projectId = named.id;
+        _picked = null;
+      }
+      _prefill = (text: link.text, seq: (_prefill?.seq ?? 0) + 1);
+    });
+    showAdaptiveToast(context, 'From a link. Review before you send.');
+  }
 
   /// The earlier session being picked up (`harness|id`), while its history is read.
   String? _resuming;
@@ -170,6 +190,10 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
     final project = projects.where((p) => p.id == _projectId).firstOrNull ?? projects.firstOrNull;
     final mode = _modeFor(project?.id);
     final lead = project == null || isDemoPath(project.path) ? everyaiHarnessName : ref.watch(codeLeadProvider).harness;
+    // The box only exists once there is a project; a link waits until then.
+    if (project != null && ref.watch(pendingPromptProvider)?.mode == PromptTarget.code) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _takeLinkPrompt());
+    }
     final earlier = project == null ? const <EarlierSession>[] : ref.watch(earlierSessionsProvider(project.id));
 
     return AdaptivePage(
@@ -212,6 +236,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                       ),
                     ),
                   CodeComposer(
+                    prefill: _prefill,
                     project: project.path,
                     slashHost: CodeSlashHost(
                       setMode: (name) => _pickMode(AgentMode.values.byName(name), project.id),
