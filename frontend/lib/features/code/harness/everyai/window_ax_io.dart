@@ -12,10 +12,15 @@ const axMaxChars = 8000;
 
 const _permissionNote =
     'Accessibility data off: allow EveryAI under System Settings > Privacy & Security > Accessibility.';
+const _automationNote =
+    'Accessibility data off: allow EveryAI to control System Events under System Settings > Privacy & Security > Automation.';
 const _unavailableNote = 'Accessibility data not available.';
 
 /// Roles that only group things: dropped when they have no label or value, their children stay.
 const _noiseRoles = {'AXGroup', 'AXUnknown', 'AXSplitter', 'AXSplitGroup', 'AXScrollArea'};
+
+/// Our own one-line notes (never app text): [withAx] keeps exactly these outside the untrusted block.
+const axNotes = {_permissionNote, _automationNote, _unavailableNote};
 
 /// Runs a JXA script for the accessibility tree (a fake in tests).
 typedef AxRunner = Future<({int exitCode, String stdout, String stderr})> Function(String script);
@@ -40,6 +45,7 @@ Future<String> windowAxTree(ScreenWindow w, {AxRunner run = osascriptRunner}) as
   try {
     final res = await run(axScript(w));
     if (res.exitCode != 0) {
+      if (RegExp(r'-1743|Not authorized to send Apple events').hasMatch(res.stderr)) return _automationNote;
       return RegExp(r'assistive access|-25211|\b1002\b|-1719').hasMatch(res.stderr)
           ? _permissionNote
           : _unavailableNote;
@@ -66,45 +72,51 @@ var se = Application("System Events");
 var procs = se.processes.whose({unixId: q.pid})();
 var wins = procs[0].windows();
 var win = wins.filter(function (x) { try { return x.title() === q.title && x.size()[0] === q.w && x.size()[1] === q.h; } catch (e) { return false; } })[0]
-  || wins.filter(function (x) { try { return x.size()[0] === q.w && x.size()[1] === q.h; } catch (e) { return false; } })[0] || wins[0];
+  || wins.filter(function (x) { try { return x.size()[0] === q.w && x.size()[1] === q.h; } catch (e) { return false; } })[0];
+if (!win) throw new Error("no matching window");
 var t0 = Date.now();
 function get(f) { try { return f(); } catch (e) { return []; } }
 function str(s) { return s == null ? "" : String(s).slice(0, 120); }
 var nodes = [];
-var queue = [[win, 0]];
-while (queue.length && nodes.length < $axMaxNodes && Date.now() - t0 < 6000) {
-  var item = queue.shift(), el = item[0], d = item[1];
-  if (d >= $axMaxDepth) continue;
+var stack = [];
+function expand(el, d) {
+  if (d >= $axMaxDepth) return;
   var kids = get(function () { return el.uiElements(); });
-  if (!kids.length) continue;
+  if (!kids.length) return;
   var roles = get(function () { return el.uiElements.role(); });
+  var subs = get(function () { return el.uiElements.subrole(); });
   var titles = get(function () { return el.uiElements.title(); });
   var descs = get(function () { return el.uiElements.description(); });
   var vals = get(function () { return el.uiElements.value(); });
   var pos = get(function () { return el.uiElements.position(); });
   var sizes = get(function () { return el.uiElements.size(); });
-  for (var i = 0; i < kids.length && nodes.length < $axMaxNodes; i++) {
+  for (var i = kids.length - 1; i >= 0; i--) {
     var role = str(roles[i]);
-    var v = role === "AXSecureTextField" ? "" : str(vals[i]);
+    var secure = role === "AXSecureTextField" || str(subs[i]) === "AXSecureTextField";
     var p = pos[i] || [0, 0], s = sizes[i] || [0, 0];
-    nodes.push({d: d, role: role, label: str(titles[i]) || str(descs[i]), value: v, x: p[0], y: p[1], w: s[0], h: s[1]});
-    queue.push([kids[i], d + 1]);
+    stack.push([kids[i], d, {d: d, role: role, label: str(titles[i]) || str(descs[i]), value: secure ? "" : str(vals[i]), secure: secure, x: p[0], y: p[1], w: s[0], h: s[1]}]);
   }
+}
+expand(win, 0);
+while (stack.length && nodes.length < $axMaxNodes && Date.now() - t0 < 6000) {
+  var item = stack.pop();
+  nodes.push(item[2]);
+  expand(item[0], item[1] + 1);
 }
 var wp = get(function () { return win.position(); });
 JSON.stringify({x: wp[0] || 0, y: wp[1] || 0, nodes: nodes});''';
 }
 
 /// Indented lines `Role "label" value="..." [x,y wxh]` for [nodes] (maps with d, role, label, value, x, y, w, h;
-/// breadth-first order is regrouped under their parents by the caller's depth only, so lines keep script order).
+/// depth-first pre-order, so each line sits under its real parent).
 /// Coordinates are relative to the window origin. Secure fields never show a value. Cut at [axMaxChars].
 String formatAxTree(List<Map<Object?, Object?>> nodes, {int originX = 0, int originY = 0}) {
   final out = StringBuffer();
   var length = 0;
   for (final n in nodes) {
-    final role = (n['role'] as String? ?? '').replaceFirst('AX', '');
+    final role = (n['role'] as String? ?? '').replaceAll('\n', ' ').replaceFirst('AX', '');
     final label = (n['label'] as String? ?? '').replaceAll('\n', ' ');
-    final secure = n['role'] == 'AXSecureTextField';
+    final secure = n['role'] == 'AXSecureTextField' || n['secure'] == true;
     final value = secure ? '' : (n['value'] as String? ?? '').replaceAll('\n', ' ');
     if (label.isEmpty && value.isEmpty && _noiseRoles.contains(n['role'])) continue;
     int num0(String k) => (n[k] as num?)?.toInt() ?? 0;

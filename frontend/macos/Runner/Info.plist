@@ -40,5 +40,7 @@
 	<string>cZ6H/Jhi7RyDULxBkpQv6GXNPPcpiGxGAXgdV2s1uc4=  </string>
 	<key>SUScheduledCheckInterval</key>
 	<integer>86400</integer>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>EveryAI reads the window of an app it is testing (its buttons and labels) so the coding agent can see it.</string>
 </dict>
 </plist>

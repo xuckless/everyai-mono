@@ -240,7 +240,7 @@ String browserErrorText(String action, String message, List<String> log) {
 /// [text] with the window's accessibility tree [ax] after it, in an untrusted block (labels are the app's text).
 /// A note instead of a tree (permission off) is our own line and stays outside the block.
 String withAx(String text, String ax) {
-  final isNote = ax.startsWith('Accessibility data ');
+  final isNote = axNotes.contains(ax);
   return '$text\n\nWindow accessibility tree:\n${isNote ? ax : untrusted(ax, source: 'window accessibility')}';
 }
 
@@ -259,8 +259,10 @@ Future<ToolOutput> captureFor(
   if (await captureWindow(w.id, path) case final problem?) return ToolOutput('Error: $problem', isError: true);
   final label = windowLabel(w);
   final more = others > 0 ? ' $others other window(s) of this session\'s apps; pick with app.' : '';
-  final url = await _pngDataUrl(File(path).readAsBytesSync());
-  final tree = Platform.isMacOS ? await ax(w) : null;
+  final (url, tree) = await (
+    _pngDataUrl(File(path).readAsBytesSync()),
+    Platform.isMacOS ? ax(w) : Future<String?>.value(),
+  ).wait;
   String text(String t) => tree == null ? t : withAx(t, tree);
   if (!vision || url == null) {
     return ToolOutput(text('Saved a screenshot of $label to $path (this model can\'t view images).$more'));
