@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:every_ai/features/code/drivers/driver_process_io.dart';
+import 'package:every_ai/features/code/harness/everyai/shell_io.dart' show killTree;
 import 'package:flutter_test/flutter_test.dart';
 
 /// Plain pipes stand in for the pty (flutter_pty's library isn't loaded
@@ -85,5 +86,55 @@ while IFS= read -r line; do printf '%s\n' "$line"; done
     await p.close();
     expect(utf8.decode(log.readAsBytesSync(), allowMalformed: true), contains('os error 6)\nnot logged in'));
     expect(File('${tmp.path}/s/tty.log').readAsStringSync(), 'terminal noise\n');
+  });
+
+  group('close after the CLI exited leaves its pid alone (it may be reused)', () {
+    late List<int> killed;
+    setUp(() {
+      killed = [];
+      killDriverTree = (pid) async => killed.add(pid);
+    });
+    tearDown(() => killDriverTree = killTree);
+
+    test('piped driver', () async {
+      final p = await spawnDriver(
+        executable: '/bin/sh',
+        args: ['-c', 'exit 0'],
+        cwd: tmp.path,
+        sessionTag: 'exited-pipe',
+        logPath: '${tmp.path}/s/driver.log',
+      );
+      await p.exitCode;
+      await p.close();
+      expect(killed, isEmpty);
+    });
+
+    test('tty driver', () async {
+      final p = await spawnDriverTty(
+        executable: '/bin/sh',
+        args: const [],
+        cwd: tmp.path,
+        sessionTag: 'exited-tty',
+        logPath: '${tmp.path}/s/stderr.log',
+        start: (exe, args, cwd, env) => _piped('/bin/sh', ['-c', 'exit 0'], cwd, env),
+      );
+      await p.exitCode;
+      await p.close();
+      expect(killed, isEmpty);
+    });
+
+    test('a running driver is still ended', () async {
+      final p = await spawnDriver(
+        executable: '/bin/sh',
+        args: ['-c', 'read x'],
+        cwd: tmp.path,
+        sessionTag: 'running-pipe',
+        logPath: '${tmp.path}/s/driver.log',
+      );
+      await p.close();
+      expect(killed, [p.pid]);
+      await killTree(p.pid);
+      await p.exitCode;
+    });
   });
 }

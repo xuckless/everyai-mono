@@ -11,6 +11,11 @@ Future<List<SessionProcess>> listSessionProcesses({
   Set<int> agentRoots = const {},
   Set<int> terminalShells = const {},
 }) async {
+  // Windows lists processes through a PowerShell start (about a second of
+  // CPU), and finds only what is under a known root there: none, no scan.
+  if (Platform.isWindows && agentRoots.isEmpty && terminalShells.isEmpty && driverRootsOf(tag).isEmpty) {
+    return const [];
+  }
   final found = await findSessionProcesses(tag: tag, workingDir: workingDir, ownsDir: ownsDir);
   if (found == null) return const [];
   final (table, agent) = found;

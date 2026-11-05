@@ -24,6 +24,7 @@ import '../../drivers/briefing/briefing_types.dart' show everyaiServerName;
 import '../../drivers/usage_limit.dart';
 import '../../git/git_service_io.dart' show runGit;
 import 'browser_io.dart';
+import 'git_bash.dart' show findGitBash;
 import 'llm.dart';
 import 'package_registry_io.dart';
 import 'mcp_io.dart';
@@ -36,6 +37,9 @@ import 'script_io.dart';
 import 'shell_io.dart';
 import 'tools_io.dart';
 import 'untrusted_tools.dart' show skillFolders;
+
+/// True on Windows when Git Bash isn't installed, so commands can't run.
+bool gitBashMissing() => Platform.isWindows && findGitBash(Platform.environment, (f) => File(f).existsSync()) == null;
 
 /// The EveryAI harness: the agent loop runs here, in the app, against the
 /// gateway. It speaks the same events as the agent-server (the transcript,

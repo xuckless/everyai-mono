@@ -4,6 +4,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_pty/flutter_pty.dart';
 
 import '../harness/everyai/shell_io.dart' show ShellEnv, killTree;
@@ -33,6 +34,10 @@ Future<DriverProcess> spawnDriver({
 }
 
 final _live = <DriverProcess>{};
+
+/// Ends a driver process's tree on close; tests watch it.
+@visibleForTesting
+Future<void> Function(int pid) killDriverTree = killTree;
 
 Future<void> closeAllDriverProcesses() => Future.wait([for (final p in _live.toList()) p.close()]);
 
@@ -68,6 +73,10 @@ Future<DriverProcess> spawnDriverTty({
   Map<String, String> env = const {},
   TtyStart start = _ptyStart,
 }) async {
+  // Not reached on Windows: the only caller is the ACP fallback for a CLI that
+  // fails opening /dev/tty (Grok's ENXIO), which Windows doesn't have. The
+  // pipes below (mkfifo, /bin/sh) have no cheap Windows equivalent, and
+  // ConPTY rewrites output, so JSON can't go over the terminal itself.
   if (Platform.isWindows) {
     throw const HarnessError("This agent needs a terminal, which the app can't give it on Windows.");
   }
@@ -266,7 +275,8 @@ final class _TtyProcess implements DriverProcess {
     _closed = true;
     _live.remove(this);
     unregisterDriverRoot(_tag, pid);
-    await killTree(pid);
+    // Not once it has exited: its pid may be another program's by now.
+    if (!_exited) await killDriverTree(pid);
     await _unblock();
     await _release();
   }
@@ -329,7 +339,8 @@ final class _Process implements DriverProcess {
     _closed = true;
     _live.remove(this);
     unregisterDriverRoot(_tag, pid);
-    await killTree(pid);
+    // Not once it has exited: its pid may be another program's by now.
+    if (!_exited) await killDriverTree(pid);
   }
 }
 
