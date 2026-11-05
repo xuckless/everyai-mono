@@ -50,6 +50,55 @@ void main() {
       expect(controller.text, 'hello');
     }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
+    for (final c in [
+      (name: '40 KiB becomes an attachment', size: 40 * 1024, attached: 1),
+      (name: 'exactly 32 KiB pastes as text', size: 32 * 1024, attached: 0),
+      (name: 'a short paste stays text', size: 10, attached: 0),
+      (name: 'over 256 KiB pastes as text', size: 300 * 1024, attached: 0),
+    ]) {
+      testWidgets('long paste: ${c.name}', (tester) async {
+        final text = 'a' * c.size;
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+          if (call.method == 'Clipboard.getData') return {'text': text};
+          if (call.method == 'Clipboard.hasStrings') return {'value': true};
+          return null;
+        });
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null),
+        );
+        final controller = TextEditingController();
+        final got = <XFile>[];
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: AttachmentDropZone(
+                onFiles: got.addAll,
+                child: TextField(controller: controller, autofocus: true),
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+        for (var i = 0; i < (c.attached == 1 ? 2 : 1); i++) {
+          await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
+          await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+          await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
+          await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 200)));
+          await tester.pumpAndSettle();
+        }
+        if (c.attached == 1) {
+          expect([for (final f in got) f.name], ['pasted-1.txt', 'pasted-2.txt']);
+          expect(controller.text, isEmpty);
+          final read = await tester.runAsync(() => readAttachments(got.take(1), onError: (_) {}));
+          expect(read!.single.kind, AttachmentKind.text);
+          expect(read.single.bytes.length, c.size);
+        } else {
+          expect(got, isEmpty);
+          expect(controller.text.length, c.size);
+        }
+      }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+    }
+
     test('files on the clipboard win over an image', () async {
       final files = await clipboardFiles(
         readFiles: () async => ['/tmp/a.pdf', 'content://x/1'],

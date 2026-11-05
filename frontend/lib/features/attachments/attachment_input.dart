@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
@@ -112,12 +114,19 @@ Future<List<XFile>> clipboardFiles({
 
 Future<String?> _clipboardText() async => (await Clipboard.getData(Clipboard.kTextPlain))?.text;
 
+/// Text pasted past this size becomes a `pasted-N.txt` attachment instead of filling the field (up to the text
+/// attachment limit; anything bigger pastes as text).
+const pasteAttachThreshold = 32 * 1024;
+
 /// Takes over paste (Cmd/Ctrl+V and the Edit menu) in the text field below it: files and images on the clipboard
-/// become attachments, anything else pastes as text as before.
+/// become attachments, as does very long text; anything else pastes as text as before.
 class _PasteAction extends Action<PasteTextIntent> {
-  _PasteAction(this.onFiles);
+  _PasteAction(this.onFiles, this.nextTextName);
 
   final ValueChanged<List<XFile>> onFiles;
+
+  /// The file name for the next pasted text (the drop zone numbers them).
+  final String Function() nextTextName;
 
   @override
   Future<void> invoke(PasteTextIntent intent) async {
@@ -126,9 +135,20 @@ class _PasteAction extends Action<PasteTextIntent> {
     final files = await clipboardFiles();
     if (files.isNotEmpty) {
       onFiles(files);
-    } else {
-      textPaste?.invoke(intent);
+      return;
     }
+    try {
+      final text = await _clipboardText();
+      if (text != null && text.length * 3 > pasteAttachThreshold) {
+        final bytes = utf8.encode(text);
+        if (bytes.length > pasteAttachThreshold && bytes.length <= AttachmentKind.text.maxBytes) {
+          final name = nextTextName();
+          onFiles([XFile.fromData(Uint8List.fromList(bytes), name: name, path: name, mimeType: 'text/plain')]);
+          return;
+        }
+      }
+    } catch (_) {}
+    textPaste?.invoke(intent);
   }
 }
 
@@ -147,6 +167,7 @@ class AttachmentDropZone extends StatefulWidget {
 
 class _AttachmentDropZoneState extends State<AttachmentDropZone> {
   bool _hovering = false;
+  int _pastes = 0;
 
   @override
   Widget build(BuildContext context) {
@@ -159,7 +180,7 @@ class _AttachmentDropZoneState extends State<AttachmentDropZone> {
         if (details.files.isNotEmpty) widget.onFiles(details.files);
       },
       child: Actions(
-        actions: {if (widget.enabled) PasteTextIntent: _PasteAction(widget.onFiles)},
+        actions: {if (widget.enabled) PasteTextIntent: _PasteAction(widget.onFiles, () => 'pasted-${++_pastes}.txt')},
         child: AnimatedOpacity(
           duration: const Duration(milliseconds: 120),
           opacity: _hovering ? 0.7 : 1,
