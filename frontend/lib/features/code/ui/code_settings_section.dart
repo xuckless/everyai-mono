@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -21,13 +22,15 @@ import '../code_providers.dart';
 import '../code_settings_providers.dart';
 import '../domain/agent_mode.dart';
 import '../domain/code_session.dart';
-import '../drivers/driver.dart' show DriverStatus;
+import '../drivers/detection/install_commands.dart';
+import '../drivers/driver.dart' show DriverInfo, DriverStatus;
 import '../drivers/driver_registry.dart';
 import '../drivers/registry_install/ui/add_agent_list.dart' show AddAgentEntry;
 import '../permissions_providers.dart';
 import '../settings/setting_defs.dart';
 import '../settings/settings.dart' as files;
 import 'code_slash_host.dart' show switchCodeAgent;
+import 'setup_button.dart';
 
 /// Settings → Code: the layers a session's settings come from (Global, a
 /// project, a session), each as rows of typed controls. Rows a layer doesn't
@@ -551,6 +554,13 @@ final class _Layer {
   final StoredCodeSettings prefs;
 }
 
+/// The install line shown for a missing CLI: the vendor's line for this system, else the driver's own hint (an agent
+/// added by hand).
+String? _installLine(DriverInfo info) {
+  final os = SetupOs.of(defaultTargetPlatform);
+  return (os == null ? null : setupCommandsFor(info.id, os)?.install) ?? info.installHint;
+}
+
 /// Settings → Code → Harnesses: each driver with what was found on this
 /// computer, the consent switch for subscription CLIs, and Refresh.
 class HarnessesSetting extends ConsumerWidget {
@@ -591,10 +601,10 @@ class HarnessesSetting extends ConsumerWidget {
                         _ => 'Checking…',
                       }, style: theme.type.caption.tint(theme.textMuted)),
                       if (statuses.value?[d.info.id] case DriverStatus(installed: false)
-                          when d.info.installHint != null)
+                          when _installLine(d.info) != null)
                         AdaptiveSelectionArea(
                           child: Text(
-                            'To install: ${d.info.installHint}',
+                            'To install: ${_installLine(d.info)}',
                             key: ValueKey('code-settings.harness.${d.info.id}.hint'),
                             style: theme.type.caption.mono.tint(theme.textMuted),
                           ),
@@ -609,7 +619,9 @@ class HarnessesSetting extends ConsumerWidget {
                     ],
                   ),
                 ),
+                SetupButton(driver: d, status: statuses.value?[d.info.id]),
                 if (d.info.needsConsent) ...[
+                  const SizedBox(width: 8),
                   Text('Use my own installed CLI', style: theme.type.caption.tint(theme.textMuted)),
                   const SizedBox(width: 8),
                   AdaptiveSwitch(

@@ -17,6 +17,7 @@ import '../../code/drivers/driver.dart';
 import '../../code/drivers/driver_registry.dart';
 import '../../code/code_settings_providers.dart';
 import '../../code/ui/code_settings_section.dart' show harnessStatusLine;
+import '../../code/ui/setup_button.dart';
 import '../../settings/byok_keys.dart';
 import '../../settings/domain/byok_providers.dart';
 import '../../settings/domain/key_check.dart';
@@ -673,10 +674,12 @@ class _HarnessRow extends StatelessWidget {
               ],
             ),
           ),
-          if (driver.info.needsConsent && ready)
+          SetupButton(driver: driver, status: checking ? null : status),
+          // A subscription CLI is set up only once the user has agreed to use it, so the choice comes first.
+          if (driver.info.needsConsent)
             AdaptiveButton(
               key: ValueKey('onboarding.consent.$id'),
-              label: consented ? 'In use ✓' : 'Use it',
+              label: consented ? 'In use ✓' : (ready ? 'Use it' : 'Allow'),
               emphasis: consented ? ButtonEmphasis.secondary : ButtonEmphasis.primary,
               onPressed: () => onConsent(!consented),
             ),

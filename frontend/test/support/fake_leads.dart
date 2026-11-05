@@ -176,7 +176,9 @@ final class FakeLeadDriver implements HarnessDriver, AttachesBriefed, AttachesWi
   final FakeLeadSession? session;
   final bool needsConsent;
   final String label;
-  final DriverStatus status;
+
+  /// What [detect] answers; a test may change it.
+  DriverStatus status;
   @override
   final Set<DriverCap> caps;
   final specs = <SessionSpec>[];
