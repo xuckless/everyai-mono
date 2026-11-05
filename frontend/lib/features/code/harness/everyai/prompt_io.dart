@@ -145,10 +145,15 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 ''';
   final facts = <String, String>{};
+  // From a file, not `-c`: Git Bash parses a Windows command line again and
+  // would cut the script at its first double quote.
+  Directory? tmp;
   try {
+    tmp = Directory.systemTemp.createTempSync('everyai-env');
+    final file = File('${tmp.path}/probe.sh')..writeAsStringSync(script);
     final res = await Process.run(
       env.shell,
-      ['-c', script],
+      [file.path.replaceAll('\\', '/')],
       // Its git calls are EveryAI's own: nothing the repository defines runs (git_guard.dart).
       environment: await guardedEnv(workingDir, base: env.env),
       workingDirectory: workingDir,
@@ -159,6 +164,12 @@ fi
     }
   } on Object {
     // Without the probe the block still names the folder and shell.
+  } finally {
+    try {
+      tmp?.deleteSync(recursive: true);
+    } on Object {
+      // A leftover temp folder is harmless.
+    }
   }
   return formatEnvironment(workingDir: workingDir, shell: env.shell, facts: facts, today: DateTime.now());
 }

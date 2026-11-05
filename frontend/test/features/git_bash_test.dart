@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:every_ai/features/code/harness/everyai/git_bash.dart';
+import 'package:every_ai/features/code/harness/everyai/prompt_io.dart' show environmentBlock;
 import 'package:every_ai/features/code/harness/everyai/shell_io.dart';
 import 'package:every_ai/features/code/panes/pty_io.dart' show terminalShell;
 import 'package:flutter_test/flutter_test.dart';
@@ -36,18 +37,38 @@ void main() {
 
     test('follows git.exe on PATH from cmd, mingw64\\bin and bin', () {
       expect(
-        find({'PATH': r'C:\Windows;D:\Tools\Git\cmd'}, {r'D:\Tools\Git\cmd\git.exe', r'D:\Tools\Git\bin\bash.exe'}),
+        find(
+          {'PATH': r'C:\Windows;D:\Tools\Git\cmd'},
+          {r'D:\Tools\Git\cmd\git.exe', r'D:\Tools\Git\git-bash.exe', r'D:\Tools\Git\bin\bash.exe'},
+        ),
         r'D:\Tools\Git\bin\bash.exe',
       );
       expect(
         find({'PATH': r'D:\Git\mingw64\bin\'}, {r'D:\Git\mingw64\bin\git.exe', r'D:\Git\bin\bash.exe'}),
         r'D:\Git\bin\bash.exe',
       );
-      expect(find({'PATH': r'D:\Git\bin'}, {r'D:\Git\bin\git.exe', r'D:\Git\bin\bash.exe'}), r'D:\Git\bin\bash.exe');
+      expect(
+        find({'PATH': r'D:\Git\bin'}, {r'D:\Git\bin\git.exe', r'D:\Git\mingw64\bin\git.exe', r'D:\Git\bin\bash.exe'}),
+        r'D:\Git\bin\bash.exe',
+      );
+    });
+
+    test('a Cygwin git on PATH falls through to Git for Windows', () {
+      expect(
+        find(
+          {'PATH': r'C:\cygwin64\bin', 'ProgramFiles': r'C:\Program Files'},
+          {r'C:\cygwin64\bin\git.exe', r'C:\cygwin64\bin\bash.exe', r'C:\Program Files\Git\bin\bash.exe'},
+        ),
+        r'C:\Program Files\Git\bin\bash.exe',
+      );
+      expect(find({'PATH': r'C:\cygwin64\bin'}, {r'C:\cygwin64\bin\git.exe', r'C:\cygwin64\bin\bash.exe'}), isNull);
     });
 
     test('matches env keys in any case', () {
-      expect(find({'Path': r'E:\Git\cmd'}, {r'E:\Git\cmd\git.exe', r'E:\Git\bin\bash.exe'}), r'E:\Git\bin\bash.exe');
+      expect(
+        find({'Path': r'E:\Git\cmd'}, {r'E:\Git\cmd\git.exe', r'E:\Git\git-bash.exe', r'E:\Git\bin\bash.exe'}),
+        r'E:\Git\bin\bash.exe',
+      );
       expect(find({'PROGRAMFILES': r'C:\PF'}, {r'C:\PF\Git\bin\bash.exe'}), r'C:\PF\Git\bin\bash.exe');
     });
 
@@ -132,6 +153,22 @@ void main() {
       final long = 'x' * 40000;
       final res = await shell.run("printf '%s' '$long' | wc -c", timeout: const Duration(seconds: 20));
       expect(res.output.trim(), '40000');
+    });
+
+    test('the environment probe runs from a file and reports the machine', () async {
+      final block = await environmentBlock(tmp.path);
+      expect(block, contains('Platform: ${Process.runSync('uname', ['-sr']).stdout.toString().trim()};'));
+    });
+
+    test('parallel commands in one clock tick each run their own script', () async {
+      final tick = DateTime(2026);
+      final shell = SessionShell(root: tmp.path, sessionTag: 't', scratchDir: '${tmp.path}/.sh', clock: () => tick);
+      final results = await Future.wait([
+        for (var i = 0; i < 8; i++) shell.run('echo cmd$i; exit $i', timeout: const Duration(seconds: 20)),
+      ]);
+      for (var i = 0; i < 8; i++) {
+        expect((results[i].output.trim(), results[i].exitCode), ('cmd$i', i));
+      }
     });
   });
 

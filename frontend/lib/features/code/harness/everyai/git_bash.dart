@@ -15,7 +15,8 @@ final gitBashMissingProvider = Provider<bool>((ref) => gitBashMissing());
 
 /// Git for Windows' `bin\bash.exe`, or null. That one is a launcher that
 /// puts Git's coreutils on PATH; `usr\bin\bash.exe` alone doesn't. First the
-/// Git on PATH (`Git\cmd`, `Git\bin` or `Git\mingw64\bin` holds git.exe),
+/// Git on PATH (`Git\cmd`, `Git\bin` or `Git\mingw64\bin` holds git.exe;
+/// not Cygwin's, whose `pwd` has no `-W`),
 /// then the usual install folders (all users, per user, Scoop). Never the
 /// WSL launchers in System32 or WindowsApps. [env] keys match in any case.
 String? findGitBash(Map<String, String> env, bool Function(String file) exists) {
@@ -38,13 +39,14 @@ String? findGitBash(Map<String, String> env, bool Function(String file) exists) 
     return f.startsWith('${strip(systemRoot)}\\') || f.contains('\\windowsapps\\');
   }
 
+  // A Git for Windows top folder has git-bash.exe (full and portable) or
+  // mingw64\bin\git.exe; Cygwin's bin (git.exe next to bash.exe) has neither.
+  bool gitForWindows(String top) => exists('$top\\git-bash.exe') || exists('$top\\mingw64\\bin\\git.exe');
   final candidates = [
     for (final raw in (get('PATH') ?? '').split(';'))
-      if (raw.trim().replaceAll('"', '') case final dir when dir.isNotEmpty && exists('${strip(dir)}\\git.exe')) ...[
-        '${strip(dir)}\\bash.exe',
-        '${parent(dir)}\\bin\\bash.exe',
-        '${parent(parent(dir))}\\bin\\bash.exe',
-      ],
+      if (raw.trim().replaceAll('"', '') case final dir when dir.isNotEmpty && exists('${strip(dir)}\\git.exe'))
+        for (final top in [parent(dir), parent(parent(dir))])
+          if (gitForWindows(top)) '$top\\bin\\bash.exe',
     for (final root in ['ProgramW6432', 'ProgramFiles', 'ProgramFiles(x86)'])
       if (get(root) case final r?) '${strip(r)}\\Git\\bin\\bash.exe',
     if (get('LOCALAPPDATA') case final l?) '${strip(l)}\\Programs\\Git\\bin\\bash.exe',

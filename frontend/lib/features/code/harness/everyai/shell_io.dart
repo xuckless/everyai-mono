@@ -219,7 +219,12 @@ final class CommandResult {
 /// the directory the previous one ended in (so `cd` carries over), tagged
 /// with the session so Stop can find leftovers.
 final class SessionShell {
-  SessionShell({required this.root, required this.sessionTag, required this.scratchDir}) : cwd = root;
+  SessionShell({
+    required this.root,
+    required this.sessionTag,
+    required this.scratchDir,
+    @visibleForTesting this.clock = DateTime.now,
+  }) : cwd = root;
 
   final String root;
   final String sessionTag;
@@ -230,6 +235,12 @@ final class SessionShell {
 
   final _background = <String, BackgroundShell>{};
   int _nextBg = 1;
+
+  // A run's files are named by time and a counter: parallel reads start in
+  // the same clock tick (Windows' clock moves every few ms), and other
+  // shells may share [scratchDir].
+  final DateTime Function() clock;
+  int _nextRun = 1;
   final _running = <Process>{};
 
   Iterable<BackgroundShell> get background => _background.values;
@@ -287,7 +298,7 @@ final class SessionShell {
   /// process tree is killed) or [cancel] completes.
   Future<CommandResult> run(String command, {required Duration timeout, Future<void>? cancel}) async {
     if ((await ShellEnv.load()).missing) return const CommandResult(output: gitBashMissingMessage, exitCode: 127);
-    final id = '${DateTime.now().microsecondsSinceEpoch}';
+    final id = '${clock().microsecondsSinceEpoch}_${_nextRun++}';
     final (process, script) = await _spawn(id, command);
     _running.add(process);
     final out = _CappedBuffer(4 * 1024 * 1024);
