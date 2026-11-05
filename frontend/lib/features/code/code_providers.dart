@@ -28,10 +28,12 @@ import '../usage/usage_totals.dart';
 import 'domain/agent_mode.dart';
 import 'domain/approval_reason.dart';
 import 'domain/code_session.dart';
+import 'environments/bridges.dart' show SshEnv;
 import 'environments/env_paths.dart';
 import 'environments/env_processes.dart';
 import 'environments/environment_providers.dart';
 import 'environments/exec_env.dart';
+import 'environments/ssh_tunnel.dart';
 import 'domain/compaction.dart';
 import 'domain/floor_advice.dart';
 import 'domain/doom_loop.dart';
@@ -67,7 +69,7 @@ import 'drivers/briefing/skill_render.dart' show defuseInlineCommands;
 import 'drivers/driver.dart';
 import 'drivers/driver_env.dart';
 import 'drivers/driver_policy.dart';
-import 'drivers/driver_process.dart' show DriverProcess, closeAllDriverProcesses;
+import 'drivers/driver_process.dart' show DriverProcess, closeAllDriverProcesses, trackDriverClose, untrackDriverClose;
 import 'drivers/driver_registry.dart';
 import 'drivers/lead_skills.dart';
 import 'drivers/terminal/terminal_driver.dart';
@@ -170,6 +172,12 @@ Future<ExecEnv> execEnvFor(Ref ref, String id) async {
 String envPathOf(ExecEnv env, String hostPath) => env.isHost
     ? hostPath
     : env.toEnvPath(hostPath) ?? (throw HarnessError("This folder isn't visible inside ${env.label}: $hostPath"));
+
+/// Opens a reverse tunnel from an ssh remote to a loopback port here (tests replace it).
+final sshTunnelProvider = Provider<Future<SshTunnel> Function(SshEnv env, int localPort)>((ref) => openSshTunnel);
+
+/// Each outside session's tunnel to its ssh remote, by session id; closed with its briefing or at quit.
+final _tunnelsProvider = Provider<Map<String, SshTunnel>>((ref) => {});
 
 /// Ends what runs inside an environment under a session's tag (tests replace it).
 final endInsideProvider = Provider<Future<List<int>> Function(ExecEnv env, String tag, {bool toolsOnly})>(
@@ -905,7 +913,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       // data), and the host's address from there.
       final env = _envOf(driver);
       final briefing = DriverBriefing(
-        mcpUrl: '${env.isHost ? token.url : await _hostUrlFrom(env, token)}',
+        mcpUrl: '${env.isHost ? token.url : await _hostUrlFrom(id, env, token)}',
         mcpToken: token.token,
         skillDir: env.isHost ? export.skillDir : env.toEnvPath(export.skillDir),
         sessionSkill: export.text,
@@ -1015,10 +1023,22 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
   /// The MCP host's address as [env] reaches it, served there for [token]
   /// only ([HostServer.reachFrom]). WSL in NAT mode reaches Windows at its
   /// default gateway (from the distro's scan). Where the environment can't
-  /// reach this computer (an ssh remote, a VM without a host name), the
-  /// loopback URL stays: the agent runs without EveryAI's tools.
-  Future<Uri> _hostUrlFrom(ExecEnv env, HostToken token) async {
+  /// reach this computer (a VM without a host name, a tunnel that didn't
+  /// open), the loopback URL stays: the agent runs without EveryAI's tools.
+  /// An ssh remote gets a reverse tunnel of session [id]'s own.
+  Future<Uri> _hostUrlFrom(String id, ExecEnv env, HostToken token) async {
     var url = env.hostUrl(token.url);
+    if (url == null && env is SshEnv) {
+      try {
+        final tunnel = await ref.read(sshTunnelProvider)(env, token.url.port);
+        _closeTunnel(id);
+        ref.read(_tunnelsProvider)[id] = tunnel;
+        trackDriverClose(tunnel.close);
+        url = token.url.replace(port: tunnel.remotePort);
+      } on Object {
+        // No tunnel: no tools.
+      }
+    }
     if (url == null && env.kind == EnvKind.wsl) {
       try {
         final gateway = (await ref.read(environmentScanProvider(env.id).future)).hostAddress;
@@ -1106,8 +1126,17 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     }
   }
 
+  /// Closes session [id]'s ssh tunnel, if it has one.
+  void _closeTunnel(String id) {
+    final tunnel = ref.read(_tunnelsProvider).remove(id);
+    if (tunnel == null) return;
+    untrackDriverClose(tunnel.close);
+    unawaited(tunnel.close().then((_) {}, onError: (Object _) {}));
+  }
+
   /// Ends outside session [id]'s host token and deletes its briefing.
   Future<void> _unbrief(String id) async {
+    _closeTunnel(id);
     ref.read(_hostTokensProvider).remove(id);
     ref.read(_briefingTextsProvider).remove(id);
     ref.read(_noticeNoncesProvider).remove(id);
