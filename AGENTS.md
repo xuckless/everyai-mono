@@ -838,6 +838,13 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   periods `Last 24h · …`, shares `N%  text · detail`, `Top …: a N%, …`; anything else stays a note) and drawn by
   `ui/transcript/plan_report_view.dart` (limit bars amber ≥75%, red ≥90%; share rows; pills). All-notes text falls
   back to mono. Fixed: the fill of every animated bar (usage, billing, workflow runs) had zero height.
+- **Terminal tabs, glyphs, Code home terminal (2026-11-06).** The terminal falls back to the bundled Nerd Fonts
+  Symbols font (`ui/panes/terminal_font.dart`), so Powerline/Nerd Font prompts draw. `TerminalTabsView(owner,
+  workingDir)` has tabs with + and × (`terminalTabsProvider`; the first tab's id is the owner's, so Processes/Preview
+  keep reading it; others `<owner>#<n>`, `EVERYAI_TERMINAL` stays the session id). Code home has a purple Terminal
+  chip in the top bar opening a resizable bottom terminal (owner `home`, starts in `terminalHomeDir`: `$HOME`, or
+  `C:\` on Windows; prefs `code.home.terminal`, `code.home.terminal_height`). Session header icons got a 2pt gap so
+  two open views' highlights don't merge.
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2

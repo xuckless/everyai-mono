@@ -192,19 +192,23 @@ class ViewIcon extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    return Semantics(
-      selected: active,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: active ? theme.accent.withValues(alpha: 0.14) : null,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: AdaptiveIconButton(
-          icon: icon,
-          tooltip: tooltip,
-          size: 16,
-          color: active ? theme.accent : theme.textMuted,
-          onPressed: onPressed,
+    // A small gap on each side, so two open views' highlights stay two rounded squares instead of one block.
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 2),
+      child: Semantics(
+        selected: active,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: active ? theme.accent.withValues(alpha: 0.14) : null,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: AdaptiveIconButton(
+            icon: icon,
+            tooltip: tooltip,
+            size: 16,
+            color: active ? theme.accent : theme.textMuted,
+            onPressed: onPressed,
+          ),
         ),
       ),
     );

@@ -114,3 +114,8 @@ final class _Pty implements ShellPty {
     _pty.kill(ProcessSignal.sighup);
   }
 }
+
+/// Where a terminal outside any session starts: the drive root on Windows (`C:\`), else the user's home folder.
+String get terminalHomeDir => Platform.isWindows
+    ? '${Platform.environment['SystemDrive'] ?? 'C:'}\\'
+    : Platform.environment['HOME'] ?? Directory.current.path;

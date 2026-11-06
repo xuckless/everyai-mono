@@ -136,7 +136,10 @@ class _BottomDrawerState extends ConsumerState<BottomDrawer> {
   Widget _body(CodePane p, {required bool active}) =>
       widget.paneBuilder?.call(p) ??
       switch (p) {
-        CodePane.terminal => TerminalPane(session: widget.session),
+        CodePane.terminal => TerminalPane(
+          session: widget.session,
+          onToggle: ref.read(codePaneProvider(widget.session.id).notifier).toggleDrawer,
+        ),
       };
 }
 

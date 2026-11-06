@@ -41,6 +41,9 @@ import '../harness/events.dart' show HarnessEvent;
 import '../resume/past_sessions.dart';
 import '../resume/resume_providers.dart';
 import 'harness_logo.dart';
+import 'panes/terminal_pane.dart' show TerminalTabsView;
+import '../panes/panes_providers.dart' show homeTerminalOwner;
+import '../panes/pty.dart' show shellSupported, terminalHomeDir;
 
 /// The New session page's headline: one picked at random each time the page opens.
 const startWords = [
@@ -56,6 +59,9 @@ const startWords = [
 
 /// Where demo sessions "run" (the mock harness ignores the folder).
 const demoProjectPath = '${demoScheme}counter-app';
+
+/// Preferences key: whether Code home's terminal is open.
+const _terminalKey = 'code.home.terminal';
 
 /// Code landing: pick a project, describe the task, start a session.
 class CodeHome extends ConsumerStatefulWidget {
@@ -227,136 +233,177 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
     }
     final earlier = project == null ? const <EarlierSession>[] : ref.watch(earlierSessionsProvider(project.id));
 
+    final prefs = ref.read(preferencesProvider);
+    final terminalOpen = shellSupported && prefs[_terminalKey] == 'open';
     return AdaptivePage(
       title: '',
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(20, 24, 20, 48),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 720),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  project == null ? 'Open a project' : _headline,
-                  textAlign: TextAlign.center,
-                  style: theme.type.largeTitle.tint(theme.text),
-                ).settle(),
-                const SizedBox(height: 24),
-                if (project == null)
-                  _NoProjects(onOpen: _openFolder, onSample: _addSample, onDemo: _addDemo)
-                else ...[
-                  if (ref.watch(morningBriefProvider) case final brief?)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: AsideCard(
-                        key: ValueKey(brief.id),
-                        aside: brief,
-                        onDismiss: ref.read(morningBriefProvider.notifier).dismiss,
-                      ),
-                    ),
-                  CodeComposer(
-                    prefill: _prefill,
-                    project: project.path,
-                    slashHost: CodeSlashHost(
-                      setMode: (name) => _pickMode(AgentMode.values.byName(name), project.id),
-                      morning: ref.read(morningBriefProvider.notifier).refresh,
-                    ),
-                    busy: _starting,
-                    mode: mode,
-                    minLines: 3,
-                    placeholder: 'Describe the task',
-                    onModeChanged: (m) => _pickMode(m, project.id),
-                    onSend: (text, files) => _start(project, text, files),
-                    agent: AgentMenu(
-                      harness: lead,
-                      onHarness: isDemoPath(project.path) ? null : ref.read(codeLeadProvider.notifier).chooseHarness,
-                      model: lead == everyaiHarnessName
-                          ? ref.watch(codeAgentProvider).model
-                          : ref.watch(codeLeadProvider).of(lead).model,
-                      effort: lead == everyaiHarnessName
-                          ? ref.watch(codeAgentProvider).effort
-                          : ref.watch(codeLeadProvider).of(lead).effort,
-                      demo: isDemoPath(project.path),
-                      onChanged: lead == everyaiHarnessName
-                          ? ref.read(codeAgentProvider.notifier).chooseModel
-                          : (model, effort) => ref.read(codeLeadProvider.notifier).chooseModel(lead, model, effort),
-                      level: ref.watch(codeSettingsProvider.select((s) => s.tier)),
-                      onLevel: ref.read(codeSettingsProvider.notifier).setTier,
-                      workflow: _workflow,
-                      onWorkflow: (w) => setState(() => _workflow = w),
-                      projectDir: project.path,
-                      budget: _budget,
-                      onBudget: (v) => setState(() => _budget = v),
-                      environment: project.environment,
-                    ),
-                    leading: _ProjectPicker(
-                      project: project,
-                      projects: projects,
-                      onPick: (p) => setState(() {
-                        _projectId = p.id;
-                        _picked = null;
-                        // Another project's own workflows aren't this one's.
-                        if (_workflow?.entry?.origin == WorkflowOrigin.project) _workflow = null;
-                      }),
-                      onOpen: _openFolder,
-                      onSample: _addSample,
-                      onDemo: _addDemo,
-                    ),
-                    lineExtras: [
-                      if (!isDemoPath(project.path)) ...[
-                        _WorkspaceMenu(isolated: _isolated, onIsolated: (v) => setState(() => _isolated = v)),
-                        if (Host.isDesktop)
-                          EnvironmentChip(
-                            quiet: true,
-                            envId: project.environment,
-                            onPick: (id) => ref.read(codeProjectsProvider.notifier).setEnvironment(project.id, id),
-                          ),
-                        AnchoredPopover(
-                          width: 320,
-                          builder: (context, close) => SessionSettingsList(projectId: project.id, close: close),
-                          child: Semantics(
-                            button: true,
-                            label: 'Session settings',
-                            child: const QuietTrigger(icon: EveryIcon.settings, chevron: false),
+      actions: [
+        if (shellSupported)
+          _TerminalButton(
+            open: terminalOpen,
+            onPressed: () => setState(() => prefs[_terminalKey] = terminalOpen ? null : 'open'),
+          ),
+      ],
+      body: LayoutBuilder(
+        builder: (context, box) => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: Center(
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.fromLTRB(20, 24, 20, 48),
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 720),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Text(
+                                project == null ? 'Open a project' : _headline,
+                                textAlign: TextAlign.center,
+                                style: theme.type.largeTitle.tint(theme.text),
+                              ).settle(),
+                              const SizedBox(height: 24),
+                              if (project == null)
+                                _NoProjects(onOpen: _openFolder, onSample: _addSample, onDemo: _addDemo)
+                              else ...[
+                                if (ref.watch(morningBriefProvider) case final brief?)
+                                  Padding(
+                                    padding: const EdgeInsets.only(bottom: 8),
+                                    child: AsideCard(
+                                      key: ValueKey(brief.id),
+                                      aside: brief,
+                                      onDismiss: ref.read(morningBriefProvider.notifier).dismiss,
+                                    ),
+                                  ),
+                                CodeComposer(
+                                  prefill: _prefill,
+                                  project: project.path,
+                                  slashHost: CodeSlashHost(
+                                    setMode: (name) => _pickMode(AgentMode.values.byName(name), project.id),
+                                    morning: ref.read(morningBriefProvider.notifier).refresh,
+                                  ),
+                                  busy: _starting,
+                                  mode: mode,
+                                  minLines: 3,
+                                  placeholder: 'Describe the task',
+                                  onModeChanged: (m) => _pickMode(m, project.id),
+                                  onSend: (text, files) => _start(project, text, files),
+                                  agent: AgentMenu(
+                                    harness: lead,
+                                    onHarness: isDemoPath(project.path)
+                                        ? null
+                                        : ref.read(codeLeadProvider.notifier).chooseHarness,
+                                    model: lead == everyaiHarnessName
+                                        ? ref.watch(codeAgentProvider).model
+                                        : ref.watch(codeLeadProvider).of(lead).model,
+                                    effort: lead == everyaiHarnessName
+                                        ? ref.watch(codeAgentProvider).effort
+                                        : ref.watch(codeLeadProvider).of(lead).effort,
+                                    demo: isDemoPath(project.path),
+                                    onChanged: lead == everyaiHarnessName
+                                        ? ref.read(codeAgentProvider.notifier).chooseModel
+                                        : (model, effort) =>
+                                              ref.read(codeLeadProvider.notifier).chooseModel(lead, model, effort),
+                                    level: ref.watch(codeSettingsProvider.select((s) => s.tier)),
+                                    onLevel: ref.read(codeSettingsProvider.notifier).setTier,
+                                    workflow: _workflow,
+                                    onWorkflow: (w) => setState(() => _workflow = w),
+                                    projectDir: project.path,
+                                    budget: _budget,
+                                    onBudget: (v) => setState(() => _budget = v),
+                                    environment: project.environment,
+                                  ),
+                                  leading: _ProjectPicker(
+                                    project: project,
+                                    projects: projects,
+                                    onPick: (p) => setState(() {
+                                      _projectId = p.id;
+                                      _picked = null;
+                                      // Another project's own workflows aren't this one's.
+                                      if (_workflow?.entry?.origin == WorkflowOrigin.project) _workflow = null;
+                                    }),
+                                    onOpen: _openFolder,
+                                    onSample: _addSample,
+                                    onDemo: _addDemo,
+                                  ),
+                                  lineExtras: [
+                                    if (!isDemoPath(project.path)) ...[
+                                      _WorkspaceMenu(
+                                        isolated: _isolated,
+                                        onIsolated: (v) => setState(() => _isolated = v),
+                                      ),
+                                      if (Host.isDesktop)
+                                        EnvironmentChip(
+                                          quiet: true,
+                                          envId: project.environment,
+                                          onPick: (id) =>
+                                              ref.read(codeProjectsProvider.notifier).setEnvironment(project.id, id),
+                                        ),
+                                      AnchoredPopover(
+                                        width: 320,
+                                        builder: (context, close) =>
+                                            SessionSettingsList(projectId: project.id, close: close),
+                                        child: Semantics(
+                                          button: true,
+                                          label: 'Session settings',
+                                          child: const QuietTrigger(icon: EveryIcon.settings, chevron: false),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                                if (_starting)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 14),
+                                    child: Center(child: ShimmerText('Starting the agent', style: theme.type.callout)),
+                                  ),
+                                // This folder's earlier sessions: EveryAI's own (marked) and every installed harness's.
+                                if (earlier.isNotEmpty) ...[
+                                  const SizedBox(height: 36),
+                                  const Padding(
+                                    padding: EdgeInsets.only(left: 10, bottom: 4),
+                                    child: KitLabel('Earlier'),
+                                  ),
+                                  for (final (i, row) in earlier.indexed)
+                                    if (row.ours case final s?)
+                                      SessionTile(
+                                        key: ValueKey('code-home.earlier.${s.id}'),
+                                        info: s,
+                                        // The harness it ran on, by name beside its logo (like the earlier outside sessions).
+                                        badge:
+                                            ref.read(driverRegistryProvider).resolve(s.harness)?.info.label ??
+                                            s.harness,
+                                        onOpen: () => context.go(Routes.codeSession(s.id)),
+                                      ).rowIn(i)
+                                    else if (row.past case final p?)
+                                      PastSessionTile(
+                                        key: ValueKey('code-home.earlier.${p.harness}.${p.nativeId}'),
+                                        past: p,
+                                        label:
+                                            ref.read(driverRegistryProvider).resolve(p.harness)?.info.label ??
+                                            p.harness,
+                                        blocked: row.blocked,
+                                        busy: _resuming == '${p.harness}|${p.nativeId}',
+                                        onOpen: _resuming != null || _starting ? null : () => _resume(project, p),
+                                      ).rowIn(i),
+                                ],
+                              ],
+                            ],
                           ),
                         ),
-                      ],
-                    ],
-                  ),
-                  if (_starting)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 14),
-                      child: Center(child: ShimmerText('Starting the agent', style: theme.type.callout)),
+                      ),
                     ),
-                  // This folder's earlier sessions: EveryAI's own (marked) and every installed harness's.
-                  if (earlier.isNotEmpty) ...[
-                    const SizedBox(height: 36),
-                    const Padding(padding: EdgeInsets.only(left: 10, bottom: 4), child: KitLabel('Earlier')),
-                    for (final (i, row) in earlier.indexed)
-                      if (row.ours case final s?)
-                        SessionTile(
-                          key: ValueKey('code-home.earlier.${s.id}'),
-                          info: s,
-                          // The harness it ran on, by name beside its logo (like the earlier outside sessions).
-                          badge: ref.read(driverRegistryProvider).resolve(s.harness)?.info.label ?? s.harness,
-                          onOpen: () => context.go(Routes.codeSession(s.id)),
-                        ).rowIn(i)
-                      else if (row.past case final p?)
-                        PastSessionTile(
-                          key: ValueKey('code-home.earlier.${p.harness}.${p.nativeId}'),
-                          past: p,
-                          label: ref.read(driverRegistryProvider).resolve(p.harness)?.info.label ?? p.harness,
-                          blocked: row.blocked,
-                          busy: _resuming == '${p.harness}|${p.nativeId}',
-                          onOpen: _resuming != null || _starting ? null : () => _resume(project, p),
-                        ).rowIn(i),
-                  ],
+                  ),
                 ],
-              ],
+              ),
             ),
-          ),
+            if (terminalOpen)
+              _HomeTerminal(maxHeight: box.maxHeight * 0.75, onClose: () => setState(() => prefs[_terminalKey] = null)),
+          ],
         ),
       ),
     );
@@ -828,6 +875,119 @@ class _PastSessionTileState extends State<PastSessionTile> {
                   ],
                 ),
               ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The terminal on Code home, outside any session: tabs of shells that start in the home folder (`C:\\` on
+/// Windows), for making a folder or running `git init` before a session. Its top edge drags to resize; the height
+/// is kept in Preferences `code.home.terminal_height`.
+class _HomeTerminal extends ConsumerStatefulWidget {
+  const _HomeTerminal({required this.maxHeight, required this.onClose});
+
+  final double maxHeight;
+  final VoidCallback onClose;
+
+  @override
+  ConsumerState<_HomeTerminal> createState() => _HomeTerminalState();
+}
+
+class _HomeTerminalState extends ConsumerState<_HomeTerminal> {
+  static const _heightKey = 'code.home.terminal_height';
+  late double _height = double.tryParse(ref.read(preferencesProvider)[_heightKey] ?? '') ?? 300;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final height = _height.clamp(160.0, widget.maxHeight.clamp(160.0, double.infinity));
+    return SizedBox(
+      key: const ValueKey('code-home.terminal-panel'),
+      height: height,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border(top: BorderSide(color: theme.border)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            MouseRegion(
+              cursor: SystemMouseCursors.resizeRow,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onVerticalDragUpdate: (d) => setState(() => _height = (height - d.delta.dy)),
+                onVerticalDragEnd: (_) => ref.read(preferencesProvider)[_heightKey] = '${height.round()}',
+                child: const SizedBox(height: 6),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 8, 0),
+              child: Row(
+                children: [
+                  Expanded(child: Text('Terminal', style: theme.type.callout.medium.tint(theme.text))),
+                  KitIconButton(icon: EveryIcon.close, tooltip: 'Hide terminal', size: 14, onPressed: widget.onClose),
+                ],
+              ),
+            ),
+            Expanded(
+              child: TerminalTabsView(owner: homeTerminalOwner, workingDir: terminalHomeDir, onToggle: widget.onClose),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Code home's terminal toggle: a small accent-bordered chip ("Terminal"), filled while the terminal is open, so it
+/// stands out in the empty top bar.
+class _TerminalButton extends StatefulWidget {
+  const _TerminalButton({required this.open, required this.onPressed});
+
+  final bool open;
+  final VoidCallback onPressed;
+
+  @override
+  State<_TerminalButton> createState() => _TerminalButtonState();
+}
+
+class _TerminalButtonState extends State<_TerminalButton> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final fill = widget.open ? 0.22 : (_hover ? 0.16 : 0.08);
+    return Semantics(
+      button: true,
+      selected: widget.open,
+      label: widget.open ? 'Hide terminal' : 'Terminal',
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          key: const ValueKey('code-home.terminal'),
+          behavior: HitTestBehavior.opaque,
+          onTap: widget.onPressed,
+          child: AnimatedContainer(
+            duration: Motion.reduced(context) ? Duration.zero : const Duration(milliseconds: 140),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: theme.accent.withValues(alpha: fill),
+              border: Border.all(color: theme.accent.withValues(alpha: widget.open ? 0.9 : 0.6)),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                AdaptiveIcon(EveryIcon.command, size: 14, color: theme.accent),
+                const SizedBox(width: 6),
+                Text('Terminal', style: theme.type.callout.medium.tint(theme.accent)),
+              ],
             ),
           ),
         ),
