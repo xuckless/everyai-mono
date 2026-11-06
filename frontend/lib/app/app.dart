@@ -40,14 +40,7 @@ class EveryApp extends ConsumerWidget {
           pureBlack: appearance.pureBlack,
         ),
         // Windows/Linux: the window buttons float over every route and dialog.
-        child: WindowButtonsOverlay(
-          child: appearance.reduceMotion
-              ? MediaQuery(
-                  data: MediaQuery.of(context).copyWith(disableAnimations: true),
-                  child: child ?? const SizedBox.shrink(),
-                )
-              : child ?? const SizedBox.shrink(),
-        ),
+        child: WindowButtonsOverlay(child: child ?? const SizedBox.shrink()),
       ),
     );
   }

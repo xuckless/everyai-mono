@@ -171,13 +171,11 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('settings.nav.general')));
     await tester.pumpAndSettle();
     expect(find.text('Reply language'), findsOneWidget);
-    // The theme pictures pick the theme; Reduce motion is remembered.
+    // The theme pictures pick the theme.
     await tester.tap(find.byKey(const ValueKey('settings.theme.light')));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('settings.pure-black')), findsNothing);
-    await tester.tap(find.byKey(const ValueKey('settings.reduce-motion')));
-    await tester.pumpAndSettle();
-    expect(c.read(appearanceProvider).reduceMotion, isTrue);
+    expect(c.read(appearanceProvider).theme, ThemePreference.light);
     await tester.tap(find.byKey(const ValueKey('settings.close')));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('settings.close')), findsNothing);

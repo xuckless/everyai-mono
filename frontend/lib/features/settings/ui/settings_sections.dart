@@ -106,18 +106,6 @@ class GeneralSection extends ConsumerWidget {
               ),
             ),
           ),
-        SettingsAnchor(
-          section: s,
-          id: 'reduce-motion',
-          child: AdaptiveListTile(
-            title: const Text('Reduce motion'),
-            trailing: AdaptiveSwitch(
-              key: const ValueKey('settings.reduce-motion'),
-              value: appearance.reduceMotion,
-              onChanged: appearanceCtl.setReduceMotion,
-            ),
-          ),
-        ),
         const AdaptiveSectionHeader('Chat'),
         SettingsAnchor(
           section: s,
