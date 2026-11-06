@@ -1,5 +1,6 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -14,6 +15,9 @@ import 'host_checks.dart';
 /// The longest a check's command may run.
 const _runLimit = Duration(minutes: 10);
 
+/// Exit codes of a run stopped at a limit rather than finished.
+const _killedExits = {124, 137, 143};
+
 /// Runs [command]; [timed] tells [HostCheckContext.timed] how long it took.
 Future<({int exit, String out})> _run(
   HostCheckContext c,
@@ -23,8 +27,11 @@ Future<({int exit, String out})> _run(
 }) async {
   final clock = Stopwatch()..start();
   if (c.run case final run?) {
+    var cancelled = false;
+    unawaited(cancel.then((_) => cancelled = true, onError: (Object _) => cancelled = true));
     final r = await run(command, cancel);
-    if (timed) await c.timed?.call(command, clock.elapsed);
+    // Like the shell's: not a run that was stopped or killed at a limit (timeout's 124, SIGKILL, SIGTERM).
+    if (timed && !cancelled && !_killedExits.contains(r.exit)) await c.timed?.call(command, clock.elapsed);
     return r;
   }
   final shell = SessionShell(root: c.workingDir, sessionTag: c.sessionId, scratchDir: '${c.stateDir}/shell');

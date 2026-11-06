@@ -61,7 +61,12 @@ final class SessionSpec {
     this.reviewModel,
     this.briefing,
     this.skillsOff = const {},
+    this.runtimeProfiles = const [],
   });
+
+  /// How long the project's commands took in earlier sessions (`renderProfiles` lines, fixed for the session),
+  /// for the EveryAI harness's prompt; an outside lead reads them in its briefing.
+  final List<String> runtimeProfiles;
 
   /// What an outside harness (a coding CLI driven by the app) is handed to
   /// reach EveryAI's own tools and the session's skill; null for the EveryAI

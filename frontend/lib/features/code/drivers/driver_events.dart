@@ -42,13 +42,14 @@ ActionCall actionEvent({
   resultEvent(id: '$id-r', actionId: id, toolName: toolName, text: 'Plan shown.'),
 );
 
-/// What [actionId]'s call returned: [text], or an error.
+/// What [actionId]'s call returned: [text], or an error; [durationMs] when the harness timed the run itself.
 ToolResult resultEvent({
   required String id,
   required String actionId,
   required String toolName,
   required String text,
   bool isError = false,
+  int? durationMs,
 }) => HarnessEvent.decode({
   'kind': 'ObservationEvent',
   'id': id,
@@ -60,6 +61,7 @@ ToolResult resultEvent({
       {'type': 'text', 'text': text},
     ],
     'is_error': isError,
+    'duration_ms': ?durationMs,
   },
 }) as ToolResult;
 

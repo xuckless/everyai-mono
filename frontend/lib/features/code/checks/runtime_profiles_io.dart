@@ -3,6 +3,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../harness/everyai/project_notes_io.dart' show notesLinkProblem;
+import '../harness/everyai/scrub.dart' show Scrubber;
 import '../settings/settings.dart' show excludeFromGit;
 import 'runtime_profiles.dart';
 
@@ -21,24 +23,45 @@ Future<void> recordRuntime(String projectRoot, String command, String dir, Durat
 }
 
 Future<void> _record(String projectRoot, String path, String command, String dir, Duration took) async {
-  final next = (await _read(path)).record(command, dir, took, DateTime.now());
-  await File(path).parent.create(recursive: true);
+  // The briefing goes to other vendors' agents: nothing from the user's environment or .env files.
+  if (Scrubber.forProject(projectRoot).leak(command) != null) return;
   final tmp = File('$path.$pid.tmp');
+  // A linked .everyai/ (or file) could point the write anywhere; a tracked file is the repository's, not ours.
+  if (notesLinkProblem(projectRoot, path) != null) return;
+  if (await _tracked(projectRoot, path)) return;
+  final next = (await _read(projectRoot, path)).record(command, dir, took, DateTime.now());
+  await File(path).parent.create(recursive: true);
+  if (notesLinkProblem(projectRoot, tmp.path) != null) return;
   await tmp.writeAsString(jsonEncode(next.toJson()), flush: true);
   await tmp.rename(path);
   if (_excluded.add(projectRoot)) await excludeFromGit(projectRoot, const ['/$runtimeProfilesPath']);
 }
 
-Future<RuntimeProfiles> _read(String path) async {
+/// [projectRoot]'s profiles; none when the file is a link, tracked by git (it came with the repository, so it
+/// is someone else's text), or malformed.
+Future<RuntimeProfiles> _read(String projectRoot, String path) async {
   try {
-    return RuntimeProfiles.fromJson(jsonDecode(await File(path).readAsString()));
+    final file = File(path);
+    if (!file.existsSync() || notesLinkProblem(projectRoot, path) != null) return const RuntimeProfiles();
+    if (await _tracked(projectRoot, path)) return const RuntimeProfiles();
+    return RuntimeProfiles.fromJson(jsonDecode(await file.readAsString()));
   } on Object {
     return const RuntimeProfiles();
   }
 }
 
+/// Whether git tracks [path] in [root]'s repository.
+Future<bool> _tracked(String root, String path) async {
+  try {
+    final r = await Process.run('git', ['ls-files', '--error-unmatch', path], workingDirectory: root);
+    return r.exitCode == 0;
+  } on Object {
+    return false;
+  }
+}
+
 /// The session's profile lines (`<sessionDir>/runtime-profiles`): rendered from [projectRoot]'s file the first time,
-/// the same lines after, so a resumed conversation's briefing doesn't change.
+/// the same lines after, so a resumed conversation's prompt or briefing doesn't change (a lead switch keeps them too).
 Future<List<String>> sessionRuntimeProfiles(String sessionDir, String projectRoot) async {
   final file = File('$sessionDir/runtime-profiles');
   try {
@@ -49,7 +72,7 @@ Future<List<String>> sessionRuntimeProfiles(String sessionDir, String projectRoo
   } on FileSystemException {
     // Not written yet.
   }
-  final lines = renderProfiles(await _read('$projectRoot/$runtimeProfilesPath'));
+  final lines = renderProfiles(await _read(projectRoot, '$projectRoot/$runtimeProfilesPath'));
   try {
     await Directory(sessionDir).create(recursive: true);
     await file.writeAsString(lines.map((l) => '$l\n').join());

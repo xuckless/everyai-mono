@@ -793,6 +793,10 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       script: !demo && !outside ? scriptCapsFor(tier, model, level: ref.read(codeSettingsProvider).scripts) : null,
       pathMap: pathMap,
       briefing: briefing,
+      // Outside leads read them in their briefing; the same rendering, once per session (see _exportBriefing).
+      runtimeProfiles: !local || demo
+          ? const []
+          : await sessionRuntimeProfiles(await _driverDir(byId(sessionId)?.parentId ?? sessionId), projectDir),
       skillsOff: !outside
           ? const {}
           : leadSkillsOff(ref.read(preferencesProvider), projectId, harness ?? byId(sessionId)?.harness ?? ''),
@@ -2423,7 +2427,6 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (!_mirror.isClosed) _mirror.add(event);
     final transcript = _builder.snapshot;
     state = state.copyWith(transcript: transcript);
-    if (_live) _timeCommand(event, transcript);
     if (_bugAsk != null) _watchBugAsk();
     if (_hostWaits.isNotEmpty) {
       _bindHostWaits();
@@ -2455,6 +2458,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     }
     if (looped && !checksBypassed) _raiseDoomLoop(_doom.looped!);
     _autoRespond(transcript);
+    // After the rules answered: a call they allowed waits for no one, so its clock runs.
+    if (_live) _timeCommand(event, transcript);
     _syncSubagents();
     _syncForkTools();
     // First, so nothing this handler sends (reports, the goal, the queue) goes out while they run.
@@ -2475,7 +2480,11 @@ final class CodeSessionController extends Notifier<CodeSessionState>
 
   /// Feeds [event] to the command timer; a finished terminal call that ran long enough goes into the profiles.
   void _timeCommand(HarnessEvent event, Transcript transcript) {
-    if (_timer.observe(event, transcript) case final r? when r.took >= minRecordedRuntime) {
+    final allowed = {
+      for (final e in _decided.entries)
+        if (e.value) e.key,
+    };
+    if (_timer.observe(event, transcript, allowed: allowed) case final r? when r.took >= minRecordedRuntime) {
       unawaited(_recordRuntime(r.command, r.took, cwd: r.cwd));
     }
   }
@@ -2715,6 +2724,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     for (final id in ids) {
       _decided[id] = accept;
     }
+    if (accept) _timer.allow(ids);
     state = state.copyWith(decided: Map.unmodifiable(_decided));
   }
 

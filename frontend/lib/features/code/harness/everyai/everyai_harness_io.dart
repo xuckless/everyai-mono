@@ -19,6 +19,7 @@ import '../../domain/subagents.dart' show forkingTaskSpec, subagentRules, taskTo
 import '../../settings/agent_prompt.dart' show forHeldClientTools;
 import '../events.dart';
 import '../harness.dart';
+import '../../checks/runtime_profiles.dart' show runtimeProfilesBlock;
 import '../../drivers/briefing/briefing_types.dart' show everyaiServerName;
 import '../../drivers/usage_limit.dart';
 import 'browser_io.dart';
@@ -507,6 +508,7 @@ final class EveryAISession
     'research_sites': ?s.researchSites,
     if (s.bugCheck) 'bug_check': true,
     'script': ?s.script?.toJson(),
+    if (s.runtimeProfiles.isNotEmpty) 'runtime_profiles': s.runtimeProfiles,
     'review_model': ?s.reviewModel,
   };
 
@@ -535,6 +537,7 @@ final class EveryAISession
     // Bug fix sessions from before workflows named their flow.
     bugCheck: j['bug_check'] == true || (j['phase_flow'] as String? ?? '').startsWith('bugfix'),
     script: ScriptCaps.fromJson(j['script']),
+    runtimeProfiles: [...?(j['runtime_profiles'] as List<Object?>?)?.whereType<String>()],
     reviewModel: j['review_model'] as String?,
   );
 
@@ -556,6 +559,9 @@ final class EveryAISession
           '<MCP>\nThese MCP servers could not start, so their tools are missing: '
           '${_mcp.failures.entries.map((e) => '${e.key} (${e.value})').join('; ')}. Tell the user if the task needs them.\n</MCP>',
         ),
+      // Fixed for the session (read once), so before the notes and the environment.
+      if (runtimeProfilesBlock(spec.runtimeProfiles) case final profiles when profiles.isNotEmpty)
+        ContextPart(prompt, profiles),
       if (await projectNotesBlock(spec.workingDir) case final notes when notes.isNotEmpty)
         ContextPart(ContextKind.memoryFiles, notes),
       ContextPart(prompt, await environmentBlock(spec.workingDir)),
@@ -864,6 +870,7 @@ final class EveryAISession
       script: script ?? s.script,
       reviewModel: s.reviewModel,
       briefing: briefing ?? s.briefing,
+      runtimeProfiles: s.runtimeProfiles,
     );
   }
 

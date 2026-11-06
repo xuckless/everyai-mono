@@ -696,6 +696,8 @@ final class ToolRunner {
       );
     }
     final ms = ((args['timeout'] as num?)?.toInt() ?? 120000).clamp(1000, 600000);
+    // Where it started: the shell keeps its folder, so a `cd` in an earlier command moved it (runtime profiles).
+    final startCwd = shell.cwd;
     final r = await shell.run(
       command,
       timeout: Duration(milliseconds: ms),
@@ -711,7 +713,7 @@ final class ToolRunner {
     return ToolOutput(
       _fit(shown, 'bash-${DateTime.now().millisecondsSinceEpoch}'),
       isError: r.exitCode != 0,
-      observation: {'exit_code': r.exitCode, 'cwd': shell.cwd},
+      observation: {'exit_code': r.exitCode, 'cwd': shell.cwd, 'start_cwd': startCwd},
     );
   }
 
