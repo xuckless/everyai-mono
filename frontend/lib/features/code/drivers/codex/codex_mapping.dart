@@ -299,6 +299,10 @@ HarnessEvent? resultOf(Map<String, Object?> item, ActionCall call) {
     toolName: call.toolName,
     text: text.isEmpty ? (isError ? 'Failed.' : 'Done.') : text,
     isError: isError,
+    // Codex times its commands; the timer prefers that to when the events arrived.
+    durationMs: item['type'] == 'commandExecution' && item['durationMs'] is num
+        ? (item['durationMs']! as num).round()
+        : null,
   );
 }
 

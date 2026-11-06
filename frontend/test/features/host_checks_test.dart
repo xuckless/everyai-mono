@@ -264,14 +264,45 @@ void main() {
           timed.add(command);
         },
       );
-      await hostCheckTool(
-        call(checkTool, {
+      // A call still going (the helper's has already ended, as if cancelled).
+      final live = HostCall(
+        id: 'live',
+        sessionId: 's1',
+        name: checkTool,
+        args: const {
           'files': ['test/foo_test.dart'],
-        }),
-        c,
+        },
+        ended: Completer<HostEnd>().future,
       );
+      await hostCheckTool(live, c);
       await hostCheckTool(call(diffStatsTool), c);
       expect(timed, ['dart test test/foo_test.dart']);
+    });
+
+    test('a cancelled run or one killed at a limit is not timed', () async {
+      write('pubspec.yaml', 'name: p\n');
+      write('test/foo_test.dart');
+      final timed = <String>[];
+      HostCheckContext ctx(int exit) => HostCheckContext(
+        sessionId: 's1',
+        workingDir: dir,
+        stateDir: stateDir,
+        refusal: (_) => null,
+        run: (command, _) async => (exit: exit, out: 'x'),
+        timed: (command, took) async => timed.add(command),
+      );
+      final args = {
+        'files': ['test/foo_test.dart'],
+      };
+      // The helper's call has ended (cancelled) before the run returns.
+      await hostCheckTool(call(checkTool, args), ctx(0));
+      for (final exit in [124, 137, 143]) {
+        await hostCheckTool(
+          HostCall(id: 'x$exit', sessionId: 's1', name: checkTool, args: args, ended: Completer<HostEnd>().future),
+          ctx(exit),
+        );
+      }
+      expect(timed, isEmpty);
     });
 
     test('nothing to test is said plainly', () async {
