@@ -468,6 +468,91 @@ void main() {
       expect(await _git(repo, ['rev-parse', 'main']), before);
       expect(await _git(repo, ['status', '--porcelain']), isEmpty);
     });
+    test('the repository\'s index hook and clean filter never run while landing', () async {
+      final marker = '${tmp.path}/ran';
+      final a = await lane('a', [
+        ({'lib/h.txt': 'h\n'}, 'Add h'),
+      ]);
+      // After the lane: its own commits (the test's plain git) would run it.
+      final hook = File('$repo/.git/hooks/post-index-change')..writeAsStringSync('#!/bin/sh\ntouch "$marker"\n');
+      await Process.run('chmod', ['+x', hook.path]);
+      File('$repo/lib/glue.txt').writeAsStringSync('glue\n');
+      final landed = await GitService.landWithCommits(
+        here(),
+        lanes: [a],
+        paths: ['lib/h.txt', 'lib/glue.txt'],
+        message: 'Integrate',
+      );
+      expect(landed.head, isNotNull);
+      expect(File(marker).existsSync(), isFalse);
+      // A clean filter: storing the files would need it, so landing is refused and it doesn't run.
+      await _git(repo, ['config', 'filter.mark.clean', 'touch "$marker"; cat']);
+      File('$repo/.gitattributes').writeAsStringSync('*.txt filter=mark\n');
+      File('$repo/lib/glue.txt').writeAsStringSync('glue 2\n');
+      final before = await _git(repo, ['rev-parse', 'HEAD']);
+      await expectLater(
+        GitService.landWithCommits(here(), lanes: [a], paths: ['lib/glue.txt'], message: 'Again'),
+        throwsA(isA<GitError>()),
+      );
+      expect(File(marker).existsSync(), isFalse);
+      expect(await _git(repo, ['rev-parse', 'HEAD']), before);
+    });
+
+    test('a staged file the pattern `b*` would match stays staged; paths are literal', () async {
+      File('$repo/bc').writeAsStringSync('mine\n');
+      await _git(repo, ['add', 'bc']);
+      File('$repo/b*').writeAsStringSync('the run\n');
+      final landed = await GitService.landWithCommits(here(), lanes: const [], paths: ['b*'], message: 'Star');
+      expect(landed.head, isNotNull);
+      expect(await _git(repo, ['show', '--name-only', '--format=', 'HEAD']), 'b*');
+      expect(await _git(repo, ['diff', '--cached', '--name-only']), 'bc');
+    });
+
+    test('a lane commit already in HEAD is not replayed as an empty commit', () async {
+      final a = await lane('a', [
+        ({'lib/d.txt': 'd\n'}, 'Add d'),
+      ]);
+      File('$repo/lib/d.txt').writeAsStringSync('d\n');
+      await _git(repo, ['add', 'lib/d.txt']);
+      await _git(repo, ['commit', '-q', '-m', 'Mine: d']);
+      final before = await _git(repo, ['rev-parse', 'HEAD']);
+      final landed = await GitService.landWithCommits(here(), lanes: [a], paths: ['lib/d.txt'], message: 'x');
+      expect(landed.head, isNull);
+      expect(landed.laneCommits, 0);
+      expect(await _git(repo, ['rev-parse', 'HEAD']), before);
+    });
+
+    test('commit.gpgSign: landing commits are signed, and a signing failure lands nothing', () async {
+      final key = '${tmp.path}/sign_key';
+      final gen = await Process.run('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', key]);
+      if (gen.exitCode != 0) markTestSkipped('ssh-keygen is not available');
+      await _git(repo, ['config', 'commit.gpgsign', 'true']);
+      await _git(repo, ['config', 'gpg.format', 'ssh']);
+      await _git(repo, ['config', 'user.signingkey', key]);
+      final a = await lane('a', [
+        ({'lib/s.txt': 's\n'}, 'Add s'),
+      ]);
+      File('$repo/lib/glue.txt').writeAsStringSync('glue\n');
+      final landed = await GitService.landWithCommits(
+        here(),
+        lanes: [a],
+        paths: ['lib/s.txt', 'lib/glue.txt'],
+        message: 'Signed',
+      );
+      expect(landed.laneCommits, 1);
+      for (final rev in ['HEAD', 'HEAD~1']) {
+        expect(await _git(repo, ['cat-file', '-p', rev]), contains('gpgsig'));
+      }
+      // A key that isn't there: an error, not an unsigned commit.
+      await _git(repo, ['config', 'user.signingkey', '${tmp.path}/missing_key']);
+      File('$repo/lib/glue.txt').writeAsStringSync('glue 2\n');
+      final before = await _git(repo, ['rev-parse', 'HEAD']);
+      await expectLater(
+        GitService.landWithCommits(here(), lanes: const [], paths: ['lib/glue.txt'], message: 'Unsigned?'),
+        throwsA(isA<GitError>().having((e) => e.message, 'message', contains('commit.gpgSign'))),
+      );
+      expect(await _git(repo, ['rev-parse', 'HEAD']), before);
+    });
   });
 
   test('a fork gets its own copy in a repository with no commit yet, and merges back', () async {

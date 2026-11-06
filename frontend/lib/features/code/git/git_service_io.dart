@@ -39,10 +39,24 @@ Future<ProcessResult> _proc(
   return Process.run(cmd.exe, cmd.args, environment: cmd.env, stdoutEncoding: stdoutEncoding);
 }
 
-/// [_proc] for a process the caller feeds on stdin.
-Future<Process> _start(List<String> args) async {
-  final cmd = await _command('git', args);
+/// [_proc] for a process the caller feeds on stdin; [env] (`GIT_INDEX_FILE`, the author) is mapped like [_proc]'s.
+Future<Process> _start(List<String> args, {Map<String, String>? env}) async {
+  final cmd = await _command('git', args, env: env);
   return Process.start(cmd.exe, cmd.args, environment: cmd.env);
+}
+
+/// Runs guarded git [args] in [dir] with [input] on stdin; throws a [GitError] when it fails.
+Future<String> _piped(String dir, List<String> args, String input, {Map<String, String>? env}) async {
+  final p = await _start(await guardedArgs(dir, args, env: env), env: env);
+  p.stdin.write(input);
+  await p.stdin.close();
+  final (out, err, code) = await (
+    p.stdout.transform(utf8.decoder).join(),
+    p.stderr.transform(utf8.decoder).join(),
+    p.exitCode,
+  ).wait;
+  if (code != 0) throw GitError('git ${args.first}: ${err.trim()}');
+  return out;
 }
 
 /// What [_proc] starts for [exe] [args] (tests).
@@ -712,46 +726,59 @@ Future<ForkMerge> mergeFork(ForkCopy copy, {required String slug, bool merge = t
 bool _isForkLeftover(String email, String subject) => email == 'agent@everyai.invalid' && subject == 'EveryAI fork';
 
 /// Cherry-picks [commit] onto [onto] without touching the folder or the index (`git merge-tree`, git 2.40+): the
-/// new commit, keeping the author, date and message (AI-credit lines removed); null when it doesn't apply cleanly.
-/// Throws a [GitError] when this git can't do it.
-Future<String?> _replay(String top, String commit, String onto) async {
+/// new commit, keeping the author, date and message (AI-credit lines removed), signed when [sign]; [onto] itself
+/// when the commit changes nothing there (its change is in already: no empty duplicate); null when it doesn't apply
+/// cleanly. Throws a [GitError] when this git can't do it, a [_SignFailed] when signing fails.
+Future<String?> _replay(String top, String commit, String onto, {bool sign = false}) async {
   final res = await _git(top, ['merge-tree', '--write-tree', '--merge-base=$commit^', onto, commit], check: false);
   if (res.exitCode == 1) return null;
   if (res.exitCode != 0) throw GitError('git merge-tree: ${'${res.stderr}'.trim()}');
   final tree = '${res.stdout}'.split('\n').first.trim();
+  if (tree == await _out(top, ['rev-parse', '$onto^{tree}'])) return onto;
   final meta = (await _out(top, ['log', '-1', '--format=%an%x00%ae%x00%ad', '--date=raw', commit])).split('\x00');
   final message = stripBranding((await _git(top, ['log', '-1', '--format=%B', commit])).stdout as String);
-  return _commitTree(top, tree, onto, message, author: (name: meta[0], email: meta[1], date: meta[2]));
+  return _commitTree(top, tree, onto, message, author: (name: meta[0], email: meta[1], date: meta[2]), sign: sign);
 }
 
-/// A commit of [tree] on [parent] with [message]; the author is the configured identity unless [author] is given.
+/// A landing commit that `commit.gpgSign` asks to sign and that couldn't be signed: nothing is landed unsigned.
+final class _SignFailed implements Exception {
+  const _SignFailed(this.detail);
+  final String detail;
+}
+
+/// Whether the user's config asks for signed commits in [top] (`commit.gpgSign`; the signing program is the
+/// user's own, see [repoGuard]).
+Future<bool> _signs(String top) async =>
+    '${(await _git(top, ['config', '--bool', '--get', 'commit.gpgsign'], check: false)).stdout}'.trim() == 'true';
+
+/// A commit of [tree] on [parent] with [message], signed when [sign]; the author is the configured identity unless
+/// [author] is given. Runs guarded, like every EveryAI git call.
 Future<String> _commitTree(
   String top,
   String tree,
   String parent,
   String message, {
   ({String name, String email, String date})? author,
+  bool sign = false,
 }) async {
-  final p = await Process.start(
-    'git',
-    ['-C', top, 'commit-tree', tree, '-p', parent, '-F', '-'],
-    environment: {
-      if (author != null) ...{
-        'GIT_AUTHOR_NAME': author.name,
-        'GIT_AUTHOR_EMAIL': author.email,
-        'GIT_AUTHOR_DATE': author.date,
-      },
+  final env = {
+    if (author != null) ...{
+      'GIT_AUTHOR_NAME': author.name,
+      'GIT_AUTHOR_EMAIL': author.email,
+      'GIT_AUTHOR_DATE': author.date,
     },
-  );
-  p.stdin.write(message.trim().isEmpty ? 'Workflow lane\n' : message);
-  await p.stdin.close();
-  final (out, err, code) = await (
-    p.stdout.transform(utf8.decoder).join(),
-    p.stderr.transform(utf8.decoder).join(),
-    p.exitCode,
-  ).wait;
-  if (code != 0) throw GitError('git commit-tree: ${err.trim()}');
-  return out.trim();
+  };
+  try {
+    return (await _piped(
+      top,
+      ['commit-tree', tree, '-p', parent, if (sign) '-S', '-F', '-'],
+      message.trim().isEmpty ? 'Workflow lane\n' : message,
+      env: env,
+    )).trim();
+  } on GitError catch (e) {
+    if (sign) throw _SignFailed(e.message);
+    rethrow;
+  }
 }
 
 Future<LaneLanding> landWithCommits(
@@ -774,6 +801,30 @@ Future<LaneLanding> landWithCommits(
   // Paths from git diffs are relative to the top of the checkout.
   final top = await _out(w.path, ['rev-parse', '--show-toplevel']);
   final head = await _out(top, ['rev-parse', 'HEAD']);
+  // The branch HEAD is on ('' when detached): landing goes nowhere if it changes meanwhile.
+  final onRef = '${(await _git(top, ['symbolic-ref', '-q', 'HEAD'], check: false)).stdout}'.trim();
+  final sign = await _signs(top);
+  try {
+    return await _land(top, head, onRef, lanes, paths, message, name, sign: sign);
+  } on _SignFailed catch (e) {
+    throw GitError(
+      'Your git config signs commits (commit.gpgSign), and signing failed, so nothing was committed and the files '
+              'are as they were. Fix signing (or turn commit.gpgSign off) and try again. ${e.detail}'
+          .trim(),
+    );
+  }
+}
+
+Future<LaneLanding> _land(
+  String top,
+  String head,
+  String onRef,
+  List<LaneRef> lanes,
+  List<String> paths,
+  String message,
+  String? name, {
+  required bool sign,
+}) async {
   var cur = head;
   var replayed = 0;
   final notes = <String>[];
@@ -803,14 +854,16 @@ Future<LaneLanding> landWithCommits(
       continue;
     }
     var laneCur = cur;
+    var laneMade = 0;
     var clean = true;
     try {
       for (final c in commits) {
-        final next = await _replay(top, c.sha, laneCur);
+        final next = await _replay(top, c.sha, laneCur, sign: sign);
         if (next == null) {
           clean = false;
           break;
         }
+        if (next != laneCur) laneMade++;
         laneCur = next;
       }
     } on GitError {
@@ -830,7 +883,7 @@ Future<LaneLanding> landWithCommits(
       touched.addAll(out.split('\x00').where((p) => p.isNotEmpty));
     }
     cur = laneCur;
-    replayed += commits.length;
+    replayed += laneMade;
   }
   // The last commit: the folder's state of every path the run or a replayed lane touched, so the branch ends where
   // the folder is (the integrate step's work, conflict fixes, lanes that weren't replayed).
@@ -840,37 +893,47 @@ Future<LaneLanding> landWithCommits(
     final env = {'GIT_INDEX_FILE': '${tmp.path}/index'};
     await _git(top, ['read-tree', cur], env: env);
     if (all.isNotEmpty) {
-      final p = await Process.start('git', [
-        '-C',
-        top,
-        'update-index',
-        '--add',
-        '--remove',
-        '-z',
-        '--stdin',
-      ], environment: env);
-      p.stdin.write('${all.join('\x00')}\x00');
-      await p.stdin.close();
-      final (_, err, code) = await (p.stdout.drain<void>(), p.stderr.transform(utf8.decoder).join(), p.exitCode).wait;
-      if (code != 0) throw GitError('git update-index: ${err.trim()}');
+      // Guarded: the repository's filters and index hooks don't run (a clean filter refuses, see [repoGuard]).
+      await _piped(top, ['update-index', '--add', '--remove', '-z', '--stdin'], '${all.join('\x00')}\x00', env: env);
     }
     final tree = await _out(top, ['write-tree'], env: env);
     if (tree != await _out(top, ['rev-parse', '$cur^{tree}'])) {
-      cur = await _commitTree(top, tree, cur, stripBranding(message));
+      cur = await _commitTree(top, tree, cur, stripBranding(message), sign: sign);
     }
   } finally {
     await tmp.delete(recursive: true);
   }
   if (cur == head) return (head: null, laneCommits: 0, notes: notes);
+  // Nothing moved HEAD (a commit, a switch) while the commits were made.
+  final nowRef = '${(await _git(top, ['symbolic-ref', '-q', 'HEAD'], check: false)).stdout}'.trim();
+  if (nowRef != onRef || await _out(top, ['rev-parse', 'HEAD']) != head) {
+    throw const GitError(
+      'The checkout moved (a commit or a branch switch) while EveryAI was landing, so nothing was landed. '
+      'Try again.',
+    );
+  }
   if (name != null) {
-    await _git(top, ['branch', name, cur]);
+    // Create-only: an empty old value fails when the branch appeared meanwhile.
+    await _git(top, ['update-ref', '-m', 'EveryAI: land a workflow on $name', 'refs/heads/$name', cur, '']);
     await _git(top, ['symbolic-ref', '-m', 'EveryAI: land a workflow on $name', 'HEAD', 'refs/heads/$name']);
   } else {
     // Moves the branch HEAD is on (or a detached HEAD), only if nothing moved it meanwhile.
     await _git(top, ['update-ref', '-m', 'EveryAI: land a workflow', 'HEAD', cur, head]);
   }
-  // The index matches the new commit on those paths; the user's own staging elsewhere is kept.
-  if (all.isNotEmpty) await _git(top, ['reset', '-q', cur, '--', ...all], check: false);
+  // The index matches the new commit on those paths; the user's own staging elsewhere is kept. The paths are
+  // literal (a file named `b*` is not a pattern) and go on stdin (no argument limit).
+  if (all.isNotEmpty) {
+    try {
+      await _piped(
+        top,
+        ['reset', '-q', cur, '--pathspec-from-file=-', '--pathspec-file-nul'],
+        '${all.join('\x00')}\x00',
+        env: const {'GIT_LITERAL_PATHSPECS': '1'},
+      );
+    } on GitError {
+      // The commit landed; a stale index entry only shows as staged.
+    }
+  }
   return (head: cur, laneCommits: replayed, notes: notes);
 }
 
