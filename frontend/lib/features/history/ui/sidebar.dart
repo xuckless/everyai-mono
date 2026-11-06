@@ -132,6 +132,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
               _Destination(EveryIcon.add, 'New session', loc == Routes.code, Routes.code)
             else
               _Destination(EveryIcon.projects, 'Sessions', loc == Routes.code, Routes.code),
+            if (Host.isDesktop) _Destination(EveryIcon.board, 'Board', loc == Routes.board, Routes.board),
             if (Host.isDesktop)
               _Destination(
                 EveryIcon.search,

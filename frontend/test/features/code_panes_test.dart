@@ -103,7 +103,7 @@ void main() {
     expect(out, ['http://localhost:3000/app', 'http://localhost:5173/', 'http://localhost:9229/']);
   });
 
-  test("a drawer saved on a tab that moved to the panel opens on the terminal", () {
+  test('a drawer saved on a tab that moved to the panel opens on the terminal', () {
     final prefs = Preferences.inMemory();
     prefs['${codeLayoutPrefix}old'] = jsonEncode({'drawer': 'preview', 'drawer_last': 'processes'});
     final c = ProviderContainer(overrides: [preferencesProvider.overrideWithValue(prefs)]);

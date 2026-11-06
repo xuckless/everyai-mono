@@ -752,7 +752,15 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   opens the terminal). Preview stays built once shown. New session page: random headline (`startWords`), the box, and
   one quiet line under it (harness · model · effort · cap · In place/Worktree · where it runs · settings gear; the
   explanations moved into the popovers' subtitles); `QuietTrigger` in the kit; a picked workflow also shows a removable
-  chip above the field. Next: phase 4 Board, 5 Settings, 6 the rest.
+  chip above the field.
+- **UI overhaul, phase 4: Board (2026-11-06).** `/code/board` (desktop; sidebar "Board" under New session),
+  `features/code/board/`: Needs you / Running / Done columns (`BoardColumn.of(status)`), harness filter (segmented,
+  only with 2+ harnesses), "This computer" host label, New session button. Cards: harness monogram
+  (`harnessMark`), title, project · branch/worktree/fork, age, one live activity line (`boardActivity`, only for
+  sessions with an open controller), Approve/Deny in place for approvals (pulse), Open/Answer for questions (answering
+  happens in the session). Forks show once detached (`boardDetachedProvider`, prefs `code.board.detached`; toggle in
+  the child chat header). Removed-harness sessions stay off. Not done: cards don't glide between columns; questions
+  aren't answered on the card. Next: phase 5 Settings, 6 the rest.
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2

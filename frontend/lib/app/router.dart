@@ -8,6 +8,7 @@ import '../features/auth/auth_providers.dart';
 import '../features/auth/domain/auth_state.dart';
 import '../features/auth/ui/sign_in_screen.dart';
 import '../features/chat/ui/chat_screen.dart';
+import '../features/code/board/board_screen.dart';
 import '../features/code/ui/code_home.dart';
 import '../features/code/ui/session_view.dart';
 import '../features/history/ui/chats_screen.dart';
@@ -41,6 +42,7 @@ abstract final class Routes {
   static const projects = '/projects';
   static const artifacts = '/artifacts';
   static const code = '/code';
+  static const board = '/code/board';
   static String chat(String id) => '/chat/$id';
   static String codeSession(String id) => '/code/s/$id';
   static const codeSettingsPath = '/code/settings';
@@ -126,6 +128,12 @@ final routerProvider = Provider<GoRouter>((ref) {
             path: Routes.code,
             // Phones, tablets and the web follow a paired computer's sessions.
             pageBuilder: (_, _) => NoTransitionPage(child: Host.isDesktop ? const CodeHome() : const RemoteCodeHome()),
+          ),
+          GoRoute(
+            path: Routes.board,
+            // The Board lists this computer's sessions; other devices follow theirs from the session list.
+            pageBuilder: (_, _) =>
+                NoTransitionPage(child: Host.isDesktop ? const BoardScreen() : const RemoteCodeHome()),
           ),
           GoRoute(
             path: '/code/s/:id',

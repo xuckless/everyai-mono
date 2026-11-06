@@ -17,6 +17,7 @@ import '../../workflows/workflow_runs.dart' show workflowRunsProvider;
 import '../session_view.dart' show StatusPill, TranscriptList;
 import '../transcript/transcript_items.dart' show TranscriptScope;
 import '../transcript/session_approval.dart';
+import '../../board/board_providers.dart' show boardDetachedProvider;
 import 'console_state.dart';
 
 /// Session info's Running work: the session's workflows and their agents, its forks and subagents (custom agents
@@ -360,6 +361,20 @@ class ChildChatView extends ConsumerWidget {
             ),
           ),
           if (info != null) StatusPill(status: _statusOf(ref, childId), dense: true),
+          if (info != null)
+            Consumer(
+              builder: (context, ref, _) {
+                final on = ref.watch(boardDetachedProvider.select((ids) => ids.contains(childId)));
+                return AdaptiveIconButton(
+                  key: const ValueKey('console.child.board'),
+                  icon: EveryIcon.board,
+                  tooltip: on ? 'Take off the Board' : 'Show on the Board',
+                  size: 16,
+                  color: on ? theme.accent : null,
+                  onPressed: () => ref.read(boardDetachedProvider.notifier).toggle(childId),
+                );
+              },
+            ),
           if (info != null)
             AdaptiveButton(
               key: const ValueKey('console.child.open'),
