@@ -2,6 +2,7 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/motion/motion.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/segmented.dart';
@@ -110,8 +111,15 @@ class _UsageBodyState extends ConsumerState<UsageBody> {
                 ],
               ),
               if (providers case AsyncData(value: final p) when p.keys.isNotEmpty) _ProviderSplit(p),
-              if (agg.keys.isNotEmpty) AdaptiveSectionHeader('By ${_by.label.toLowerCase()}'),
-              for (final (i, k) in agg.keys.indexed) _KeyTile(k, label: label(k.key), color: _colorFor(agg, i)),
+              if (agg.keys.isNotEmpty)
+                KitLabel('By ${_by.label.toLowerCase()}', padding: const EdgeInsets.fromLTRB(8, 6, 8, 8)),
+              if (agg.keys.isNotEmpty)
+                _Card(
+                  children: [
+                    for (final (i, k) in agg.keys.indexed)
+                      _KeyTile(k, label: label(k.key), color: _colorFor(agg, i), share: _shareOf(agg, k)).rowIn(i),
+                  ],
+                ),
             ],
           ),
           AsyncError(:final error) => Padding(
@@ -133,6 +141,12 @@ class _UsageBodyState extends ConsumerState<UsageBody> {
         },
       ],
     );
+  }
+
+  /// [k]'s bar length: its value of the shown metric against the biggest key's.
+  double _shareOf(UsageAggregate agg, UsageBucket k) {
+    final top = agg.keys.fold<num>(0, (m, e) => _metric.of(e) > m ? _metric.of(e) : m);
+    return top <= 0 ? 0 : _metric.of(k) / top;
   }
 
   /// The swatch for the [i]th key of the list, matching its chart series.
@@ -158,36 +172,71 @@ class _QuotaCard extends StatelessWidget {
       children: [
         Row(
           children: [
-            Text('${b.plan.name} plan · included usage', style: theme.type.headline.tint(theme.text)),
-            const Spacer(),
-            Text(
-              '${formatMicros(b.usedMicros)} of ${formatMicros(b.includedMicros)}',
-              style: theme.type.callout.tint(theme.textMuted),
+            Expanded(child: Text('This month', style: theme.type.body.tint(theme.text))),
+            Text.rich(
+              TextSpan(
+                children: [
+                  TextSpan(text: formatMicros(b.usedMicros)),
+                  TextSpan(
+                    text: ' of ${formatMicros(b.includedMicros)}',
+                    style: TextStyle(color: theme.textSubtle),
+                  ),
+                ],
+              ),
+              style: theme.type.callout.mono.tint(theme.text),
             ),
           ],
         ),
-        const SizedBox(height: 8),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(4),
-          child: SizedBox(
-            height: 8,
-            child: Stack(
-              children: [
-                Positioned.fill(child: ColoredBox(color: theme.border)),
-                FractionallySizedBox(
-                  widthFactor: fraction,
-                  child: ColoredBox(color: fraction > 0.9 ? theme.danger : theme.accent),
-                ),
-              ],
+        const SizedBox(height: 10),
+        _Bar(fraction: fraction, color: fraction > 0.9 ? theme.danger : theme.accent),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                '${b.plan.name} plan · ${formatMicros(b.quotaLeftMicros)} left',
+                style: theme.type.caption.tint(theme.textSubtle),
+              ),
             ),
-          ),
-        ),
-        const SizedBox(height: 6),
-        Text(
-          '${formatMicros(b.quotaLeftMicros)} left this period · wallet ${formatMicros(b.walletMicros)}',
-          style: theme.type.caption.tint(theme.textMuted),
+            Text('Wallet ${formatMicros(b.walletMicros)}', style: theme.type.caption.tint(theme.textSubtle)),
+          ],
         ),
       ],
+    );
+  }
+}
+
+/// A thin rounded bar that fills to [fraction], easing in when it first shows or changes.
+class _Bar extends StatelessWidget {
+  const _Bar({required this.fraction, required this.color, this.height = 6});
+
+  final double fraction;
+  final Color color;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(99),
+      child: SizedBox(
+        height: height,
+        width: double.infinity,
+        child: Stack(
+          children: [
+            Positioned.fill(child: ColoredBox(color: theme.border)),
+            TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0, end: fraction.clamp(0, 1)),
+              duration: Motion.reduced(context) ? Duration.zero : const Duration(milliseconds: 520),
+              curve: Motion.easeOut,
+              builder: (context, v, _) => FractionallySizedBox(
+                widthFactor: v,
+                child: ColoredBox(color: color),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -484,38 +533,59 @@ class _ProviderSplit extends StatelessWidget {
   }
 }
 
+/// One model, kind or provider: its name and details, a bar of its share, and what it cost.
 class _KeyTile extends StatelessWidget {
-  const _KeyTile(this.k, {required this.label, required this.color});
+  const _KeyTile(this.k, {required this.label, required this.color, required this.share});
 
   final UsageBucket k;
   final String label;
   final Color? color;
 
+  /// Of the biggest key's spend (the longest bar fills the row).
+  final double share;
+
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    return AdaptiveListTile(
-      dense: true,
-      leading: Container(
-        width: 10,
-        height: 10,
-        decoration: BoxDecoration(
-          color: color ?? theme.textMuted.withValues(alpha: 0.5),
-          borderRadius: BorderRadius.circular(3),
-        ),
-      ),
-      title: Text(label),
-      subtitle: Text(
-        [
-          '${k.calls} calls',
-          '${formatTokens(k.promptTokens)} in / ${formatTokens(k.completionTokens)} out',
-          if (k.cachedTokens > 0) '${(k.cacheShare * 100).round()}% cached',
-          if (k.savedMicros > 0) 'saved ${_money(k.savedMicros)}',
-        ].join(' · '),
-      ),
-      trailing: Text(
-        k.chargedMicros == 0 ? 'Free' : _money(k.chargedMicros),
-        style: TextStyle(color: theme.textMuted, fontFeatures: const [FontFeature.tabularFigures()]),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 7),
+      child: Row(
+        children: [
+          Expanded(
+            flex: 5,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.type.callout.tint(theme.text)),
+                Text(
+                  [
+                    '${k.calls} calls',
+                    '${formatTokens(k.promptTokens)} in · ${formatTokens(k.completionTokens)} out',
+                    if (k.cachedTokens > 0) '${(k.cacheShare * 100).round()}% cached',
+                    if (k.savedMicros > 0) 'saved ${_money(k.savedMicros)}',
+                  ].join(' · '),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.type.caption.tint(theme.textSubtle),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            flex: 4,
+            child: _Bar(fraction: share, color: color ?? theme.textMuted, height: 5),
+          ),
+          const SizedBox(width: 12),
+          SizedBox(
+            width: 64,
+            child: Text(
+              k.chargedMicros == 0 ? 'Free' : _money(k.chargedMicros),
+              textAlign: TextAlign.end,
+              style: theme.type.caption.mono.tint(theme.text),
+            ),
+          ),
+        ],
       ),
     );
   }

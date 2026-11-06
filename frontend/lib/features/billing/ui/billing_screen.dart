@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/motion/motion.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../models/domain/model_catalog.dart';
@@ -33,10 +34,10 @@ class BillingBody extends ConsumerWidget {
             children: [
               Row(
                 children: [
-                  Expanded(child: Text('${b.plan.name} plan', style: theme.type.title.tint(theme.text))),
+                  Expanded(child: Text('${b.plan.name} plan', style: theme.type.headline.tint(theme.text))),
                   Text(
                     b.plan.priceCents == 0 ? 'Free' : '\$${b.plan.priceCents ~/ 100}/month',
-                    style: theme.type.headline.tint(theme.textMuted),
+                    style: theme.type.callout.mono.tint(theme.textMuted),
                   ),
                 ],
               ),
@@ -45,11 +46,11 @@ class BillingBody extends ConsumerWidget {
               const SizedBox(height: 16),
               Row(
                 children: [
-                  Text('Included usage', style: theme.type.headline.tint(theme.text)),
+                  Text('Included usage', style: theme.type.body.tint(theme.text)),
                   const Spacer(),
                   Text(
                     '${formatMicros(b.usedMicros)} of ${formatMicros(b.includedMicros)}',
-                    style: theme.type.callout.tint(theme.textMuted),
+                    style: theme.type.callout.mono.tint(theme.textMuted),
                   ),
                 ],
               ),
@@ -73,7 +74,7 @@ class BillingBody extends ConsumerWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('Wallet', style: theme.type.headline.tint(theme.text)),
+                          Text('Wallet', style: theme.type.body.tint(theme.text)),
                           Text(
                             'Used after the included usage runs out.',
                             style: theme.type.caption.tint(theme.textMuted),
@@ -81,7 +82,7 @@ class BillingBody extends ConsumerWidget {
                         ],
                       ),
                     ),
-                    Text(formatMicros(b.walletMicros), style: theme.type.title.tint(theme.text)),
+                    Text(formatMicros(b.walletMicros), style: theme.type.headline.mono.tint(theme.text)),
                   ],
                 ),
                 const SizedBox(height: 12),
@@ -189,7 +190,7 @@ class _UsageTile extends ConsumerWidget {
       ),
       trailing: Text(
         row.chargedMicros == 0 ? 'Free' : formatMicros(row.chargedMicros),
-        style: TextStyle(color: theme.textMuted, fontFeatures: const [FontFeature.tabularFigures()]),
+        style: theme.type.caption.mono.tint(theme.textMuted),
       ),
     );
   }
@@ -225,15 +226,22 @@ class _Bar extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     return ClipRRect(
-      borderRadius: BorderRadius.circular(4),
+      borderRadius: BorderRadius.circular(99),
       child: SizedBox(
-        height: 8,
+        height: 6,
+        width: double.infinity,
         child: Stack(
           children: [
             Positioned.fill(child: ColoredBox(color: theme.border)),
-            FractionallySizedBox(
-              widthFactor: fraction,
-              child: ColoredBox(color: fraction > 0.9 ? theme.danger : theme.accent),
+            // Fills in once shown (ease-out), and again when the usage changes.
+            TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0, end: fraction.clamp(0, 1)),
+              duration: Motion.reduced(context) ? Duration.zero : const Duration(milliseconds: 520),
+              curve: Motion.easeOut,
+              builder: (context, v, _) => FractionallySizedBox(
+                widthFactor: v,
+                child: ColoredBox(color: fraction > 0.9 ? theme.danger : theme.accent),
+              ),
             ),
           ],
         ),
