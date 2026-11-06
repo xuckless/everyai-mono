@@ -24,6 +24,7 @@ import '../../code/ui/code_home.dart';
 import '../../remote/ui/remote_code.dart' show RemoteSessionList;
 import '../../settings/ui/account_menu.dart';
 import '../../updates/ui/update_banner.dart';
+import '../../../core/preferences.dart';
 
 /// The app sidebar: Chat | Code, destinations, the recent list, the account.
 /// On wide windows it collapses away entirely (pages then show a button to
@@ -318,6 +319,7 @@ class CodeSessionList extends ConsumerWidget {
     ];
     final groups = groupCodeSessions(filterSessions(known, query, projectNames: names));
     final searching = query.trim().isNotEmpty;
+    final folded = ref.watch(sidebarFoldedProjectsProvider);
     final active = location.startsWith('/code/s/') ? location.substring('/code/s/'.length) : null;
     if (projects.isEmpty) {
       return Padding(
@@ -349,14 +351,32 @@ class CodeSessionList extends ConsumerWidget {
         ],
         for (final p in projects)
           if (!searching || groups.recent.any((s) => s.projectId == p.id)) ...[
-            _ProjectHeader(key: ValueKey('sidebar.project.${p.id}'), project: p),
-            for (final s in groups.recent.where((s) => s.projectId == p.id))
-              SessionTile(
-                info: s,
-                dense: true,
-                selected: s.id == active,
-                onOpen: () => onNavigate(Routes.codeSession(s.id)),
-              ),
+            _ProjectHeader(
+              key: ValueKey('sidebar.project.${p.id}'),
+              project: p,
+              // A search shows every match, folded or not.
+              open: searching || !folded.contains(p.id),
+              onToggle: searching ? null : () => ref.read(sidebarFoldedProjectsProvider.notifier).toggle(p.id),
+            ),
+            AnimatedSize(
+              duration: Motion.reduced(context) ? Duration.zero : Motion.move,
+              curve: Motion.easeInOut,
+              alignment: Alignment.topCenter,
+              child: searching || !folded.contains(p.id)
+                  ? Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        for (final s in groups.recent.where((s) => s.projectId == p.id))
+                          SessionTile(
+                            info: s,
+                            dense: true,
+                            selected: s.id == active,
+                            onOpen: () => onNavigate(Routes.codeSession(s.id)),
+                          ),
+                      ],
+                    )
+                  : const SizedBox(width: double.infinity),
+            ),
           ],
       ],
     );
@@ -366,9 +386,13 @@ class CodeSessionList extends ConsumerWidget {
 /// A project's name in the Code list, with where it runs when that isn't this computer, and a ⋯ (on hover) to
 /// change that or remove the project from the list.
 class _ProjectHeader extends ConsumerStatefulWidget {
-  const _ProjectHeader({super.key, required this.project});
+  const _ProjectHeader({super.key, required this.project, required this.open, this.onToggle});
 
   final CodeProject project;
+
+  /// Whether its sessions show; [onToggle] folds or opens them (null while searching).
+  final bool open;
+  final VoidCallback? onToggle;
 
   @override
   ConsumerState<_ProjectHeader> createState() => _ProjectHeaderState();
@@ -384,50 +408,101 @@ class _ProjectHeaderState extends ConsumerState<_ProjectHeader> {
     final env = watchEnvironment(ref, p.environment);
     // The id stands in while the list loads or when the environment is gone.
     final where = p.environment == 'host' ? null : env?.label ?? p.environment;
+    final muted = _hover ? theme.textMuted : theme.textSubtle;
+    // Like a Settings group heading: name over a hairline, a chevron that folds the project's sessions. The insets
+    // match the session rows', so the ⋯ lines up with theirs.
     return MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 10, 8, 2),
-        child: Row(
-          children: [
-            AdaptiveIcon(EveryIcon.projects, size: 13, color: theme.textMuted),
-            const SizedBox(width: 6),
-            Flexible(
-              child: Text(
-                p.name,
-                overflow: TextOverflow.ellipsis,
-                style: theme.type.caption.semibold.tint(theme.textMuted),
-              ),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onToggle,
+        child: Semantics(
+          button: widget.onToggle != null,
+          expanded: widget.open,
+          label: p.name,
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(8, 12, 8, 4),
+            padding: const EdgeInsets.fromLTRB(10, 0, 10, 5),
+            decoration: BoxDecoration(
+              border: Border(bottom: BorderSide(color: theme.border)),
             ),
-            if (where != null) ...[
-              const SizedBox(width: 6),
-              Flexible(
-                child: Text(
-                  where,
-                  key: ValueKey('sidebar.project.${p.id}.environment'),
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.type.caption.tint(theme.textMuted),
+            child: Row(
+              children: [
+                AdaptiveIcon(EveryIcon.projects, size: 13, color: muted),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          p.name,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.type.caption.medium.tint(muted),
+                        ),
+                      ),
+                      if (where != null) ...[
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            where,
+                            key: ValueKey('sidebar.project.${p.id}.environment'),
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.type.caption.tint(theme.textSubtle),
+                          ),
+                        ),
+                      ],
+                      const SizedBox(width: 4),
+                      AnimatedRotation(
+                        turns: widget.open ? 0 : -0.25,
+                        duration: Motion.reduced(context) ? Duration.zero : Motion.swap,
+                        curve: Motion.easeInOut,
+                        child: AdaptiveIcon(
+                          EveryIcon.chevronDown,
+                          key: ValueKey('sidebar.project.${p.id}.fold'),
+                          size: 13,
+                          color: muted,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
-            const Spacer(),
-            Opacity(
-              opacity: _hover || Host.isMobile ? 1 : 0,
-              child: AnchoredPopover(
-                width: 300,
-                builder: (context, close) => _ProjectOptions(project: p, close: close),
-                child: Padding(
-                  key: ValueKey('sidebar.project.${p.id}.options'),
-                  padding: const EdgeInsets.all(4),
-                  child: AdaptiveIcon(EveryIcon.more, size: 14, color: theme.textMuted),
+                Opacity(
+                  opacity: _hover || Host.isMobile ? 1 : 0,
+                  child: AnchoredPopover(
+                    width: 300,
+                    builder: (context, close) => _ProjectOptions(project: p, close: close),
+                    child: Padding(
+                      key: ValueKey('sidebar.project.${p.id}.options'),
+                      padding: const EdgeInsets.only(left: 6),
+                      child: AdaptiveIcon(EveryIcon.more, size: 14, color: theme.textMuted),
+                    ),
+                  ),
                 ),
-              ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
+  }
+}
+
+/// Projects whose sessions are folded in the Code sidebar, by id (Preferences `code.sidebar.folded`).
+final sidebarFoldedProjectsProvider = NotifierProvider<SidebarFoldedProjects, Set<String>>(SidebarFoldedProjects.new);
+
+final class SidebarFoldedProjects extends Notifier<Set<String>> {
+  static const key = 'code.sidebar.folded';
+
+  @override
+  Set<String> build() {
+    final raw = ref.read(preferencesProvider)[key];
+    return raw == null || raw.isEmpty ? const {} : raw.split('\n').toSet();
+  }
+
+  void toggle(String id) {
+    state = state.contains(id) ? ({...state}..remove(id)) : {...state, id};
+    ref.read(preferencesProvider)[key] = state.join('\n');
   }
 }
 
