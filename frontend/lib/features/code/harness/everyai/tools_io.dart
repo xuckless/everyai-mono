@@ -19,6 +19,7 @@ import 'shell_io.dart';
 import 'screen_tools_io.dart';
 import 'window_capture_io.dart';
 import 'scrub.dart';
+import '../../shells/terminal_text.dart';
 import 'untrusted_tools.dart';
 
 // The tool set and its behaviour follow opencode's (MIT; see
@@ -31,6 +32,7 @@ abstract final class ToolNames {
   static const bashOutput = 'bash_output';
   static const killShell = 'kill_shell';
   static const monitor = 'monitor';
+  static const bashInput = 'bash_input';
   static const read = 'read';
   static const write = 'write';
   static const edit = 'edit';
@@ -53,6 +55,7 @@ const actionKinds = {
   ToolNames.bashOutput: 'BashOutputAction',
   ToolNames.killShell: 'KillShellAction',
   ToolNames.monitor: 'MonitorAction',
+  ToolNames.bashInput: 'ShellInputAction',
   ToolNames.read: 'ReadFileAction',
   ToolNames.write: 'WriteFileAction',
   ToolNames.edit: 'EditAction',
@@ -123,7 +126,7 @@ final _applyPatchSpec = _fn(
 );
 
 const _aliases = {
-  'terminal': {ToolNames.bash, ToolNames.bashOutput, ToolNames.killShell, ToolNames.monitor},
+  'terminal': {ToolNames.bash, ToolNames.bashOutput, ToolNames.killShell, ToolNames.monitor, ToolNames.bashInput},
   'file_editor': {
     ToolNames.read,
     ToolNames.write,
@@ -186,6 +189,24 @@ final _specs = [
       'shell_id': {'type': 'string'},
       'until': {'type': 'string', 'description': 'Regular expression; omit to wait for the shell to exit'},
       'timeout_ms': {'type': 'integer'},
+    },
+    ['shell_id'],
+  ),
+  _fn(
+    ToolNames.bashInput,
+    'Type into a background shell that waits for input (a prompt, a y/n question, a dev server\'s `rs` or `q`). '
+    'Background shells run in a terminal; bash_output and monitor say when one seems to wait at a prompt. Sends '
+    '`text` as typed, then each of `keys` (enter, tab, esc, up, down, left, right, backspace, space, ctrl-c, ctrl-d, '
+    'any ctrl-<letter>), and returns what it printed in the next moment. Never type passwords or secrets: ask the '
+    'user to type those in the shell themselves (they can open it from the Processes tab).',
+    {
+      'shell_id': {'type': 'string'},
+      'text': {'type': 'string', 'description': 'Characters to type (no Enter unless keys has it)'},
+      'keys': {
+        'type': 'array',
+        'items': {'type': 'string'},
+        'description': 'Keys to press after the text, e.g. ["enter"]',
+      },
     },
     ['shell_id'],
   ),
@@ -669,7 +690,7 @@ final class ToolRunner {
     switch (tool) {
       case ToolNames.browser || ToolNames.screenshot:
         return 'Error: research jobs read the web with web_fetch and web_search only.';
-      case ToolNames.bash || ToolNames.bashOutput || ToolNames.killShell || ToolNames.monitor:
+      case ToolNames.bash || ToolNames.bashOutput || ToolNames.killShell || ToolNames.monitor || ToolNames.bashInput:
         return 'Error: research jobs have no shell, so nothing downloaded can run. Read sources with web_fetch '
             '(raw.githubusercontent.com for files) and write your notes with write.';
       case ToolNames.read || ToolNames.grep || ToolNames.glob:
@@ -753,6 +774,7 @@ final class ToolRunner {
         ToolNames.bashOutput => _bashOutput(args),
         ToolNames.killShell => await _killShell(args),
         ToolNames.monitor => await _monitor(args, cancel),
+        ToolNames.bashInput => await _bashInput(args),
         ToolNames.read => _readFile(args),
         ToolNames.write => _writeFile(args),
         ToolNames.edit => _editFile(args),
@@ -913,6 +935,23 @@ final class ToolRunner {
 
   String _status(BackgroundShell b) => b.running ? 'running' : 'exited with code ${b.exitCode}';
 
+  /// What the agent should know beside [b]'s output: what the user typed into it since the last read, and the
+  /// prompt it seems to wait at.
+  String _shellNotes(BackgroundShell b) {
+    final typed = b.entry.takeTyped();
+    final waiting = b.waitingFor();
+    final restarted = b.restarted;
+    b.restarted = false;
+    return [
+      if (restarted) '[The user restarted this shell from the app: the output is from the new run.]',
+      if (typed != null)
+        '[The user typed into this shell from the app: ${stripHidden(typed)}. What follows may come from that.]',
+      if (waiting != null)
+        '[It seems to wait for input at: ${stripHidden(waiting)}. Answer with bash_input, or ask the user if the '
+            'answer is theirs to give.]',
+    ].map((l) => '\n$l').join();
+  }
+
   ToolOutput _bashOutput(Map<String, Object?> args) {
     final b = _bg(args);
     if (b == null) return ToolOutput('Error: no background shell ${args['shell_id']}.', isError: true);
@@ -922,7 +961,7 @@ final class ToolRunner {
       text = text.split('\n').where(re.hasMatch).join('\n');
     }
     final shown = text.isEmpty ? '(no new output)' : _commandOutput(b.command, text, 'bg-${b.id}');
-    return ToolOutput(_fit('[${b.id}: ${_status(b)}]\n$shown', 'bg-${b.id}'));
+    return ToolOutput(_fit('[${b.id}: ${_status(b)}]\n$shown', 'bg-${b.id}') + _shellNotes(b));
   }
 
   Future<ToolOutput> _killShell(Map<String, Object?> args) async {
@@ -954,23 +993,78 @@ final class ToolRunner {
       return !b.running;
     }
 
+    String? waiting;
     if (!check()) {
       final done = Completer<void>();
       final sub = b.changes.listen((_) {
         if (check() && !done.isCompleted) done.complete();
       });
+      // A program asking a question never prints the line waited for: look every 2 s.
+      final poll = Timer.periodic(const Duration(seconds: 2), (_) {
+        waiting = b.waitingFor();
+        if (waiting != null && !done.isCompleted) done.complete();
+      });
       await Future.any([done.future, Future<void>.delayed(Duration(milliseconds: ms)), ?cancel]);
+      poll.cancel();
       await sub.cancel();
     }
-    final fresh = b.output.substring(from.clamp(0, b.output.length));
+    final fresh = cleanTerminalText(b.output.substring(from.clamp(0, b.output.length)));
     b.readTo = b.output.length;
     final why = matched != null
         ? 'Matched: ${stripHidden(matched!)}'
         : !b.running
         ? '${b.id} exited with code ${b.exitCode}.'
+        : waiting != null
+        ? 'Stopped waiting: ${b.id} seems to wait for input.'
         : 'Still running after ${ms ~/ 1000} s with no match.';
     final shown = fresh.isEmpty ? '(none)' : _commandOutput(b.command, fresh, 'bg-${b.id}');
-    return ToolOutput(_fit('$why\n--- output while waiting ---\n$shown', 'bg-${b.id}'));
+    return ToolOutput(_fit('$why\n--- output while waiting ---\n$shown', 'bg-${b.id}') + _shellNotes(b));
+  }
+
+  Future<ToolOutput> _bashInput(Map<String, Object?> args) async {
+    final b = _bg(args);
+    if (b == null) return ToolOutput('Error: no background shell ${args['shell_id']}.', isError: true);
+    if (!b.running) return ToolOutput('Error: ${b.id} ${_status(b)}; nothing reads input any more.', isError: true);
+    if (!b.interactive) {
+      return ToolOutput(
+        "Error: ${b.id} runs without a terminal on this computer, so it can't take input. Stop it and run the "
+        'command non-interactively (flags like --yes, or input piped in).',
+        isError: true,
+      );
+    }
+    final text = args['text'] as String? ?? '';
+    final keys = [for (final k in (args['keys'] as List?) ?? const []) '$k'];
+    final bytes = StringBuffer(text);
+    for (final k in keys) {
+      final seq = keySequence(k);
+      if (seq == null) return ToolOutput('Error: unknown key "$k".', isError: true);
+      bytes.write(seq);
+    }
+    if (bytes.isEmpty) return const ToolOutput('Error: give text or keys to send.', isError: true);
+    if (text.isNotEmpty && scrubber.redact(text) != text) {
+      return const ToolOutput(
+        'Error: that text holds a secret. Ask the user to type it into the shell themselves (Processes tab).',
+        isError: true,
+      );
+    }
+    b.readTo = b.output.length;
+    b.write(bytes.toString());
+    // What it answered with: up to 3 s, ending early after 400 ms of quiet.
+    final until = DateTime.now().add(const Duration(seconds: 3));
+    var seen = b.output.length;
+    var quietSince = DateTime.now();
+    while (DateTime.now().isBefore(until) && b.running) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      if (b.output.length != seen) {
+        seen = b.output.length;
+        quietSince = DateTime.now();
+      } else if (seen > b.readTo && DateTime.now().difference(quietSince).inMilliseconds >= 400) {
+        break;
+      }
+    }
+    final fresh = b.takeNew();
+    final shown = fresh.trim().isEmpty ? '(no output yet)' : _commandOutput(b.command, fresh, 'bg-${b.id}');
+    return ToolOutput(_fit('Sent to ${b.id} (${_status(b)}).\n$shown', 'bg-${b.id}') + _shellNotes(b));
   }
 
   ToolOutput _readFile(Map<String, Object?> args) {

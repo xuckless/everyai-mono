@@ -124,8 +124,8 @@ final class SessionTerminal extends Notifier<TerminalStatus> {
     return const TerminalStatus();
   }
 
-  /// Starts the shell in [workingDir] unless it is running.
-  void start(String workingDir) {
+  /// Starts the shell in [workingDir] unless it is running; [command] is typed into it once it starts.
+  void start(String workingDir, {String? command}) {
     if (_pty != null && state.running) return;
     final pty = startShell(
       workingDir: workingDir,
@@ -139,6 +139,7 @@ final class SessionTerminal extends Notifier<TerminalStatus> {
       return;
     }
     _pty = pty;
+    if (command != null) pty.write(const Utf8Encoder().convert('$command\r'));
     state = TerminalStatus(pid: pty.pid, urls: state.urls);
     _sub = pty.output.cast<List<int>>().transform(const Utf8Decoder(allowMalformed: true)).listen(_output);
     terminal.onOutput = (data) => _pty?.write(const Utf8Encoder().convert(data));
@@ -186,9 +187,12 @@ final class SessionTerminal extends Notifier<TerminalStatus> {
 /// Processes and Preview keep reading the shell they always did; the others are `<owner>#<n>`.
 @immutable
 final class TerminalTabsState {
-  const TerminalTabsState(this.ids, this.active);
+  const TerminalTabsState(this.ids, this.active, {this.labels = const {}});
   final List<String> ids;
   final int active;
+
+  /// Names of tabs opened for a command ("logs · web"); others show their number.
+  final Map<String, String> labels;
 
   String get activeId => ids[active.clamp(0, ids.length - 1)];
 }
@@ -202,6 +206,7 @@ final class TerminalTabs extends Notifier<TerminalTabsState> {
   TerminalTabs(this.owner);
   final String owner;
   int _next = 2;
+  final _commands = <String, String>{};
 
   @override
   TerminalTabsState build() => TerminalTabsState([owner], 0);
@@ -209,10 +214,31 @@ final class TerminalTabs extends Notifier<TerminalTabsState> {
   /// Opens a new tab and shows it.
   void add() {
     final ids = [...state.ids, '$owner#${_next++}'];
-    state = TerminalTabsState(ids, ids.length - 1);
+    state = TerminalTabsState(ids, ids.length - 1, labels: state.labels);
   }
 
-  void show(int index) => state = TerminalTabsState(state.ids, index.clamp(0, state.ids.length - 1));
+  /// Opens a new tab named [label] whose shell runs [command] first (a container's logs, a shell inside it).
+  void addCommand(String label, String command) {
+    final id = '$owner#${_next++}';
+    _commands[id] = command;
+    final ids = [...state.ids, id];
+    state = TerminalTabsState(ids, ids.length - 1, labels: {...state.labels, id: label});
+  }
+
+  /// The command tab [id] runs when its shell starts (once).
+  String? takeCommand(String id) => _commands.remove(id);
+
+  void show(int index) =>
+      state = TerminalTabsState(state.ids, index.clamp(0, state.ids.length - 1), labels: state.labels);
+
+  /// Shows the tab following shell [key] (see `shellTabId`), opening it after the others when there is none.
+  void openShell(String key) {
+    final id = '$owner@shell:$key';
+    final at = state.ids.indexOf(id);
+    if (at >= 0) return show(at);
+    final ids = [...state.ids, id];
+    state = TerminalTabsState(ids, ids.length - 1, labels: state.labels);
+  }
 
   /// Closes the tab at [index] and ends its shell; the last tab stays (restart it instead).
   void close(int index) {
@@ -220,8 +246,9 @@ final class TerminalTabs extends Notifier<TerminalTabsState> {
     final id = state.ids[index];
     final ids = [...state.ids]..removeAt(index);
     final active = state.active > index || state.active == ids.length ? state.active - 1 : state.active;
-    state = TerminalTabsState(ids, active.clamp(0, ids.length - 1));
-    ref.invalidate(sessionTerminalProvider(id));
+    state = TerminalTabsState(ids, active.clamp(0, ids.length - 1), labels: {...state.labels}..remove(id));
+    // A shell's tab only follows it: closing the tab leaves the shell running.
+    if (!id.contains('@shell:')) ref.invalidate(sessionTerminalProvider(id));
   }
 }
 

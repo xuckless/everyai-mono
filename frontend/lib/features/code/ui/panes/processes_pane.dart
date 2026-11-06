@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -9,6 +11,9 @@ import '../../domain/code_session.dart';
 import '../../domain/local_ports.dart';
 import '../../panes/panes_providers.dart';
 import '../../panes/processes.dart';
+import '../../shells/containers.dart';
+import '../../shells/shell_registry.dart';
+import '../../shells/shells_providers.dart';
 import '../console/console_state.dart';
 
 final _mono = EveryType.resolve().caption.mono.copyWith(height: 1.4);
@@ -31,11 +36,62 @@ class ProcessesPane extends ConsumerWidget {
     ref.read(consolePanelProvider(session.id).notifier).show(ConsoleView.preview);
   }
 
+  /// Opens the drawer's tab that follows [shell] (its log so far, then live).
+  void _open(WidgetRef ref, ShellEntry shell) {
+    ref.read(terminalTabsProvider(session.id).notifier).openShell(shell.key);
+    ref.read(codePaneProvider(session.id).notifier).show(CodePane.terminal);
+  }
+
+  /// Opens a drawer tab named [label] running [command] (a container's logs or a shell inside it).
+  void _run(WidgetRef ref, String label, String command) {
+    ref.read(terminalTabsProvider(session.id).notifier).addCommand(label, command);
+    ref.read(codePaneProvider(session.id).notifier).show(CodePane.terminal);
+  }
+
+  void _logs(WidgetRef ref, SessionContainer c) =>
+      _run(ref, 'logs · ${c.name}', '${c.cli} logs -f --tail 500 ${c.shortId}');
+
+  Future<void> _stopContainer(BuildContext context, WidgetRef ref, SessionContainer c) async {
+    final ok = await stopContainer(c);
+    if (context.mounted) showAdaptiveToast(context, ok ? 'Stopped ${c.name}' : "Couldn't stop ${c.name}");
+    ref.invalidate(sessionContainersProvider(session.id));
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = EveryTheme.of(context);
+    final containers = ref.watch(sessionContainersProvider(session.id)).value ?? const <SessionContainer>[];
     final snapshot = ref.watch(sessionProcessesProvider(session.id));
     final list = snapshot.value ?? const <SessionProcess>[];
+    final shells = ref.watch(sessionShellsProvider(session.id)).value ?? const <ShellEntry>[];
+    final groups = groupByShell(shells, list);
+    final running = [
+      for (final g in groups)
+        if (g.shell.running) g,
+    ];
+    // Finished background shells, then the last few commands, newest first.
+    final ended = [
+      for (final g in groups.reversed)
+        if (!g.shell.running && g.shell.background) g,
+    ];
+    final recent = [
+      for (final g in groups.reversed)
+        if (!g.shell.running && !g.shell.background) g,
+    ].take(8).toList();
+    final others = otherProcesses(groups, list);
+    final empty = groups.isEmpty && others.isEmpty && containers.isEmpty;
+    Widget header(String text) => Padding(
+      padding: const EdgeInsets.fromLTRB(4, 14, 4, 4),
+      child: Text(text, style: theme.type.micro.semibold.tint(theme.textSubtle)),
+    );
+    Widget shellRow(ShellGroup g) => _ShellRow(
+      group: g,
+      onOpen: () => _open(ref, g.shell),
+      onStop: g.shell.running ? () => g.shell.live?.stop() : null,
+      onRestart: g.shell.restart,
+      onPreview: (port) => _preview(ref, port),
+      onStopChild: (p) => _kill(context, ref, p),
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -45,9 +101,10 @@ class ProcessesPane extends ConsumerWidget {
             children: [
               Expanded(
                 child: Text(
-                  snapshot.isLoading && snapshot.value == null
+                  snapshot.isLoading && snapshot.value == null && shells.isEmpty
                       ? 'Looking…'
-                      : '${list.length} running · ${list.fold(0, (n, p) => n + p.ports.length)} listening',
+                      : '${running.length + others.length} running · '
+                            '${list.fold(0, (n, p) => n + p.ports.length)} listening',
                   style: theme.type.caption.tint(theme.textMuted),
                 ),
               ),
@@ -61,30 +118,248 @@ class ProcessesPane extends ConsumerWidget {
           ),
         ),
         Expanded(
-          child: list.isEmpty
+          child: empty
               ? Center(
                   child: Padding(
                     padding: const EdgeInsets.all(24),
                     child: Text(
-                      'Nothing running. Servers and background jobs the agent or the terminal starts show here.',
+                      'Nothing running. Servers, background jobs and commands the agent or the terminal starts show '
+                      'here; click one to see its output.',
                       textAlign: TextAlign.center,
                       style: theme.type.callout.tint(theme.textMuted),
                     ),
                   ),
                 )
-              : ListView.separated(
+              : ListView(
                   padding: const EdgeInsets.fromLTRB(10, 0, 10, 12),
-                  itemCount: list.length,
-                  separatorBuilder: (_, _) => Container(height: 1, color: theme.border),
-                  itemBuilder: (context, i) => _ProcessRow(
-                    process: list[i],
-                    onStop: () => _kill(context, ref, list[i]),
-                    onForceQuit: () => _kill(context, ref, list[i], force: true),
-                    onPreview: (port) => _preview(ref, port),
-                  ),
+                  children: [
+                    if (running.isNotEmpty) ...[header('RUNNING'), for (final g in running) shellRow(g)],
+                    if (others.isNotEmpty) ...[
+                      header(running.isEmpty ? 'RUNNING' : 'OTHER PROCESSES'),
+                      for (final p in others)
+                        _ProcessRow(
+                          process: p,
+                          onStop: () => _kill(context, ref, p),
+                          onForceQuit: () => _kill(context, ref, p, force: true),
+                          onPreview: (port) => _preview(ref, port),
+                        ),
+                    ],
+                    if (containers.isNotEmpty) ...[
+                      header('CONTAINERS'),
+                      for (final c in containers)
+                        _ContainerRow(
+                          container: c,
+                          onLogs: () => _logs(ref, c),
+                          onShell: () => _run(
+                            ref,
+                            'shell · ${c.name}',
+                            "${c.cli} exec -it ${c.shortId} sh -c 'command -v bash >/dev/null && exec bash || exec sh'",
+                          ),
+                          onStop: () => _stopContainer(context, ref, c),
+                          onPreview: (port) => _preview(ref, port),
+                        ),
+                    ],
+                    if (ended.isNotEmpty) ...[header('ENDED'), for (final g in ended) shellRow(g)],
+                    if (recent.isNotEmpty) ...[header('RECENT COMMANDS'), for (final g in recent) shellRow(g)],
+                  ],
                 ),
         ),
       ],
+    );
+  }
+}
+
+/// A shell and the processes running under it, with the ports they listen on.
+@immutable
+final class ShellGroup {
+  const ShellGroup(this.shell, this.processes);
+  final ShellEntry shell;
+
+  /// Processes below the shell (not the shell itself).
+  final List<SessionProcess> processes;
+
+  List<ListeningPort> get ports {
+    final byPort = {
+      for (final p in processes)
+        for (final l in p.ports) l.port: l,
+    };
+    return byPort.values.toList()..sort((a, b) => a.port.compareTo(b.port));
+  }
+}
+
+/// [shells] with the [processes] under each (a dev server's workers sit under the shell that started them).
+List<ShellGroup> groupByShell(List<ShellEntry> shells, List<SessionProcess> processes) {
+  final parent = {for (final p in processes) p.pid: p.ppid};
+  final roots = {
+    for (final s in shells)
+      if (s.running && s.pid != null) s.pid!: s,
+  };
+  final under = <String, List<SessionProcess>>{};
+  for (final p in processes) {
+    if (roots.containsKey(p.pid)) continue;
+    var at = p.ppid;
+    final seen = <int>{};
+    while (seen.add(at)) {
+      if (roots[at] case final s?) {
+        (under[s.key] ??= []).add(p);
+        break;
+      }
+      final up = parent[at];
+      if (up == null) break;
+      at = up;
+    }
+  }
+  return [for (final s in shells) ShellGroup(s, under[s.key] ?? const [])];
+}
+
+/// The processes in no shell's group (the user's terminals, what an outside lead started).
+List<SessionProcess> otherProcesses(List<ShellGroup> groups, List<SessionProcess> processes) {
+  final taken = {
+    for (final g in groups) ...[
+      if (g.shell.running && g.shell.pid != null) g.shell.pid!,
+      for (final p in g.processes) p.pid,
+    ],
+  };
+  return [
+    for (final p in processes)
+      if (!taken.contains(p.pid)) p,
+  ];
+}
+
+/// A shell: its title, who started it and how it is doing, the command, its ports, the processes under it. Click
+/// opens its output in the drawer.
+class _ShellRow extends StatefulWidget {
+  const _ShellRow({
+    required this.group,
+    required this.onOpen,
+    required this.onStop,
+    required this.onRestart,
+    required this.onPreview,
+    required this.onStopChild,
+  });
+
+  final ShellGroup group;
+  final VoidCallback onOpen;
+  final VoidCallback? onStop;
+  final Future<void> Function()? onRestart;
+  final ValueChanged<ListeningPort> onPreview;
+  final ValueChanged<SessionProcess> onStopChild;
+
+  @override
+  State<_ShellRow> createState() => _ShellRowState();
+}
+
+class _ShellRowState extends State<_ShellRow> {
+  var _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final g = widget.group;
+    final s = g.shell;
+    final failed = !s.running && (s.exitCode ?? 0) != 0;
+    final dot = s.running ? theme.success : (failed ? theme.danger : theme.textSubtle);
+    final status = s.running
+        ? (s.live?.interactive ?? false ? 'running · interactive' : 'running')
+        : 'exited ${s.exitCode}';
+    final ports = g.ports;
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onOpen,
+        child: Container(
+          margin: const EdgeInsets.only(bottom: 2),
+          padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 6),
+          decoration: BoxDecoration(color: _hover ? theme.hover : null, borderRadius: BorderRadius.circular(8)),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(top: 6, right: 8),
+                child: Container(
+                  width: 7,
+                  height: 7,
+                  decoration: BoxDecoration(color: dot, shape: BoxShape.circle),
+                ),
+              ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            s.title,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.type.callout.semibold.tint(theme.text),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          '${s.id} · ${s.origin.label} · $status',
+                          style: theme.type.caption.tint(failed ? theme.danger : theme.textMuted),
+                        ),
+                      ],
+                    ),
+                    if (s.description.trim().isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        s.command.trim(),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: _mono.copyWith(color: theme.textMuted),
+                      ),
+                    ],
+                    if (ports.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 4,
+                        children: [
+                          for (final port in ports)
+                            _PortChip(port: port, onTap: port.local ? () => widget.onPreview(port) : null),
+                        ],
+                      ),
+                    ],
+                    for (final p in g.processes)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          '↳ ${p.name} ${p.pid}',
+                          overflow: TextOverflow.ellipsis,
+                          style: _mono.copyWith(color: theme.textSubtle),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              AdaptiveMenuButton(
+                tooltip: 'Shell actions',
+                actions: [
+                  MenuAction(label: 'Open output', onSelected: widget.onOpen),
+                  if (widget.onStop case final stop?) MenuAction(label: 'Stop', onSelected: stop),
+                  if (widget.onRestart case final restart?)
+                    MenuAction(label: 'Restart', onSelected: () => unawaited(restart())),
+                  for (final p in g.processes)
+                    MenuAction(label: 'Stop ${p.name} (${p.pid})', onSelected: () => widget.onStopChild(p)),
+                  MenuAction(
+                    label: 'Copy command',
+                    onSelected: () => Clipboard.setData(ClipboardData(text: s.command)),
+                  ),
+                ],
+                child: Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: Icon(EveryIcon.more.of(theme.design), size: 16, color: theme.textMuted),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -163,6 +438,107 @@ class _ProcessRow extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// A container of the session: name, image, state and why it counts, its published ports. Click shows its logs.
+class _ContainerRow extends StatelessWidget {
+  const _ContainerRow({
+    required this.container,
+    required this.onLogs,
+    required this.onShell,
+    required this.onStop,
+    required this.onPreview,
+  });
+
+  final SessionContainer container;
+  final VoidCallback onLogs;
+  final VoidCallback onShell;
+  final VoidCallback onStop;
+  final ValueChanged<ListeningPort> onPreview;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final c = container;
+    final up = c.status == 'running';
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onLogs,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 6),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(top: 6, right: 8),
+                child: Container(
+                  width: 7,
+                  height: 7,
+                  decoration: BoxDecoration(color: up ? theme.cyan : theme.textSubtle, shape: BoxShape.circle),
+                ),
+              ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            c.name,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.type.callout.semibold.tint(theme.text),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Text('${c.cli} · ${c.status}', style: theme.type.caption.tint(theme.textMuted)),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${c.image} · ${c.why}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: _mono.copyWith(color: theme.textMuted),
+                    ),
+                    if (c.ports.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 4,
+                        children: [
+                          for (final port in c.ports)
+                            _PortChip(port: port, onTap: port.local ? () => onPreview(port) : null),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              AdaptiveMenuButton(
+                tooltip: 'Container actions',
+                actions: [
+                  MenuAction(label: 'Logs', onSelected: onLogs),
+                  MenuAction(label: 'Shell inside', onSelected: onShell),
+                  MenuAction(label: 'Stop', destructive: true, onSelected: onStop),
+                  MenuAction(
+                    label: 'Copy id',
+                    onSelected: () => Clipboard.setData(ClipboardData(text: c.id)),
+                  ),
+                ],
+                child: Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: Icon(EveryIcon.more.of(theme.design), size: 16, color: theme.textMuted),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

@@ -172,7 +172,12 @@ final class EveryAISession
         ReportsMcpTools {
   EveryAISession._(this.id, this._spec, this._dir, http.Client? client)
     : _gateway = GatewayClient(baseUrl: _spec.llmBaseUrl, apiKey: _spec.llmApiKey, client: client),
-      _shell = SessionShell(root: _spec.workingDir, sessionTag: _spec.sessionTag, scratchDir: '${_dir.path}/shell'),
+      _shell = SessionShell(
+        root: _spec.workingDir,
+        sessionTag: _spec.sessionTag,
+        scratchDir: '${_dir.path}/shell',
+        logDir: '${_dir.path}/shells',
+      ),
       _packages = PackageGuard(
         RegistryLookup(client ?? http.Client()),
         loadEnv: () async => (await ShellEnv.load()).env,

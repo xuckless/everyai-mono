@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/widgets.dart';
@@ -7,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../core/api/decide_client.dart' show decideClientProvider;
+import 'shells/shell_registry.dart';
 import '../../core/preferences.dart';
 import '../../core/providers.dart';
 import '../agents/agents_providers.dart' show AgentDefinition, agentLibrarySettingsProvider, childSetup, codeAgentsFor;
