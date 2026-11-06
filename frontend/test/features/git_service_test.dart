@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:every_ai/features/code/checks/post_edit_hooks.dart';
 import 'package:every_ai/features/code/checks/post_edit_hooks_io.dart';
+import 'package:every_ai/features/code/checks/runtime_profiles_io.dart' show recordRuntime;
 import 'package:every_ai/features/code/git/git_service.dart';
 import 'package:every_ai/features/code/git/git_service_io.dart' show guardedEnv, runGit;
 import 'package:every_ai/features/code/harness/everyai/repro_paths_io.dart';
@@ -211,6 +212,41 @@ void main() {
 
     await round(second);
     expect(asked, isEmpty, reason: 'nothing changed since');
+  });
+
+  test('after-edit checks and runtime profiles run no fsmonitor; an untracked node_modules tool is named', () async {
+    final marker = '${tmp.path}/fsmonitor-ran';
+    final monitor = File('${tmp.path}/monitor.sh')..writeAsStringSync('#!/bin/sh\ntouch "$marker"\nexit 1\n');
+    await Process.run('chmod', ['+x', monitor.path]);
+    File('$repo/package.json').writeAsStringSync('{}\n');
+    File('$repo/src/a.js')
+      ..parent.createSync(recursive: true)
+      ..writeAsStringSync('a\n');
+    await _git(repo, ['config', 'core.fsmonitor', monitor.path]);
+    final base = (await GitService.baseline(repo))!;
+    File('$repo/src/a.js').writeAsStringSync('b\n');
+    // The session put a "prettier" there that no .gitignore hides.
+    File('$repo/node_modules/.bin/prettier')
+      ..parent.createSync(recursive: true)
+      ..writeAsStringSync('#!/bin/sh\n');
+    final asked = <String>[];
+    final r = await runPostEditHooks(
+      workingDir: repo,
+      sessionTag: 'test',
+      shellDir: '${tmp.path}/shell',
+      target: base.diffView,
+      tree: null,
+      refusal: (command) {
+        asked.add(command);
+        return 'not in this test';
+      },
+      autoFormat: false,
+      touched: (written: {'src/a.js'}, named: <String>{}),
+    );
+    expect(asked.single, startsWith('node_modules/.bin/prettier --check'));
+    expect(r.report, contains('node_modules/.bin/prettier'));
+    await recordRuntime(repo, 'npm test', '', const Duration(seconds: 3));
+    expect(File(marker).existsSync(), isFalse);
   });
 
   test('a commit that fails after the switch goes back and removes the new branch', () async {

@@ -97,7 +97,7 @@ abstract interface class AgentLauncher {
   Future<Map<String, Object?>> bugCheckOf(String childId);
 
   /// Runs [batch]'s check in the child's worktree, before its merge:
-  /// `{passed: true}`, `{passed: false, output}`, `{skipped: true, output}`
+  /// `{passed: true, note?}`, `{passed: false, output}`, `{skipped: true, output}`
   /// when the mode kept it from running, or `{skipped: true, unverified: true, output}` when no test covers the
   /// batch (see `batchCheckRecord`); only a failed one blocks the merge. [stop] cancels a check that is running.
   Future<Map<String, Object?>> batchCheckOf(String childId, PlanBatch batch);

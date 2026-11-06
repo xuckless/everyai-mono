@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart';
 
 import '../domain/spill.dart';
 import '../git/git_service.dart';
+import '../git/git_service_io.dart' show runGit;
 import '../harness/everyai/shell_io.dart';
 import '../spill/spill.dart';
 import 'post_edit_hooks.dart';
@@ -39,7 +40,7 @@ Future<({String report, String skipped, String? tree, List<HookRun> slow})> runP
   try {
     // One snapshot, compared with the last: no second pass over the whole folder.
     now = await GitService.snapshotTree(target);
-    top = (await Process.run('git', ['-C', target.path, 'rev-parse', '--show-toplevel'])).stdout.toString().trim();
+    top = (await runGit(target.path, ['rev-parse', '--show-toplevel'])).stdout.toString().trim();
   } on Object {
     return (report: '', skipped: '', tree: tree, slow: none);
   }
@@ -57,11 +58,14 @@ Future<({String report, String skipped, String? tree, List<HookRun> slow})> runP
     return (report: '', skipped: '', tree: now, slow: none);
   }
   bool exists(String p) => FileSystemEntity.typeSync('$root/$p') != FileSystemEntityType.notFound;
-  final files = touchedOf([
+  // What changed, as the session folder sees it (the lead's or not): git names paths from the top of the repository.
+  final local = [
     for (final p in changed)
-      // git names paths from the top of the repository; checks see them from the session folder.
-      if ('$top/$p' case final abs when top.isNotEmpty && abs.startsWith('$root/'))
-        if (abs.substring(root.length + 1) case final rel when !rel.startsWith('.everyai/') && exists(rel)) rel,
+      if ('$top/$p' case final abs when top.isNotEmpty && abs.startsWith('$root/')) abs.substring(root.length + 1),
+  ];
+  final files = touchedOf([
+    for (final rel in local)
+      if (!rel.startsWith('.everyai/') && exists(rel)) rel,
   ], touched);
   if (files.isEmpty) return (report: '', skipped: '', tree: now, slow: none);
   String? read(String p) {
@@ -82,7 +86,8 @@ Future<({String report, String skipped, String? tree, List<HookRun> slow})> runP
     final tracked = <String>{};
     for (final d in nodeDirs) {
       try {
-        final r = await Process.run('git', ['-C', d.isEmpty ? root : '$root/$d', 'ls-files', '--', 'node_modules']);
+        // Guarded: the repository's own programs (core.fsmonitor) don't run.
+        final r = await runGit(d.isEmpty ? root : '$root/$d', ['ls-files', '--', 'node_modules']);
         if (r.exitCode != 0 || r.stdout.toString().trim().isNotEmpty) tracked.add(d);
       } on Object {
         tracked.add(d);
@@ -98,6 +103,25 @@ Future<({String report, String skipped, String? tree, List<HookRun> slow})> runP
         nodeModulesTracked: tracked.contains,
       );
     }
+  }
+  // node_modules binaries that changed since the last round (untracked, not ignored) or that the lead's calls wrote:
+  // they still run (the user's installed tools), but the lead is told which ones it may have written.
+  final binNotes = <String>[];
+  for (final d in {
+    for (final r in found.runs)
+      if (r.command.startsWith('node_modules/')) r.dir,
+  }) {
+    final under = d.isEmpty ? 'node_modules/' : '$d/node_modules/';
+    final wrote = {
+      for (final p in [...local, ...touched.written, ...touched.named])
+        if (p.startsWith(under)) p,
+    }.toList()..sort();
+    if (wrote.isEmpty) continue;
+    binNotes.add(
+      'Note: ${wrote.take(8).join(', ')}${wrote.length > 8 ? ' and ${wrote.length - 8} more' : ''} under '
+      '${under.substring(0, under.length - 1)} changed in this session and git does not track '
+      '${wrote.length == 1 ? 'it' : 'them'}; the checks ran that folder\'s tools anyway.',
+    );
   }
   final shell = SessionShell(root: root, sessionTag: sessionTag, scratchDir: shellDir);
   var cancelled = false;
@@ -129,7 +153,10 @@ Future<({String report, String skipped, String? tree, List<HookRun> slow})> runP
     formatted: result.formatted,
     skipped: [...found.skipped, ...result.skipped],
   );
-  final report = formatHookReport(all, spill: (name, text) => saveSpill(root, Spill.fileName('$stamp-$name'), text));
+  final report = [
+    ...binNotes,
+    formatHookReport(all, spill: (name, text) => saveSpill(root, Spill.fileName('$stamp-$name'), text)),
+  ].where((s) => s.isNotEmpty).join('\n\n');
   var next = now;
   if (result.formatted.isNotEmpty) {
     try {

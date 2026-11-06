@@ -3,6 +3,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../git/git_service_io.dart' show runGit;
 import '../harness/everyai/project_notes_io.dart' show notesLinkProblem;
 import '../harness/everyai/scrub.dart' show Scrubber;
 import '../settings/settings.dart' show excludeFromGit;
@@ -50,10 +51,11 @@ Future<RuntimeProfiles> _read(String projectRoot, String path) async {
   }
 }
 
-/// Whether git tracks [path] in [root]'s repository.
+/// Whether git tracks [path] in [root]'s repository. Guarded: the repository's own programs (core.fsmonitor) don't
+/// run.
 Future<bool> _tracked(String root, String path) async {
   try {
-    final r = await Process.run('git', ['ls-files', '--error-unmatch', path], workingDirectory: root);
+    final r = await runGit(root, ['ls-files', '--error-unmatch', '--', path]);
     return r.exitCode == 0;
   } on Object {
     return false;

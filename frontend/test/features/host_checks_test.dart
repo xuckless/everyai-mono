@@ -199,8 +199,8 @@ void main() {
         [
           'cd app && flutter test -- test/ui/home_test.dart',
           'cd pkg && dart test -- test/x_test.dart',
-          'cd web && npx vitest related --run src/a.ts',
-          'cd api && npx jest --findRelatedTests src/b.js',
+          'cd web && npx --no-install vitest related --run src/a.ts',
+          'cd api && npx --no-install jest --findRelatedTests src/b.js',
           'cd svc && go test ./internal/q',
           'cd core && cargo test',
           'cd py && python -m pytest -- tests/test_util.py',
@@ -485,6 +485,36 @@ void main() {
     Future<BatchVerdict> check(List<String> files, BatchCheck c, List<String> runs) =>
         runBatchCheck(context(runs: runs), PlanBatch(id: 'a', intent: 'A', files: files, check: c), cancel);
 
+    test('a project whose node_modules git tracks runs no jest; an untracked runner is named', () async {
+      void git(List<String> args) {
+        final r = Process.runSync('git', ['-C', dir, ...args]);
+        if (r.exitCode != 0) fail('git $args: ${r.stderr}');
+      }
+
+      write('web/package.json', '{"devDependencies": {"jest": "29"}}');
+      write('web/src/a.test.js');
+      write('web/node_modules/.bin/jest', '#!/bin/sh\n');
+      git(['init', '-q']);
+      git(['add', '-A']);
+      git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base']);
+      final runs = <String>[];
+      var v = await check(['web/src/a.test.js'], const FilesCheck([]), runs);
+      expect(runs, isEmpty);
+      expect(v.outcome, BatchOutcome.unverified);
+      expect(v.output, contains('node_modules is in git'));
+      // Not tracked, not ignored: it runs (with --no-install), and the record names the binary.
+      git(['rm', '-rq', '--cached', 'web/node_modules']);
+      git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'untrack']);
+      v = await check(['web/src/a.test.js'], const FilesCheck([]), runs);
+      expect(runs, ['cd web && npx --no-install jest --findRelatedTests src/a.test.js']);
+      expect(v.outcome, BatchOutcome.passed);
+      expect(batchCheckRecord(v), {'passed': true, 'note': contains('web/node_modules/.bin/jest')});
+      // Ignored (an ordinary install): nothing to say.
+      write('.gitignore', 'node_modules/\n');
+      v = await check(['web/src/a.test.js'], const FilesCheck([]), runs);
+      expect(batchCheckRecord(v), {'passed': true});
+    });
+
     test('a lib file with no test, a docs-only batch and a runner the app does not know are unverified', () async {
       write('pubspec.yaml', 'name: p\n');
       write('lib/a.dart');
@@ -539,8 +569,8 @@ void main() {
         [
           'cd d && dart test --plain-name=$q',
           'cd f && flutter test --plain-name=$q',
-          'cd j && npx jest --testNamePattern=$q',
-          'cd v && npx vitest run --testNamePattern=$q',
+          'cd j && npx --no-install jest --testNamePattern=$q',
+          'cd v && npx --no-install vitest run --testNamePattern=$q',
           'cd g && go test -run=$q ./...',
           'cd c && cargo test -- $q',
           'cd p && python -m pytest -k $q',

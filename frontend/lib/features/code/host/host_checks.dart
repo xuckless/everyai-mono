@@ -52,7 +52,8 @@ Map<String, Object?> bugCheckRecord(Map<String, Object?>? saved, {String? hostle
 /// skipped check doesn't gate: the work merges unchecked, as it would with no check, and nothing is spent on fixing
 /// a check that can't pass. The safety floor or a deny rule refusing the command is a failed check.
 Map<String, Object?> batchCheckRecord(BatchVerdict v) => switch (v.outcome) {
-  BatchOutcome.passed => const {'passed': true},
+  // A note (a test runner the agent may have written) still reaches the reader.
+  BatchOutcome.passed => {'passed': true, if (v.output.isNotEmpty) 'note': v.output},
   BatchOutcome.failed => {'passed': false, 'output': v.output},
   BatchOutcome.skipped => {'skipped': true, 'output': v.output},
   BatchOutcome.unverified => {'skipped': true, 'unverified': true, 'output': v.output},
@@ -61,7 +62,8 @@ Map<String, Object?> batchCheckRecord(BatchVerdict v) => switch (v.outcome) {
 /// How a batch check ended (see [batchCheckRecord]).
 enum BatchOutcome { passed, failed, skipped, unverified }
 
-/// A batch check's outcome: [output] is the tail of what ran (or why it couldn't), '' when it passed.
+/// A batch check's outcome: [output] is the tail of what ran (or why it couldn't); when it passed, only its notes
+/// ('' for none).
 typedef BatchVerdict = ({BatchOutcome outcome, String output});
 
 /// Why the app won't run a batch check's command: [skip] when only the mode stands in the way (it would ask), so
@@ -432,13 +434,16 @@ typedef CheckRun = ({String dir, String command});
 /// the tests whose name matches it, in each project (its runner's filter).
 /// File arguments come after `--` where the runner takes it, and a path that
 /// starts with `-` gets `./`, so no file name reads as an option; a very long
-/// list is split over several runs.
+/// list is split over several runs. jest and vitest run through `npx --no-install` (the project's own install,
+/// nothing downloaded); a project whose node_modules git tracks ([nodeModulesTracked]) gets none: its binaries are
+/// repository code, not installed tools.
 ({List<CheckRun> runs, List<String> unmatched}) detectChecks(
   List<String> files, {
   required bool Function(String path) exists,
   required String? Function(String path) read,
   bool full = false,
   String? testName,
+  bool Function(String dir)? nodeModulesTracked,
 }) {
   const markers = ['pubspec.yaml', 'package.json', 'go.mod', 'Cargo.toml', 'pyproject.toml', 'pytest.ini', 'setup.py'];
   String join(String dir, String name) => dir.isEmpty ? name : '$dir/$name';
@@ -477,13 +482,20 @@ typedef CheckRun = ({String dir, String command});
       unmatched.addAll([for (final f in inside) '${join(dir, f)} (its package.json names neither jest nor vitest)']);
       continue;
     }
+    if (marker == 'package.json' && (nodeModulesTracked?.call(dir) ?? false)) {
+      unmatched.addAll([
+        for (final f in inside) '${join(dir, f)} (node_modules is in git, so EveryAI does not run its binaries)',
+      ]);
+      continue;
+    }
     if (testName != null) {
       final q = _quote(testName);
       runs.add((
         dir: dir,
         command: switch (marker) {
           'pubspec.yaml' => '$dart --plain-name=$q',
-          'package.json' => js == 'vitest' ? 'npx vitest run --testNamePattern=$q' : 'npx jest --testNamePattern=$q',
+          'package.json' =>
+            js == 'vitest' ? '$checkNpx vitest run --testNamePattern=$q' : '$checkNpx jest --testNamePattern=$q',
           'go.mod' => 'go test -run=$q ./...',
           'Cargo.toml' => 'cargo test -- $q',
           _ => 'python -m pytest -k $q',
@@ -496,7 +508,7 @@ typedef CheckRun = ({String dir, String command});
         dir: dir,
         command: switch (marker) {
           'pubspec.yaml' => dart,
-          'package.json' => js == 'vitest' ? 'npx vitest run' : 'npx jest',
+          'package.json' => js == 'vitest' ? '$checkNpx vitest run' : '$checkNpx jest',
           'go.mod' => 'go test ./...',
           'Cargo.toml' => 'cargo test',
           _ => 'python -m pytest',
@@ -540,7 +552,8 @@ typedef CheckRun = ({String dir, String command});
     if (tests.isEmpty) continue;
     final (tool, dashes) = switch (marker) {
       'pubspec.yaml' => (dart, true),
-      'package.json' => js == 'vitest' ? ('npx vitest related --run', false) : ('npx jest --findRelatedTests', false),
+      'package.json' =>
+        js == 'vitest' ? ('$checkNpx vitest related --run', false) : ('$checkNpx jest --findRelatedTests', false),
       'go.mod' => ('go test', false),
       'Cargo.toml' => ('cargo test', false),
       _ => ('python -m pytest', true),
@@ -572,6 +585,9 @@ typedef CheckRun = ({String dir, String command});
   }
   return (runs: runs, unmatched: unmatched);
 }
+
+/// How a check runs the project's jest or vitest: from its node_modules only, never downloaded.
+const checkNpx = 'npx --no-install';
 
 /// The most characters of file arguments one check command carries.
 const _argLimit = 32 * 1024;

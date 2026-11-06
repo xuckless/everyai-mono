@@ -110,7 +110,7 @@ Future<HostResult> hostCheck(
 
 /// The tests that cover [files] ([full]: their projects' whole suites; [testName]: the tests of that name), run in
 /// [c]'s folder; each command passes [refuse] first. Unverified when no test was found to run at all.
-Future<({String text, BatchOutcome outcome})> _checks(
+Future<({String text, String notes, BatchOutcome outcome})> _checks(
   HostCheckContext c,
   List<String> files,
   Future<void> cancel, {
@@ -118,10 +118,11 @@ Future<({String text, BatchOutcome outcome})> _checks(
   bool full = false,
   String? testName,
 }) async {
-  final found = detectChecks(
+  ({List<CheckRun> runs, List<String> unmatched}) detect({bool Function(String dir)? tracked}) => detectChecks(
     files,
     full: full,
     testName: testName,
+    nodeModulesTracked: tracked,
     exists: (p) => FileSystemEntity.typeSync('${c.workingDir}/$p') != FileSystemEntityType.notFound,
     read: (p) {
       try {
@@ -131,12 +132,41 @@ Future<({String text, BatchOutcome outcome})> _checks(
       }
     },
   );
+  var found = detect();
+  // Like the after-edit checks: a project whose node_modules git tracks runs none of its binaries.
+  final nodeDirs = {
+    for (final r in found.runs)
+      if (r.command.startsWith('$checkNpx ')) r.dir,
+  };
+  final notes = <String>[];
+  if (nodeDirs.isNotEmpty) {
+    final tracked = <String>{};
+    for (final d in nodeDirs) {
+      final at = d.isEmpty ? c.workingDir : '${c.workingDir}/$d';
+      switch (await _nodeModules(at)) {
+        case null:
+          tracked.add(d);
+        case final untracked when untracked.isNotEmpty:
+          // Not in git and not ignored: likely written in this session. Run, but named for the reader.
+          final shown = [for (final p in untracked.take(8)) d.isEmpty ? p : '$d/$p'];
+          notes.add(
+            'Note: ${shown.join(', ')}${untracked.length > 8 ? ' and ${untracked.length - 8} more' : ''} '
+            'under node_modules/.bin ${untracked.length == 1 ? 'is' : 'are'} not in git and not ignored, so '
+            '${untracked.length == 1 ? 'it was' : 'they were'} probably written in this session; the test runner '
+            'ran from there.',
+          );
+        default:
+      }
+    }
+    if (tracked.isNotEmpty) found = detect(tracked: tracked.contains);
+  }
   final missed = found.unmatched.isEmpty ? '' : 'No test found for: ${found.unmatched.join(', ')}.';
   if (found.runs.isEmpty) {
     return (
       text:
           '$missed Pass the test files themselves (they run as given), or run the right tests yourself. The app knows '
           'Dart/Flutter, jest, vitest, Go, Cargo and pytest projects.',
+      notes: '',
       outcome: BatchOutcome.unverified,
     );
   }
@@ -145,16 +175,44 @@ Future<({String text, BatchOutcome outcome})> _checks(
   for (final run in found.runs) {
     final command = checkCommand(run);
     if (refuse(command) case final no?) {
-      return (text: '${no.why}\n(command: $command)', outcome: no.skip ? BatchOutcome.skipped : BatchOutcome.failed);
+      return (
+        text: '${no.why}\n(command: $command)',
+        notes: '',
+        outcome: no.skip ? BatchOutcome.skipped : BatchOutcome.failed,
+      );
     }
     final r = await _run(c, command, cancel);
     failed |= r.exit != 0;
     out.add('\$ $command\n[exit ${r.exit}]\n${r.out.trimRight()}');
   }
   return (
-    text: [failed ? 'Some tests failed.' : 'The tests passed.', if (missed.isNotEmpty) missed, ...out].join('\n\n'),
+    text: [
+      failed ? 'Some tests failed.' : 'The tests passed.',
+      if (missed.isNotEmpty) missed,
+      ...notes,
+      ...out,
+    ].join('\n\n'),
+    notes: notes.join('\n'),
     outcome: failed ? BatchOutcome.failed : BatchOutcome.passed,
   );
+}
+
+/// The files under [dir]'s `node_modules/.bin` that git shows as untracked (not ignored); null when git tracks
+/// node_modules there, or can't tell in a repository. Outside a repository nothing is tracked.
+Future<List<String>?> _nodeModules(String dir) async {
+  try {
+    // Guarded: the repository's own programs (core.fsmonitor) don't run.
+    final t = await runGit(dir, ['ls-files', '-z', '--', 'node_modules']);
+    if (t.exitCode != 0) return '${t.stderr}'.contains('not a git repository') ? const [] : null;
+    if ('${t.stdout}'.isNotEmpty) return null;
+    final u = await runGit(dir, ['ls-files', '-z', '--others', '--exclude-standard', '--', 'node_modules/.bin']);
+    return [
+      for (final p in '${u.stdout}'.split('\x00'))
+        if (p.isNotEmpty) p,
+    ];
+  } on Object {
+    return null;
+  }
 }
 
 Future<BatchVerdict> runBatchCheck(HostCheckContext c, PlanBatch batch, Future<void> cancel) async {
@@ -164,26 +222,28 @@ Future<BatchVerdict> runBatchCheck(HostCheckContext c, PlanBatch batch, Future<v
     return why == null ? null : (why: why, skip: false);
   }
 
-  Future<({String text, BatchOutcome outcome})> own(List<String> files, {bool full = false}) =>
+  Future<({String text, String notes, BatchOutcome outcome})> own(List<String> files, {bool full = false}) =>
       _checks(c, files, cancel, full: full, refuse: (command) => refuse(command, own: true));
   final r = switch (batch.check) {
-    null => (text: '', outcome: BatchOutcome.passed),
+    null => (text: '', notes: '', outcome: BatchOutcome.passed),
     FilesCheck(:final files) => await own(files.isEmpty ? batch.files : files),
     FullCheck() => await own(batch.files, full: true),
     CommandCheck(:final command) => switch (refuse(command, own: false)) {
       final no? => (
         text: '${no.why}\n(command: $command)',
+        notes: '',
         outcome: no.skip ? BatchOutcome.skipped : BatchOutcome.failed,
       ),
       null => await _run(c, command, cancel).then(
         (r) => (
           text: '\$ $command\n[exit ${r.exit}]\n${r.out.trimRight()}',
+          notes: '',
           outcome: r.exit == 0 ? BatchOutcome.passed : BatchOutcome.failed,
         ),
       ),
     },
   };
-  return (outcome: r.outcome, output: r.outcome == BatchOutcome.passed ? '' : _tail(r.text));
+  return (outcome: r.outcome, output: r.outcome == BatchOutcome.passed ? r.notes : _tail(r.text));
 }
 
 String _tail(String out) => out.length > 3000 ? '…${out.substring(out.length - 3000)}' : out;
