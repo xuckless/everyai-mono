@@ -48,6 +48,23 @@ class ProcessesPane extends ConsumerWidget {
     ref.read(codePaneProvider(session.id).notifier).show(CodePane.terminal);
   }
 
+  /// A process EveryAI didn't start (an outside lead's, the user's terminal job): tails its output when that goes
+  /// to a file, else says it can't be shown.
+  Future<void> _follow(BuildContext context, WidgetRef ref, SessionProcess p) async {
+    final file = await outputFileOf(p.pid);
+    if (!context.mounted) return;
+    if (file == null) {
+      showAdaptiveToast(
+        context,
+        p.origin == ProcessOrigin.terminal
+            ? 'It runs in one of your terminal tabs: its output is there.'
+            : "Started outside EveryAI's shells: its output isn't available. Stop and the ports still work.",
+      );
+      return;
+    }
+    _run(ref, 'output · ${p.name}', "tail -n 500 -f '${file.replaceAll("'", r"'\''")}'");
+  }
+
   void _logs(WidgetRef ref, SessionContainer c) =>
       _run(ref, 'logs · ${c.name}', '${c.cli} logs -f --tail 500 ${c.shortId}');
 
@@ -139,6 +156,7 @@ class ProcessesPane extends ConsumerWidget {
                       for (final p in others)
                         _ProcessRow(
                           process: p,
+                          onOpen: () => _follow(context, ref, p),
                           onStop: () => _kill(context, ref, p),
                           onForceQuit: () => _kill(context, ref, p, force: true),
                           onPreview: (port) => _preview(ref, port),
@@ -365,9 +383,18 @@ class _ShellRowState extends State<_ShellRow> {
 }
 
 class _ProcessRow extends StatelessWidget {
-  const _ProcessRow({required this.process, required this.onStop, required this.onForceQuit, required this.onPreview});
+  const _ProcessRow({
+    required this.process,
+    required this.onStop,
+    required this.onForceQuit,
+    required this.onPreview,
+    this.onOpen,
+  });
 
   final SessionProcess process;
+
+  /// Shows its output (when it can be found).
+  final VoidCallback? onOpen;
   final VoidCallback onStop;
   final VoidCallback onForceQuit;
   final ValueChanged<ListeningPort> onPreview;
@@ -377,7 +404,7 @@ class _ProcessRow extends StatelessWidget {
     final theme = EveryTheme.of(context);
     final p = process;
     final ports = {for (final l in p.ports) l.port: l}.values.toList()..sort((a, b) => a.port.compareTo(b.port));
-    return Padding(
+    final row = Padding(
       padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -425,6 +452,7 @@ class _ProcessRow extends StatelessWidget {
           AdaptiveMenuButton(
             tooltip: 'Process actions',
             actions: [
+              if (onOpen case final open?) MenuAction(label: 'Show output', onSelected: open),
               MenuAction(label: 'Stop', onSelected: onStop),
               MenuAction(label: 'Force quit', destructive: true, onSelected: onForceQuit),
               MenuAction(
@@ -439,6 +467,12 @@ class _ProcessRow extends StatelessWidget {
           ),
         ],
       ),
+    );
+    if (onOpen == null) return row;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onOpen,
+      child: MouseRegion(cursor: SystemMouseCursors.click, child: row),
     );
   }
 }

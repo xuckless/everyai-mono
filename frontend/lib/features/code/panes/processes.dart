@@ -54,3 +54,15 @@ Future<List<ListeningPort>> listeningPorts(Iterable<int> pids) => impl.listening
 
 /// Sends SIGTERM (or SIGKILL with [force]) to [pid].
 bool killProcess(int pid, {bool force = false}) => impl.killProcess(pid, force: force);
+
+/// The regular file [pid]'s standard output goes to (a process an outside lead started with its output in a file),
+/// or null: a terminal, a pipe, a socket, or not found. Its row in Processes then tails it.
+Future<String?> outputFileOf(int pid) => impl.outputFileOf(pid);
+
+/// The file name in `lsof -Fn` output, or null.
+String? lsofFileName(String out) {
+  for (final line in out.split('\n')) {
+    if (line.startsWith('n') && line.length > 1) return line.substring(1);
+  }
+  return null;
+}

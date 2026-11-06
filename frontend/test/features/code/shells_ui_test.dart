@@ -98,4 +98,19 @@ void main() {
     expect(containerHintsOf('docker run -d --name api nginx', '3f2a9c1b7d4e\n'), {'3f2a9c1b7d4e', 'api'});
     expect(containerHintsOf('echo 3f2a9c1b7d4e', '3f2a9c1b7d4e\n'), isEmpty);
   });
+
+  test('a process writing to a file is found by its output file; one on a pipe is not', () async {
+    expect(lsofFileName('p123\nf1\nn/tmp/out.log\n'), '/tmp/out.log');
+    if (!Platform.isMacOS && !Platform.isLinux) return;
+    final tmp = await Directory.systemTemp.createTemp('outfile');
+    addTearDown(() => tmp.delete(recursive: true));
+    final file = '${tmp.resolveSymbolicLinksSync()}/out.log';
+    final p = await Process.start('/bin/sh', ['-c', 'exec sleep 5 > "$file"']);
+    addTearDown(p.kill);
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    expect(await outputFileOf(p.pid), file);
+    final piped = await Process.start('sleep', ['5']);
+    addTearDown(piped.kill);
+    expect(await outputFileOf(piped.pid), isNull);
+  });
 }
