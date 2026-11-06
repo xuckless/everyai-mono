@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "updated": "2026-11-06",
+  "packs": [
+    {
+      "id": "light",
+      "label": "Light",
+      "blurb": "Fast, basic chat and small code edits",
+      "models": [
+        {"roles": ["chat", "code", "vision"], "ollama": "qwen3.5:4b", "size_gb": 3.4, "min_memory_gb": 5, "context": 262144, "tools": true, "vision": true}
+      ]
+    },
+    {
+      "id": "balanced",
+      "label": "Balanced",
+      "blurb": "Chat, pictures and code",
+      "models": [
+        {"roles": ["chat", "code", "vision"], "ollama": "qwen3.5:9b", "size_gb": 6.6, "min_memory_gb": 9, "context": 262144, "tools": true, "vision": true}
+      ]
+    },
+    {
+      "id": "best",
+      "label": "Best",
+      "blurb": "A fast chat model and a coding model",
+      "models": [
+        {"roles": ["chat", "vision"], "ollama": "gemma4:26b", "size_gb": 18, "min_memory_gb": 21, "context": 262144, "tools": true, "vision": true},
+        {"roles": ["code"], "ollama": "qwen3.6:27b-coding", "size_gb": 18.5, "min_memory_gb": 21, "context": 262144, "tools": true, "vision": true}
+      ]
+    }
+  ]
+}

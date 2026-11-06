@@ -24,6 +24,7 @@ enum SettingsSection {
   billing('Billing', SettingsGroup.preferences, EveryIcon.card),
   usage('Usage', SettingsGroup.preferences, EveryIcon.usage),
   models('Models', SettingsGroup.preferences, EveryIcon.models),
+  localModels('Local models', SettingsGroup.preferences, EveryIcon.cpu, desktopOnly: true),
   memory('Memory', SettingsGroup.preferences, EveryIcon.memory),
   code('Code', SettingsGroup.code, EveryIcon.code, desktopOnly: true),
   permissions('Permissions', SettingsGroup.code, EveryIcon.shield, desktopOnly: true),
@@ -97,6 +98,19 @@ const settingsEntries = <SettingsEntry>[
   SettingsEntry(SettingsSection.billing, 'Wallet and top-ups', anchor: 'wallet', keywords: ['credits', 'top up']),
   SettingsEntry(SettingsSection.usage, 'Usage', keywords: ['spend', 'tokens', 'cost', 'cache']),
   SettingsEntry(SettingsSection.models, 'My models', keywords: ['library', 'shop', 'catalog']),
+  SettingsEntry(
+    SettingsSection.localModels,
+    'Local models',
+    keywords: ['ollama', 'offline', 'private', 'lm studio', 'llama.cpp', 'download', 'gpu', 'on this computer'],
+  ),
+  SettingsEntry(
+    SettingsSection.localModels,
+    'Apple Intelligence',
+    anchor: 'fm',
+    keywords: ['apple', 'foundation models', 'fm', 'on-device'],
+  ),
+  SettingsEntry(SettingsSection.localModels, 'Starter packs', anchor: 'packs', keywords: ['download', 'models']),
+  SettingsEntry(SettingsSection.localModels, 'Add a server', anchor: 'add-server', keywords: ['url', 'openai']),
   SettingsEntry(SettingsSection.memory, 'Memory', keywords: ['notes', 'remember', 'search chats']),
   SettingsEntry(SettingsSection.code, 'Code settings', keywords: ['layers', 'global', 'project', 'session']),
   SettingsEntry(
