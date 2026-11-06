@@ -849,6 +849,18 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   chip in the top bar opening a resizable bottom terminal (owner `home`, starts in `terminalHomeDir`: `$HOME`, or
   `C:\` on Windows; prefs `code.home.terminal`, `code.home.terminal_height`). Session header icons got a 2pt gap so
   two open views' highlights don't merge.
+- **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
+  `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
+  `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,
+  10 MB then rolled to `.1`), live chunks with byte offsets (`entry.output`, synchronous) so a tab replays the log
+  and follows without gaps. Background shells run in a pty (`pty_spawn_io.dart`; pipes when flutter_pty doesn't load,
+  e.g. `flutter test`), env `ptyShellEnv` (colour, PAGER=cat, GIT_TERMINAL_PROMPT=0). Model view: `cleanTerminalText`.
+  Tool `bash_input {shell_id, text, keys}` (kind `ShellInputAction`, asks like a command); bash_output/monitor add
+  "user typed …", "restarted", "seems to wait for input" (`waitingFor`, `looksLikePrompt`). Processes tab groups
+  processes under their shell (`groupByShell`), opens `shellTabId` tabs (Stop/Restart/Copy/Send to agent, scrubbed),
+  lists Docker/Podman containers (`containers.dart`: compose dir, bind mount, or ids the session's docker commands
+  printed) with logs/shell-inside tabs (`TerminalTabs.addCommand`), and tails the stdout file of processes EveryAI
+  didn't start (`outputFileOf`).
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2
