@@ -451,10 +451,23 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
         error.ServerDraining => sink.send("error", .{ .message = "The server is restarting. Try again in a moment.", .retryable = true }) catch {},
         else => {
             req.log().err("chat turn failed", .{ .err = @errorName(err) });
-            sink.send("error", .{ .message = "Something went wrong while answering.", .retryable = true }) catch {};
+            // A local model's server that isn't there (stopped, moved ports): say so, not a generic failure.
+            const message = if (on_local and isConnectError(err))
+                "Couldn't reach the local model's server. Start it (Settings → Local models), or pick another model."
+            else
+                "Something went wrong while answering.";
+            sink.send("error", .{ .message = message, .retryable = true }) catch {};
         },
     };
     try ev.end();
+}
+
+/// Errors that mean nothing listens where the request went.
+fn isConnectError(err: anyerror) bool {
+    return switch (err) {
+        error.ConnectionRefused, error.ConnectionResetByPeer, error.NetworkUnreachable, error.HostUnreachable, error.ConnectionTimedOut, error.UnknownHostName => true,
+        else => false,
+    };
 }
 
 fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, body: ChatRequest, facts: @import("models.zig").Catalog.Facts, sink: Sink) !void {
