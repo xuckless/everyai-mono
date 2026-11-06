@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart';
 
 import '../domain/plan_batches.dart';
 import '../harness/everyai/repro_paths_io.dart';
+import '../git/git_service_io.dart' show runGit;
 import '../harness/everyai/shell_io.dart';
 import 'host.dart';
 import 'host_checks.dart';
@@ -39,7 +40,7 @@ Future<({int exit, String out})> _run(
 Future<HostResult> hostDiffStatsHere(HostCheckContext c, Future<void> cancel) async {
   const command = 'git diff --stat HEAD && git ls-files --others --exclude-standard';
   if (c.refusal(command) case final why?) return (text: '$why\n(command: $command)', isError: true);
-  final r = await _run(c, command, cancel, timed: false);
+  final r = c.run == null ? await _statsHere(c.workingDir) : await _run(c, command, cancel, timed: false);
   if (r.exit != 0) {
     return (
       text: 'This folder is not a git repository with a commit, so there is nothing to count from.',
@@ -65,6 +66,18 @@ Future<HostResult> hostDiffStatsHere(HostCheckContext c, Future<void> cancel) as
     ].join('\n'),
     isError: false,
   );
+}
+
+/// [hostDiffStatsHere]'s command as EveryAI's own git calls (nothing the repository defines runs).
+Future<({int exit, String out})> _statsHere(String dir) async {
+  try {
+    final stat = await runGit(dir, ['diff', '--stat', 'HEAD']);
+    if (stat.exitCode != 0) return (exit: stat.exitCode, out: '${stat.stderr}');
+    final added = await runGit(dir, ['ls-files', '--others', '--exclude-standard']);
+    return (exit: added.exitCode, out: '${stat.stdout}${added.stdout}');
+  } on Object catch (e) {
+    return (exit: 1, out: '$e');
+  }
 }
 
 Future<HostResult> hostCheck(HostCheckContext c, List<String> files, Future<void> cancel) async {

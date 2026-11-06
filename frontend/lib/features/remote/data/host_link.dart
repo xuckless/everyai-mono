@@ -55,6 +55,58 @@ final class PairRequest {
   }
 }
 
+/// A webhook delivery the relay passed on (a `webhook` notice; see backend-exp `hooks.zig`). The body comes from an
+/// outside sender: it is untrusted data, and the server could read it (this notice is not end-to-end encrypted).
+@immutable
+final class WebhookDelivery {
+  const WebhookDelivery({
+    required this.id,
+    required this.hookId,
+    required this.hookName,
+    required this.headers,
+    required this.body,
+    required this.receivedAt,
+  });
+
+  final String id;
+  final String hookId;
+  final String hookName;
+
+  /// The few headers the relay passes on, lower-case (`content-type`, `x-github-event`, …).
+  final Map<String, String> headers;
+  final Uint8List body;
+  final DateTime receivedAt;
+
+  /// The event name the sender gave: GitHub's `X-GitHub-Event`, else `X-EveryAI-Event`.
+  String? get event => headers['x-github-event'] ?? headers['x-everyai-event'];
+
+  static WebhookDelivery? fromJson(Map<String, Object?> j) {
+    final id = j['delivery_id'];
+    final hook = j['hook_id'];
+    final b64 = j['body_b64'];
+    if (id is! String || id.isEmpty || hook is! String || b64 is! String) return null;
+    final Uint8List body;
+    try {
+      body = base64Decode(b64);
+    } on FormatException {
+      return null;
+    }
+    final headers = j['headers'];
+    return WebhookDelivery(
+      id: id,
+      hookId: hook,
+      hookName: j['hook_name'] as String? ?? '',
+      headers: {
+        if (headers is Map<String, Object?>)
+          for (final e in headers.entries)
+            if (e.value is String) e.key.toLowerCase(): e.value! as String,
+      },
+      body: body,
+      receivedAt: DateTime.fromMillisecondsSinceEpoch(((j['received_at'] as num?) ?? 0).toInt() * 1000),
+    );
+  }
+}
+
 /// A paired device connected through the relay right now.
 typedef ConnectedDevice = ({int channel, String deviceId, String deviceName});
 
@@ -104,6 +156,7 @@ final class RemoteHostLink {
     required RelayConnector connect,
     required HostBridge Function(void Function(int channel, Uint8List payload) send) bridge,
     required this._approvedKey,
+    this.onWebhook,
   }) : _connector = connect {
     _bridge = bridge(_sendTo);
   }
@@ -113,6 +166,9 @@ final class RemoteHostLink {
   final String token;
   final RelayConnector _connector;
   final String? Function(String deviceId) _approvedKey;
+
+  /// Gets each webhook delivery; it answers with [ackWebhook] once it is handled.
+  final void Function(WebhookDelivery delivery)? onWebhook;
   late final HostBridge _bridge;
 
   WebSocket? _ws;
@@ -147,6 +203,9 @@ final class RemoteHostLink {
     _bridge.closeChannel(channel);
     _ws?.sendText(jsonEncode({'type': 'close_channel', 'channel': channel}));
   }
+
+  /// Tells the relay [deliveryId] was handled, so it isn't sent again on the next connect.
+  void ackWebhook(String deliveryId) => _ws?.sendText(jsonEncode({'type': 'webhook_ack', 'delivery_id': deliveryId}));
 
   Future<void> _connect() async {
     if (_closed) return;
@@ -238,6 +297,8 @@ final class RemoteHostLink {
         if (PairRequest.fromJson(n) case final p?) {
           _set(_state.copyWith(pending: [..._state.pending.where((x) => x.pairingId != p.pairingId), p]));
         }
+      case 'webhook':
+        if (WebhookDelivery.fromJson(n) case final d?) onWebhook?.call(d);
       case 'replaced':
         _set(_state.copyWith(replaced: true));
       case 'revoked':

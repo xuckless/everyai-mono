@@ -9,6 +9,8 @@ import 'package:every_ai/core/ui/adaptive.dart' show AdaptiveMenuButton;
 import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
+import 'package:every_ai/features/code/environments/environment_providers.dart';
+import 'package:every_ai/features/code/environments/exec_env.dart';
 import 'package:every_ai/features/history/ui/sidebar.dart';
 import 'package:every_ai/features/remote/host_mirror.dart' show remoteFollowedProvider;
 import 'package:flutter/foundation.dart';
@@ -16,6 +18,8 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart' as m;
+
+import 'code/environments/env_fakes.dart';
 
 // The sidebar's Code lists: Pinned, Recents with status marks, search, and the pin menu.
 
@@ -117,11 +121,16 @@ void main() {
       String query = '',
       Map<String, SessionStatus> statuses = const {},
       Set<String> followed = const {},
+      String projects = '[{"id":"p1","name":"Alpha","path":"/tmp/p1"},{"id":"p2","name":"Beta","path":"/tmp/p2"}]',
     }) async {
-      prefs['code.projects'] =
-          '[{"id":"p1","name":"Alpha","path":"/tmp/p1"},{"id":"p2","name":"Beta","path":"/tmp/p2"}]';
+      prefs['code.projects'] = projects;
       prefs['code.sessions'] = jsonEncode([for (final s in sessions) s.toJson()]);
-      final container = ProviderContainer(overrides: [preferencesProvider.overrideWithValue(prefs)]);
+      final container = ProviderContainer(
+        overrides: [
+          preferencesProvider.overrideWithValue(prefs),
+          environmentsProvider.overrideWith((ref) async => [HostEnv.instance, FakeEnv()]),
+        ],
+      );
       opened = container;
       container.read(remoteFollowedProvider.notifier).set(followed);
       container.listen(codeStatusesProvider, (_, _) {});
@@ -176,6 +185,36 @@ void main() {
       await tester.pump();
       expect(container.read(codeSessionsProvider).single.pinned, isFalse);
       expect(find.text('Pinned'), findsNothing);
+    });
+
+    desktopTest('a project names a non-host environment, and its menu changes it', (tester) async {
+      final container = await show(
+        tester,
+        [_s('a')],
+        projects: '[{"id":"p1","name":"Alpha","path":"/tmp/p1","environment":"wsl:Ubuntu"},{"id":"p2","name":"Beta","path":"/tmp/p2"}]',
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('sidebar.project.p1.environment')), findsOneWidget);
+      expect(find.text('Ubuntu (WSL)'), findsOneWidget);
+      expect(find.byKey(const ValueKey('sidebar.project.p2.environment')), findsNothing);
+
+      await tester.tap(find.byKey(const ValueKey('sidebar.project.p2.options')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('sidebar.project.environment')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('environment.wsl:Ubuntu')));
+      await tester.pumpAndSettle();
+      expect(container.read(codeProjectsProvider).last.environment, 'wsl:Ubuntu');
+      expect(find.byKey(const ValueKey('sidebar.project.p2.environment')), findsOneWidget);
+    });
+
+    desktopTest('the project menu removes it from the list', (tester) async {
+      final container = await show(tester, [_s('a')]);
+      await tester.tap(find.byKey(const ValueKey('sidebar.project.p2.options')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('sidebar.project.remove')));
+      await tester.pumpAndSettle();
+      expect([for (final p in container.read(codeProjectsProvider)) p.id], ['p1']);
     });
 
     desktopTest('sessions of a removed project are in no list, pinned or not', (tester) async {

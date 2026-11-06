@@ -40,7 +40,20 @@
 					<string>com.googleusercontent.apps.903732364114-n8ijda017je37sk0p5dk3908dd4fpfrp</string>
 				</array>
 			</dict>
+			<dict>
+				<key>CFBundleTypeRole</key>
+				<string>Editor</string>
+				<key>CFBundleURLName</key>
+				<string>everyai</string>
+				<key>CFBundleURLSchemes</key>
+				<array>
+					<string>everyai</string>
+				</array>
+			</dict>
 		</array>
+		<!-- app_links hands links to Dart; Flutter must not also route the raw URL. -->
+		<key>FlutterDeepLinkingEnabled</key>
+		<false/>
 		<key>GIDClientID</key>
 		<string>903732364114-n8ijda017je37sk0p5dk3908dd4fpfrp.apps.googleusercontent.com</string>
 		<key>NSAppTransportSecurity</key>

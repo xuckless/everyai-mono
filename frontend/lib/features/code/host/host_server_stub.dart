@@ -32,4 +32,7 @@ final class _NoHost implements HostServer {
 
   @override
   Future<void> stop() async {}
+
+  @override
+  Future<Uri> reachFrom(String token, Uri url) async => url;
 }

@@ -216,7 +216,8 @@ String? acpVersionProblem(AcpProfile p, String label, String? versionLine) {
 /// name must print Cursor's dated version (`2026.10.22-…`).
 String? acpForeignProblem(AcpProfile p, String? versionLine, {String? path}) {
   if (versionLine == null) return null;
-  if (p.agent == AcpAgent.cursor && path?.split('/').last == 'agent') {
+  if (p.agent == AcpAgent.cursor &&
+      path?.split(RegExp(r'[\\/]')).last.replaceFirst(RegExp(r'\.[A-Za-z]+$'), '') == 'agent') {
     return RegExp(r'\b20\d\d\.\d\d\.\d\d\b').hasMatch(versionLine)
         ? null
         : 'This `agent` is another program, not Cursor CLI.';

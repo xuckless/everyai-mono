@@ -2,7 +2,7 @@
 
 import 'dart:async';
 
-import '../domain/agent_mode.dart' show askUserQuestionTool, presentPlanTool;
+import '../domain/agent_mode.dart' show askUserQuestionTool, presentPlanTool, securityAlertTool;
 import '../domain/phases.dart' show bugCheckTool;
 import 'host_checks.dart' show checkTool, diffStatsTool;
 import 'host_report.dart' show reportIssueTool;
@@ -80,6 +80,14 @@ abstract interface class HostServer {
 
   /// Ends every token and closes the server.
   Future<void> stop();
+
+  /// Lets [token] reach the server at [url], the address an environment uses
+  /// for it (`ExecEnv.hostUrl`): requests naming that host in their `Host`
+  /// header are served for that token only. When [url]'s host is an IP that
+  /// isn't loopback (the host's side of WSL's or a VM's virtual network), the
+  /// server also listens on that one address, on the same port, until the
+  /// last token using it ends. Never on every address. Returns [url].
+  Future<Uri> reachFrom(String token, Uri url);
 }
 
 /// The server: [idleLimit] without use ends a token (the server closes with
@@ -99,9 +107,10 @@ HostServer createHostServer({
 List<Map<String, Object?>> get hostToolSpecs => impl.hostToolSpecs;
 
 /// What a workflow agent's token sees: the proof tools and nothing that
-/// forks, starts a workflow or asks the user (the lead does that). No memory:
+/// forks, starts a workflow or asks the user (the lead does that), and the
+/// security alert, which every agent has. No memory:
 /// they read it in their instructions, and the lead decides what is kept.
-const workflowHostTools = {bugCheckTool, checkTool, diffStatsTool, reportIssueTool};
+const workflowHostTools = {bugCheckTool, checkTool, diffStatsTool, reportIssueTool, securityAlertTool};
 
 /// The calls that wait for the user, so they get [createHostServer]'s
 /// `heldLimit` (a screenshot of another app's window asks first).

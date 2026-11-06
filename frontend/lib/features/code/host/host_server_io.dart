@@ -8,7 +8,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
-import '../domain/agent_mode.dart' show askUserQuestionTool, clientToolSpecs, presentPlanTool;
+import '../domain/agent_mode.dart' show askUserQuestionTool, clientToolSpecs, presentPlanTool, securityAlertSpec;
 import '../harness/everyai/project_notes_io.dart' show memoryToolSpec;
 import '../harness/everyai/tools_io.dart' show builtInToolSpecs;
 import 'host.dart';
@@ -36,12 +36,13 @@ const _metaVersion = 'io.modelcontextprotocol/protocolVersion';
 const _maxBody = 4 << 20;
 
 /// `ask_user_question` and `present_plan` with the held wording (the answer
-/// is the call's result), then memory, saved plans, the Max fork tools, the checks,
+/// is the call's result), security_alert, then memory, saved plans, the Max fork tools, the checks,
 /// run_script where Deno is found, run_workflow, report_issue, then the
 /// screen tools: browser, screenshot, app_run.
 final List<Map<String, Object?>> hostToolSpecs = List.unmodifiable([
   for (final name in [askUserQuestionTool, presentPlanTool])
     _mcpTool(clientToolSpecs(held: true).firstWhere((s) => s['name'] == name)),
+  _mcpTool(securityAlertSpec),
   _mcpTool(memoryToolSpec),
   savedPlansSpec,
   for (final s in maxForkSpecs) _mcpTool(s),
@@ -79,6 +80,7 @@ HostServer createHostServer({
   DateTime Function()? now,
   HostTimer? timer,
   @visibleForTesting Future<HttpServer> Function()? bind,
+  @visibleForTesting Future<HttpServer> Function(InternetAddress address, int port)? bindAt,
 }) => _HostServer(
   idleLimit,
   heldLimit,
@@ -86,6 +88,7 @@ HostServer createHostServer({
   now ?? DateTime.now,
   timer ?? Timer.new,
   bind ?? () => HttpServer.bind(InternetAddress.loopbackIPv4, 0),
+  bindAt ?? HttpServer.bind,
 );
 
 /// A live token, with the tool list it was minted with.
@@ -99,7 +102,16 @@ final class _Grant {
   final List<Map<String, Object?>> specs;
   DateTime lastUsed;
   final pending = <_Pending>{};
+
+  /// `host:port` values besides loopback its requests may name ([HostServer.reachFrom]).
+  final hosts = <String>{};
+
+  /// The extra addresses listened on for it.
+  final addresses = <String>{};
 }
+
+/// A listener on one address beyond loopback, and the tokens that need it.
+typedef _Extra = ({Future<HttpServer> server, Set<String> tokens});
 
 final class _Pending {
   _Pending(this.grant, this.rpcId, this.call, this.ended);
@@ -118,7 +130,7 @@ final class _Pending {
 }
 
 final class _HostServer implements HostServer {
-  _HostServer(this.idleLimit, this.heldLimit, this.keepAlive, this.now, this.timer, this.bind);
+  _HostServer(this.idleLimit, this.heldLimit, this.keepAlive, this.now, this.timer, this.bind, this.bindAt);
 
   final Duration idleLimit;
   final Duration heldLimit;
@@ -126,8 +138,12 @@ final class _HostServer implements HostServer {
   final DateTime Function() now;
   final HostTimer timer;
   final Future<HttpServer> Function() bind;
+  final Future<HttpServer> Function(InternetAddress address, int port) bindAt;
 
   final _grants = <_Grant>[];
+
+  /// Listeners beyond loopback, by address.
+  final _extra = <String, _Extra>{};
   final _random = Random.secure();
   HttpServer? _server;
   Future<void> _lifecycle = Future.value();
@@ -188,14 +204,62 @@ final class _HostServer implements HostServer {
   @override
   Future<void> stop() => _drop([..._grants]);
 
-  Future<void> _drop(List<_Grant> gone) {
+  @override
+  Future<Uri> reachFrom(String token, Uri url) async {
+    final grant = _find(token);
+    final port = _server?.port;
+    if (grant == null || port == null) throw StateError('That token is not live.');
+    if (url.port != port && !_loopback.contains(url.host)) {
+      throw ArgumentError.value('$url', 'url', 'not this server (port $port)');
+    }
+    final address = InternetAddress.tryParse(url.host);
+    if (address != null && !address.isLoopback) {
+      final key = address.address;
+      final extra = _extra[key] ??= (
+        server: bindAt(address, port).then((s) => s..listen((req) => unawaited(_handle(port, req, via: key)))),
+        tokens: <String>{},
+      );
+      try {
+        await extra.server;
+      } on Object {
+        if (extra.tokens.isEmpty) _extra.remove(key);
+        rethrow;
+      }
+      extra.tokens.add(grant.token);
+      grant.addresses.add(key);
+    }
+    grant.hosts.add(url.authority.toLowerCase());
+    return url;
+  }
+
+  static const _loopback = {'127.0.0.1', 'localhost', '::1', '[::1]'};
+
+  Future<void> _drop(List<_Grant> gone) async {
+    final closing = <Future<void>>[];
     for (final g in gone) {
       _grants.remove(g);
+      closing.add(_release(g));
       for (final p in [...g.pending]) {
         p.finish(_ended, HostEnd.sessionClosed);
       }
     }
+    await Future.wait(closing);
     return _closeIfIdle();
+  }
+
+  /// Closes the extra listeners only [g] needed.
+  Future<void> _release(_Grant g) async {
+    final closing = <Future<void>>[];
+    for (final key in g.addresses) {
+      final extra = _extra[key];
+      if (extra == null) continue;
+      extra.tokens.remove(g.token);
+      if (extra.tokens.isNotEmpty) continue;
+      _extra.remove(key);
+      closing.add(extra.server.then((s) => s.close(force: true), onError: (Object _) {}));
+    }
+    g.addresses.clear();
+    await Future.wait(closing);
   }
 
   Future<void> _closeIfIdle() => _serial(() async {
@@ -209,7 +273,14 @@ final class _HostServer implements HostServer {
   /// Drops tokens idle for [idleLimit]; a pending call keeps its token.
   void _sweep() {
     final at = now();
-    _grants.removeWhere((g) => g.pending.isEmpty && at.difference(g.lastUsed) >= idleLimit);
+    final gone = [
+      for (final g in _grants)
+        if (g.pending.isEmpty && at.difference(g.lastUsed) >= idleLimit) g,
+    ];
+    for (final g in gone) {
+      _grants.remove(g);
+      unawaited(_release(g));
+    }
   }
 
   void _used(_Grant grant) {
@@ -244,9 +315,10 @@ final class _HostServer implements HostServer {
     return hit;
   }
 
-  Future<void> _handle(int port, HttpRequest req) async {
+  /// [via] is the address of the extra listener [req] came in on; null for loopback.
+  Future<void> _handle(int port, HttpRequest req, {String? via}) async {
     try {
-      await _serve(port, req);
+      await _serve(port, req, via: via);
     } on Object {
       // A client that left mid-answer.
       try {
@@ -258,20 +330,27 @@ final class _HostServer implements HostServer {
     if (_grants.isEmpty) unawaited(_closeIfIdle());
   }
 
-  Future<void> _serve(int port, HttpRequest req) async {
+  Future<void> _serve(int port, HttpRequest req, {String? via}) async {
     if (req.uri.path != '/mcp') return _reply(req, 404, _error(null, -32601, 'Not found'));
-    // DNS rebinding: a web page can reach a loopback port, but its Host or Origin names its own site.
+    // DNS rebinding: a web page can reach a loopback port, but its Host or Origin names its own site. Beyond
+    // loopback, only the names a live token was given (reachFrom), and only with that token.
     final local = ['127.0.0.1:$port', 'localhost:$port', '[::1]:$port'];
-    if (!local.contains(req.headers.value('host')?.toLowerCase())) {
+    final named = {for (final g in _grants) ...g.hosts};
+    final host = req.headers.value('host')?.toLowerCase();
+    if (!local.contains(host) && !named.contains(host)) {
       return _reply(req, 403, _error(null, -32600, 'Forbidden host'));
     }
     final origin = req.headers.value('origin')?.toLowerCase();
-    if (origin != null && !local.any((h) => origin == 'http://$h')) {
+    if (origin != null && !local.any((h) => origin == 'http://$h') && origin != 'http://$host') {
       return _reply(req, 403, _error(null, -32600, 'Forbidden origin'));
     }
     final auth = req.headers.value('authorization') ?? '';
     final grant = auth.startsWith('Bearer ') ? _find(auth.substring(7).trim()) : null;
     if (grant == null) return _unauthorized(req);
+    // An extra listener serves only the tokens it was opened for, whatever the Host header names.
+    if (!local.contains(host) && !grant.hosts.contains(host) || via != null && !grant.addresses.contains(via)) {
+      return _reply(req, 403, _error(null, -32600, 'Forbidden host'));
+    }
     _used(grant);
     if (req.method != 'POST') {
       req.response.headers.set('allow', 'POST');

@@ -8,6 +8,7 @@ import '../../core/platform/platform_kind.dart';
 import '../../core/providers.dart';
 import '../attachments/attachment.dart';
 import '../auth/data/token_store.dart' show tokenStoreProvider;
+import '../code/automations/webhook_providers.dart' show webhookRunnerProvider;
 import '../code/code_providers.dart' show CodeSessionState, Outgoing;
 import '../code/domain/agent_mode.dart';
 import '../code/domain/code_session.dart';
@@ -184,6 +185,8 @@ final class RemoteHosting extends Notifier<RemoteHostingState> {
       token: host.token,
       connect: ref.read(relayConnectorProvider),
       approvedKey: (deviceId) => state.host?.devices[deviceId],
+      // Webhooks for this host start sessions here; the ack goes back on whichever socket is up by then.
+      onWebhook: (d) => unawaited(ref.read(webhookRunnerProvider.notifier).handle(d, (id) => _link?.ackWebhook(id))),
       bridge: (send) {
         final bridge = HostBridge(
           identity: identity,

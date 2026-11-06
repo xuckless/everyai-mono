@@ -132,6 +132,10 @@ final class PermissionPolicy {
   /// what the rest of the policy says about a floor hit (see floor_advice.dart).
   Decision decide(ActionCall call, AgentMode mode, {bool floor = true}) {
     if (isClientTool(call)) return const Decision(Verdict.allow, DecisionSource.clientTool);
+    // The app's own security alert only shows a card: no rule (an `Mcp(everyai*)` deny included) holds it back.
+    if (hostTools && hostToolOf(call) == securityAlertTool) {
+      return const Decision(Verdict.allow, DecisionSource.clientTool);
+    }
     // Bypass: the user turned every EveryAI check off (floor, rules, risk) for this session.
     if (mode == AgentMode.bypass) return const Decision(Verdict.allow, DecisionSource.mode);
     final command = _command(call);
@@ -556,7 +560,7 @@ List<_Part> _parts(String raw, int depth) {
   for (final (p, pipedIn) in pieces) {
     final (stripped, xargs) = _stripWrappers(p);
     // Escapes and quotes removed, wrappers that only showed up then stripped too.
-    final (normalized, xargs2) = _stripWrappers(_collapse(_unescape(_unquote(stripped))));
+    final (normalized, xargs2) = _stripWrappers(_collapse(_unescape(_drivePaths(_unquote(stripped)))));
     if (normalized.isNotEmpty) {
       out.add(_Part(normalized, viaXargs: xargs || xargs2, input: pipedIn ? previous : null));
     }
@@ -631,6 +635,11 @@ final _xargs = _wrapper(
 
 String _unquote(String s) => s.replaceAll(RegExp(r'''["']'''), '');
 
+/// Windows paths (`C:\Users\x`) with forward slashes, before escapes are
+/// removed, so the floor still sees the folder.
+String _drivePaths(String s) =>
+    s.replaceAllMapped(RegExp(r'(?<!\S)[A-Za-z]:\\\S*'), (m) => m[0]!.replaceAll('\\', '/'));
+
 /// Backslash escapes removed: `r\m` runs `rm`.
 String _unescape(String s) => s.replaceAllMapped(RegExp(r'\\(.)'), (m) => m[1]!);
 
@@ -675,6 +684,14 @@ final _systemDir = RegExp(
 );
 final _homeDir = RegExp(r'^/(Users|home)/[^/*]+(/\*)?$');
 
+/// A Windows drive (`C:`, Git Bash's `/c`, Cygwin's `/cygdrive/c`), its
+/// Users, Windows, Program Files or ProgramData folder, or a home folder.
+/// Words split at spaces, so "Program Files" arrives as `/c/Program`.
+final _windowsDir = RegExp(
+  r'^(/[a-z]|/cygdrive/[a-z]|[a-z]:)(/users(/[^/*]+)?|/windows|/program( files( \(x86\))?)?|/programdata)?(/\*)?$',
+  caseSensitive: false,
+);
+
 /// The file system root, a home folder, or a system folder.
 bool _isRootTarget(String arg) {
   var t = arg;
@@ -682,8 +699,11 @@ bool _isRootTarget(String arg) {
     t = t.substring(0, t.length - 1);
   }
   if (t == '//' || t == '/.') t = '/';
-  const exact = {'/', '/*', '~', '~/*', r'$HOME', r'${HOME}', r'$HOME/*', r'${HOME}/*', '~/.', '/..'};
-  return exact.contains(t) || _systemDir.hasMatch(t) || _homeDir.hasMatch(t);
+  const exact = {
+    '/', '/*', '~', '~/*', r'$HOME', r'${HOME}', r'$HOME/*', r'${HOME}/*', '~/.', '/..', //
+    r'$USERPROFILE', r'${USERPROFILE}', r'$USERPROFILE/*', r'${USERPROFILE}/*',
+  };
+  return exact.contains(t) || _systemDir.hasMatch(t) || _homeDir.hasMatch(t) || _windowsDir.hasMatch(t);
 }
 
 /// `git` with its global options skipped: the subcommand and what follows.

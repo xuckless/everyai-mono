@@ -10,6 +10,10 @@ import 'package:macos_ui/macos_ui.dart' as mac;
 import 'package:macos_window_utils/widgets/transparent_macos_sidebar.dart';
 import 'package:material_ui/material_ui.dart' as m;
 
+import 'package:app_links/app_links.dart';
+
+import '../core/links/app_link.dart';
+import '../core/links/link_providers.dart';
 import '../core/platform/platform_kind.dart';
 import '../core/net/api_client.dart' show ServerStatus;
 import '../core/preferences.dart';
@@ -17,6 +21,7 @@ import '../core/providers.dart' show apiClientProvider, serverStatusProvider;
 import '../features/updates/update_providers.dart' show updateProvider;
 import '../core/theme/every_theme.dart';
 import '../core/ui/adaptive.dart' show AdaptiveButton, AdaptiveProgress, GlassSurface, GlassLevel, showAdaptiveToast;
+import '../features/code/automations/schedule_providers.dart' show scheduleRunnerProvider;
 import '../features/code/code_providers.dart' show driverShutdownProvider;
 import '../features/code/drivers/driver_registry.dart' show driverStatusesProvider;
 import '../features/history/ui/sidebar.dart';
@@ -83,10 +88,51 @@ class _AppShellState extends ConsumerState<AppShell> {
   }
 
   AppLifecycleListener? _lifecycle;
+  StreamSubscription<Uri>? _links;
+  PromptLink? _awaitingLink;
+
+  @override
+  void didUpdateWidget(AppShell old) {
+    super.didUpdateWidget(old);
+    if (widget.location != old.location && _awaitingLink != null) {
+      final link = _awaitingLink!;
+      _awaitingLink = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) ref.read(pendingPromptProvider.notifier).offer(link);
+      });
+    }
+  }
+
+  /// An `everyai://prompt` link: open the page whose box takes the text (it fills the box; nothing is sent).
+  void _onLink(Uri uri) {
+    switch (parseAppLink(uri)) {
+      case final PromptLink link:
+        final offered = linkForHost(link, desktop: Host.isDesktop);
+        final to = routeForPrompt(offered, desktop: Host.isDesktop, chat: Routes.newChat, code: Routes.code);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          if (to == widget.location) {
+            ref.read(pendingPromptProvider.notifier).offer(offered); // the page is already showing
+          } else {
+            // Offered once the new page is up: the page being left must not take it.
+            _awaitingLink = offered;
+            context.go(to);
+          }
+        });
+      case OversizedLink():
+        showAdaptiveToast(context, 'That link\'s text is too long.');
+      case null:
+        break;
+    }
+  }
 
   @override
   void initState() {
     super.initState();
+    if (!kIsWeb) {
+      // Also delivers the link the app was started with.
+      _links = AppLinks().uriLinkStream.listen(_onLink, onError: (Object _) {});
+    }
     // A settings link that came before the shell existed (the first location).
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && ref.read(pendingSettingsProvider) != null) _openPendingSettings();
@@ -106,6 +152,7 @@ class _AppShellState extends ConsumerState<AppShell> {
   @override
   void dispose() {
     _lifecycle?.dispose();
+    unawaited(_links?.cancel());
     super.dispose();
   }
 
@@ -133,6 +180,8 @@ class _AppShellState extends ConsumerState<AppShell> {
     if (Host.isDesktop) {
       // Outside coding CLIs end with the app, whichever way they were started.
       ref.listen(driverShutdownProvider, (_, _) {});
+      // Scheduled tasks start their sessions while the app is open.
+      ref.listen(scheduleRunnerProvider, (_, _) {});
       ref.listen(remoteHostingProvider.select((s) => s.link.pending.length), (before, now) {
         if (now > (before ?? 0)) {
           showAdaptiveToast(context, 'A device wants to use Code here. Approve it in Settings → Remote.');

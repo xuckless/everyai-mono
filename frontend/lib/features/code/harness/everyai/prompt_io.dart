@@ -4,6 +4,8 @@ import 'dart:async';
 import 'dart:io';
 
 import '../../../../core/config/version.dart';
+import '../../../../core/security/security_rules.dart';
+import '../../git/git_service_io.dart' show guardedEnv;
 import 'model_family.dart';
 import 'shell_io.dart';
 
@@ -66,6 +68,9 @@ and reads your messages between them.
   button), not only by calling the app's own functions, which skips overlays that swallow clicks. Web pages: the
   browser tool (open, click, type, screenshot, console). Desktop apps you started: the screenshot tool. Look at the
   picture before you say a UI works. Never quit or kill the user's own apps (their browser, Finder, terminals).
+
+# Security
+$securityRules
 
 # Debugging
 - Reproduce first: a failing test, a small script, or the exact clicks in browser. Then change one thing at a time
@@ -140,11 +145,17 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 ''';
   final facts = <String, String>{};
+  // From a file, not `-c`: Git Bash parses a Windows command line again and
+  // would cut the script at its first double quote.
+  Directory? tmp;
   try {
+    tmp = Directory.systemTemp.createTempSync('everyai-env');
+    final file = File('${tmp.path}/probe.sh')..writeAsStringSync(script);
     final res = await Process.run(
       env.shell,
-      ['-c', script],
-      environment: env.env,
+      [file.path.replaceAll('\\', '/')],
+      // Its git calls are EveryAI's own: nothing the repository defines runs (git_guard.dart).
+      environment: await guardedEnv(workingDir, base: env.env),
       workingDirectory: workingDir,
     ).timeout(const Duration(seconds: 8));
     for (final line in (res.stdout as String).split('\n')) {
@@ -153,6 +164,12 @@ fi
     }
   } on Object {
     // Without the probe the block still names the folder and shell.
+  } finally {
+    try {
+      tmp?.deleteSync(recursive: true);
+    } on Object {
+      // A leftover temp folder is harmless.
+    }
   }
   return formatEnvironment(workingDir: workingDir, shell: env.shell, facts: facts, today: DateTime.now());
 }

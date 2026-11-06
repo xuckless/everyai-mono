@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -21,13 +22,19 @@ import '../code_providers.dart';
 import '../code_settings_providers.dart';
 import '../domain/agent_mode.dart';
 import '../domain/code_session.dart';
-import '../drivers/driver.dart' show DriverStatus;
+import '../drivers/detection/install_commands.dart';
+import '../drivers/driver.dart' show DriverInfo, DriverStatus;
 import '../drivers/driver_registry.dart';
 import '../drivers/registry_install/ui/add_agent_list.dart' show AddAgentEntry;
 import '../permissions_providers.dart';
 import '../settings/setting_defs.dart';
 import '../settings/settings.dart' as files;
+import '../migration/ui/bring_over_sheet.dart';
 import 'code_slash_host.dart' show switchCodeAgent;
+import '../../onboarding/domain/harness_rows.dart';
+import '../../onboarding/git_bash_stub.dart';
+import '../../onboarding/onboarding_harness_providers.dart';
+import 'harness_setup_row.dart';
 
 /// Settings → Code: the layers a session's settings come from (Global, a
 /// project, a session), each as rows of typed controls. Rows a layer doesn't
@@ -369,6 +376,13 @@ class _CodeSettingsSectionState extends ConsumerState<CodeSettingsSection> {
       case SettingKind.harnesses:
         block = true;
         control = const HarnessesSetting();
+      case SettingKind.migration:
+        control = AdaptiveButton(
+          key: const ValueKey('code-settings.bring-over'),
+          label: 'Choose what to bring over',
+          emphasis: ButtonEmphasis.secondary,
+          onPressed: () => showBringOver(context),
+        );
       case SettingKind.link:
         control = AdaptiveButton(
           label: 'Open',
@@ -551,6 +565,13 @@ final class _Layer {
   final StoredCodeSettings prefs;
 }
 
+/// The install line shown for a missing CLI: the vendor's line for this system, else the driver's own hint (an agent
+/// added by hand).
+String? _installLine(DriverInfo info) {
+  final os = SetupOs.of(defaultTargetPlatform);
+  return (os == null ? null : setupCommandsFor(info.id, os)?.install) ?? info.installHint;
+}
+
 /// Settings → Code → Harnesses: each driver with what was found on this
 /// computer, the consent switch for subscription CLIs, and Refresh.
 class HarnessesSetting extends ConsumerWidget {
@@ -566,56 +587,56 @@ class HarnessesSetting extends ConsumerWidget {
       for (final d in drivers)
         if (d.info.needsConsent) d.info.label,
     ];
+    final rows = harnessRows(
+      drivers,
+      ref.watch(harnessEnvStatusesProvider),
+      hideAbsent: false,
+      // The button offers Set up for a missing CLI here, so the dot says the same.
+      appFound: (_) => true,
+      builtInBlocked: ref.watch(gitBashMissingProvider),
+    );
     final handoff = ref.watch(codeLeadProvider.select((l) => l.handoff));
     final resumeUnsupported = ref.watch(resumeUnsupportedProvider);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        for (final d in drivers)
-          Padding(
-            key: ValueKey('code-settings.harness.${d.info.id}'),
-            padding: const EdgeInsets.symmetric(vertical: 6),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(d.info.label, style: theme.type.callout.medium.tint(theme.text)),
-                      Text(switch (statuses) {
-                        AsyncValue(:final value?) when value[d.info.id] != null => harnessStatusLine(
-                          d.info.id,
-                          value[d.info.id]!,
-                        ),
-                        AsyncError() => "Couldn't check",
-                        _ => 'Checking…',
-                      }, style: theme.type.caption.tint(theme.textMuted)),
-                      if (statuses.value?[d.info.id] case DriverStatus(installed: false)
-                          when d.info.installHint != null)
-                        AdaptiveSelectionArea(
-                          child: Text(
-                            'To install: ${d.info.installHint}',
-                            key: ValueKey('code-settings.harness.${d.info.id}.hint'),
-                            style: theme.type.caption.mono.tint(theme.textMuted),
-                          ),
-                        ),
-                      // A harness whose earlier sessions can't be listed or loaded isn't offered on New session.
-                      if (resumeUnsupported(d.info.id) case final why?)
-                        Text(
-                          'Earlier sessions: not available for ${d.info.label}${why.isEmpty ? '' : ' ($why)'}',
-                          key: ValueKey('code-settings.harness.${d.info.id}.resume'),
-                          style: theme.type.caption.tint(theme.textMuted),
-                        ),
-                    ],
+        const GitForWindowsNotice(),
+        for (final r in rows)
+          KeyedSubtree(
+            key: ValueKey('code-settings.harness.${r.id}${r.keySuffix}'),
+            child: HarnessSetupRow(
+              row: r,
+              statusLine: statuses.hasError
+                  ? "Couldn't check"
+                  : r.id == everyaiHarnessName && r.state == RowState.setUp
+                  ? 'Needs Git for Windows to run commands'
+                  : null,
+              footer: [
+                if (r.status case DriverStatus(installed: false) when _installLine(r.driver.info) != null)
+                  AdaptiveSelectionArea(
+                    child: Text(
+                      'To install: ${_installLine(r.driver.info)}',
+                      key: ValueKey('code-settings.harness.${r.id}${r.keySuffix}.hint'),
+                      style: theme.type.caption.mono.tint(theme.textMuted),
+                    ),
                   ),
-                ),
-                if (d.info.needsConsent) ...[
+                // A harness whose earlier sessions can't be listed or loaded isn't offered on New session.
+                if (resumeUnsupported(r.id) case final why?)
+                  Text(
+                    'Earlier sessions: not available for ${r.driver.info.label}${why.isEmpty ? '' : ' ($why)'}',
+                    key: ValueKey('code-settings.harness.${r.id}${r.keySuffix}.resume'),
+                    style: theme.type.caption.tint(theme.textMuted),
+                  ),
+              ],
+              trailing: [
+                if (r.driver.info.needsConsent && r.env.isHost) ...[
+                  const SizedBox(width: 8),
                   Text('Use my own installed CLI', style: theme.type.caption.tint(theme.textMuted)),
                   const SizedBox(width: 8),
                   AdaptiveSwitch(
-                    key: ValueKey('code-settings.own-cli.${d.info.id}'),
-                    value: own.contains(d.info.consentId),
-                    onChanged: (v) => ref.read(codeSettingsProvider.notifier).setOwnCli(d.info.consentId, v),
+                    key: ValueKey('code-settings.own-cli.${r.id}'),
+                    value: own.contains(r.driver.info.consentId),
+                    onChanged: (v) => ref.read(codeSettingsProvider.notifier).setOwnCli(r.driver.info.consentId, v),
                   ),
                 ],
               ],
@@ -661,6 +682,7 @@ class HarnessesSetting extends ConsumerWidget {
               onPressed: () {
                 unawaited(ref.read(driverStatusesProvider.notifier).refresh(reloadShell: true));
                 ref.invalidate(driverModelsProvider);
+                ref.invalidate(gitBashMissingProvider);
               },
             ),
             if (ref.read(driverStatusesProvider.notifier).checkedAt case final at?) ...[

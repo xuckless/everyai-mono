@@ -13,13 +13,16 @@ import '../../../core/ui/brand.dart';
 import '../../../core/ui/segmented.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../code/domain/code_session.dart' show everyaiHarnessName;
-import '../../code/drivers/driver.dart';
 import '../../code/drivers/driver_registry.dart';
 import '../../code/code_settings_providers.dart';
-import '../../code/ui/code_settings_section.dart' show harnessStatusLine;
+import '../../code/migration/ui/bring_over_sheet.dart' show showBringOver;
+import '../../code/ui/harness_setup_row.dart';
 import '../../settings/byok_keys.dart';
 import '../../settings/domain/byok_providers.dart';
 import '../../settings/domain/key_check.dart';
+import '../domain/harness_rows.dart';
+import '../git_bash_stub.dart';
+import '../onboarding_harness_providers.dart';
 import '../onboarding_providers.dart';
 
 /// The terms the last step asks the user to accept; the same text as
@@ -575,16 +578,27 @@ class _KeysState extends ConsumerState<_Keys> {
   }
 }
 
-/// Step 4 on a desktop: the coding CLIs found on this computer.
+/// Step 4 on a desktop: the coding agents found on this computer, one row each with its one button.
 class _CodeHarnesses extends ConsumerWidget {
   const _CodeHarnesses();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = EveryTheme.of(context);
-    final statuses = ref.watch(driverStatusesProvider);
     final own = ref.watch(codeSettingsProvider.select((s) => s.ownClis));
     final drivers = ref.watch(driverRegistryProvider).listed.toList();
+    ref.watch(driverStatusesProvider);
+    final scan = ref.read(driverStatusesProvider.notifier).appScan;
+    final done = ref.watch(driverStatusesProvider).hasValue;
+    final gitMissing = ref.watch(gitBashMissingProvider);
+    final rows = harnessRows(
+      drivers,
+      ref.watch(harnessEnvStatusesProvider),
+      hideAbsent: true,
+      appFound: scan.offersSetUp,
+      builtInBlocked: gitMissing,
+    );
+    // Until the first check ends there are no statuses, so every harness reads "Checking…".
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -594,17 +608,43 @@ class _CodeHarnesses extends ConsumerWidget {
           style: theme.type.body.tint(theme.textMuted),
         ),
         const SizedBox(height: 14),
-        for (final d in drivers)
-          _HarnessRow(
-            key: ValueKey('onboarding.harness.${d.info.id}'),
-            driver: d,
-            status: switch (statuses) {
-              AsyncData(:final value) => value[d.info.id],
-              _ => null,
-            },
-            checking: statuses is! AsyncData,
-            consented: own.contains(d.info.consentId),
-            onConsent: (v) => ref.read(codeSettingsProvider.notifier).setOwnCli(d.info.consentId, v),
+        const GitForWindowsNotice(),
+        for (final r in rows)
+          HarnessSetupRow(
+            key: ValueKey('onboarding.harness.${r.id}${r.keySuffix}'),
+            row: r,
+            title: r.id == everyaiHarnessName ? "EveryAI's own agent" : null,
+            statusLine: r.id == everyaiHarnessName
+                ? (gitMissing ? 'Needs Git for Windows to run commands' : 'Runs on the key from the last step')
+                : null,
+            unknownLine: "Couldn't check. You can check again in Settings → Code → Harnesses.",
+            offerMissing: false,
+            trailing: [
+              // A subscription CLI is set up only once the user has agreed to use it, so the choice comes first.
+              if (r.driver.info.needsConsent && r.env.isHost)
+                Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: AdaptiveButton(
+                    key: ValueKey('onboarding.consent.${r.id}${r.keySuffix}'),
+                    label: own.contains(r.driver.info.consentId)
+                        ? 'In use ✓'
+                        : (r.state == RowState.ready ? 'Use it' : 'Allow'),
+                    emphasis: own.contains(r.driver.info.consentId) ? ButtonEmphasis.secondary : ButtonEmphasis.primary,
+                    onPressed: () => ref
+                        .read(codeSettingsProvider.notifier)
+                        .setOwnCli(r.driver.info.consentId, !own.contains(r.driver.info.consentId)),
+                  ),
+                ),
+            ],
+          ),
+        if (done && rows.every((r) => r.id == everyaiHarnessName))
+          Padding(
+            key: const ValueKey('onboarding.none-found'),
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              'No other coding agents found yet. You can add one later in Settings → Code → Harnesses.',
+              style: theme.type.caption.tint(theme.textMuted),
+            ),
           ),
         const SizedBox(height: 8),
         Text(
@@ -612,76 +652,14 @@ class _CodeHarnesses extends ConsumerWidget {
           'this in Settings → Code → Harnesses.',
           style: theme.type.caption.tint(theme.textMuted),
         ),
+        const SizedBox(height: 4),
+        AdaptiveButton(
+          key: const ValueKey('onboarding.import'),
+          label: 'Bring over from other tools',
+          emphasis: ButtonEmphasis.plain,
+          onPressed: () => showBringOver(context),
+        ),
       ],
-    );
-  }
-}
-
-class _HarnessRow extends StatelessWidget {
-  const _HarnessRow({
-    super.key,
-    required this.driver,
-    required this.status,
-    required this.checking,
-    required this.consented,
-    required this.onConsent,
-  });
-
-  final HarnessDriver driver;
-  final DriverStatus? status;
-  final bool checking;
-  final bool consented;
-  final ValueChanged<bool> onConsent;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    final id = driver.info.id;
-    final own = id == everyaiHarnessName;
-    final ready = own || (status?.installed ?? false);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Row(
-        children: [
-          Container(
-            width: 9,
-            height: 9,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: checking ? theme.textMuted : (ready ? theme.success : theme.border),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  own ? "EveryAI's own agent" : driver.info.label,
-                  style: theme.type.callout.medium.tint(theme.text),
-                ),
-                Text(
-                  own
-                      ? 'Runs on the key from the last step'
-                      : checking
-                      ? 'Checking…'
-                      : status == null
-                      ? "Couldn't check"
-                      : harnessStatusLine(id, status!),
-                  style: theme.type.caption.tint(theme.textMuted),
-                ),
-              ],
-            ),
-          ),
-          if (driver.info.needsConsent && ready)
-            AdaptiveButton(
-              key: ValueKey('onboarding.consent.$id'),
-              label: consented ? 'In use ✓' : 'Use it',
-              emphasis: consented ? ButtonEmphasis.secondary : ButtonEmphasis.primary,
-              onPressed: () => onConsent(!consented),
-            ),
-        ],
-      ),
     );
   }
 }

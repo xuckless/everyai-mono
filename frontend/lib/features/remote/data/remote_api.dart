@@ -21,7 +21,10 @@ typedef RemoteDevice = ({String id, String hostId, String name, String publicKey
 /// A host on the account.
 typedef RemoteHostInfo = ({String id, String name, String platform, bool online, List<RemoteDevice> devices});
 
-/// The backend's `/v1/remote` REST endpoints (see AGENTS.md).
+/// A webhook on the account (`GET /v1/hooks`); the secret is only in [RemoteApi.createHook]'s answer.
+typedef HookInfo = ({String id, String name, String hostId, String url, DateTime? lastDelivery, int pending});
+
+/// The backend's `/v1/remote` REST endpoints (see AGENTS.md) and `/v1/hooks` (backend-exp `hooks.zig`).
 final class RemoteApi {
   const RemoteApi(this._api, {required this.authenticated});
 
@@ -108,5 +111,27 @@ final class RemoteApi {
     const {},
     authenticated: authenticated,
     headers: {'X-Remote-Host-Token': hostToken},
+  );
+
+  /// A webhook URL for [hostId]; the answer's secret is shown once.
+  Future<({HookInfo hook, String secret})> createHook({required String name, required String hostId}) async {
+    final r = await _api.postJson('v1/hooks', {'name': name, 'host_id': hostId}, authenticated: authenticated);
+    return (hook: _hook(r), secret: r['secret']! as String);
+  }
+
+  Future<List<HookInfo>> hooks() async {
+    final list = await _api.getJsonList('v1/hooks', authenticated: authenticated);
+    return [for (final h in list.whereType<Map<String, Object?>>()) _hook(h)];
+  }
+
+  Future<void> deleteHook(String id) => _api.delete('v1/hooks/$id', authenticated: authenticated);
+
+  static HookInfo _hook(Map<String, Object?> h) => (
+    id: h['id']! as String,
+    name: h['name'] as String? ?? '',
+    hostId: h['host_id'] as String? ?? '',
+    url: h['url'] as String? ?? '',
+    lastDelivery: h['last_delivery_at'] == null ? null : _time(h['last_delivery_at']),
+    pending: (h['pending'] as num?)?.toInt() ?? 0,
   );
 }

@@ -3,10 +3,12 @@
 import 'package:uuid/uuid.dart';
 
 import '../../domain/agent_mode.dart';
+import '../../environments/exec_env.dart';
 import '../../git/git_service.dart';
 import '../../harness/events.dart';
 import '../../harness/harness.dart';
 import '../driver.dart';
+import '../driver_env.dart';
 import '../driver_process.dart';
 import '../event_journal.dart';
 import '../json_rpc.dart';
@@ -26,7 +28,14 @@ export 'acp_session.dart' show AcpConnect;
 /// agent's session id, the folder, the session tag; nothing secret), the
 /// event journal and the agent's stderr. Models come from the last session
 /// the agent started (no session is started just to ask).
-final class AcpDriver implements HarnessDriver, AttachesBriefed, StartsInNativeMode, AdoptsNativeSession {
+final class AcpDriver
+    implements
+        HarnessDriver,
+        AttachesBriefed,
+        AttachesWithMcp,
+        StartsInNativeMode,
+        AdoptsNativeSession,
+        RunsInEnvironments {
   AcpDriver({
     required this.id,
     required this.label,
@@ -46,10 +55,49 @@ final class AcpDriver implements HarnessDriver, AttachesBriefed, StartsInNativeM
     this.signedIn,
     this.initTimeout = const Duration(seconds: 60),
     this.replayQuiet = const Duration(milliseconds: 300),
-  }) : _dataDir = dataDir ?? GitService.dataDir,
-       _connect = connect ?? _spawn,
-       _ttyConnect = ttyConnect ?? _spawnTty,
+    this.execEnv = HostEnv.instance,
+  }) : _dataDirGiven = dataDir,
+       _connectGiven = connect,
+       _ttyGiven = ttyConnect,
+       _loginEnvGiven = loginEnv,
+       _dataDir = dataDir ?? GitService.dataDir,
+       _connect = connect ?? _spawnIn(execEnv),
+       _ttyConnect = ttyConnect ?? (execEnv.isHost ? _spawnTty : _noTty(label, execEnv)),
        _loginEnv = loginEnv ?? shellLoginEnv;
+
+  @override
+  final ExecEnv execEnv;
+
+  // What was injected, for [inEnv]'s copy.
+  final Future<String> Function()? _dataDirGiven;
+  final AcpConnect? _connectGiven;
+  final AcpConnect? _ttyGiven;
+  final Future<Map<String, String>> Function()? _loginEnvGiven;
+
+  /// This agent inside [env]: found by its scan, started through its bridge,
+  /// never under a terminal (that would need a pty inside).
+  @override
+  AcpDriver inEnv(ExecEnv env, EnvFind find) => AcpDriver(
+    id: id,
+    label: label,
+    command: command,
+    args: args,
+    needsConsent: needsConsent,
+    consentId: consentId,
+    installHint: installHint,
+    profile: profile,
+    prefix: prefix,
+    knownVersion: knownVersion,
+    which: which ?? (c) async => (await find(c)).path,
+    dataDir: _dataDirGiven,
+    connect: _connectGiven,
+    ttyConnect: _ttyGiven,
+    loginEnv: _loginEnvGiven,
+    signedIn: signedIn,
+    initTimeout: initTimeout,
+    replayQuiet: replayQuiet,
+    execEnv: env,
+  );
 
   final String id;
   final String label;
@@ -109,7 +157,7 @@ final class AcpDriver implements HarnessDriver, AttachesBriefed, StartsInNativeM
     final text = b.sessionSkill;
     if (dir == null || text == null) return null;
     final input = (mcpUrl: Uri.parse(b.mcpUrl), mcpToken: b.mcpToken, skillDir: dir, sessionText: text);
-    final sent = resolved.profile.deliver(input, await listSkills(dir));
+    final sent = resolved.profile.deliver(input, await listSkills(hostSide(execEnv, dir)));
     return sent.instructions ?? sent.firstPrompt ?? text;
   }
 
@@ -119,14 +167,36 @@ final class AcpDriver implements HarnessDriver, AttachesBriefed, StartsInNativeM
   /// Whether a session of it is open in this app run.
   bool get busy => _live.isNotEmpty;
 
-  static Future<LineChannel> _spawn({
-    required String executable,
-    required List<String> args,
-    required String cwd,
-    required String sessionTag,
-    required String logPath,
-    required Map<String, String> env,
-  }) => spawnDriver(executable: executable, args: args, cwd: cwd, sessionTag: sessionTag, logPath: logPath, env: env);
+  static AcpConnect _spawnIn(ExecEnv execEnv) =>
+      ({
+        required String executable,
+        required List<String> args,
+        required String cwd,
+        required String sessionTag,
+        required String logPath,
+        required Map<String, String> env,
+      }) => spawnDriver(
+        executable: executable,
+        args: args,
+        cwd: cwd,
+        sessionTag: sessionTag,
+        logPath: logPath,
+        env: env,
+        execEnv: execEnv,
+      );
+
+  static AcpConnect _noTty(String label, ExecEnv execEnv) =>
+      ({
+        required String executable,
+        required List<String> args,
+        required String cwd,
+        required String sessionTag,
+        required String logPath,
+        required Map<String, String> env,
+      }) async => throw HarnessError(_ttyRefusal(label, execEnv));
+
+  static String _ttyRefusal(String label, ExecEnv env) =>
+      "$label needs a terminal; it can't run inside ${env.label} yet.";
 
   static Future<LineChannel> _spawnTty({
     required String executable,
@@ -198,6 +268,11 @@ final class AcpDriver implements HarnessDriver, AttachesBriefed, StartsInNativeM
   @override
   Future<DriverStatus> detect() async {
     if (knownVersion case final version?) return _detectInstalled(version);
+    // Inside an environment: found by its scan; nothing runs on this computer.
+    if (!execEnv.isHost) {
+      final path = await _find();
+      return path == null ? const DriverStatus() : DriverStatus(installed: true, path: path);
+    }
     final s = await detectCli(resolved.executable, which: (_) => _find());
     if (!s.installed || s.path == null) return s;
     final signed = await (signedIn ?? () => resolved.profile.signedIn(s.path!))();
@@ -249,7 +324,7 @@ final class AcpDriver implements HarnessDriver, AttachesBriefed, StartsInNativeM
   Future<String> _root() async => '${await _dataDir()}/acp-sessions';
 
   Future<String> _modelsPath() async =>
-      '${await _root()}/models-${id.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_')}.json';
+      '${await _root()}/models-${(execEnv.isHost ? id : '$id@${execEnv.id}').replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_')}.json';
 
   Future<void> _offered(Map<String, Object?> reply) async {
     final models = acpModels(reply);
@@ -273,7 +348,9 @@ final class AcpDriver implements HarnessDriver, AttachesBriefed, StartsInNativeM
   }
 
   Future<String> _executable() async {
+    if (!execEnv.isHost && resolved.profile.ttyFallback) throw HarnessError(_ttyRefusal(label, execEnv));
     final path = await _find();
+    if (path == null && !execEnv.isHost) throw HarnessError(notInstalledIn(label, execEnv));
     if (path == null) throw HarnessError("$label isn't installed: `${resolved.executable}` wasn't found on your PATH.");
     return path;
   }
@@ -290,6 +367,7 @@ final class AcpDriver implements HarnessDriver, AttachesBriefed, StartsInNativeM
     replayQuiet: replayQuiet,
     offered: _offered,
     closed: _live.remove,
+    toHost: (p) => hostSide(execEnv, p),
   );
 
   @override
@@ -350,6 +428,7 @@ final class AcpDriver implements HarnessDriver, AttachesBriefed, StartsInNativeM
 
   /// [attach] for a session without a briefing (a child session), still with the user's
   /// approved MCP servers ([mcpConfig]).
+  @override
   Future<HarnessSession> attachWithMcp(String conversationId, Map<String, Object?> mcpConfig) =>
       _attach(conversationId, null, mcpConfig);
 

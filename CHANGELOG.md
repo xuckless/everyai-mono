@@ -3,8 +3,26 @@
 EveryAI is in alpha. Signed releases start at `0.1.0-alpha.1`; the earlier unsigned dev build was
 `0.1.0-dev-nonsigned`. Earlier changes are listed by date and pull request.
 
-## Unreleased
+## 0.1.0-alpha.3 (2026-11-05): security in the tools, Bypass, environments, Windows
 
+- **Security lives in the tools.** Every tool guards itself and never adds an approval card, in every mode and for
+  every lead:
+  - Web pages, search results, browser pages and outside files reach the model marked as data, with hidden
+    characters removed.
+  - Reading credential stores and sending data out (uploads, gists, pushes to new remotes, paste and webhook sites)
+    are refused, and secrets are hidden in tool output.
+  - Look-alike and typo domains of official sites are refused. Package installs are checked for typosquats and
+    names that don't exist.
+  - The browser never types into password or payment fields, and screenshots skip password managers.
+  - EveryAI's own git calls never run a repo's hooks. MCP tool lists are pinned at consent, and skills, agents and
+    commands are scanned for hidden instructions.
+  - A `security_alert` tool shows a red card and a notification when content tries something harmful.
+  - Chat gets the same web guardrails, the alert card, and a warning on links that carry data.
+- **Permissions:**
+  - **Bypass EveryAI checks:** a switch under the modes that turns off EveryAI's floor, rules and risk prompts for
+    every agent in the session. Outside agents keep their own permissions.
+  - **Full auto never asks,** edits outside the project included.
+  - **Approvals ask once and are kept:** Allow saves the rule for the project. "Just this once" is still there.
 - **Bypass permissions:** a new mode, after Full auto, that turns every EveryAI check off (safety floor, deny rules,
   risk prompts, the window question for screenshots). It asks you to confirm before it turns on, and forks,
   subagents and workflow agents inherit it.
@@ -13,6 +31,24 @@ EveryAI is in alpha. Signed releases start at `0.1.0-alpha.1`; the earlier unsig
   tools for this session" covers the whole kind; the floor and risky actions still ask. Allow rules match a chain
   when every part is allowed. Rules changed in Settings apply to the running session at once, including a card
   already waiting.
+- **MCP tools are checked before the agent sees them:** the EveryAI harness keeps each server's tools as they were at
+  its first session. A tool that changes later, or whose description or parameters carry hidden characters,
+  instructions to keep things from you, reach for secrets or talk about other tools, is left out until you review it
+  in Settings → MCP servers ("Review tools…"). On the first session after this update, flagged tools of servers you
+  already use are left out once. The review shows each tool's description and parameters in full. Two servers that
+  offer the same tool name both get a `<server>__` prefix, and the newcomer is held for review. What MCP tools return
+  is marked as outside data. Gaps: Claude Code, Codex and OpenCode load their own MCP servers, which EveryAI doesn't
+  see. ACP agents (Gemini and others) connect to whole servers, so a server with any tool waiting for review is left
+  out of their sessions entirely, and only EveryAI sessions check tools: a server never used in one goes to ACP agents
+  unchecked, and a change shows up only after an EveryAI session connects to it again.
+- **Agents in other environments:** projects can run inside WSL, Docker or dev containers, Lima, OrbStack,
+  Multipass or Colima (project ⋯ menu → Environment). SSH remotes can be added; agents don't run there yet.
+- **Windows:** the EveryAI harness uses Git Bash; Stop ends the whole process tree; terminal agents run through
+  ConPTY; pasted clipboard images work (thanks to TiaoTiaoLin).
+- **Setup:** each harness shows Ready, Sign in or Set up, with a one-step install in the terminal, and a checklist
+  to import MCP servers, rules, commands, agents and skills from other tools.
+- **Automations:** scheduled tasks and signed webhooks start ordinary Code sessions.
+- **Small things:** pastes over 32 KiB become attachments; `everyai://prompt` links fill the composer.
 
 ## 0.1.0-alpha.2 (2026-11-05): updates in the app, and the prober fixes
 

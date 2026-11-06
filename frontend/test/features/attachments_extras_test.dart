@@ -50,6 +50,77 @@ void main() {
       expect(controller.text, 'hello');
     }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
+    test('pastedTextFile: boundaries by UTF-8 bytes', () {
+      String name() => 'pasted-1.txt';
+      expect(pastedTextFile(null, name), isNull);
+      expect(pastedTextFile('short', name), isNull);
+      expect(pastedTextFile('a' * pasteAttachThreshold, name), isNull);
+      expect(pastedTextFile('a' * (pasteAttachThreshold + 1), name)?.name, 'pasted-1.txt');
+      // 3-byte characters: under the limit in characters, over in bytes.
+      expect(pastedTextFile('\u20ac' * 11000, name), isNotNull);
+      expect(pastedTextFile('\u20ac' * 10000, name), isNull);
+      // Past the attachment limit it still becomes one, so the size error shows.
+      expect(pastedTextFile('a' * (300 * 1024), name), isNotNull);
+    });
+
+    for (final c in [
+      (name: '40 KiB becomes attachments', size: 40 * 1024, attach: true, attached: 2),
+      (name: 'exactly 32 KiB pastes as text', size: 32 * 1024, attach: true, attached: 0),
+      (name: 'a short paste stays text', size: 10, attach: true, attached: 0),
+      (name: 'over 256 KiB becomes an attachment (size error shows)', size: 300 * 1024, attach: true, attached: 2),
+      (name: 'attachLongText off pastes as text', size: 40 * 1024, attach: false, attached: 0),
+    ]) {
+      testWidgets('long paste: ${c.name}', (tester) async {
+        final text = 'a' * c.size;
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+          if (call.method == 'Clipboard.getData') return {'text': text};
+          if (call.method == 'Clipboard.hasStrings') return {'value': true};
+          return null;
+        });
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null),
+        );
+        final controller = TextEditingController();
+        final got = <XFile>[];
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: AttachmentDropZone(
+                onFiles: got.addAll,
+                attachLongText: c.attach,
+                readFiles: () async => const [],
+                readText: () async => text,
+                child: TextField(controller: controller, autofocus: true),
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+        for (var i = 0; i < 2; i++) {
+          await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
+          await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+          await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
+          await tester.pump();
+        }
+        if (c.attached > 0) {
+          expect([for (final f in got) f.name], ['pasted-1.txt', 'pasted-2.txt']);
+          expect(controller.text, isEmpty);
+          final errors = <String>[];
+          final read = await tester.runAsync(() => readAttachments(got.take(1), onError: errors.add));
+          if (c.size <= AttachmentKind.text.maxBytes) {
+            expect(read!.single.kind, AttachmentKind.text);
+            expect(read.single.bytes.length, c.size);
+          } else {
+            expect(read, isEmpty);
+            expect(errors.single, contains('too large'));
+          }
+        } else {
+          expect(got, isEmpty);
+          expect(controller.text.length, c.size * 2);
+        }
+      }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+    }
+
     test('files on the clipboard win over an image', () async {
       final files = await clipboardFiles(
         readFiles: () async => ['/tmp/a.pdf', 'content://x/1'],
@@ -89,6 +160,21 @@ void main() {
         readText: () async => '',
       );
       expect(jpg.single.name, 'Pasted image.jpg');
+    });
+
+    test('a Windows clipboard BMP becomes an opaque png', () async {
+      // XRGB like the Windows clipboard: 32 bits with the fourth byte 0.
+      final bmp = img.Image(width: 3, height: 2, numChannels: 4)..clear(img.ColorRgba8(200, 30, 40, 0));
+      final files = await clipboardFiles(
+        readFiles: () async => [],
+        readImage: () async => img.encodeBmp(bmp),
+        readText: () async => null,
+      );
+      expect((files.single.name, files.single.mimeType), ('Pasted image.png', 'image/png'));
+      final back = img.decodePng(await files.single.readAsBytes())!;
+      expect((back.width, back.height), (3, 2));
+      final p = back.getPixel(1, 1);
+      expect((p.r, p.g, p.b, p.a), (200, 30, 40, 255));
     });
 
     test('text-only or failing clipboards give nothing', () async {

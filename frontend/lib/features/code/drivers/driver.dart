@@ -77,6 +77,10 @@ final class DriverInfo {
   String get consentId => _consentId ?? id;
   final String? _consentId;
 
+  /// This info under another [label] (the name with where it runs).
+  DriverInfo labelled(String label) =>
+      DriverInfo(id: id, label: label, needsConsent: needsConsent, consentId: _consentId, installHint: installHint);
+
   /// How to install it, as one line (a command, usually), or null.
   final String? installHint;
 }

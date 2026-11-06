@@ -30,6 +30,18 @@ class AttachmentTray extends StatelessWidget {
   /// A line under the chips (Code: "Saved to .everyai/uploads").
   final String? note;
 
+  /// A read-only look at a text attachment (the first 20K characters).
+  static void _preview(BuildContext context, Attachment a) {
+    final text = a.text;
+    showAdaptiveConfirm(
+      context,
+      title: a.name,
+      message: formatBytes(a.size),
+      confirmLabel: 'Close',
+      detail: text.length > 20000 ? '${text.substring(0, 20000)}\n...' : text,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (attachments.isEmpty) return const SizedBox.shrink();
@@ -54,6 +66,7 @@ class AttachmentTray extends StatelessWidget {
                   bytes: a.kind == AttachmentKind.image ? a.bytes : null,
                   dimmed: blocked.contains(a),
                   onRemove: () => onRemove(a),
+                  onTap: a.kind == AttachmentKind.text ? () => _preview(context, a) : null,
                 ),
             ],
           ),

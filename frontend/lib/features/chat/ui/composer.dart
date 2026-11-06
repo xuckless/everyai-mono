@@ -137,7 +137,9 @@ class ComposerState extends ConsumerState<Composer> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _modelPicker.currentState?.open());
   }
 
-  void prefill(String text) {
+  /// [keep]: a draft already in the box stays, with [text] after a blank line.
+  void prefill(String text, {bool keep = false}) {
+    if (keep && _controller.text.trim().isNotEmpty) text = '${_controller.text.trimRight()}\n\n$text';
     _controller.value = TextEditingValue(
       text: text,
       selection: TextSelection.collapsed(offset: text.length),
@@ -276,6 +278,8 @@ class ComposerState extends ConsumerState<Composer> {
           ),
         AttachmentDropZone(
           onFiles: addFiles,
+          // Answering a question card sends text only: a long reply stays in the field.
+          attachLongText: !(widget.busy && widget.replying),
           child: GlassSurface(
             radius: radius,
             padding: const EdgeInsets.fromLTRB(16, 14, 10, 10),

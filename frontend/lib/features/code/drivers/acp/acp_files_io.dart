@@ -6,6 +6,7 @@ import 'dart:io';
 
 import '../../../skills/domain/skill_format.dart' show parseFrontMatter;
 import '../../harness/everyai/shell_io.dart' show ShellEnv;
+import '../detection/cli_scan.dart' show findCli;
 import 'acp_agents.dart' show cursorSignedInFrom, kiroSignedInFrom;
 import 'acp_xai.dart' show parseGrokModelsLogin;
 
@@ -54,14 +55,7 @@ Future<List<({String name, String description})>> listSkills(String skillDir) as
 
 Future<String?> whichCommand(String command) async {
   if (command.startsWith('/')) return File(command).existsSync() ? command : null;
-  try {
-    final shell = await ShellEnv.load();
-    final res = await Process.run('/usr/bin/which', [command], environment: shell.env);
-    final path = '${res.stdout}'.trim().split('\n').first.trim();
-    return res.exitCode == 0 && path.isNotEmpty ? path : null;
-  } on Object {
-    return null;
-  }
+  return findCli(command);
 }
 
 Future<Map<String, String>> loginEnv() async => (await ShellEnv.load()).env;

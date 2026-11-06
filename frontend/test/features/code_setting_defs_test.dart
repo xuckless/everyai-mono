@@ -148,7 +148,10 @@ void main() {
     });
 
     test('each scope has its own settings', () {
-      expect(defsFor(SettingsScope.global).map((d) => d.key), containsAll(['prompt', 'tier', 'forks', 'permissions']));
+      expect(
+        defsFor(SettingsScope.global).map((d) => d.key),
+        containsAll(['prompt', 'tier', 'forks', 'permissions', 'bring-over']),
+      );
       expect(defsFor(SettingsScope.project).map((d) => d.key), isNot(contains('tier')));
       expect(defsFor(SettingsScope.session).map((d) => d.key), ['model', 'effort', 'mode', 'budget']);
     });
@@ -183,6 +186,7 @@ void main() {
     expect(find.byKey(const ValueKey('code-settings.row.prompt')), findsOneWidget);
     expect(find.byKey(const ValueKey('code-settings.row.permissions')), findsOneWidget);
     expect(find.byKey(const ValueKey('code-settings.row.commitStyle')), findsNothing);
+    expect(find.byKey(const ValueKey('code-settings.bring-over')), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('code-settings.add')));
     await tester.pumpAndSettle();

@@ -71,6 +71,16 @@ Future<CustomCommand> create(String name, String? projectPath, String? projectNa
   return command;
 }
 
+Future<void> write(CustomCommand command, String? projectPath) async {
+  if (!CustomCommand.validName.hasMatch(command.name)) throw StateError('"${command.name}" is not a valid name.');
+  final dir = projectPath != null ? '$projectPath/$_dirName' : await globalDir();
+  if (dir == null) throw StateError('Custom commands need a file system.');
+  final file = File('$dir/${command.name}.md');
+  if (file.existsSync()) throw StateError('/${command.name} already exists.');
+  await file.parent.create(recursive: true);
+  await file.writeAsString(command.toSource());
+}
+
 Future<void> delete(CustomCommand command) async {
   final path = command.path;
   if (path == null) return;

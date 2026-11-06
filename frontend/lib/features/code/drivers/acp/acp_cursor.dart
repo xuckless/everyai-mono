@@ -1,6 +1,7 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
 import '../../../questions/domain/questions.dart';
+import '../../uploads/uploads.dart' show splitAttachedNote;
 import '../../domain/transcript.dart' show planApprovedReason, planRevisionLead;
 import '../../harness/events.dart';
 import '../../host/host.dart' show HostResult;
@@ -68,14 +69,19 @@ const cursorCancelled = {
 /// The reply to `cursor/ask_question` [params] once the card's host call
 /// came back with [result]: the picked option ids when every answer is a
 /// pick. Cursor's reply has no place for free text, so an "Other" answer or
-/// a reply in chat goes back as `skipped` with the readable answer as the
+/// an attached file or a reply in chat goes back as `skipped` with the readable answer as the
 /// reason; an error (the card was given up) is `cancelled`.
 Map<String, Object?> cursorAnswerReply(Map<String, Object?> params, HostResult result) {
   if (result.isError) return cursorCancelled;
   final raw = _questions(params);
   final questions = Question.listFrom(cursorQuestionArgs(params));
   final answers = parseAnswers(result.text, questions);
-  if (answers == null || answers.any((a) => a.other.trim().isNotEmpty)) return cursorSkipped(result.text);
+  // Files attached to the card ride in a note Cursor's reply has no slot for: the readable text carries it.
+  if (answers == null ||
+      answers.any((a) => a.other.trim().isNotEmpty) ||
+      splitAttachedNote(result.text).$2.isNotEmpty) {
+    return cursorSkipped(result.text);
+  }
   return {
     'outcome': {
       'outcome': 'answered',
