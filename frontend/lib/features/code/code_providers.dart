@@ -2719,6 +2719,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     // The after-edit checks: due when a turn ends (not one the user stopped), started once nothing is open,
     // first, so nothing this handler sends (reports, the goal, the queue) goes out while they run.
     if (_live && event is ActionCall) _noteTouched(event);
+    if (event is ToolResult) _settleTouched(event);
+    if (ended) _flushCallTouches();
     if (_live && wasRunning && !transcript.running) {
       _checksDue = !_userStopped;
       _userStopped = false;
@@ -3045,6 +3047,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   void _markDecided(Iterable<String> ids, {required bool accept}) {
     for (final id in ids) {
       _decided[id] = accept;
+      // A denied call touches nothing.
+      if (!accept) _dropCallTouches(id);
     }
     if (accept) _timer.allow(ids);
     state = state.copyWith(decided: Map.unmodifiable(_decided));
@@ -3182,7 +3186,37 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// harness) that came while the checks ran; they go when the round ends.
   final _leadNotes = <String>[];
 
-  /// Notes the files [call] touched for the next round of checks: in the
+  /// What each live call touches, held until its result says it ran: a refused or denied call touched nothing, so
+  /// its files don't count as the lead's (auto-format must not rewrite the user's own work in them). Keyed by call
+  /// id; [_touchIds] maps a tool call id to it.
+  final _callTouches = <String, ({List<String> written, List<String> named})>{};
+  final _touchIds = <String, String>{};
+
+  /// [r]'s call ran (or failed while running): what it touched counts. A rejected call's is dropped.
+  void _settleTouched(ToolResult r) {
+    final id = _callTouches.containsKey(r.actionId) ? r.actionId : _touchIds[r.toolCallId];
+    if (id == null) return;
+    final t = _dropCallTouches(id);
+    // A write that errored wrote nothing; a command that failed may still have written.
+    if (t == null || r.outcome == ToolOutcome.rejected) return;
+    _addTouched(r.outcome == ToolOutcome.ok ? t.written : const [], t.named);
+  }
+
+  ({List<String> written, List<String> named})? _dropCallTouches(String id) {
+    _touchIds.removeWhere((_, v) => v == id);
+    return _callTouches.remove(id);
+  }
+
+  /// Nothing is open any more: calls whose driver sent no result count as run.
+  void _flushCallTouches() {
+    for (final t in _callTouches.values) {
+      _addTouched(t.written, t.named);
+    }
+    _callTouches.clear();
+    _touchIds.clear();
+  }
+
+  /// Notes the files [call] touches for the next round of checks once its result comes ([_settleTouched]): in the
   /// session that leads (a subagent's or fork's go to the session above it).
   void _noteTouched(ActionCall call) {
     final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
@@ -3194,8 +3228,10 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     final named = terminal && !AgentMode.isReadOnly(call)
         ? [for (final p in touchedPaths(call)) ?rel(p)]
         : const <String>[];
-    if (written.isEmpty && named.isEmpty) return;
-    _addTouched(written, named);
+    // Already refused by the rules (answered before this runs).
+    if ((written.isEmpty && named.isEmpty) || _decided[call.id] == false) return;
+    _callTouches[call.id] = (written: written, named: named);
+    if (call.toolCallId.isNotEmpty) _touchIds[call.toolCallId] = call.id;
   }
 
   void _addTouched(Iterable<String> written, Iterable<String> named) {
@@ -3341,10 +3377,20 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     return '$checks\n\n$text';
   }
 
+  /// Whether a note for the lead waits for the check round running, to go with its report: never in Plan mode or
+  /// with the after-edit checks off, where no report comes.
+  bool get _holdsNotes => _checking && _afterEdit && state.mode != AgentMode.plan;
+
+  /// The user wrote (a message, a steer, a command): a stop on a security alert is over, and the notes it held go.
+  void _releaseSecurityHold() {
+    _securityHold = false;
+    _flushLeadNotes();
+  }
+
   /// Sends the lead the notes held while the checks ran (see [_notifyLead]).
   void _flushLeadNotes() {
     final session = _session;
-    if (_leadNotes.isEmpty || _checking || _securityHold || session == null) return;
+    if (_leadNotes.isEmpty || _holdsNotes || _securityHold || session == null) return;
     final text = _leadNotes.join('\n\n');
     _leadNotes.clear();
     unawaited(session.send(_withChecks(text)).catchError((Object _) {}));
@@ -3540,7 +3586,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   @override
   Future<bool> send(String text, {List<Attachment> files = const []}) async {
     if (!_withinBudget()) return false;
-    _securityHold = false;
+    _releaseSecurityHold();
     final out = await _outgoing(text, files);
     if (out == null) return false;
     return _sendOut(out);
@@ -3570,7 +3616,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (session is! HasNativeCommands) return 'This agent has no / commands of its own.';
     if (_busy || _switching) return 'The agent is working. Run the command when it stops.';
     if (!_withinBudget()) return null;
-    _securityHold = false;
+    _releaseSecurityHold();
     _touchHost();
     await _checkpoint();
     try {
@@ -3644,7 +3690,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// Interrupts the agent and sends [text] right away.
   Future<void> steer(String text, {List<Attachment> files = const []}) async {
     if (!_withinBudget()) return;
-    _securityHold = false;
+    _releaseSecurityHold();
     final out = await _outgoing(text, files);
     final session = _session;
     if (out == null || session == null) return;
@@ -4958,7 +5004,9 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       Map<String, Object?>? gate;
       if (merge && batch?.check != null) {
         try {
-          gate = await batchGate(ref, childId!, batch!, Completer<void>().future);
+          // Stop and a rewind cancel it with the after-edit checks.
+          final cancel = _checksCancel ??= Completer<void>();
+          gate = await batchGate(ref, childId!, batch!, cancel.future);
         } on Object catch (e) {
           gate = {'passed': false, 'output': 'The check could not run: $e'};
         }
@@ -4984,7 +5032,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
             '${out.text}\n\n${switch (gate) {
               {'unverified': true} => '[Batch ${batch!.id}: no test covers its files, so it merged unverified.]',
               {'skipped': true} => '[Batch ${batch!.id}\'s check was not run (${gate['output']}), so it merged unchecked.]',
-              _ => '[Batch ${batch!.id}\'s check passed before the merge.]',
+              _ => '[Batch ${batch!.id}\'s check passed before the merge.'
+                  '${gate['note'] is String ? ' ${gate['note']}' : ''}]',
             }}',
           );
         }
@@ -5615,7 +5664,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   void _notifyLead(String text, {String kind = 'fork-report', String id = 'fork'}) {
     if (!_onOutsideLead && !_securityHold) {
       // Not beside the checks: it goes when they end, with their report ([_flushLeadNotes]).
-      if (_checking) {
+      if (_holdsNotes) {
         _leadNotes.add(text);
         return;
       }
@@ -5644,13 +5693,15 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// Not through [send]: that would close the lead's own open cards. A
   /// queued message of the user's goes first; the notices follow its turn.
   void _sendForkNotices() {
+    // Notes held for a round that is over (or one that no longer holds them) go too.
+    _flushLeadNotes();
     final t = state.transcript;
     final session = _session;
     // While the checks run they wait too, and go with the checks' report ([_startChecks] sends them).
     if (_forkNotices.isEmpty ||
         session == null ||
         _securityHold ||
-        _checking ||
+        _holdsNotes ||
         t.running ||
         t.pending.isNotEmpty ||
         state.queued.isNotEmpty) {
@@ -6059,6 +6110,10 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         if (callIds == null ? !_decided.containsKey(c.id) : callIds.contains(c.id)) ?asked[c.id],
     ];
     if (!perCall || callIds == null) _answered = pending.map((c) => c.id).join(',');
+    // A refused call touches nothing, whether or not the driver reports the refusal.
+    for (final c in pending) {
+      if (callIds == null ? !_decided.containsKey(c.id) : callIds.contains(c.id)) _dropCallTouches(c.id);
+    }
     if (perCall) {
       _markDecided([
         for (final c in pending)
