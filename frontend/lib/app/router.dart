@@ -20,6 +20,8 @@ import '../core/platform/window_caption.dart';
 import '../core/platform/platform_kind.dart';
 import '../features/remote/ui/remote_code.dart';
 import 'shell.dart';
+import '../features/code/code_providers.dart' show codeSessionsProvider;
+import '../core/preferences.dart';
 
 abstract final class Routes {
   static const signIn = '/sign-in';
@@ -64,12 +66,47 @@ String _openSettings(Ref ref, Uri uri) {
 /// therefore the router) so the user stays on the same screen.
 String _lastLocation = const String.fromEnvironment('INITIAL_LOCATION', defaultValue: Routes.newChat);
 
+/// Whether this run already took its first location from Preferences.
+bool _restored = const bool.hasEnvironment('INITIAL_LOCATION');
+
+/// Preferences key: the screen the app last showed, opened again at the next launch.
+const lastLocationKey = 'app.last_location';
+
+/// Whether [location] is worth reopening at launch: a chat, Code home, a Code session, the Board, or one of the
+/// top-level pages. Sign-in and Settings are not (Settings is a modal over another screen).
+bool restorableLocation(String location) {
+  final path = Uri.parse(location).path;
+  return path.startsWith('/chat/') ||
+      path == Routes.code ||
+      path == Routes.board ||
+      path.startsWith('/code/s/') ||
+      const {Routes.chats, Routes.projects, Routes.artifacts, Routes.models}.contains(path);
+}
+
+/// Where the last run left off, if it can still be shown: a Code session that was removed since falls back to Code
+/// home.
+String? restoredLocation(Ref ref) {
+  final saved = ref.read(preferencesProvider)[lastLocationKey];
+  if (saved == null || !restorableLocation(saved)) return null;
+  final path = Uri.parse(saved).path;
+  if (path.startsWith('/code/s/')) {
+    final id = path.substring('/code/s/'.length);
+    if (!ref.read(codeSessionsProvider).any((s) => s.id == id)) return Routes.code;
+  }
+  return saved;
+}
+
 final routerProvider = Provider<GoRouter>((ref) {
   // A new root widget per design language needs a fresh router.
   ref.watch(appearanceProvider.select((a) => a.design));
 
   final auth = ValueNotifier<AuthState>(ref.read(authProvider));
   ref.listen(authProvider, (_, next) => auth.value = next);
+
+  if (!_restored) {
+    _restored = true;
+    if (restoredLocation(ref) case final at?) _lastLocation = at;
+  }
 
   final router = GoRouter(
     initialLocation: _lastLocation,
@@ -156,6 +193,11 @@ final routerProvider = Provider<GoRouter>((ref) {
   void remember() {
     final now = router.routerDelegate.currentConfiguration.uri.toString();
     if (settingsTargetForLocation(Uri.parse(now)) == null) _lastLocation = now;
+    // Kept across launches too, so the app opens where it was closed.
+    if (restorableLocation(now)) {
+      final prefs = ref.read(preferencesProvider);
+      if (prefs[lastLocationKey] != now) prefs[lastLocationKey] = now;
+    }
   }
 
   router.routerDelegate.addListener(remember);

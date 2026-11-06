@@ -821,6 +821,10 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   the status as a corner dot, Code home's Earlier list) use it; the API keys page too. Kimi uses the one-colour mark
   (its colour K vanishes on dark). Missing in Lobe Icons: VS Code, Augment, Factory, Zed, TeleAI, Writer and other
   small vendors (monograms). The old rasters in `assets/models/` are unused now.
+- **Reopens where it was closed (2026-11-06).** `app/router.dart`: every route change that `restorableLocation`
+  accepts (a chat, Code home, a Code session, the Board, Chats/Projects/Artifacts/Models; not sign-in or Settings) is
+  saved in Preferences `app.last_location`; the first router of a run starts there (`restoredLocation`; a removed Code
+  session falls back to `/code`; an `INITIAL_LOCATION` define still wins). Checked with a hot restart from the Board.
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2
