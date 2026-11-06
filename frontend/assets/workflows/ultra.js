@@ -3,7 +3,7 @@ export const meta = {
   name: 'Ultra',
   description: 'Several independent changes at once. Each item gets its own research note, an implementation in its own worktree, a review through two lenses and a fix round, alongside the other items; then one full test round on the combined work',
   whenToUse: 'The task splits into two or more independent changes that each need research, code and tests',
-  args: '{items: [{id, title, spec, files?, check?}], plan_ref?} or {task, plan_ref?}: one entry per independent change, spec saying what to build and how to tell it works; files and check: the plan batch\'s (check {files: [...]}, {command} or "full"), and the app runs that check in the item\'s worktree before merging it; or the whole task, which a first agent splits into items; plan_ref: a file name from saved_plans (e.g. 2026-11-05-x.md) the user picked or approved in this conversation (never one you found on your own)',
+  args: '{items: [{id, title, spec, files?, check?}], plan_ref?} or {task, plan_ref?}: one entry per independent change, spec saying what to build and how to tell it works; files and check: the plan batch\'s (check {files: [...]}, {command: "..."} or {full: true}), and the app runs that check in the item\'s worktree before merging it; or the whole task, which a first agent splits into items; plan_ref: a file name from saved_plans (e.g. 2026-11-05-x.md) the user picked or approved in this conversation (never one you found on your own). With plan_ref, the plan\'s batches fill in each item\'s files and check by id, and given only a task they are the items',
   phases: [
     { title: 'Split', detail: 'given one task: split it into independent items' },
     { title: 'Research', detail: 'per item, read-only, with a concrete plan' },
@@ -25,14 +25,15 @@ export const meta = {
 // research -> implement -> reviews -> refix on its own, and only the integration waits for all of them.
 // An item with a check is one plan batch: its implement call carries it, and the app runs the check in that worktree
 // before merging. A failed check merges nothing; a refix gets the output and starts from the kept work, and once that
-// passes the item is reviewed as usual. A check the session's permissions refuse is skipped: the work merges unchecked.
+// passes the item is reviewed as usual. A check that didn't run (the session's mode would ask first, or no test covers
+// the files) is skipped: the work merges unchecked, and no agent is spent on fixing a check that can't pass. An item
+// whose check is malformed runs ungated, with a log line saying why.
 
 const A = args || {}
 const TASK = typeof A.task === 'string' ? A.task.trim() : ''
 const GIVEN = Array.isArray(A.items) ? A.items : null
-if (GIVEN ? !GIVEN.length || GIVEN.some((it) => !it || !it.id || !it.spec) : !TASK) {
-  throw new Error('ultra needs args {items: [{id, title, spec}]} with at least one item, each with an id and a spec, or {task}')
-}
+const NEEDS = 'ultra needs args {items: [{id, title, spec}]} with at least one item, each with an id and a spec, {task}, or a plan_ref whose plan lists batches'
+if (GIVEN ? !GIVEN.length || GIVEN.some((it) => !it || !it.id || !it.spec) : !TASK && !A.plan_ref) throw new Error(NEEDS)
 const C = (typeof ctx === 'object' && ctx) || {}
 const REVIEW = C.review || null
 const RUN = (C.runId || 'run').slice(0, 12)
@@ -53,6 +54,16 @@ const PLAN_REF = planRefOf(A.plan_ref)
 // The plan file is git-excluded, so worktrees don't have it: only the agents in the session's folder read it, and
 // research copies what its item needs into the run's note.
 const PLAN_LINE = PLAN_REF ? `\nThe plan the user picked for this work: ${PLAN_REF} (read it first).` : ''
+// The plan's ```json batches block, read by the app (a script can't read files): by id.
+const PLAN_BATCHES = new Map(
+  (PLAN_REF && Array.isArray(C.planBatches) ? C.planBatches : []).filter((b) => b && typeof b.id === 'string').map((b) => [b.id, b]),
+)
+// An item the plan has a batch for takes its files and check when it gives none itself.
+const withPlanBatch = (it) => {
+  const b = PLAN_BATCHES.get(it.id)
+  if (!b) return it
+  return { ...it, ...(it.files === undefined && Array.isArray(b.files) ? { files: b.files } : {}), ...(it.check === undefined && b.check !== undefined ? { check: b.check } : {}) }
+}
 
 // For the agents that work in their own worktree. The integrate step works in the user's folder and leaves its changes
 // uncommitted, so it does not get this.
@@ -152,8 +163,9 @@ const SPLIT_SCHEMA = {
           spec: { type: 'string' },
           files: { type: 'array', items: { type: 'string' }, description: 'optional: the files this item changes' },
           check: {
-            type: ['object', 'string'],
-            description: 'optional: how the app checks it before merging: {"files": [test files]}, {"command": "one line"} or "full"',
+            type: 'object',
+            description: 'optional: how the app checks it before merging; give one: files (the test files), command (one line), or full: true',
+            properties: { files: { type: 'array', items: { type: 'string' } }, command: { type: 'string' }, full: { type: 'boolean' } },
           },
         },
         required: ['id', 'title', 'spec'],
@@ -178,7 +190,18 @@ function itemsOf(list) {
   return out
 }
 
-let ITEMS = GIVEN
+let ITEMS = GIVEN ? GIVEN.map(withPlanBatch) : null
+if (!ITEMS && PLAN_BATCHES.size) {
+  // The approved plan already split the work: one item per batch, each told to read its step of the plan.
+  ITEMS = itemsOf([...PLAN_BATCHES.values()].map((b) => ({
+    id: b.id,
+    title: b.intent,
+    spec: `${b.intent}\nThis is batch ${b.id} of the plan ${PLAN_REF}: build that step as the plan says.${TASK ? `\nThe task, in the user's words:\n${quote(TASK)}` : ''}`,
+    files: b.files,
+    check: b.check,
+  })))
+}
+if (!ITEMS && !TASK) throw new Error(NEEDS)
 if (!ITEMS) {
   // Prompt reason: the workflow picker hands Ultra the user's whole message, and Ultra only pays off on
   // independent items built in parallel, so a first agent splits it.
@@ -205,13 +228,16 @@ command ({"command": "..."}); the full suite runs once at the end anyway.`,
 const keptRef = (gate) => ((/\b(refs\/\S+?)\.?(\s|$)/.exec((gate && gate.kept) || '') || [])[1]) || ''
 
 async function runItem(it) {
-  // A bad batch stops this item before it spends.
+  // A malformed check doesn't cost the item: it runs ungated, and the log and its result say why.
   let batch = null
+  let checkProblem = ''
   if (it.check) {
     try {
       batch = batchOf({ id: it.id, intent: it.title || it.id, files: it.files || [], check: it.check })
+      if (!batch.check) batch = null
     } catch (e) {
-      return { id: it.id, status: 'failed', error: e.message, commits: [], findings: [], refix: null }
+      checkProblem = e.message
+      log(`${it.id}: its check was not usable (${e.message}), so it runs without one`)
     }
   }
   const batchOpt = batch ? { batch } : {}
@@ -248,7 +274,7 @@ do with this item fails, say so in deviations with the output rather than fixing
   let commits = impl.commits
   let checkFix = null
   // The check failed, so nothing merged and the reviews would read old code: a refix from the kept work first. A
-  // skipped check (the session's permissions refused it) merged unchecked, like an item without one.
+  // skipped check (not run, or no test to run) merged unchecked, like an item without one.
   if (gate && gate.passed === false) {
     const ref = keptRef(gate)
     checkFix = await agent(`${COMMON}${COMMIT}
@@ -319,6 +345,7 @@ test for every real correctness bug. Run the checks and the touched tests again,
   return {
     id: it.id,
     status: refixGate ? 'refix_check_failed' : impl.status,
+    ...(checkProblem ? { check_problem: checkProblem } : {}),
     ...(refixGate ? { batch_check: { ...refixGate, ...(kept ? { kept_ref: kept } : {}) } } : unchecked ? { batch_check: unchecked } : {}),
     commits: [...commits, ...(refix && !refixGate ? refix.commits : [])],
     summary: impl.summary,
@@ -349,10 +376,12 @@ working tree, because the user chooses whether to commit it. If one item's own c
 instead of rewriting it. An item with status check_failed did not merge (its batch check failed, output in
 batch_check): report it, don't redo it. An item with status refix_check_failed merged its implementation, but not the
 fixes from its review (their check failed; they are kept at batch_check.kept_ref): report it, don't redo them. A
-batch_check with skipped: true wasn't run (the session's permissions), so that item merged unchecked.
+batch_check with skipped: true wasn't run (the session's mode would have asked first, or, with unverified: true, no
+test covers its files), so that item merged unchecked; an item with check_problem had a malformed check and merged
+unchecked too. Say which items merged unchecked.
 
 Items (JSON):
-${quote(JSON.stringify(summary.map((r) => ({ id: r.id, status: r.status, commits: r.commits, ...(r.batch_check ? { batch_check: r.batch_check } : {}) })), null, 1))}
+${quote(JSON.stringify(summary.map((r) => ({ id: r.id, status: r.status, commits: r.commits, ...(r.batch_check ? { batch_check: r.batch_check } : {}), ...(r.check_problem ? { check_problem: r.check_problem } : {}) })), null, 1))}
 
 Reply with what ran, the pass and fail counts, and anything that still fails.`,
   { label: 'integrate', phase: 'Integrate' })

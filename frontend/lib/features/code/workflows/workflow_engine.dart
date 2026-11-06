@@ -97,8 +97,9 @@ abstract interface class AgentLauncher {
   Future<Map<String, Object?>> bugCheckOf(String childId);
 
   /// Runs [batch]'s check in the child's worktree, before its merge:
-  /// `{passed: true}`, `{passed: false, output}`, or `{skipped: true, output}`
-  /// when it couldn't run (see `batchCheckRecord`); only a failed one blocks the merge. [stop] cancels a check that is running.
+  /// `{passed: true}`, `{passed: false, output}`, `{skipped: true, output}`
+  /// when the mode kept it from running, or `{skipped: true, unverified: true, output}` when no test covers the
+  /// batch (see `batchCheckRecord`); only a failed one blocks the merge. [stop] cancels a check that is running.
   Future<Map<String, Object?>> batchCheckOf(String childId, PlanBatch batch);
 
   void stop(String childId);
@@ -561,9 +562,12 @@ final class WorkflowEngine {
         if (failed) {
           _log('${call.label}: its batch check failed, so it was not merged', phase: call.phase);
           note = null;
+        } else if (gate['unverified'] == true) {
+          // Nothing to run isn't a failure: no agent can make a test appear for a file that has none.
+          _log('${call.label}: no test covers its files, so it merged unverified', phase: call.phase);
         } else if (gate['skipped'] == true) {
           _log(
-            '${call.label}: its batch check was not run (the session\'s permissions), so it merged unchecked',
+            '${call.label}: its batch check was not run (the session\'s mode would ask first), so it merged unchecked',
             phase: call.phase,
           );
         }

@@ -22,12 +22,12 @@ The tools named here (`fork`, `check_forks`, `answer_fork`, `present_plan`, `ask
 
 ## 3. Plan
 - Call `present_plan` with a title, a short summary and the steps.
-- List the change as batches, not prose: each batch is one step with an `id` (a short slug), its `files` and its `check`. The check is how that batch proves itself before it merges: prefer `{files: [the tests that cover it]}`, else `{command: "one line"}`; use `{full: true}` only when nothing narrower checks it. The saved plan carries them as a ```json batches block.
+- List the change as batches, not prose: each batch is one step with an `id` (a short slug), its `files` and its `check`. The check is how that batch proves itself before it merges. Give exactly one of: `{files: [the tests that cover it]}` (preferred; `{files: []}` means the tests of the batch's own files), `{command: "one line"}`, or `{full: true}` only when nothing narrower checks it. The saved plan carries them as a ```json batches block, and Ultra reads them from there when you pass the plan as `plan_ref`.
 - Mark the steps that don't depend on each other: those can run in parallel.
 - Wait for the user's answer. Change the plan if they ask for changes.
 
 ## 4. Build in forks
-- Give each independent step to a `fork`, with `worktree` on so parallel forks don't edit the same files. At most 4 run at once.
+- Give each independent step to a `fork`, with `worktree` on so parallel forks don't edit the same files, and `batch` set to the step's batch id. The app then runs that batch's check in the fork's worktree before merging it back: a failed check merges nothing, and the report holds the output and where the work is kept. At most 4 run at once.
 - A fork sees nothing of this conversation. Its task must stand alone: the goal, the files, the plan step, the conventions to keep, and its batch's check (the tests or command to run before it reports).
 - Do the steps that depend on others yourself, or start their fork once the step before has reported.
 - Don't sleep or poll. Each fork's report comes as a `<task-notification>` inside an `<everyai-notice>` (see the notices rule in the session briefing). Use `check_forks` when you want to see how they are doing.

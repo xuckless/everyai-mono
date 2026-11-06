@@ -304,6 +304,24 @@ void main() {
       await run;
     });
 
+    test('a check with no test to run merges, logged as unverified; a flat check is accepted', () async {
+      launcher.reply = (call, turn) => done;
+      launcher.batchCheck = (id, b) async => {'skipped': true, 'unverified': true, 'output': 'No test found'};
+      final run = engine().run();
+      final value = await bridge.agent('build a', {
+        'schema': _schema,
+        'worktree': true,
+        'label': 'impl:a',
+        'batch': batch({'files': <String>[], 'command': '', 'full': true}),
+      });
+      expect(launcher.calls.single.batch!.check, isA<FullCheck>());
+      expect(launcher.finished, [(launcher.started.single.childId, true)]);
+      expect((value! as Map)['batch_check'], containsPair('unverified', true));
+      bridge.finish(null);
+      final end = await run;
+      expect([for (final l in end.logs) l.text], contains('impl:a: no test covers its files, so it merged unverified'));
+    });
+
     test('a passing check merges and says so; a String value is wrapped', () async {
       final run = engine().run();
       final value = await bridge.agent('build a', {'worktree': true, 'batch': batch('full')});

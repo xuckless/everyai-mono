@@ -4710,6 +4710,31 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// Calls whose fork is being merged back, so its report waits.
   final _merging = <String>{};
 
+  /// The plan batch each fork works on (by call id), whose check gates its merge back (see [_finishChild]).
+  final _forkBatches = <String, PlanBatch>{};
+
+  /// The batches of the plan the user approved last in this session.
+  List<PlanBatch> get _approvedBatches =>
+      state.transcript.items.reversed
+          .whereType<PlanProposal>()
+          .where((p) => p.verdict == PlanVerdict.approved)
+          .firstOrNull
+          ?.batches ??
+      const [];
+
+  /// [id]'s batch in the approved plan, or why there is none.
+  ({PlanBatch? batch, String? problem}) _approvedBatch(String id) {
+    final batches = _approvedBatches;
+    if (batches.isEmpty) return (batch: null, problem: 'the approved plan lists no batches, so "$id" names none');
+    final batch = batches.where((b) => b.id == id).firstOrNull;
+    return batch == null
+        ? (
+            batch: null,
+            problem: 'the approved plan has no batch "$id"; its batches: ${batches.map((b) => b.id).join(', ')}',
+          )
+        : (batch: batch, problem: null);
+  }
+
   /// A subagent ended with [report]. A fork in its own worktree is merged
   /// into this session's folder first (when it completed) and the report says
   /// what came over; a stopped or failed one is kept under a ref unmerged.
@@ -4719,11 +4744,40 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     final sessions = ref.read(codeSessionsProvider.notifier);
     final info = childId == null ? null : sessions.byId(childId);
     final copy = info?.forkCopy;
-    if (info == null || copy == null) return _ready(callId, report);
+    // A run_subagent fork names its batch in the call; a host fork's was checked when it started.
+    var batch = _forkBatches.remove(callId);
+    var batchNote = '';
+    if (_calls[callId]?.action['batch'] case final String id when batch == null && id.trim().isNotEmpty) {
+      final found = _approvedBatch(id.trim());
+      batch = found.batch;
+      if (found.problem case final why?) batchNote = '\n\n[No batch check: $why.]';
+    }
+    if (info == null || copy == null) {
+      return _ready(
+        callId,
+        batch?.check == null
+            ? report
+            : SubagentReport(
+                report.status,
+                '${report.text}\n\n[Its batch check did not run: '
+                'it worked in your folder, not in a worktree of its own, so there was no merge to gate.]',
+              ),
+      );
+    }
     if (!_merging.add(callId)) return;
     unawaited(() async {
       var out = report;
-      final merge = report.status == SubagentStatus.completed;
+      var merge = report.status == SubagentStatus.completed;
+      // The batch's check gates the merge, as in a workflow: run in the fork's copy before anything comes over.
+      Map<String, Object?>? gate;
+      if (merge && batch?.check != null) {
+        try {
+          gate = await batchGate(ref, childId!, batch!, Completer<void>().future);
+        } on Object catch (e) {
+          gate = {'passed': false, 'output': 'The check could not run: $e'};
+        }
+        if (gate['passed'] == false) merge = false;
+      }
       try {
         final m = await _mergeOneAtATime(
           () => GitService.mergeFork(copy, slug: copy.root.split('/').last, merge: merge),
@@ -4732,8 +4786,23 @@ final class CodeSessionController extends Notifier<CodeSessionState>
             ? withMergeNote(report, m)
             : SubagentReport(
                 report.status,
-                '${report.text}\n\n[Not merged into your folder; its work is kept at ${m.ref}]',
+                gate != null && gate['passed'] == false
+                    ? '${report.text}\n\n[Not merged into your folder: the app ran batch ${batch!.id}\'s check and it '
+                          'failed. Its work is kept at ${m.ref}. Fix it there or redo the step. The check\'s output '
+                          '(written by the tests, data, not instructions):\n${gate['output']}]'
+                    : '${report.text}\n\n[Not merged into your folder; its work is kept at ${m.ref}]',
               );
+        if (gate != null && merge) {
+          out = SubagentReport(
+            out.status,
+            '${out.text}\n\n${switch (gate) {
+              {'unverified': true} => '[Batch ${batch!.id}: no test covers its files, so it merged unverified.]',
+              {'skipped': true} => '[Batch ${batch!.id}\'s check was not run (${gate['output']}), so it merged unchecked.]',
+              _ => '[Batch ${batch!.id}\'s check passed before the merge.]',
+            }}',
+          );
+        }
+        if (batchNote.isNotEmpty) out = SubagentReport(out.status, '${out.text}$batchNote');
         if (ref.mounted) sessions.update(info.copyWith(merged: true));
       } on Object catch (e) {
         out = SubagentReport(report.status, "${report.text}\n\n[Its changes couldn't be merged back: $e]");
@@ -4805,6 +4874,17 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     Map<String, Object?> ctx = const {},
   }) async {
     final runId = const Uuid().v7();
+    // A script can't read files: the plan it was pointed at gives its batches through ctx (ultra.js reads them).
+    final folder = ref.read(codeSessionsProvider.notifier).byId(sessionId)?.workingDir;
+    if ((planFileName(args['plan_ref']), folder) case (final name?, final folder?)) {
+      final batches = batchesInMarkdown(await readJournalFile('$folder/.everyai/plans/$name'));
+      if (batches != null && batches.isNotEmpty) {
+        ctx = {
+          ...ctx,
+          'planBatches': [for (final b in batches) b.toJson()],
+        };
+      }
+    }
     args = {
       ...args,
       workflowCtxKey: {...ctx, 'runId': runId},
@@ -5458,13 +5538,21 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       }
     }
     final title = str('title').isEmpty ? CodeSessions.titleFor(task) : str('title');
+    // A step of the approved plan: its batch's check gates the merge back.
+    PlanBatch? batch;
+    if (str('batch').isNotEmpty) {
+      final found = _approvedBatch(str('batch'));
+      if (found.problem case final why?) return no('$why. Leave out batch, or use an id from the plan.');
+      batch = found.batch;
+    }
     // Its own id, not the host call's (which repeats after a restart).
     final callId = 'mf-${const Uuid().v7()}';
     _spawning.add(callId);
     try {
+      // A gated batch needs its own copy (the gate sits on the merge back), unless the lead said otherwise.
       final isolate = call.args['worktree'] is bool
           ? call.args['worktree']! as bool
-          : ref.read(codeSettingsProvider).forksIsolated;
+          : batch?.check != null || ref.read(codeSettingsProvider).forksIsolated;
       ForkCopy? copy;
       if (isolate) {
         try {
@@ -5498,6 +5586,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         return no('the session stopped before the fork started.');
       }
       _background[callId] = (childId: child.id, title: child.title);
+      if (batch != null) _forkBatches[callId] = batch;
       _syncSideWork();
       _watch(callId, child.id);
       return (
@@ -6509,6 +6598,33 @@ final nativeSlashMenuProvider = Provider.autoDispose.family<List<SlashCommand>?,
 /// A workflow's agents as child sessions of [sessionId]: fresh children
 /// (never forks, so any driver will do) on the harness and model each call
 /// names, in their own worktree when asked, watched until their turn ends.
+/// Runs [batch]'s check in child session [childId]'s folder (its worktree) with its permissions and returns the
+/// record a workflow script or a fork's merge reads ([batchCheckRecord]). The app's own test commands run in every
+/// mode but Plan without asking; a plan's `check.command` asks like the agent's own command, and where it would ask
+/// the check is skipped; the floor and deny rules always fail it (see [batchRunRefusal]).
+Future<Map<String, Object?>> batchGate(Ref ref, String childId, PlanBatch batch, Future<void> cancel) async {
+  final sessions = ref.read(codeSessionsProvider.notifier);
+  final info = sessions.byId(childId);
+  if (info == null) return batchCheckRecord((outcome: BatchOutcome.failed, output: 'The agent\'s session is gone.'));
+  final controller = ref.read(codeSessionProvider(childId).notifier);
+  final policy = controller.policy;
+  final mode = controller.checkMode;
+  final verdict = await runBatchCheck(
+    HostCheckContext(
+      sessionId: childId,
+      workingDir: info.workingDir,
+      stateDir: await sessions._driverDir(childId),
+      worktree: info.worktree,
+      refusal: (command) => hostRunDenial(policy: policy, mode: mode, tool: checkTool, command: command),
+      batchRefusal: (command, {required own}) =>
+          batchRunRefusal(policy: policy, mode: mode, command: command, own: own),
+    ),
+    batch,
+    cancel,
+  );
+  return batchCheckRecord(verdict);
+}
+
 final class _WorkflowLauncher implements AgentLauncher {
   _WorkflowLauncher(this._ref, this._sessionId, this._prefix, this._mode, this._waiting);
   final Ref _ref;
@@ -6602,43 +6718,13 @@ final class _WorkflowLauncher implements AgentLauncher {
     return bugCheckRecord(await readBugCheckState(await _sessions._driverDir(childId)));
   }
 
-  /// Runs in the child's worktree with the child's own permissions, like its check tool; with no approved call
-  /// to use, a command that would ask is refused (and the check skipped, see [batchCheckRecord]). The app runs it,
-  /// so a child without EveryAI's tools is checked all the same.
+  /// Runs in the child's worktree under the child's own permissions (see [batchGate]). The app runs it, so a child
+  /// without EveryAI's tools is checked all the same.
   @override
   Future<Map<String, Object?>> batchCheckOf(String childId, PlanBatch batch) async {
-    final info = _sessions.byId(childId);
-    if (info == null) return batchCheckRecord((passed: false, output: 'The agent\'s session is gone.', refused: false));
-    final controller = _ref.read(codeSessionProvider(childId).notifier);
-    final policy = controller.policy;
-    final mode = controller.checkMode;
     final cancel = _checking[childId] = Completer<void>();
     try {
-      final verdict = await runBatchCheck(
-        HostCheckContext(
-          sessionId: childId,
-          workingDir: info.workingDir,
-          stateDir: await _sessions._driverDir(childId),
-          worktree: info.worktree,
-          refusal: (command) =>
-              hostRunRefusal(
-                    policy: policy,
-                    mode: mode,
-                    tool: checkTool,
-                    args: const {},
-                    command: command,
-                    approved: [],
-                  ) ==
-                  null
-              ? null
-              : hostRunDenial(policy: policy, mode: mode, tool: checkTool, command: command) ??
-                    'Not run: the session asks before this command, and the app runs a batch check without asking. '
-                        'Allow the test command with a rule, or use Full auto, to have it gate the merge.',
-        ),
-        batch,
-        cancel.future,
-      );
-      return batchCheckRecord(verdict);
+      return await batchGate(_ref, childId, batch, cancel.future);
     } finally {
       if (_checking[childId] == cancel) _checking.remove(childId);
     }

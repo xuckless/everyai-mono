@@ -219,21 +219,10 @@ final class PlanProposal extends TranscriptItem {
   ];
 
   /// The steps that are change batches (an id, and a valid batch), in order. present_plan's check is
-  /// `{files?, command?, full?}` (one flat object every provider's tool schema takes); the batch's is one of them.
+  /// `{files?, command?, full?}` (one flat object every provider's tool schema takes); [parseBatch] normalises it.
   List<PlanBatch> get batches => [
     for (final s in steps)
-      if (s.id.isNotEmpty)
-        ?parseBatch({
-          'id': s.id,
-          'intent': s.title,
-          'files': s.files,
-          'check': ?switch (s.check) {
-            {'full': true} => 'full',
-            {'files': final List<Object?> f} when f.isNotEmpty => {'files': f},
-            {'command': final String c} => {'command': c},
-            final c => c,
-          },
-        }).batch,
+      if (s.id.isNotEmpty) ?parseBatch({'id': s.id, 'intent': s.title, 'files': s.files, 'check': s.check}).batch,
   ];
 
   List<String> get risks => [for (final r in (call.action['risks'] as List<Object?>? ?? const [])) '$r'];

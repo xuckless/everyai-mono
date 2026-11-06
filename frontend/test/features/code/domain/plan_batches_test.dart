@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:every_ai/features/code/domain/plan_batches.dart';
+import 'package:every_ai/features/code/domain/transcript.dart';
+import 'package:every_ai/features/code/drivers/driver_events.dart' show actionEvent;
 import 'package:every_ai/features/code/workflows/workflow_prelude.dart' show batchJs;
 import 'package:flutter_test/flutter_test.dart';
 
@@ -31,6 +33,29 @@ void main() {
       expect(parseBatch(_b(check: {'files': <String>[]})).batch!.toJson()['check'], {'files': <String>[]});
     });
 
+    test('a flat check (present_plan, the Max skill) is normalised: blank keys drop, the one left is the check', () {
+      BatchCheck? check(Object? c) => parseBatch(_b(check: c)).batch!.check;
+      expect(check({'full': true}), isA<FullCheck>());
+      expect(parseBatch(_b(check: 'full')).batch!.toJson()['check'], {'full': true});
+      expect(
+        (check({'files': <String>[], 'command': 'make test', 'full': false})! as CommandCheck).command,
+        'make test',
+      );
+      expect(
+        (check({
+                  'files': ['test/a_test.dart'],
+                  'command': '',
+                  'full': null,
+                })!
+                as FilesCheck)
+            .files,
+        ['test/a_test.dart'],
+      );
+      expect(check({'full': false}), isNull);
+      expect(check({}), isNull);
+      expect(check(false), isNull);
+    });
+
     test('bad ids, empty intents, paths out of the project and bad checks are refused readably', () {
       List<String> problems(Map<String, Object?> json) => parseBatch(json).problems;
       expect(problems(_b(id: 'Add Form')), [contains('id must be a short slug')]);
@@ -50,7 +75,19 @@ void main() {
       );
       expect(problems(_b(check: {'command': ''})), [contains('non-empty')]);
       expect(problems(_b(check: {'command': 'a\nb'})), [contains('one line')]);
-      expect(problems(_b(check: {'command': 'x', 'files': <String>[]})), [contains('check must be')]);
+      expect(
+        problems(
+          _b(
+            check: {
+              'command': 'x',
+              'files': ['t_test.dart'],
+            },
+          ),
+        ),
+        [contains('give one of files, command')],
+      );
+      expect(problems(_b(check: {'full': 'yes'})), [contains('check.full must be true')]);
+      expect(problems(_b(check: {'tests': <String>[]})), [contains('unknown key tests')]);
       expect(problems(_b(check: 'all')), [contains('check must be')]);
       expect(parseBatch('nope').problems, [contains('object')]);
       // A path is checked as it is kept: trimmed.
@@ -80,6 +117,47 @@ void main() {
       expect(dup.problems, [contains('batch 2: the id a is used twice')]);
       expect(parseBatches({}).problems, [contains('list')]);
     });
+  });
+
+  test('present_plan steps take the same flat check; a plan_ref names only a file in .everyai/plans/', () {
+    final plan = PlanProposal(
+      actionEvent(
+        id: 'p',
+        toolName: 'present_plan',
+        kind: 'PresentPlanAction',
+        args: {
+          'title': 'T',
+          'steps': [
+            {
+              'id': 'a',
+              'title': 'A',
+              'files': ['lib/a.dart'],
+              'check': {'full': true, 'files': <String>[]},
+            },
+            {
+              'id': 'b',
+              'title': 'B',
+              'files': ['lib/b.dart'],
+              'check': {'command': 'make b', 'full': false},
+            },
+            {'title': 'plain'},
+          ],
+        },
+      ),
+    );
+    expect(
+      [for (final b in plan.batches) b.toJson()['check']],
+      [
+        {'full': true},
+        {'command': 'make b'},
+      ],
+    );
+    expect(planFileName('2026-11-05-x.md'), '2026-11-05-x.md');
+    expect(planFileName('.everyai/plans/2026-11-05-x.md'), '2026-11-05-x.md');
+    expect(planFileName('/Users/me/p/.everyai/plans/x.md'), 'x.md');
+    for (final bad in ['../x.md', 'other/x.md', 'x.txt', '', 3, null]) {
+      expect(planFileName(bad), isNull, reason: '$bad');
+    }
   });
 
   group('the batches fence', () {
@@ -124,6 +202,24 @@ void main() {
       _b(files: [r'C:\x']),
       _b(check: {'command': 'a\nb'}),
       _b(check: {'command': 'x', 'files': <String>[]}),
+      _b(
+        check: {
+          'command': 'x',
+          'files': ['a'],
+        },
+      ),
+      _b(check: {'full': true}),
+      _b(check: {'full': false, 'command': ''}),
+      _b(check: {'full': 'yes'}),
+      _b(check: {'tests': 1}),
+      _b(check: {'command': ''}),
+      _b(
+        check: {
+          'files': ['t.dart'],
+          'command': '',
+          'full': false,
+        },
+      ),
       _b(check: 'all'),
       _b(files: [' /abs/a.dart']),
       _b(files: [' lib/a.dart ']),

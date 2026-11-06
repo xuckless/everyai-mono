@@ -7,6 +7,12 @@ import 'dart:convert';
 // workflow passes one as agent()'s `batch` option, and the app runs its check
 // in the agent's worktree before merging it (see `runBatchCheck`). The
 // prelude's `batchOf` (workflow_prelude.dart) holds the same rules in JS.
+//
+// One check shape everywhere (present_plan, the Max skill, Ultra's items, the
+// plan's fence): `{files: [...]}`, `{command: "..."}` or `{full: true}`; the
+// string "full" is the same as `{full: true}`. A flat object with more than one
+// key (what a provider's tool schema produces) is normalised first: keys that
+// are null, false, "" or [] are dropped, and the one left is the check.
 
 /// How a batch proves itself before it merges.
 sealed class BatchCheck {
@@ -38,7 +44,7 @@ final class FullCheck extends BatchCheck {
   const FullCheck();
 
   @override
-  Object toJson() => 'full';
+  Object toJson() => const {'full': true};
 }
 
 /// One change batch. Without a [check] it isn't gated.
@@ -83,28 +89,59 @@ List<String> _paths(Object? json, String where, List<String> problems) {
   return out;
 }
 
+const _checkShape = 'check must be {"files": [...]}, {"command": "..."} or {"full": true}';
+
+bool _blank(Object? v) => v == null || v == false || (v is String && v.trim().isEmpty) || (v is List && v.isEmpty);
+
 BatchCheck? _checkOf(Object? json, List<String> problems) {
-  switch (json) {
-    case null:
+  if (json == null || json == false) return null;
+  if (json == 'full') return const FullCheck();
+  if (json is! Map) {
+    problems.add(_checkShape);
+    return null;
+  }
+  final unknown = [
+    for (final k in json.keys)
+      if (k is! String || !const {'files', 'command', 'full'}.contains(k)) '$k',
+  ];
+  if (unknown.isNotEmpty) {
+    problems.add('$_checkShape (unknown key ${unknown.join(', ')})');
+    return null;
+  }
+  final given = {
+    for (final MapEntry(:key, :value) in json.entries)
+      if (!_blank(value)) key as String: value,
+  };
+  if (given.isEmpty) {
+    // `{files: []}` alone: the tests that cover the batch's own files.
+    if (json['files'] is List) return const FilesCheck([]);
+    // An empty command alone is a mistake, not "no check".
+    if (json['command'] is String) problems.add('check.command must be a non-empty string');
+    return null;
+  }
+  if (given.length > 1) {
+    problems.add('$_checkShape: give one of files, command and full, not ${given.keys.join(' and ')}');
+    return null;
+  }
+  switch (given.entries.single) {
+    case MapEntry(key: 'full', :final value):
+      if (value == true) return const FullCheck();
+      problems.add('check.full must be true');
       return null;
-    case 'full':
-      return const FullCheck();
-    case {'files': final files} when (json as Map).length == 1:
-      return FilesCheck(_paths(files, 'check.files', problems));
-    case {'command': final command} when (json as Map).length == 1:
-      if (command is! String || command.trim().isEmpty) {
+    case MapEntry(key: 'files', :final value):
+      return FilesCheck(_paths(value, 'check.files', problems));
+    case MapEntry(key: 'command', :final value):
+      if (value is! String) {
         problems.add('check.command must be a non-empty string');
-        return null;
-      }
-      if (command.contains('\n')) {
+      } else if (value.contains('\n')) {
         problems.add('check.command must be one line');
-        return null;
+      } else {
+        return CommandCheck(value.trim());
       }
-      return CommandCheck(command.trim());
-    default:
-      problems.add('check must be {"files": [...]}, {"command": "..."} or "full"');
       return null;
   }
+  problems.add(_checkShape);
+  return null;
 }
 
 /// [json] as a batch, or the problems that stop it (readable, one per fault).
@@ -121,7 +158,7 @@ BatchCheck? _checkOf(Object? json, List<String> problems) {
   final check = _checkOf(json['check'], problems);
   // These find their tests from the batch's files: with none, the check could never pass.
   if (files.isEmpty && (check is FullCheck || (check is FilesCheck && check.files.isEmpty))) {
-    problems.add('a "full" check, or {"files": []}, needs the batch\'s files');
+    problems.add('a {"full": true} check, or {"files": []}, needs the batch\'s files');
   }
   if (problems.isNotEmpty) return (batch: null, problems: problems);
   return (
@@ -163,4 +200,14 @@ List<PlanBatch>? batchesInMarkdown(String markdown) {
   } on FormatException {
     return null;
   }
+}
+
+/// The saved plan's file name in `.everyai/plans/` that [ref] names (a bare name, `.everyai/plans/<name>` or a path
+/// ending in it), or null. The same rule as ultra.js's `planRefOf`: only a plain `.md` file in that folder.
+String? planFileName(Object? ref) {
+  if (ref is! String) return null;
+  final s = ref.trim();
+  final name = s.contains('/') ? RegExp(r'(?:^|/)\.everyai/plans/([^/]+)$').firstMatch(s)?.group(1) : s;
+  if (name == null || !RegExp(r'^[\w.-]+\.md$').hasMatch(name) || name.contains('..')) return null;
+  return name;
 }

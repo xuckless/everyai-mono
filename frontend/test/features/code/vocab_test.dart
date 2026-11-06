@@ -305,7 +305,7 @@ void main() {
             'id': 'whole',
             'intent': 'Whole',
             'files': ['lib/app.dart'],
-            'check': 'full',
+            'check': {'full': true},
           },
         ],
       );

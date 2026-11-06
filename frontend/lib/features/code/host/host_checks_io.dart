@@ -87,21 +87,41 @@ Future<({int exit, String out})> _statsHere(String dir) async {
   }
 }
 
-Future<HostResult> hostCheck(HostCheckContext c, List<String> files, Future<void> cancel) async {
-  final r = await _checks(c, files, cancel);
-  return (text: r.text, isError: r.failed);
-}
-
-/// The tests that cover [files] ([full]: their projects' whole suites), run in [c]'s folder.
-Future<({String text, bool failed, bool refused})> _checks(
+Future<HostResult> hostCheck(
   HostCheckContext c,
   List<String> files,
   Future<void> cancel, {
   bool full = false,
+  String? testName,
+}) async {
+  final r = await _checks(
+    c,
+    files,
+    cancel,
+    full: full,
+    testName: testName,
+    refuse: (command) {
+      final why = c.refusal(command);
+      return why == null ? null : (why: why, skip: false);
+    },
+  );
+  return (text: r.text, isError: r.outcome != BatchOutcome.passed);
+}
+
+/// The tests that cover [files] ([full]: their projects' whole suites; [testName]: the tests of that name), run in
+/// [c]'s folder; each command passes [refuse] first. Unverified when no test was found to run at all.
+Future<({String text, BatchOutcome outcome})> _checks(
+  HostCheckContext c,
+  List<String> files,
+  Future<void> cancel, {
+  required BatchRefusal? Function(String command) refuse,
+  bool full = false,
+  String? testName,
 }) async {
   final found = detectChecks(
     files,
     full: full,
+    testName: testName,
     exists: (p) => FileSystemEntity.typeSync('${c.workingDir}/$p') != FileSystemEntityType.notFound,
     read: (p) {
       try {
@@ -117,41 +137,53 @@ Future<({String text, bool failed, bool refused})> _checks(
       text:
           '$missed Pass the test files themselves (they run as given), or run the right tests yourself. The app knows '
           'Dart/Flutter, jest, vitest, Go, Cargo and pytest projects.',
-      failed: true,
-      refused: false,
+      outcome: BatchOutcome.unverified,
     );
   }
   final out = <String>[];
   var failed = false;
   for (final run in found.runs) {
     final command = checkCommand(run);
-    if (c.refusal(command) case final why?) return (text: '$why\n(command: $command)', failed: true, refused: true);
+    if (refuse(command) case final no?) {
+      return (text: '${no.why}\n(command: $command)', outcome: no.skip ? BatchOutcome.skipped : BatchOutcome.failed);
+    }
     final r = await _run(c, command, cancel);
     failed |= r.exit != 0;
     out.add('\$ $command\n[exit ${r.exit}]\n${r.out.trimRight()}');
   }
   return (
     text: [failed ? 'Some tests failed.' : 'The tests passed.', if (missed.isNotEmpty) missed, ...out].join('\n\n'),
-    failed: failed,
-    refused: false,
+    outcome: failed ? BatchOutcome.failed : BatchOutcome.passed,
   );
 }
 
 Future<BatchVerdict> runBatchCheck(HostCheckContext c, PlanBatch batch, Future<void> cancel) async {
+  BatchRefusal? refuse(String command, {required bool own}) {
+    if (c.batchRefusal case final gate?) return gate(command, own: own);
+    final why = c.refusal(command);
+    return why == null ? null : (why: why, skip: false);
+  }
+
+  Future<({String text, BatchOutcome outcome})> own(List<String> files, {bool full = false}) =>
+      _checks(c, files, cancel, full: full, refuse: (command) => refuse(command, own: true));
   final r = switch (batch.check) {
-    null => (text: '', failed: false, refused: false),
-    FilesCheck(:final files) => await _checks(c, files.isEmpty ? batch.files : files, cancel),
-    FullCheck() => await _checks(c, batch.files, cancel, full: true),
-    CommandCheck(:final command) => switch (c.refusal(command)) {
-      final why? => (text: '$why\n(command: $command)', failed: true, refused: true),
-      null => await _run(
-        c,
-        command,
-        cancel,
-      ).then((r) => (text: '\$ $command\n[exit ${r.exit}]\n${r.out.trimRight()}', failed: r.exit != 0, refused: false)),
+    null => (text: '', outcome: BatchOutcome.passed),
+    FilesCheck(:final files) => await own(files.isEmpty ? batch.files : files),
+    FullCheck() => await own(batch.files, full: true),
+    CommandCheck(:final command) => switch (refuse(command, own: false)) {
+      final no? => (
+        text: '${no.why}\n(command: $command)',
+        outcome: no.skip ? BatchOutcome.skipped : BatchOutcome.failed,
+      ),
+      null => await _run(c, command, cancel).then(
+        (r) => (
+          text: '\$ $command\n[exit ${r.exit}]\n${r.out.trimRight()}',
+          outcome: r.exit == 0 ? BatchOutcome.passed : BatchOutcome.failed,
+        ),
+      ),
     },
   };
-  return (passed: !r.failed, output: r.failed ? _tail(r.text) : '', refused: r.refused);
+  return (outcome: r.outcome, output: r.outcome == BatchOutcome.passed ? '' : _tail(r.text));
 }
 
 String _tail(String out) => out.length > 3000 ? '…${out.substring(out.length - 3000)}' : out;
