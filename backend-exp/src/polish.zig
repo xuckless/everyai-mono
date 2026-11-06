@@ -172,6 +172,7 @@ fn polish(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const model = routing.modelFor(app.cfg, .polish);
     app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
     const aux = try app.aux(req);
+    if (aux.unavailable) return res.fail(.service_unavailable, "Polish needs an API key or a local side-job model.");
     const model_free = app.catalog.facts(req.io, model).free;
     // On the user's own key nothing is charged, but the cost cap still holds.
     const free = model_free or aux.byok;
