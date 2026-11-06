@@ -807,6 +807,9 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   with a share bar and mono cost; billing uses the same bar and mono amounts.
   6e MCP / Skills / Agents: one-line intros instead of paragraphs, skill and agent names in mono with one-line
   descriptions, the Claude Code skills list on a card (`KitGroupedList.fold`).
+  6f Remote: host and device sections on cards, a status dot by the relay state, the security code in mono on the
+  right, Remove this host in red. Artifacts page and the inline renderers (flashcards, slides, quiz) already sat on
+  the kit; left as they are.
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2
