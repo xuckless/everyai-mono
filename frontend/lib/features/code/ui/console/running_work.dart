@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../../app/router.dart';
+import '../../../../core/motion/motion.dart';
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/every_icons.dart';
@@ -46,7 +47,14 @@ class _RunningWorkState extends ConsumerState<RunningWork> {
   void _toggle(String key, {required bool active}) => setState(() => _open[key] = !_isOpen(key, active: active));
 
   /// A group header that folds its rows ([count] of them when folded).
-  Widget _group(String key, String title, {required bool active, required int count, required List<Widget> rows}) {
+  Widget _group(
+    String key,
+    String title, {
+    required bool active,
+    required int count,
+    required List<Widget> rows,
+    double? progress,
+  }) {
     final open = _isOpen(key, active: active);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -58,6 +66,7 @@ class _RunningWorkState extends ConsumerState<RunningWork> {
           count: count,
           onTap: () => _toggle(key, active: active),
         ),
+        if (progress != null) Padding(padding: const EdgeInsets.fromLTRB(2, 0, 2, 8), child: _RunBar(progress)),
         if (open) ...rows,
       ],
     );
@@ -146,12 +155,24 @@ class _RunningWorkState extends ConsumerState<RunningWork> {
                 '${run.agents.where((a) => a.status == WorkflowAgentStatus.done).length}/${run.agents.length} agents done',
             active: run.status == WorkflowStatus.running,
             count: run.agents.length,
+            progress: run.agents.isEmpty
+                ? null
+                : run.agents.where((a) => a.status == WorkflowAgentStatus.done).length / run.agents.length,
             rows: [
               for (final a in run.agents)
                 if (a.childId case final c? when byId.containsKey(c))
                   childRow(byId[c]!)
                 else
-                  _Line(title: a.label, subtitle: '${a.phase} · ${a.status.name}'),
+                  _Line(
+                    leading: StatusDot(switch (a.status) {
+                      WorkflowAgentStatus.queued => DotStatus.idle,
+                      WorkflowAgentStatus.running => DotStatus.running,
+                      WorkflowAgentStatus.done => DotStatus.done,
+                      WorkflowAgentStatus.failed => DotStatus.failed,
+                    }),
+                    title: a.label,
+                    subtitle: '${a.phase} · ${a.status.name}',
+                  ),
             ],
           ),
         if (forks.isNotEmpty) ...[
@@ -240,12 +261,15 @@ SessionStatus _statusOf(WidgetRef ref, String id) => ref.exists(codeSessionProvi
     : ref.watch(codeStatusesProvider.select((all) => all[id])) ?? SessionStatus.idle;
 
 class _Line extends StatelessWidget {
-  const _Line({required this.title, required this.subtitle, this.leading, this.trailing = const []});
+  const _Line({required this.title, required this.subtitle, this.leading, this.trailing = const [], this.mono = false});
 
   final String title;
   final String subtitle;
   final Widget? leading;
   final List<Widget> trailing;
+
+  /// The title is a command: set in mono.
+  final bool mono;
 
   @override
   Widget build(BuildContext context) {
@@ -255,7 +279,7 @@ class _Line extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
       decoration: BoxDecoration(
         border: Border.all(color: theme.border),
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(10),
       ),
       child: Row(
         children: [
@@ -264,7 +288,12 @@ class _Line extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.type.callout.tint(theme.text)),
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: (mono ? theme.type.caption.mono : theme.type.callout).tint(theme.text),
+                ),
                 Text(subtitle, maxLines: 1, style: theme.type.caption.tint(theme.textMuted)),
               ],
             ),
@@ -321,6 +350,8 @@ class _ShellRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => _Line(
+    mono: task.description.isEmpty,
+    leading: StatusDot(task.running ? DotStatus.running : (task.exitCode == 0 ? DotStatus.done : DotStatus.failed)),
     title: task.description.isNotEmpty ? task.description : task.command,
     subtitle: '${task.id} · ${task.running ? 'running ${_elapsed(task.startedAt)}' : 'exited (${task.exitCode})'}',
     trailing: [if (task.running) AdaptiveButton(label: 'Stop', emphasis: ButtonEmphasis.plain, onPressed: onStop)],
@@ -431,6 +462,39 @@ class ChildChatView extends ConsumerWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// A run's share of finished agents: a thin bar that eases to its new length.
+class _RunBar extends StatelessWidget {
+  const _RunBar(this.fraction);
+
+  final double fraction;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(99),
+      child: SizedBox(
+        height: 3,
+        width: double.infinity,
+        child: Stack(
+          children: [
+            Positioned.fill(child: ColoredBox(color: theme.border)),
+            TweenAnimationBuilder<double>(
+              tween: Tween(end: fraction.clamp(0, 1)),
+              duration: Motion.reduced(context) ? Duration.zero : const Duration(milliseconds: 420),
+              curve: Motion.easeOut,
+              builder: (context, v, _) => FractionallySizedBox(
+                widthFactor: v,
+                child: ColoredBox(color: theme.accent),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

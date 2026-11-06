@@ -810,6 +810,8 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   6f Remote: host and device sections on cards, a status dot by the relay state, the security code in mono on the
   right, Remove this host in red. Artifacts page and the inline renderers (flashcards, slides, quiz) already sat on
   the kit; left as they are.
+  6g workflow progress (Session tab's running work): a thin bar per run (finished agents), status dots on workflow
+  agents and background commands, commands in mono. Not seen with a live Ultra run.
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2
