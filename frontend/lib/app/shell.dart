@@ -207,7 +207,7 @@ class _AppShellState extends ConsumerState<AppShell> {
       );
     }
 
-    Widget body = _SplitView(
+    Widget body = ShellSplitView(
       compact: compact,
       collapsed: _collapsed,
       drawerOpen: _drawerOpen,
@@ -367,8 +367,10 @@ class _ServerBanner extends ConsumerWidget {
 /// Sidebar + content. Wide: the sidebar on the window background and the page
 /// in an inset panel; collapsing slides the sidebar away (ease-in-out).
 /// Compact: the page fills the window and the sidebar is a drawer over a scrim.
-class _SplitView extends StatelessWidget {
-  const _SplitView({
+@visibleForTesting
+class ShellSplitView extends StatelessWidget {
+  const ShellSplitView({
+    super.key,
     required this.compact,
     required this.collapsed,
     required this.drawerOpen,
@@ -414,7 +416,9 @@ class _SplitView extends StatelessWidget {
               child: AnimatedPadding(
                 duration: duration,
                 curve: Motion.easeInOut,
-                padding: EdgeInsets.fromLTRB(collapsed ? 8 : 0, hasCustomCaption ? 0 : 8, 8, 8),
+                // Windows/Linux: the panel starts below the caption strip, so the window buttons and the drag area
+                // get their own headroom instead of covering the panel's header.
+                padding: EdgeInsets.fromLTRB(collapsed ? 8 : 0, hasCustomCaption ? windowCaptionHeight : 8, 8, 8),
                 child: DecoratedBox(
                   decoration: BoxDecoration(
                     color: theme.surface,

@@ -21,40 +21,54 @@ double get windowButtonsWidth => defaultTargetPlatform == TargetPlatform.windows
 
 /// The draggable strip a layout keeps at its top: drag it to move the window, double-click it to maximize or
 /// restore. The buttons themselves float above everything ([WindowButtonsOverlay]); the strip leaves room for them.
-class WindowCaption extends StatefulWidget {
+class WindowCaption extends StatelessWidget {
   const WindowCaption({super.key});
-
-  @override
-  State<WindowCaption> createState() => _WindowCaptionState();
-}
-
-class _WindowCaptionState extends State<WindowCaption> {
-  Duration? _lastDown;
 
   @override
   Widget build(BuildContext context) => SizedBox(
     height: windowCaptionHeight,
     child: Padding(
       padding: EdgeInsets.only(right: windowButtonsWidth),
-      // A raw Listener, not a double-tap recognizer, so a double-click doesn't delay single clicks.
-      child: Listener(
-        onPointerDown: (e) {
-          if (e.kind == PointerDeviceKind.mouse && e.buttons != kPrimaryMouseButton) return;
-          final last = _lastDown;
-          _lastDown = e.timeStamp;
-          if (last != null && e.timeStamp - last < kDoubleTapTimeout) {
-            _lastDown = null;
-            _toggleMaximize();
-          }
-        },
-        child: GestureDetector(
-          key: const ValueKey('caption.drag'),
-          behavior: HitTestBehavior.opaque,
-          onPanStart: (_) => windowManager.startDragging(),
-        ),
-      ),
+      child: const WindowDragArea(key: ValueKey('caption.drag'), child: SizedBox.expand()),
     ),
   );
+}
+
+/// [child] as a handle for the window on Windows and Linux: dragging its empty parts moves the window and a
+/// double-click maximizes or restores it; buttons inside still get their clicks. [child] alone elsewhere.
+class WindowDragArea extends StatefulWidget {
+  const WindowDragArea({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  State<WindowDragArea> createState() => _WindowDragAreaState();
+}
+
+class _WindowDragAreaState extends State<WindowDragArea> {
+  Duration? _lastDown;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!hasCustomCaption) return widget.child;
+    // A raw Listener, not a double-tap recognizer, so a double-click doesn't delay single clicks.
+    return Listener(
+      onPointerDown: (e) {
+        if (e.kind == PointerDeviceKind.mouse && e.buttons != kPrimaryMouseButton) return;
+        final last = _lastDown;
+        _lastDown = e.timeStamp;
+        if (last != null && e.timeStamp - last < kDoubleTapTimeout) {
+          _lastDown = null;
+          _toggleMaximize();
+        }
+      },
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanStart: (_) => windowManager.startDragging(),
+        child: widget.child,
+      ),
+    );
+  }
 }
 
 Future<void> _toggleMaximize() async =>
