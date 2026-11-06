@@ -34,6 +34,9 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -94,6 +97,9 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -105,6 +111,9 @@ jobs:
             "$EVERYAI_API" > "$RUNNER_TEMP/defines.json"
       - run: flutter pub get
       - run: flutter build windows --release --dart-define-from-file="$RUNNER_TEMP/defines.json"
+      - name: Bundled server
+        # Next to EveryAI.exe, where findLocalBackend looks (runs local-model and own-key chats).
+        run: cp -f "$(tool/build_local_backend.sh x86_64-windows | tail -1)" build/windows/x64/runner/Release/everyai-backend.exe
       - name: Store MSIX
         run: |
           # The Store wants a.b.c.0 and each package higher than the last, but a.b.c alone can't tell
@@ -144,6 +153,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev \
             libsecret-1-dev libjsoncpp-dev libsqlite3-dev libfuse2
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
       - uses: subosito/flutter-action@v2
         with:
           channel: stable

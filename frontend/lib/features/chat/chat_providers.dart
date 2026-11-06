@@ -24,6 +24,8 @@ import 'domain/message.dart';
 import 'domain/reasoning_effort.dart';
 import 'domain/security_alert.dart';
 import '../settings/byok_keys.dart' show modelBillingProvider;
+import '../../core/local_backend/local_backend_providers.dart';
+import '../../core/net/api_client.dart';
 import '../settings/reply_language.dart';
 
 final chatRepositoryProvider = Provider<ChatRepository>((ref) {
@@ -35,22 +37,39 @@ final chatTransportProvider = Provider<ChatTransport>((ref) {
   final api = ref.watch(apiClientProvider);
   // With dev auth the backend serves anonymous requests as its dev user.
   final authenticated = !ref.watch(appConfigProvider).devSkipAuth;
-  return TransportRouter(
-    stream: SseTransport(api, authenticated: authenticated),
-    image: ImageTransport(api, authenticated: authenticated),
+  final local = ref.watch(localApiProvider);
+  return SplitTransport(
+    remote: TransportRouter(
+      stream: SseTransport(api, authenticated: authenticated),
+      image: ImageTransport(api, authenticated: authenticated),
+    ),
+    local: () async => switch (await local.client()) {
+      // The bundled server has one user and no sign-in.
+      final ApiClient c => TransportRouter(stream: SseTransport(c), image: ImageTransport(c)),
+      null => null,
+    },
+    localProblem: () => local.backend.problem,
   );
 });
 
 /// Names new chats after their first reply. Null when chat turns don't go to
 /// the backend (a fake transport in tests), so no title call goes out either.
 final chatTitlerProvider = Provider<ChatTitler?>((ref) {
-  if (ref.watch(chatTransportProvider) is! TransportRouter) return null;
+  if (ref.watch(chatTransportProvider) is! SplitTransport) return null;
   return HttpChatTitler(ref.watch(apiClientProvider), authenticated: !ref.watch(appConfigProvider).devSkipAuth);
 });
 
 /// Answers client-executed tool calls (`POST /v1/chat/tool_result`).
 final toolResultsProvider = Provider<ToolResults>((ref) {
-  return HttpToolResults(ref.watch(apiClientProvider), authenticated: !ref.watch(appConfigProvider).devSkipAuth);
+  final local = ref.watch(localApiProvider);
+  return SplitToolResults(
+    remote: HttpToolResults(ref.watch(apiClientProvider), authenticated: !ref.watch(appConfigProvider).devSkipAuth),
+    // Only once it runs: answering a tool must not start the server.
+    local: () async => switch (local.backend.running ? await local.client() : null) {
+      final ApiClient c => HttpToolResults(c),
+      null => null,
+    },
+  );
 });
 
 /// UI tools the app runs itself and answers with [ChatController.resolveTool]

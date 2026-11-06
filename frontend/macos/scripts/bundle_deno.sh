@@ -33,3 +33,6 @@ if [[ "${CODE_SIGNING_ALLOWED:-NO}" == YES && -n "$IDENTITY" ]]; then
       --entitlements "$PROJECT_DIR/scripts/deno.entitlements" "$DEST/deno"
   fi
 fi
+
+# The bundled EveryAI server rides on this build phase (no extra Xcode phase).
+"$PROJECT_DIR/scripts/bundle_local_backend.sh"
