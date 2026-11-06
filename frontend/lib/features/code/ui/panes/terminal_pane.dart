@@ -95,7 +95,7 @@ class _TerminalPaneState extends ConsumerState<TerminalPane> {
               autofocus: true,
               padding: const EdgeInsets.all(8),
               textStyle: TerminalStyle(
-                fontFamily: 'SourceCodePro',
+                fontFamily: 'GeistMono',
                 fontSize: EveryTheme.of(context).type.callout.fontSize!,
               ),
               onSecondaryTapDown: (_, _) => _copyOrPaste(),

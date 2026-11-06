@@ -229,7 +229,7 @@ class _SetupTerminalDialogState extends ConsumerState<SetupTerminalDialog> {
                                   autofocus: true,
                                   padding: const EdgeInsets.all(8),
                                   textStyle: TerminalStyle(
-                                    fontFamily: 'SourceCodePro',
+                                    fontFamily: 'GeistMono',
                                     fontSize: theme.type.callout.fontSize!,
                                   ),
                                   onSecondaryTapDown: (_, _) => _copyOrPaste(),

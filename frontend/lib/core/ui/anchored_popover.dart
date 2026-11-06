@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+import '../motion/motion.dart';
 import '../platform/platform_kind.dart';
 import '../theme/every_theme.dart';
 import 'adaptive.dart';
@@ -25,16 +26,41 @@ class AnchoredPopover extends StatefulWidget {
   State<AnchoredPopover> createState() => AnchoredPopoverState();
 }
 
-class AnchoredPopoverState extends State<AnchoredPopover> {
-  /// Popovers follow the brand's control radius, but stay native-tight on Fluent.
-  static double _radius(EveryTheme theme) => theme.design == DesignLanguage.fluent ? 8 : 14;
+class AnchoredPopoverState extends State<AnchoredPopover> with SingleTickerProviderStateMixin {
+  static const _radius = 14.0;
 
   final _portal = OverlayPortalController();
+  late final _anim = AnimationController(vsync: this, duration: Motion.popIn, reverseDuration: Motion.popOut);
+
+  @override
+  void dispose() {
+    _anim.dispose();
+    super.dispose();
+  }
+
+  bool get isOpen => _portal.isShowing && _anim.status != AnimationStatus.reverse;
 
   /// Opens the panel as if the trigger were tapped (`/model` opens the picker).
   void open() {
-    if (mounted) _portal.show();
+    if (!mounted) return;
+    setState(() => _closing = false);
+    _portal.show();
+    _anim.forward();
   }
+
+  /// A closing panel lets taps through while it animates out.
+  bool _closing = false;
+
+  /// Closes toward the trigger, then removes the panel.
+  void close() {
+    if (!_portal.isShowing) return;
+    setState(() => _closing = true);
+    _anim.reverse().whenComplete(() {
+      if (mounted && _anim.isDismissed) _portal.hide();
+    });
+  }
+
+  void _toggle() => isOpen ? close() : open();
 
   @override
   Widget build(BuildContext context) {
@@ -43,14 +69,13 @@ class AnchoredPopoverState extends State<AnchoredPopover> {
       overlayChildBuilder: _buildPanel,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTap: _portal.toggle,
+        onTap: _toggle,
         child: MouseRegion(cursor: SystemMouseCursors.click, child: widget.child),
       ),
     );
   }
 
   Widget _buildPanel(BuildContext overlayContext) {
-    final theme = EveryTheme.of(context);
     final box = context.findRenderObject()! as RenderBox;
     // Placed from the trigger's rect in the overlay, not by following its
     // layer: a trigger that fades out once the pointer leaves its row
@@ -85,42 +110,66 @@ class AnchoredPopoverState extends State<AnchoredPopover> {
       dx = math.max(math.min(0.0, window.width - margin - maxWidth - left), margin - left);
     }
 
-    return Stack(
-      children: [
-        Positioned.fill(
-          child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: _portal.hide),
-        ),
-        Positioned(
-          left: alignRight ? null : origin.dx + dx,
-          right: alignRight ? window.width - (origin.dx + box.size.width + dx) : null,
-          top: openUp ? null : origin.dy + box.size.height + 6,
-          bottom: openUp ? window.height - origin.dy + 6 : null,
-          child: CallbackShortcuts(
-            bindings: {const SingleActivator(LogicalKeyboardKey.escape): _portal.hide},
-            child: FocusScope(
-              autofocus: true,
-              child: ConstrainedBox(
-                constraints: BoxConstraints(
-                  minWidth: minWidth,
-                  maxWidth: maxWidth,
-                  maxHeight: roomVertical.clamp(120, widget.maxHeight),
-                ),
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(_radius(theme)),
-                    boxShadow: const [BoxShadow(color: Color(0x80000000), blurRadius: 48, offset: Offset(0, 24))],
+    return IgnorePointer(
+      ignoring: _closing,
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: close),
+          ),
+          Positioned(
+            left: alignRight ? null : origin.dx + dx,
+            right: alignRight ? window.width - (origin.dx + box.size.width + dx) : null,
+            top: openUp ? null : origin.dy + box.size.height + 6,
+            bottom: openUp ? window.height - origin.dy + 6 : null,
+            child: CallbackShortcuts(
+              bindings: {const SingleActivator(LogicalKeyboardKey.escape): close},
+              child: FocusScope(
+                autofocus: true,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    minWidth: minWidth,
+                    maxWidth: maxWidth,
+                    maxHeight: roomVertical.clamp(120, widget.maxHeight),
                   ),
-                  child: GlassSurface(
-                    level: GlassLevel.thick,
-                    radius: _radius(theme),
-                    child: widget.builder(overlayContext, _portal.hide),
+                  child: _PopTransition(
+                    animation: _anim,
+                    // Grow from the corner nearest the trigger.
+                    alignment: Alignment(alignRight ? 0.8 : -0.8, openUp ? 1 : -1),
+                    child: GlassSurface(
+                      level: GlassLevel.thick,
+                      radius: _radius,
+                      child: widget.builder(overlayContext, close),
+                    ),
                   ),
                 ),
               ),
             ),
           ),
-        ),
-      ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Popover entrance: fade and scale from 0.95 (ease-out); the exit runs the
+/// same path back with an ease-in, 20% faster.
+class _PopTransition extends StatelessWidget {
+  const _PopTransition({required this.animation, required this.alignment, required this.child});
+  final Animation<double> animation;
+  final Alignment alignment;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final curved = CurvedAnimation(parent: animation, curve: Motion.easeOut, reverseCurve: Motion.easeExit);
+    return FadeTransition(
+      opacity: curved,
+      child: ScaleTransition(
+        alignment: alignment,
+        scale: Tween(begin: Motion.popoverStartScale, end: 1.0).animate(curved),
+        child: child,
+      ),
     );
   }
 }
@@ -152,58 +201,49 @@ class PopoverRow extends StatefulWidget {
 }
 
 class _PopoverRowState extends State<PopoverRow> {
-  bool _hover = false;
-
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final enabled = widget.onTap != null;
+    final touch = Host.isMobile;
     final titleColor = !enabled
-        ? theme.textMuted
+        ? theme.textSubtle
         : widget.destructive
         ? theme.danger
         : theme.text;
-    return MouseRegion(
-      cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.onTap,
-        child: Semantics(
-          button: true,
-          selected: widget.selected,
-          enabled: enabled,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 100),
-            margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            decoration: BoxDecoration(
-              color: _hover && enabled ? theme.text.withValues(alpha: 0.07) : null,
-              borderRadius: BorderRadius.circular(theme.radius - 2),
-            ),
-            child: Row(
+    return Pressable(
+      onTap: widget.onTap,
+      selected: widget.selected,
+      builder: (context, s, child) => AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 0.5),
+        constraints: BoxConstraints(minHeight: touch ? 44 : 34),
+        padding: EdgeInsets.symmetric(horizontal: 10, vertical: widget.subtitle == null ? 6 : 7),
+        decoration: BoxDecoration(
+          color: s.pressed
+              ? theme.pressed
+              : s.hovered
+              ? theme.hover
+              : null,
+          borderRadius: BorderRadius.circular(9),
+        ),
+        child: child,
+      ),
+      child: Row(
+        children: [
+          if (widget.leading != null) ...[widget.leading!, const SizedBox(width: 10)],
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                if (widget.leading != null) ...[widget.leading!, const SizedBox(width: 10)],
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(widget.title, style: theme.type.body.tint(titleColor)),
-                      if (widget.subtitle != null)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 1),
-                          child: Text(widget.subtitle!, style: theme.type.caption.tint(theme.textMuted)),
-                        ),
-                    ],
-                  ),
-                ),
-                if (widget.trailing != null) ...[const SizedBox(width: 8), widget.trailing!],
+                Text(widget.title, style: (touch ? theme.type.body : theme.type.callout).tint(titleColor)),
+                if (widget.subtitle != null) Text(widget.subtitle!, style: theme.type.caption.tint(theme.textSubtle)),
               ],
             ),
           ),
-        ),
+          if (widget.trailing != null) ...[const SizedBox(width: 8), widget.trailing!],
+        ],
       ),
     );
   }
@@ -219,8 +259,8 @@ class PopoverHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
-      child: Text(label, style: theme.type.caption.medium.tint(theme.textMuted)),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      child: Text(label, style: theme.type.caption.medium.tint(theme.textSubtle)),
     );
   }
 }

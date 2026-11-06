@@ -38,7 +38,8 @@ class _Catalog extends CatalogController {
 
 const sizes = [Size(1280, 800), Size(900, 640), Size(600, 720), Size(420, 480)];
 const textScales = [1.0, 1.6];
-const languages = [DesignLanguage.cupertino, DesignLanguage.macos, DesignLanguage.material, DesignLanguage.fluent];
+// One EveryAI look on every platform since the 2026-11 overhaul.
+const languages = [DesignLanguage.material];
 
 Future<T> _until<T>(T Function() read, bool Function(T) cond) async {
   final end = DateTime.now().add(const Duration(seconds: 10));

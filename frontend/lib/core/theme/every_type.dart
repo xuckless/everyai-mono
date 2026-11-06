@@ -26,19 +26,33 @@ final class EveryType {
 
   factory EveryType.resolve({bool? touch}) {
     final t = touch ?? Host.isMobile;
-    TextStyle s(double desktop, double touch, {FontWeight w = FontWeight.w400, double tracking = -0.1}) =>
-        TextStyle(fontSize: t ? touch : desktop, fontWeight: w, letterSpacing: tracking);
+    // Geist, tracked in ems like the kit: -0.005em on body, tighter on headings.
+    TextStyle s(double desktop, double touch, {FontWeight w = FontWeight.w400, double em = -0.005, double h = 1.5}) {
+      final size = t ? touch : desktop;
+      return TextStyle(
+        fontFamily: family,
+        fontSize: size,
+        fontWeight: w,
+        letterSpacing: size * em,
+        height: h,
+        fontFeatures: const [FontFeature.enable('ss01'), FontFeature.enable('cv11')],
+      );
+    }
+
     return EveryType(
-      largeTitle: s(26, 28, w: FontWeight.w600, tracking: -0.4),
-      title: s(18, 20, w: FontWeight.w600, tracking: -0.3),
-      headline: s(14, 16, w: FontWeight.w600),
-      body: s(14, 16),
-      callout: s(13, 14.5),
-      caption: s(12, 13),
-      footnote: s(11, 12, tracking: 0),
-      micro: s(10, 10.5, tracking: 0),
+      largeTitle: s(24, 30, w: FontWeight.w600, em: -0.025, h: 1.2),
+      title: s(17, 17, w: FontWeight.w600, em: -0.018, h: 1.3),
+      headline: s(14.5, 16, w: FontWeight.w600, em: -0.012, h: 1.35),
+      body: s(14.5, 15.5, h: 1.6),
+      callout: s(13.5, 15),
+      caption: s(12, 13, h: 1.4),
+      footnote: s(11.5, 12, em: 0, h: 1.35),
+      micro: s(10, 10.5, em: 0, h: 1.2),
     );
   }
+
+  static const family = 'Geist';
+  static const monoFamily = 'GeistMono';
 
   /// Screen and empty-state titles.
   final TextStyle largeTitle;
@@ -71,7 +85,12 @@ extension EveryTypeWeights on TextStyle {
   TextStyle get semibold => copyWith(fontWeight: FontWeight.w600);
 
   /// Monospace at the same role size (code, paths, keys).
-  TextStyle get mono => copyWith(fontFamily: 'SourceCodePro');
+  TextStyle get mono => copyWith(
+    fontFamily: EveryType.monoFamily,
+    fontSize: (fontSize ?? 14) * 0.9,
+    letterSpacing: 0,
+    fontFeatures: const [],
+  );
 
   TextStyle tint(Color color) => copyWith(color: color);
 }

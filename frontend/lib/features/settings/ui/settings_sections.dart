@@ -111,18 +111,15 @@ class GeneralSection extends ConsumerWidget {
             ),
           ),
         ),
-        SettingsAnchor(
-          section: s,
-          id: 'design',
-          child: AdaptiveListTile(
-            title: const Text('Design'),
-            subtitle: Text('Follows this device by default (${DesignLanguage.host.label}).'),
-            trailing: settingsPicker<DesignLanguage?>(appearance.designOverride?.label ?? 'Automatic', [
-              ('Automatic', null),
-              for (final d in DesignLanguage.values) (d.label, d),
-            ], appearanceCtl.setDesign),
+        if (appearance.theme != ThemePreference.light)
+          SettingsAnchor(
+            section: s,
+            id: 'pure-black',
+            child: AdaptiveListTile(
+              title: const Text('Pure black'),
+              trailing: AdaptiveSwitch(value: appearance.pureBlack, onChanged: appearanceCtl.setPureBlack),
+            ),
           ),
-        ),
         const AdaptiveSectionHeader('Chat'),
         SettingsAnchor(
           section: s,
@@ -336,7 +333,7 @@ class _AboutSectionState extends ConsumerState<AboutSection> {
         AdaptiveListTile(title: const Text('Server'), subtitle: Text(config.apiBaseUrl.toString())),
         AdaptiveListTile(
           title: const Text('Platform'),
-          subtitle: Text('${Host.isDesktop ? 'Desktop' : 'Mobile or web'} · ${theme.design.label} design'),
+          subtitle: Text('${Host.isDesktop ? 'Desktop' : 'Mobile or web'} · Geist'),
         ),
         SettingsAnchor(
           section: SettingsSection.about,
