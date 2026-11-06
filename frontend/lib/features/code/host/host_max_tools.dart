@@ -45,6 +45,12 @@ const forkSpec = <String, Object?>{
         'type': 'boolean',
         'description': 'Work in its own git worktree, merged back when it completes (default: the user\'s setting)',
       },
+      'batch': {
+        'type': 'string',
+        'description':
+            'The id of the approved plan\'s batch this fork builds. The app runs that batch\'s check in the fork\'s '
+            'worktree before merging it back; a failed check merges nothing and the report says why',
+      },
     },
     'required': ['task'],
   },

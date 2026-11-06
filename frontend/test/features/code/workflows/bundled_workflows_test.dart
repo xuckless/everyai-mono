@@ -342,7 +342,7 @@ void main() {
       expect(integrate, contains(ref));
     }, skip: skip);
 
-    test('a bad batch fails its item before it spends; a skipped check merges unchecked and is reviewed', () async {
+    test('a bad check runs its item ungated and says why; a skipped check merges unchecked and is reviewed', () async {
       final agents = _Agents(
         answers(verdict: 'ship'),
         batchChecks: {
@@ -366,17 +366,94 @@ void main() {
         ],
       }, agents);
       final items = ((end.result! as Map)['items'] as List).cast<Map<String, Object?>>();
-      expect(items.first['status'], 'failed');
-      expect(items.first['error'], contains('check.command'));
-      expect(agents.labels, isNot(contains('research:a')));
+      expect(items.first['status'], 'done');
+      expect(items.first['check_problem'], contains('check.command'));
+      expect(agents.byLabel('impl:a').batch, isNull);
       expect(items[1]['status'], 'done');
       expect(items[1]['batch_check'], containsPair('skipped', true));
-      expect(agents.labels, containsAll(['review:b:correctness']));
+      expect(agents.labels, containsAll(['review:b:correctness', 'research:a', 'research:c']));
       expect(agents.labels, isNot(contains('fix-check:b')));
-      expect(items.last['status'], 'failed');
-      expect(items.last['error'], contains('needs the batch\'s files'));
-      expect(agents.labels, isNot(contains('research:c')));
-      expect(agents.byLabel('integrate').prompt, contains('merged unchecked'));
+      expect(items.last['status'], 'done');
+      expect(items.last['check_problem'], contains('needs the batch\'s files'));
+      expect(agents.byLabel('integrate').prompt, allOf(contains('merged unchecked'), contains('check_problem')));
+      expect([for (final l in end.logs) l.text].join('\n'), contains('a: its check was not usable'));
+    }, skip: skip);
+
+    test('a flat check is normalised; a check with no test to run merges and spends no fix agent', () async {
+      final agents = _Agents(
+        answers(verdict: 'ship'),
+        batchChecks: {
+          'impl:a': {'skipped': true, 'unverified': true, 'output': 'No test found for: lib/a.dart'},
+        },
+      );
+      final end = await run('ultra', {
+        'items': [
+          {
+            'id': 'a',
+            'spec': 'Build A',
+            'files': ['lib/a.dart'],
+            'check': {'files': <String>[], 'command': '', 'full': true},
+          },
+        ],
+      }, agents);
+      expect(agents.byLabel('impl:a').batch!.check, isA<FullCheck>());
+      final item = ((end.result! as Map)['items'] as List).single as Map;
+      expect(item['status'], 'done');
+      expect(item['batch_check'], containsPair('unverified', true));
+      expect(agents.labels, isNot(contains('fix-check:a')));
+    }, skip: skip);
+
+    test('with plan_ref the plan\'s batches fill in the items, or are the items', () async {
+      final batches = [
+        {
+          'id': 'a',
+          'intent': 'Build A',
+          'files': ['lib/a.dart'],
+          'check': {
+            'files': ['test/a_test.dart'],
+          },
+        },
+        {
+          'id': 'b',
+          'intent': 'Build B',
+          'files': ['lib/b.dart'],
+          'check': {'full': true},
+        },
+      ];
+      final ctx = {'runId': 'run-1', 'planBatches': batches};
+      var agents = _Agents(answers(verdict: 'ship'));
+      await run(
+        'ultra',
+        {
+          'items': [
+            {'id': 'a', 'spec': 'Build A'},
+            {'id': 'c', 'spec': 'Build C'},
+          ],
+          'plan_ref': '2026-11-05-x.md',
+        },
+        agents,
+        ctx: ctx,
+      );
+      expect((agents.byLabel('impl:a').batch!.check! as FilesCheck).files, ['test/a_test.dart']);
+      expect(agents.byLabel('impl:c').batch, isNull);
+      agents = _Agents(answers(verdict: 'ship'));
+      await run('ultra', {'plan_ref': '2026-11-05-x.md'}, agents, ctx: ctx);
+      expect(agents.labels, isNot(contains('split')));
+      expect(agents.byLabel('impl:b').batch!.check, isA<FullCheck>());
+      expect(agents.byLabel('research:a').prompt, contains('batch a of the plan .everyai/plans/2026-11-05-x.md'));
+      // Without plan_ref the batches in ctx are not used.
+      agents = _Agents(answers(verdict: 'ship'));
+      await run(
+        'ultra',
+        {
+          'items': [
+            {'id': 'a', 'spec': 'Build A'},
+          ],
+        },
+        agents,
+        ctx: ctx,
+      );
+      expect(agents.byLabel('impl:a').batch, isNull);
     }, skip: skip);
 
     test('the integration step is told not to commit', () async {
