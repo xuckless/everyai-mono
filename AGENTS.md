@@ -805,6 +805,8 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   Start building.
   6d usage/billing: "This month" card (mono "$x of $y", a thin bar that fills in, plan · left, wallet), per-key rows
   with a share bar and mono cost; billing uses the same bar and mono amounts.
+  6e MCP / Skills / Agents: one-line intros instead of paragraphs, skill and agent names in mono with one-line
+  descriptions, the Claude Code skills list on a card (`KitGroupedList.fold`).
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2

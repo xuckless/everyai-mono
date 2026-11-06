@@ -169,9 +169,7 @@ class _McpSettingsBodyState extends ConsumerState<McpSettingsBody> {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
           child: Text(
-            'Tools from MCP servers for Code sessions. The agent server starts local servers and connects to '
-            'remote ones when a session starts. Every MCP tool asks before it runs, except in Full auto or when '
-            'you allow it.',
+            'Tools for Code sessions. Each asks before it runs, except in Full auto or once you allow it.',
             style: theme.type.callout.tint(theme.textMuted),
           ),
         ),

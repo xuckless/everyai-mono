@@ -93,10 +93,7 @@ class _AgentsSettingsBodyState extends ConsumerState<AgentsSettingsBody> {
     return KitGroupedList(
       children: [
         Text(
-          'An agent is a Markdown file: a description that tells the Code agent when to hand it work, optional '
-          'model, effort, tools and permissions lines, and its instructions. The Code agent starts one as a '
-          'subagent when a task fits its description. An agent can make a subagent more careful than the session '
-          'that starts it, never less.',
+          'Subagents the Code agent hands work to when a task fits their description.',
           style: theme.type.caption.tint(theme.textMuted),
         ),
         Padding(
@@ -263,12 +260,12 @@ class _AgentTile extends ConsumerWidget {
     ];
     final notes = [...a.warnings, if (status != null && status != 'Off') status];
     return AdaptiveListTile(
-      title: Text(a.name),
+      title: Text(a.name, style: theme.type.body.mono.tint(theme.text)),
       onTap: onEdit,
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (a.description.isNotEmpty) Text(a.description, maxLines: 2, overflow: TextOverflow.ellipsis),
+          if (a.description.isNotEmpty) Text(a.description, maxLines: 1, overflow: TextOverflow.ellipsis),
           if (traits.isNotEmpty) Text(traits.join(' · '), style: theme.type.caption.tint(theme.textMuted)),
           if (a.usable)
             Padding(
