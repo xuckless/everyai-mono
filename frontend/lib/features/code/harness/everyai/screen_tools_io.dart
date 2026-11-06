@@ -101,7 +101,7 @@ Future<ToolOutput> runBrowser(
         } else if (at('x') == null || at('y') == null) {
           return const ToolOutput('Error: click needs a ref, a selector, or x and y.', isError: true);
         } else {
-          final p = _point(b, str('frame'), at('x')!, at('y')!);
+          final p = await _point(b, str('frame'), at('x')!, at('y')!);
           if (p.refusal case final why?) return ToolOutput('Error: $why', isError: true);
           did = await b.click(x: p.x, y: p.y, count: count);
           if (p.warning case final w?) note = [?note, w].join('\n');
@@ -118,7 +118,7 @@ Future<ToolOutput> runBrowser(
         if (x == null || y == null || w == null || h == null || w <= 0 || h <= 0) {
           return const ToolOutput('Error: zoom needs x, y, width and height (in the frame\'s pixels).', isError: true);
         }
-        final from = _point(b, str('frame'), x, y), to = _point(b, str('frame'), x + w, y + h);
+        final from = await _point(b, str('frame'), x, y), to = await _point(b, str('frame'), x + w, y + h);
         if (from.refusal ?? to.refusal case final why?) return ToolOutput('Error: $why', isError: true);
         zoom = (left: from.x, top: from.y, width: to.x - from.x, height: to.y - from.y);
         shot = true;
@@ -152,7 +152,10 @@ Future<ToolOutput> runBrowser(
         shot = true;
         did = 'Screenshot of ${await b.describe()}';
       case 'console':
-        did = 'Console since the last read:';
+        final old = b.history;
+        did = old.isEmpty
+            ? 'Console:'
+            : 'Console (the last ${old.length} lines, oldest first; new ones below):\n${old.join('\n')}';
       case 'resize':
         did = await b.resize((args['width'] as num?)?.toInt() ?? 1280, (args['height'] as num?)?.toInt() ?? 800);
       case 'close':
@@ -169,6 +172,7 @@ Future<ToolOutput> runBrowser(
     if (!shot) return ToolOutput(text);
     final dir = Directory('$root/.everyai/scratch/screenshots')..createSync(recursive: true);
     final path = '${dir.path}/browser-${DateTime.now().millisecondsSinceEpoch}.png';
+    final shown = path.startsWith('$root/') ? path.substring(root.length + 1) : path;
     if (args['full_page'] == true && zoom == null) {
       // A whole long page: for reading, not for coordinates.
       final png = await b.screenshot(fullPage: true);
@@ -194,20 +198,21 @@ Future<ToolOutput> runBrowser(
         ? 'a zoom of part of the page at ${frame.imageWidth}×${frame.imageHeight}'
         : 'the page at ${frame.imageWidth}×${frame.imageHeight}';
     return ToolOutput(
-      '$text\nFrame ${frame.id}: $where ($path). To click something in it, pass frame: "${frame.id}" with x and y '
+      '$text\nFrame ${frame.id}: $where ($shown). To click something in it, pass frame: "${frame.id}" with x and y '
       'in this picture\'s pixels.',
       images: [(label: path, dataUrl: url)],
     );
   } on BrowserError catch (e) {
-    return ToolOutput(browserErrorText(action, e.message, b.takeLog()), isError: true);
+    return ToolOutput(browserErrorText(e.fromPage ? action : '', e.message, b.takeLog()), isError: true);
   }
 }
 
 /// Where the model's [x],[y] in frame [frame] (null: its latest) lands on [b]'s page. Before any screenshot the
 /// point is taken as CSS pixels of the viewport, as the model may know them from the page itself.
-FramePoint _point(HeadlessBrowser b, String? frame, double x, double y) {
+Future<FramePoint> _point(HeadlessBrowser b, String? frame, double x, double y) async {
   if (b.frames.latest == null && (frame == null || frame.isEmpty)) return FramePoint(x, y);
-  return b.frames.map(frame, x, y, b.geometry);
+  final at = await b.scrollOffset();
+  return b.frames.map(frame, x, y, b.geometry, scrollX: at.x, scrollY: at.y);
 }
 
 /// Why the agent's eval [script] on the page at [pageUrl] is refused: it reads the shared profile's cookies, storage
@@ -328,7 +333,7 @@ const _page = 'browser page';
 String browserResultText(String action, String did, List<String> log) {
   final text = [
     did,
-    if (log.isNotEmpty) 'Page log:\n${log.join('\n')}' else if (action == 'console') '(nothing logged)',
+    if (log.isNotEmpty) 'Page log:\n${log.join('\n')}' else if (action == 'console') '(nothing new)',
   ].join('\n');
   return log.isEmpty && !_pageTextActions.contains(action) ? text : untrusted(text, source: _page);
 }

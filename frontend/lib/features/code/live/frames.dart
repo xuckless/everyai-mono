@@ -46,6 +46,8 @@ final class AgentFrame {
     required this.region,
     required this.geometry,
     required this.moves,
+    this.scrollX = 0,
+    this.scrollY = 0,
   });
 
   final String id;
@@ -54,8 +56,12 @@ final class AgentFrame {
   final ViewRect region;
   final ViewGeometry geometry;
 
-  /// The source's scroll/navigation count when it was taken (see [FrameBook.moved]).
+  /// The source's navigation count when it was taken (see [FrameBook.moved]).
   final int moves;
+
+  /// Where the view was scrolled when it was taken (a page's scroll offset), so a later point can follow it.
+  final double scrollX;
+  final double scrollY;
 
   bool get zoomed => region.width < geometry.width || region.height < geometry.height;
 }
@@ -95,8 +101,12 @@ final class FrameBook {
     required int imageHeight,
     required ViewGeometry geometry,
     ViewRect? region,
+    double scrollX = 0,
+    double scrollY = 0,
   }) {
     final f = AgentFrame(
+      scrollX: scrollX,
+      scrollY: scrollY,
       id: '${prefix}_${_next++}',
       imageWidth: imageWidth,
       imageHeight: imageHeight,
@@ -116,7 +126,7 @@ final class FrameBook {
   /// The point in the source for [x],[y] in frame [frameId] (null: the latest), checked against the view's
   /// geometry [now]: a refusal when it changed (the point would land elsewhere) or the frame is unknown, a warning
   /// when the view scrolled or navigated since.
-  FramePoint map(String? frameId, double x, double y, ViewGeometry now) {
+  FramePoint map(String? frameId, double x, double y, ViewGeometry now, {double scrollX = 0, double scrollY = 0}) {
     final f = frameId == null || frameId.isEmpty ? latest : _frames[frameId];
     if (f == null) {
       return FramePoint.refused(
@@ -128,18 +138,29 @@ final class FrameBook {
     if (f.geometry != now) {
       return FramePoint.refused(
         'The view is now ${now.width}×${now.height}${now.rotation != f.geometry.rotation ? ' and rotated' : ''} '
-        '(frame ${f.id} was ${f.geometry.width}×${f.geometry.height}): take a new screenshot.',
+        '(frame ${f.id} was taken of a ${f.geometry.width}×${f.geometry.height} view): take a new screenshot.',
       );
     }
     if (x < 0 || y < 0 || x > f.imageWidth || y > f.imageHeight) {
       return FramePoint.refused('($x, $y) is outside frame ${f.id}, which is ${f.imageWidth}×${f.imageHeight}.');
     }
     final sx = f.region.width / f.imageWidth, sy = f.region.height / f.imageHeight;
+    // The view scrolled since: the point follows what the model saw there.
+    final dx = f.scrollX - scrollX, dy = f.scrollY - scrollY;
+    final px = f.region.left + x * sx + dx, py = f.region.top + y * sy + dy;
+    if (px < 0 || py < 0 || px > now.width || py > now.height) {
+      return FramePoint.refused(
+        'What you saw at ($x, $y) in frame ${f.id} is scrolled out of view now: scroll back, or take a new '
+        'screenshot.',
+      );
+    }
     return FramePoint(
-      f.region.left + x * sx,
-      f.region.top + y * sy,
+      px,
+      py,
       warning: f.moves != moves
-          ? 'The view scrolled or changed page since frame ${f.id}, so this point may not be what you saw there.'
+          ? 'The page changed (navigated) since frame ${f.id}, so this point may not be what you saw there.'
+          : dx != 0 || dy != 0
+          ? 'The page scrolled since frame ${f.id}; the point was moved with it.'
           : null,
       frame: f,
     );

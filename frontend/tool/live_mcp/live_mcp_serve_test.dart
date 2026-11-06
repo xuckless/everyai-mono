@@ -51,13 +51,14 @@ body{font-family:sans-serif;margin:24px;max-width:900px} .item{display:flex;gap:
 <label>Search <input id=q placeholder="green, black…"></label> <button id=go>Search</button>
 <p id=status></p>
 <h2>Teas</h2><div id=list></div>
-<h2>Sign in</h2><form id=login onsubmit="event.preventDefault();status.textContent='signed in as '+email.value">
+<h2>Sign in</h2><form id=login onsubmit="event.preventDefault();document.getElementById('status').textContent='signed in as '+email.value">
 <input id=email type=email aria-label="Email"> <input id=pw type=password aria-label="Password">
 <button type=submit>Sign in</button></form>
 <h2>Drawing</h2><canvas id=c width=300 height=120></canvas>
-<p class=tiny>Small print: <a href="#terms" onclick="status.textContent='terms opened'">terms</a></p>
-<div style="height:1400px"></div><button id=bottom onclick="status.textContent='bottom reached'">Bottom button</button>
+<p class=tiny>Small print: <a href="#terms" onclick="document.getElementById('status').textContent='terms opened'">terms</a></p>
+<div style="height:1400px"></div><button id=bottom onclick="document.getElementById('status').textContent='bottom reached'">Bottom button</button>
 <script>
+const status=document.getElementById('status');
 const teas=['Sencha','Assam','Oolong','Earl Grey','Rooibos'];
 let n=0; const list=document.getElementById('list');
 function render(f){list.innerHTML='';teas.filter(t=>t.toLowerCase().includes(f.toLowerCase())).forEach(t=>{

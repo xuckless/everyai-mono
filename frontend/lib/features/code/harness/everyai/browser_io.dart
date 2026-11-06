@@ -481,12 +481,19 @@ final class HeadlessBrowser {
     'mobile': false,
   });
 
-  /// What the page logged since the last call; cleared on read.
+  /// What the page logged since the last call; cleared on read (the last 50 lines stay in [history]).
   List<String> takeLog() {
     final out = [..._log];
+    _logged.addAll(out);
+    if (_logged.length > 50) _logged.removeRange(0, _logged.length - 50);
     _log.clear();
     return out;
   }
+
+  final _logged = <String>[];
+
+  /// The last 50 lines the page logged, read or not.
+  List<String> get history => [..._logged, ..._log];
 
   Future<String> open(String url) async {
     await _start();
@@ -516,7 +523,7 @@ final class HeadlessBrowser {
     });
     if (r['exceptionDetails'] case final Map<String, Object?> d) {
       final ex = d['exception'] as Map<String, Object?>?;
-      throw BrowserError('The script threw: ${ex?['description'] ?? d['text']}');
+      throw BrowserError('The script threw: ${ex?['description'] ?? d['text']}', fromPage: true);
     }
     return (r['result'] as Map<String, Object?>?)?['value'];
   }
@@ -558,8 +565,21 @@ final class HeadlessBrowser {
       // In page coordinates: the viewport's region plus the scroll offset.
       'clip': {'x': r.left + sx, 'y': r.top + sy, 'width': r.width, 'height': r.height, 'scale': size.width / r.width},
     });
-    final f = frames.record(imageWidth: size.width, imageHeight: size.height, geometry: g, region: region);
+    final f = frames.record(
+      imageWidth: size.width,
+      imageHeight: size.height,
+      geometry: g,
+      region: region,
+      scrollX: sx,
+      scrollY: sy,
+    );
     return (base64Decode(shot['data']! as String), f);
+  }
+
+  /// The page's scroll offset now.
+  Future<({double x, double y})> scrollOffset() async {
+    final v = await evaluate('[scrollX, scrollY]');
+    return v is List ? (x: (v[0] as num).toDouble(), y: (v[1] as num).toDouble()) : (x: 0.0, y: 0.0);
   }
 
   /// The page's element list (see [pageSnapshotJs]): what the model clicks by ref.
@@ -613,7 +633,8 @@ final class HeadlessBrowser {
     await _refuse('''
 const w = submits(deep(${at.x}, ${at.y}));
 return w ? 'that button submits a form with ' + w : null;''', focus: false);
-    final before = {..._downloads.keys};
+    final before = await _here();
+    final running = {..._downloads.keys};
     await _send('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': at.x, 'y': at.y});
     for (var n = 1; n <= count; n++) {
       for (final type in ['mousePressed', 'mouseReleased']) {
@@ -627,13 +648,28 @@ return w ? 'that button submits a form with ' + w : null;''', focus: false);
       }
     }
     await Future<void>.delayed(const Duration(milliseconds: 250));
-    await _settleDownloads(before);
+    await _settleDownloads(running);
     final hit = await evaluate(
-      '(() => { const e = document.elementFromPoint(${at.x}, ${at.y}); '
-      'return e ? e.tagName.toLowerCase() + (e.id ? "#" + e.id : "") + '
-      '(e.className && typeof e.className === "string" ? "." + e.className.trim().split(/\\s+/).join(".") : "") : null; })()',
+      '(() => { const e = document.elementFromPoint(${at.x}, ${at.y}); if (!e) return null; '
+      'const t = (e.getAttribute("aria-label") || e.innerText || e.value || e.alt || "").replace(/\\s+/g, " ").trim(); '
+      'return e.tagName.toLowerCase() + (e.id ? "#" + e.id : "") + (t ? \' "\' + t.slice(0, 40) + \'"\' : ""); })()',
     );
-    return 'Clicked at (${at.x.round()}, ${at.y.round()})${hit == null ? '' : ' on $hit'}.';
+    final after = await _here();
+    final moved = after.url != before.url
+        ? ' The page went to ${after.url} (${after.title}).'
+        : after.title != before.title
+        ? ' The title is now "${after.title}".'
+        : '';
+    return 'Clicked at (${at.x.round()}, ${at.y.round()})${hit == null ? '' : ' on $hit'}.$moved';
+  }
+
+  Future<({String url, String title})> _here() async {
+    try {
+      final v = await evaluate('[location.href, document.title]');
+      return v is List ? (url: '${v[0]}', title: '${v[1]}') : (url: '', title: '');
+    } on BrowserError {
+      return (url: '', title: '');
+    }
   }
 
   /// Types [text] into [selector] (clicked first) or the focused element.
@@ -712,7 +748,6 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
 
   Future<String> scroll(double dy, {double? x, double? y}) async {
     await _start();
-    frames.moved();
     control.report(LiveActivity('scroll', x: x ?? width / 2, y: y ?? height / 2, caption: 'Scrolling'));
     await _send('Input.dispatchMouseEvent', {
       'type': 'mouseWheel',
@@ -722,8 +757,15 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
       'deltaY': dy,
     });
     await Future<void>.delayed(const Duration(milliseconds: 250));
-    final pos = await evaluate('Math.round(window.scrollY)');
-    return 'Scrolled; the page is at y=$pos.';
+    final pos = await evaluate(
+      '[Math.round(scrollY), Math.max(0, document.documentElement.scrollHeight - innerHeight)]',
+    );
+    if (pos is! List) return 'Scrolled.';
+    return 'Scrolled; the page is at y=${pos[0]}${pos[0] == pos[1]
+        ? ' (the bottom)'
+        : pos[0] == 0
+        ? ' (the top)'
+        : ' of ${pos[1]}'}.';
   }
 
   /// Waits for [selector] to appear (or [ms] to pass).
@@ -746,7 +788,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     height = h.clamp(200, 2400);
     await _start();
     await _viewport();
-    return 'The viewport is ${width}x$height.';
+    return 'The viewport is $width×$height.';
   }
 
   /// Waits ([downloadWait]) for the downloads an action started (those not in
@@ -799,7 +841,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     });
     if (r['exceptionDetails'] case final Map<String, Object?> d) {
       final ex = d['exception'] as Map<String, Object?>?;
-      throw BrowserError('The script threw: ${ex?['description'] ?? d['text']}');
+      throw BrowserError('The script threw: ${ex?['description'] ?? d['text']}', fromPage: true);
     }
     final result = r['result'] as Map<String, Object?>? ?? const {};
     if (result['value'] case final String why) return why;
@@ -924,7 +966,6 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     double deltaY = 0,
   }) async {
     await _start();
-    if (type == 'mouseWheel') frames.moved();
     await _send('Input.dispatchMouseEvent', {
       'type': type,
       'x': x,
@@ -1064,8 +1105,11 @@ const deep = (x, y) => {
 };''';
 
 final class BrowserError implements Exception {
-  const BrowserError(this.message);
+  const BrowserError(this.message, {this.fromPage = false});
   final String message;
+
+  /// The message quotes the page (a script's exception), so it goes in the page's untrusted block.
+  final bool fromPage;
   @override
   String toString() => message;
 }

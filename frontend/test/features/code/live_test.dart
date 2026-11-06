@@ -28,14 +28,18 @@ void main() {
       expect(book.map(null, 200, 100, g).x, 200.0);
     });
 
-    test('a resize refuses old frames; a scroll only warns', () {
+    test('a resize refuses old frames; a scroll moves the point with the page; a navigation warns', () {
       final book = FrameBook();
       final f = book.record(imageWidth: 1280, imageHeight: 800, geometry: g);
       expect(book.map(f.id, 10, 10, const ViewGeometry(1440, 900)).refusal, contains('now 1440×900'));
+      final scrolled = book.map(f.id, 10, 500, g, scrollY: 300);
+      expect(scrolled.y, 200.0);
+      expect(scrolled.warning, contains('moved with it'));
+      expect(book.map(f.id, 10, 100, g, scrollY: 300).refusal, contains('scrolled out of view'));
       book.moved();
       final p = book.map(f.id, 10, 10, g);
       expect(p.refusal, isNull);
-      expect(p.warning, contains('scrolled'));
+      expect(p.warning, contains('navigated'));
       expect(book.map('f_99', 1, 1, g).refusal, contains('no frame f_99'));
       expect(book.map(f.id, 2000, 1, g).refusal, contains('outside'));
     });
@@ -100,14 +104,21 @@ void main() {
       final url = 'http://127.0.0.1:${server.port}/';
       String fit(String t, String _) => t;
       final opened = await runBrowser(a, {'action': 'open', 'url': url}, root: tmp.path, vision: true, fit: fit);
-      expect(opened.text, contains('[ref_2] button "Add to cart"'));
+      expect(opened.text, contains('button "Add to cart"'));
       expect(opened.text, contains('textbox "Search" value="tea"'));
       // A password field's value is never listed.
       expect(opened.text, isNot(contains('value="" (password')));
       expect(opened.text, contains('heading h1 "Items"'));
       final ref = RegExp(r'\[(ref_\d+)\] button').firstMatch(opened.text)!.group(1)!;
-      await runBrowser(a, {'action': 'click', 'ref': ref}, root: tmp.path, vision: true, fit: fit);
+      final clicked = await runBrowser(a, {'action': 'click', 'ref': ref}, root: tmp.path, vision: true, fit: fit);
       expect(await a.evaluate('document.title'), 'added');
+      expect(clicked.text, contains('button#add "Add to cart"'));
+      expect(clicked.text, contains('The title is now "added"'));
+      // The same element keeps its ref in the next list.
+      final again = await runBrowser(a, {'action': 'snapshot'}, root: tmp.path, vision: true, fit: fit);
+      expect(again.text, contains('[$ref] button "Add to cart"'));
+      final missing = await runBrowser(a, {'action': 'click', 'ref': 'ref_99'}, root: tmp.path, vision: true, fit: fit);
+      expect(missing.text, startsWith('Error: No element ref_99'));
       // The other session's page is its own.
       await b.open('about:blank');
       expect(await b.evaluate('document.title'), '');
