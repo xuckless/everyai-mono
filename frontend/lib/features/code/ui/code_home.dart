@@ -2,7 +2,6 @@ import 'dart:math' show Random;
 
 import '../../../core/preferences.dart';
 import '../../../core/motion/motion.dart';
-import '../../../core/ui/brand.dart';
 
 import 'package:file_selector/file_selector.dart' show getDirectoryPath;
 import 'package:flutter/widgets.dart';
@@ -518,33 +517,45 @@ class _ProjectPicker extends StatelessWidget {
   }
 }
 
-/// The sidebar's status mark for a session: the working mark while it runs, a dot when it needs you or failed,
-/// nothing when it is idle or done (so Recents stay quiet). Always the same width.
+/// The sidebar's mark for a session: its harness's logo, with its state as a dot on the corner (breathing while it
+/// runs, amber when it needs you, red when it failed, none when it is idle or done, so Recents stay quiet).
 class SessionStatusIcon extends StatelessWidget {
-  const SessionStatusIcon({super.key, required this.status});
+  const SessionStatusIcon({super.key, required this.status, required this.harness});
 
   final SessionStatus status;
+
+  /// The harness id the session runs on.
+  final String harness;
 
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    Widget dot(String key, Color color) => Container(
-      key: ValueKey(key),
-      width: 8,
-      height: 8,
-      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-    );
-    return SizedBox(
-      width: 14,
-      height: 14,
-      child: Center(
-        child: switch (status) {
-          SessionStatus.running ||
-          SessionStatus.starting => const EveryMarkActivity(key: ValueKey('status-running'), size: 14),
-          SessionStatus.needsInput => dot('status-needs-input', theme.warning),
-          SessionStatus.failed => dot('status-failed', theme.danger),
-          SessionStatus.idle || SessionStatus.done => null,
-        },
+    final (key, dot) = switch (status) {
+      SessionStatus.running || SessionStatus.starting => ('status-running', DotStatus.running),
+      SessionStatus.needsInput => ('status-needs-input', DotStatus.waiting),
+      SessionStatus.failed => ('status-failed', DotStatus.failed),
+      SessionStatus.idle || SessionStatus.done => (null, null),
+    };
+    return SizedBox.square(
+      dimension: 18,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          HarnessLogo(harness, size: 18),
+          if (dot != null)
+            Positioned(
+              right: -3,
+              bottom: -3,
+              child: DecoratedBox(
+                key: ValueKey<String>(key!),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: theme.background, width: 2),
+                ),
+                child: StatusDot(dot, size: 7),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -615,7 +626,10 @@ class _SessionTileState extends ConsumerState<SessionTile> {
             ),
             child: Row(
               children: [
-                if (widget.dense) SessionStatusIcon(status: status) else StatusPill(status: status, dense: true),
+                if (widget.dense)
+                  SessionStatusIcon(status: status, harness: widget.info.harness)
+                else
+                  StatusPill(status: status, dense: true),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Column(

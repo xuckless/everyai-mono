@@ -825,6 +825,10 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   accepts (a chat, Code home, a Code session, the Board, Chats/Projects/Artifacts/Models; not sign-in or Settings) is
   saved in Preferences `app.last_location`; the first router of a run starts there (`restoredLocation`; a removed Code
   session falls back to `/code`; an `INITIAL_LOCATION` define still wins). Checked with a hot restart from the Board.
+- **Code sidebar (2026-11-06).** Project headings fold like Settings groups (name + chevron, hairline underneath,
+  Preferences `code.sidebar.folded`; searching shows all), with the session rows' insets so the ⋯ lines up. Each
+  session row starts with its harness's logo (`SessionStatusIcon(status, harness)`); its state is a dot on the
+  logo's corner (none when idle/done).
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2
