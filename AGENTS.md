@@ -833,6 +833,11 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   (also on `didUpdateWidget`). The Code session panel opens at a third of the session screen (`consolePanelShare`
   0.33 via `PanelSplit.defaultShare`; artifacts keep 0.52); sessions with a dragged width keep it, double-click
   resets. Code home's earlier EveryAI sessions name their harness beside its logo.
+- **Plan report card (2026-11-06).** An outside lead's `/usage` text (the cost aside) is parsed by
+  `code/domain/plan_report.dart` (`parsePlanReport`: notes, limits `X: N% used · resets …`, headings + caption,
+  periods `Last 24h · …`, shares `N%  text · detail`, `Top …: a N%, …`; anything else stays a note) and drawn by
+  `ui/transcript/plan_report_view.dart` (limit bars amber ≥75%, red ≥90%; share rows; pills). All-notes text falls
+  back to mono. Fixed: the fill of every animated bar (usage, billing, workflow runs) had zero height.
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2

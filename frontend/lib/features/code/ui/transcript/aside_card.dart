@@ -1,14 +1,15 @@
-import 'package:flutter/material.dart' show SelectableText;
 import 'package:flutter/widgets.dart';
 
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/brand.dart';
 import '../../../../core/ui/every_icons.dart';
+import '../../../../core/ui/selection.dart';
 import '../../../chat/ui/chat_markdown.dart';
 import '../../../usage/ui/usage_meter.dart';
 import '../../../usage/usage_totals.dart';
 import '../../domain/session_commands.dart';
+import 'plan_report_view.dart';
 
 /// A card above the composer: a `/btw` answer, the `/cost` breakdown, a
 /// `/review` report, a `/commit` or `/pr` draft, a `/learn` result or the
@@ -82,8 +83,11 @@ class AsideCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (usage.isEmpty)
+          // An outside lead's own report says more than "no calls" (EveryAI made none in its session).
+          if (usage.isEmpty && aside.answer.isEmpty && !aside.busy)
             Text('No model calls yet.', style: theme.type.callout.tint(theme.textMuted))
+          else if (usage.isEmpty)
+            const SizedBox.shrink()
           else
             UsageBreakdown(totals: usage, contextWindow: contextWindow, modelName: modelName),
           for (final line in limitLines)
@@ -112,7 +116,7 @@ class AsideCard extends StatelessWidget {
             Padding(
               key: const ValueKey('usage.plan-report'),
               padding: const EdgeInsets.only(top: 10),
-              child: SelectableText(aside.answer, style: theme.type.callout.mono),
+              child: AdaptiveSelectionArea(child: PlanReportView(aside.answer)),
             ),
         ],
       ),
@@ -167,7 +171,7 @@ class AsideCard extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(right: 6),
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 280),
+              constraints: BoxConstraints(maxHeight: aside.kind == AsideKind.cost ? 420 : 280),
               child: SingleChildScrollView(child: body),
             ),
           ),

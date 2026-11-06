@@ -483,13 +483,17 @@ class _RunBar extends StatelessWidget {
         child: Stack(
           children: [
             Positioned.fill(child: ColoredBox(color: theme.border)),
-            TweenAnimationBuilder<double>(
-              tween: Tween(end: fraction.clamp(0, 1)),
-              duration: Motion.reduced(context) ? Duration.zero : const Duration(milliseconds: 420),
-              curve: Motion.easeOut,
-              builder: (context, v, _) => FractionallySizedBox(
-                widthFactor: v,
-                child: ColoredBox(color: theme.accent),
+            Positioned.fill(
+              child: TweenAnimationBuilder<double>(
+                tween: Tween(end: fraction.clamp(0, 1)),
+                duration: Motion.reduced(context) ? Duration.zero : const Duration(milliseconds: 420),
+                curve: Motion.easeOut,
+                builder: (context, v, _) => FractionallySizedBox(
+                  widthFactor: v,
+                  heightFactor: 1,
+                  alignment: Alignment.centerLeft,
+                  child: ColoredBox(color: theme.accent),
+                ),
               ),
             ),
           ],

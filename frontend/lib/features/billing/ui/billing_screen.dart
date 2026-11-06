@@ -234,13 +234,17 @@ class _Bar extends StatelessWidget {
           children: [
             Positioned.fill(child: ColoredBox(color: theme.border)),
             // Fills in once shown (ease-out), and again when the usage changes.
-            TweenAnimationBuilder<double>(
-              tween: Tween(begin: 0, end: fraction.clamp(0, 1)),
-              duration: Motion.reduced(context) ? Duration.zero : const Duration(milliseconds: 520),
-              curve: Motion.easeOut,
-              builder: (context, v, _) => FractionallySizedBox(
-                widthFactor: v,
-                child: ColoredBox(color: fraction > 0.9 ? theme.danger : theme.accent),
+            Positioned.fill(
+              child: TweenAnimationBuilder<double>(
+                tween: Tween(begin: 0, end: fraction.clamp(0, 1)),
+                duration: Motion.reduced(context) ? Duration.zero : const Duration(milliseconds: 520),
+                curve: Motion.easeOut,
+                builder: (context, v, _) => FractionallySizedBox(
+                  widthFactor: v,
+                  heightFactor: 1,
+                  alignment: Alignment.centerLeft,
+                  child: ColoredBox(color: fraction > 0.9 ? theme.danger : theme.accent),
+                ),
               ),
             ),
           ],
