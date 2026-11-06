@@ -25,6 +25,7 @@ import '../../remote/ui/remote_code.dart' show RemoteSessionList;
 import '../../settings/ui/account_menu.dart';
 import '../../updates/ui/update_banner.dart';
 import '../../../core/preferences.dart';
+import '../../../core/platform/window_caption.dart' show WindowDragArea;
 
 /// The app sidebar: Chat | Code, destinations, the recent list, the account.
 /// On wide windows it collapses away entirely (pages then show a button to
@@ -159,21 +160,24 @@ class _SidebarState extends ConsumerState<Sidebar> {
             _Destination(EveryIcon.models, 'Models', loc == Routes.models, Routes.models),
           ];
 
-    final header = SizedBox(
-      height: touch ? 52 : 48,
-      child: Padding(
-        // macOS: the title-bar row, clear of the traffic lights.
-        padding: EdgeInsets.only(left: lights && !touch ? 78 : 14, right: 6),
-        child: Row(
-          children: [
-            if (!lights || touch)
-              Semantics(
-                label: 'EveryAI',
-                child: BrandMark(size: touch ? 22 : 18),
-              ),
-            const Spacer(),
-            if (!touch) _toggleButton(),
-          ],
+    // On Windows/Linux the title row also moves the window (beside the caption strip over the panel).
+    final header = WindowDragArea(
+      child: SizedBox(
+        height: touch ? 52 : 48,
+        child: Padding(
+          // macOS: the title-bar row, clear of the traffic lights.
+          padding: EdgeInsets.only(left: lights && !touch ? 78 : 14, right: 6),
+          child: Row(
+            children: [
+              if (!lights || touch)
+                Semantics(
+                  label: 'EveryAI',
+                  child: BrandMark(size: touch ? 22 : 18),
+                ),
+              const Spacer(),
+              if (!touch) _toggleButton(),
+            ],
+          ),
         ),
       ),
     );

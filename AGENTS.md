@@ -790,6 +790,10 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   handles (all edges on Linux, top on Windows). Native: the Windows runner paints the app background and sets
   `DWMWA_BORDER_COLOR` to none; the Linux runner paints the GTK window #07070A. Not built or seen on Windows or
   Linux yet (widget tests only). macOS unchanged.
+  Fix (2026-11-06, from a Fedora screenshot): the wide layout gave the panel no top padding, so the strip and the
+  buttons sat on the panel's header (covering its icons, nothing free to drag). The panel now starts
+  `windowCaptionHeight` down; the sidebar's title row is a `WindowDragArea` too. Test: `window_caption_test.dart`
+  (headroom on Windows and Linux, via `ShellSplitView`).
 - **UI overhaul, phase 6 (second pass), in steps (2026-11-06).** 6a onboarding: the board's layout (48pt top row with
   the mark and version, one 480pt column with five progress pills, headline, body, then Back · Later · Continue).
   The key step is the board's: provider switch across the column, one field with an inline ✓/✕ and Check, and a

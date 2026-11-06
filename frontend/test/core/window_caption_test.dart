@@ -1,3 +1,4 @@
+import 'package:every_ai/app/shell.dart';
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/platform/window_caption.dart';
 import 'package:flutter/foundation.dart';
@@ -47,6 +48,36 @@ void main() {
         await tester.pumpAndSettle();
       }
       expect(calls, containsAll(['minimize', 'maximize', 'close']));
+      debugDefaultTargetPlatformOverride = null;
+    });
+  }
+
+  for (final platform in [TargetPlatform.windows, TargetPlatform.linux]) {
+    testWidgets('the window buttons get their own headroom above the panel on ${platform.name}', (tester) async {
+      debugDefaultTargetPlatformOverride = platform;
+      tester.view.physicalSize = const Size(1200, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        LayoutHost(
+          language: DesignLanguage.material,
+          child: WindowButtonsOverlay(
+            child: ShellSplitView(
+              compact: false,
+              collapsed: false,
+              drawerOpen: false,
+              onDismissDrawer: () {},
+              sidebar: const SizedBox.expand(),
+              content: const SizedBox.expand(key: ValueKey('panel')),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      // The panel starts below the caption strip, so neither the buttons nor the drag area cover its header.
+      final panelTop = tester.getTopLeft(find.byKey(const ValueKey('panel'))).dy;
+      expect(panelTop, greaterThanOrEqualTo(tester.getBottomLeft(find.byType(WindowButtons)).dy));
+      expect(panelTop, greaterThanOrEqualTo(tester.getBottomLeft(find.byType(WindowCaption)).dy));
       debugDefaultTargetPlatformOverride = null;
     });
   }
