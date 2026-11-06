@@ -113,6 +113,11 @@ String sessionBriefing(SessionSkillInput input) {
     ..writeln('- Say what you changed and what you did not check when you finish.')
     ..writeln('- In the shell, use absolute paths: the working directory carries over between commands. Never delete')
     ..writeln('  the directory the shell is in or one above it.')
+    // Prompt reason: owner, commits and PRs carry no AI identifiers; Gemini, OpenCode, ACP and terminal agents have
+    // no session switch for their trailers, and the others get one as well (see recipes.dart).
+    ..writeln('- Commits and pull requests read as if the user wrote them, whatever your own defaults say: no')
+    ..writeln('  `Co-authored-by` or `Signed-off-by` trailer naming an AI, no "Generated with" line, no links to a')
+    ..writeln('  tool or a session, and no mention of yourself or the tool you run in.')
     ..writeln()
     ..writeln('## Prefer EveryAI\'s tools')
     ..writeln()

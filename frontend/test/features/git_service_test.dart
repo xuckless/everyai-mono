@@ -308,6 +308,10 @@ void main() {
     );
     expect(stripBranding('fix: x\n\nCo-authored-by: Sam <sam@example.com>\n'), contains('Sam'));
     expect(stripBranding('Add y\n\nSigned-off-by: Dev <dev@example.com>\n'), contains('Signed-off-by: Dev'));
+    expect(
+      stripBranding('Add z\n\nClaude-Session: https://claude.ai/code/session_01ABC\nAssisted-by: Codex\n'),
+      'Add z\n',
+    );
   });
 
   test('a fork works on a copy of the uncommitted folder and merges back file by file', () async {
@@ -343,6 +347,119 @@ void main() {
     expect(await _git(repo, ['rev-parse', '--verify', '-q', result.ref]), isNotEmpty);
     expect(await _git(repo, ['log', '--format=%s', '-1']), 'Initial commit');
     expect(await _git(repo, ['diff', '--cached', '--name-only']), isEmpty);
+  });
+
+  group('landing a workflow with its lanes\' commits', () {
+    /// A lane: a fork of the folder that commits [commits] (path → content, message) as [author], then merges back.
+    Future<LaneRef> lane(String slug, List<(Map<String, String>, String)> commits, {String author = 'Lane'}) async {
+      final copy = (await GitService.forkCopy(repo, worktreesDir: '${tmp.path}/forks', slug: slug))!;
+      for (final (files, message) in commits) {
+        files.forEach(
+          (p, text) => File('${copy.root}/$p')
+            ..parent.createSync(recursive: true)
+            ..writeAsStringSync(text),
+        );
+        await _git(copy.root, ['add', '-A']);
+        await _git(copy.root, [
+          '-c',
+          'user.name=$author',
+          '-c',
+          'user.email=$author@example.com',
+          'commit',
+          '-q',
+          '-m',
+          message,
+        ]);
+      }
+      final m = await GitService.mergeFork(copy, slug: slug);
+      return (ref: m.ref, base: copy.base, label: slug);
+    }
+
+    SessionWorktree here() =>
+        SessionWorktree(repoRoot: repo, path: repo, branch: 'main', baseBranch: 'main', baseCommit: 'HEAD');
+
+    test('commit here: the lanes\' commits in order with their authors, then one for the rest', () async {
+      final a = await lane('a', [
+        ({'lib/one.txt': 'one\n'}, 'Add one\n\nCo-Authored-By: Claude <noreply@anthropic.com>'),
+        ({'lib/one.txt': 'one, better\n'}, 'Improve one'),
+      ]);
+      final b = await lane('b', [
+        ({'lib/two.txt': 'two\n'}, 'Add two'),
+      ], author: 'Other');
+      // The integrate step's own work, and the user's unrelated work, uncommitted in the folder.
+      File('$repo/lib/glue.txt').writeAsStringSync('glue\n');
+      File('$repo/README.md').writeAsStringSync('# App, mine\n');
+      final landed = await GitService.landWithCommits(
+        here(),
+        lanes: [a, b],
+        paths: ['lib/one.txt', 'lib/two.txt', 'lib/glue.txt'],
+        message: 'Ultra: integrate\n\nGenerated with Claude Code',
+      );
+      expect(landed.laneCommits, 3);
+      expect(landed.notes, isEmpty);
+      expect(landed.head, await _git(repo, ['rev-parse', 'HEAD']));
+      expect(
+        await _git(repo, ['log', '--format=%s|%an', 'HEAD~4..HEAD']),
+        ['Ultra: integrate|Dev', 'Add two|Other', 'Improve one|Lane', 'Add one|Lane'].join('\n'),
+      );
+      final bodies = await _git(repo, ['log', '--format=%B', 'HEAD~4..HEAD']);
+      expect(bodies, isNot(contains('Claude')));
+      expect(await _git(repo, ['show', '--name-only', '--format=', 'HEAD']), 'lib/glue.txt');
+      // The run's paths are clean; the user's own work stays uncommitted.
+      expect(await _git(repo, ['status', '--porcelain']), 'M README.md');
+      expect(await _git(repo, ['branch', '--show-current']), 'main');
+    });
+
+    test('a lane that does not apply on top of the others lands as files in the last commit, with a note', () async {
+      // Both start from the same folder and rewrite the same line.
+      final a = (await GitService.forkCopy(repo, worktreesDir: '${tmp.path}/forks', slug: 'a'))!;
+      final b = (await GitService.forkCopy(repo, worktreesDir: '${tmp.path}/forks', slug: 'b'))!;
+      for (final (copy, text) in [(a, 'A\n'), (b, 'B\n')]) {
+        File('${copy.root}/lib/a.txt').writeAsStringSync(text);
+        await _git(copy.root, ['commit', '-qam', 'Rewrite a as $text']);
+      }
+      final ma = await GitService.mergeFork(a, slug: 'a');
+      final mb = await GitService.mergeFork(b, slug: 'b');
+      // b's merge left conflict markers; the integrate step resolved them in the folder.
+      File('$repo/lib/a.txt').writeAsStringSync('A and B\n');
+      final landed = await GitService.landWithCommits(
+        here(),
+        lanes: [(ref: ma.ref, base: a.base, label: 'a'), (ref: mb.ref, base: b.base, label: 'b')],
+        paths: ['lib/a.txt'],
+        message: 'Integrate',
+      );
+      expect(landed.laneCommits, 1);
+      expect(landed.notes.single, startsWith("b: its commits didn't apply"));
+      expect(await _git(repo, ['log', '--format=%s', 'HEAD~2..HEAD']), 'Integrate\nRewrite a as A');
+      expect(await _git(repo, ['show', 'HEAD:lib/a.txt']), 'A and B');
+      expect(await _git(repo, ['status', '--porcelain']), isEmpty);
+    });
+
+    test('new branch: the history goes there and the folder follows; a taken name changes nothing', () async {
+      final a = await lane('a', [
+        ({'lib/n.txt': 'n\n'}, 'Add n'),
+      ]);
+      final before = await _git(repo, ['rev-parse', 'HEAD']);
+      await _git(repo, ['branch', 'taken']);
+      await expectLater(
+        GitService.landWithCommits(here(), lanes: [a], paths: ['lib/n.txt'], message: 'x', newBranch: 'taken'),
+        throwsA(isA<GitError>()),
+      );
+      expect(await _git(repo, ['rev-parse', 'HEAD']), before);
+      final landed = await GitService.landWithCommits(
+        here(),
+        lanes: [a],
+        paths: ['lib/n.txt'],
+        message: 'x',
+        newBranch: 'everyai/run',
+      );
+      // Nothing is left beyond the lane's commit, so there is no extra one.
+      expect(landed.laneCommits, 1);
+      expect(await _git(repo, ['branch', '--show-current']), 'everyai/run');
+      expect(await _git(repo, ['log', '--format=%s', '-1']), 'Add n');
+      expect(await _git(repo, ['rev-parse', 'main']), before);
+      expect(await _git(repo, ['status', '--porcelain']), isEmpty);
+    });
   });
 
   test('a fork gets its own copy in a repository with no commit yet, and merges back', () async {

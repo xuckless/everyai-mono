@@ -162,7 +162,7 @@ void main() {
         '--effort',
         'high',
         '--settings',
-        '{"disableSkillShellExecution":true}',
+        claudeSettingsJson(),
       ]);
       final resumed = claudeLaunch(sessionId: 'abc', resume: true, mode: AgentMode.plan, model: 'default');
       expect(resumed.args.sublist(9), [
@@ -173,7 +173,7 @@ void main() {
         '--resume',
         'abc',
         '--settings',
-        '{"disableSkillShellExecution":true}',
+        claudeSettingsJson(),
       ]);
       // A project's own .claude settings (hooks, apiKeyHelper, env) never load, nor in the models probe.
       expect(claudeProbeArgs, containsAllInOrder(['--setting-sources', 'user']));
@@ -186,10 +186,12 @@ void main() {
     });
 
     test('one --settings JSON: sorted skill overrides beside the shell switch, from every builder', () {
-      expect(claudeSettingsJson(), '{"disableSkillShellExecution":true}');
+      const noCredit = '"includeCoAuthoredBy":false,"attribution":{"commit":"","pr":""}';
+      expect(claudeSettingsJson(), '{"disableSkillShellExecution":true,$noCredit}');
       expect(
         claudeSettingsJson(skillsOff: {'pdf', 'plugin:x:lint', 'docx'}),
-        '{"disableSkillShellExecution":true,"skillOverrides":{"docx":"off","pdf":"off","plugin:x:lint":"off"}}',
+        '{"disableSkillShellExecution":true,$noCredit,'
+        '"skillOverrides":{"docx":"off","pdf":"off","plugin:x:lint":"off"}}',
       );
       const off = {'pdf'};
       final json = claudeSettingsJson(skillsOff: off);
@@ -251,7 +253,7 @@ void main() {
       expect(l.args, containsAll(['--mcp-config', '--append-system-prompt', 'Session rules.', '--add-dir']));
       // The recipe's own --settings switches skill shell lines off; there is only one.
       expect(l.args.where((a) => a == '--settings'), hasLength(1));
-      expect(l.args, contains('{"disableSkillShellExecution":true}'));
+      expect(l.args, contains(claudeSettingsJson()));
       expect(l.args.join(' '), isNot(contains('tok-secret')));
       expect(l.env[tokenEnvVar], 'tok-secret');
       expect(l.env['MCP_TOOL_TIMEOUT'], '330000');

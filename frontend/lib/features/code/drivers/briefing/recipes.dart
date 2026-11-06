@@ -8,11 +8,16 @@ import 'briefing_types.dart';
 
 String _bearer(String ref) => 'Bearer $ref';
 
-/// The one `--settings` JSON for a Claude Code process: skill bodies' inline `!` shell lines never run, and each
-/// skill in [skillsOff] is off (`skillOverrides`, the CLI's per-skill switch; names sorted, so the line is stable).
+/// The one `--settings` JSON for a Claude Code process: skill bodies' inline `!` shell lines never run, each skill
+/// in [skillsOff] is off (`skillOverrides`, the CLI's per-skill switch; names sorted, so the line is stable), and
+/// commits and PRs get no AI credit (owner: commits and PRs carry no AI identifiers): `attribution` with empty
+/// `commit`/`pr` drops the `Co-Authored-By: Claude` trailer and the "Generated with Claude Code" line, and the older
+/// `includeCoAuthoredBy: false` does the same on versions before `attribution`.
 /// Passed inline per process: nothing is written to `~/.claude` or the project.
 String claudeSettingsJson({Set<String> skillsOff = const {}}) => jsonEncode({
   'disableSkillShellExecution': true,
+  'includeCoAuthoredBy': false,
+  'attribution': {'commit': '', 'pr': ''},
   if (skillsOff.isNotEmpty)
     'skillOverrides': {
       for (final n in [...skillsOff]..sort()) n: 'off',

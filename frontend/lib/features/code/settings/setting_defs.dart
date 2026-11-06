@@ -138,16 +138,6 @@ const settingDefs = <SettingDef>[
     fallback: 'auto',
   ),
   SettingDef(
-    key: 'attribution',
-    title: 'Attribution',
-    help: 'Let commits and PRs name the agent or the tool (Co-authored-by trailers and the like).',
-    scopes: _gp,
-    kind: SettingKind.toggle,
-    store: SettingStore.file,
-    path: ['git', 'attribution'],
-    fallback: false,
-  ),
-  SettingDef(
     key: 'afterEditChecks',
     title: 'Checks after each turn',
     help:

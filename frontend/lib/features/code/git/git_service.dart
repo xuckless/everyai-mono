@@ -101,6 +101,20 @@ abstract final class GitService {
   static Future<String?> commitOnNewBranch(SessionWorktree w, String branch, String message, {List<String>? paths}) =>
       impl.commitOnNewBranch(w, branch, message, paths: paths);
 
+  /// Lands a workflow run with its lanes' history: replays each lane's own commits (`base..ref`, in order, with
+  /// their authors and messages, AI-credit lines removed) onto the branch, then one commit with [message] for what
+  /// the folder holds on [paths] and the paths the lanes touched (the integrate step's work). A lane whose commits
+  /// don't apply cleanly is left out of the history, with a note; its changes are in the last commit either way.
+  /// The folder is never touched; the branch moves (or new branch [newBranch] is made and checked out), and the
+  /// index follows on those paths. [LaneLanding.head] is null when there was nothing to commit.
+  static Future<LaneLanding> landWithCommits(
+    SessionWorktree w, {
+    required List<LaneRef> lanes,
+    required List<String> paths,
+    required String message,
+    String? newBranch,
+  }) => impl.landWithCommits(w, lanes: lanes, paths: paths, message: message, newBranch: newBranch);
+
   /// The tree of everything in the folder now; [changedSince] compares a later state with it.
   static Future<String> snapshotTree(SessionWorktree w) => impl.snapshotTree(w);
 

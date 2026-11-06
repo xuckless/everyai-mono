@@ -25,7 +25,11 @@ void main() {
       },
     });
     expect(d.args[d.args.indexOf('--append-system-prompt') + 1], i.sessionText);
-    expect(jsonDecode(d.args[d.args.indexOf('--settings') + 1]), {'disableSkillShellExecution': true});
+    expect(jsonDecode(d.args[d.args.indexOf('--settings') + 1]), {
+      'disableSkillShellExecution': true,
+      'includeCoAuthoredBy': false,
+      'attribution': {'commit': '', 'pr': ''},
+    });
     expect(d.args, containsAllInOrder(['--add-dir', '/data/s1/briefing/skills']));
     expect(d.args, isNot(contains('--strict-mcp-config')));
     expect(d.env, {'EVERYAI_MCP_TOKEN': 'tok-SECRET-123'});
@@ -38,6 +42,8 @@ void main() {
     expect(d.args.where((a) => a == '--settings'), hasLength(1));
     expect(jsonDecode(d.args[d.args.indexOf('--settings') + 1]), {
       'disableSkillShellExecution': true,
+      'includeCoAuthoredBy': false,
+      'attribution': {'commit': '', 'pr': ''},
       'skillOverrides': {'docx': 'off', 'pdf': 'off'},
     });
     expect(d.args[d.args.indexOf('--settings') + 1], claudeSettingsJson(skillsOff: {'docx', 'pdf'}));

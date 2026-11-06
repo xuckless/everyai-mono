@@ -43,3 +43,11 @@ Future<void> removeWorktree(SessionWorktree w, {required String hooksDir, bool d
 Future<ForkCopy?> forkCopy(String dir, {required String worktreesDir, required String slug}) async => null;
 Future<ForkMerge> mergeFork(ForkCopy copy, {required String slug, bool merge = true}) async => _unsupported();
 Future<List<RepoFinding>> checkRepo(String dir) async => const [];
+
+Future<LaneLanding> landWithCommits(
+  SessionWorktree w, {
+  required List<LaneRef> lanes,
+  required List<String> paths,
+  required String message,
+  String? newBranch,
+}) async => _unsupported();
