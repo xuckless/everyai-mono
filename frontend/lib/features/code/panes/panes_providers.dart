@@ -11,11 +11,10 @@ import '../domain/local_ports.dart';
 import 'processes.dart';
 import 'pty.dart';
 
-/// The tabs of a Code session's bottom drawer.
+/// The tabs of a Code session's bottom drawer: the terminal only (Preview and Processes are tabs of the session
+/// panel, `ConsoleView`).
 enum CodePane {
-  terminal('Terminal'),
-  processes('Processes'),
-  preview('Preview');
+  terminal('Terminal');
 
   const CodePane(this.label);
   final String label;

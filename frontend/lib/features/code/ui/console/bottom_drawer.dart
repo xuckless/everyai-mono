@@ -10,14 +10,14 @@ import '../../code_providers.dart' show isDemoPath;
 import '../../domain/code_session.dart';
 import '../../panes/panes_providers.dart';
 import '../../panes/pty.dart';
-import '../panes/preview_pane.dart';
-import '../panes/processes_pane.dart';
 import '../panes/terminal_pane.dart';
 
-/// The drawer's tabs for [session]: Terminal, Processes and Preview for a real folder on a desktop with a shell;
-/// none elsewhere (no drawer).
-List<CodePane> drawerPanesFor(CodeSessionInfo session) =>
-    Host.isDesktop && shellSupported && !isDemoPath(session.workingDir) ? CodePane.values : const [];
+/// Whether [session] has a shell beside it: a real folder on a desktop with a shell. The drawer (Terminal) and the
+/// panel's Preview and Processes need one.
+bool hasLocalShell(CodeSessionInfo session) => Host.isDesktop && shellSupported && !isDemoPath(session.workingDir);
+
+/// The drawer's tabs for [session]: the Terminal, or none (no drawer).
+List<CodePane> drawerPanesFor(CodeSessionInfo session) => hasLocalShell(session) ? CodePane.values : const [];
 
 /// ⌃` opens and closes the drawer on every platform (as in VS Code and Claude's console).
 const drawerToggleKey = SingleActivator(LogicalKeyboardKey.backquote, control: true);
@@ -137,9 +137,6 @@ class _BottomDrawerState extends ConsumerState<BottomDrawer> {
       widget.paneBuilder?.call(p) ??
       switch (p) {
         CodePane.terminal => TerminalPane(session: widget.session),
-        // Polls only while showing.
-        CodePane.processes => active ? ProcessesPane(session: widget.session) : const SizedBox.shrink(),
-        CodePane.preview => PreviewPane(session: widget.session),
       };
 }
 

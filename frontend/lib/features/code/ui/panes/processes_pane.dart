@@ -9,6 +9,7 @@ import '../../domain/code_session.dart';
 import '../../domain/local_ports.dart';
 import '../../panes/panes_providers.dart';
 import '../../panes/processes.dart';
+import '../console/console_state.dart';
 
 final _mono = EveryType.resolve().caption.mono.copyWith(height: 1.4);
 
@@ -27,7 +28,7 @@ class ProcessesPane extends ConsumerWidget {
 
   void _preview(WidgetRef ref, ListeningPort port) {
     ref.read(previewUrlProvider(session.id).notifier).set(urlForPort(port.port));
-    ref.read(codePaneProvider(session.id).notifier).show(CodePane.preview);
+    ref.read(consolePanelProvider(session.id).notifier).show(ConsoleView.preview);
   }
 
   @override

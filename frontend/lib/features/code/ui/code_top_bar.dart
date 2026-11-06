@@ -19,78 +19,8 @@ import '../permissions_providers.dart';
 import '../../settings/settings_registry.dart';
 import '../../settings/ui/settings_modal.dart';
 
-/// The settings popover on the New session page, for the session about to
-/// start (the Agent menu in the composer has the tier, model and cap).
-class CodeDraftBar extends StatelessWidget {
-  const CodeDraftBar({super.key, required this.projectId});
-
-  final String projectId;
-
-  @override
-  Widget build(BuildContext context) => _SettingsChip(projectId: projectId);
-}
-
-/// A compact outlined chip that opens a popover.
-class _Chip extends StatelessWidget {
-  const _Chip({required this.label, this.icon, this.semantics});
-
-  final String label;
-  final EveryIcon? icon;
-  final String? semantics;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    final fg = theme.textMuted;
-    return Semantics(
-      button: true,
-      label: semantics ?? label,
-      child: Container(
-        margin: const EdgeInsets.only(left: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        decoration: BoxDecoration(
-          border: Border.all(color: theme.border),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (icon != null) ...[
-              AdaptiveIcon(icon!, size: 13, color: fg),
-              if (label.isNotEmpty) const SizedBox(width: 5),
-            ],
-            if (label.isNotEmpty)
-              Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.type.callout.copyWith(color: fg, fontFeatures: const [FontFeature.tabularFigures()]),
-              ),
-            const SizedBox(width: 4),
-            AdaptiveIcon(EveryIcon.chevronDown, size: 10, color: fg),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 Widget _check(EveryTheme theme, bool on) =>
     on ? AdaptiveIcon(EveryIcon.check, size: 14, color: theme.accent) : const SizedBox(width: 14);
-
-/// Shortcuts to the settings a session runs with.
-class _SettingsChip extends StatelessWidget {
-  const _SettingsChip({required this.projectId});
-
-  final String projectId;
-
-  @override
-  Widget build(BuildContext context) => AnchoredPopover(
-    width: 320,
-    builder: (context, close) => SessionSettingsList(projectId: projectId, close: close),
-    child: const _Chip(icon: EveryIcon.settings, label: '', semantics: 'Session settings'),
-  );
-}
 
 /// The rows of a session's settings (permissions, MCP, skills, prompt, auto-compact, forks, research sites), in a
 /// popover: the New session page's chip, and the console's ⋯ menu.

@@ -33,7 +33,7 @@ import 'agent_menu.dart';
 /// Option-Enter interrupts and sends now, Esc stops. `/` at the start opens the
 /// command menu. With an [agent], a strip on the box's top edge holds the
 /// harness, Workflows, Skills and MCP, and the settings sit as quiet text
-/// under the box (model · effort · workflow · mode), each part its own menu.
+/// under the box (harness · model · effort), each part its own menu.
 class CodeComposer extends ConsumerStatefulWidget {
   const CodeComposer({
     super.key,
@@ -48,6 +48,7 @@ class CodeComposer extends ConsumerStatefulWidget {
     this.placeholder = 'Ask for a change, or reply to the agent',
     this.leading,
     this.trailing,
+    this.lineExtras = const [],
     this.agent,
     this.banner,
     this.meter,
@@ -83,6 +84,10 @@ class CodeComposer extends ConsumerStatefulWidget {
   /// session's model name).
   final Widget? leading;
   final Widget? trailing;
+
+  /// More quiet parts after harness · model · effort under the box (the New session page's workspace, host and
+  /// settings).
+  final List<Widget> lineExtras;
 
   /// The harness, workflow, model and effort the session runs with: the
   /// strip and the settings line take their parts from it. Null: no strip,
@@ -334,6 +339,29 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                if (widget.agent case final agent? when agent.workflow != null && agent.onWorkflow != null)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: KitChip(
+                        key: const ValueKey('composer.workflow-chip'),
+                        label: agent.workflow!.title,
+                        on: true,
+                        leading: AdaptiveIcon(EveryIcon.workflow, size: 13),
+                        trailing: Semantics(
+                          button: true,
+                          label: 'Remove workflow',
+                          child: GestureDetector(
+                            key: const ValueKey('composer.workflow-chip.remove'),
+                            onTap: () => agent.onWorkflow!(null),
+                            child: AdaptiveIcon(EveryIcon.close, size: 12),
+                          ),
+                        ),
+                        onTap: () {},
+                      ),
+                    ).settle(),
+                  ),
                 AttachmentTray(
                   attachments: _files,
                   note: _filesNote,
@@ -429,26 +457,29 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
         : ModeMenu(mode: widget.mode, onChanged: widget.onModeChanged);
   }
 
-  /// harness · model · effort under the box, each its own menu.
+  /// harness · model · effort under the box, each its own menu, then [CodeComposer.lineExtras].
   Widget _settingsLine() {
     final theme = EveryTheme.of(context);
     final agent = widget.agent;
-    if (agent == null) return const SizedBox.shrink();
+    if (agent == null && widget.lineExtras.isEmpty) return const SizedBox.shrink();
     final parts = [
-      AgentMenuPart(
-        key: const ValueKey('composer.strip.harness'),
-        menu: agent,
-        page: AgentMenuPage.harness,
-        trigger: (context, label, enabled) => _QuietPart(label: label, enabled: enabled),
-      ),
-      for (final page in agent.lineParts(ref))
-        if (page != AgentMenuPage.workflow)
-          AgentMenuPart(
-            key: ValueKey('composer.line.${page.name}'),
-            menu: agent,
-            page: page,
-            trigger: (context, label, enabled) => _QuietPart(label: label, enabled: enabled),
-          ),
+      if (agent != null) ...[
+        AgentMenuPart(
+          key: const ValueKey('composer.strip.harness'),
+          menu: agent,
+          page: AgentMenuPage.harness,
+          trigger: (context, label, enabled) => QuietTrigger(label: label, enabled: enabled),
+        ),
+        for (final page in agent.lineParts(ref))
+          if (page != AgentMenuPage.workflow)
+            AgentMenuPart(
+              key: ValueKey('composer.line.${page.name}'),
+              menu: agent,
+              page: page,
+              trigger: (context, label, enabled) => QuietTrigger(label: label, enabled: enabled),
+            ),
+      ],
+      ...widget.lineExtras,
     ];
     final dot = Text(' · ', style: theme.type.caption.tint(theme.textSubtle));
     return Padding(
@@ -556,55 +587,6 @@ class _CodeSend extends StatelessWidget {
                   )
                 : Icon(EveryIcon.send.data, key: const ValueKey('send'), size: 17, color: fg),
           ),
-        ),
-      ),
-    );
-  }
-}
-
-/// A part of the composer's settings line: quiet text that lights up under
-/// the pointer to show it opens a menu.
-class _QuietPart extends StatefulWidget {
-  const _QuietPart({required this.label, this.enabled = true});
-
-  final String label;
-  final bool enabled;
-
-  @override
-  State<_QuietPart> createState() => _QuietPartState();
-}
-
-class _QuietPartState extends State<_QuietPart> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    final lit = _hover && widget.enabled;
-    final color = lit ? theme.text : theme.textSubtle;
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 120),
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-        decoration: BoxDecoration(color: lit ? theme.hover : null, borderRadius: BorderRadius.circular(6)),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Flexible(
-              child: Text(
-                widget.label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.type.caption.tint(color),
-              ),
-            ),
-            if (widget.enabled) ...[
-              const SizedBox(width: 3),
-              AdaptiveIcon(EveryIcon.chevronDown, size: 10, color: color),
-            ],
-          ],
         ),
       ),
     );

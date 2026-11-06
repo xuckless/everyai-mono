@@ -121,10 +121,13 @@ class _EnvironmentPanelState extends ConsumerState<EnvironmentPanel> {
 
 /// The "Runs in [Ubuntu (WSL) ▾]" chip of a project.
 class EnvironmentChip extends ConsumerWidget {
-  const EnvironmentChip({super.key, required this.envId, required this.onPick});
+  const EnvironmentChip({super.key, required this.envId, required this.onPick, this.quiet = false});
 
   final String envId;
   final ValueChanged<String> onPick;
+
+  /// A quiet part of the line under a composer: the icon says where, no "Runs in".
+  final bool quiet;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -133,6 +136,17 @@ class EnvironmentChip extends ConsumerWidget {
     final env = watchEnvironment(ref, envId);
     // The id stands in while the list is loading or the environment is gone.
     final label = env?.label ?? (envId == 'host' ? EnvKind.host.label : envId);
+    if (quiet) {
+      return EnvironmentMenu(
+        envId: envId,
+        onPick: onPick,
+        child: Semantics(
+          button: true,
+          label: 'Runs in: $label',
+          child: QuietTrigger(label: label, icon: env == null ? EveryIcon.display : environmentIcon(env)),
+        ),
+      );
+    }
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [

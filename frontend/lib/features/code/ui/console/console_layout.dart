@@ -8,6 +8,8 @@ import '../../../artifacts/ui/panel_split.dart';
 import '../../code_providers.dart';
 import '../../domain/code_session.dart';
 import '../panes/diff_pane.dart';
+import '../panes/preview_pane.dart';
+import '../panes/processes_pane.dart';
 import 'console_header.dart' show consoleViewsFor;
 import 'console_state.dart';
 import 'files_view.dart';
@@ -108,13 +110,22 @@ class _ConsoleLayoutState extends ConsumerState<ConsoleLayout> {
 }
 
 /// The panel itself: a child session's chat when one is open, else the chosen view.
-class ConsolePanelView extends ConsumerWidget {
+class ConsolePanelView extends ConsumerStatefulWidget {
   const ConsolePanelView({super.key, required this.session});
 
   final CodeSessionInfo session;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ConsolePanelView> createState() => _ConsolePanelViewState();
+}
+
+class _ConsolePanelViewState extends ConsumerState<ConsolePanelView> {
+  /// Once shown, the Preview stays built (hidden) while other tabs show, so its page survives a tab switch.
+  bool _previewBuilt = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final session = widget.session;
     final theme = EveryTheme.of(context);
     // Not the width: a drag of the divider shouldn't rebuild the Diff or Session info.
     final (shown, childId) = ref.watch(consolePanelProvider(session.id).select((p) => (p.view, p.child)));
@@ -122,6 +133,7 @@ class ConsolePanelView extends ConsumerWidget {
     // A view this session has no content for (a Diff outside git, Files without a folder) shows Session info.
     final views = consoleViewsFor(session);
     final view = shown != null && views.contains(shown) ? shown : ConsoleView.info;
+    if (view == ConsoleView.preview) _previewBuilt = true;
     final Widget body;
     if (childId case final child?) {
       body = ChildChatView(key: ValueKey('console.child.$child'), parentId: session.id, childId: child);
@@ -151,11 +163,27 @@ class ConsolePanelView extends ConsumerWidget {
           ),
           const SizedBox(height: 6),
           Expanded(
-            child: switch (view) {
-              ConsoleView.diff => DiffPane(session: session),
-              ConsoleView.files => FilesView(session: session),
-              _ => SessionInfoView(session: session),
-            },
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                if (_previewBuilt || view == ConsoleView.preview)
+                  Offstage(
+                    offstage: view != ConsoleView.preview,
+                    child: TickerMode(
+                      enabled: view == ConsoleView.preview,
+                      child: PreviewPane(session: session),
+                    ),
+                  ),
+                if (view != ConsoleView.preview)
+                  switch (view) {
+                    ConsoleView.diff => DiffPane(session: session),
+                    ConsoleView.files => FilesView(session: session),
+                    // Polls only while showing.
+                    ConsoleView.processes => ProcessesPane(session: session),
+                    _ => SessionInfoView(session: session),
+                  },
+              ],
+            ),
           ),
         ],
       );

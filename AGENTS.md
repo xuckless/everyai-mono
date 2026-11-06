@@ -746,8 +746,13 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   mode chip, round send/stop, quiet follow-ups, violet inline code), Code session: composer chips row (mode, Workflow
   named after the pick, Skills) with harness · model · effort under the box (MCP chip gone, it lives in Settings),
   `KitTabs` (one sliding underline) for the right panel (Session · Diff · Files) and the drawer (Terminal · Processes ·
-  Preview), kit status dots and shimmer. The owner's five-tab single panel is not done: Diff/Files stay in the right
-  panel and Terminal/Processes/Preview in the bottom drawer. Next: phase 4 Board, 5 Settings, 6 the rest.
+  Preview), kit status dots and shimmer.
+- **UI overhaul, phase 3b (2026-11-06).** Owner: the session panel has five tabs (Session · Diff · Preview · Files ·
+  Processes; `ConsoleView`), the bottom drawer keeps only the Terminal (`CodePane.terminal`; an old saved drawer tab
+  opens the terminal). Preview stays built once shown. New session page: random headline (`startWords`), the box, and
+  one quiet line under it (harness · model · effort · cap · In place/Worktree · where it runs · settings gear; the
+  explanations moved into the popovers' subtitles); `QuietTrigger` in the kit; a picked workflow also shows a removable
+  chip above the field. Next: phase 4 Board, 5 Settings, 6 the rest.
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2

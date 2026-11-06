@@ -70,7 +70,12 @@ void main() {
   });
   tearDown(() => db.close());
 
-  AgentMenu menu({String harness = 'everyai', bool switchable = true, WorkflowPick? workflow}) => AgentMenu(
+  AgentMenu menu({
+    String harness = 'everyai',
+    bool switchable = true,
+    WorkflowPick? workflow,
+    ValueChanged<WorkflowPick?>? onWorkflow,
+  }) => AgentMenu(
     harness: harness,
     onHarness: switchable ? harnesses.add : null,
     model: harness == 'everyai' ? 'anthropic/claude-opus-5.5' : '',
@@ -79,7 +84,7 @@ void main() {
     level: HarnessTier.efficient,
     onLevel: (_) {},
     workflow: workflow,
-    onWorkflow: (_) {},
+    onWorkflow: onWorkflow ?? (_) {},
   );
 
   Future<ProviderContainer> pump(
@@ -258,6 +263,20 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('agent-menu.workflow.none')), findsOneWidget);
       expect(find.byKey(const ValueKey('agent-menu.back')), findsNothing);
+    });
+
+    testWidgets('a picked workflow shows a chip above the field that removes it', (tester) async {
+      final picks = <WorkflowPick?>[];
+      await pump(
+        tester,
+        agent: menu(workflow: const WorkflowPick.max(), onWorkflow: picks.add),
+      );
+      expect(
+        find.descendant(of: find.byKey(const ValueKey('composer.workflow-chip')), matching: find.text('Max')),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const ValueKey('composer.workflow-chip.remove')));
+      expect(picks, [null]);
     });
 
     testWidgets("an outside harness's line shows its native mode", (tester) async {

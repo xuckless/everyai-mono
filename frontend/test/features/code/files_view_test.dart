@@ -489,9 +489,10 @@ void main() {
       await tester.pump();
       expect(tester.getSize(find.byKey(const ValueKey('drawer'))).height, closeTo(800 * 0.7, 0.01));
 
-      await tester.tap(find.byKey(const ValueKey('drawer.tab.preview')));
+      // Preview and Processes are tabs of the session panel now; the drawer is the terminal.
+      expect(find.byKey(const ValueKey('drawer.tab.preview')), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('drawer.tab.terminal')));
       await tester.pump();
-      expect(find.text('pane preview'), findsOneWidget);
       await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
       await tester.sendKeyEvent(LogicalKeyboardKey.backquote);
       await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
@@ -501,7 +502,7 @@ void main() {
       final again = ProviderContainer(overrides: [preferencesProvider.overrideWithValue(prefs)]);
       addTearDown(again.dispose);
       again.read(codePaneProvider('d1').notifier).toggleDrawer();
-      expect(again.read(codePaneProvider('d1')).open, CodePane.preview);
+      expect(again.read(codePaneProvider('d1')).open, CodePane.terminal);
       expect(again.read(codePaneProvider('d1')).height, closeTo(800 * 0.7, 0.5));
     }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 

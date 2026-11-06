@@ -1,4 +1,7 @@
+import 'dart:math' show Random;
+
 import '../../../core/preferences.dart';
+import '../../../core/motion/motion.dart';
 import '../../../core/ui/brand.dart';
 
 import 'package:file_selector/file_selector.dart' show getDirectoryPath;
@@ -30,7 +33,7 @@ import 'agent_menu.dart';
 import 'code_composer.dart';
 import 'transcript/aside_card.dart';
 import 'session_view.dart';
-import 'code_top_bar.dart' show CodeDraftBar;
+import 'code_top_bar.dart' show SessionSettingsList;
 import 'console/session_actions.dart';
 import '../code_settings_providers.dart';
 import '../drivers/driver_registry.dart' show driverRegistryProvider;
@@ -38,6 +41,18 @@ import '../environments/environment_picker.dart';
 import '../harness/events.dart' show HarnessEvent;
 import '../resume/past_sessions.dart';
 import '../resume/resume_providers.dart';
+
+/// The New session page's headline: one picked at random each time the page opens.
+const startWords = [
+  'What should we build?',
+  "What's next?",
+  'What needs fixing?',
+  'Where do we start?',
+  'Ship something.',
+  'What are we making?',
+  'Pick a task.',
+  'Ready when you are.',
+];
 
 /// Where demo sessions "run" (the mock harness ignores the folder).
 const demoProjectPath = '${demoScheme}counter-app';
@@ -51,6 +66,7 @@ class CodeHome extends ConsumerStatefulWidget {
 }
 
 class _CodeHomeState extends ConsumerState<CodeHome> {
+  final _headline = startWords[Random().nextInt(startWords.length)];
   String? _projectId;
   AgentMode? _picked;
   bool _isolated = false;
@@ -207,21 +223,11 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const BrandGlyph('code', active: true, size: 26),
-                    const SizedBox(width: 12),
-                    Flexible(
-                      child: Text(
-                        project == null ? 'Code with an agent' : 'What should we build?',
-                        maxLines: 2,
-                        textAlign: TextAlign.center,
-                        style: theme.type.largeTitle.regular.copyWith(color: theme.text, letterSpacing: -0.5),
-                      ),
-                    ),
-                  ],
-                ),
+                Text(
+                  project == null ? 'Open a project' : _headline,
+                  textAlign: TextAlign.center,
+                  style: theme.type.largeTitle.tint(theme.text),
+                ).settle(),
                 const SizedBox(height: 24),
                 if (project == null)
                   _NoProjects(onOpen: _openFolder, onSample: _addSample, onDemo: _addDemo)
@@ -245,7 +251,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                     busy: _starting,
                     mode: mode,
                     minLines: 3,
-                    placeholder: 'Describe a change, a bug to fix, or a feature to build',
+                    placeholder: 'Describe the task',
                     onModeChanged: (m) => _pickMode(m, project.id),
                     onSend: (text, files) => _start(project, text, files),
                     agent: AgentMenu(
@@ -283,42 +289,44 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                       onSample: _addSample,
                       onDemo: _addDemo,
                     ),
+                    lineExtras: [
+                      if (!isDemoPath(project.path)) ...[
+                        _WorkspaceMenu(isolated: _isolated, onIsolated: (v) => setState(() => _isolated = v)),
+                        if (Host.isDesktop)
+                          EnvironmentChip(
+                            quiet: true,
+                            envId: project.environment,
+                            onPick: (id) => ref.read(codeProjectsProvider.notifier).setEnvironment(project.id, id),
+                          ),
+                        AnchoredPopover(
+                          width: 320,
+                          builder: (context, close) => SessionSettingsList(projectId: project.id, close: close),
+                          child: Semantics(
+                            button: true,
+                            label: 'Session settings',
+                            child: const QuietTrigger(icon: EveryIcon.settings, chevron: false),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
-                  const SizedBox(height: 10),
-                  if (!isDemoPath(project.path))
-                    _SessionOptions(
-                      isolated: _isolated,
-                      onIsolated: (v) => setState(() => _isolated = v),
-                      projectId: project.id,
-                      environment: project.environment,
-                      onEnvironment: (id) => ref.read(codeProjectsProvider.notifier).setEnvironment(project.id, id),
+                  if (_starting)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 14),
+                      child: Center(child: ShimmerText('Starting the agent', style: theme.type.callout)),
                     ),
-                  const SizedBox(height: 8),
-                  Text(
-                    _starting && !isDemoPath(project.path)
-                        ? 'Starting the agent…'
-                        : isDemoPath(project.path)
-                        ? 'A demo project with a scripted agent. ${mode.description}.'
-                        : _isolated
-                        ? 'Works on its own branch in a separate worktree; merge or open a PR when it\'s done. '
-                              '${mode.description}.'
-                        : 'Works in the project folder, in your shell. Changes shows what it did. ${mode.description}.',
-                    textAlign: TextAlign.center,
-                    style: theme.type.callout.tint(theme.textMuted),
-                  ),
                   // This folder's earlier sessions: EveryAI's own (marked) and every installed harness's.
                   if (earlier.isNotEmpty) ...[
-                    const SizedBox(height: 28),
-                    Text('Earlier sessions', style: theme.type.caption.semibold.tint(theme.textMuted)),
-                    const SizedBox(height: 6),
-                    for (final row in earlier)
+                    const SizedBox(height: 36),
+                    const Padding(padding: EdgeInsets.only(left: 10, bottom: 4), child: KitLabel('Earlier')),
+                    for (final (i, row) in earlier.indexed)
                       if (row.ours case final s?)
                         SessionTile(
                           key: ValueKey('code-home.earlier.${s.id}'),
                           info: s,
                           badge: 'EveryAI',
                           onOpen: () => context.go(Routes.codeSession(s.id)),
-                        )
+                        ).rowIn(i)
                       else if (row.past case final p?)
                         PastSessionTile(
                           key: ValueKey('code-home.earlier.${p.harness}.${p.nativeId}'),
@@ -327,7 +335,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                           blocked: row.blocked,
                           busy: _resuming == '${p.harness}|${p.nativeId}',
                           onOpen: _resuming != null || _starting ? null : () => _resume(project, p),
-                        ),
+                        ).rowIn(i),
                   ],
                 ],
               ],
@@ -342,53 +350,45 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
 /// The prefs key for the mode last used in a project.
 String lastModeKey(String projectId) => 'code.lastMode.$projectId';
 
-/// Below the composer: where the session works, and the project's settings.
-class _SessionOptions extends StatelessWidget {
-  const _SessionOptions({
-    required this.isolated,
-    required this.onIsolated,
-    required this.projectId,
-    required this.environment,
-    required this.onEnvironment,
-  });
+/// Where the session works: in the project folder, or on its own branch in a worktree.
+class _WorkspaceMenu extends StatelessWidget {
+  const _WorkspaceMenu({required this.isolated, required this.onIsolated});
 
   final bool isolated;
   final ValueChanged<bool> onIsolated;
-  final String projectId;
-
-  /// Where the project runs ("Runs in"); the chip changes the project's.
-  final String environment;
-  final ValueChanged<String> onEnvironment;
 
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    Widget option(String label, bool on, VoidCallback onTap) => GestureDetector(
-      onTap: onTap,
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-          decoration: BoxDecoration(
-            color: on ? theme.accent.withValues(alpha: 0.12) : null,
-            border: Border.all(color: on ? theme.accent : theme.border),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Text(label, style: theme.type.callout.tint(on ? theme.accent : theme.textMuted)),
+    Widget row(String title, String subtitle, bool value, VoidCallback close) => PopoverRow(
+      key: ValueKey('code-home.workspace.${value ? 'worktree' : 'in-place'}'),
+      title: title,
+      subtitle: subtitle,
+      selected: isolated == value,
+      trailing: isolated == value ? AdaptiveIcon(EveryIcon.check, size: 14, color: theme.accentText) : null,
+      onTap: () {
+        close();
+        onIsolated(value);
+      },
+    );
+    return AnchoredPopover(
+      width: 280,
+      builder: (context, close) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            row('In place', 'In the project folder, in your shell', false, close),
+            row('Isolated worktree', 'Its own branch; merge or open a PR after', true, close),
+          ],
         ),
       ),
-    );
-    return Wrap(
-      alignment: WrapAlignment.center,
-      spacing: 6,
-      runSpacing: 6,
-      children: [
-        option('In place', !isolated, () => onIsolated(false)),
-        option('Isolated worktree', isolated, () => onIsolated(true)),
-        if (Host.isDesktop) EnvironmentChip(envId: environment, onPick: onEnvironment),
-        // The settings popover for the session about to start.
-        CodeDraftBar(projectId: projectId),
-      ],
+      child: Semantics(
+        button: true,
+        label: 'Works: ${isolated ? 'isolated worktree' : 'in place'}',
+        child: QuietTrigger(label: isolated ? 'Worktree' : 'In place', icon: isolated ? EveryIcon.branch : null),
+      ),
     );
   }
 }
@@ -401,28 +401,16 @@ class _NoProjects extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    return Column(
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      alignment: WrapAlignment.center,
       children: [
-        Text(
-          'Open a project folder and describe what you want. The agent reads the code, runs commands and edits '
-          'files, asking before anything risky.',
-          textAlign: TextAlign.center,
-          style: theme.type.body.copyWith(color: theme.textMuted, height: 1.45),
-        ),
-        const SizedBox(height: 20),
-        Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          alignment: WrapAlignment.center,
-          children: [
-            AdaptiveButton(label: 'Open folder…', onPressed: onOpen),
-            AdaptiveButton(label: 'Sample project', emphasis: ButtonEmphasis.secondary, onPressed: onSample),
-            AdaptiveButton(label: 'Scripted demo', emphasis: ButtonEmphasis.plain, onPressed: onDemo),
-          ],
-        ),
+        KitButton(label: 'Open folder…', icon: EveryIcon.projects, onPressed: onOpen),
+        KitButton(label: 'Sample project', style: KitButtonStyle.soft, onPressed: onSample),
+        KitButton(label: 'Scripted demo', style: KitButtonStyle.ghost, onPressed: onDemo),
       ],
-    );
+    ).settle(delay: const Duration(milliseconds: 60));
   }
 }
 
@@ -513,24 +501,16 @@ class _ProjectPicker extends StatelessWidget {
           ],
         ),
       ),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-        decoration: BoxDecoration(borderRadius: BorderRadius.circular(8)),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            AdaptiveIcon(EveryIcon.projects, size: 13, color: theme.textMuted),
-            const SizedBox(width: 6),
-            Flexible(
-              child: Text(
-                project.name,
-                overflow: TextOverflow.ellipsis,
-                style: theme.type.callout.medium.tint(theme.textMuted),
-              ),
-            ),
-            const SizedBox(width: 4),
-            AdaptiveIcon(EveryIcon.chevronDown, size: 11, color: theme.textMuted),
-          ],
+      child: Semantics(
+        button: true,
+        label: 'Project: ${project.name}',
+        child: IgnorePointer(
+          child: KitChip(
+            label: project.name,
+            leading: AdaptiveIcon(EveryIcon.projects, size: 14),
+            chevron: true,
+            onTap: () {},
+          ),
         ),
       ),
     );
