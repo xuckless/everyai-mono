@@ -113,7 +113,6 @@ const settingsEntries = <SettingsEntry>[
   ),
   SettingsEntry(SettingsSection.code, 'Research sites', anchor: 'researchSites', keywords: ['web', 'domains']),
   SettingsEntry(SettingsSection.code, 'Commit style', anchor: 'commitStyle', keywords: ['git', 'conventional']),
-  SettingsEntry(SettingsSection.code, 'Attribution', anchor: 'attribution', keywords: ['git', 'co-authored']),
   SettingsEntry(SettingsSection.code, 'Spending cap', anchor: 'budget', keywords: ['budget', 'session', 'cost']),
   SettingsEntry(SettingsSection.code, 'View as JSON', anchor: 'json', keywords: ['settings.json', 'raw']),
   SettingsEntry(SettingsSection.permissions, 'Permissions', keywords: ['allow', 'deny', 'rules', 'approve']),

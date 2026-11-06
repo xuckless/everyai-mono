@@ -85,6 +85,9 @@ void main() {
   test('carries the rule and the host tools', () {
     final md = sessionBriefing(_input());
     expect(md, contains('Check per part, not per edit'));
+    // Owner: commits and PRs carry no AI identifiers, in every harness.
+    expect(md, contains('`Co-authored-by` or `Signed-off-by` trailer naming an AI, no "Generated with" line'));
+    expect(md.indexOf('Generated with'), lessThan(md.indexOf('## This session')));
     expect(md, contains('`ask_user_question`: a decision is the user\'s'));
     expect(md, contains('`/wt/s1`'));
   });

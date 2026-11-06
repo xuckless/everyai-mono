@@ -132,7 +132,10 @@ void _files(List<String> out, Object? files) {
 
 void _commits(List<String> out, Object? commits) {
   if (commits is! List || commits.isEmpty) return;
-  out.add("Commits: ${commits.length}, in the workers' own branches; the files themselves are in your folder");
+  out.add(
+    "Commits: ${commits.length}, in the workers' own branches; the files themselves are in your folder, and committing "
+    'the run (here or on a new branch) brings those commits over',
+  );
 }
 
 void _line(List<String> out, String label, Object? v) {

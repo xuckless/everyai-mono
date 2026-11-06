@@ -18,18 +18,19 @@ import 'package:material_ui/material_ui.dart' as m;
 void main() {
   group('file layers', () {
     final commit = settingDef('commitStyle');
-    final attribution = settingDef('attribution');
+    final format = settingDef('autoFormat');
     final rules = settingDef('instructions');
 
     test('read typed values, and only what the layer sets', () {
       final raw = <String, Object?>{
-        'git': {'commitStyle': 'plain', 'attribution': 'yes'},
+        'git': {'commitStyle': 'plain'},
+        'checks': {'autoFormat': 'yes'},
         'instructions': 'One rule',
       };
       expect(isSetInFile(commit, raw), isTrue);
       expect(readFileValue(commit, raw), 'plain');
-      expect(isSetInFile(attribution, raw), isTrue);
-      expect(readFileValue(attribution, raw), isNull, reason: 'not a bool');
+      expect(isSetInFile(format, raw), isTrue);
+      expect(readFileValue(format, raw), isNull, reason: 'not a bool');
       expect(readFileValue(rules, raw), ['One rule']);
       expect(isSetInFile(commit, const {}), isFalse);
       expect(readFileValue(commit, {'git': 'x'}), isNull);
@@ -38,7 +39,7 @@ void main() {
     test('write and clear keep every other key, known or not', () {
       final raw = <String, Object?>{
         'colour': 'violet',
-        'git': {'attribution': true, 'signing': 'ssh'},
+        'git': {'signing': 'ssh'},
         'agents': {
           'reviewer': {'description': 'Reviews'},
         },
@@ -46,12 +47,12 @@ void main() {
       final set = writeFileValue(commit, raw, 'conventional');
       expect(set['colour'], 'violet');
       expect(set['agents'], raw['agents']);
-      expect(set['git'], {'attribution': true, 'signing': 'ssh', 'commitStyle': 'conventional'});
-      expect(raw['git'], {'attribution': true, 'signing': 'ssh'}, reason: 'the input is not changed');
-      final cleared = clearFileValue(attribution, clearFileValue(commit, set));
+      expect(set['git'], {'signing': 'ssh', 'commitStyle': 'conventional'});
+      expect(raw['git'], {'signing': 'ssh'}, reason: 'the input is not changed');
+      final cleared = clearFileValue(commit, set);
       expect(cleared['git'], {'signing': 'ssh'});
-      final bare = clearFileValue(attribution, {
-        'git': {'attribution': true},
+      final bare = clearFileValue(commit, {
+        'git': {'commitStyle': 'plain'},
       });
       expect(bare, isEmpty, reason: 'an emptied parent goes too');
     });

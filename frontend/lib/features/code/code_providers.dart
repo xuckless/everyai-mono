@@ -4486,6 +4486,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
 
   void stopWorkflow(String runId) => _workflows[runId]?.stop();
 
+  static String _withLanes(int n) => n == 0 ? '' : ', after the workers\' $n ${n == 1 ? 'commit' : 'commits'}';
+
   /// The user's pick for a finished run's uncommitted work: commits it here, commits it on a new branch, or
   /// leaves it. The card shows the outcome (or why it failed, with the buttons kept) and the lead gets one note.
   Future<void> landWorkflow(WorkflowRun run, WorkflowLand choice, {String message = '', String branch = ''}) async {
@@ -4494,6 +4496,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     try {
       var sha = '';
       var committed = true;
+      var laneCommits = 0;
+      var notes = const <String>[];
       if (choice != WorkflowLand.leave) {
         final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
         final target = info?.diffTarget ?? (throw const GitError("This folder isn't in git."));
@@ -4504,8 +4508,21 @@ final class CodeSessionController extends Notifier<CodeSessionState>
             'This session has its own branch; commit here, and merge or open a PR from the diff pane.',
           );
         }
+        // The lanes' own commits come along (a fresh repository with no commit yet gets the files only).
+        final lanes = ref.read(workflowLanesProvider(sessionId))[run.runId] ?? const <LaneRef>[];
         if (paths.isEmpty) {
           committed = false;
+        } else if (lanes.isNotEmpty && await GitService.hasCommits(target.repoRoot)) {
+          final landed = await GitService.landWithCommits(
+            target,
+            lanes: lanes,
+            paths: paths,
+            message: message,
+            newBranch: choice == WorkflowLand.branch ? branch : null,
+          );
+          committed = landed.head != null;
+          laneCommits = landed.laneCommits;
+          notes = landed.notes;
         } else if (choice == WorkflowLand.commit) {
           committed = await GitService.commitAll(target, message, paths: paths);
         } else {
@@ -4520,8 +4537,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         text: switch (choice) {
           WorkflowLand.leave => 'Left uncommitted.',
           _ when !committed => 'Nothing was left to commit.',
-          WorkflowLand.commit => 'Committed $sha.',
-          WorkflowLand.branch => 'Committed $sha on $name.',
+          WorkflowLand.commit => 'Committed $sha${_withLanes(laneCommits)}.',
+          WorkflowLand.branch => 'Committed $sha on $name${_withLanes(laneCommits)}.',
         },
       ));
       // Other finished runs' cards re-check what is still uncommitted.
@@ -4534,6 +4551,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
           branch: choice == WorkflowLand.branch && committed ? name : '',
           commit: sha,
           committed: committed,
+          laneCommits: laneCommits,
+          notes: notes,
         ),
       );
     } on Object catch (e) {
@@ -6377,6 +6396,14 @@ final class _WorkflowLauncher implements AgentLauncher {
         () => GitService.mergeFork(copy, slug: copy.root.split('/').last, merge: ok && !planning),
       );
       _sessions.update(info.copyWith(merged: true));
+      // Landed: its own commits go onto the branch when the user commits the run (see landWorkflow).
+      if (ok && !planning && _prefix.startsWith('wf-')) {
+        _ref.read(workflowLanesProvider(_sessionId).notifier).add(_prefix.substring(3), (
+          ref: m.ref,
+          base: copy.base,
+          label: info.title.isEmpty ? 'A lane' : info.title,
+        ));
+      }
       if (!ok) return 'Not merged into your folder; its work is kept at ${m.ref}.';
       if (planning) return 'Not merged while planning; its work is kept at ${m.ref}. Merge it once you build.';
       final note = withMergeNote(const SubagentReport(SubagentStatus.completed, ''), m).text.trim();

@@ -39,7 +39,7 @@ final class AgentType {
 /// ```json
 /// {
 ///   "instructions": ["Run `dart format -l 120` on changed files"],
-///   "git": {"commitStyle": "auto", "attribution": false},
+///   "git": {"commitStyle": "auto"},
 ///   "checks": {"afterEdit": true, "autoFormat": false},
 ///   "agents": {"reviewer": {"description": "Reviews a diff for bugs", "prompt": "…"}},
 ///   "permissions": {"allow": [], "deny": []}
@@ -50,7 +50,6 @@ final class AgentSettings {
   const AgentSettings({
     this.instructions = const [],
     this.commitStyle = CommitStyle.auto,
-    this.attribution = false,
     this.afterEditChecks = true,
     this.autoFormat = false,
     this.agents = const {},
@@ -63,10 +62,6 @@ final class AgentSettings {
   /// Project rules, added to the agent's system prompt.
   final List<String> instructions;
   final CommitStyle commitStyle;
-
-  /// Whether commits and PRs may name the agent, the tool or its maker
-  /// (Co-authored-by trailers, "Generated with …"). Off by default.
-  final bool attribution;
 
   /// Whether the app runs the project's formatter check, lint and typecheck
   /// on the files a lead's turn changed (see `post_edit_hooks.dart`). On by default.
@@ -102,7 +97,6 @@ final class AgentSettings {
     return AgentSettings(
       instructions: strings(json['instructions']),
       commitStyle: CommitStyle.parse(git['commitStyle']),
-      attribution: git['attribution'] == true,
       afterEditChecks: checks['afterEdit'] != false,
       autoFormat: checks['autoFormat'] == true,
       agents: {
@@ -126,7 +120,6 @@ final class AgentSettings {
     return AgentSettings(
       instructions: [...instructions, ...over.instructions],
       commitStyle: git.containsKey('commitStyle') ? over.commitStyle : commitStyle,
-      attribution: git.containsKey('attribution') ? over.attribution : attribution,
       afterEditChecks: _checks(raw).containsKey('afterEdit') ? over.afterEditChecks : afterEditChecks,
       autoFormat: _checks(raw).containsKey('autoFormat') ? over.autoFormat : autoFormat,
       agents: {...agents, ...over.agents},

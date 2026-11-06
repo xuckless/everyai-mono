@@ -17,6 +17,7 @@ import 'package:every_ai/features/code/domain/transcript.dart' show NoticeItem, 
 import 'package:every_ai/features/code/drivers/acp/acp_mapping.dart' show agentMessageEvent, userMessageEvent;
 import 'package:every_ai/features/code/drivers/driver_events.dart';
 import 'package:every_ai/features/code/drivers/driver_registry.dart';
+import 'package:every_ai/features/code/git/git_service.dart';
 import 'package:every_ai/features/code/gateway_key.dart';
 import 'package:every_ai/features/code/harness/events.dart';
 import 'package:every_ai/features/code/harness/harness.dart' show NativeMode;
@@ -615,6 +616,30 @@ void main() {
       final paths = container.read(workflowOwnPathsProvider(c.sessionId)).values.single;
       expect(paths, ['made.txt']);
       expect(lead.sent.singleWhere((m) => m.contains('<workflow-result')), contains('you will be told'));
+    });
+
+    test('a lane that merged brings its own commits over before the last one', () async {
+      final (c, dir) = await dirty();
+      final fork = (await GitService.forkCopy(dir, worktreesDir: '${project.parent.path}/forks', slug: 'lane1'))!;
+      File('${fork.root}/c.txt').writeAsStringSync('lane\n');
+      await Process.run('git', ['-C', fork.root, 'add', '-A']);
+      await Process.run('git', [
+        '-C', fork.root, '-c', 'user.name=Worker', '-c', 'user.email=w@w', //
+        'commit', '-qm', 'Add c\n\nCo-Authored-By: Claude <noreply@anthropic.com>',
+      ]);
+      final m = await GitService.mergeFork(fork, slug: 'lane1');
+      container.read(workflowOwnPathsProvider(c.sessionId).notifier).set(run.runId, ['b.txt', 'c.txt']);
+      container.read(workflowLanesProvider(c.sessionId).notifier).add(run.runId, (
+        ref: m.ref,
+        base: fork.base,
+        label: 'Lane 1',
+      ));
+      await c.landWorkflow(run, WorkflowLand.commit, message: 'Bug fix: two');
+      expect(landed(c)!.text, contains("after the workers' 1 commit"));
+      expect(await out(dir, ['log', '--format=%s|%an', '-2']), 'Bug fix: two|t\nAdd c|Worker');
+      expect(await out(dir, ['log', '--format=%B', '-2']), isNot(contains('Claude')));
+      expect(await out(dir, ['status', '--porcelain']), isEmpty);
+      expect(await told(), contains("The workers' own 1 commit came over first"));
     });
 
     test('Leave uncommitted touches nothing and still tells the lead', () async {

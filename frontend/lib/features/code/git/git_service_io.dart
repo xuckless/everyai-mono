@@ -122,8 +122,9 @@ Future<void> _installHooks(SessionWorktree w, String hooksDir) async {
 
 /// The POSIX ERE twin of `brandingLine`.
 const _brandingPattern =
-    r'^[[:space:]]*(co-authored-by|signed-off-by)[[:space:]]*:.*(openhands|all-hands|claude|anthropic|everyai|openai|chatgpt|gpt-|copilot|cursor|gemini|codex|\[bot\])'
-    r'|generated (with|by) .*(openhands|claude|everyai|copilot|chatgpt|codex|cursor|gemini)'
+    r'^[[:space:]]*(co-authored-by|signed-off-by|assisted-by)[[:space:]]*:.*(openhands|all-hands|claude|anthropic|everyai|openai|chatgpt|gpt-|copilot|cursor|gemini|codex|opencode|\[bot\])'
+    r'|generated (with|by) .*(openhands|claude|everyai|copilot|chatgpt|codex|cursor|gemini|opencode)'
+    r'|^[[:space:]]*claude-session[[:space:]]*:|claude\.ai/code/session'
     '|🤖';
 
 const _hookNames = [
@@ -548,6 +549,174 @@ Future<ForkMerge> mergeFork(ForkCopy copy, {required String slug, bool merge = t
   }
   await _git(copy.repoRoot, ['worktree', 'remove', '--force', wt], check: false);
   return (merged: merged, conflicts: conflicts, ref: ref);
+}
+
+// --------------------------------------------------------- landing lanes
+
+/// The fork's own last commit for what it left uncommitted (see [mergeFork]): not one of the lane's commits.
+bool _isForkLeftover(String email, String subject) => email == 'agent@everyai.invalid' && subject == 'EveryAI fork';
+
+/// Cherry-picks [commit] onto [onto] without touching the folder or the index (`git merge-tree`, git 2.40+): the
+/// new commit, keeping the author, date and message (AI-credit lines removed); null when it doesn't apply cleanly.
+/// Throws a [GitError] when this git can't do it.
+Future<String?> _replay(String top, String commit, String onto) async {
+  final res = await _git(top, ['merge-tree', '--write-tree', '--merge-base=$commit^', onto, commit], check: false);
+  if (res.exitCode == 1) return null;
+  if (res.exitCode != 0) throw GitError('git merge-tree: ${'${res.stderr}'.trim()}');
+  final tree = '${res.stdout}'.split('\n').first.trim();
+  final meta = (await _out(top, ['log', '-1', '--format=%an%x00%ae%x00%ad', '--date=raw', commit])).split('\x00');
+  final message = stripBranding((await _git(top, ['log', '-1', '--format=%B', commit])).stdout as String);
+  return _commitTree(top, tree, onto, message, author: (name: meta[0], email: meta[1], date: meta[2]));
+}
+
+/// A commit of [tree] on [parent] with [message]; the author is the configured identity unless [author] is given.
+Future<String> _commitTree(
+  String top,
+  String tree,
+  String parent,
+  String message, {
+  ({String name, String email, String date})? author,
+}) async {
+  final p = await Process.start(
+    'git',
+    ['-C', top, 'commit-tree', tree, '-p', parent, '-F', '-'],
+    environment: {
+      if (author != null) ...{
+        'GIT_AUTHOR_NAME': author.name,
+        'GIT_AUTHOR_EMAIL': author.email,
+        'GIT_AUTHOR_DATE': author.date,
+      },
+    },
+  );
+  p.stdin.write(message.trim().isEmpty ? 'Workflow lane\n' : message);
+  await p.stdin.close();
+  final (out, err, code) = await (
+    p.stdout.transform(utf8.decoder).join(),
+    p.stderr.transform(utf8.decoder).join(),
+    p.exitCode,
+  ).wait;
+  if (code != 0) throw GitError('git commit-tree: ${err.trim()}');
+  return out.trim();
+}
+
+Future<LaneLanding> landWithCommits(
+  SessionWorktree w, {
+  required List<LaneRef> lanes,
+  required List<String> paths,
+  required String message,
+  String? newBranch,
+}) async {
+  final name = newBranch?.trim();
+  if (name != null) {
+    if ((await _git(w.path, ['check-ref-format', '--branch', name], check: false)).exitCode != 0 ||
+        name.startsWith('-')) {
+      throw GitError('"$name" is not a branch name git accepts.');
+    }
+    if ((await _git(w.path, ['show-ref', '--verify', '--quiet', 'refs/heads/$name'], check: false)).exitCode == 0) {
+      throw GitError('There is a branch called $name already.');
+    }
+  }
+  // Paths from git diffs are relative to the top of the checkout.
+  final top = await _out(w.path, ['rev-parse', '--show-toplevel']);
+  final head = await _out(top, ['rev-parse', 'HEAD']);
+  var cur = head;
+  var replayed = 0;
+  final notes = <String>[];
+  final touched = <String>{};
+  var gitTooOld = false;
+  for (final lane in lanes) {
+    if (gitTooOld) break;
+    final log = await _git(top, [
+      'log',
+      '--reverse',
+      '--topo-order',
+      '--format=%H%x00%P%x00%ae%x00%s',
+      '${lane.base}..${lane.ref}',
+    ], check: false);
+    if (log.exitCode != 0) {
+      notes.add('${lane.label}: its commits are gone, so its changes are in the last commit.');
+      continue;
+    }
+    final commits = [
+      for (final l in const LineSplitter().convert('${log.stdout}'))
+        if (l.split('\x00') case [final sha, final parents, final email, final subject])
+          (sha: sha, merge: parents.contains(' '), leftover: _isForkLeftover(email, subject)),
+    ].where((c) => !c.leftover).toList();
+    if (commits.isEmpty) continue;
+    if (commits.any((c) => c.merge)) {
+      notes.add('${lane.label}: it has merge commits, so its changes are in the last commit.');
+      continue;
+    }
+    var laneCur = cur;
+    var clean = true;
+    try {
+      for (final c in commits) {
+        final next = await _replay(top, c.sha, laneCur);
+        if (next == null) {
+          clean = false;
+          break;
+        }
+        laneCur = next;
+      }
+    } on GitError {
+      gitTooOld = true;
+      notes.add(
+        'This git cannot replay commits without touching the folder (it needs git 2.40 or later), so the '
+        'lanes\' changes are in the last commit.',
+      );
+      break;
+    }
+    if (!clean) {
+      notes.add("${lane.label}: its commits didn't apply on top of the others, so its changes are in the last commit.");
+      continue;
+    }
+    for (final c in commits) {
+      final out = await _out(top, ['diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', '-z', c.sha]);
+      touched.addAll(out.split('\x00').where((p) => p.isNotEmpty));
+    }
+    cur = laneCur;
+    replayed += commits.length;
+  }
+  // The last commit: the folder's state of every path the run or a replayed lane touched, so the branch ends where
+  // the folder is (the integrate step's work, conflict fixes, lanes that weren't replayed).
+  final all = {...paths, ...touched}.toList()..sort();
+  final tmp = await Directory.systemTemp.createTemp('everyai-land');
+  try {
+    final env = {'GIT_INDEX_FILE': '${tmp.path}/index'};
+    await _git(top, ['read-tree', cur], env: env);
+    if (all.isNotEmpty) {
+      final p = await Process.start('git', [
+        '-C',
+        top,
+        'update-index',
+        '--add',
+        '--remove',
+        '-z',
+        '--stdin',
+      ], environment: env);
+      p.stdin.write('${all.join('\x00')}\x00');
+      await p.stdin.close();
+      final (_, err, code) = await (p.stdout.drain<void>(), p.stderr.transform(utf8.decoder).join(), p.exitCode).wait;
+      if (code != 0) throw GitError('git update-index: ${err.trim()}');
+    }
+    final tree = await _out(top, ['write-tree'], env: env);
+    if (tree != await _out(top, ['rev-parse', '$cur^{tree}'])) {
+      cur = await _commitTree(top, tree, cur, stripBranding(message));
+    }
+  } finally {
+    await tmp.delete(recursive: true);
+  }
+  if (cur == head) return (head: null, laneCommits: 0, notes: notes);
+  if (name != null) {
+    await _git(top, ['branch', name, cur]);
+    await _git(top, ['symbolic-ref', '-m', 'EveryAI: land a workflow on $name', 'HEAD', 'refs/heads/$name']);
+  } else {
+    // Moves the branch HEAD is on (or a detached HEAD), only if nothing moved it meanwhile.
+    await _git(top, ['update-ref', '-m', 'EveryAI: land a workflow', 'HEAD', cur, head]);
+  }
+  // The index matches the new commit on those paths; the user's own staging elsewhere is kept.
+  if (all.isNotEmpty) await _git(top, ['reset', '-q', cur, '--', ...all], check: false);
+  return (head: cur, laneCommits: replayed, notes: notes);
 }
 
 /// Git's empty tree, the base for a repository with no commit yet.
