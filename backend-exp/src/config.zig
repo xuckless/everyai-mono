@@ -99,6 +99,12 @@ pub const Config = struct {
     stripe_secret_key: ?anole.Secret = null,
     stripe_webhook_secret: ?anole.Secret = null,
 
+    /// The app's bundled sidecar (local.zig): loopback only, every route needs
+    /// `X-EveryAI-Local: <LOCAL_TOKEN>`, local models and the user's own keys,
+    /// nothing charged. Off on a deployed server.
+    local_mode: bool = false,
+    local_token: ?anole.Secret = null,
+
     pub const production = .{ .dev_auth = false };
 };
 

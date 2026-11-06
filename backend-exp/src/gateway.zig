@@ -5,6 +5,7 @@
 //! sent none: system prompt, tools, and the latest message.
 const std = @import("std");
 const anole = @import("anole");
+const app_local = @import("local.zig");
 const App = @import("main.zig").App;
 const auth = @import("auth.zig");
 const billing = @import("billing.zig");
@@ -34,7 +35,9 @@ fn completions(app: *App, req: *anole.Request, res: *anole.Response) !void {
     try o.put(req.arena, "model", .{ .string = model });
 
     app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
-    const facts = app.catalog.facts(req.io, model);
+    if (app.cfg.local_mode and app_local.isLocalId(model) and !app.isLocal(req, model))
+        return res.fail(.bad_request, "a local model needs X-Local-Base-Url");
+    const facts = if (app.isLocal(req, model)) app_local.facts(app_local.capsOf(req)) else app.catalog.facts(req.io, model);
     // The newest user message carries what is being attached now; earlier
     // attachments (from before a model switch) become text notes instead.
     if (o.get("messages")) |msgs| if (msgs == .array) {

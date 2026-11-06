@@ -176,6 +176,7 @@ const Run = struct {
     fn call(self: *Run, cx: *anole.db.Ctx, system: []const u8, user: []const u8, max_tokens: i64) ![]const u8 {
         const a = cx.arena;
         const model = routing.modelFor(self.app.cfg, .summarise);
+        if (self.aux.unavailable) return error.UpstreamFailed;
         const body = try std.json.Stringify.valueAlloc(a, .{
             .model = model,
             .usage = .{ .include = true },

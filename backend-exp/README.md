@@ -80,6 +80,43 @@ cached_tokens, cache_write_tokens, charged_micros}` (one per upstream call),
   stay on the device); when the app does not list them in `client_tools`, the
   model gets an error saying they are off.
 
+## Local mode (the app's bundled sidecar)
+
+The app ships this server and starts it on loopback for chats on the user's
+local models (Ollama, Apple `fm serve`, LM Studio, llama.cpp, Jan, vLLM, MLX)
+and on their own keys, so neither reaches the deployed server. Code:
+`src/local.zig`, tests `src/local_test.zig`. The deployed server ignores every
+header below.
+
+- **Env:** `LOCAL_MODE=true`, `LOCAL_TOKEN` (16+ characters, random per launch),
+  `HOST=127.0.0.1` (anything else refuses to start), `PORT`, `DATABASE_PATH`,
+  `DEV_AUTH=true`. No TLS. Nothing is charged: preflight never blocks and
+  usage is recorded with `charged_micros = 0` (provider `local` for local models).
+- **Token:** every route but `/v1/ping`, `/healthz` and `/readyz` needs
+  `X-EveryAI-Local: <LOCAL_TOKEN>` (constant-time compare); otherwise 401
+  `{code: "local_token"}`. Other programs and web pages can reach loopback too.
+- **Local models:** id `local/<name>` (`<name>` as the server knows it; may hold
+  `/` or `:`). Per request: `X-Local-Base-Url` (OpenAI-compatible root, e.g.
+  `http://127.0.0.1:11434/v1`; http/https only), optional `X-Local-Api-Key`,
+  `X-Local-Caps` (comma list: `tools`, `vision`, `reasoning`) and `X-Local-Context`
+  (tokens). Missing base URL → 422 `chat.local_server`. The body sent upstream
+  names `<name>` and drops what only OpenRouter reads (`plugins`, `provider`,
+  `usage`, cache breakpoints, reasoning blocks; `reasoning.effort` becomes
+  `reasoning_effort`; `stream_options.include_usage` is added). A model without
+  `tools` gets plain answers; Research on it runs as Chat (the research model is
+  on OpenRouter).
+- **Side jobs** (follow-ups, titles, decide, summarise, compaction, polish) with
+  no OpenRouter key: `X-Local-Aux-Model` (`local/<name>`), `X-Local-Aux-Base-Url`,
+  optional `X-Local-Aux-Api-Key`. Without them follow-ups are skipped, decide
+  answers "unsure", and the side-job routes answer 503. Image generation needs
+  OpenRouter.
+- **Web search** with no OpenRouter key (local mode): `X-Search-Brave-Key`,
+  `X-Search-Tavily-Key` or `X-Search-Searxng-Url` (the first sent), else
+  DuckDuckGo's HTML results (keyless, through `safe_fetch`). Results go through
+  the same ledger, cache and untrusted wrapping as the web plugin's. Search
+  mode on a model without tools searches the question first and puts the
+  numbered results before it.
+
 ## Prompt caching
 
 - The system prompt and tool schemas are compile-time constants (`tools.zig`),
