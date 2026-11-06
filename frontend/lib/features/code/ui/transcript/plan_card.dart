@@ -1,6 +1,7 @@
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+import '../../../../core/motion/motion.dart';
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/layout.dart';
@@ -66,24 +67,41 @@ class _PlanCardState extends State<PlanCard> {
     final open = widget.open && !_sent;
     final steps = plan.steps;
     final risks = plan.risks;
+    final fileCount = {for (final st in steps) ...st.files}.length;
 
     return Container(
       decoration: BoxDecoration(
         color: theme.surfaceRaised,
-        border: Border.all(color: open ? theme.accent.withValues(alpha: 0.5) : theme.border),
+        border: Border.all(color: theme.border),
         borderRadius: BorderRadius.circular(EveryTheme.cardRadius),
       ),
-      padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
+      padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Row(
             children: [
-              AdaptiveIcon(EveryIcon.document, size: 15, color: theme.accent),
-              const SizedBox(width: 8),
               Expanded(
-                child: Text(plan.title.isEmpty ? 'Plan' : plan.title, style: theme.type.headline.tint(theme.text)),
+                child: Text(
+                  plan.title.isEmpty ? 'Plan' : plan.title,
+                  style: theme.type.callout.semibold.tint(theme.text),
+                ),
               ),
+              if (steps.isNotEmpty)
+                Flexible(
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: Text(
+                      [
+                        '${steps.length} ${steps.length == 1 ? 'step' : 'steps'}',
+                        if (fileCount > 0) '$fileCount ${fileCount == 1 ? 'file' : 'files'}',
+                      ].join(' · '),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.type.caption.tint(theme.textSubtle),
+                    ),
+                  ),
+                ),
               if (plan.verdict case final verdict?)
                 Padding(
                   padding: const EdgeInsets.only(right: 4),
@@ -110,35 +128,46 @@ class _PlanCardState extends State<PlanCard> {
           const SizedBox(height: 10),
           for (final (i, step) in steps.indexed)
             Padding(
-              padding: const EdgeInsets.only(bottom: 8, right: 4),
+              padding: const EdgeInsets.symmetric(vertical: 5),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  SizedBox(width: 22, child: Text('${i + 1}.', style: theme.type.callout.semibold.tint(theme.accent))),
+                  const Padding(padding: EdgeInsets.only(top: 6, right: 12), child: StatusDot(DotStatus.idle)),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(step.title, style: theme.type.body.medium.copyWith(color: theme.text, height: 1.35)),
+                        Text(step.title, style: theme.type.callout.copyWith(color: theme.text, height: 1.4)),
                         if (step.detail.isNotEmpty)
                           Padding(
-                            padding: const EdgeInsets.only(top: 2),
+                            padding: const EdgeInsets.only(top: 1),
                             child: Text(
                               step.detail,
-                              style: theme.type.callout.copyWith(color: theme.textMuted, height: 1.35),
+                              style: theme.type.caption.copyWith(color: theme.textSubtle, height: 1.35),
                             ),
-                          ),
-                        if (step.files.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 3),
-                            child: Text(step.files.join('  '), style: _mono.copyWith(color: theme.textMuted)),
                           ),
                       ],
                     ),
                   ),
+                  if (step.files.isNotEmpty)
+                    Flexible(
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: 12, top: 2),
+                        child: Align(
+                          alignment: Alignment.topRight,
+                          child: Text(
+                            step.files.join('  '),
+                            textAlign: TextAlign.end,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: _mono.copyWith(color: theme.textSubtle),
+                          ),
+                        ),
+                      ),
+                    ),
                 ],
               ),
-            ),
+            ).settle(delay: Duration(milliseconds: 30 * i)),
           if (risks.isNotEmpty) ...[
             const SizedBox(height: 4),
             Text('Risks', style: theme.type.callout.semibold.tint(theme.text)),
@@ -179,19 +208,19 @@ class _PlanCardState extends State<PlanCard> {
             ],
             WrapRow(
               lead: Text(
-                widget.switchesToAutoEdit ? 'Start building switches to Auto-edit.' : '',
-                style: theme.type.caption.tint(theme.textMuted),
+                widget.switchesToAutoEdit ? 'Switches to Auto-edit' : '',
+                style: theme.type.caption.tint(theme.textSubtle),
               ),
               actions: [
                 if (_revising)
-                  AdaptiveButton(label: 'Send changes', emphasis: ButtonEmphasis.secondary, onPressed: _revise)
+                  KitButton(label: 'Send changes', style: KitButtonStyle.ghost, onPressed: _revise)
                 else
-                  AdaptiveButton(
+                  KitButton(
                     label: 'Keep planning',
-                    emphasis: ButtonEmphasis.secondary,
+                    style: KitButtonStyle.ghost,
                     onPressed: () => setState(() => _revising = true),
                   ),
-                AdaptiveButton(label: 'Start building', onPressed: _approve),
+                KitButton(label: 'Start building', onPressed: _approve),
               ],
             ),
           ],

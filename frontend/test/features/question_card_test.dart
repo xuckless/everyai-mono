@@ -63,7 +63,7 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.digit1);
     await tester.pumpAndSettle();
     expect(find.text('Which Fields?'), findsOneWidget);
-    expect(find.text('Select all that apply'), findsOneWidget);
+    expect(find.text('Pick any'), findsOneWidget);
 
     // Multi-select stays on the page; Next moves on.
     await tester.tap(find.text('Fields A'));
@@ -71,7 +71,7 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Next'));
     await tester.pumpAndSettle();
-    expect(find.text('Still to answer: Address'), findsOneWidget);
+    expect(find.text('1 left'), findsOneWidget);
 
     await tester.tap(find.text('Address A'));
     await tester.pumpAndSettle();

@@ -798,6 +798,11 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   Add/Added with a pulse, "…" options on hover), a search, scope chips (All, My models, Free, On your keys), the six
   biggest vendors plus More, and capability toggles (Tools, Vision, Reasoning, Makes images); rows re-enter staggered
   when the filters change. Narrow widths fold the price under the name. Negative catalog prices (routers) show none.
+  6c cards: the question card has `KitTabs` (now with a `leading` mark: breathing dot for the current question, a
+  tick once answered) and "n of m", "Pick one/any", option rows with their number key, a pencil "Other" row, panes
+  that slide in from the side you move to, and Back · "n left" · Next / Submit ⌘↵. The plan card has "n steps · m
+  files", a dot per step with its files flush right (steps settle in), "Switches to Auto-edit", Keep planning,
+  Start building.
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2

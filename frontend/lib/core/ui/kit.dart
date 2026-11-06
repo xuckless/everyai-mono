@@ -766,12 +766,16 @@ class KitTabs<T> extends StatefulWidget {
     required this.label,
     required this.onSelected,
     this.keyOf,
+    this.leading,
   });
 
   final List<T> values;
   final T selected;
   final String Function(T) label;
   final ValueChanged<T> onSelected;
+
+  /// A small mark before a tab's label (a status dot, a tick).
+  final Widget Function(T)? leading;
 
   /// A key per tab (tests find tabs by it).
   final Key Function(T)? keyOf;
@@ -824,7 +828,16 @@ class _KitTabsState<T> extends State<KitTabs<T>> {
                     duration: Motion.swap,
                     curve: Motion.easeOut,
                     style: theme.type.callout.medium.tint(v == widget.selected ? theme.text : theme.textSubtle),
-                    child: Text(widget.label(v)),
+                    child: widget.leading == null
+                        ? Text(widget.label(v))
+                        : Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              SizedBox(width: 12, child: Center(child: widget.leading!(v))),
+                              const SizedBox(width: 7),
+                              Text(widget.label(v)),
+                            ],
+                          ),
                   ),
                 ),
               ),
