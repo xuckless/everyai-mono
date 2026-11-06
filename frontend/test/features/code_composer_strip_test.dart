@@ -172,12 +172,13 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.descendant(of: strip('harness'), matching: find.text('EveryAI')), findsOneWidget);
-      expect(find.descendant(of: strip('workflow'), matching: find.text('Workflows')), findsOneWidget);
+      expect(find.descendant(of: strip('workflow'), matching: find.text('Workflow')), findsOneWidget);
       expect(find.descendant(of: strip('skills'), matching: find.text('Skills 2')), findsOneWidget);
-      expect(find.descendant(of: strip('mcp'), matching: find.text('MCP 1')), findsOneWidget);
+      // MCP servers live in Settings; the composer has no chip for them.
+      expect(strip('mcp'), findsNothing);
     });
 
-    for (final section in [SettingsSection.skills, SettingsSection.mcp]) {
+    for (final section in [SettingsSection.skills]) {
       testWidgets('${section.name} opens Settings there, for this project', (tester) async {
         final c = await pump(tester, agent: menu());
         final targets = <SettingsTarget?>[];
@@ -249,10 +250,11 @@ void main() {
       expect(modes, [AgentMode.plan]);
     });
 
-    testWidgets('a picked workflow shows in the line and opens the Workflow page', (tester) async {
+    testWidgets('a picked workflow names the Workflow chip and opens the Workflow page', (tester) async {
       await pump(tester, agent: menu(workflow: const WorkflowPick.max()));
-      expect(find.descendant(of: line('workflow'), matching: find.text('Max')), findsOneWidget);
-      await tester.tap(line('workflow'));
+      expect(line('workflow'), findsNothing);
+      expect(find.descendant(of: strip('workflow'), matching: find.text('Max')), findsOneWidget);
+      await tester.tap(strip('workflow'));
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('agent-menu.workflow.none')), findsOneWidget);
       expect(find.byKey(const ValueKey('agent-menu.back')), findsNothing);

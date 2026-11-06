@@ -125,24 +125,34 @@ class ConsolePanelView extends ConsumerWidget {
     final Widget body;
     if (childId case final child?) {
       body = ChildChatView(key: ValueKey('console.child.$child'), parentId: session.id, childId: child);
-    } else if (view == ConsoleView.diff) {
-      // The Diff draws its own header, with Close.
-      return _belowBar(context, DiffPane(session: session, onClose: notifier.close));
     } else {
       body = Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(14, 8, 6, 2),
+            padding: const EdgeInsets.fromLTRB(6, 2, 6, 0),
             child: Row(
               children: [
-                Expanded(child: Text(view.label, style: theme.type.headline.tint(theme.text))),
+                Expanded(
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: KitTabs<ConsoleView>(
+                      values: views,
+                      selected: view,
+                      label: (v) => v == ConsoleView.info ? 'Session' : v.label,
+                      keyOf: (v) => ValueKey('console.tab.${v.name}'),
+                      onSelected: notifier.show,
+                    ),
+                  ),
+                ),
                 AdaptiveIconButton(icon: EveryIcon.close, tooltip: 'Close', size: 16, onPressed: notifier.close),
               ],
             ),
           ),
+          const SizedBox(height: 6),
           Expanded(
             child: switch (view) {
+              ConsoleView.diff => DiffPane(session: session),
               ConsoleView.files => FilesView(session: session),
               _ => SessionInfoView(session: session),
             },

@@ -1,9 +1,11 @@
 import 'package:file_selector/file_selector.dart' show XFile;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
+import 'package:material_ui/material_ui.dart' as m show Tooltip;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/platform/platform_kind.dart';
+import '../../../core/motion/motion.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/anchored_popover.dart';
@@ -24,7 +26,6 @@ import '../../slash/ui/slash_menu.dart';
 import '../code_providers.dart' show codeProjectsProvider, composerInsertProvider;
 import '../domain/agent_mode.dart';
 import '../harness/harness.dart' show NativeCommand, NativeMode, nativeModeOf;
-import '../mcp_providers.dart';
 import '../uploads/uploads.dart';
 import 'agent_menu.dart';
 
@@ -300,8 +301,7 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    final radius = theme.design == DesignLanguage.fluent ? 8.0 : EveryTheme.cardRadius;
+    const radius = EveryTheme.composerRadius;
     if (widget.sessionId case final id?) {
       ref.listen(composerInsertProvider(id), (_, next) {
         if (next != null) _insert(next.text);
@@ -325,7 +325,6 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
             ),
           ),
         ?widget.banner,
-        if (widget.agent case final agent?) _Strip(agent: agent, project: widget.project),
         AttachmentDropZone(
           onFiles: _add,
           child: GlassSurface(
@@ -359,38 +358,50 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
                 const SizedBox(height: 8),
                 Row(
                   children: [
-                    AdaptiveIconButton(
-                      icon: EveryIcon.attach,
+                    KitIconButton(
+                      icon: EveryIcon.add,
                       tooltip: 'Attach files',
-                      color: theme.textMuted,
+                      round: true,
+                      size: 18,
                       onPressed: () async => _add(await pickAttachmentFiles(allowed: widget.attachKinds)),
                     ),
                     if (widget.slashHost case final host? when widget.commands != null)
                       SessionActionsButton(host: host),
-                    // Both sides shrink on narrow composers (project first, it is
-                    // capped); a remote session's model sits at the right, next to send.
-                    if (widget.leading != null) ...[
-                      const SizedBox(width: 4),
-                      Flexible(
-                        flex: 2,
-                        child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 240), child: widget.leading),
-                      ),
-                    ],
+                    const SizedBox(width: 2),
                     Expanded(
-                      flex: 3,
-                      child: Align(alignment: Alignment.centerRight, child: widget.trailing ?? const SizedBox()),
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        primary: false,
+                        child: Row(
+                          children: [
+                            _modeMenu(),
+                            if (widget.agent case final agent? when agent.onWorkflow != null && !agent.demo)
+                              AgentMenuPart(
+                                key: const ValueKey('composer.strip.workflow'),
+                                menu: agent,
+                                page: AgentMenuPage.workflow,
+                                trigger: (context, label, enabled) =>
+                                    _RowChip(label: label, icon: EveryIcon.workflow, on: agent.workflow != null),
+                              ),
+                            if (widget.agent != null) _SkillsChip(project: widget.project),
+                            if (widget.leading != null) ...[
+                              const SizedBox(width: 4),
+                              ConstrainedBox(constraints: const BoxConstraints(maxWidth: 240), child: widget.leading),
+                            ],
+                          ],
+                        ),
+                      ),
                     ),
+                    ?widget.trailing,
                     ?widget.meter,
                     const SizedBox(width: 6),
-                    if (widget.busy && widget.onStop != null && !_hasText)
-                      AdaptiveIconButton(icon: EveryIcon.stop, tooltip: 'Stop (Esc)', onPressed: widget.onStop)
-                    else
-                      AdaptiveIconButton(
-                        icon: EveryIcon.send,
-                        tooltip: widget.busy ? 'Queue' : 'Send',
-                        color: _hasText ? theme.accent : theme.textMuted,
-                        onPressed: _hasText ? _submit : null,
-                      ),
+                    _CodeSend(
+                      busy: widget.busy && widget.onStop != null && !_hasText,
+                      hasText: _hasText,
+                      queue: widget.busy,
+                      onSend: _submit,
+                      onStop: widget.onStop,
+                    ),
                   ],
                 ),
               ],
@@ -402,12 +413,10 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
     );
   }
 
-  /// model · effort · workflow · mode under the box, each its own menu.
-  Widget _settingsLine() {
-    final theme = EveryTheme.of(context);
-    final agent = widget.agent;
+  /// The permission mode: EveryAI's, or the outside harness's own.
+  Widget _modeMenu() {
     final modes = widget.nativeModes;
-    final mode = modes != null && modes.isNotEmpty && widget.onNativeModeChanged != null
+    return modes != null && modes.isNotEmpty && widget.onNativeModeChanged != null
         ? NativeModeMenu(
             harness: widget.harnessLabel,
             modes: modes,
@@ -418,20 +427,32 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
             onBypass: widget.onNativeBypass,
           )
         : ModeMenu(mode: widget.mode, onChanged: widget.onModeChanged);
+  }
+
+  /// harness · model · effort under the box, each its own menu.
+  Widget _settingsLine() {
+    final theme = EveryTheme.of(context);
+    final agent = widget.agent;
+    if (agent == null) return const SizedBox.shrink();
     final parts = [
-      if (agent != null)
-        for (final page in agent.lineParts(ref))
+      AgentMenuPart(
+        key: const ValueKey('composer.strip.harness'),
+        menu: agent,
+        page: AgentMenuPage.harness,
+        trigger: (context, label, enabled) => _QuietPart(label: label, enabled: enabled),
+      ),
+      for (final page in agent.lineParts(ref))
+        if (page != AgentMenuPage.workflow)
           AgentMenuPart(
             key: ValueKey('composer.line.${page.name}'),
             menu: agent,
             page: page,
             trigger: (context, label, enabled) => _QuietPart(label: label, enabled: enabled),
           ),
-      mode,
     ];
-    final dot = Text(' · ', style: theme.type.caption.tint(theme.textMuted));
+    final dot = Text(' · ', style: theme.type.caption.tint(theme.textSubtle));
     return Padding(
-      padding: const EdgeInsets.fromLTRB(10, 4, 10, 0),
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
       child: Wrap(
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
@@ -442,15 +463,36 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
   }
 }
 
-/// The tabs on the composer's top-left edge: the harness (a click hands
-/// the session to another), Workflows, and how many skills and MCP servers
-/// the session gets (each opens its Settings page).
-class _Strip extends ConsumerWidget {
-  const _Strip({required this.agent, required this.project});
+/// A chip in the composer's row; the popover around it takes the tap.
+class _RowChip extends StatelessWidget {
+  const _RowChip({required this.label, this.icon, this.on = false, this.tint});
 
-  final AgentMenu agent;
+  final String label;
+  final EveryIcon? icon;
+  final bool on;
+  final Color? tint;
 
-  /// The project folder, or null on a page without one.
+  @override
+  Widget build(BuildContext context) => Semantics(
+    button: true,
+    label: label,
+    child: IgnorePointer(
+      child: KitChip(
+        label: label,
+        on: on,
+        tint: tint,
+        chevron: true,
+        leading: icon == null ? null : AdaptiveIcon(icon!, size: 14),
+        onTap: () {},
+      ),
+    ),
+  );
+}
+
+/// Skills: how many this session gets; opens their settings.
+class _SkillsChip extends ConsumerWidget {
+  const _SkillsChip({required this.project});
+
   final String? project;
 
   @override
@@ -458,85 +500,75 @@ class _Strip extends ConsumerWidget {
     final projectId = project == null
         ? null
         : ref.watch(codeProjectsProvider).where((p) => p.path == project).firstOrNull?.id;
-    // What a session here gets: active, trusted, this project's own or the user's.
     final skills = sessionSkills(
       ref.watch(installedSkillsProvider).value ?? const [],
       ref.watch(skillSettingsProvider),
       projectId,
     ).length;
-    final mcp = ref.watch(codeMcpServersProvider).serversFor(projectId).where((s) => s.active).length;
-    // MCP opens on this project's list; the Skills page lists every scope at once.
-    void open(SettingsSection section) => showSettings(context, section: section, args: {'project': ?projectId});
-    _QuietPart tab(String label, bool enabled) => _QuietPart(label: label, enabled: enabled, tab: true);
-    return Padding(
-      padding: const EdgeInsets.only(left: 14),
-      child: Wrap(
-        spacing: 2,
-        children: [
-          AgentMenuPart(
-            key: const ValueKey('composer.strip.harness'),
-            menu: agent,
-            page: AgentMenuPage.harness,
-            trigger: (context, label, enabled) => tab(label, enabled),
+    return KitChip(
+      key: const ValueKey('composer.strip.skills'),
+      label: skills == 0 ? 'Skills' : 'Skills $skills',
+      leading: AdaptiveIcon(EveryIcon.skill, size: 14),
+      chevron: true,
+      onTap: () => showSettings(context, section: SettingsSection.skills, args: {'project': ?projectId}),
+    );
+  }
+}
+
+/// Send (violet once there is text; queues while the agent works) or Stop.
+class _CodeSend extends StatelessWidget {
+  const _CodeSend({
+    required this.busy,
+    required this.hasText,
+    required this.queue,
+    required this.onSend,
+    required this.onStop,
+  });
+
+  final bool busy;
+  final bool hasText;
+  final bool queue;
+  final VoidCallback onSend;
+  final VoidCallback? onStop;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final bg = busy ? theme.text : (hasText ? theme.primary : theme.overlay);
+    final fg = busy ? theme.background : (hasText ? theme.onPrimary : theme.textSubtle);
+    return m.Tooltip(
+      message: busy ? 'Stop (Esc)' : (queue ? 'Queue' : 'Send'),
+      child: Pressable(
+        onTap: busy ? onStop : (hasText ? onSend : null),
+        semanticLabel: busy ? 'Stop' : (queue ? 'Queue' : 'Send'),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          width: 32,
+          height: 32,
+          decoration: BoxDecoration(shape: BoxShape.circle, color: bg),
+          child: IconSwap(
+            child: busy
+                ? Container(
+                    key: const ValueKey('stop'),
+                    width: 11,
+                    height: 11,
+                    decoration: BoxDecoration(color: fg, borderRadius: BorderRadius.circular(2.5)),
+                  )
+                : Icon(EveryIcon.send.data, key: const ValueKey('send'), size: 17, color: fg),
           ),
-          if (agent.onWorkflow != null && !agent.demo)
-            AgentMenuPart(
-              key: const ValueKey('composer.strip.workflow'),
-              menu: agent,
-              page: AgentMenuPage.workflow,
-              trigger: (context, label, enabled) => tab(label, enabled),
-            ),
-          _StripButton(
-            key: const ValueKey('composer.strip.skills'),
-            label: 'Skills $skills',
-            onTap: () => open(SettingsSection.skills),
-          ),
-          _StripButton(
-            key: const ValueKey('composer.strip.mcp'),
-            label: 'MCP $mcp',
-            onTap: () => open(SettingsSection.mcp),
-          ),
-        ],
+        ),
       ),
     );
   }
 }
 
-class _StripButton extends StatelessWidget {
-  const _StripButton({super.key, required this.label, required this.onTap});
-
-  final String label;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) => Semantics(
-    button: true,
-    label: label,
-    child: GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: onTap,
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        child: _QuietPart(label: label, tab: true, chevron: false),
-      ),
-    ),
-  );
-}
-
-/// A part of the composer's settings line (or, as a [tab], of its strip):
-/// quiet text that lights up under the pointer to show it opens a menu.
+/// A part of the composer's settings line: quiet text that lights up under
+/// the pointer to show it opens a menu.
 class _QuietPart extends StatefulWidget {
-  const _QuietPart({required this.label, this.color, this.enabled = true, this.tab = false, this.chevron = true});
+  const _QuietPart({required this.label, this.enabled = true});
 
   final String label;
-
-  /// The text's colour at rest (the mode's policy); muted by default.
-  final Color? color;
   final bool enabled;
-
-  /// A tab on the box's top edge: a filled top, square bottom corners.
-  final bool tab;
-  final bool chevron;
 
   @override
   State<_QuietPart> createState() => _QuietPartState();
@@ -549,22 +581,14 @@ class _QuietPartState extends State<_QuietPart> {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final lit = _hover && widget.enabled;
-    final rest = widget.color ?? theme.textMuted;
-    final color = lit ? (widget.color ?? theme.text) : rest;
-    final fill = widget.tab
-        ? theme.surfaceRaised.withValues(alpha: lit ? 1 : 0.7)
-        : lit
-        ? theme.text.withValues(alpha: 0.07)
-        : null;
+    final color = lit ? theme.text : theme.textSubtle;
     return MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
-      child: Container(
-        padding: EdgeInsets.symmetric(horizontal: widget.tab ? 9 : 4, vertical: widget.tab ? 3 : 2),
-        decoration: BoxDecoration(
-          color: fill,
-          borderRadius: widget.tab ? const BorderRadius.vertical(top: Radius.circular(8)) : BorderRadius.circular(6),
-        ),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+        decoration: BoxDecoration(color: lit ? theme.hover : null, borderRadius: BorderRadius.circular(6)),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -576,9 +600,9 @@ class _QuietPartState extends State<_QuietPart> {
                 style: theme.type.caption.tint(color),
               ),
             ),
-            if (widget.chevron && widget.enabled) ...[
+            if (widget.enabled) ...[
               const SizedBox(width: 3),
-              AdaptiveIcon(EveryIcon.chevronDown, size: 9, color: color),
+              AdaptiveIcon(EveryIcon.chevronDown, size: 10, color: color),
             ],
           ],
         ),
@@ -754,15 +778,14 @@ class _ModeChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    final color = switch (policy) {
+    final tint = switch (policy) {
       AgentMode.fullAuto || AgentMode.bypass => theme.danger,
-      AgentMode.plan => theme.accent,
       _ => null,
     };
     return Semantics(
       button: true,
       label: 'Mode: $label',
-      child: _QuietPart(label: label, color: color),
+      child: _RowChip(label: label, tint: tint, on: policy == AgentMode.plan),
     );
   }
 }

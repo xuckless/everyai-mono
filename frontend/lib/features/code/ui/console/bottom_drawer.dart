@@ -197,25 +197,24 @@ class _Frame extends ConsumerWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(8, 2, 6, 0),
+            padding: const EdgeInsets.fromLTRB(6, 0, 6, 0),
             child: Row(
               children: [
                 Expanded(
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: [
-                        for (final p in panes)
-                          _Tab(
-                            key: ValueKey('drawer.tab.${p.name}'),
-                            label: p.label,
-                            selected: p == open,
-                            onTap: () {
-                              onTab();
-                              notifier.show(p);
-                            },
-                          ),
-                      ],
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: KitTabs<CodePane>(
+                        values: panes,
+                        selected: open,
+                        label: (p) => p.label,
+                        keyOf: (p) => ValueKey('drawer.tab.${p.name}'),
+                        onSelected: (p) {
+                          onTab();
+                          notifier.show(p);
+                        },
+                      ),
                     ),
                   ),
                 ),
@@ -226,40 +225,6 @@ class _Frame extends ConsumerWidget {
           Container(height: 1, color: theme.border),
           Expanded(child: child),
         ],
-      ),
-    );
-  }
-}
-
-class _Tab extends StatelessWidget {
-  const _Tab({super.key, required this.label, required this.selected, required this.onTap});
-
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    return GestureDetector(
-      onTap: onTap,
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        child: Container(
-          margin: const EdgeInsets.only(right: 2),
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          decoration: BoxDecoration(
-            color: selected ? theme.accent.withValues(alpha: 0.12) : null,
-            borderRadius: BorderRadius.circular(7),
-          ),
-          child: Text(
-            label,
-            style: theme.type.callout.copyWith(
-              color: selected ? theme.accent : theme.textMuted,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ),
       ),
     );
   }

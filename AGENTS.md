@@ -741,6 +741,13 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   `Motion.ambient` is off under test via `test/flutter_test_config.dart`), `core/ui/kit.dart` widgets; the `Adaptive*`
   wrappers render the kit. Screens still use their old (Material-branch) layouts until their phase. Not checked
   visually yet. Next: phase 1 shell + sidebar, then Chat, Code session, Board, Settings, the rest.
+- **UI overhaul, phases 1–3 (2026-11-06; 6bfa00f, d318a74, then phase 3).** Shell + sidebar (264pt, inset content
+  panel, phone drawer, Chat|Code segmented), Chat on the kit (model chip with vendor monogram + effort in its popover,
+  mode chip, round send/stop, quiet follow-ups, violet inline code), Code session: composer chips row (mode, Workflow
+  named after the pick, Skills) with harness · model · effort under the box (MCP chip gone, it lives in Settings),
+  `KitTabs` (one sliding underline) for the right panel (Session · Diff · Files) and the drawer (Terminal · Processes ·
+  Preview), kit status dots and shimmer. The owner's five-tab single panel is not done: Diff/Files stay in the right
+  panel and Terminal/Processes/Preview in the bottom drawer. Next: phase 4 Board, 5 Settings, 6 the rest.
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2

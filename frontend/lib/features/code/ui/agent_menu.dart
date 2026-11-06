@@ -239,7 +239,7 @@ class AgentMenuPart extends ConsumerWidget {
   /// What the part says, as its label reads.
   static String _labelOf(AgentMenu m, AgentMenuPage page, _Resolved r) => switch (page) {
     AgentMenuPage.harness => r.lead.label,
-    AgentMenuPage.workflow => m.workflow?.title ?? 'Workflows',
+    AgentMenuPage.workflow => m.workflow?.title ?? 'Workflow',
     AgentMenuPage.model => r.modelName,
     AgentMenuPage.effort => [
       if (r.reasons) m.effort.isEmpty ? 'Default effort' : effortLabel(m.effort),

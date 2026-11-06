@@ -199,9 +199,13 @@ class KitChip extends StatelessWidget {
     this.touch = false,
     this.strong = false,
     this.chevron = false,
+    this.tint,
   });
 
   final String label;
+
+  /// A colour for the label at rest (a risky mode in red).
+  final Color? tint;
   final VoidCallback? onTap;
   final Widget? leading;
   final Widget? trailing;
@@ -224,11 +228,7 @@ class KitChip extends StatelessWidget {
       semanticLabel: label,
       selected: on,
       builder: (context, s, child) {
-        final fg = on
-            ? theme.accentText
-            : s.hovered || strong
-            ? theme.text
-            : theme.textMuted;
+        final fg = on ? theme.accentText : tint ?? (s.hovered || strong ? theme.text : theme.textMuted);
         return AnimatedContainer(
           duration: const Duration(milliseconds: 160),
           height: touch ? 36 : 30,
@@ -752,6 +752,97 @@ class KitLabel extends StatelessWidget {
     return Padding(
       padding: padding,
       child: Text(text, style: theme.type.caption.medium.tint(theme.textSubtle)),
+    );
+  }
+}
+
+/// A row of text tabs with one underline that slides to the picked tab (the
+/// same element moves; it is never drawn twice).
+class KitTabs<T> extends StatefulWidget {
+  const KitTabs({
+    super.key,
+    required this.values,
+    required this.selected,
+    required this.label,
+    required this.onSelected,
+    this.keyOf,
+  });
+
+  final List<T> values;
+  final T selected;
+  final String Function(T) label;
+  final ValueChanged<T> onSelected;
+
+  /// A key per tab (tests find tabs by it).
+  final Key Function(T)? keyOf;
+
+  @override
+  State<KitTabs<T>> createState() => _KitTabsState<T>();
+}
+
+class _KitTabsState<T> extends State<KitTabs<T>> {
+  final _row = GlobalKey();
+  late List<GlobalKey> _keys = [for (final _ in widget.values) GlobalKey()];
+  Rect? _bar;
+
+  @override
+  void didUpdateWidget(KitTabs<T> old) {
+    super.didUpdateWidget(old);
+    if (old.values.length != widget.values.length) _keys = [for (final _ in widget.values) GlobalKey()];
+  }
+
+  void _measure() {
+    final i = widget.values.indexOf(widget.selected);
+    final row = _row.currentContext?.findRenderObject() as RenderBox?;
+    final tab = i < 0 ? null : _keys[i].currentContext?.findRenderObject() as RenderBox?;
+    if (row == null || tab == null || !tab.hasSize) return;
+    final at = tab.localToGlobal(Offset.zero, ancestor: row);
+    final rect = Rect.fromLTWH(at.dx + 8, 0, tab.size.width - 16, 0);
+    if (rect != _bar && mounted) setState(() => _bar = rect);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _measure());
+    final first = _bar == null;
+    return Stack(
+      key: _row,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final (i, v) in widget.values.indexed)
+              Pressable(
+                key: widget.keyOf?.call(v),
+                onTap: () => widget.onSelected(v),
+                semanticLabel: widget.label(v),
+                child: Padding(
+                  key: _keys[i],
+                  padding: const EdgeInsets.fromLTRB(8, 9, 8, 10),
+                  child: AnimatedDefaultTextStyle(
+                    duration: Motion.swap,
+                    curve: Motion.easeOut,
+                    style: theme.type.callout.medium.tint(v == widget.selected ? theme.text : theme.textSubtle),
+                    child: Text(widget.label(v)),
+                  ),
+                ),
+              ),
+          ],
+        ),
+        if (_bar case final bar?)
+          AnimatedPositioned(
+            duration: first ? Duration.zero : Motion.move,
+            curve: Motion.easeInOut,
+            left: bar.left,
+            width: bar.width,
+            bottom: 0,
+            height: 2,
+            child: DecoratedBox(
+              decoration: BoxDecoration(color: theme.accent, borderRadius: BorderRadius.circular(1)),
+            ),
+          ),
+      ],
     );
   }
 }
