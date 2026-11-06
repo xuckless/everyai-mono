@@ -5,10 +5,12 @@ import 'package:drift/native.dart';
 import 'package:every_ai/core/db/app_database.dart';
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/core/providers.dart';
+import 'package:every_ai/features/code/checks/post_edit_hooks.dart';
 import 'package:every_ai/features/code/checks/post_edit_hooks_provider.dart';
 import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
+import 'package:every_ai/features/code/domain/rewind.dart';
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/harness/events.dart';
 import 'package:every_ai/features/code/harness/fake_harness.dart';
@@ -52,12 +54,36 @@ void main() {
   var calls = 0;
   var skips = '';
   Completer<void>? gate;
+  var cancelled = 0;
+  late List<List<Map<String, Object?>>> turns;
+  // The slow checks: the runs the next fast round hands over, the reports they give, and their gate.
+  var slowRuns = <HookRun>[];
+  final slowNotes = <String>[];
+  var slowCalls = 0;
+  Completer<void>? slowGate;
+  // Whether a subagent was still open when each round started.
+  final openAtCall = <bool>[];
+  bool Function()? onCall;
 
   setUp(() async {
+    openAtCall.clear();
+    onCall = null;
     notes.clear();
     calls = 0;
     skips = '';
     gate = null;
+    cancelled = 0;
+    slowRuns = [];
+    slowNotes.clear();
+    slowCalls = 0;
+    slowGate = null;
+    turns = [
+      [_agent('reply one')],
+      [_agent('reply two')],
+      [_agent('reply three')],
+      [_agent('reply four')],
+      [_agent('reply five')],
+    ];
     CodeSessionController.liveAfter = Duration.zero;
     db = AppDatabase(NativeDatabase.memory());
     final prefs = await Preferences.load(db);
@@ -71,11 +97,9 @@ void main() {
         harnessProvider.overrideWithValue(
           FakeHarness(
             step: Duration.zero,
-            turns: [
-              [_agent('reply one')],
-              [_agent('reply two')],
-              [_agent('reply three')],
-              [_agent('reply four')],
+            turns: turns,
+            subagentTurns: [
+              [_agent('child report')],
             ],
           ),
         ),
@@ -85,10 +109,31 @@ void main() {
           required shellDir,
           required refusal,
           required autoFormat,
+          required touched,
+          cancel,
         }) async {
           calls++;
-          await gate?.future;
-          return (report: notes.isEmpty ? '' : notes.removeAt(0), skipped: skips, tree: 'tree-$calls');
+          openAtCall.add(onCall?.call() ?? false);
+          var stopped = false;
+          unawaited(cancel?.then((_) => stopped = true));
+          if (gate case final g?) await Future.any([g.future, ?cancel]);
+          await Future<void>.delayed(Duration.zero);
+          if (stopped) cancelled++;
+          final slow = slowRuns;
+          slowRuns = [];
+          return (report: notes.isEmpty ? '' : notes.removeAt(0), skipped: skips, tree: 'tree-$calls', slow: slow);
+        }),
+        slowHooksProvider.overrideWithValue((
+          info,
+          runs, {
+          required shellDir,
+          required refusal,
+          required baselines,
+          cancel,
+        }) async {
+          slowCalls++;
+          if (slowGate case final g?) await Future.any([g.future, ?cancel]);
+          return (report: slowNotes.isEmpty ? '' : slowNotes.removeAt(0), skipped: '');
         }),
       ],
     );
@@ -228,5 +273,147 @@ void main() {
     await _until(said, (s) => s.contains('agent:reply four'));
     expect(sent().firstWhere((m) => m.contains('fourth')), isNot(contains('<everyai-checks>')));
     expect(t().items.whereType<NoticeItem>().where((n) => n.message == checksNotice), hasLength(1));
+  });
+
+  test('Stop cancels the checks running; the next message goes at once, without their report', () async {
+    final controller = await open();
+    final sessions = container.read(codeSessionsProvider.notifier);
+    await _until(() => saidBy(controller), (s) => s.contains('agent:reply one'));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    gate = Completer<void>();
+    notes.add(_report);
+    final before = calls;
+    await controller.send('second');
+    await _until(() => calls, (n) => n == before + 1);
+    final tree = sessions.byId(controller.sessionId)!.checkedTree;
+    await controller.stop();
+    await _until(() => cancelled, (n) => n == 1);
+    await controller.send('third');
+    await _until(() => saidBy(controller), (s) => s.contains('agent:reply three'));
+    expect(sentBy(controller).firstWhere((m) => m.contains('third')), isNot(contains('<everyai-checks>')));
+    // The cancelled round moved nothing: what it would have checked is checked next time.
+    expect(sessions.byId(controller.sessionId)!.checkedTree, tree);
+    expect(gate!.isCompleted, isFalse);
+  });
+
+  test('a turn the user stopped starts no checks; the next one does', () async {
+    final controller = await open();
+    await _until(() => saidBy(controller), (s) => s.contains('agent:reply one'));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    final words = List.filled(60, 'word').join(' ');
+    turns[1] = [
+      {..._agent(words), 'stream': true},
+    ];
+    final before = calls;
+    await controller.send('second');
+    await _until(() => controller.state.transcript.running, (r) => r);
+    await controller.stop();
+    await _until(() => controller.state.transcript.running, (r) => !r);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(calls, before);
+    await controller.send('third');
+    await _until(() => calls, (n) => n == before + 1);
+  });
+
+  test('no checks in Plan mode', () async {
+    final controller = await open();
+    await _until(() => saidBy(controller), (s) => s.contains('agent:reply one'));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    await controller.setMode(AgentMode.plan);
+    final before = calls;
+    await controller.send('second');
+    await _until(() => saidBy(controller), (s) => s.contains('agent:reply two'));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(calls, before);
+  });
+
+  test('slow checks never hold a message; their report goes with the first one after they finish', () async {
+    final controller = await open();
+    await _until(() => saidBy(controller), (s) => s.contains('agent:reply one'));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    slowRuns = [
+      (
+        dir: '',
+        tool: 'cargo check',
+        command: 'cargo check',
+        files: const ['src/lib.rs'],
+        format: false,
+        outputFails: false,
+        filtered: true,
+        slow: true,
+      ),
+    ];
+    slowGate = Completer<void>();
+    const slowReport = '<everyai-checks>\nsrc/lib.rs\n  cargo check: src/lib.rs:1:1: error\n</everyai-checks>';
+    slowNotes.add(slowReport);
+    await controller.send('second');
+    await _until(() => slowCalls, (n) => n == 1);
+    // Still running: the message goes anyway, without it.
+    await controller.send('third');
+    await _until(() => saidBy(controller), (s) => s.contains('agent:reply three'));
+    expect(sentBy(controller).firstWhere((m) => m.contains('third')), isNot(contains('<everyai-checks>')));
+    slowGate!.complete();
+    final id = controller.sessionId;
+    await _until(() => container.read(codeSessionsProvider.notifier).byId(id)!.pendingChecks, (p) => p.isNotEmpty);
+    await controller.send('fourth');
+    await _until(() => saidBy(controller), (s) => s.contains('agent:reply four'));
+    expect(sentBy(controller).firstWhere((m) => m.contains('fourth')), contains('cargo check: src/lib.rs:1:1'));
+  });
+
+  test('a rewind stops the checks running and drops the report about the turns it undoes', () async {
+    final controller = await open();
+    final sessions = container.read(codeSessionsProvider.notifier);
+    await _until(() => saidBy(controller), (s) => s.contains('agent:reply one'));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    notes.add(_report);
+    final before = calls;
+    await controller.send('second');
+    await _until(() => sessions.byId(controller.sessionId)!.pendingChecks, (p) => p == _report);
+    gate = Completer<void>();
+    // A third turn whose checks still run when the user rewinds.
+    turns[2] = [_agent('reply three')];
+    await controller.send('third');
+    await _until(() => calls, (n) => n == before + 2);
+    final outcome = await controller.rewind(2);
+    expect(outcome.kind, RewindKind.done);
+    expect(cancelled, 1);
+    expect(sessions.byId(controller.sessionId)!.pendingChecks, '');
+    expect(gate!.isCompleted, isFalse);
+    // The rewind's own stop started no new round.
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(calls, before + 2);
+  });
+
+  test('a turn that ends with a subagent still working is checked after it reports, not before', () async {
+    final controller = await open();
+    onCall = () => controller.state.transcript.openSubagents.isNotEmpty;
+    await _until(() => saidBy(controller), (s) => s.contains('agent:reply one'));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    turns[1] = [
+      {
+        'kind': 'ActionEvent',
+        'tool_name': 'run_subagent',
+        'tool_call_id': 'call_task',
+        'thought': <Object?>[],
+        'action': <String, Object?>{},
+        'tool_call': {
+          'id': 'c',
+          'name': 'run_subagent',
+          'arguments': jsonEncode({'description': 'Write tests', 'prompt': 'Write the tests.'}),
+          'origin': 'completion',
+        },
+      },
+    ];
+    final before = calls;
+    var opened = false;
+    container.listen(codeSessionProvider(controller.sessionId), (_, s) {
+      if (s.transcript.openSubagents.isNotEmpty) opened = true;
+    });
+    await controller.send('second');
+    // The lead's turn after the report ends with no subagent open: that is when the round starts.
+    await _until(() => saidBy(controller), (s) => s.contains('agent:reply three'));
+    await _until(() => calls, (n) => n > before);
+    expect(opened, isTrue);
+    expect(openAtCall.skip(before), everyElement(isFalse));
   });
 }
