@@ -6,6 +6,7 @@ import 'dart:math';
 
 import 'package:http/http.dart' as http;
 
+import '../../../models/domain/local_routes.dart';
 import '../../../models/domain/model_catalog.dart' show ModelId;
 import '../../../settings/domain/byok_providers.dart' show ModelBilling;
 
@@ -276,7 +277,9 @@ final class GatewayClient {
   final String apiKey;
   final http.Client _http;
 
-  Uri get _url => Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}/chat/completions');
+  Uri get _url => _completionsAt(baseUrl);
+
+  static Uri _completionsAt(String base) => Uri.parse('${base.replaceAll(RegExp(r'/$'), '')}/chat/completions');
 
   /// With [model], the user's own key when that model bills to one
   /// (`ModelBilling`): read per call, so forks and model switches follow it.
@@ -303,11 +306,24 @@ final class GatewayClient {
     void Function(ToolProgress progress)? onToolProgress,
     Future<void>? cancel,
   }) async {
-    final req = http.Request('POST', _url)
-      ..headers.addAll(_headers(sessionTag, effort, model: model))
+    // A local model goes straight to its own server (OpenAI-compatible), never through ours.
+    final local = LocalRoutes.of(model);
+    if (LocalRoute.isLocal(model) && local == null) {
+      throw const LlmError(
+        'This local model is not running. Start its server, or pick another model.',
+        retryable: true,
+      );
+    }
+    final req = http.Request('POST', local == null ? _url : _completionsAt(local.baseUrl))
+      ..headers.addAll(
+        local == null
+            ? _headers(sessionTag, effort, model: model)
+            : {'Content-Type': 'application/json', if (local.apiKey case final k?) 'Authorization': 'Bearer $k'},
+      )
       ..body = jsonEncode({
-        'model': model,
+        'model': local?.name ?? model,
         'stream': true,
+        if (local != null) 'stream_options': {'include_usage': true},
         'messages': messages,
         if (tools.isNotEmpty) 'tools': tools,
         'tool_choice': ?toolChoice,
