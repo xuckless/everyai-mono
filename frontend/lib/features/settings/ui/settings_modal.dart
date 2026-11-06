@@ -335,23 +335,44 @@ class _SettingsModalState extends ConsumerState<SettingsModal> {
     final query = _query.text.trim();
     final rows = <Widget>[];
     if (query.isEmpty) {
-      SettingsGroup? group;
+      final groups = <SettingsGroup, List<SettingsSection>>{};
       for (final s in SettingsSection.values) {
-        if (!s.available) continue;
-        if (s.group != group) {
-          group = s.group;
+        if (s.available) (groups[s.group] ??= []).add(s);
+      }
+      final collapsed = ref.watch(settingsCollapsedGroupsProvider);
+      for (final MapEntry(key: group, value: sections) in groups.entries) {
+        final open = group.label.isEmpty || !collapsed.contains(group);
+        if (group.label.isEmpty) {
+          rows.add(const SizedBox(height: 14));
+        } else {
           rows.add(
-            group.label.isEmpty
-                ? const SizedBox(height: 14)
-                : KitLabel(group.label, padding: const EdgeInsets.fromLTRB(10, 14, 10, 5)),
+            _GroupHeader(
+              key: ValueKey('settings.group.${group.name}'),
+              label: group.label,
+              open: open,
+              onTap: () => ref.read(settingsCollapsedGroupsProvider.notifier).toggle(group),
+            ),
           );
         }
         rows.add(
-          _SectionRow(
-            key: ValueKey('settings.nav.${s.name}'),
-            section: s,
-            selected: s == _section,
-            onTap: () => _open(s),
+          AnimatedSize(
+            duration: Motion.reduced(context) ? Duration.zero : Motion.move,
+            curve: Motion.easeInOut,
+            alignment: Alignment.topCenter,
+            child: open
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      for (final s in sections)
+                        _SectionRow(
+                          key: ValueKey('settings.nav.${s.name}'),
+                          section: s,
+                          selected: s == _section,
+                          onTap: () => _open(s),
+                        ),
+                    ],
+                  )
+                : const SizedBox(width: double.infinity),
           ),
         );
       }
@@ -444,6 +465,7 @@ class _SlidingSelectionState extends State<_SlidingSelection> {
   final _stack = GlobalKey();
   Rect? _rect;
   bool _first = true;
+  SettingsSection? _measured;
 
   void _measure() {
     if (!mounted) return;
@@ -459,14 +481,23 @@ class _SlidingSelectionState extends State<_SlidingSelection> {
     }
 
     (_stack.currentContext as Element?)?.visitChildElements(find);
-    if (stack == null || row == null || !row!.hasSize) return;
+    if (stack == null) return;
+    if (row == null || !row!.hasSize) {
+      // The open section's group is collapsed: no highlight.
+      if (_rect != null) setState(() => _rect = null);
+      return;
+    }
     final at = row!.localToGlobal(Offset.zero, ancestor: stack);
     final rect = at & row!.size;
     if (rect != _rect) {
       setState(() {
-        _first = _rect == null;
+        // Slide only when the selection moved; a group opening or closing above just carries it along.
+        _first = _rect == null || _measured == widget.selected;
+        _measured = widget.selected;
         _rect = rect;
       });
+      // A group may still be opening or closing: follow it until the row settles.
+      WidgetsBinding.instance.addPostFrameCallback((_) => _measure());
     }
   }
 
@@ -598,6 +629,49 @@ class _SettingsAnchorState extends ConsumerState<SettingsAnchor> {
         borderRadius: BorderRadius.circular(theme.radius),
       ),
       child: widget.child,
+    );
+  }
+}
+
+/// A group heading in the Settings list: its label over a fine rule, and a chevron that folds the group away.
+class _GroupHeader extends StatelessWidget {
+  const _GroupHeader({super.key, required this.label, required this.open, required this.onTap});
+
+  final String label;
+  final bool open;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return Pressable(
+      onTap: onTap,
+      semanticLabel: '$label, ${open ? 'collapse' : 'expand'}',
+      builder: (context, s, child) => Container(
+        margin: const EdgeInsets.fromLTRB(0, 14, 0, 4),
+        padding: const EdgeInsets.fromLTRB(10, 0, 6, 6),
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: theme.border)),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(label, style: theme.type.caption.medium.tint(s.hovered ? theme.textMuted : theme.textSubtle)),
+            ),
+            AnimatedRotation(
+              turns: open ? 0 : -0.25,
+              duration: Motion.reduced(context) ? Duration.zero : Motion.swap,
+              curve: Motion.easeInOut,
+              child: AdaptiveIcon(
+                EveryIcon.chevronDown,
+                size: 13,
+                color: s.hovered ? theme.textMuted : theme.textSubtle,
+              ),
+            ),
+          ],
+        ),
+      ),
+      child: const SizedBox.shrink(),
     );
   }
 }

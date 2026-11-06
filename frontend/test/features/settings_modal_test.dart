@@ -137,6 +137,21 @@ void main() {
     // The jump is spent once the row has been shown.
     expect(c.read(settingsTargetProvider)!.anchor, isNull);
 
+    // A group heading folds its sections away, and remembers it.
+    await tester.enterText(
+      find.descendant(of: find.byKey(const ValueKey('settings.search')), matching: find.byType(EditableText)),
+      '',
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('settings.nav.account')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('settings.group.preferences')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('settings.nav.account')), findsNothing);
+    expect(c.read(settingsCollapsedGroupsProvider), {SettingsGroup.preferences});
+    await tester.tap(find.byKey(const ValueKey('settings.group.preferences')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('settings.nav.account')), findsOneWidget);
+
     // A second open while showing only jumps.
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pumpAndSettle();

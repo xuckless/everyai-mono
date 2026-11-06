@@ -779,7 +779,8 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   tile) share a card, an `AdaptiveSectionHeader` labels the next card, anything else stands alone. Every settings
   page uses it. General: theme as three pictures (`ThemeCards`), Pure black, new Reduce motion
   (`appearance.reduce_motion`, sets `disableAnimations` app-wide). Account: avatar, name, email · plan, Manage
-  plan. Code settings rows are quiet cards instead of ruled rows.
+  plan. Code settings rows are quiet cards instead of ruled rows. Group headings in the list have a fine rule and
+  a chevron that folds the group (prefs `settings.collapsed_groups`).
 - **Window chrome on Windows/Linux (2026-11-06).** `core/platform/window_caption.dart`: the native title bar is
   hidden (`TitleBarStyle.hidden`, window_manager) and the app draws its own. `WindowButtonsOverlay` (app root
   builder) floats minimize / maximize-restore / close at the top right above every route and dialog (Windows: flat
