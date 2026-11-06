@@ -16,6 +16,7 @@ import '../../questions/ui/question_card.dart';
 import '../code_providers.dart';
 import '../domain/code_session.dart';
 import '../drivers/driver_registry.dart' show driverRegistryProvider;
+import '../ui/harness_logo.dart';
 import 'board_providers.dart';
 
 /// Every session at a glance: Needs you, Running, Done, side by side with hairlines between them (drag one to
@@ -432,7 +433,6 @@ class _BoardCardState extends ConsumerState<BoardCard> {
       if (info.worktree != null) 'worktree' else if (info.branch.isNotEmpty) info.branch,
       if (info.parentId != null) 'fork',
     ].join(' · ');
-    final mark = harnessMark(info.harness);
     final waiting = widget.status == SessionStatus.needsInput;
     void openSession() => context.go(Routes.codeSession(info.id));
 
@@ -484,7 +484,7 @@ class _BoardCardState extends ConsumerState<BoardCard> {
               children: [
                 m.Tooltip(
                   message: widget.harnessLabel,
-                  child: AgentGlyph(letters: mark.letters, color: mark.color, size: 24),
+                  child: HarnessLogo(info.harness, size: 24),
                 ),
                 const SizedBox(width: 12),
                 Expanded(

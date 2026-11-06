@@ -812,6 +812,15 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   the kit; left as they are.
   6g workflow progress (Session tab's running work): a thin bar per run (finished agents), status dots on workflow
   agents and background commands, commands in mono. Not seen with a live Ultra run.
+- **Logos back (2026-11-06).** Owner: real icons for every model vendor, harness and editor, from Lobe Icons (MIT,
+  owner's pick; notice added), brand colour on a tile. `core/ui/logos.dart`: `Logo.vendor(slug)` / `.harness(id)` /
+  `.app(id)` map to `assets/logos/*.svg` (51 files); `LogoTile` draws a neutral tile (r 28%, hairline), `-color` files
+  keep their colours, one-colour marks take the text colour; no logo → the old monogram (`AgentGlyph`). EveryAI uses
+  the brand mark. `ModelAvatar` (shop, pickers, composer chip, message footer, Settings) and `HarnessLogo`
+  (`code/ui/harness_logo.dart`: Board cards, agent menu, Code composer line, harness rows in Settings/onboarding with
+  the status as a corner dot, Code home's Earlier list) use it; the API keys page too. Kimi uses the one-colour mark
+  (its colour K vanishes on dark). Missing in Lobe Icons: VS Code, Augment, Factory, Zed, TeleAI, Writer and other
+  small vendors (monograms). The old rasters in `assets/models/` are unused now.
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2

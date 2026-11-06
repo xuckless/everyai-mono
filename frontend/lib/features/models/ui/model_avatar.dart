@@ -1,11 +1,11 @@
 import 'package:flutter/widgets.dart';
 
-import '../../../core/ui/kit.dart';
+import '../../../core/ui/logos.dart';
+
 import '../domain/model_catalog.dart';
 
-/// A vendor's coloured monogram (no third-party logos): C for Claude, O for
-/// OpenAI, G for Gemini, E for EveryAI · Auto; other vendors get their initial
-/// on a colour derived from their slug.
+/// A vendor's logo on its tile (Lobe Icons); vendors without one get their
+/// initial on a colour derived from their slug.
 class ModelAvatar extends StatelessWidget {
   const ModelAvatar(this.provider, {super.key, this.size = 28});
 
@@ -34,9 +34,11 @@ class ModelAvatar extends StatelessWidget {
   };
 
   @override
-  Widget build(BuildContext context) => Semantics(
+  Widget build(BuildContext context) => LogoTile(
+    logo: Logo.vendor(provider.slug),
+    letters: lettersOf(provider),
+    color: colorOf(provider),
+    size: size,
     label: provider.label,
-    image: true,
-    child: AgentGlyph(letters: lettersOf(provider), color: colorOf(provider), size: size),
   );
 }

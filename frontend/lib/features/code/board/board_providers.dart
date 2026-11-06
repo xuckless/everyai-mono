@@ -27,7 +27,7 @@ enum BoardColumn {
   };
 }
 
-/// A harness's mark on the Board: two letters on its colour (no logos).
+/// A harness's two-letter mark and colour: the fallback for harnesses without a logo ([HarnessLogo]).
 ({String letters, Color color}) harnessMark(String harness) => switch (harness) {
   everyaiHarnessName => (letters: 'EA', color: const Color(0xFF7756E4)),
   'claude-code' => (letters: 'CC', color: const Color(0xFFC9694A)),

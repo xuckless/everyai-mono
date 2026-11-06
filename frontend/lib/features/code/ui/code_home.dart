@@ -41,6 +41,7 @@ import '../environments/environment_picker.dart';
 import '../harness/events.dart' show HarnessEvent;
 import '../resume/past_sessions.dart';
 import '../resume/resume_providers.dart';
+import 'harness_logo.dart';
 
 /// The New session page's headline: one picked at random each time the page opens.
 const startWords = [
@@ -654,7 +655,9 @@ class _SessionTileState extends ConsumerState<SessionTile> {
                   const SizedBox(width: 6),
                 ],
                 if (widget.badge case final b?) ...[
-                  Text(b, style: theme.type.caption.medium.tint(theme.accent)),
+                  HarnessLogo(widget.info.harness, size: 14, label: b),
+                  const SizedBox(width: 5),
+                  Text(b, style: theme.type.caption.tint(theme.textMuted)),
                   const SizedBox(width: 8),
                 ],
                 if (!widget.dense) Text(_age(widget.info.createdAt), style: theme.type.caption.tint(theme.textMuted)),
@@ -770,7 +773,7 @@ class _PastSessionTileState extends State<PastSessionTile> {
                 ),
                 child: Row(
                   children: [
-                    AdaptiveIcon(EveryIcon.command, size: 14, color: theme.textMuted),
+                    HarnessLogo(p.harness, size: 18, label: widget.label),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Column(

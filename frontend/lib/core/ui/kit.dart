@@ -863,10 +863,13 @@ class _KitTabsState<T> extends State<KitTabs<T>> {
 /// Quiet text (an optional icon, a chevron) that lights up under the pointer to show it opens a menu: the parts of
 /// the line under a composer. A popover around it takes the tap.
 class QuietTrigger extends StatefulWidget {
-  const QuietTrigger({super.key, this.label = '', this.icon, this.enabled = true, this.chevron = true});
+  const QuietTrigger({super.key, this.label = '', this.icon, this.leading, this.enabled = true, this.chevron = true});
 
   final String label;
   final EveryIcon? icon;
+
+  /// Drawn before the label instead of [icon] (a logo).
+  final Widget? leading;
   final bool enabled;
   final bool chevron;
 
@@ -893,7 +896,10 @@ class _QuietTriggerState extends State<QuietTrigger> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (widget.icon case final icon?) ...[
+            if (widget.leading case final leading?) ...[
+              leading,
+              if (widget.label.isNotEmpty) const SizedBox(width: 5),
+            ] else if (widget.icon case final icon?) ...[
               Icon(icon.data, size: 13, color: color),
               if (widget.label.isNotEmpty) const SizedBox(width: 5),
             ],

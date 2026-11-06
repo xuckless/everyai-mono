@@ -488,3 +488,11 @@ POSSIBILITY OF SUCH DAMAGE.
 - **What:** the `flutter_animate` package, used as a dependency (no code copied) for ambient loops in the UI kit.
 - **Where:** `frontend/pubspec.yaml`; resolved from pub.dev.
 - **License:** BSD-3-Clause
+
+## Lobe Icons 1.102.0 (lobehub/lobe-icons, npm `@lobehub/icons-static-svg`)
+
+- **What:** 51 unmodified SVG logos of model vendors, coding-agent CLIs and editors (Claude, OpenAI, Gemini, Claude
+  Code, Codex, Cursor, …), shown on tiles beside model and harness names (`frontend/lib/core/ui/logos.dart`). The
+  logos themselves are their owners' trademarks, used only to name their products.
+- **Where:** `frontend/assets/logos/`.
+- **License:** MIT, Copyright (c) 2023 LobeHub

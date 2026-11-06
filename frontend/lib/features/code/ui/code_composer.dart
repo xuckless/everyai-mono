@@ -28,6 +28,9 @@ import '../domain/agent_mode.dart';
 import '../harness/harness.dart' show NativeCommand, NativeMode, nativeModeOf;
 import '../uploads/uploads.dart';
 import 'agent_menu.dart';
+import '../../models/ui/model_avatar.dart';
+import 'harness_logo.dart';
+import '../domain/code_session.dart' show everyaiHarnessName;
 
 /// The Code composer. Enter sends (or queues while the agent works),
 /// Option-Enter interrupts and sends now, Esc stops. `/` at the start opens the
@@ -468,7 +471,8 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
           key: const ValueKey('composer.strip.harness'),
           menu: agent,
           page: AgentMenuPage.harness,
-          trigger: (context, label, enabled) => QuietTrigger(label: label, enabled: enabled),
+          trigger: (context, label, enabled) =>
+              QuietTrigger(label: label, enabled: enabled, leading: HarnessLogo(agent.harness, size: 14)),
         ),
         for (final page in agent.lineParts(ref))
           if (page != AgentMenuPage.workflow)
@@ -476,7 +480,14 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
               key: ValueKey('composer.line.${page.name}'),
               menu: agent,
               page: page,
-              trigger: (context, label, enabled) => QuietTrigger(label: label, enabled: enabled),
+              trigger: (context, label, enabled) => QuietTrigger(
+                label: label,
+                enabled: enabled,
+                // EveryAI's models carry their vendor's logo; an outside harness's own model names don't map.
+                leading: page == AgentMenuPage.model && agent.harness == everyaiHarnessName && agent.model.isNotEmpty
+                    ? ModelAvatar(ModelProvider.ofModel(ModelId(agent.model)), size: 14)
+                    : null,
+              ),
             ),
       ],
       ...widget.lineExtras,
