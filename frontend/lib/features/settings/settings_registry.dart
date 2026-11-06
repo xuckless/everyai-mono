@@ -72,7 +72,13 @@ final class SettingsEntry {
 const settingsEntries = <SettingsEntry>[
   SettingsEntry(SettingsSection.general, 'General', keywords: ['preferences']),
   SettingsEntry(SettingsSection.general, 'Theme', anchor: 'theme', keywords: ['dark', 'light', 'appearance', 'mode']),
-  SettingsEntry(SettingsSection.general, 'Design', anchor: 'design', keywords: ['look', 'macos', 'material', 'fluent']),
+  SettingsEntry(SettingsSection.general, 'Pure black', anchor: 'pure-black', keywords: ['oled', 'black', 'dark']),
+  SettingsEntry(
+    SettingsSection.general,
+    'Reduce motion',
+    anchor: 'reduce-motion',
+    keywords: ['animation', 'motion', 'accessibility'],
+  ),
   SettingsEntry(SettingsSection.general, 'Default model', anchor: 'default-model', keywords: ['chat', 'model']),
   SettingsEntry(
     SettingsSection.general,

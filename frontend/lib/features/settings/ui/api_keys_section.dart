@@ -22,8 +22,7 @@ class ApiKeysSection extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = EveryTheme.of(context);
     final keys = ref.watch(byokKeysProvider).value ?? const <String, String>{};
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+    return KitGroupedList(
       children: [
         Container(
           key: const ValueKey('byok.banner'),

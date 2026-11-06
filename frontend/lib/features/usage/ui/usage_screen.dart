@@ -53,8 +53,7 @@ class _UsageBodyState extends ConsumerState<UsageBody> {
       UsageGroupBy.provider => usageProviderLabel(key),
     };
 
-    return ListView(
-      padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
+    return KitGroupedList(
       children: [
         if (billing case AsyncData(value: final b)) _QuotaCard(b),
         Wrap(

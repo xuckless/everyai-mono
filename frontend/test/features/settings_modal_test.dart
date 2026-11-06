@@ -6,6 +6,7 @@ import 'package:every_ai/core/providers.dart';
 import 'package:every_ai/core/theme/every_theme.dart';
 import 'package:every_ai/features/models/domain/model_catalog.dart';
 import 'package:every_ai/features/models/models_providers.dart';
+import 'package:every_ai/features/settings/appearance.dart';
 import 'package:every_ai/features/settings/reply_language.dart';
 import 'package:every_ai/features/settings/settings_registry.dart';
 import 'package:every_ai/features/settings/ui/settings_modal.dart';
@@ -120,7 +121,7 @@ void main() {
     await tester.tap(find.text('open'));
     await tester.pumpAndSettle();
     expect(c.read(settingsOpenProvider), isTrue);
-    expect(find.text('Settings'), findsOneWidget);
+    expect(find.byType(SettingsModal), findsOneWidget);
     expect(find.byKey(const ValueKey('settings.notices')), findsOneWidget);
     expect(find.byKey(const ValueKey('settings.nav.general')), findsOneWidget);
 
@@ -139,12 +140,12 @@ void main() {
     // A second open while showing only jumps.
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pumpAndSettle();
-    expect(find.text('Settings'), findsNothing);
+    expect(find.byType(SettingsModal), findsNothing);
     expect(c.read(settingsOpenProvider), isFalse);
   });
 
   testWidgets('narrow windows drill down from the list', (tester) async {
-    await _pump(tester, const Size(500, 900));
+    final c = await _pump(tester, const Size(500, 900));
     await tester.tap(find.text('open'));
     await tester.pumpAndSettle();
     // Opened at a section: it shows, with a way back to the list.
@@ -155,6 +156,13 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('settings.nav.general')));
     await tester.pumpAndSettle();
     expect(find.text('Reply language'), findsOneWidget);
+    // The theme pictures pick the theme; Reduce motion is remembered.
+    await tester.tap(find.byKey(const ValueKey('settings.theme.light')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('settings.pure-black')), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('settings.reduce-motion')));
+    await tester.pumpAndSettle();
+    expect(c.read(appearanceProvider).reduceMotion, isTrue);
     await tester.tap(find.byKey(const ValueKey('settings.close')));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('settings.close')), findsNothing);

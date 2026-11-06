@@ -38,7 +38,12 @@ class EveryApp extends ConsumerWidget {
           appearance.brightness(MediaQuery.platformBrightnessOf(context)),
           pureBlack: appearance.pureBlack,
         ),
-        child: child ?? const SizedBox.shrink(),
+        child: appearance.reduceMotion
+            ? MediaQuery(
+                data: MediaQuery.of(context).copyWith(disableAnimations: true),
+                child: child ?? const SizedBox.shrink(),
+              )
+            : child ?? const SizedBox.shrink(),
       ),
     );
   }

@@ -761,3 +761,63 @@ class GlassSurface extends StatelessWidget {
 /// one, so it works in any parent instead of throwing "No Material widget found".
 Widget onMaterial(BuildContext context, Widget child) =>
     m.Material.maybeOf(context) != null ? child : m.Material(type: m.MaterialType.transparency, child: child);
+
+/// A widget that sits in a [KitGroupedList] card like a row when [groupsInCard] says so (a wrapper such as a
+/// Settings anchor around a list tile).
+abstract interface class KitRowLike {
+  bool get groupsInCard;
+}
+
+/// Whether [w] is a settings-style row that belongs on a card.
+bool kitIsRow(Widget w) => w is AdaptiveListTile || w is MenuRow || (w is KitRowLike && (w as KitRowLike).groupsInCard);
+
+/// A scrolling settings page from a flat list of children: runs of rows (list tiles, or wrappers of them) go
+/// together on one [KitGroup] card, an [AdaptiveSectionHeader] becomes the label of the card after it, and anything
+/// else (an editor, a note, a chart) stands on its own between the cards.
+class KitGroupedList extends StatelessWidget {
+  const KitGroupedList({super.key, required this.children, this.padding = const EdgeInsets.fromLTRB(20, 4, 20, 28)});
+
+  final List<Widget> children;
+  final EdgeInsetsGeometry padding;
+
+  /// [children] folded into cards.
+  static List<Widget> fold(List<Widget> children) {
+    final out = <Widget>[];
+    String? label;
+    var run = <Widget>[];
+    void flush() {
+      if (run.isNotEmpty) {
+        out.add(KitGroup(label: label, children: run));
+      } else if (label case final l?) {
+        out.add(KitLabel(l, padding: const EdgeInsets.fromLTRB(8, 0, 8, 8)));
+      }
+      run = [];
+      label = null;
+    }
+
+    for (final c in children) {
+      if (c is AdaptiveSectionHeader) {
+        flush();
+        label = c.label;
+      } else if (kitIsRow(c)) {
+        run.add(c);
+      } else if (c is SizedBox && c.child == null) {
+        // Spacers between rows don't break a card.
+        if (run.isEmpty) out.add(c);
+      } else {
+        if (run.isNotEmpty) {
+          flush();
+        } else if (label case final l?) {
+          out.add(KitLabel(l, padding: const EdgeInsets.fromLTRB(8, 0, 8, 8)));
+          label = null;
+        }
+        out.add(Padding(padding: const EdgeInsets.only(bottom: 14), child: c));
+      }
+    }
+    flush();
+    return out;
+  }
+
+  @override
+  Widget build(BuildContext context) => ListView(padding: padding, children: fold(children));
+}

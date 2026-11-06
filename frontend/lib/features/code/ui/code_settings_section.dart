@@ -135,8 +135,7 @@ class _CodeSettingsSectionState extends ConsumerState<CodeSettingsSection> {
         if (d.addable && !shown.contains(d)) d,
     ];
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+    return KitGroupedList(
       children: [
         Wrap(
           spacing: 10,
@@ -435,9 +434,13 @@ class _CodeSettingsSectionState extends ConsumerState<CodeSettingsSection> {
     );
     return Container(
       key: ValueKey('code-settings.row.${d.key}'),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+      // Each setting on its own quiet card: space separates them, not rules.
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
-        border: Border(bottom: BorderSide(color: theme.border.withValues(alpha: 0.6))),
+        color: theme.surfaceRaised.withValues(alpha: theme.isDark ? 0.55 : 0.6),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: theme.border),
       ),
       child: block
           ? Column(
@@ -842,14 +845,15 @@ class _PromptEditorState extends State<_PromptEditor> {
           onChanged: (_) => setState(() {}),
         ),
         const SizedBox(height: 8),
-        Row(
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
           children: [
             AdaptiveButton(
               key: const ValueKey('code-settings.prompt.save'),
               label: 'Save',
               onPressed: dirty ? () => widget.onSave(_controller.text) : null,
             ),
-            const SizedBox(width: 8),
             AdaptiveButton(
               label: 'Revert',
               emphasis: ButtonEmphasis.secondary,
@@ -1198,8 +1202,7 @@ class PermissionsSection extends ConsumerWidget {
       );
     }
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+    return KitGroupedList(
       children: [
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12),

@@ -769,7 +769,17 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   harness, Claude Code and ACP drivers reads the tail of their event file (`readEventTail`); Codex and OpenCode keep
   no file, so they show status only. `KitListEditor` (`core/ui/list_editor.dart`): macOS Login Items-style table with
   + / − and Delete, replacing comma/line-separated inputs for research sites (dialog + Settings), Rules, and MCP
-  environment variables and headers (secret-looking values hidden). Next: phase 5 Settings, 6 the rest.
+  environment variables and headers (secret-looking values hidden).
+- **UI overhaul, phase 5: Settings (2026-11-06).** The modal follows the artifact's Settings board: a solid surface
+  (r18, pop shadow, hairline on top) that eases in from 0.95; the left column (bg fill, 232pt) holds search and the
+  sections under quiet group labels, with one highlight that slides to the open section (`_SlidingSelection`); the
+  right side has the section title (StateSwap) and Close. Phones get grouped cards of sections, and a section slides
+  in from the right with a back control. `KitGroupedList` (adaptive.dart) folds a page's flat children into
+  `KitGroup` cards: runs of rows (`AdaptiveListTile`, `MenuRow`, or a `KitRowLike` such as `SettingsAnchor` around a
+  tile) share a card, an `AdaptiveSectionHeader` labels the next card, anything else stands alone. Every settings
+  page uses it. General: theme as three pictures (`ThemeCards`), Pure black, new Reduce motion
+  (`appearance.reduce_motion`, sets `disableAnimations` app-wide). Account: avatar, name, email · plan, Manage
+  plan. Code settings rows are quiet cards instead of ruled rows. Next: window chrome on Windows/Linux, then phase 6.
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2

@@ -52,8 +52,7 @@ class SkillsSettingsBody extends ConsumerWidget {
           ],
         );
 
-    return ListView(
-      padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
+    return KitGroupedList(
       children: [
         Text(
           'A skill is a folder with a SKILL.md: instructions, and sometimes scripts and reference files, that the '

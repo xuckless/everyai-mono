@@ -15,9 +15,12 @@ enum ThemePreference {
 
 @immutable
 final class Appearance {
-  const Appearance({required this.theme, this.pureBlack = false});
+  const Appearance({required this.theme, this.pureBlack = false, this.reduceMotion = false});
 
   final ThemePreference theme;
+
+  /// Animations off in the app, whatever the system says (the system setting already turns them off).
+  final bool reduceMotion;
 
   /// Dark theme on a #000 background.
   final bool pureBlack;
@@ -38,6 +41,7 @@ final appearanceProvider = NotifierProvider<AppearanceController, Appearance>(Ap
 final class AppearanceController extends Notifier<Appearance> {
   static const _themeKey = 'appearance.theme';
   static const _pureBlackKey = 'appearance.pure_black';
+  static const _reduceMotionKey = 'appearance.reduce_motion';
 
   Preferences get _prefs => ref.read(preferencesProvider);
 
@@ -47,16 +51,22 @@ final class AppearanceController extends Notifier<Appearance> {
     return Appearance(
       theme: ThemePreference.values.asNameMap()[prefs[_themeKey]] ?? ThemePreference.system,
       pureBlack: prefs[_pureBlackKey] == 'true',
+      reduceMotion: prefs[_reduceMotionKey] == 'true',
     );
   }
 
   void setTheme(ThemePreference theme) {
     _prefs[_themeKey] = theme.name;
-    state = Appearance(theme: theme, pureBlack: state.pureBlack);
+    state = Appearance(theme: theme, pureBlack: state.pureBlack, reduceMotion: state.reduceMotion);
   }
 
   void setPureBlack(bool on) {
     _prefs[_pureBlackKey] = on ? 'true' : null;
-    state = Appearance(theme: state.theme, pureBlack: on);
+    state = Appearance(theme: state.theme, pureBlack: on, reduceMotion: state.reduceMotion);
+  }
+
+  void setReduceMotion(bool on) {
+    _prefs[_reduceMotionKey] = on ? 'true' : null;
+    state = Appearance(theme: state.theme, pureBlack: state.pureBlack, reduceMotion: on);
   }
 }

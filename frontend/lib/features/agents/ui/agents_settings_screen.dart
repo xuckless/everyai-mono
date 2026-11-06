@@ -90,8 +90,7 @@ class _AgentsSettingsBodyState extends ConsumerState<AgentsSettingsBody> {
       ],
     );
 
-    return ListView(
-      padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
+    return KitGroupedList(
       children: [
         Text(
           'An agent is a Markdown file: a description that tells the Code agent when to hand it work, optional '
@@ -148,8 +147,7 @@ class _AgentsSettingsBodyState extends ConsumerState<AgentsSettingsBody> {
     final readOnly = a.path == null;
     final preview = AgentDefinition.parse(_text.text, fileName: '${a.name}.md', source: a.source);
     final problems = [...preview.errors, ...preview.warnings];
-    return ListView(
-      padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
+    return KitGroupedList(
       children: [
         Row(
           children: [

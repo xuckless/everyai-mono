@@ -25,8 +25,7 @@ class RemoteSettingsBody extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return ListView(
-      padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
+    return KitGroupedList(
       // A computer hosts its sessions; other devices pair with one to follow them.
       children: [if (Host.isDesktop) const _HostSection() else const _PairedHostsSection()],
     );

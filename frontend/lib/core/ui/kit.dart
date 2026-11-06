@@ -903,3 +903,43 @@ class _QuietTriggerState extends State<QuietTrigger> {
     );
   }
 }
+
+/// Rows that belong together on one quiet card, with an optional label above (Settings groups). No dividers: the
+/// rows' own spacing separates them.
+class KitGroup extends StatelessWidget {
+  const KitGroup({super.key, this.label, required this.children, this.padding = const EdgeInsets.all(4)});
+
+  final String? label;
+  final List<Widget> children;
+  final EdgeInsetsGeometry padding;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (label case final l? when l.isNotEmpty) KitLabel(l, padding: const EdgeInsets.fromLTRB(8, 0, 8, 8)),
+          DecoratedBox(
+            decoration: BoxDecoration(
+              color: theme.surfaceRaised.withValues(alpha: theme.isDark ? 0.55 : 0.6),
+              borderRadius: BorderRadius.circular(EveryTheme.cardRadius),
+              border: Border.all(color: theme.border),
+            ),
+            child: Padding(
+              padding: padding,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                mainAxisSize: MainAxisSize.min,
+                children: children,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
