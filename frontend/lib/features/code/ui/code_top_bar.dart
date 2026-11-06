@@ -18,6 +18,7 @@ import '../mcp_providers.dart';
 import '../permissions_providers.dart';
 import '../../settings/settings_registry.dart';
 import '../../settings/ui/settings_modal.dart';
+import 'research_sites_editor.dart';
 
 Widget _check(EveryTheme theme, bool on) =>
     on ? AdaptiveIcon(EveryIcon.check, size: 14, color: theme.accent) : const SizedBox(width: 14);
@@ -131,15 +132,9 @@ class SessionSettingsList extends ConsumerWidget {
             key: const ValueKey('top-bar.settings.research'),
             title: 'Research sites',
             subtitle: '${plural(prompts.researchSites.length, 'site')} · what Max and Ultra research may read',
-            onTap: () async {
+            onTap: () {
               close();
-              final next = await showAdaptivePrompt(
-                context,
-                title: 'Research sites (comma separated; *.example.com for subdomains; empty for the defaults)',
-                confirmLabel: 'Save',
-                initialValue: prompts.researchSites.join(', '),
-              );
-              if (next != null) ref.read(codeSettingsProvider.notifier).setResearchSites(next.split(','));
+              showResearchSites(context);
             },
           ),
           PopoverRow(

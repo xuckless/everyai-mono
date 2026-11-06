@@ -19,6 +19,7 @@ import '../../domain/transcript.dart' show PlanProposal, planApprovedReason;
 import '../../domain/subagents.dart' show forkingTaskSpec, subagentRules, taskTool;
 import '../../settings/agent_prompt.dart' show forHeldClientTools;
 import '../events.dart';
+import '../../drivers/event_journal.dart' show readEventTail;
 import '../harness.dart';
 import '../../checks/runtime_profiles.dart' show runtimeProfilesBlock;
 import '../../drivers/briefing/briefing_types.dart' show everyaiServerName;
@@ -47,7 +48,7 @@ bool gitBashMissing() => Platform.isWindows && findGitBash(Platform.environment,
 /// permissions and approvals are shared), but the loop, the tools and the
 /// history are ours: questions block inside the call, tool results can be cut
 /// to size, and a session can be forked from another's history.
-final class EveryAIHarness implements Harness, ForksSessions, AttachesBriefed, AttachesWithMcp {
+final class EveryAIHarness implements Harness, ForksSessions, AttachesBriefed, AttachesWithMcp, ReadsRecentEvents {
   EveryAIHarness({required this.dataDir, required this.gatewayKey, this.client});
 
   /// App Support; sessions are kept under `everyai-sessions/<id>/`.
@@ -133,6 +134,12 @@ final class EveryAIHarness implements Harness, ForksSessions, AttachesBriefed, A
         .._writeSpec();
     }
     return session;
+  }
+
+  @override
+  Future<List<HarnessEvent>> recentEvents(String conversationId) async {
+    if (_sessions[conversationId] case final s?) return List.of(s._history);
+    return readEventTail('${await dataDir()}/everyai-sessions/$conversationId/events.jsonl');
   }
 
   @override

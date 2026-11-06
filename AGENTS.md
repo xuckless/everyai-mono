@@ -760,7 +760,16 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   sessions with an open controller), Approve/Deny in place for approvals (pulse), Open/Answer for questions (answering
   happens in the session). Forks show once detached (`boardDetachedProvider`, prefs `code.board.detached`; toggle in
   the child chat header). Removed-harness sessions stay off. Not done: cards don't glide between columns; questions
-  aren't answered on the card. Next: phase 5 Settings, 6 the rest.
+  aren't answered on the card.
+- **Board and list fixes (2026-11-06).** Board: Done cards clear (× on hover, Clear on the column; prefs
+  `code.board.dismissed`; a cleared session that runs again comes back), cards glide to their new column (`_Glide`,
+  one GlobalKey per card, ease-in-out with a shallow arc), hairline dividers resize the columns (prefs
+  `code.board.columns`, double-click evens), questions are answered on the card (the `QuestionCard`; waiting sessions
+  are opened so their card can answer). Closed sessions show what they last did: `ReadsRecentEvents` on the EveryAI
+  harness, Claude Code and ACP drivers reads the tail of their event file (`readEventTail`); Codex and OpenCode keep
+  no file, so they show status only. `KitListEditor` (`core/ui/list_editor.dart`): macOS Login Items-style table with
+  + / − and Delete, replacing comma/line-separated inputs for research sites (dialog + Settings), Rules, and MCP
+  environment variables and headers (secret-looking values hidden). Next: phase 5 Settings, 6 the rest.
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2

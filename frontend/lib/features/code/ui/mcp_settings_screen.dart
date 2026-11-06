@@ -299,16 +299,22 @@ class _ServerEditor extends StatefulWidget {
 class _ServerEditorState extends State<_ServerEditor> {
   late final _name = TextEditingController(text: widget.initial.name);
   late final _command = TextEditingController(text: widget.initial.commandLine);
-  late final _env = TextEditingController(text: envLines(widget.initial.env));
+  late var _env = [
+    for (final l in envLines(widget.initial.env).split('\n'))
+      if (l.trim().isNotEmpty) l,
+  ];
   late final _url = TextEditingController(text: widget.initial.url);
-  late final _headers = TextEditingController(text: headerLines(widget.initial.headers));
+  late var _headers = [
+    for (final l in headerLines(widget.initial.headers).split('\n'))
+      if (l.trim().isNotEmpty) l,
+  ];
   late final _description = TextEditingController(text: widget.initial.description);
   late McpTransport _transport = widget.initial.transport;
   String? _error;
 
   @override
   void dispose() {
-    for (final c in [_name, _command, _env, _url, _headers, _description]) {
+    for (final c in [_name, _command, _url, _description]) {
       c.dispose();
     }
     super.dispose();
@@ -322,9 +328,9 @@ class _ServerEditorState extends State<_ServerEditor> {
       transport: _transport,
       command: stdio && words.isNotEmpty ? words.first : '',
       args: stdio && words.length > 1 ? words.sublist(1) : const [],
-      env: stdio ? parseEnvLines(_env.text) : const {},
+      env: stdio ? parseEnvLines(_env.join('\n')) : const {},
       url: stdio ? '' : _url.text.trim(),
-      headers: stdio ? const {} : parseHeaderLines(_headers.text),
+      headers: stdio ? const {} : parseHeaderLines(_headers.join('\n')),
       description: _description.text.trim(),
     );
   }
@@ -379,13 +385,37 @@ class _ServerEditorState extends State<_ServerEditor> {
           if (stdio) ...[
             label('Command and arguments, as you would type them'),
             AdaptiveTextField(controller: _command, placeholder: 'npx -y @scope/server@1.2.3'),
-            label('Environment, one KEY=value per line'),
-            AdaptiveTextField(controller: _env, minLines: 2, maxLines: 6, placeholder: 'API_KEY=…'),
+            label('Environment'),
+            KitListEditor(
+              key: const ValueKey('mcp.env'),
+              items: _env,
+              itemLabel: 'Variable',
+              kindLabel: 'Value',
+              display: (l) => l.split('=').first,
+              kindOf: (l) => _shown(l.substring(l.indexOf('=') + 1), l.split('=').first),
+              placeholder: 'API_KEY=value',
+              empty: 'No variables',
+              validate: (t) => RegExp(r'^[A-Za-z_][A-Za-z0-9_]*=').hasMatch(t) ? null : 'NAME=value',
+              maxHeight: 160,
+              onChanged: (next) => setState(() => _env = next),
+            ),
           ] else ...[
             label('URL'),
             AdaptiveTextField(controller: _url, placeholder: 'https://example.com/mcp'),
-            label('Headers, one Name: value per line'),
-            AdaptiveTextField(controller: _headers, minLines: 2, maxLines: 6, placeholder: 'Authorization: Bearer …'),
+            label('Headers'),
+            KitListEditor(
+              key: const ValueKey('mcp.headers'),
+              items: _headers,
+              itemLabel: 'Header',
+              kindLabel: 'Value',
+              display: (l) => l.split(':').first.trim(),
+              kindOf: (l) => _shown(l.substring(l.indexOf(':') + 1).trim(), l.split(':').first),
+              placeholder: 'Authorization: Bearer …',
+              empty: 'No headers',
+              validate: (t) => RegExp(r'^[A-Za-z0-9-]+\s*:').hasMatch(t) ? null : 'Name: value',
+              maxHeight: 160,
+              onChanged: (next) => setState(() => _headers = next),
+            ),
           ],
           label('Description (optional)'),
           AdaptiveTextField(controller: _description),
@@ -418,3 +448,9 @@ class _ServerEditorState extends State<_ServerEditor> {
     );
   }
 }
+
+/// A value as the list shows it: hidden when its name looks secret (keys, tokens, passwords, auth).
+String _shown(String value, String name) =>
+    RegExp(r'key|token|secret|pass|auth|cookie', caseSensitive: false).hasMatch(name) && value.isNotEmpty
+    ? '•' * value.length.clamp(4, 12)
+    : value;

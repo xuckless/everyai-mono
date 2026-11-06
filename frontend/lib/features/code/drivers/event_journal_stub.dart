@@ -5,6 +5,8 @@ import 'event_journal.dart';
 
 EventJournal openEventJournal(String dir, String conversationId) => _Memory();
 
+Future<List<HarnessEvent>> readEventTail(String path, {int maxBytes = 0}) async => const [];
+
 final class _Memory implements EventJournal {
   final _events = <HarnessEvent>[];
 

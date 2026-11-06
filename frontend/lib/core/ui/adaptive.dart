@@ -10,6 +10,7 @@ import 'every_icons.dart';
 import 'kit.dart';
 
 export 'kit.dart';
+export 'list_editor.dart';
 
 /// The building blocks screens compose. Since the 2026-11 overhaul they all
 /// render the EveryAI kit (`kit.dart`), the same on every platform; the names

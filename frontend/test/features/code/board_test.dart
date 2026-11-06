@@ -55,6 +55,8 @@ void main() {
       ],
       ['b', 'f', 'a'],
     );
+    // Sessions of the removed harness can't be reopened, so they stay off.
+    expect(boardSessions([_s('o', harness: openHandsHarnessName)], const {}), isEmpty);
   });
 
   test('activity: the approval it waits on, else the latest step or words', () {
@@ -138,6 +140,25 @@ void main() {
     expect(jsonDecode(prefs[BoardDetached.key]!), ['f']);
     // A waiting session without a live controller can still be opened from its card.
     expect(find.byKey(const ValueKey('board.open.b')), findsOneWidget);
+
+    // Done cards clear; one that runs again comes back.
+    await tester.tap(find.byKey(const ValueKey('board.clear-done')));
+    await tester.pumpAndSettle();
+    expect(find.text('Session c'), findsNothing);
+    expect(c.read(boardDismissedProvider), {'c'});
+    // ignore: invalid_use_of_protected_member
+    c.read(codeStatusesProvider.notifier).state = {...c.read(codeStatusesProvider), 'c': SessionStatus.running};
+    await tester.pumpAndSettle();
+    expect(inColumn('running', 'Session c'), findsOneWidget);
+    expect(c.read(boardDismissedProvider), isEmpty);
+
+    // A hairline between columns resizes them and remembers it.
+    final before = tester.getSize(find.byKey(const ValueKey('board.column.needsYou'))).width;
+    await tester.drag(find.byKey(const ValueKey('board.divider.0')), const Offset(80, 0), touchSlopX: 0);
+    await tester.pumpAndSettle();
+    expect(tester.getSize(find.byKey(const ValueKey('board.column.needsYou'))).width, closeTo(before + 80, 1));
+    expect(c.read(boardColumnsProvider).first, greaterThan(1 / 3));
+    expect(prefs[BoardColumns.key], isNotNull);
 
     await tester.tap(
       find.descendant(of: find.byKey(const ValueKey('board.filter')), matching: find.text('Claude Code')),

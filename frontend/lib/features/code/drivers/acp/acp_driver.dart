@@ -31,6 +31,7 @@ export 'acp_session.dart' show AcpConnect;
 final class AcpDriver
     implements
         HarnessDriver,
+        ReadsRecentEvents,
         AttachesBriefed,
         AttachesWithMcp,
         StartsInNativeMode,
@@ -471,6 +472,10 @@ final class AcpDriver
     _live[conversationId] = session;
     return session;
   }
+
+  @override
+  Future<List<HarnessEvent>> recentEvents(String conversationId) async =>
+      readEventTail(eventJournalPath('${await _root()}/$conversationId', 'events'));
 
   @override
   Future<Map<String, ExecutionStatus>> statuses(List<String> conversationIds) async {

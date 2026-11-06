@@ -57,6 +57,7 @@ enum EveryIcon {
   moon(LucideIcons300.moon),
   display(LucideIcons300.monitor),
   activity(LucideIcons300.activity),
+  minus(LucideIcons300.minus),
   help(LucideIcons300.circleHelp),
   signOut(LucideIcons300.logOut),
   language(LucideIcons300.languages),

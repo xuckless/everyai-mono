@@ -4,7 +4,10 @@ import 'dart:ui' show Color;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/preferences.dart';
+import '../code_providers.dart' show codeSessionsProvider;
 import '../domain/code_session.dart';
+import '../drivers/driver_registry.dart' show driverRegistryProvider;
+import '../harness/harness.dart' show ReadsRecentEvents;
 import '../domain/transcript.dart';
 import '../ui/transcript/transcript_items.dart' show approvalTitle;
 
@@ -90,8 +93,88 @@ final class BoardDetached extends Notifier<Set<String>> {
   }
 }
 
-/// The sessions the Board shows: every top-level session plus the detached forks, newest first.
+/// Done cards the user cleared off the Board (Preferences `code.board.dismissed`). A session that runs again comes
+/// back: the Board drops its id once it leaves Done.
+final boardDismissedProvider = NotifierProvider<BoardDismissed, Set<String>>(BoardDismissed.new);
+
+final class BoardDismissed extends Notifier<Set<String>> {
+  static const key = 'code.board.dismissed';
+
+  @override
+  Set<String> build() {
+    final raw = ref.read(preferencesProvider)[key];
+    if (raw == null) return const {};
+    try {
+      return {...(jsonDecode(raw) as List).whereType<String>()};
+    } on Object {
+      return const {};
+    }
+  }
+
+  void _set(Set<String> ids) {
+    state = ids;
+    ref.read(preferencesProvider)[key] = jsonEncode([...ids]);
+  }
+
+  void dismiss(Iterable<String> ids) => _set({...state, ...ids});
+
+  void restore(Iterable<String> ids) {
+    if (ids.any(state.contains)) _set({...state}..removeAll(ids));
+  }
+}
+
+/// The Board's column widths as shares of its width (three, summing to 1); Preferences `code.board.columns`.
+final boardColumnsProvider = NotifierProvider<BoardColumns, List<double>>(BoardColumns.new);
+
+final class BoardColumns extends Notifier<List<double>> {
+  static const key = 'code.board.columns';
+  static const even = [1 / 3, 1 / 3, 1 / 3];
+
+  @override
+  List<double> build() {
+    final raw = ref.read(preferencesProvider)[key];
+    try {
+      final list = [for (final v in jsonDecode(raw ?? '') as List) (v as num).toDouble()];
+      if (list.length == 3 && list.every((v) => v > 0)) return list;
+    } on Object {
+      // Missing or malformed: even columns.
+    }
+    return even;
+  }
+
+  /// New shares; [persist] is false while dragging.
+  void set(List<double> shares, {bool persist = true}) {
+    final total = shares.fold<double>(0, (a, b) => a + b);
+    state = [for (final v in shares) v / total];
+    if (persist) ref.read(preferencesProvider)[key] = jsonEncode(state);
+  }
+
+  void reset() => set(even);
+}
+
+/// The sessions the Board shows: every top-level session plus the detached forks, newest first. Sessions of a
+/// removed harness (they can't be reopened) stay off.
 List<CodeSessionInfo> boardSessions(List<CodeSessionInfo> all, Set<String> detached) => [
   for (final s in all)
-    if (s.parentId == null || detached.contains(s.id)) s,
+    if ((s.parentId == null || detached.contains(s.id)) && !s.removedHarness) s,
 ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+/// What a closed session last did, read from its harness's files (null when the harness keeps none). Keyed by the
+/// session and its status, so a status change reads it again.
+final boardRecentTranscriptProvider = FutureProvider.autoDispose.family<Transcript?, (String, SessionStatus)>((
+  ref,
+  key,
+) async {
+  final info = ref.read(codeSessionsProvider).where((s) => s.id == key.$1).firstOrNull;
+  if (info == null || info.removedHarness) return null;
+  final driver = ref.read(driverRegistryProvider).resolve(info.harness);
+  if (driver is! ReadsRecentEvents) return null;
+  try {
+    final events = await (driver as ReadsRecentEvents).recentEvents(info.conversationId);
+    final builder = TranscriptBuilder();
+    events.forEach(builder.add);
+    return builder.snapshot;
+  } on Object {
+    return null;
+  }
+});

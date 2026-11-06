@@ -44,6 +44,7 @@ typedef ClaudeSpawn = Future<LineChannel> Function(
 final class ClaudeDriver
     implements
         HarnessDriver,
+        ReadsRecentEvents,
         AttachesBriefed,
         ChecksResume,
         StartsInNativeMode,
@@ -301,6 +302,10 @@ final class ClaudeDriver
     session._emit(stateEvent(const Uuid().v4(), ExecutionStatus.idle), keep: false);
     return session;
   }
+
+  @override
+  Future<List<HarnessEvent>> recentEvents(String conversationId) async =>
+      readEventTail(eventJournalPath(await _dir(), conversationId));
 
   @override
   Future<Map<String, ExecutionStatus>> statuses(List<String> conversationIds) async {
