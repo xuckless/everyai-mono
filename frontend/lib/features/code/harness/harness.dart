@@ -61,6 +61,8 @@ final class SessionSpec {
     this.script,
     this.reviewModel,
     this.briefing,
+    this.liveId,
+    this.browserProfile,
     this.skillsOff = const {},
     this.runtimeProfiles = const [],
   });
@@ -73,6 +75,13 @@ final class SessionSpec {
   /// reach EveryAI's own tools and the session's skill; null for the EveryAI
   /// harness, which has them built in.
   final DriverBriefing? briefing;
+
+  /// The Code session this runs for, whose shared browser page the browser tool drives (see `LiveBrowsers`); null
+  /// gives the session a page of its own.
+  final String? liveId;
+
+  /// The browser profile folder: the project's, so sign-ins carry over (null: one in the session's folder).
+  final String? browserProfile;
 
   /// Skills of an outside lead that are off in this project (by the lead's own names).
   final Set<String> skillsOff;

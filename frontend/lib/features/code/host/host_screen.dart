@@ -188,8 +188,8 @@ final class ScreenAccess {
   })
   spawn;
 
-  /// A headless browser keeping its profile in [profileDir].
-  final ScreenBrowser Function(String profileDir) browser;
+  /// Code session [liveId]'s shared browser page (the one its Preview paints), its profile in [profileDir].
+  final ScreenBrowser Function(String liveId, String profileDir) browser;
 
   /// The TCP ports [pids] listen on.
   final Future<List<ListeningPort>> Function(Set<int> pids) listening;

@@ -4,7 +4,9 @@ import 'dart:io';
 
 import '../drivers/driver_process.dart';
 import '../harness/everyai/browser_io.dart';
+import '../live/live_browsers.dart';
 import '../harness/everyai/screen_tools_io.dart';
+import '../harness/everyai/scrub.dart';
 import '../harness/everyai/tools_io.dart' show ToolOutput;
 import '../harness/everyai/window_capture_io.dart' as capture;
 import '../harness/session_processes.dart';
@@ -32,14 +34,15 @@ ScreenAccess screenAccess() => ScreenAccess(
     sessionTag: sessionTag,
     logPath: logPath,
   ),
-  browser: (profileDir) => _Browser(HeadlessBrowser(profileDir: profileDir)),
+  browser: (liveId, profileDir) => _Browser(LiveBrowsers.forSession(liveId, profileDir: profileDir)),
   listening: listeningPorts,
 );
 
 ScreenResult _result(ToolOutput o) =>
     (text: o.text, isError: o.isError, images: [for (final i in o.images) ?hostImageOf(i.dataUrl)]);
 
-/// Closed with the session, or when the app quits.
+/// The host's handle on a session's shared page: dropping it (Stop, the session closing) leaves the page for the
+/// Preview; the app's quit stops the browser.
 final class _Browser implements ScreenBrowser {
   _Browser(this._b) {
     trackDriverClose(close);
@@ -47,14 +50,19 @@ final class _Browser implements ScreenBrowser {
   final HeadlessBrowser _b;
 
   @override
-  Future<ScreenResult> run(Map<String, Object?> args, String root) async =>
-      _result(await runBrowser(_b, args, root: root, vision: true, fit: (text, _) => _cut(text)));
+  Future<ScreenResult> run(Map<String, Object?> args, String root) async => _result(
+    await runBrowser(
+      _b,
+      args,
+      root: root,
+      vision: true,
+      fit: (text, _) => _cut(text),
+      scrub: Scrubber.forProject(root).redact,
+    ),
+  );
 
   @override
-  Future<void> close() {
-    untrackDriverClose(close);
-    return _b.close();
-  }
+  Future<void> close() async => untrackDriverClose(close);
 }
 
 /// An eval result as long as a host result should be.

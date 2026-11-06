@@ -1212,7 +1212,7 @@ final class _FakeScreen {
       onSpawn?.call(p);
       return p;
     },
-    browser: (_) {
+    browser: (_, _) {
       final b = _FakeBrowser();
       browsers.add(b);
       return b;

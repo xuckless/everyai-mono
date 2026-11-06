@@ -326,23 +326,34 @@ final _specs = [
   ),
   _fn(
     ToolNames.browser,
-    'Use a web page the way the user would, in a headless browser of your own (its own profile: never the '
-    'user\'s browser, so never quit or kill theirs). Open what you built (http://localhost:PORT with the dev server '
-    'in the background, or file:///path/index.html), click and type on the real elements, then look.\n'
-    '- action: open {url} · click {selector, or x and y; count 2 = double-click} · type {text, selector?, submit?} '
-    '· press {key: Enter, Tab, Escape, ArrowUp…, or one character} · scroll {dy} · wait {selector? ms?} · '
-    'eval {script: a JS expression; its JSON value comes back} · screenshot {full_page?} · console · '
+    'Use a web page the way the user would, in the browser the user sees live in the Preview tab (a profile of this '
+    'project\'s own: never the user\'s everyday browser, so never quit or kill theirs). Open what you built '
+    '(http://localhost:PORT with the dev server in the background, or file:///path/index.html), act on it, then '
+    'look.\n'
+    '- action: open {url} · snapshot · click {ref, or selector, or x and y with frame; count 2 = double-click} · '
+    'type {text, ref? or selector?, submit?} · press {key: Enter, Tab, Escape, ArrowUp…, or one character} · '
+    'scroll {dy} · wait {selector? ms?} · screenshot {full_page?} · zoom {x, y, width, height, frame?} · '
+    'back · forward · reload · eval {script: a JS expression; its JSON value comes back} · console · '
     'resize {width, height} · close.\n'
-    '- Every action reports what the page logged since the last one (console errors, uncaught exceptions, '
-    'failed requests); console reads it alone. screenshot returns the picture: look at it before saying a UI works.\n'
-    '- Add screenshot: true to any action to see the page right after it.\n'
+    '- open and snapshot return the element list: one line per button, link, field and heading, as '
+    '`[ref_3] button "Sign in"`. Click and type by ref: exact, and far cheaper than a picture. Refs hold until the '
+    'next list.\n'
+    '- screenshot returns a picture with a frame id (f_N) and its size. Coordinates are that picture\'s pixels: '
+    'click {x, y, frame: "f_N"}. zoom shows a part of a frame at higher detail (its x, y, width, height in that '
+    'frame); clicks in the zoom map back. A click is refused when the page was resized since its frame.\n'
+    '- Look before saying a UI works: a screenshot for how it looks, the element list for what it holds. Add '
+    'screenshot: true or snapshot: true to any action to look right after it.\n'
+    '- Every action reports what the page logged since the last one (console errors, uncaught exceptions, failed '
+    'requests); console reads it alone.\n'
+    '- The user may take control of the page in the Preview; your actions then wait until they give it back.\n'
     '- It never types into password, one-time code or payment fields nor submits their forms, and eval must not '
-    'either: the user does that. Downloads land in .everyai/scratch/downloads.',
+    'either, nor read cookies or storage: the user does that. Downloads land in .everyai/scratch/downloads.',
     {
       'action': {
         'type': 'string',
         'enum': [
           'open',
+          'snapshot',
           'click',
           'type',
           'press',
@@ -350,12 +361,18 @@ final _specs = [
           'wait',
           'eval',
           'screenshot',
+          'zoom',
+          'back',
+          'forward',
+          'reload',
           'console',
           'resize',
           'close',
         ],
       },
       'url': {'type': 'string'},
+      'ref': {'type': 'string', 'description': 'An element of the last element list (ref_3)'},
+      'frame': {'type': 'string', 'description': 'The screenshot (f_N) that x and y are in'},
       'selector': {'type': 'string', 'description': 'A CSS selector'},
       'x': {'type': 'number'},
       'y': {'type': 'number'},
@@ -370,6 +387,7 @@ final _specs = [
       'width': {'type': 'integer'},
       'height': {'type': 'integer'},
       'screenshot': {'type': 'boolean', 'description': 'Also return a screenshot after the action'},
+      'snapshot': {'type': 'boolean', 'description': 'Also return the element list after the action'},
     },
     ['action'],
   ),
@@ -798,7 +816,7 @@ final class ToolRunner {
   Future<ToolOutput> _browse(Map<String, Object?> args) async {
     final b = browser;
     if (b == null) return const ToolOutput('Error: no browser in this session.', isError: true);
-    return runBrowser(b, args, root: root, vision: vision, fit: _fit);
+    return runBrowser(b, args, root: root, vision: vision, fit: _fit, scrub: scrubber.redact);
   }
 
   Future<ToolOutput> _screenshot(Map<String, Object?> args) async {

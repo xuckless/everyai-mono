@@ -4,9 +4,158 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show ValueNotifier, visibleForTesting;
 
+import '../../live/frames.dart';
+import '../../live/live_session.dart';
+import '../../live/page_snapshot.dart';
 import 'shell_io.dart' show killTree;
+
+/// One Chrome per profile folder (Chrome locks a profile, so sessions of one project share the process and get a
+/// page each). Started on first use, stopped a little after its last page closes.
+final class ChromeHost {
+  ChromeHost._(this.profileDir, this.executable);
+
+  static final _hosts = <String, ChromeHost>{};
+
+  /// The host of [profileDir] (one per folder for the app run).
+  static ChromeHost of(String profileDir, {String? executable}) =>
+      _hosts.putIfAbsent(profileDir, () => ChromeHost._(profileDir, executable));
+
+  final String profileDir;
+  final String? executable;
+  Process? _process;
+  Uri? _endpoint;
+  Future<Uri>? _starting;
+  var _pages = 0;
+  Timer? _idle;
+
+  /// Set while the profile is open in a plain window for the user to sign in (see [signIn]).
+  Future<void>? _signingIn;
+
+  bool get running => _endpoint != null;
+
+  /// The browser-level DevTools address, starting Chrome when needed.
+  Future<Uri> endpoint({required int width, required int height}) async {
+    if (_signingIn case final s?) await s;
+    if (_endpoint case final e?) return e;
+    return _starting ??= _launch(width, height).whenComplete(() => _starting = null);
+  }
+
+  Future<Uri> _launch(int width, int height) async {
+    final exe = executable ?? HeadlessBrowser.find();
+    if (exe == null) throw const BrowserError(noBrowserMessage);
+    Directory(profileDir).createSync(recursive: true);
+    final process = await Process.start(exe, [
+      '--headless=new',
+      '--remote-debugging-port=0',
+      '--user-data-dir=$profileDir',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-extensions',
+      '--disable-background-networking',
+      // Never the user's Keychain or keyring.
+      '--use-mock-keychain',
+      '--password-store=basic',
+      '--hide-scrollbars',
+      '--mute-audio',
+      '--window-size=$width,$height',
+      'about:blank',
+    ]);
+    _process = process;
+    unawaited(process.stdout.drain<void>());
+    // Chrome says where its DevTools endpoint is on stderr.
+    final endpoint = Completer<Uri>();
+    process.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen((line) {
+      final m = RegExp(r'DevTools listening on (ws://\S+)').firstMatch(line);
+      if (m != null && !endpoint.isCompleted) endpoint.complete(Uri.parse(m[1]!));
+    }, onError: (Object _) {});
+    unawaited(
+      process.exitCode.then((_) {
+        // Not killed later: its pid may be another program's by then.
+        if (identical(_process, process)) {
+          _process = null;
+          _endpoint = null;
+        }
+        if (!endpoint.isCompleted) endpoint.completeError(const BrowserError('The browser exited at start.'));
+      }),
+    );
+    final e = await endpoint.future.timeout(
+      const Duration(seconds: 20),
+      onTimeout: () => throw const BrowserError('The browser did not start within 20 s.'),
+    );
+    return _endpoint = e;
+  }
+
+  void _opened() {
+    _pages++;
+    _idle?.cancel();
+  }
+
+  void _closedPage() {
+    if (--_pages > 0) return;
+    _pages = 0;
+    _idle?.cancel();
+    _idle = Timer(const Duration(seconds: 30), () => unawaited(stop()));
+  }
+
+  Future<void> stop() async {
+    _idle?.cancel();
+    final p = _process;
+    _process = null;
+    _endpoint = null;
+    if (p != null) await killTree(p.pid);
+  }
+
+  /// Opens the profile in a plain Chrome window at [url], without the automation flags (sites such as Google
+  /// refuse sign-in in a browser driven over DevTools), and waits until the user closes it. The headless browser
+  /// stops meanwhile (its pages close); the next use starts it again with the new sign-ins.
+  Future<void> signIn(String url) async {
+    final exe = executable ?? HeadlessBrowser.find();
+    if (exe == null) throw const BrowserError(noBrowserMessage);
+    await stop();
+    Directory(profileDir).createSync(recursive: true);
+    final done = Completer<void>();
+    _signingIn = done.future;
+    try {
+      final p = await Process.start(exe, [
+        '--user-data-dir=$profileDir',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--use-mock-keychain',
+        '--password-store=basic',
+        '--new-window',
+        url,
+      ]);
+      unawaited(p.stdout.drain<void>());
+      unawaited(p.stderr.drain<void>());
+      await p.exitCode;
+    } finally {
+      _signingIn = null;
+      done.complete();
+    }
+  }
+
+  /// Whether the profile is open for sign-in now.
+  bool get signingIn => _signingIn != null;
+
+  /// Deletes the profile (sign-ins, cookies, storage): "Clear" in the project menu.
+  Future<void> clear() async {
+    await stop();
+    final d = Directory(profileDir);
+    if (d.existsSync()) d.deleteSync(recursive: true);
+  }
+}
+
+const noBrowserMessage =
+    'No Chrome, Chromium, Edge or Brave found. The user can download one from the Preview tab (or set '
+    'EVERYAI_CHROME to a browser\'s path).';
+
+/// A frame of a page's screencast: JPEG bytes, its size, and what to ack.
+typedef ScreencastFrame = ({List<int> jpeg, int width, int height, double scrollY, int session});
+
+/// What the Preview shows about the page: its address and title, and whether it can go back or forward.
+typedef PageState = ({String url, String title, bool canBack, bool canForward, bool loading});
 
 /// A headless Chrome the session owns, driven over the DevTools protocol:
 /// its own profile under the session's scratch folder (never the user's
@@ -19,8 +168,28 @@ import 'shell_io.dart' show killTree;
 final class HeadlessBrowser {
   HeadlessBrowser({required this.profileDir, this.executable});
 
-  /// Where the browser keeps its profile (cookies, storage) for this session.
+  /// Where the browser keeps its profile (cookies, storage): the project's, shared by its sessions (see
+  /// [ChromeHost]).
   final String profileDir;
+
+  ChromeHost get host => ChromeHost.of(profileDir, executable: executable);
+
+  /// Who drives the page (agent or user), and the agent's actions for the Preview's ghost cursor.
+  final control = LiveControl();
+
+  /// The pictures of the page the model has seen, for checking and mapping its coordinates.
+  final frames = FrameBook();
+
+  /// The page's address, title and history, for the Preview's bar.
+  final page = ValueNotifier<PageState>((url: '', title: '', canBack: false, canForward: false, loading: false));
+
+  String? _targetId;
+  // ignore: close_sinks
+  final _screencast = StreamController<ScreencastFrame>.broadcast();
+  var _casting = false;
+
+  /// The page's screencast while [startScreencast] runs.
+  Stream<ScreencastFrame> get screencast => _screencast.stream;
 
   /// The browser to run; null finds Chrome, Chromium, Edge or Brave.
   final String? executable;
@@ -29,7 +198,6 @@ final class HeadlessBrowser {
   /// folder); null refuses downloads.
   String? downloadDir;
 
-  Process? _process;
   // Closed in close().
   // ignore: close_sinks
   WebSocket? _socket;
@@ -66,10 +234,20 @@ final class HeadlessBrowser {
   @visibleForTesting
   Stream<({String method, Map<String, Object?> params})> get events => _events.stream;
 
+  /// A Chrome for Testing the app downloaded (see `downloadChromeForTesting`), tried after installed browsers.
+  static String? downloaded;
+
   /// Where a Chromium-family browser is installed, or null.
   static String? find() {
     final env = Platform.environment['EVERYAI_CHROME'];
     if (env != null && File(env).existsSync()) return env;
+    final found = _installed();
+    if (found != null) return found;
+    final d = downloaded;
+    return d != null && File(d).existsSync() ? d : null;
+  }
+
+  static String? _installed() {
     final home = Platform.environment['HOME'] ?? '';
     final candidates = <String>[
       if (Platform.isMacOS) ...[
@@ -104,68 +282,29 @@ final class HeadlessBrowser {
 
   Future<void> _start() async {
     if (_socket != null) return;
-    final exe = executable ?? find();
-    if (exe == null) {
-      throw const BrowserError(
-        'No Chrome, Chromium, Edge or Brave found. Install one (or set EVERYAI_CHROME to its path), or check the '
-        'page another way.',
-      );
-    }
-    Directory(profileDir).createSync(recursive: true);
-    final process = await Process.start(exe, [
-      '--headless=new',
-      '--remote-debugging-port=0',
-      '--user-data-dir=$profileDir',
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-extensions',
-      '--disable-background-networking',
-      // Never the user's Keychain or keyring.
-      '--use-mock-keychain',
-      '--password-store=basic',
-      '--hide-scrollbars',
-      '--mute-audio',
-      '--window-size=$width,$height',
-      'about:blank',
-    ]);
-    _process = process;
-    unawaited(process.stdout.drain<void>());
-    // Chrome says where its DevTools endpoint is on stderr.
-    final endpoint = Completer<Uri>();
-    process.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen((line) {
-      final m = RegExp(r'DevTools listening on (ws://\S+)').firstMatch(line);
-      if (m != null && !endpoint.isCompleted) endpoint.complete(Uri.parse(m[1]!));
-    }, onError: (Object _) {});
-    unawaited(
-      process.exitCode.then((_) {
-        // Not killed later: its pid may be another program's by then.
-        if (identical(_process, process)) _process = null;
-        if (!endpoint.isCompleted) endpoint.completeError(const BrowserError('The browser exited at start.'));
-        _closed();
-      }),
+    final endpoint = await host.endpoint(width: width, height: height);
+    // A page of our own, with its own socket: commands go to it without per-target sessions.
+    final browser = await WebSocket.connect(endpoint.toString());
+    _browserSocket = browser;
+    browser.listen(
+      _onFrame,
+      onError: (Object _) {},
+      onDone: () {
+        if (identical(_browserSocket, browser)) _closed();
+      },
     );
-    final browserWs = await endpoint.future.timeout(
-      const Duration(seconds: 20),
-      onTimeout: () => throw const BrowserError('The browser did not start within 20 s.'),
-    );
-    // The page target (about:blank) has its own socket: commands go to it
-    // without per-target sessions.
-    final client = HttpClient();
     try {
-      final req = await client.getUrl(Uri.parse('http://${browserWs.host}:${browserWs.port}/json/list'));
-      final res = await req.close();
-      final list = jsonDecode(await res.transform(utf8.decoder).join()) as List<Object?>;
-      final page = list.whereType<Map<String, Object?>>().firstWhere(
-        (t) => t['type'] == 'page',
-        orElse: () => throw const BrowserError('The browser has no page to drive.'),
-      );
-      _socket = await WebSocket.connect(page['webSocketDebuggerUrl']! as String);
-    } finally {
-      client.close(force: true);
+      final created = await _sendOn(browser, 'Target.createTarget', {'url': 'about:blank'});
+      _targetId = created['targetId'] as String?;
+      if (_targetId == null) throw const BrowserError('The browser has no page to drive.');
+      _socket = await WebSocket.connect('ws://${endpoint.host}:${endpoint.port}/devtools/page/$_targetId');
+    } on Object {
+      await browser.close();
+      _browserSocket = null;
+      rethrow;
     }
+    host._opened();
     _socket!.listen(_onFrame, onDone: _closed, onError: (Object _) => _closed());
-    _browserSocket = await WebSocket.connect(browserWs.toString());
-    _browserSocket!.listen(_onFrame, onError: (Object _) {});
     final dir = downloadDir;
     if (dir != null) Directory(dir).createSync(recursive: true);
     await Future.wait([
@@ -175,6 +314,7 @@ final class HeadlessBrowser {
       _send('Network.enable'),
       // Frames of other origins as their own targets, so the guards can look inside.
       _send('Target.setAutoAttach', {'autoAttach': true, 'waitForDebuggerOnStart': false, 'flatten': true}),
+      _sendOn(_browserSocket, 'Target.setDiscoverTargets', {'discover': true}),
       _sendOn(_browserSocket, 'Browser.setDownloadBehavior', {
         'behavior': dir == null ? 'deny' : 'allow',
         'downloadPath': ?dir,
@@ -182,6 +322,7 @@ final class HeadlessBrowser {
       }),
     ]);
     await _viewport();
+    if (_casting) await _castStart();
   }
 
   void _onFrame(Object? frame) {
@@ -205,6 +346,38 @@ final class HeadlessBrowser {
     final method = msg['method'] as String? ?? '';
     final params = (msg['params'] as Map<String, Object?>?) ?? const {};
     switch (method) {
+      case 'Page.screencastFrame':
+        final m = params['metadata'] as Map<String, Object?>? ?? const {};
+        _screencast.add((
+          jpeg: base64Decode(params['data'] as String? ?? ''),
+          width: ((m['deviceWidth'] as num?) ?? width).round(),
+          height: ((m['deviceHeight'] as num?) ?? height).round(),
+          scrollY: ((m['scrollOffsetY'] as num?) ?? 0).toDouble(),
+          session: (params['sessionId'] as num?)?.toInt() ?? 0,
+        ));
+        return;
+      case 'Page.frameNavigated':
+        final f = params['frame'] as Map<String, Object?>? ?? const {};
+        if (f['parentId'] == null) {
+          frames.moved();
+          unawaited(_refreshPage(url: f['url'] as String?));
+        }
+      case 'Page.navigatedWithinDocument':
+        frames.moved();
+        unawaited(_refreshPage(url: params['url'] as String?));
+      case 'Page.frameStartedLoading':
+        page.value = (
+          url: page.value.url,
+          title: page.value.title,
+          canBack: page.value.canBack,
+          canForward: page.value.canForward,
+          loading: true,
+        );
+      case 'Page.loadEventFired':
+        unawaited(_refreshPage());
+      case 'Target.targetInfoChanged':
+        final t = params['targetInfo'] as Map<String, Object?>? ?? const {};
+        if (t['targetId'] == _targetId) unawaited(_refreshPage(url: t['url'] as String?, title: t['title'] as String?));
       case 'Target.attachedToTarget':
         final t = params['targetInfo'] as Map<String, Object?>? ?? const {};
         if (t['type'] == 'iframe') _frameSessions['${t['targetId']}'] = '${params['sessionId']}';
@@ -260,7 +433,9 @@ final class HeadlessBrowser {
   }
 
   void _closed() {
+    if (_socket != null || _browserSocket != null) host._closedPage();
     _socket = null;
+    _targetId = null;
     unawaited(_browserSocket?.close());
     _browserSocket = null;
     for (final d in _downloads.values) {
@@ -367,6 +542,49 @@ final class HeadlessBrowser {
     return base64Decode(r['data']! as String);
   }
 
+  /// A picture of [region] of the viewport (null: all of it) for the model, sized for it ([agentImageSize]; a
+  /// zoomed region at up to twice its CSS size, so small things are legible), and the frame it is recorded as.
+  Future<(List<int>, AgentFrame)> frameShot({ViewRect? region}) async {
+    await _start();
+    final g = geometry;
+    final r = region ?? (left: 0.0, top: 0.0, width: g.width.toDouble(), height: g.height.toDouble());
+    final zoom = region == null ? 1.0 : 2.0;
+    final size = agentImageSize(r.width, r.height, scale: zoom);
+    final scroll = await evaluate('[scrollX, scrollY]');
+    final sx = scroll is List ? (scroll[0] as num).toDouble() : 0.0,
+        sy = scroll is List ? (scroll[1] as num).toDouble() : 0.0;
+    final shot = await _send('Page.captureScreenshot', {
+      'format': 'png',
+      // In page coordinates: the viewport's region plus the scroll offset.
+      'clip': {'x': r.left + sx, 'y': r.top + sy, 'width': r.width, 'height': r.height, 'scale': size.width / r.width},
+    });
+    final f = frames.record(imageWidth: size.width, imageHeight: size.height, geometry: g, region: region);
+    return (base64Decode(shot['data']! as String), f);
+  }
+
+  /// The page's element list (see [pageSnapshotJs]): what the model clicks by ref.
+  Future<String> snapshot() async {
+    final v = await evaluate(pageSnapshotJs);
+    if (v is! Map) return '(the page gave no element list)';
+    return pageSnapshotText(
+      title: '${v['title'] ?? ''}',
+      url: '${v['url'] ?? ''}',
+      width: (v['w'] as num?)?.toInt() ?? width,
+      height: (v['h'] as num?)?.toInt() ?? height,
+      scrollY: (v['y'] as num?)?.toInt() ?? 0,
+      scrollHeight: (v['sh'] as num?)?.toInt() ?? 0,
+      elements: [for (final i in (v['items'] as List?) ?? const []) ?PageElement.fromJson(i)],
+    );
+  }
+
+  /// The centre of element [ref] of the last element list, scrolled into view.
+  Future<({double x, double y})> refCentre(String ref) async {
+    final v = await evaluate(refCentreJs(ref));
+    if (v is! Map) throw BrowserError('No element $ref on the page now: take a new snapshot.');
+    if (v['w'] == 0 && v['h'] == 0) throw BrowserError('$ref has no size now (hidden?).');
+    return (x: (v['x'] as num).toDouble(), y: (v['y'] as num).toDouble());
+  }
+
   /// The centre of the first element matching [selector], scrolled into view.
   Future<({double x, double y})> _centre(String selector) async {
     final v = await evaluate('''
@@ -384,9 +602,14 @@ final class HeadlessBrowser {
 
   /// A real mouse click (press and release) on [selector] or at [x],[y]: it
   /// goes through overlays the way a user's click would.
-  Future<String> click({String? selector, double? x, double? y, int count = 1}) async {
+  Future<String> click({String? selector, String? ref, double? x, double? y, int count = 1}) async {
     await _start();
-    final at = selector != null ? await _centre(selector) : (x: x ?? 0, y: y ?? 0);
+    final at = ref != null
+        ? await refCentre(ref)
+        : selector != null
+        ? await _centre(selector)
+        : (x: x ?? 0, y: y ?? 0);
+    control.report(LiveActivity('click', x: at.x, y: at.y, caption: count > 1 ? 'Double-clicking' : 'Clicking'));
     await _refuse('''
 const w = submits(deep(${at.x}, ${at.y}));
 return w ? 'that button submits a form with ' + w : null;''', focus: false);
@@ -414,9 +637,10 @@ return w ? 'that button submits a form with ' + w : null;''', focus: false);
   }
 
   /// Types [text] into [selector] (clicked first) or the focused element.
-  Future<String> type(String text, {String? selector, bool submit = false}) async {
+  Future<String> type(String text, {String? selector, String? ref, bool submit = false}) async {
     await _start();
-    if (selector != null) await click(selector: selector);
+    if (selector != null || ref != null) await click(selector: selector, ref: ref);
+    control.report(const LiveActivity('type', caption: 'Typing'));
     await _refuse(
       '''
 const el = focused();
@@ -488,6 +712,8 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
 
   Future<String> scroll(double dy, {double? x, double? y}) async {
     await _start();
+    frames.moved();
+    control.report(LiveActivity('scroll', x: x ?? width / 2, y: y ?? height / 2, caption: 'Scrolling'));
     await _send('Input.dispatchMouseEvent', {
       'type': 'mouseWheel',
       'x': x ?? width / 2,
@@ -599,16 +825,182 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     }
   }
 
+  /// Closes this session's page (Chrome itself stops once no session has one).
   Future<void> close() async {
+    final target = _targetId;
+    if (target != null && _browserSocket != null) {
+      try {
+        await _sendOn(_browserSocket, 'Target.closeTarget', {'targetId': target}).timeout(const Duration(seconds: 3));
+      } on Object {
+        // Gone already.
+      }
+    }
+    final had = _socket != null || _browserSocket != null;
     final socket = _socket;
     _socket = null;
+    _targetId = null;
     await socket?.close();
     final browserSocket = _browserSocket;
     _browserSocket = null;
     await browserSocket?.close();
-    final p = _process;
-    _process = null;
-    if (p != null) await killTree(p.pid);
+    if (had) host._closedPage();
+  }
+
+  /// The page's size now, in CSS pixels.
+  ViewGeometry get geometry => ViewGeometry(width, height);
+
+  Future<void> _refreshPage({String? url, String? title}) async {
+    if (_socket == null) return;
+    try {
+      final h = await _send('Page.getNavigationHistory');
+      final at = (h['currentIndex'] as num?)?.toInt() ?? 0;
+      final entries = (h['entries'] as List<Object?>?) ?? const [];
+      final here = at < entries.length ? entries[at] as Map<String, Object?> : const <String, Object?>{};
+      page.value = (
+        url: url ?? here['url'] as String? ?? page.value.url,
+        title: title ?? here['title'] as String? ?? page.value.title,
+        canBack: at > 0,
+        canForward: at < entries.length - 1,
+        loading: false,
+      );
+    } on Object {
+      // Closing.
+    }
+  }
+
+  // ----------------------------------------------------------- the Preview (the user's own input, unguarded)
+
+  /// Starts painting frames into [screencast] (the Preview is showing), up to [maxWidth]×[maxHeight].
+  Future<void> startScreencast() async {
+    _casting = true;
+    await _start();
+    await _castStart();
+  }
+
+  Future<void> _castStart() async {
+    await _send('Page.startScreencast', {'format': 'jpeg', 'quality': 72, 'maxWidth': width, 'maxHeight': height});
+    // Chrome sends frames on changes only: a still page would show nothing until it moves. One picture now.
+    final shot = await _send('Page.captureScreenshot', {'format': 'jpeg', 'quality': 72});
+    final scroll = await evaluate('scrollY');
+    _screencast.add((
+      jpeg: base64Decode(shot['data']! as String),
+      width: width,
+      height: height,
+      scrollY: scroll is num ? scroll.toDouble() : 0,
+      session: 0,
+    ));
+  }
+
+  Future<void> stopScreencast() async {
+    _casting = false;
+    if (_socket == null) return;
+    try {
+      await _send('Page.stopScreencast');
+    } on Object {
+      // Closed.
+    }
+  }
+
+  /// Tells Chrome frame [session] was painted, so it sends the next (the Preview paces the stream this way).
+  void ackFrame(int session) {
+    // 0: the picture taken at the start, not one of Chrome's frames.
+    if (_socket == null || session == 0) return;
+    unawaited(
+      _send('Page.screencastFrameAck', {'sessionId': session}).catchError((Object _) => const <String, Object?>{}),
+    );
+  }
+
+  /// A mouse event from the user's view, in CSS pixels: `mouseMoved`, `mousePressed`, `mouseReleased`,
+  /// `mouseWheel`.
+  Future<void> userMouse(
+    String type,
+    double x,
+    double y, {
+    String button = 'none',
+    int buttons = 0,
+    int clickCount = 0,
+    int modifiers = 0,
+    double deltaX = 0,
+    double deltaY = 0,
+  }) async {
+    await _start();
+    if (type == 'mouseWheel') frames.moved();
+    await _send('Input.dispatchMouseEvent', {
+      'type': type,
+      'x': x,
+      'y': y,
+      'button': button,
+      'buttons': buttons,
+      'clickCount': clickCount,
+      'modifiers': modifiers,
+      if (type == 'mouseWheel') ...{'deltaX': deltaX, 'deltaY': deltaY},
+    });
+  }
+
+  /// A key event from the user's view (`keyDown` with [text] for printable keys, `rawKeyDown`, `keyUp`); [commands]
+  /// are editing commands Chrome runs for it (`selectAll`, `undo`…), which headless Chrome doesn't map from keys.
+  Future<void> userKey(
+    String type, {
+    required String key,
+    required String code,
+    int keyCode = 0,
+    String? text,
+    int modifiers = 0,
+    List<String> commands = const [],
+  }) async {
+    await _start();
+    await _send('Input.dispatchKeyEvent', {
+      'type': type,
+      'key': key,
+      'code': code,
+      'windowsVirtualKeyCode': keyCode,
+      'nativeVirtualKeyCode': keyCode,
+      'modifiers': modifiers,
+      'text': ?text,
+      'unmodifiedText': ?text,
+      if (commands.isNotEmpty) 'commands': commands,
+    });
+  }
+
+  /// Text the user pasted or composed (an IME), inserted at the caret.
+  Future<void> userText(String text) async {
+    await _start();
+    await _send('Input.insertText', {'text': text});
+  }
+
+  /// The page's selected text (the user's copy).
+  Future<String> selectedText() async {
+    final v = await evaluate('String(getSelection ? getSelection() : "")');
+    return v is String ? v : '';
+  }
+
+  /// Goes to [url] for the user (the address bar).
+  Future<void> userOpen(String url) async {
+    await _start();
+    await _send('Page.navigate', {'url': url});
+  }
+
+  Future<void> back() => _history(-1);
+  Future<void> forward() => _history(1);
+
+  Future<void> reload() async {
+    await _start();
+    await _send('Page.reload');
+  }
+
+  Future<void> _history(int step) async {
+    await _start();
+    final h = await _send('Page.getNavigationHistory');
+    final at = ((h['currentIndex'] as num?)?.toInt() ?? 0) + step;
+    final entries = (h['entries'] as List<Object?>?) ?? const [];
+    if (at < 0 || at >= entries.length) return;
+    await _send('Page.navigateToHistoryEntry', {'entryId': (entries[at] as Map<String, Object?>)['id']});
+  }
+
+  /// Sets the page's size (the Preview's size menu): frames taken before no longer map.
+  Future<void> setSize(int w, int h) async {
+    await resize(w, h);
+    if (_casting) await _castStart();
   }
 }
 

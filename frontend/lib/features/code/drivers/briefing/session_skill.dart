@@ -128,6 +128,14 @@ String sessionBriefing(SessionSkillInput input) {
     )
     ..writeln('`check` rather than guessing which tests to run). The user\'s own instructions always come first.')
     ..writeln()
+    // Prompt reason: owner, 2026-11-06: the Preview shows the session's browser page live; outside leads keep their
+    // own browser tools, but EveryAI's `browser` is the one the user can watch and take over.
+    ..writeln(
+      'For the web pages, app and windows this session runs, use EveryAI\'s `browser`, `app_run` and `screenshot`',
+    )
+    ..writeln('when they are listed above: the user watches that browser page live in the Preview and can take over.')
+    ..writeln('Your own browser or screenshot tools are fine for anything else, or when ours fail.')
+    ..writeln()
     ..writeln('## Reporting EveryAI problems')
     ..writeln()
     ..writeln(

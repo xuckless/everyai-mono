@@ -275,12 +275,14 @@ mixin _SessionScreen on Notifier<CodeSessionState> {
   Future<HostResult> _browse(HostCall call, CodeSessionInfo info, ScreenAccess a) async {
     if (a.os.isEmpty) return (text: 'Error: the browser works on desktop only.', isError: true);
     final gen = _screenGen;
-    final dir = await ref.read(codeSessionsProvider.notifier)._driverDir(sessionId);
+    final profile =
+        await CodeSessions._browserProfile(_projectDirOf(info)) ??
+        '${await ref.read(codeSessionsProvider.notifier)._driverDir(sessionId)}/browser';
     final Future<HostResult> turn = _browserTurn.then((_) async {
       if (gen != _screenGen || !ref.mounted) {
         return (text: 'Error: the session was stopped, and its browser with it.', isError: true);
       }
-      final b = _screenBrowser ??= a.browser('$dir/browser');
+      final b = _screenBrowser ??= a.browser(sessionId, profile);
       return _withImages(call, await b.run(call.args, info.workingDir));
     });
     _browserTurn = turn.then((_) {}, onError: (Object _) {});

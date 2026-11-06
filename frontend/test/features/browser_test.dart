@@ -19,6 +19,8 @@ void main() {
   });
   tearDown(() async {
     await browser.close();
+    // Chrome outlives a closed page for a while (other sessions of the project may want it): stop it here.
+    await browser.host.stop();
     tmp.deleteSync(recursive: true);
   });
 

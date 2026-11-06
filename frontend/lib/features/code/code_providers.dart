@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../core/api/decide_client.dart' show decideClientProvider;
+import 'live/live_browsers.dart';
 import 'shells/shell_registry.dart';
 import '../../core/preferences.dart';
 import '../../core/providers.dart';
@@ -370,7 +371,10 @@ Future<List<WorkflowEntry>> _workflowsOfIn(Ref ref, String projectDir) async {
 /// disposal doesn't run then). The shell listens to it from app start, so
 /// every CLI is covered, however it was spawned.
 final driverShutdownProvider = Provider<void>((ref) {
-  Future<void> closeAll() => closeAllDriverProcesses().timeout(const Duration(seconds: 3), onTimeout: () {});
+  Future<void> closeAll() => Future.wait([
+    closeAllDriverProcesses(),
+    LiveBrowsers.stopAll(),
+  ]).timeout(const Duration(seconds: 3), onTimeout: () => const []);
   final lifecycle = AppLifecycleListener(
     onExitRequested: () async {
       await closeAll();
@@ -946,12 +950,24 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       script: !demo && !outside ? scriptCapsFor(tier, model, level: ref.read(codeSettingsProvider).scripts) : null,
       pathMap: pathMap,
       briefing: briefing,
+      // The Code session's shared browser page (the Preview paints it), in the project's profile.
+      liveId: demo || !local ? null : sessionId,
+      browserProfile: demo || !local ? null : await _browserProfile(projectDir),
       // Outside leads read them in their briefing; the same rendering, once per session (see _exportBriefing).
       runtimeProfiles: !local || demo ? const [] : await _profilesFor(sessionId, projectDir),
       skillsOff: !outside
           ? const {}
           : leadSkillsOff(ref.read(preferencesProvider), projectId, harness ?? byId(sessionId)?.harness ?? ''),
     );
+  }
+
+  /// Project [projectDir]'s browser profile folder, or null without an app data folder (tests).
+  static Future<String?> _browserProfile(String projectDir) async {
+    try {
+      return browserProfileDir(await GitService.dataDir(), projectDir);
+    } on Object {
+      return null;
+    }
   }
 
   /// Hands outside session [id] what its agent needs to reach EveryAI: a
@@ -1726,6 +1742,11 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       for (final s in state)
         if (s.parentId == id) s.id,
     };
+    // Their browser pages and shell rows go with them.
+    for (final g in gone) {
+      unawaited(LiveBrowsers.release(g));
+      ShellRegistry.instance.forget(g);
+    }
     // Any outside lead the session had left a briefing (and maybe a token).
     final outside = [
       for (final s in state)
