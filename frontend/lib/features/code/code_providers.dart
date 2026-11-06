@@ -25,6 +25,7 @@ import '../slash/skills/learn.dart';
 import '../slash/skills/learn_sources.dart';
 import '../slash/skills/skill_draft.dart' show skillDrafterProvider;
 import '../usage/usage_totals.dart';
+import 'checks/post_edit_hooks.dart';
 import 'checks/post_edit_hooks_provider.dart';
 import 'checks/runtime_profiles.dart';
 import 'domain/agent_mode.dart';
@@ -41,6 +42,7 @@ import 'domain/review.dart';
 import 'domain/rewind.dart';
 import 'domain/spill.dart';
 import 'domain/fork_files.dart';
+import 'domain/fork_files.dart' as fork_files show relativeTo;
 import 'domain/notice.dart';
 import 'domain/plan_batches.dart';
 import 'domain/subagents.dart';
@@ -2457,8 +2459,14 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     _autoRespond(transcript);
     _syncSubagents();
     _syncForkTools();
-    // First, so nothing this handler sends (reports, the goal, the queue) goes out while they run.
-    if (_live && wasRunning && ended && _afterEdit && !_isSubagent) _startChecks();
+    // The after-edit checks: due when a turn ends (not one the user stopped), started once nothing is open,
+    // first, so nothing this handler sends (reports, the goal, the queue) goes out while they run.
+    if (_live && event is ActionCall) _noteTouched(event);
+    if (_live && wasRunning && !transcript.running) {
+      _checksDue = !_userStopped;
+      _userStopped = false;
+    }
+    if (_live) _maybeStartChecks();
     _deliver();
     _sendForkNotices();
     _goalTick(turnEnded: wasRunning && !transcript.running);
@@ -2589,9 +2597,10 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       _answered = pending.map((c) => c.id).join(',');
       await session.respond(accept: false, reason: text);
     }
-    // It becomes a user turn like any other, so it gets a checkpoint to rewind to.
-    await _checkpoint();
+    // It becomes a user turn like any other, so it gets a checkpoint to rewind to (after the checks, which may
+    // format files).
     await _checksRun;
+    await _checkpoint();
     await (_session ?? session).send(_noted(text));
   }
 
@@ -2821,22 +2830,97 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   String _checksSkipped = '';
 
   /// While [_checksRun] runs: messages queue, and the lead gets nothing
-  /// (reports, answers) until it is done, so its next turn neither runs
-  /// beside a formatter nor goes without the report.
+  /// (reports, answers, fork notices) until it is done, so its next turn
+  /// neither runs beside a formatter nor goes without the report.
   bool _checking = false;
+
+  /// A lead's turn ended with work to check; the round starts once nothing
+  /// is open (no approval, card or subagent: see [_maybeStartChecks]).
+  bool _checksDue = false;
+
+  /// The user stopped the running turn: its end starts no checks (what it
+  /// changed is checked after the next turn).
+  bool _userStopped = false;
+
+  /// Completing it cancels the check rounds running (fast and slow): Stop, a rewind.
+  Completer<void>? _checksCancel;
+
+  /// What the lead's tool calls (and its subagents' and forks') touched since
+  /// the last round started; a round that doesn't finish puts them back.
+  final _touched = (written: <String>{}, named: <String>{});
+
+  /// The slow project-wide checks: the round running in the background, the
+  /// runs waiting for it, and what each check printed last (see [runHooks]).
+  Future<void>? _slowRun;
+  List<HookRun> _slowQueue = const [];
+  final _hookBaselines = <String, List<String>>{};
+
+  /// Messages for the lead (fork reports and questions on the EveryAI
+  /// harness) that came while the checks ran; they go when the round ends.
+  final _leadNotes = <String>[];
+
+  /// Notes the files [call] touched for the next round of checks: in the
+  /// session that leads (a subagent's or fork's go to the session above it).
+  void _noteTouched(ActionCall call) {
+    final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
+    if (info == null || noLocalFolder(info.workingDir)) return;
+    String? rel(String p) =>
+        p == '.' || p == './' || p == info.workingDir ? '' : fork_files.relativeTo(p, info.workingDir);
+    final written = [for (final p in writeTargets(call)) ?rel(p)];
+    final terminal = call.toolName == 'terminal' || call.actionKind == 'TerminalAction';
+    final named = terminal && !AgentMode.isReadOnly(call)
+        ? [for (final p in touchedPaths(call)) ?rel(p)]
+        : const <String>[];
+    if (written.isEmpty && named.isEmpty) return;
+    _addTouched(written, named);
+  }
+
+  void _addTouched(Iterable<String> written, Iterable<String> named) {
+    if (_parentController case final parent?) return parent._addTouched(written, named);
+    _touched.written.addAll(written);
+    _touched.named.addAll(named);
+  }
+
+  /// Starts the after-edit checks once a lead's turn has ended and nothing is
+  /// left open: no approval or card, no subagent or fork still working (its
+  /// edits are checked with the lead's), no rewind under way. Not in Plan
+  /// mode: the lead isn't editing (what changed is checked after a later turn).
+  void _maybeStartChecks() {
+    if (!_checksDue || _rewinding) return;
+    final t = state.transcript;
+    if (t.running || t.pending.isNotEmpty || t.held.isNotEmpty || t.openSubagents.isNotEmpty) return;
+    _checksDue = false;
+    if (!_afterEdit || _isSubagent || state.mode == AgentMode.plan) return;
+    _startChecks();
+  }
+
+  /// Stops the check rounds running (they report nothing) and drops the slow ones waiting.
+  void _cancelChecks() {
+    if (_checksCancel case final c? when !c.isCompleted) c.complete();
+    _checksCancel = null;
+    _slowQueue = const [];
+  }
 
   /// Runs the after-edit checks on what the turn changed (see
   /// [postEditHooksProvider]); a report waits in [CodeSessionInfo.pendingChecks],
   /// and tools that did not run are shown to the user (not sent to the lead).
+  /// The slow project-wide ones then run in the background ([_queueSlow]).
   void _startChecks() {
     if (ref.read(codeSessionsProvider.notifier).byId(sessionId) == null) return;
     final hooks = ref.read(postEditHooksProvider);
     final before = _checksRun;
+    final cancel = _checksCancel ??= Completer<void>();
+    final TouchedPaths touched = (written: {..._touched.written}, named: {..._touched.named});
+    _touched.written.clear();
+    _touched.named.clear();
     _checking = true;
     late final Future<void> run;
     run = _checksRun = () async {
       await before;
+      var done = false;
+      var slow = const <HookRun>[];
       try {
+        if (cancel.isCompleted) return;
         final sessions = ref.read(codeSessionsProvider.notifier);
         // Read now: a round before this one may have moved the snapshot.
         final info = sessions.byId(sessionId);
@@ -2846,47 +2930,108 @@ final class CodeSessionController extends Notifier<CodeSessionState>
           shellDir: () async => '${await sessions._driverDir(sessionId)}/shell',
           refusal: _checksRefusal,
           autoFormat: _autoFormat,
+          touched: touched,
+          cancel: cancel.future,
         );
-        if (!ref.mounted) return;
+        if (!ref.mounted || cancel.isCompleted) return;
+        done = true;
+        slow = r.slow;
         if (sessions.byId(sessionId) case final now?) {
           sessions.update(now.copyWith(checkedTree: r.tree, pendingChecks: r.report.isEmpty ? null : r.report));
         }
-        if (r.skipped.isNotEmpty && r.skipped != _checksSkipped) {
-          _builder.addNotice(NoticeItem('checks-skipped-${_events.length}', checksSkippedNotice, detail: r.skipped));
-          state = state.copyWith(transcript: _builder.snapshot);
-        }
-        _checksSkipped = r.skipped;
+        _showSkipped(r.skipped);
       } on Object {
         // Without them the next message just goes without a report.
       } finally {
+        // Not checked: the next round looks at these paths again.
+        if (!done && ref.mounted) _addTouched(touched.written, touched.named);
+        if (slow.isNotEmpty && ref.mounted) _queueSlow(slow, cancel);
         // A later round may have started meanwhile; it releases the queue when it ends.
         if (ref.mounted && identical(_checksRun, run)) {
           _checking = false;
           _deliver();
+          _flushLeadNotes();
+          _sendForkNotices();
           _sendQueued();
         }
       }
     }();
   }
 
-  /// Why the after-edit checks won't run [command]: the session's
-  /// permissions refuse it, or would ask (nobody is there to approve a
-  /// check the app starts on its own), else null.
-  String? _checksRefusal(String command) {
-    const tool = 'after_edit_checks';
-    if (hostRunDenial(policy: policy, mode: checkMode, tool: tool, command: command) case final why?) {
-      return why.replaceFirst('Not run: ', '');
+  /// Shows the user the tools that did not run, unless it is the same list as last time.
+  void _showSkipped(String skipped) {
+    if (skipped.isNotEmpty && skipped != _checksSkipped) {
+      _builder.addNotice(NoticeItem('checks-skipped-${_events.length}', checksSkippedNotice, detail: skipped));
+      state = state.copyWith(transcript: _builder.snapshot);
     }
-    final asks = hostRunRefusal(
-      policy: policy,
-      mode: checkMode,
-      tool: tool,
-      args: const {},
-      command: command,
-      approved: [],
-    );
-    return asks == null ? null : 'this mode asks before such commands; allow it in Permissions to run it';
+    _checksSkipped = skipped;
   }
+
+  /// Adds [runs] to the slow checks and starts them unless a round of them
+  /// runs: they never hold a message, and their report goes with whichever
+  /// message follows once it is ready (merged into a waiting one).
+  void _queueSlow(List<HookRun> runs, Completer<void> cancel) {
+    if (cancel.isCompleted) return;
+    _slowQueue = mergeHookRuns(_slowQueue, runs);
+    if (_slowRun != null) return;
+    _slowRun = () async {
+      try {
+        while (ref.mounted && _slowQueue.isNotEmpty) {
+          final batch = _slowQueue;
+          _slowQueue = const [];
+          final own = _checksCancel ??= Completer<void>();
+          final sessions = ref.read(codeSessionsProvider.notifier);
+          final info = sessions.byId(sessionId);
+          if (info == null) return;
+          final r = await ref.read(slowHooksProvider)(
+            info,
+            batch,
+            shellDir: () async => '${await sessions._driverDir(sessionId)}/shell',
+            refusal: _checksRefusal,
+            baselines: _hookBaselines,
+            cancel: own.future,
+          );
+          if (!ref.mounted) return;
+          if (own.isCompleted) continue;
+          if (r.report.isNotEmpty) {
+            if (sessions.byId(sessionId) case final now?) {
+              sessions.update(now.copyWith(pendingChecks: mergeCheckReports(now.pendingChecks, r.report)));
+            }
+          }
+          _showSkipped(r.skipped);
+        }
+      } on Object {
+        // The next message goes without their report.
+      } finally {
+        _slowRun = null;
+      }
+    }();
+  }
+
+  /// The check report waiting for the lead, taken (cleared), then [text]; [text] alone when none waits.
+  String _withChecks(String text) {
+    final sessions = ref.read(codeSessionsProvider.notifier);
+    final info = sessions.byId(sessionId);
+    final checks = info?.pendingChecks ?? '';
+    if (info == null || checks.isEmpty) return text;
+    sessions.update(info.copyWith(pendingChecks: ''));
+    return '$checks\n\n$text';
+  }
+
+  /// Sends the lead the notes held while the checks ran (see [_notifyLead]).
+  void _flushLeadNotes() {
+    final session = _session;
+    if (_leadNotes.isEmpty || _checking || session == null) return;
+    final text = _leadNotes.join('\n\n');
+    _leadNotes.clear();
+    unawaited(session.send(_withChecks(text)).catchError((Object _) {}));
+  }
+
+  /// Why the after-edit checks won't run [command]: the safety floor or a
+  /// deny rule of the user's refuses it, or the session is in Plan mode.
+  /// They are EveryAI's own fixed commands, so they never ask (see
+  /// [PermissionPolicy.decideOwnCommand]).
+  String? _checksRefusal(String command) => ownCommandRefusal(policy, state.mode, command);
 
   /// While [rewind] runs: messages wait, so none goes out mid-restore or without the note.
   bool _rewinding = false;
@@ -3134,6 +3279,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     await _checksRun;
     final session = _session;
     if (session == null) return false;
+    // A new turn of the user's: its end runs the checks again.
+    _userStopped = false;
     _releaseHostCards();
     _touchHost();
     final held = state.transcript.held;
@@ -3189,6 +3336,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       steer: (s) => s.steer(_noted(out.text), images: out.images),
       resend: () async {
         await _stopSubagents();
+        // The checkpoint after the checks: they may format files.
+        await _checksRun;
         await _checkpoint();
         await _sendNow(out);
       },
@@ -3897,6 +4046,13 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     _rewinding = true;
     _syncSideWork();
     try {
+      // The checks running look at files about to go back: stop them first, and let them unwind (a formatter
+      // must not write over the restore), slow ones too.
+      _checksDue = false;
+      _cancelChecks();
+      await _checksRun;
+      await _slowRun;
+      if (!ref.mounted) return const RewindOutcome.failed('The session was closed.');
       return await _rewind(info, session, turns, turn, native);
     } finally {
       _rewinding = false;
@@ -3952,6 +4108,17 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       try {
         await ref.read(codeGitProvider(sessionId).notifier).rewind(turn);
         files = true;
+        // The files are the checkpoint's now: the next checks compare with it, and a report about the
+        // turns undone is moot.
+        final w = info.worktree!;
+        final sessions = ref.read(codeSessionsProvider.notifier);
+        if (sessions.byId(sessionId) case final now?) {
+          sessions.update(
+            now.copyWith(checkedTree: turn <= 1 ? w.baseCommit : checkpointRef(w, turn), pendingChecks: ''),
+          );
+        }
+        _touched.written.clear();
+        _touched.named.clear();
         // The harness kept the later turns: it hears about the files with the next message.
         if (!conversation) {
           final sessions = ref.read(codeSessionsProvider.notifier);
@@ -3964,6 +4131,13 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       }
     } else if (conversation && !isDemoPath(info.workingDir)) {
       note = 'The files stay as they are (the session has no checkpoints).';
+    }
+    // The lead forgot the turns a waiting check report is about.
+    if (conversation && !files) {
+      final sessions = ref.read(codeSessionsProvider.notifier);
+      if (sessions.byId(sessionId) case final now? when now.pendingChecks.isNotEmpty) {
+        sessions.update(now.copyWith(pendingChecks: ''));
+      }
     }
     return RewindOutcome(kind: RewindKind.done, conversation: conversation, files: files, message: note);
   }
@@ -4189,6 +4363,10 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   Future<void> stop() async {
     _doomOpen = false;
     _timer.clear();
+    // The checks running stop too, and the turn being stopped starts none (its files are checked after the next).
+    if (_busy) _userStopped = true;
+    _checksDue = false;
+    _cancelChecks();
     // A Bug fix card still waiting for its start note won't show now.
     if (_bugAsk case final ask? when !ask.shown) _endBugAsk();
     _pauseGoal('Stopped by you. Set the goal again to carry on.');
@@ -4980,7 +5158,12 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// outside lead gets it when its turn ends.
   void _notifyLead(String text, {String kind = 'fork-report', String id = 'fork'}) {
     if (!_onOutsideLead) {
-      unawaited(_session?.send(text).catchError((Object _) {}));
+      // Not beside the checks: it goes when they end, with their report ([_flushLeadNotes]).
+      if (_checking) {
+        _leadNotes.add(text);
+        return;
+      }
+      unawaited(_session?.send(_withChecks(text)).catchError((Object _) {}));
       return;
     }
     _forkNotices.add((kind: kind, id: id, text: text));
@@ -5007,13 +5190,19 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   void _sendForkNotices() {
     final t = state.transcript;
     final session = _session;
-    if (_forkNotices.isEmpty || session == null || t.running || t.pending.isNotEmpty || state.queued.isNotEmpty) {
+    // While the checks run they wait too, and go with the checks' report ([_startChecks] sends them).
+    if (_forkNotices.isEmpty ||
+        session == null ||
+        _checking ||
+        t.running ||
+        t.pending.isNotEmpty ||
+        state.queued.isNotEmpty) {
       return;
     }
     // Wrapped now, for the lead that gets them.
     final text = [for (final n in _forkNotices) _notice(n.kind, n.id, n.text)].join('\n\n');
     _forkNotices.clear();
-    unawaited(session.send(text).catchError((Object _) {}));
+    unawaited(session.send(_withChecks(text)).catchError((Object _) {}));
   }
 
   /// Whether this session's question card [rowId] waits on its agent's host call.

@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:every_ai/features/code/checks/post_edit_hooks.dart';
 import 'package:every_ai/features/code/checks/post_edit_hooks_io.dart';
 import 'package:every_ai/features/code/git/git_service.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -166,6 +167,12 @@ void main() {
     File('${w.path}/lib/a.dart').writeAsStringSync('void a() {}\n');
     File('${w.path}/lib/c.dart').writeAsStringSync('void c() {}\n');
     final asked = <String>[];
+    // What the lead's tool calls touched: the user's own edit of lib/user.dart is not the lead's to check.
+    File('${w.path}/lib/user.dart').writeAsStringSync('void u() {}\n');
+    final TouchedPaths touched = (
+      written: {'lib/a.dart', 'lib/b.dart', 'lib/c.dart', '.everyai/x.dart'},
+      named: <String>{},
+    );
     Future<String?> round(String? tree) async {
       asked.clear();
       final r = await runPostEditHooks(
@@ -180,6 +187,7 @@ void main() {
           return 'not in this test';
         },
         autoFormat: false,
+        touched: touched,
       );
       expect(r.report, isEmpty, reason: 'skips alone are no report');
       return r.tree;
@@ -188,14 +196,14 @@ void main() {
     // The first round has no snapshot: everything since the session's base.
     final first = await round(null);
     expect(first, isNotNull);
-    expect(asked.first, 'dart format --output=none --set-exit-if-changed lib/a.dart lib/c.dart');
+    expect(asked.first, 'dart format --output=none --set-exit-if-changed -- lib/a.dart lib/c.dart');
 
     File('${w.path}/lib/b.dart').writeAsStringSync('void b() {}\n');
     File('${w.path}/lib/c.dart').deleteSync();
     Directory('${w.path}/.everyai').createSync();
     File('${w.path}/.everyai/x.dart').writeAsStringSync('void x() {}\n');
     final second = await round(first);
-    expect(asked, ['dart format --output=none --set-exit-if-changed lib/b.dart', 'dart analyze lib/b.dart']);
+    expect(asked, ['dart format --output=none --set-exit-if-changed -- lib/b.dart', 'dart analyze -- lib/b.dart']);
 
     await round(second);
     expect(asked, isEmpty, reason: 'nothing changed since');

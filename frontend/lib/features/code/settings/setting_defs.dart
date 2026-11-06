@@ -149,7 +149,11 @@ const settingDefs = <SettingDef>[
     title: 'Checks after each turn',
     help:
         'When a lead\'s turn ends, run the formatter check, lint and typecheck on the files it changed, and tell '
-        'the lead about problems with its next message.',
+        'the lead about problems with its next message. EveryAI picks the commands itself (never the agent) and '
+        'runs them in every mode but Plan without asking; the safety floor and your deny rules still apply. They '
+        'run the project\'s own toolchain: its formatter and linter configs and plugins, node_modules binaries '
+        '(not ones checked into git) and, for cargo check and go vet, its build scripts. Project-wide checks run in '
+        'the background and never hold a message.',
     scopes: _gp,
     kind: SettingKind.toggle,
     store: SettingStore.file,

@@ -30,7 +30,8 @@ import 'shell_readonly.dart';
 enum Verdict { allow, ask, deny }
 
 /// Which step of the policy decided.
-enum DecisionSource { clientTool, floor, rule, plan, readOnly, scratch, dangerous, allowRule, mode }
+/// [ownCommand]: one of EveryAI's own fixed commands ([PermissionPolicy.decideOwnCommand]).
+enum DecisionSource { clientTool, floor, rule, plan, readOnly, scratch, dangerous, allowRule, mode, ownCommand }
 
 @immutable
 final class Decision {
@@ -192,6 +193,27 @@ final class PermissionPolicy {
       AgentMode.ask || AgentMode.plan => false,
     };
     return Decision(allowed ? Verdict.allow : Verdict.ask, DecisionSource.mode, why: danger ?? '');
+  }
+
+  /// The decision on [command] when EveryAI runs it on its own (the
+  /// after-edit checks: fixed commands the app builds, never the agent's).
+  /// Nobody is asked: the safety floor and the user's deny rules refuse it
+  /// in every mode, Bypass included, Plan mode refuses it (the lead isn't
+  /// editing), and otherwise it runs.
+  Decision decideOwnCommand(String command, AgentMode mode) {
+    if (floorReason(command) case final why?) return Decision(Verdict.deny, DecisionSource.floor, why: why);
+    final call = ActionCall(
+      id: 'everyai-own',
+      raw: const {},
+      toolName: 'terminal',
+      toolCallId: '',
+      action: {'kind': 'TerminalAction', 'command': command},
+    );
+    if (_matching(call, rules.deny, allowing: false) case final rule?) {
+      return Decision(Verdict.deny, DecisionSource.rule, rule: rule);
+    }
+    if (mode == AgentMode.plan) return const Decision(Verdict.deny, DecisionSource.plan);
+    return const Decision(Verdict.allow, DecisionSource.ownCommand);
   }
 
   /// One answer for everything the server is waiting on (it approves or
@@ -1246,4 +1268,18 @@ String denialSummary(String text) {
     return 'Blocked: ${reason.split('. This is').first.replaceAll(RegExp(r'\.$'), '')}';
   }
   return text;
+}
+
+/// Why [policy] won't let EveryAI run its own [command] in [mode] (see
+/// [PermissionPolicy.decideOwnCommand]), in a few words for a "Skipped"
+/// line, or null when it runs.
+String? ownCommandRefusal(PermissionPolicy policy, AgentMode mode, String command) {
+  final d = policy.decideOwnCommand(command, mode);
+  if (d.verdict == Verdict.allow) return null;
+  return switch (d.source) {
+    DecisionSource.floor => 'on the safety floor: ${d.why}',
+    DecisionSource.rule => 'your rule ${d.rule} refuses it',
+    DecisionSource.plan => 'Plan mode',
+    _ => "the session's permissions refuse it",
+  };
 }
