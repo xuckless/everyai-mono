@@ -115,6 +115,9 @@ flutter:
           weight: 600
         - asset: assets/fonts/Geist/Geist-Bold.ttf
           weight: 700
+    - family: SymbolsNerdFontMono
+      fonts:
+        - asset: assets/fonts/SymbolsNerdFont/SymbolsNerdFontMono-Regular.ttf
     - family: GeistMono
       fonts:
         - asset: assets/fonts/GeistMono/GeistMono-Regular.ttf

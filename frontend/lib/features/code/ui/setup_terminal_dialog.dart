@@ -20,6 +20,7 @@ import '../drivers/driver_registry.dart';
 import '../environments/exec_env.dart';
 import '../panes/setup_terminal.dart';
 import '../settings/context_files_stub.dart' if (dart.library.io) '../settings/context_files_io.dart' as home;
+import 'panes/terminal_font.dart';
 
 /// Opens the setup terminal for [driver]: the vendor's install line for this system typed at a prompt (not run),
 /// and, once the CLI is there, its own sign-in. [env] is where the shell runs. With [signIn] (the CLI is installed
@@ -230,6 +231,7 @@ class _SetupTerminalDialogState extends ConsumerState<SetupTerminalDialog> {
                                   padding: const EdgeInsets.all(8),
                                   textStyle: TerminalStyle(
                                     fontFamily: 'GeistMono',
+                                    fontFamilyFallback: terminalFontFallback,
                                     fontSize: theme.type.callout.fontSize!,
                                   ),
                                   onSecondaryTapDown: (_, _) => _copyOrPaste(),

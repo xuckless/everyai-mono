@@ -496,3 +496,12 @@ POSSIBILITY OF SUCH DAMAGE.
   logos themselves are their owners' trademarks, used only to name their products.
 - **Where:** `frontend/assets/logos/`.
 - **License:** MIT, Copyright (c) 2023 LobeHub
+
+## Nerd Fonts Symbols Only 3.5.1 (ryanoasis/nerd-fonts)
+
+- **What:** `SymbolsNerdFontMono-Regular.ttf`, unmodified, the terminal's first fallback font so Powerline arrows and
+  Nerd Font icons in shell prompts draw (`frontend/lib/features/code/ui/panes/terminal_font.dart`).
+- **Where:** `frontend/assets/fonts/SymbolsNerdFont/` (with its `LICENSE`).
+- **License:** MIT, Copyright (c) 2014 Ryan L McIntyre. The glyphs come from icon sets under their own licences:
+  Codicons and Font Awesome (CC BY 4.0), Material Design Icons (Apache 2.0), Devicons, Octicons, Seti, Font Awesome
+  Extension and the Powerline symbols (MIT), Pomicons and Weather Icons (OFL 1.1), Font Logos (unlicensed).

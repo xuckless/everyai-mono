@@ -9,6 +9,7 @@ import '../../../../core/ui/every_icons.dart';
 import '../../domain/code_session.dart';
 import '../../panes/panes_providers.dart';
 import '../console/bottom_drawer.dart' show isDrawerToggle;
+import 'terminal_font.dart';
 
 /// The terminal's own key filter, which runs before the shell gets a key: ⌃` toggles the drawer ([toggle]) instead.
 /// It is handled here: a key the filter lets through goes to the shell, never up to the drawer's shortcut.
@@ -96,6 +97,7 @@ class _TerminalPaneState extends ConsumerState<TerminalPane> {
               padding: const EdgeInsets.all(8),
               textStyle: TerminalStyle(
                 fontFamily: 'GeistMono',
+                fontFamilyFallback: terminalFontFallback,
                 fontSize: EveryTheme.of(context).type.callout.fontSize!,
               ),
               onSecondaryTapDown: (_, _) => _copyOrPaste(),
