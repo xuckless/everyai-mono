@@ -789,7 +789,11 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   `WithWindowCaption` around sign-in, onboarding and the full-window Settings. `WindowResizeEdges` adds resize
   handles (all edges on Linux, top on Windows). Native: the Windows runner paints the app background and sets
   `DWMWA_BORDER_COLOR` to none; the Linux runner paints the GTK window #07070A. Not built or seen on Windows or
-  Linux yet (widget tests only). macOS unchanged. Next: phase 6.
+  Linux yet (widget tests only). macOS unchanged.
+- **UI overhaul, phase 6 (second pass), in steps (2026-11-06).** 6a onboarding: the board's layout (48pt top row with
+  the mark and version, one 480pt column with five progress pills, headline, body, then Back · Later · Continue).
+  The key step is the board's: provider switch across the column, one field with an inline ✓/✕ and Check, and a
+  status line (hint, shimmering Checking, works, or rejected with nothing saved).
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2

@@ -93,7 +93,7 @@ void main() {
     await tester.enterText(find.byKey(const ValueKey('onboarding.key')), 'bad');
     await tester.tap(find.byKey(const ValueKey('onboarding.key.save')));
     await tester.pumpAndSettle();
-    expect(find.textContaining('It was not saved'), findsOneWidget);
+    expect(find.textContaining('Nothing was saved'), findsOneWidget);
     expect(store.values, isEmpty);
 
     await tester.enterText(find.byKey(const ValueKey('onboarding.key')), 'good');

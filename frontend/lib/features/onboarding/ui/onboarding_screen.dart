@@ -6,11 +6,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/config/version.dart';
+import '../../../core/motion/motion.dart';
 import '../../../core/platform/platform_kind.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/brand.dart';
-import '../../../core/ui/segmented.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../code/domain/code_session.dart' show everyaiHarnessName;
 import '../../code/drivers/driver_registry.dart';
@@ -68,110 +68,123 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final last = _index == _steps.length - 1;
+    // The agents list needs more room than the other steps.
+    final width = _step == _Step.code && _desktop ? 580.0 : 480.0;
     return ColoredBox(
       color: theme.background,
       child: SafeArea(
         child: Column(
           children: [
-            _ProgressBar(value: (_index + 1) / _steps.length),
-            Padding(
-              // On macOS the traffic lights sit in this row: start after them, as the sidebar does.
-              padding: EdgeInsets.fromLTRB(Host.hasTrafficLights ? 92 : 28, 18, 28, 0),
-              child: Row(
-                children: [
-                  const BrandMark(size: 22),
-                  const SizedBox(width: 10),
-                  Flexible(
-                    child: Text(
-                      'EveryAI',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.type.headline.semibold.tint(theme.text),
+            SizedBox(
+              height: 48,
+              child: Padding(
+                // On macOS the traffic lights sit in this row: start after them, as the sidebar does.
+                padding: EdgeInsets.fromLTRB(Host.hasTrafficLights ? 92 : 22, 0, 22, 0),
+                child: Row(
+                  children: [
+                    const BrandMark(size: 18),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        'EveryAI',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.type.callout.semibold.tint(theme.text),
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      '$appVersion · alpha',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.end,
-                      style: theme.type.caption.mono.tint(theme.textMuted),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        '$appVersion · alpha',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.end,
+                        style: theme.type.caption.mono.tint(theme.textSubtle),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
             Expanded(
               child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 620),
+                child: AnimatedContainer(
+                  duration: Motion.reduced(context) ? Duration.zero : Motion.move,
+                  curve: Motion.easeInOut,
+                  constraints: BoxConstraints(maxWidth: width + 48),
                   child: SingleChildScrollView(
-                    padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
-                    child: _StepView(
-                      key: ValueKey(_step),
-                      headline: _headline(_step),
-                      child: switch (_step) {
-                        _Step.welcome => const _Welcome(),
-                        _Step.bugs => const _Bugs(),
-                        _Step.keys => const _Keys(),
-                        _Step.code => _desktop ? const _CodeHarnesses() : const _CodeRemote(),
-                        _Step.agree => _Agree(agreed: _agreed, onChanged: (v) => setState(() => _agreed = v)),
-                      },
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(28, 0, 28, 22),
-              // Back at the start; the others at the end, wrapping onto a second line when they don't fit.
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  if (_index > 0) ...[
-                    AdaptiveButton(
-                      key: const ValueKey('onboarding.back'),
-                      label: 'Back',
-                      emphasis: ButtonEmphasis.secondary,
-                      onPressed: _back,
-                    ),
-                    const SizedBox(width: 8),
-                  ],
-                  Expanded(
-                    child: Wrap(
-                      alignment: WrapAlignment.end,
-                      spacing: 8,
-                      runSpacing: 8,
+                    padding: const EdgeInsets.fromLTRB(24, 16, 24, 48),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        if (_step == _Step.keys)
-                          AdaptiveButton(
-                            key: const ValueKey('onboarding.skip'),
-                            label: 'Skip for now',
-                            emphasis: ButtonEmphasis.plain,
-                            onPressed: _next,
-                          ),
-                        if (last)
-                          AdaptiveButton(
-                            key: const ValueKey('onboarding.enter'),
-                            label: 'Enter EveryAI',
-                            icon: const AdaptiveIcon(EveryIcon.spark, size: 15),
-                            onPressed: _agreed ? () => ref.read(onboardingAcceptedProvider.notifier).accept() : null,
-                          )
-                        else
-                          AdaptiveButton(
-                            key: const ValueKey('onboarding.next'),
-                            label: switch (_step) {
-                              _Step.welcome => 'Show me around',
-                              _Step.bugs => 'Got it',
-                              _ => 'Next',
-                            },
-                            onPressed: _next,
-                          ),
+                        _ProgressBar(step: _index, of: _steps.length),
+                        const SizedBox(height: 28),
+                        _StepView(
+                          key: ValueKey(_step),
+                          headline: _headline(_step),
+                          child: switch (_step) {
+                            _Step.welcome => const _Welcome(),
+                            _Step.bugs => const _Bugs(),
+                            _Step.keys => const _Keys(),
+                            _Step.code => _desktop ? const _CodeHarnesses() : const _CodeRemote(),
+                            _Step.agree => _Agree(agreed: _agreed, onChanged: (v) => setState(() => _agreed = v)),
+                          },
+                        ),
+                        const SizedBox(height: 28),
+                        // Back at the start; the others at the end, wrapping when they don't fit.
+                        Row(
+                          children: [
+                            if (_index > 0)
+                              KitButton(
+                                key: const ValueKey('onboarding.back'),
+                                label: 'Back',
+                                style: KitButtonStyle.ghost,
+                                onPressed: _back,
+                              ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Wrap(
+                                alignment: WrapAlignment.end,
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                spacing: 6,
+                                runSpacing: 8,
+                                children: [
+                                  if (_step == _Step.keys)
+                                    KitButton(
+                                      key: const ValueKey('onboarding.skip'),
+                                      label: 'Later',
+                                      style: KitButtonStyle.ghost,
+                                      onPressed: _next,
+                                    ),
+                                  if (last)
+                                    KitButton(
+                                      key: const ValueKey('onboarding.enter'),
+                                      label: 'Enter EveryAI',
+                                      large: true,
+                                      onPressed: _agreed
+                                          ? () => ref.read(onboardingAcceptedProvider.notifier).accept()
+                                          : null,
+                                    )
+                                  else
+                                    KitButton(
+                                      key: const ValueKey('onboarding.next'),
+                                      label: switch (_step) {
+                                        _Step.welcome => 'Show me around',
+                                        _Step.bugs => 'Got it',
+                                        _ => 'Continue',
+                                      },
+                                      large: true,
+                                      onPressed: _next,
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
                       ],
                     ),
                   ),
-                ],
+                ),
               ),
             ),
           ],
@@ -189,25 +202,44 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   };
 }
 
-/// A thin bar across the top showing how far along the tour is.
+/// Where the tour is: one short pill per step, filled up to the current one (the newest fills from its left).
 class _ProgressBar extends StatelessWidget {
-  const _ProgressBar({required this.value});
+  const _ProgressBar({required this.step, required this.of});
 
-  final double value;
+  final int step;
+  final int of;
 
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    return SizedBox(
-      height: 3,
-      child: Align(
-        alignment: Alignment.centerLeft,
-        child: AnimatedFractionallySizedBox(
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-          widthFactor: value,
-          child: ColoredBox(color: theme.primary),
-        ),
+    return Semantics(
+      label: 'Step ${step + 1} of $of',
+      child: Row(
+        children: [
+          for (var i = 0; i < of; i++) ...[
+            if (i > 0) const SizedBox(width: 6),
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(99),
+                child: Container(
+                  height: 3,
+                  color: theme.border,
+                  alignment: Alignment.centerLeft,
+                  child: TweenAnimationBuilder<double>(
+                    tween: Tween(end: i <= step ? 1 : 0),
+                    duration: Motion.reduced(context) ? Duration.zero : Motion.move,
+                    curve: Motion.easeInOut,
+                    builder: (context, v, _) => FractionallySizedBox(
+                      widthFactor: v,
+                      heightFactor: 1,
+                      child: ColoredBox(color: theme.accent),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -478,100 +510,110 @@ class _KeysState extends ConsumerState<_Keys> {
     final theme = EveryTheme.of(context);
     final saved = ref.watch(byokKeysProvider).value ?? const {};
     final result = _result;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          "No API keys come with this build: EveryAI doesn't pay for or see your model use. Add one to start "
-          'chatting.',
-          style: theme.type.body.tint(theme.textMuted),
-        ),
-        const SizedBox(height: 18),
-        AdaptiveSegmented<ByokProvider>(
-          values: byokProviders,
-          selected: _provider,
-          label: (p) => p.name,
-          onSelected: (p) => setState(() {
-            _provider = p;
-            _result = null;
-          }),
-        ),
-        const SizedBox(height: 6),
-        Text(_provider.blurb, style: theme.type.caption.tint(theme.textMuted)),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: AdaptiveTextField(
-                key: const ValueKey('onboarding.key'),
-                controller: _field,
-                placeholder: saved.containsKey(_provider.id)
-                    ? '${_provider.name} key saved (…${ByokKeys.lastFour(saved[_provider.id]!)}). Paste to replace.'
-                    : _provider.keyHint,
-                obscureText: true,
-                onSubmitted: (_) => _save(),
-              ),
-            ),
-            const SizedBox(width: 8),
-            AdaptiveButton(
-              key: const ValueKey('onboarding.key.save'),
-              label: _checking ? 'Checking…' : 'Save',
-              busy: _checking,
-              onPressed: _checking ? null : _save,
-            ),
-          ],
-        ),
-        const SizedBox(height: 10),
-        if (result != null)
-          Row(
+    final ok = result != null && result.valid != false;
+    final bad = result != null && result.valid == false;
+    final ring = ok ? theme.success : (bad ? theme.danger : theme.border);
+    final status = _checking
+        ? const ShimmerText('Checking', key: ValueKey('checking'))
+        : result != null
+        ? Text(
+            bad ? '${result.message} Nothing was saved.' : '${result.message}. Saved to this device\'s keychain.',
             key: const ValueKey('onboarding.key.result'),
+            style: theme.type.callout.tint(bad ? theme.danger : (result.valid == true ? theme.success : theme.warning)),
+          )
+        : Text(
+            saved.containsKey(_provider.id)
+                ? '${_provider.name} key saved (…${ByokKeys.lastFour(saved[_provider.id]!)})'
+                : _provider.blurb,
+            key: ValueKey('hint.${_provider.id}'),
+            style: theme.type.callout.tint(saved.containsKey(_provider.id) ? theme.success : theme.textSubtle),
+          );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text('Your key, your spend. EveryAI bills nothing on it.', style: theme.type.body.tint(theme.textMuted)),
+        const SizedBox(height: 22),
+        LayoutBuilder(
+          builder: (context, box) => KitSegmented<ByokProvider>(
+            width: box.maxWidth,
+            values: byokProviders,
+            selected: _provider,
+            label: (p) => p.name,
+            onSelected: (p) => setState(() {
+              _provider = p;
+              _result = null;
+            }),
+          ),
+        ),
+        const SizedBox(height: 12),
+        AnimatedContainer(
+          duration: Motion.reduced(context) ? Duration.zero : const Duration(milliseconds: 220),
+          curve: Motion.easeInOut,
+          height: 46,
+          padding: const EdgeInsets.fromLTRB(4, 0, 7, 0),
+          decoration: BoxDecoration(
+            color: theme.well,
+            borderRadius: BorderRadius.circular(EveryTheme.rowRadius + 3),
+            border: Border.all(color: ring, width: ok || bad ? 1.5 : 1),
+          ),
+          child: Row(
             children: [
-              AdaptiveIcon(
-                result.valid == false ? EveryIcon.close : (result.valid == true ? EveryIcon.check : EveryIcon.info),
-                size: 15,
-                color: result.valid == false ? theme.danger : (result.valid == true ? theme.success : theme.warning),
-              ),
-              const SizedBox(width: 8),
               Expanded(
-                child: Text(
-                  result.valid == false
-                      ? '${result.message} It was not saved.'
-                      : '${result.message}. Saved to this device\'s keychain.',
-                  style: theme.type.callout.tint(theme.text),
+                child: AdaptiveTextField(
+                  key: const ValueKey('onboarding.key'),
+                  controller: _field,
+                  borderless: true,
+                  placeholder: _provider.keyHint,
+                  obscureText: true,
+                  onChanged: (_) {
+                    if (_result != null) setState(() => _result = null);
+                  },
+                  onSubmitted: (_) => _save(),
                 ),
               ),
+              StateSwap(
+                child: ok
+                    ? AdaptiveIcon(EveryIcon.check, key: const ValueKey('ok'), size: 16, color: theme.success)
+                    : bad
+                    ? AdaptiveIcon(EveryIcon.close, key: const ValueKey('bad'), size: 16, color: theme.danger)
+                    : const SizedBox(key: ValueKey('none'), width: 16),
+              ),
+              const SizedBox(width: 8),
+              KitButton(
+                key: const ValueKey('onboarding.key.save'),
+                label: 'Check',
+                style: KitButtonStyle.soft,
+                onPressed: _checking ? null : _save,
+              ),
             ],
-          )
-        else if (saved.isNotEmpty)
-          Text(
-            'Saved: ${[for (final p in byokProviders)
-              if (saved.containsKey(p.id)) p.name].join(', ')}.',
-            style: theme.type.callout.tint(theme.success),
           ),
-        const SizedBox(height: 12),
+        ),
+        const SizedBox(height: 8),
+        SizedBox(
+          height: 20,
+          child: Padding(
+            padding: const EdgeInsets.only(left: 2),
+            child: StateSwap(alignment: Alignment.centerLeft, child: status),
+          ),
+        ),
+        const SizedBox(height: 10),
         Wrap(
-          spacing: 8,
-          runSpacing: 8,
+          spacing: 4,
+          runSpacing: 4,
           children: [
-            AdaptiveButton(
+            KitButton(
               label: 'Get ${'AEIOU'.contains(_provider.name[0]) ? 'an' : 'a'} ${_provider.name} key',
-              emphasis: ButtonEmphasis.secondary,
-              icon: const AdaptiveIcon(EveryIcon.external, size: 14),
+              style: KitButtonStyle.ghost,
+              icon: EveryIcon.external,
               onPressed: () => launchUrl(Uri.parse(_provider.keysUrl), mode: LaunchMode.externalApplication),
             ),
-            const AdaptiveButton(
+            const KitButton(
               key: ValueKey('onboarding.local'),
-              label: 'Use a local model (Ollama, LM Studio): coming soon',
-              emphasis: ButtonEmphasis.plain,
+              label: 'Local models: coming soon',
+              style: KitButtonStyle.ghost,
               onPressed: null,
             ),
           ],
-        ),
-        const SizedBox(height: 14),
-        Text(
-          "Your key stays in this device's keychain and is sent only with your own requests. It's never stored on "
-          'our server. You can change it any time in Settings → API keys.',
-          style: theme.type.caption.tint(theme.textMuted),
         ),
       ],
     );
