@@ -2,6 +2,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart' as m;
 
+import '../core/platform/window_caption.dart';
 import '../core/motion/motion.dart';
 import '../core/theme/every_theme.dart';
 import '../core/theme/native_themes.dart';
@@ -38,12 +39,15 @@ class EveryApp extends ConsumerWidget {
           appearance.brightness(MediaQuery.platformBrightnessOf(context)),
           pureBlack: appearance.pureBlack,
         ),
-        child: appearance.reduceMotion
-            ? MediaQuery(
-                data: MediaQuery.of(context).copyWith(disableAnimations: true),
-                child: child ?? const SizedBox.shrink(),
-              )
-            : child ?? const SizedBox.shrink(),
+        // Windows/Linux: the window buttons float over every route and dialog.
+        child: WindowButtonsOverlay(
+          child: appearance.reduceMotion
+              ? MediaQuery(
+                  data: MediaQuery.of(context).copyWith(disableAnimations: true),
+                  child: child ?? const SizedBox.shrink(),
+                )
+              : child ?? const SizedBox.shrink(),
+        ),
       ),
     );
   }

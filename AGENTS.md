@@ -779,7 +779,16 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   tile) share a card, an `AdaptiveSectionHeader` labels the next card, anything else stands alone. Every settings
   page uses it. General: theme as three pictures (`ThemeCards`), Pure black, new Reduce motion
   (`appearance.reduce_motion`, sets `disableAnimations` app-wide). Account: avatar, name, email · plan, Manage
-  plan. Code settings rows are quiet cards instead of ruled rows. Next: window chrome on Windows/Linux, then phase 6.
+  plan. Code settings rows are quiet cards instead of ruled rows.
+- **Window chrome on Windows/Linux (2026-11-06).** `core/platform/window_caption.dart`: the native title bar is
+  hidden (`TitleBarStyle.hidden`, window_manager) and the app draws its own. `WindowButtonsOverlay` (app root
+  builder) floats minimize / maximize-restore / close at the top right above every route and dialog (Windows: flat
+  46pt cells, red close; Linux: small round buttons); `WindowCaption` is the 36pt drag strip (double-click
+  maximizes) each layout keeps under them: the shell above the content panel beside the sidebar, and
+  `WithWindowCaption` around sign-in, onboarding and the full-window Settings. `WindowResizeEdges` adds resize
+  handles (all edges on Linux, top on Windows). Native: the Windows runner paints the app background and sets
+  `DWMWA_BORDER_COLOR` to none; the Linux runner paints the GTK window #07070A. Not built or seen on Windows or
+  Linux yet (widget tests only). macOS unchanged. Next: phase 6.
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2

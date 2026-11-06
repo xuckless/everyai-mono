@@ -16,6 +16,7 @@ import '../features/history/ui/projects_screen.dart';
 import '../features/models/ui/models_screen.dart';
 import '../features/settings/appearance.dart';
 import '../features/settings/settings_registry.dart';
+import '../core/platform/window_caption.dart';
 import '../core/platform/platform_kind.dart';
 import '../features/remote/ui/remote_code.dart';
 import 'shell.dart';
@@ -91,11 +92,11 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/', redirect: (_, _) => Routes.newChat),
       GoRoute(
         path: Routes.signIn,
-        builder: (_, _) => const SignInScreen(mode: AuthMode.signIn),
+        builder: (_, _) => const WithWindowCaption(child: SignInScreen(mode: AuthMode.signIn)),
       ),
       GoRoute(
         path: Routes.signUp,
-        builder: (_, _) => const SignInScreen(mode: AuthMode.signUp),
+        builder: (_, _) => const WithWindowCaption(child: SignInScreen(mode: AuthMode.signUp)),
       ),
       // Settings is a modal now: its old pages stay where the user was and
       // open the modal at the matching section.

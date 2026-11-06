@@ -12,6 +12,13 @@ namespace {
 /// Redefined in case the developer's machine has a Windows SDK older than
 /// version 10.0.22000.0.
 /// See: https://docs.microsoft.com/windows/win32/api/dwmapi/ne-dwmapi-dwmwindowattribute
+#ifndef DWMWA_BORDER_COLOR
+#define DWMWA_BORDER_COLOR 34
+#endif
+#ifndef DWMWA_COLOR_NONE
+#define DWMWA_COLOR_NONE 0xFFFFFFFE
+#endif
+
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
 #endif
@@ -97,7 +104,8 @@ const wchar_t* WindowClassRegistrar::GetWindowClass() {
     window_class.hInstance = GetModuleHandle(nullptr);
     window_class.hIcon =
         LoadIcon(window_class.hInstance, MAKEINTRESOURCE(IDI_APP_ICON));
-    window_class.hbrBackground = 0;
+    // The app's background, so a resize or the first frame never flashes white.
+    window_class.hbrBackground = CreateSolidBrush(RGB(7, 7, 10));
     window_class.lpszMenuName = nullptr;
     window_class.lpfnWndProc = Win32Window::WndProc;
     RegisterClass(&window_class);
@@ -285,4 +293,10 @@ void Win32Window::UpdateTheme(HWND const window) {
     DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
                           &enable_dark_mode, sizeof(enable_dark_mode));
   }
+
+  // The app draws its own caption and colours: no light or dark system
+  // border around it (Windows 11; older versions ignore the attribute).
+  COLORREF no_border = DWMWA_COLOR_NONE;
+  DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR, &no_border,
+                        sizeof(no_border));
 }

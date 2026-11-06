@@ -11,6 +11,7 @@ import 'package:app_links/app_links.dart';
 
 import '../core/links/app_link.dart';
 import '../core/motion/motion.dart';
+import '../core/platform/window_caption.dart';
 import '../core/links/link_providers.dart';
 import '../core/platform/platform_kind.dart';
 import '../core/net/api_client.dart' show ServerStatus;
@@ -200,7 +201,10 @@ class _AppShellState extends ConsumerState<AppShell> {
 
     // The pre-alpha entry screen, once per build version, before anything else.
     if (!ref.watch(onboardingAcceptedProvider)) {
-      return m.Material(color: theme.background, child: const OnboardingScreen());
+      return m.Material(
+        color: theme.background,
+        child: const WithWindowCaption(child: OnboardingScreen()),
+      );
     }
 
     Widget body = _SplitView(
@@ -389,7 +393,7 @@ class _SplitView extends StatelessWidget {
 
     if (!compact) {
       final duration = reduced ? Duration.zero : Motion.move;
-      return ColoredBox(
+      final Widget wide = ColoredBox(
         color: theme.background,
         child: Row(
           children: [
@@ -410,7 +414,7 @@ class _SplitView extends StatelessWidget {
               child: AnimatedPadding(
                 duration: duration,
                 curve: Motion.easeInOut,
-                padding: EdgeInsets.fromLTRB(collapsed ? 8 : 0, 8, 8, 8),
+                padding: EdgeInsets.fromLTRB(collapsed ? 8 : 0, hasCustomCaption ? 0 : 8, 8, 8),
                 child: DecoratedBox(
                   decoration: BoxDecoration(
                     color: theme.surface,
@@ -424,6 +428,14 @@ class _SplitView extends StatelessWidget {
           ],
         ),
       );
+      if (!hasCustomCaption) return wide;
+      // Windows/Linux: the caption strip sits above the panel, on the window background, beside the sidebar.
+      return Stack(
+        children: [
+          Positioned.fill(child: wide),
+          Positioned(top: 0, right: 0, left: collapsed ? 0 : sidebarWidth, child: const WindowCaption()),
+        ],
+      );
     }
 
     final width = (MediaQuery.sizeOf(context).width * 0.85).clamp(0.0, 318.0);
@@ -432,7 +444,18 @@ class _SplitView extends StatelessWidget {
     return Stack(
       children: [
         Positioned.fill(
-          child: ColoredBox(color: theme.background, child: content),
+          child: ColoredBox(
+            color: theme.background,
+            child: hasCustomCaption
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const WindowCaption(),
+                      Expanded(child: content),
+                    ],
+                  )
+                : content,
+          ),
         ),
         IgnorePointer(
           ignoring: !drawerOpen,

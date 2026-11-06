@@ -8,6 +8,7 @@ import 'package:material_ui/material_ui.dart' as m;
 
 import '../../../core/motion/motion.dart';
 import '../../../core/platform/platform_kind.dart';
+import '../../../core/platform/window_caption.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/every_icons.dart';
@@ -175,76 +176,78 @@ class _SettingsModalState extends ConsumerState<SettingsModal> {
       color: theme.background,
       child: SafeArea(
         child: _onMaterial(
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              SizedBox(
-                height: 52,
-                child: Row(
-                  children: [
-                    const SizedBox(width: 4),
-                    SizedBox(
-                      width: 44,
-                      child: listing
-                          ? null
-                          : KitIconButton(
-                              key: const ValueKey('settings.back'),
-                              icon: EveryIcon.chevronLeft,
-                              tooltip: 'All settings',
-                              touch: true,
-                              onPressed: () => setState(() => _listing = true),
-                            ),
-                    ),
-                    Expanded(
-                      child: StateSwap(
-                        alignment: Alignment.center,
-                        child: Text(
-                          listing ? 'Settings' : _section.title,
-                          key: ValueKey(listing ? 'list' : _section.name),
-                          textAlign: TextAlign.center,
-                          style: theme.type.headline.tint(theme.text),
-                          overflow: TextOverflow.ellipsis,
+          WithWindowCaption(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SizedBox(
+                  height: 52,
+                  child: Row(
+                    children: [
+                      const SizedBox(width: 4),
+                      SizedBox(
+                        width: 44,
+                        child: listing
+                            ? null
+                            : KitIconButton(
+                                key: const ValueKey('settings.back'),
+                                icon: EveryIcon.chevronLeft,
+                                tooltip: 'All settings',
+                                touch: true,
+                                onPressed: () => setState(() => _listing = true),
+                              ),
+                      ),
+                      Expanded(
+                        child: StateSwap(
+                          alignment: Alignment.center,
+                          child: Text(
+                            listing ? 'Settings' : _section.title,
+                            key: ValueKey(listing ? 'list' : _section.name),
+                            textAlign: TextAlign.center,
+                            style: theme.type.headline.tint(theme.text),
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                       ),
-                    ),
-                    SizedBox(
-                      width: 44,
-                      child: KitIconButton(
-                        key: const ValueKey('settings.close'),
-                        icon: EveryIcon.close,
-                        tooltip: 'Close',
-                        touch: true,
-                        onPressed: _close,
+                      SizedBox(
+                        width: 44,
+                        child: KitIconButton(
+                          key: const ValueKey('settings.close'),
+                          icon: EveryIcon.close,
+                          tooltip: 'Close',
+                          touch: true,
+                          onPressed: _close,
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 4),
-                  ],
+                      const SizedBox(width: 4),
+                    ],
+                  ),
                 ),
-              ),
-              Expanded(
-                child: AnimatedSwitcher(
-                  duration: reduced ? Duration.zero : Motion.move,
-                  reverseDuration: reduced ? Duration.zero : Motion.exitOf(Motion.move),
-                  switchInCurve: Motion.easeInOut,
-                  switchOutCurve: Motion.easeInOut,
-                  // A section comes in from the right; the list comes back from the left.
-                  transitionBuilder: (child, animation) {
-                    final isList = child.key == const ValueKey('settings.list');
-                    final from = Offset(isList ? -0.25 : 0.25, 0);
-                    return FadeTransition(
-                      opacity: animation,
-                      child: SlideTransition(
-                        position: Tween(begin: from, end: Offset.zero).animate(animation),
-                        child: child,
-                      ),
-                    );
-                  },
-                  child: listing
-                      ? KeyedSubtree(key: const ValueKey('settings.list'), child: _phoneList(theme))
-                      : KeyedSubtree(key: ValueKey('settings.section.${_section.name}'), child: _sectionBody()),
+                Expanded(
+                  child: AnimatedSwitcher(
+                    duration: reduced ? Duration.zero : Motion.move,
+                    reverseDuration: reduced ? Duration.zero : Motion.exitOf(Motion.move),
+                    switchInCurve: Motion.easeInOut,
+                    switchOutCurve: Motion.easeInOut,
+                    // A section comes in from the right; the list comes back from the left.
+                    transitionBuilder: (child, animation) {
+                      final isList = child.key == const ValueKey('settings.list');
+                      final from = Offset(isList ? -0.25 : 0.25, 0);
+                      return FadeTransition(
+                        opacity: animation,
+                        child: SlideTransition(
+                          position: Tween(begin: from, end: Offset.zero).animate(animation),
+                          child: child,
+                        ),
+                      );
+                    },
+                    child: listing
+                        ? KeyedSubtree(key: const ValueKey('settings.list'), child: _phoneList(theme))
+                        : KeyedSubtree(key: ValueKey('settings.section.${_section.name}'), child: _sectionBody()),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
