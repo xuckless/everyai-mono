@@ -4,6 +4,12 @@
 // short window, with normal and large text. Any overflow, unbounded size or layout exception fails the test, and the
 // failure lists every one (screen, language, size, text scale, the error's first line), not just the first.
 
+import 'dart:io' show File;
+
+import 'package:every_ai/features/local_models/local_models_providers.dart';
+
+import '../features/local_models/fakes.dart';
+
 import 'package:drift/native.dart';
 import 'package:every_ai/app/shell.dart';
 import 'package:every_ai/core/db/app_database.dart';
@@ -82,6 +88,11 @@ void main() {
                 databaseProvider.overrideWithValue(db),
                 preferencesProvider.overrideWithValue(Preferences.inMemory()),
                 secretStoreProvider.overrideWithValue(_Store()),
+                localHttpProvider.overrideWithValue(FakeLocalHttp()),
+                localSystemProvider.overrideWithValue(FakeLocalSystem()),
+                bundledCatalogueProvider.overrideWith(
+                  (ref) async => File('assets/local_models.json').readAsStringSync(),
+                ),
                 apiClientProvider.overrideWithValue(
                   ApiClient(
                     baseUrl: Uri.parse('http://backend/'),

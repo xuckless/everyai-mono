@@ -74,6 +74,7 @@ enum EveryIcon {
   board(LucideIcons300.squareKanban),
   branch(LucideIcons300.gitBranch),
   workflow(LucideIcons300.zap),
+  cpu(LucideIcons300.cpu),
   arrowUpRight(LucideIcons300.arrowUpRight);
 
   const EveryIcon(this.data);
