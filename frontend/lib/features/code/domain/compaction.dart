@@ -4,6 +4,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
+import '../checks/post_edit_hooks.dart' show splitCheckReport;
 import '../../../core/security/untrusted.dart';
 import '../git/repo_check.dart' show repoCheckLine, splitRepoCheck;
 import '../harness/events.dart';
@@ -137,9 +138,12 @@ String repoCheckIn(Iterable<String> userTexts) {
   return '';
 }
 
-/// The user's text of a message: session block, mode, repo-check, context, workflow and rewind notes split off.
+/// The user's text of a message: session block, mode, repo-check, check report, context, workflow and rewind notes
+/// split off.
 String userTextOf(String raw) => splitRewindNote(
-  splitWorkflowNotes(splitContextNotes(splitRepoCheck(splitModeNote(splitSessionBlock(raw).$2).$2).$2).$2).$2,
+  splitWorkflowNotes(
+    splitContextNotes(splitCheckReport(splitRepoCheck(splitModeNote(splitSessionBlock(raw).$2).$2).$2).$2).$2,
+  ).$2,
 );
 
 String _userText(String raw) => userTextOf(raw);

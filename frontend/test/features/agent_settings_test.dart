@@ -3,6 +3,24 @@ import 'package:every_ai/features/code/settings/agent_settings.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('after-edit checks: on by default, auto-format off, and a project file cannot turn auto-format on', () {
+    expect(AgentSettings.defaults.afterEditChecks, isTrue);
+    expect(AgentSettings.defaults.autoFormat, isFalse);
+    final user = {
+      'checks': {'autoFormat': true},
+    };
+    final project = AgentSettings.untrusted({
+      'checks': {'afterEdit': false, 'autoFormat': true},
+    });
+    expect(project['checks'], {'afterEdit': false});
+    final s = AgentSettings.layered([user, project]);
+    expect(s.afterEditChecks, isFalse);
+    expect(s.autoFormat, isTrue, reason: "the user's own layer still counts");
+    expect(AgentSettings.layered([project]).autoFormat, isFalse);
+    // A layer that doesn't mention them keeps what is below.
+    expect(AgentSettings.layered([user, const {}]).autoFormat, isTrue);
+  });
+
   test('layers merge: scalars override when set, lists add up, agents merge by name', () {
     final user = {
       'instructions': 'Keep functions small',
@@ -26,7 +44,6 @@ void main() {
     final s = AgentSettings.layered([user, project, local]);
     expect(s.instructions, ['Keep functions small', 'Run dart format -l 120']);
     expect(s.commitStyle, CommitStyle.conventional);
-    expect(s.attribution, isFalse);
     expect(s.agents.keys, ['reviewer', 'tester']);
     expect(s.deny, ['git push --force']);
     // A layer without git keeps the style below it.
@@ -55,15 +72,15 @@ void main() {
   });
 
   test('the persona replaces OpenHands branding with the configured commit rules', () {
-    final plain = agentPersona(style: CommitStyle.plain, attribution: false);
+    final plain = agentPersona(style: CommitStyle.plain);
     expect(plain, contains('agentic environment'));
     expect(plain, contains('imperative, capitalised subject'));
     expect(plain, contains('No Co-authored-by'));
     expect(plain, isNot(contains('openhands@all-hands.dev')));
     expect(plain, contains('Never set user.name'));
-    final conventional = agentPersona(style: CommitStyle.conventional, attribution: true);
+    final conventional = agentPersona(style: CommitStyle.conventional);
     expect(conventional, contains('Conventional Commits'));
-    expect(conventional, isNot(contains('No Co-authored-by')));
+    expect(conventional, contains('No Co-authored-by'), reason: 'always on (owner)');
   });
 
   test('the suffix carries project rules, agent types and the attribution override', () {
@@ -80,6 +97,7 @@ void main() {
     expect(suffix, contains('<ATTRIBUTION>'));
     expect(suffix, contains('- Never touch generated files'));
     expect(suffix, contains('- reviewer: Reviews a diff for bugs'));
+    // An old `git.attribution: true` no longer turns the rule off.
     expect(
       agentPromptSuffix(
         AgentSettings.layered([
@@ -88,7 +106,7 @@ void main() {
           },
         ]),
       ),
-      isNot(contains('<ATTRIBUTION>')),
+      contains('<ATTRIBUTION>'),
     );
   });
 

@@ -859,6 +859,8 @@ final class ToolRunner {
       );
     }
     final ms = ((args['timeout'] as num?)?.toInt() ?? 120000).clamp(1000, 600000);
+    // Where it started: the shell keeps its folder, so a `cd` in an earlier command moved it (runtime profiles).
+    final startCwd = shell.cwd;
     final name = 'bash-${DateTime.now().millisecondsSinceEpoch}';
     final locks = check == null ? null : await packages!.snapshot(cwd, root, check.scan);
     final r = await shell.run(
@@ -879,7 +881,7 @@ final class ToolRunner {
     return ToolOutput(
       '${_fit(shown, name)}$checked',
       isError: r.exitCode != 0,
-      observation: {'exit_code': r.exitCode, 'cwd': shell.cwd},
+      observation: {'exit_code': r.exitCode, 'cwd': shell.cwd, 'start_cwd': startCwd},
     );
   }
 

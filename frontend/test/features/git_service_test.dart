@@ -1,5 +1,8 @@
 import 'dart:io';
 
+import 'package:every_ai/features/code/checks/post_edit_hooks.dart';
+import 'package:every_ai/features/code/checks/post_edit_hooks_io.dart';
+import 'package:every_ai/features/code/checks/runtime_profiles_io.dart' show recordRuntime;
 import 'package:every_ai/features/code/git/git_service.dart';
 import 'package:every_ai/features/code/git/git_service_io.dart' show guardedEnv, runGit;
 import 'package:every_ai/features/code/harness/everyai/repro_paths_io.dart';
@@ -137,6 +140,15 @@ void main() {
     File('${w.path}/lib/new.txt').writeAsStringSync('fresh, changed\n');
     File('${w.path}/lib/more.txt').writeAsStringSync('more\n');
     expect((await GitService.changedSince(w, tree))..sort(), ['lib/more.txt', 'lib/new.txt']);
+    final later = await GitService.snapshotTree(w);
+    expect((await GitService.changedBetween(w, tree, later))..sort(), ['lib/more.txt', 'lib/new.txt']);
+    expect(await GitService.changedBetween(w, later, later), isEmpty);
+    // From the base commit: everything the session has done.
+    expect((await GitService.changedBetween(w, w.baseCommit, later))..sort(), [
+      'lib/mine.txt',
+      'lib/more.txt',
+      'lib/new.txt',
+    ]);
     expect(await GitService.isDirtyAmong(w, ['lib/new.txt']), isTrue);
     expect(await GitService.isDirtyAmong(w, []), isFalse);
 
@@ -152,6 +164,89 @@ void main() {
     final sha = await GitService.commitOnNewBranch(w, 'everyai/more', 'More', paths: ['lib/more.txt']);
     expect(sha, await _git(w.path, ['rev-parse', 'HEAD']));
     expect(await _git(w.path, ['show', '--name-only', '--format=', 'HEAD']), 'lib/more.txt');
+  });
+
+  test('after-edit checks see only the files changed since their last run, deletions and .everyai left out', () async {
+    final w = await start();
+    File('${w.path}/pubspec.yaml').writeAsStringSync('name: app\n');
+    File('${w.path}/lib/a.dart').writeAsStringSync('void a() {}\n');
+    File('${w.path}/lib/c.dart').writeAsStringSync('void c() {}\n');
+    final asked = <String>[];
+    // What the lead's tool calls touched: the user's own edit of lib/user.dart is not the lead's to check.
+    File('${w.path}/lib/user.dart').writeAsStringSync('void u() {}\n');
+    final TouchedPaths touched = (
+      written: {'lib/a.dart', 'lib/b.dart', 'lib/c.dart', '.everyai/x.dart'},
+      named: <String>{},
+    );
+    Future<String?> round(String? tree) async {
+      asked.clear();
+      final r = await runPostEditHooks(
+        workingDir: w.path,
+        sessionTag: 'test',
+        shellDir: '${tmp.path}/shell',
+        target: w,
+        tree: tree,
+        // Records what would run, and runs nothing.
+        refusal: (command) {
+          asked.add(command);
+          return 'not in this test';
+        },
+        autoFormat: false,
+        touched: touched,
+      );
+      expect(r.report, isEmpty, reason: 'skips alone are no report');
+      return r.tree;
+    }
+
+    // The first round has no snapshot: everything since the session's base.
+    final first = await round(null);
+    expect(first, isNotNull);
+    expect(asked.first, 'dart format --output=none --set-exit-if-changed -- lib/a.dart lib/c.dart');
+
+    File('${w.path}/lib/b.dart').writeAsStringSync('void b() {}\n');
+    File('${w.path}/lib/c.dart').deleteSync();
+    Directory('${w.path}/.everyai').createSync();
+    File('${w.path}/.everyai/x.dart').writeAsStringSync('void x() {}\n');
+    final second = await round(first);
+    expect(asked, ['dart format --output=none --set-exit-if-changed -- lib/b.dart', 'dart analyze -- lib/b.dart']);
+
+    await round(second);
+    expect(asked, isEmpty, reason: 'nothing changed since');
+  });
+
+  test('after-edit checks and runtime profiles run no fsmonitor; an untracked node_modules tool is named', () async {
+    final marker = '${tmp.path}/fsmonitor-ran';
+    final monitor = File('${tmp.path}/monitor.sh')..writeAsStringSync('#!/bin/sh\ntouch "$marker"\nexit 1\n');
+    await Process.run('chmod', ['+x', monitor.path]);
+    File('$repo/package.json').writeAsStringSync('{}\n');
+    File('$repo/src/a.js')
+      ..parent.createSync(recursive: true)
+      ..writeAsStringSync('a\n');
+    await _git(repo, ['config', 'core.fsmonitor', monitor.path]);
+    final base = (await GitService.baseline(repo))!;
+    File('$repo/src/a.js').writeAsStringSync('b\n');
+    // The session put a "prettier" there that no .gitignore hides.
+    File('$repo/node_modules/.bin/prettier')
+      ..parent.createSync(recursive: true)
+      ..writeAsStringSync('#!/bin/sh\n');
+    final asked = <String>[];
+    final r = await runPostEditHooks(
+      workingDir: repo,
+      sessionTag: 'test',
+      shellDir: '${tmp.path}/shell',
+      target: base.diffView,
+      tree: null,
+      refusal: (command) {
+        asked.add(command);
+        return 'not in this test';
+      },
+      autoFormat: false,
+      touched: (written: {'src/a.js'}, named: <String>{}),
+    );
+    expect(asked.single, startsWith('node_modules/.bin/prettier --check'));
+    expect(r.report, contains('node_modules/.bin/prettier'));
+    await recordRuntime(repo, 'npm test', '', const Duration(seconds: 3));
+    expect(File(marker).existsSync(), isFalse);
   });
 
   test('a commit that fails after the switch goes back and removes the new branch', () async {
@@ -257,6 +352,10 @@ void main() {
     );
     expect(stripBranding('fix: x\n\nCo-authored-by: Sam <sam@example.com>\n'), contains('Sam'));
     expect(stripBranding('Add y\n\nSigned-off-by: Dev <dev@example.com>\n'), contains('Signed-off-by: Dev'));
+    expect(
+      stripBranding('Add z\n\nClaude-Session: https://claude.ai/code/session_01ABC\nAssisted-by: Codex\n'),
+      'Add z\n',
+    );
   });
 
   test('a fork works on a copy of the uncommitted folder and merges back file by file', () async {
@@ -292,6 +391,204 @@ void main() {
     expect(await _git(repo, ['rev-parse', '--verify', '-q', result.ref]), isNotEmpty);
     expect(await _git(repo, ['log', '--format=%s', '-1']), 'Initial commit');
     expect(await _git(repo, ['diff', '--cached', '--name-only']), isEmpty);
+  });
+
+  group('landing a workflow with its lanes\' commits', () {
+    /// A lane: a fork of the folder that commits [commits] (path → content, message) as [author], then merges back.
+    Future<LaneRef> lane(String slug, List<(Map<String, String>, String)> commits, {String author = 'Lane'}) async {
+      final copy = (await GitService.forkCopy(repo, worktreesDir: '${tmp.path}/forks', slug: slug))!;
+      for (final (files, message) in commits) {
+        files.forEach(
+          (p, text) => File('${copy.root}/$p')
+            ..parent.createSync(recursive: true)
+            ..writeAsStringSync(text),
+        );
+        await _git(copy.root, ['add', '-A']);
+        await _git(copy.root, [
+          '-c',
+          'user.name=$author',
+          '-c',
+          'user.email=$author@example.com',
+          'commit',
+          '-q',
+          '-m',
+          message,
+        ]);
+      }
+      final m = await GitService.mergeFork(copy, slug: slug);
+      return (ref: m.ref, base: copy.base, label: slug);
+    }
+
+    SessionWorktree here() =>
+        SessionWorktree(repoRoot: repo, path: repo, branch: 'main', baseBranch: 'main', baseCommit: 'HEAD');
+
+    test('commit here: the lanes\' commits in order with their authors, then one for the rest', () async {
+      final a = await lane('a', [
+        ({'lib/one.txt': 'one\n'}, 'Add one\n\nCo-Authored-By: Claude <noreply@anthropic.com>'),
+        ({'lib/one.txt': 'one, better\n'}, 'Improve one'),
+      ]);
+      final b = await lane('b', [
+        ({'lib/two.txt': 'two\n'}, 'Add two'),
+      ], author: 'Other');
+      // The integrate step's own work, and the user's unrelated work, uncommitted in the folder.
+      File('$repo/lib/glue.txt').writeAsStringSync('glue\n');
+      File('$repo/README.md').writeAsStringSync('# App, mine\n');
+      final landed = await GitService.landWithCommits(
+        here(),
+        lanes: [a, b],
+        paths: ['lib/one.txt', 'lib/two.txt', 'lib/glue.txt'],
+        message: 'Ultra: integrate\n\nGenerated with Claude Code',
+      );
+      expect(landed.laneCommits, 3);
+      expect(landed.notes, isEmpty);
+      expect(landed.head, await _git(repo, ['rev-parse', 'HEAD']));
+      expect(
+        await _git(repo, ['log', '--format=%s|%an', 'HEAD~4..HEAD']),
+        ['Ultra: integrate|Dev', 'Add two|Other', 'Improve one|Lane', 'Add one|Lane'].join('\n'),
+      );
+      final bodies = await _git(repo, ['log', '--format=%B', 'HEAD~4..HEAD']);
+      expect(bodies, isNot(contains('Claude')));
+      expect(await _git(repo, ['show', '--name-only', '--format=', 'HEAD']), 'lib/glue.txt');
+      // The run's paths are clean; the user's own work stays uncommitted.
+      expect(await _git(repo, ['status', '--porcelain']), 'M README.md');
+      expect(await _git(repo, ['branch', '--show-current']), 'main');
+    });
+
+    test('a lane that does not apply on top of the others lands as files in the last commit, with a note', () async {
+      // Both start from the same folder and rewrite the same line.
+      final a = (await GitService.forkCopy(repo, worktreesDir: '${tmp.path}/forks', slug: 'a'))!;
+      final b = (await GitService.forkCopy(repo, worktreesDir: '${tmp.path}/forks', slug: 'b'))!;
+      for (final (copy, text) in [(a, 'A\n'), (b, 'B\n')]) {
+        File('${copy.root}/lib/a.txt').writeAsStringSync(text);
+        await _git(copy.root, ['commit', '-qam', 'Rewrite a as $text']);
+      }
+      final ma = await GitService.mergeFork(a, slug: 'a');
+      final mb = await GitService.mergeFork(b, slug: 'b');
+      // b's merge left conflict markers; the integrate step resolved them in the folder.
+      File('$repo/lib/a.txt').writeAsStringSync('A and B\n');
+      final landed = await GitService.landWithCommits(
+        here(),
+        lanes: [(ref: ma.ref, base: a.base, label: 'a'), (ref: mb.ref, base: b.base, label: 'b')],
+        paths: ['lib/a.txt'],
+        message: 'Integrate',
+      );
+      expect(landed.laneCommits, 1);
+      expect(landed.notes.single, startsWith("b: its commits didn't apply"));
+      expect(await _git(repo, ['log', '--format=%s', 'HEAD~2..HEAD']), 'Integrate\nRewrite a as A');
+      expect(await _git(repo, ['show', 'HEAD:lib/a.txt']), 'A and B');
+      expect(await _git(repo, ['status', '--porcelain']), isEmpty);
+    });
+
+    test('new branch: the history goes there and the folder follows; a taken name changes nothing', () async {
+      final a = await lane('a', [
+        ({'lib/n.txt': 'n\n'}, 'Add n'),
+      ]);
+      final before = await _git(repo, ['rev-parse', 'HEAD']);
+      await _git(repo, ['branch', 'taken']);
+      await expectLater(
+        GitService.landWithCommits(here(), lanes: [a], paths: ['lib/n.txt'], message: 'x', newBranch: 'taken'),
+        throwsA(isA<GitError>()),
+      );
+      expect(await _git(repo, ['rev-parse', 'HEAD']), before);
+      final landed = await GitService.landWithCommits(
+        here(),
+        lanes: [a],
+        paths: ['lib/n.txt'],
+        message: 'x',
+        newBranch: 'everyai/run',
+      );
+      // Nothing is left beyond the lane's commit, so there is no extra one.
+      expect(landed.laneCommits, 1);
+      expect(await _git(repo, ['branch', '--show-current']), 'everyai/run');
+      expect(await _git(repo, ['log', '--format=%s', '-1']), 'Add n');
+      expect(await _git(repo, ['rev-parse', 'main']), before);
+      expect(await _git(repo, ['status', '--porcelain']), isEmpty);
+    });
+    test('the repository\'s index hook and clean filter never run while landing', () async {
+      final marker = '${tmp.path}/ran';
+      final a = await lane('a', [
+        ({'lib/h.txt': 'h\n'}, 'Add h'),
+      ]);
+      // After the lane: its own commits (the test's plain git) would run it.
+      final hook = File('$repo/.git/hooks/post-index-change')..writeAsStringSync('#!/bin/sh\ntouch "$marker"\n');
+      await Process.run('chmod', ['+x', hook.path]);
+      File('$repo/lib/glue.txt').writeAsStringSync('glue\n');
+      final landed = await GitService.landWithCommits(
+        here(),
+        lanes: [a],
+        paths: ['lib/h.txt', 'lib/glue.txt'],
+        message: 'Integrate',
+      );
+      expect(landed.head, isNotNull);
+      expect(File(marker).existsSync(), isFalse);
+      // A clean filter: storing the files would need it, so landing is refused and it doesn't run.
+      await _git(repo, ['config', 'filter.mark.clean', 'touch "$marker"; cat']);
+      File('$repo/.gitattributes').writeAsStringSync('*.txt filter=mark\n');
+      File('$repo/lib/glue.txt').writeAsStringSync('glue 2\n');
+      final before = await _git(repo, ['rev-parse', 'HEAD']);
+      await expectLater(
+        GitService.landWithCommits(here(), lanes: [a], paths: ['lib/glue.txt'], message: 'Again'),
+        throwsA(isA<GitError>()),
+      );
+      expect(File(marker).existsSync(), isFalse);
+      expect(await _git(repo, ['rev-parse', 'HEAD']), before);
+    });
+
+    test('a staged file the pattern `b*` would match stays staged; paths are literal', () async {
+      File('$repo/bc').writeAsStringSync('mine\n');
+      await _git(repo, ['add', 'bc']);
+      File('$repo/b*').writeAsStringSync('the run\n');
+      final landed = await GitService.landWithCommits(here(), lanes: const [], paths: ['b*'], message: 'Star');
+      expect(landed.head, isNotNull);
+      expect(await _git(repo, ['show', '--name-only', '--format=', 'HEAD']), 'b*');
+      expect(await _git(repo, ['diff', '--cached', '--name-only']), 'bc');
+    });
+
+    test('a lane commit already in HEAD is not replayed as an empty commit', () async {
+      final a = await lane('a', [
+        ({'lib/d.txt': 'd\n'}, 'Add d'),
+      ]);
+      File('$repo/lib/d.txt').writeAsStringSync('d\n');
+      await _git(repo, ['add', 'lib/d.txt']);
+      await _git(repo, ['commit', '-q', '-m', 'Mine: d']);
+      final before = await _git(repo, ['rev-parse', 'HEAD']);
+      final landed = await GitService.landWithCommits(here(), lanes: [a], paths: ['lib/d.txt'], message: 'x');
+      expect(landed.head, isNull);
+      expect(landed.laneCommits, 0);
+      expect(await _git(repo, ['rev-parse', 'HEAD']), before);
+    });
+
+    test('commit.gpgSign: landing commits are signed, and a signing failure lands nothing', () async {
+      final key = '${tmp.path}/sign_key';
+      final gen = await Process.run('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', key]);
+      if (gen.exitCode != 0) markTestSkipped('ssh-keygen is not available');
+      await _git(repo, ['config', 'commit.gpgsign', 'true']);
+      await _git(repo, ['config', 'gpg.format', 'ssh']);
+      await _git(repo, ['config', 'user.signingkey', key]);
+      final a = await lane('a', [
+        ({'lib/s.txt': 's\n'}, 'Add s'),
+      ]);
+      File('$repo/lib/glue.txt').writeAsStringSync('glue\n');
+      final landed = await GitService.landWithCommits(
+        here(),
+        lanes: [a],
+        paths: ['lib/s.txt', 'lib/glue.txt'],
+        message: 'Signed',
+      );
+      expect(landed.laneCommits, 1);
+      for (final rev in ['HEAD', 'HEAD~1']) {
+        expect(await _git(repo, ['cat-file', '-p', rev]), contains('gpgsig'));
+      }
+      // A key that isn't there: an error, not an unsigned commit.
+      await _git(repo, ['config', 'user.signingkey', '${tmp.path}/missing_key']);
+      File('$repo/lib/glue.txt').writeAsStringSync('glue 2\n');
+      final before = await _git(repo, ['rev-parse', 'HEAD']);
+      await expectLater(
+        GitService.landWithCommits(here(), lanes: const [], paths: ['lib/glue.txt'], message: 'Unsigned?'),
+        throwsA(isA<GitError>().having((e) => e.message, 'message', contains('commit.gpgSign'))),
+      );
+      expect(await _git(repo, ['rev-parse', 'HEAD']), before);
+    });
   });
 
   test('a fork gets its own copy in a repository with no commit yet, and merges back', () async {

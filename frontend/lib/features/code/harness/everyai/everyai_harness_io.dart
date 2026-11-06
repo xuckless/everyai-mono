@@ -20,6 +20,7 @@ import '../../domain/subagents.dart' show forkingTaskSpec, subagentRules, taskTo
 import '../../settings/agent_prompt.dart' show forHeldClientTools;
 import '../events.dart';
 import '../harness.dart';
+import '../../checks/runtime_profiles.dart' show runtimeProfilesBlock;
 import '../../drivers/briefing/briefing_types.dart' show everyaiServerName;
 import '../../drivers/usage_limit.dart';
 import '../../git/git_service_io.dart' show runGit;
@@ -564,6 +565,7 @@ final class EveryAISession
     'research_sites': ?s.researchSites,
     if (s.bugCheck) 'bug_check': true,
     'script': ?s.script?.toJson(),
+    if (s.runtimeProfiles.isNotEmpty) 'runtime_profiles': s.runtimeProfiles,
     'review_model': ?s.reviewModel,
   };
 
@@ -592,6 +594,7 @@ final class EveryAISession
     // Bug fix sessions from before workflows named their flow.
     bugCheck: j['bug_check'] == true || (j['phase_flow'] as String? ?? '').startsWith('bugfix'),
     script: ScriptCaps.fromJson(j['script']),
+    runtimeProfiles: [...?(j['runtime_profiles'] as List<Object?>?)?.whereType<String>()],
     reviewModel: j['review_model'] as String?,
   );
 
@@ -608,6 +611,9 @@ final class EveryAISession
       if (spec.rolePrompt case final role?) ContextPart(prompt, role),
       if (spec.skills.isNotEmpty) ContextPart(ContextKind.skills, _skillsBlock(spec.skills)),
       if (_mcp.failures.isNotEmpty || _mcp.leftOut.isNotEmpty) ContextPart(ContextKind.mcpInstructions, _mcpBlock()),
+      // Fixed for the session (read once), so before the notes and the environment.
+      if (runtimeProfilesBlock(spec.runtimeProfiles) case final profiles when profiles.isNotEmpty)
+        ContextPart(prompt, profiles),
       if (await projectNotesBlock(spec.workingDir) case final notes when notes.isNotEmpty)
         ContextPart(ContextKind.memoryFiles, notes),
       ContextPart(prompt, await environmentBlock(spec.workingDir)),
@@ -948,6 +954,7 @@ final class EveryAISession
       script: script ?? s.script,
       reviewModel: s.reviewModel,
       briefing: briefing ?? s.briefing,
+      runtimeProfiles: s.runtimeProfiles,
     );
   }
 

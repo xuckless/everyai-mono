@@ -228,12 +228,15 @@ String sessionSlug(String title, String id) {
   return words.isEmpty ? tail : '${words.length > 40 ? words.substring(0, 40) : words}-$tail';
 }
 
-/// Lines that credit an AI tool, which the commit-msg hook removes:
-/// Co-authored-by/Signed-off-by trailers naming one, and "Generated with"
-/// lines.
+/// Lines that credit an AI tool, which the commit-msg hook removes (and
+/// landing a workflow's lane commits, see `landWithCommits`):
+/// Co-authored-by/Signed-off-by/Assisted-by trailers naming one, "Generated
+/// with" lines, and session trailers or links (`Claude-Session:`,
+/// `claude.ai/code/session_…`). Owner: commits and PRs carry no AI identifiers.
 final brandingLine = RegExp(
-  r'^\s*(co-authored-by|signed-off-by)\s*:.*(openhands|all-hands|claude|anthropic|everyai|openai|chatgpt|gpt-|copilot|cursor|gemini|codex|\[bot\])'
-  r'|generated (with|by) .*(openhands|claude|everyai|copilot|chatgpt|codex|cursor|gemini)'
+  r'^\s*(co-authored-by|signed-off-by|assisted-by)\s*:.*(openhands|all-hands|claude|anthropic|everyai|openai|chatgpt|gpt-|copilot|cursor|gemini|codex|opencode|\[bot\])'
+  r'|generated (with|by) .*(openhands|claude|everyai|copilot|chatgpt|codex|cursor|gemini|opencode)'
+  r'|^\s*claude-session\s*:|claude\.ai/code/session'
   '|🤖',
   caseSensitive: false,
 );
@@ -294,6 +297,14 @@ final class ForkCopy {
 /// parent's version kept when they can't be merged as text), and the ref
 /// that keeps the fork's work either way.
 typedef ForkMerge = ({List<String> merged, List<String> conflicts, String ref});
+
+/// A workflow lane whose work merged into the folder: its fork's ref (the tip it left), the snapshot it started
+/// from, and its name for notes. Its own commits are `base..ref`.
+typedef LaneRef = ({String ref, String base, String label});
+
+/// What landing a workflow with its lanes' commits did: the new [head] (null when nothing was committed), how many
+/// lane commits were replayed, and a note per lane whose commits could not be (its changes are in the last commit).
+typedef LaneLanding = ({String? head, int laneCommits, List<String> notes});
 
 /// A branch's latest pull request: still [open], or merged or closed, and the commit it was opened (or merged) at.
 typedef BranchPr = ({int number, String url, bool open, String head});

@@ -140,6 +140,12 @@ Map<String, Object?> forkingTaskSpec() => {
             'other or on you. shared: it works in this folder directly; use that only for read-only investigation. '
             'Default: the user\'s setting (usually worktree).',
       },
+      'batch': {
+        'type': 'string',
+        'description':
+            'For a worktree fork that builds one batch of the approved plan: its id. The app runs that batch\'s check '
+            'in the fork\'s copy before merging it back; a failed check merges nothing and the report says why.',
+      },
       'run_in_background': {
         'type': 'boolean',
         'description':

@@ -1,10 +1,12 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 
+import '../domain/plan_batches.dart';
 import '../harness/everyai/repro_paths_io.dart';
 import '../git/git_service_io.dart' show runGit;
 import '../harness/everyai/shell_io.dart';
@@ -14,10 +16,28 @@ import 'host_checks.dart';
 /// The longest a check's command may run.
 const _runLimit = Duration(minutes: 10);
 
-Future<({int exit, String out})> _run(HostCheckContext c, String command, Future<void> cancel) async {
-  if (c.run case final run?) return run(command, cancel);
+/// Exit codes of a run stopped at a limit rather than finished.
+const _killedExits = {124, 137, 143};
+
+/// Runs [command]; [timed] tells [HostCheckContext.timed] how long it took.
+Future<({int exit, String out})> _run(
+  HostCheckContext c,
+  String command,
+  Future<void> cancel, {
+  bool timed = true,
+}) async {
+  final clock = Stopwatch()..start();
+  if (c.run case final run?) {
+    var cancelled = false;
+    unawaited(cancel.then((_) => cancelled = true, onError: (Object _) => cancelled = true));
+    final r = await run(command, cancel);
+    // Like the shell's: not a run that was stopped or killed at a limit (timeout's 124, SIGKILL, SIGTERM).
+    if (timed && !cancelled && !_killedExits.contains(r.exit)) await c.timed?.call(command, clock.elapsed);
+    return r;
+  }
   final shell = SessionShell(root: c.workingDir, sessionTag: c.sessionId, scratchDir: '${c.stateDir}/shell');
   final r = await shell.run(command, timeout: _runLimit, cancel: cancel);
+  if (timed && !r.timedOut && !r.cancelled) await c.timed?.call(command, clock.elapsed);
   final note = r.timedOut ? '\n[Stopped after ${_runLimit.inMinutes} minutes.]' : '';
   return (exit: r.exitCode, out: '${r.output}$note');
 }
@@ -27,7 +47,7 @@ Future<({int exit, String out})> _run(HostCheckContext c, String command, Future
 Future<HostResult> hostDiffStatsHere(HostCheckContext c, Future<void> cancel) async {
   const command = 'git diff --stat HEAD && git ls-files --others --exclude-standard';
   if (c.refusal(command) case final why?) return (text: '$why\n(command: $command)', isError: true);
-  final r = c.run == null ? await _statsHere(c.workingDir) : await _run(c, command, cancel);
+  final r = c.run == null ? await _statsHere(c.workingDir) : await _run(c, command, cancel, timed: false);
   if (r.exit != 0) {
     return (
       text: 'This folder is not a git repository with a commit, so there is nothing to count from.',
@@ -67,9 +87,42 @@ Future<({int exit, String out})> _statsHere(String dir) async {
   }
 }
 
-Future<HostResult> hostCheck(HostCheckContext c, List<String> files, Future<void> cancel) async {
-  final found = detectChecks(
+Future<HostResult> hostCheck(
+  HostCheckContext c,
+  List<String> files,
+  Future<void> cancel, {
+  bool full = false,
+  String? testName,
+}) async {
+  final r = await _checks(
+    c,
     files,
+    cancel,
+    full: full,
+    testName: testName,
+    refuse: (command) {
+      final why = c.refusal(command);
+      return why == null ? null : (why: why, skip: false);
+    },
+  );
+  return (text: r.text, isError: r.outcome != BatchOutcome.passed);
+}
+
+/// The tests that cover [files] ([full]: their projects' whole suites; [testName]: the tests of that name), run in
+/// [c]'s folder; each command passes [refuse] first. Unverified when no test was found to run at all.
+Future<({String text, String notes, BatchOutcome outcome})> _checks(
+  HostCheckContext c,
+  List<String> files,
+  Future<void> cancel, {
+  required BatchRefusal? Function(String command) refuse,
+  bool full = false,
+  String? testName,
+}) async {
+  ({List<CheckRun> runs, List<String> unmatched}) detect({bool Function(String dir)? tracked}) => detectChecks(
+    files,
+    full: full,
+    testName: testName,
+    nodeModulesTracked: tracked,
     exists: (p) => FileSystemEntity.typeSync('${c.workingDir}/$p') != FileSystemEntityType.notFound,
     read: (p) {
       try {
@@ -79,28 +132,118 @@ Future<HostResult> hostCheck(HostCheckContext c, List<String> files, Future<void
       }
     },
   );
+  var found = detect();
+  // Like the after-edit checks: a project whose node_modules git tracks runs none of its binaries.
+  final nodeDirs = {
+    for (final r in found.runs)
+      if (r.command.startsWith('$checkNpx ')) r.dir,
+  };
+  final notes = <String>[];
+  if (nodeDirs.isNotEmpty) {
+    final tracked = <String>{};
+    for (final d in nodeDirs) {
+      final at = d.isEmpty ? c.workingDir : '${c.workingDir}/$d';
+      switch (await _nodeModules(at)) {
+        case null:
+          tracked.add(d);
+        case final untracked when untracked.isNotEmpty:
+          // Not in git and not ignored: likely written in this session. Run, but named for the reader.
+          final shown = [for (final p in untracked.take(8)) d.isEmpty ? p : '$d/$p'];
+          notes.add(
+            'Note: ${shown.join(', ')}${untracked.length > 8 ? ' and ${untracked.length - 8} more' : ''} '
+            'under node_modules/.bin ${untracked.length == 1 ? 'is' : 'are'} not in git and not ignored, so '
+            '${untracked.length == 1 ? 'it was' : 'they were'} probably written in this session; the test runner '
+            'ran from there.',
+          );
+        default:
+      }
+    }
+    if (tracked.isNotEmpty) found = detect(tracked: tracked.contains);
+  }
   final missed = found.unmatched.isEmpty ? '' : 'No test found for: ${found.unmatched.join(', ')}.';
   if (found.runs.isEmpty) {
     return (
       text:
           '$missed Pass the test files themselves (they run as given), or run the right tests yourself. The app knows '
           'Dart/Flutter, jest, vitest, Go, Cargo and pytest projects.',
-      isError: true,
+      notes: '',
+      outcome: BatchOutcome.unverified,
     );
   }
   final out = <String>[];
   var failed = false;
   for (final run in found.runs) {
     final command = checkCommand(run);
-    if (c.refusal(command) case final why?) return (text: '$why\n(command: $command)', isError: true);
+    if (refuse(command) case final no?) {
+      return (
+        text: '${no.why}\n(command: $command)',
+        notes: '',
+        outcome: no.skip ? BatchOutcome.skipped : BatchOutcome.failed,
+      );
+    }
     final r = await _run(c, command, cancel);
     failed |= r.exit != 0;
     out.add('\$ $command\n[exit ${r.exit}]\n${r.out.trimRight()}');
   }
   return (
-    text: [failed ? 'Some tests failed.' : 'The tests passed.', if (missed.isNotEmpty) missed, ...out].join('\n\n'),
-    isError: failed,
+    text: [
+      failed ? 'Some tests failed.' : 'The tests passed.',
+      if (missed.isNotEmpty) missed,
+      ...notes,
+      ...out,
+    ].join('\n\n'),
+    notes: notes.join('\n'),
+    outcome: failed ? BatchOutcome.failed : BatchOutcome.passed,
   );
+}
+
+/// The files under [dir]'s `node_modules/.bin` that git shows as untracked (not ignored); null when git tracks
+/// node_modules there, or can't tell in a repository. Outside a repository nothing is tracked.
+Future<List<String>?> _nodeModules(String dir) async {
+  try {
+    // Guarded: the repository's own programs (core.fsmonitor) don't run.
+    final t = await runGit(dir, ['ls-files', '-z', '--', 'node_modules']);
+    if (t.exitCode != 0) return '${t.stderr}'.contains('not a git repository') ? const [] : null;
+    if ('${t.stdout}'.isNotEmpty) return null;
+    final u = await runGit(dir, ['ls-files', '-z', '--others', '--exclude-standard', '--', 'node_modules/.bin']);
+    return [
+      for (final p in '${u.stdout}'.split('\x00'))
+        if (p.isNotEmpty) p,
+    ];
+  } on Object {
+    return null;
+  }
+}
+
+Future<BatchVerdict> runBatchCheck(HostCheckContext c, PlanBatch batch, Future<void> cancel) async {
+  BatchRefusal? refuse(String command, {required bool own}) {
+    if (c.batchRefusal case final gate?) return gate(command, own: own);
+    final why = c.refusal(command);
+    return why == null ? null : (why: why, skip: false);
+  }
+
+  Future<({String text, String notes, BatchOutcome outcome})> own(List<String> files, {bool full = false}) =>
+      _checks(c, files, cancel, full: full, refuse: (command) => refuse(command, own: true));
+  final r = switch (batch.check) {
+    null => (text: '', notes: '', outcome: BatchOutcome.passed),
+    FilesCheck(:final files) => await own(files.isEmpty ? batch.files : files),
+    FullCheck() => await own(batch.files, full: true),
+    CommandCheck(:final command) => switch (refuse(command, own: false)) {
+      final no? => (
+        text: '${no.why}\n(command: $command)',
+        notes: '',
+        outcome: no.skip ? BatchOutcome.skipped : BatchOutcome.failed,
+      ),
+      null => await _run(c, command, cancel).then(
+        (r) => (
+          text: '\$ $command\n[exit ${r.exit}]\n${r.out.trimRight()}',
+          notes: '',
+          outcome: r.exit == 0 ? BatchOutcome.passed : BatchOutcome.failed,
+        ),
+      ),
+    },
+  };
+  return (outcome: r.outcome, output: r.outcome == BatchOutcome.passed ? r.notes : _tail(r.text));
 }
 
 String _tail(String out) => out.length > 3000 ? '…${out.substring(out.length - 3000)}' : out;

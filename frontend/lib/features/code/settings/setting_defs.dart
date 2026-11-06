@@ -138,13 +138,31 @@ const settingDefs = <SettingDef>[
     fallback: 'auto',
   ),
   SettingDef(
-    key: 'attribution',
-    title: 'Attribution',
-    help: 'Let commits and PRs name the agent or the tool (Co-authored-by trailers and the like).',
+    key: 'afterEditChecks',
+    title: 'Checks after each turn',
+    help:
+        'When a lead\'s turn ends, run the formatter check, lint and typecheck on the files it changed, and tell '
+        'the lead about problems with its next message. EveryAI picks the commands itself (never the agent) and '
+        'runs them in every mode but Plan without asking; the safety floor and your deny rules still apply. They '
+        'run the project\'s own toolchain: its formatter and linter configs and plugins, node_modules binaries '
+        '(not ones checked into git) and, for cargo check and go vet, its build scripts. Project-wide checks run in '
+        'the background and never hold a message.',
     scopes: _gp,
     kind: SettingKind.toggle,
     store: SettingStore.file,
-    path: ['git', 'attribution'],
+    path: ['checks', 'afterEdit'],
+    fallback: true,
+  ),
+  SettingDef(
+    key: 'autoFormat',
+    title: 'Auto-format',
+    help:
+        'Let those checks run the formatters for real, so they rewrite the files the lead changed. Only your own '
+        'settings can turn this on.',
+    scopes: _g,
+    kind: SettingKind.toggle,
+    store: SettingStore.file,
+    path: ['checks', 'autoFormat'],
     fallback: false,
   ),
   SettingDef(

@@ -32,7 +32,7 @@ List<SlashCommand> withEveryLeadCommands(List<SlashCommand> native) => [
 ];
 
 /// The Code composer's built-in session commands.
-final codeBuiltIns = <SlashCommand>[
+List<SlashCommand> get codeBuiltIns => [
   _code('plan', 'Switch to Plan mode: read and propose before editing', argsHint: '[what to plan]', (ctx, args) {
     ctx.code?.setMode('plan');
     if (args.isNotEmpty) ctx.send(args);

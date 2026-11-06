@@ -101,7 +101,7 @@ void _tell(SlashContext ctx, String? message) {
 }
 
 /// The chat composer's built-in commands.
-final chatBuiltIns = <SlashCommand>[
+List<SlashCommand> get chatBuiltIns => [
   _chatMode('chat', 'Answer from the model alone'),
   _chatMode('search', 'Search the web and cite sources'),
   _chatMode('research', 'Multi-step research with a report'),

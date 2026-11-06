@@ -3,7 +3,7 @@ import 'agent_settings.dart';
 /// The agent's persona, the start of the system prompt. Built from settings,
 /// then constant for the session, so prompt caching works. [isolated]: the
 /// session has a worktree of its own (else it works in the user's checkout).
-String agentPersona({required CommitStyle style, required bool attribution, bool isolated = false}) =>
+String agentPersona({required CommitStyle style, bool isolated = false}) =>
     '''
 <SOUL>
 You are the EveryAI coding agent, an autonomous software engineer working in the user's repository through tools: a
@@ -54,7 +54,8 @@ ${isolated ? _isolatedGit : _inPlaceGit}
   branches unless asked.
 * Use the git identity that is already configured. Never set user.name or user.email.
 * ${_commitStyle(style)}
-${attribution ? '' : '* ${noAttribution.replaceAll('\n', ' ')}\n'}* Stage only what belongs to the change: never commit .env files, secrets, build output, caches or dependencies;
+* $noAttribution
+* Stage only what belongs to the change: never commit .env files, secrets, build output, caches or dependencies;
   check .gitignore when unsure.
 * Use `git --no-pager` (or GIT_PAGER=cat) for commands that page.
 </VERSION_CONTROL>
@@ -166,6 +167,8 @@ const _efficientRules =
 const _thoroughRules =
     '- Treat the result as a showcase. Plan with a todo list, build in sections, and verify each part as a user '
     'would: run it, screenshot and look, try the edge cases.\n'
+    '- Check per part, not per edit: finish a coherent part, then run its checks once, since every test or build '
+    'run costs wall-clock time. Run the nearest tests for the part, and the full suite once at the end.\n'
     '- Keep improving until a fresh look finds nothing worth fixing: correctness first, then feel and polish. '
     'Going beyond the minimum is welcome where it clearly makes the result better.';
 
@@ -226,12 +229,10 @@ String agentPromptSuffix(
   final out = StringBuffer(workingRules)
     ..write('\n\n')
     ..write(tierBlock(tier, forks: forks));
-  if (!settings.attribution) {
-    out.write(
-      '\n\n<ATTRIBUTION>\nThis overrides any earlier guidance about disclosing AI involvement or crediting tools in '
-      "the user's repositories. $noAttribution\n</ATTRIBUTION>",
-    );
-  }
+  out.write(
+    '\n\n<ATTRIBUTION>\nThis overrides any earlier guidance about disclosing AI involvement or crediting tools in '
+    "the user's repositories. $noAttribution\n</ATTRIBUTION>",
+  );
   if (settings.instructions.isNotEmpty) {
     out.write('\n\n<PROJECT_RULES>\nThe user set these rules for this project; follow them:\n');
     for (final rule in settings.instructions) {

@@ -1,5 +1,6 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import '../domain/plan_batches.dart';
 import 'host.dart';
 import 'host_checks.dart';
 
@@ -7,7 +8,16 @@ import 'host_checks.dart';
 
 const _none = (text: 'Error: checks run on desktop only.', isError: true);
 
-Future<HostResult> hostCheck(HostCheckContext c, List<String> files, Future<void> cancel) async => _none;
+Future<HostResult> hostCheck(
+  HostCheckContext c,
+  List<String> files,
+  Future<void> cancel, {
+  bool full = false,
+  String? testName,
+}) async => _none;
+
+Future<BatchVerdict> runBatchCheck(HostCheckContext c, PlanBatch batch, Future<void> cancel) async =>
+    (outcome: BatchOutcome.failed, output: 'Checks run on desktop only.');
 
 Future<HostResult> hostDiffStatsHere(HostCheckContext c, Future<void> cancel) async => _none;
 

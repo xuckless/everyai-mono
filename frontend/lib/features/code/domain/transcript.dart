@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'phases.dart';
+import '../checks/post_edit_hooks.dart' show splitCheckReport;
 import '../drivers/driver_policy.dart' show hostToolOf;
 import '../drivers/usage_limit.dart';
 import '../git/repo_check.dart' show splitRepoCheck;
@@ -10,6 +11,7 @@ import '../workflows/workflow_notes.dart' show splitWorkflowNotes;
 import 'agent_mode.dart';
 import 'compaction.dart' show splitCompacted, splitHandoff;
 import 'notice.dart';
+import 'plan_batches.dart';
 import 'questions.dart';
 import 'rewind.dart' show splitRewindNote;
 import 'subagents.dart';
@@ -205,11 +207,22 @@ final class PlanProposal extends TranscriptItem {
   List<PlanStep> get steps => [
     for (final s in (call.action['steps'] as List<Object?>? ?? const []))
       if (s is Map<String, Object?>)
-        PlanStep(s['title'] as String? ?? '', s['detail'] as String? ?? '', [
-          for (final f in (s['files'] as List<Object?>? ?? const [])) '$f',
-        ])
+        PlanStep(
+          s['title'] as String? ?? '',
+          s['detail'] as String? ?? '',
+          [for (final f in (s['files'] as List<Object?>? ?? const [])) '$f'],
+          id: s['id'] as String? ?? '',
+          check: s['check'],
+        )
       else if (s is String)
         PlanStep(s, '', const []),
+  ];
+
+  /// The steps that are change batches (an id, and a valid batch), in order. present_plan's check is
+  /// `{files?, command?, full?}` (one flat object every provider's tool schema takes); [parseBatch] normalises it.
+  List<PlanBatch> get batches => [
+    for (final s in steps)
+      if (s.id.isNotEmpty) ?parseBatch({'id': s.id, 'intent': s.title, 'files': s.files, 'check': s.check}).batch,
   ];
 
   List<String> get risks => [for (final r in (call.action['risks'] as List<Object?>? ?? const [])) '$r'];
@@ -226,6 +239,7 @@ final class PlanProposal extends TranscriptItem {
     ],
     if (risks.isNotEmpty) ...['', '## Risks', for (final r in risks) '- $r'],
     if (verification.isNotEmpty) ...['', '## Verification', verification],
+    if (batches case final b when b.isNotEmpty) ...['', '## Batches', batchesFence(b)],
   ].join('\n');
 }
 
@@ -233,10 +247,14 @@ enum PlanVerdict { approved, revised }
 
 @immutable
 final class PlanStep {
-  const PlanStep(this.title, this.detail, this.files);
+  const PlanStep(this.title, this.detail, this.files, {this.id = '', this.check});
   final String title;
   final String detail;
   final List<String> files;
+
+  /// A change batch's id ('' for a plain step) and its check as given (see [parseBatch]).
+  final String id;
+  final Object? check;
 }
 
 /// The message "Start building" sends after a plan is approved.
@@ -252,6 +270,12 @@ const planRevisionLead = 'Not an error: the user wants changes to this plan befo
 
 /// The title of the row that holds the text an outside agent was briefed with.
 const briefingNotice = 'EveryAI briefing';
+
+/// The row for the after-edit checks' report on the last turn (see `post_edit_hooks.dart`).
+const checksNotice = 'Checks after the last turn';
+
+/// The notice row when some after-edit checks could not run (its detail says which and why).
+const checksSkippedNotice = 'Some checks after the last turn did not run';
 
 /// The row for the repo-check block on a session's first message.
 const repoCheckNotice = 'This repository can run code by itself';
@@ -484,7 +508,10 @@ final class TranscriptBuilder {
         final (mode, noted) = splitModeNote(raw);
         final (repoCheck, checked) = splitRepoCheck(noted);
         if (repoCheck != null) _items.add(NoticeItem('${e.id}-repo', repoCheckNotice, detail: repoCheck));
-        final (_, afterContext) = splitContextNotes(checked);
+        // The app's own check report on the last turn: its own row, not the user's words.
+        final (checks, afterChecks) = splitCheckReport(checked);
+        if (checks != null) _items.add(NoticeItem('${e.id}-checks', checksNotice, detail: checks));
+        final (_, afterContext) = splitContextNotes(afterChecks);
         final (flows, afterFlows) = splitWorkflowNotes(afterContext);
         var text = splitRewindNote(afterFlows);
         final changed = mode != null && mode != _notedMode;

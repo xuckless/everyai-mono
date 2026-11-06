@@ -6,6 +6,7 @@ import '../domain/agent_mode.dart';
 import '../domain/goal.dart';
 import '../domain/permissions.dart';
 import '../domain/phases.dart' show bugCheckTool;
+import '../domain/plan_batches.dart';
 import '../drivers/briefing/session_skill.dart' show HostToolInfo;
 import '../drivers/driver_policy.dart' show hostToolOf;
 import '../git/git_service.dart';
@@ -45,6 +46,72 @@ Map<String, Object?> bugCheckRecord(Map<String, Object?>? saved, {String? hostle
   };
 }
 
+/// What a workflow script reads of a batch check ([runBatchCheck]'s verdict): `{passed: true}`, `{passed: false,
+/// output}`, `{skipped: true, output}` when the session's mode would have asked before the command (the app can't ask
+/// the user from a gate), or `{skipped: true, unverified: true, output}` when no test covers the batch's files. A
+/// skipped check doesn't gate: the work merges unchecked, as it would with no check, and nothing is spent on fixing
+/// a check that can't pass. The safety floor or a deny rule refusing the command is a failed check.
+Map<String, Object?> batchCheckRecord(BatchVerdict v) => switch (v.outcome) {
+  // A note (a test runner the agent may have written) still reaches the reader.
+  BatchOutcome.passed => {'passed': true, if (v.output.isNotEmpty) 'note': v.output},
+  BatchOutcome.failed => {'passed': false, 'output': v.output},
+  BatchOutcome.skipped => {'skipped': true, 'output': v.output},
+  BatchOutcome.unverified => {'skipped': true, 'unverified': true, 'output': v.output},
+};
+
+/// How a batch check ended (see [batchCheckRecord]).
+enum BatchOutcome { passed, failed, skipped, unverified }
+
+/// A batch check's outcome: [output] is the tail of what ran (or why it couldn't); when it passed, only its notes
+/// ('' for none).
+typedef BatchVerdict = ({BatchOutcome outcome, String output});
+
+/// Why the app won't run a batch check's command: [skip] when only the mode stands in the way (it would ask), so
+/// the check is skipped; otherwise (the safety floor, a deny rule) the check fails with [why].
+typedef BatchRefusal = ({String why, bool skip});
+
+/// Why the app won't run [command] for a batch check now, or null. [own]: a command EveryAI built itself from the
+/// project ([detectChecks]: the tests that cover the batch's files, or the whole suite); otherwise the plan's own
+/// `check.command`, which a model wrote.
+/// - The safety floor and the user's deny rules refuse in every mode, Bypass included. Bypass turns EveryAI's checks
+///   off for the agent's own calls; a batch check is the app running a command itself, outside the agent's tools,
+///   so the app's guardrails stay on for it.
+/// - Plan mode runs no checks (skipped).
+/// - The app's own test commands run in every other mode without asking (the user's decision: they are the
+///   project's tests, chosen by the app, not by the model).
+/// - A model-written command is treated like the agent's own command: the mode decides, and where it would ask the
+///   check is skipped (nobody can approve it from a gate).
+BatchRefusal? batchRunRefusal({
+  required PermissionPolicy policy,
+  required AgentMode mode,
+  required String command,
+  required bool own,
+}) {
+  if (floorReason(command) case final why?) return (why: 'Not run: $why. EveryAI never runs this.', skip: false);
+  // Bypass skips the floor and the rules in the policy, so they are asked as in Full auto.
+  final guard = _probe(policy, mode == AgentMode.bypass ? AgentMode.fullAuto : mode, checkTool, command);
+  if (guard.source == DecisionSource.rule) return (why: _denial(guard), skip: false);
+  if (mode == AgentMode.plan) return (why: 'Not run: Plan mode runs no checks.', skip: true);
+  if (own || mode == AgentMode.bypass) return null;
+  return switch (guard.verdict) {
+    Verdict.allow => null,
+    Verdict.deny => (why: _denial(guard), skip: false),
+    Verdict.ask => (
+      why:
+          'Not run: the session asks before this command, and the app runs a batch check without asking. Allow '
+          'the command with a rule, or use Full auto, to have it gate the merge.',
+      skip: true,
+    ),
+  };
+}
+
+/// Runs [batch]'s check in [c]'s folder (the batch agent's worktree) and returns the verdict: the one entry point
+/// for gating a batch's merge (workflow agents and Max forks). Each command passes
+/// [HostCheckContext.batchRefusal] first (see [batchRunRefusal]). A batch without a check passes; one with no test
+/// to run is unverified, not failed.
+Future<BatchVerdict> runBatchCheck(HostCheckContext c, PlanBatch batch, Future<void> cancel) =>
+    impl.runBatchCheck(c, batch, cancel);
+
 /// The host's own bug_check: the deterministic steps of Bug fix mode's
 /// (no triage, no review by another model), which a workflow sequences.
 const hostBugCheckSpec = <String, Object?>{
@@ -82,15 +149,24 @@ const checkSpec = <String, Object?>{
       'Run the tests that cover the files you changed, and only those. The app finds each file\'s project '
       '(pubspec.yaml, package.json with jest or vitest, go.mod, Cargo.toml, pyproject.toml or pytest), maps source '
       'files to their tests and runs them there. Without files it takes what this session changed. Long output is '
-      'saved to a file and you get a preview. Use it after a change, before you say it works.',
+      'saved to a file and you get a preview. Use it after a change, before you say it works.\n'
+      'scope: changed (what this session changed), files (the files you name; the default when you name some), '
+      'test (the tests whose name matches `test`, in the projects of the files or of the session folder) or full '
+      '(the whole suite of those projects; use it once at the end, not after every change).',
   'inputSchema': {
     'type': 'object',
     'properties': {
+      'scope': {
+        'type': 'string',
+        'enum': ['changed', 'files', 'test', 'full'],
+        'description': 'What to run; default: files when you name some, else changed',
+      },
       'files': {
         'type': 'array',
         'items': {'type': 'string'},
         'description': 'Paths relative to the session folder; tests or the source files they cover',
       },
+      'test': {'type': 'string', 'description': 'scope test: the test name (or part of it) to run'},
     },
     'additionalProperties': false,
   },
@@ -152,9 +228,11 @@ final class HostCheckContext {
     required this.workingDir,
     required this.stateDir,
     required this.refusal,
+    this.batchRefusal,
     this.worktree,
     this.goal,
     this.run,
+    this.timed,
   });
 
   final String sessionId;
@@ -170,8 +248,16 @@ final class HostCheckContext {
   /// Why the app won't run a command for this call now, or null (see [hostRunRefusal]).
   final String? Function(String command) refusal;
 
+  /// Why the app won't run a batch check's command (see [batchRunRefusal]); null: [refusal] decides, and any refusal
+  /// fails the check.
+  final BatchRefusal? Function(String command, {required bool own})? batchRefusal;
+
   /// The command runner; null runs in the user's login shell.
   final HostRun? run;
+
+  /// Told how long each check or bug_check command ran (not one that timed out or was cancelled); the run's
+  /// result waits for it.
+  final Future<void> Function(String command, Duration took)? timed;
 }
 
 /// Answers a check tool call ([checkToolNames]).
@@ -189,16 +275,37 @@ Future<HostResult> hostCheckTool(HostCall call, HostCheckContext c) async {
     case checkTool:
       // Outside agents often pass absolute paths; the detector works on relative ones.
       final root = '${c.workingDir}/';
-      var files = [
+      final named = [
         for (final f in (call.args['files'] as List<Object?>? ?? const []).whereType<String>())
           f.startsWith(root) ? f.substring(root.length) : f,
       ];
-      final w = c.worktree;
-      if (files.isEmpty && w != null) files = [for (final f in await GitService.changes(w)) f.path];
-      if (files.isEmpty) {
+      final scope = call.args['scope'] is String
+          ? call.args['scope']! as String
+          : (named.isEmpty ? 'changed' : 'files');
+      final test = call.args['test'] is String ? (call.args['test']! as String).trim() : '';
+      if (!const {'changed', 'files', 'test', 'full'}.contains(scope)) {
+        return (text: 'Error: scope must be changed, files, test or full.', isError: true);
+      }
+      if (scope == 'test' && test.isEmpty) {
+        return (text: 'Error: scope test needs the test\'s name in `test`.', isError: true);
+      }
+      if (scope == 'files' && named.isEmpty) {
         return (text: 'Error: name the files to check (paths relative to the session folder).', isError: true);
       }
-      return impl.hostCheck(c, files, call.ended);
+      var files = scope == 'changed' ? const <String>[] : named;
+      final w = c.worktree;
+      if (files.isEmpty && scope != 'files' && w != null) files = [for (final f in await GitService.changes(w)) f.path];
+      // A name or the whole suite needs only the projects: the session folder's own when nothing narrows it.
+      if (files.isEmpty && (scope == 'test' || scope == 'full')) files = const ['.'];
+      if (files.isEmpty) {
+        return (
+          text:
+              'Error: this session changed nothing the app can see; name the files to check (paths relative to the '
+              'session folder).',
+          isError: true,
+        );
+      }
+      return impl.hostCheck(c, files, call.ended, full: scope == 'full', testName: scope == 'test' ? test : null);
     case bugCheckTool:
       return impl.hostBugCheck(c, call.args, call.ended);
     default:
@@ -322,18 +429,28 @@ typedef CheckRun = ({String dir, String command});
 
 /// The test commands that cover [files] (relative to the session folder),
 /// one per project they are in, and the files no test was found for.
-/// [exists] and [read] see paths relative to the session folder.
+/// [exists] and [read] see paths relative to the session folder. [full]:
+/// each project's whole suite instead (the bare test command). [testName]:
+/// the tests whose name matches it, in each project (its runner's filter).
+/// File arguments come after `--` where the runner takes it, and a path that
+/// starts with `-` gets `./`, so no file name reads as an option; a very long
+/// list is split over several runs. jest and vitest run through `npx --no-install` (the project's own install,
+/// nothing downloaded); a project whose node_modules git tracks ([nodeModulesTracked]) gets none: its binaries are
+/// repository code, not installed tools.
 ({List<CheckRun> runs, List<String> unmatched}) detectChecks(
   List<String> files, {
   required bool Function(String path) exists,
   required String? Function(String path) read,
+  bool full = false,
+  String? testName,
+  bool Function(String dir)? nodeModulesTracked,
 }) {
   const markers = ['pubspec.yaml', 'package.json', 'go.mod', 'Cargo.toml', 'pyproject.toml', 'pytest.ini', 'setup.py'];
   String join(String dir, String name) => dir.isEmpty ? name : '$dir/$name';
   final groups = <(String, String), List<String>>{};
   final unmatched = <String>[];
   for (final raw in files) {
-    final file = raw.startsWith('./') ? raw.substring(2) : raw;
+    final file = raw == '.' ? '' : (raw.startsWith('./') ? raw.substring(2) : raw);
     (String, String)? hit;
     for (var dir = _parent(file); hit == null; dir = _parent(dir)) {
       for (final m in markers) {
@@ -352,6 +469,53 @@ typedef CheckRun = ({String dir, String command});
   }
   final runs = <CheckRun>[];
   for (final MapEntry(key: (dir, marker), value: inside) in groups.entries) {
+    final dart = RegExp(r'sdk:\s*flutter').hasMatch(read(join(dir, marker)) ?? '') ? 'flutter test' : 'dart test';
+    final js = marker == 'package.json'
+        ? switch (read(join(dir, marker)) ?? '') {
+            final p when p.contains('"vitest"') => 'vitest',
+            final p when p.contains('"jest"') => 'jest',
+            _ => null,
+          }
+        : null;
+    // The project's runner is unknown (a package.json with neither jest nor vitest): no test can be run there.
+    if (marker == 'package.json' && js == null) {
+      unmatched.addAll([for (final f in inside) '${join(dir, f)} (its package.json names neither jest nor vitest)']);
+      continue;
+    }
+    if (marker == 'package.json' && (nodeModulesTracked?.call(dir) ?? false)) {
+      unmatched.addAll([
+        for (final f in inside) '${join(dir, f)} (node_modules is in git, so EveryAI does not run its binaries)',
+      ]);
+      continue;
+    }
+    if (testName != null) {
+      final q = _quote(testName);
+      runs.add((
+        dir: dir,
+        command: switch (marker) {
+          'pubspec.yaml' => '$dart --plain-name=$q',
+          'package.json' =>
+            js == 'vitest' ? '$checkNpx vitest run --testNamePattern=$q' : '$checkNpx jest --testNamePattern=$q',
+          'go.mod' => 'go test -run=$q ./...',
+          'Cargo.toml' => 'cargo test -- $q',
+          _ => 'python -m pytest -k $q',
+        },
+      ));
+      continue;
+    }
+    if (full) {
+      runs.add((
+        dir: dir,
+        command: switch (marker) {
+          'pubspec.yaml' => dart,
+          'package.json' => js == 'vitest' ? '$checkNpx vitest run' : '$checkNpx jest',
+          'go.mod' => 'go test ./...',
+          'Cargo.toml' => 'cargo test',
+          _ => 'python -m pytest',
+        },
+      ));
+      continue;
+    }
     final tests = <String>{};
     for (final f in inside) {
       final found = switch (marker) {
@@ -386,27 +550,47 @@ typedef CheckRun = ({String dir, String command});
       }
     }
     if (tests.isEmpty) continue;
-    final args = tests.where((t) => t.isNotEmpty).map(_quote).join(' ');
-    final tool = switch (marker) {
-      'pubspec.yaml' =>
-        RegExp(r'sdk:\s*flutter').hasMatch(read(join(dir, marker)) ?? '') ? 'flutter test' : 'dart test',
-      'package.json' => switch (read(join(dir, marker)) ?? '') {
-        final p when p.contains('"vitest"') => 'npx vitest related --run',
-        final p when p.contains('"jest"') => 'npx jest --findRelatedTests',
-        _ => null,
-      },
-      'go.mod' => 'go test',
-      'Cargo.toml' => 'cargo test',
-      _ => 'python -m pytest',
+    final (tool, dashes) = switch (marker) {
+      'pubspec.yaml' => (dart, true),
+      'package.json' =>
+        js == 'vitest' ? ('$checkNpx vitest related --run', false) : ('$checkNpx jest --findRelatedTests', false),
+      'go.mod' => ('go test', false),
+      'Cargo.toml' => ('cargo test', false),
+      _ => ('python -m pytest', true),
     };
-    if (tool == null) {
-      unmatched.addAll(inside.map((f) => join(dir, f)));
+    final args = [
+      for (final t in tests)
+        if (t.isNotEmpty) _quote(t.startsWith('-') ? './$t' : t),
+    ];
+    if (args.isEmpty) {
+      runs.add((dir: dir, command: tool));
       continue;
     }
-    runs.add((dir: dir, command: args.isEmpty ? tool : '$tool $args'));
+    // Under the shell's argument limit (ARG_MAX is 256 KiB on macOS, less with a big environment).
+    var chunk = <String>[];
+    var size = 0;
+    void flush() {
+      if (chunk.isEmpty) return;
+      runs.add((dir: dir, command: '$tool${dashes ? ' --' : ''} ${chunk.join(' ')}'));
+      chunk = [];
+      size = 0;
+    }
+
+    for (final a in args) {
+      if (size + a.length + 1 > _argLimit) flush();
+      chunk.add(a);
+      size += a.length + 1;
+    }
+    flush();
   }
   return (runs: runs, unmatched: unmatched);
 }
+
+/// How a check runs the project's jest or vitest: from its node_modules only, never downloaded.
+const checkNpx = 'npx --no-install';
+
+/// The most characters of file arguments one check command carries.
+const _argLimit = 32 * 1024;
 
 String? _ifExists(String path, String dir, bool Function(String) exists) =>
     exists(dir.isEmpty ? path : '$dir/$path') ? path : null;

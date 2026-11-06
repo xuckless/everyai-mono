@@ -87,6 +87,23 @@ AcpShape acpShape(
   }
 }
 
+/// Gemini's shell title: `<command> [current working directory] (<description>)`, or `[in <dir>]`.
+final _geminiShellTitle = RegExp(r'^(.+?) \[(?:current working directory|in (.+?))\](?: \(.*\))?$');
+
+/// What a shell call the rules keep a kind of its own for ([call], an
+/// `AcpExecuteAction`) ran, and in which folder ('' for the session's), for
+/// timing it only: OpenCode's `command` with its `workdir`, else the command
+/// in Gemini's title. Null when neither says.
+({String command, String cwd})? acpShellCommand(ActionCall call) {
+  final raw = call.action;
+  if (_str(raw['command']) ?? _str(raw['cmd']) case final command?) {
+    return (command: command, cwd: _str(raw['workdir']) ?? _str(raw['cwd']) ?? '');
+  }
+  final m = _geminiShellTitle.firstMatch(call.summary.trim());
+  if (m == null) return null;
+  return (command: m[1]!, cwd: m[2] ?? '');
+}
+
 /// [call] as the app's event, with its ACP `title` as the summary the
 /// transcript shows for kinds it doesn't know.
 ActionCall acpActionEvent(

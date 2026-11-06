@@ -37,4 +37,4 @@ final skillSlashCommandsProvider = Provider<List<SlashCommand>>((ref) => const [
 final connectorSlashCommandsProvider = Provider<List<SlashCommand>>((ref) => const []);
 
 /// The built-ins: the chat set (`chat_commands.dart`) and the Code set (`code_commands.dart`).
-final builtInSlashCommands = <SlashCommand>[...chatBuiltIns, ...codeBuiltIns];
+List<SlashCommand> get builtInSlashCommands => [...chatBuiltIns, ...codeBuiltIns];

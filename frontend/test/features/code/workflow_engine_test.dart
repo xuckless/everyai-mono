@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:every_ai/features/code/domain/plan_batches.dart';
 import 'package:every_ai/features/code/workflows/json_schema_lite.dart';
 import 'package:every_ai/features/code/workflows/workflow_engine.dart';
 import 'package:every_ai/features/code/workflows/workflow_journal.dart';
@@ -247,6 +248,144 @@ void main() {
       expect(launcher.bugChecked, isEmpty);
       bridge.finish(null);
       await run;
+    });
+  });
+
+  group('batch check', () {
+    const done = '```json\n{"status":"done"}\n```';
+    Map<String, Object?> batch([
+      Object? check = const {
+        'files': ['test/a_test.dart'],
+      },
+    ]) => {
+      'id': 'a',
+      'intent': 'Build A',
+      'files': ['lib/a.dart'],
+      'check': ?check,
+    };
+
+    test('a failing check blocks the merge and comes back to the script as a value, journalled', () async {
+      launcher.reply = (call, turn) => done;
+      launcher.batchCheck = (id, b) async => {'passed': false, 'output': 'boom'};
+      launcher.finishNote = (id, ok) => ok ? null : 'Not merged into your folder; its work is kept at refs/x.';
+      final run = engine().run();
+      final value = await bridge.agent('build a', {'schema': _schema, 'worktree': true, 'batch': batch()});
+      final child = launcher.started.single.childId;
+      expect(launcher.batchChecked, [(child, 'a')]);
+      expect(launcher.finished, [(child, false)]);
+      expect(value, {
+        'status': 'done',
+        'batch_check': {
+          'passed': false,
+          'output': 'boom',
+          'kept': 'Not merged into your folder; its work is kept at refs/x.',
+        },
+      });
+      expect(launcher.calls.single.batch!.check, isA<FilesCheck>());
+      bridge.finish(null);
+      final end = await run;
+      expect(end.agents.single.status, WorkflowAgentStatus.done);
+      final agent = lines.map((l) => jsonDecode(l) as Map).firstWhere((m) => m['t'] == 'agent');
+      expect(agent['ok'], isTrue);
+      expect((agent['value'] as Map)['batch_check'], containsPair('passed', false));
+    });
+
+    test('a skipped check (refused by the permissions) does not block the merge', () async {
+      launcher.reply = (call, turn) => done;
+      launcher.batchCheck = (id, b) async => {'skipped': true, 'output': 'Not run'};
+      final run = engine().run();
+      final value = await bridge.agent('build a', {'schema': _schema, 'worktree': true, 'batch': batch()});
+      expect(launcher.finished, [(launcher.started.single.childId, true)]);
+      expect(value, {
+        'status': 'done',
+        'batch_check': {'skipped': true, 'output': 'Not run'},
+      });
+      bridge.finish(null);
+      await run;
+    });
+
+    test('a check with no test to run merges, logged as unverified; a flat check is accepted', () async {
+      launcher.reply = (call, turn) => done;
+      launcher.batchCheck = (id, b) async => {'skipped': true, 'unverified': true, 'output': 'No test found'};
+      final run = engine().run();
+      final value = await bridge.agent('build a', {
+        'schema': _schema,
+        'worktree': true,
+        'label': 'impl:a',
+        'batch': batch({'files': <String>[], 'command': '', 'full': true}),
+      });
+      expect(launcher.calls.single.batch!.check, isA<FullCheck>());
+      expect(launcher.finished, [(launcher.started.single.childId, true)]);
+      expect((value! as Map)['batch_check'], containsPair('unverified', true));
+      bridge.finish(null);
+      final end = await run;
+      expect([for (final l in end.logs) l.text], contains('impl:a: no test covers its files, so it merged unverified'));
+    });
+
+    test('a passing check merges and says so; a String value is wrapped', () async {
+      final run = engine().run();
+      final value = await bridge.agent('build a', {'worktree': true, 'batch': batch('full')});
+      expect(launcher.finished, [(launcher.started.single.childId, true)]);
+      expect(value, {
+        'text': 'ok:build a',
+        'batch_check': {'passed': true},
+      });
+      bridge.finish(null);
+      await run;
+    });
+
+    test('no check, or no worktree, never runs it; a call without batch keeps its key', () async {
+      final run = engine().run();
+      await bridge.agent('build a', {'worktree': true, 'batch': batch(null)});
+      expect(await bridge.agent('build a', {'batch': batch()}), 'ok:build a');
+      await bridge.agent('build a', {'worktree': true});
+      await bridge.agent('build a', {'worktree': true, 'batch': null});
+      expect(launcher.batchChecked, isEmpty);
+      expect(launcher.finished.every((f) => f.$2), isTrue);
+      final keys = [for (final c in launcher.calls) c.key];
+      expect(keys[3], '${keys[2].split('#').first}#2');
+      expect(keys[0].split('#').first, isNot(keys[2].split('#').first));
+      bridge.finish(null);
+      await run;
+    });
+
+    test('a bad batch is a reply error and starts nothing', () async {
+      final run = engine().run();
+      await expectLater(
+        bridge.agent('build a', {
+          'worktree': true,
+          'batch': {
+            'id': 'Bad Id',
+            'intent': '',
+            'files': ['../x'],
+          },
+        }),
+        throwsA(allOf(startsWith('batch:'), contains('id must be'), contains('..'))),
+      );
+      expect(launcher.started, isEmpty);
+      bridge.finish(null);
+      await run;
+    });
+
+    test('a stop during the check cancels it: the work is not merged and nothing is journalled', () async {
+      final held = Completer<Map<String, Object?>>();
+      launcher.batchCheck = (id, b) => held.future;
+      final engine0 = engine();
+      final run = engine0.run();
+      final reply = bridge
+          .agent('build a', {'worktree': true, 'batch': batch()})
+          .then<Object?>((v) => v, onError: (Object e) => e);
+      await pumpEventQueue();
+      expect(launcher.batchChecked, hasLength(1));
+      engine0.stop();
+      final child = launcher.started.single.childId;
+      expect(launcher.stopped, [child]);
+      held.complete({'passed': true});
+      expect(await reply, 'Stopped.');
+      expect(launcher.finished, [(child, false)]);
+      final end = await run;
+      expect(end.status, WorkflowStatus.stopped);
+      expect(lines.map((l) => (jsonDecode(l) as Map)['t']), isNot(contains('agent')));
     });
   });
 

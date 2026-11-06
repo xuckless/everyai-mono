@@ -39,10 +39,24 @@ Future<ProcessResult> _proc(
   return Process.run(cmd.exe, cmd.args, environment: cmd.env, stdoutEncoding: stdoutEncoding);
 }
 
-/// [_proc] for a process the caller feeds on stdin.
-Future<Process> _start(List<String> args) async {
-  final cmd = await _command('git', args);
+/// [_proc] for a process the caller feeds on stdin; [env] (`GIT_INDEX_FILE`, the author) is mapped like [_proc]'s.
+Future<Process> _start(List<String> args, {Map<String, String>? env}) async {
+  final cmd = await _command('git', args, env: env);
   return Process.start(cmd.exe, cmd.args, environment: cmd.env);
+}
+
+/// Runs guarded git [args] in [dir] with [input] on stdin; throws a [GitError] when it fails.
+Future<String> _piped(String dir, List<String> args, String input, {Map<String, String>? env}) async {
+  final p = await _start(await guardedArgs(dir, args, env: env), env: env);
+  p.stdin.write(input);
+  await p.stdin.close();
+  final (out, err, code) = await (
+    p.stdout.transform(utf8.decoder).join(),
+    p.stderr.transform(utf8.decoder).join(),
+    p.exitCode,
+  ).wait;
+  if (code != 0) throw GitError('git ${args.first}: ${err.trim()}');
+  return out;
 }
 
 /// What [_proc] starts for [exe] [args] (tests).
@@ -249,8 +263,9 @@ Future<void> _installHooks(SessionWorktree w, String hooksDir) async {
 
 /// The POSIX ERE twin of `brandingLine`.
 const _brandingPattern =
-    r'^[[:space:]]*(co-authored-by|signed-off-by)[[:space:]]*:.*(openhands|all-hands|claude|anthropic|everyai|openai|chatgpt|gpt-|copilot|cursor|gemini|codex|\[bot\])'
-    r'|generated (with|by) .*(openhands|claude|everyai|copilot|chatgpt|codex|cursor|gemini)'
+    r'^[[:space:]]*(co-authored-by|signed-off-by|assisted-by)[[:space:]]*:.*(openhands|all-hands|claude|anthropic|everyai|openai|chatgpt|gpt-|copilot|cursor|gemini|codex|opencode|\[bot\])'
+    r'|generated (with|by) .*(openhands|claude|everyai|copilot|chatgpt|codex|cursor|gemini|opencode)'
+    r'|^[[:space:]]*claude-session[[:space:]]*:|claude\.ai/code/session'
     '|🤖';
 
 const _hookNames = [
@@ -459,6 +474,15 @@ Future<List<String>> changedSince(SessionWorktree w, String tree) => _withSnapsh
       if (p.isNotEmpty) p,
   ];
 });
+
+/// The paths whose content differs between trees (or commits) [from] and [to].
+Future<List<String>> changedBetween(SessionWorktree w, String from, String to) async {
+  final out = await _out(w.path, ['diff', '--name-only', '--no-renames', '-z', from, to]);
+  return [
+    for (final p in out.split('\x00'))
+      if (p.isNotEmpty) p,
+  ];
+}
 
 /// Whether any of [paths] has changes not committed.
 Future<bool> isDirtyAmong(SessionWorktree w, List<String> paths) async =>
@@ -694,6 +718,223 @@ Future<ForkMerge> mergeFork(ForkCopy copy, {required String slug, bool merge = t
   }
   await _git(copy.repoRoot, ['worktree', 'remove', '--force', wt], check: false);
   return (merged: merged, conflicts: conflicts, ref: ref);
+}
+
+// --------------------------------------------------------- landing lanes
+
+/// The fork's own last commit for what it left uncommitted (see [mergeFork]): not one of the lane's commits.
+bool _isForkLeftover(String email, String subject) => email == 'agent@everyai.invalid' && subject == 'EveryAI fork';
+
+/// Cherry-picks [commit] onto [onto] without touching the folder or the index (`git merge-tree`, git 2.40+): the
+/// new commit, keeping the author, date and message (AI-credit lines removed), signed when [sign]; [onto] itself
+/// when the commit changes nothing there (its change is in already: no empty duplicate); null when it doesn't apply
+/// cleanly. Throws a [GitError] when this git can't do it, a [_SignFailed] when signing fails.
+Future<String?> _replay(String top, String commit, String onto, {bool sign = false}) async {
+  final res = await _git(top, ['merge-tree', '--write-tree', '--merge-base=$commit^', onto, commit], check: false);
+  if (res.exitCode == 1) return null;
+  if (res.exitCode != 0) throw GitError('git merge-tree: ${'${res.stderr}'.trim()}');
+  final tree = '${res.stdout}'.split('\n').first.trim();
+  if (tree == await _out(top, ['rev-parse', '$onto^{tree}'])) return onto;
+  final meta = (await _out(top, ['log', '-1', '--format=%an%x00%ae%x00%ad', '--date=raw', commit])).split('\x00');
+  final message = stripBranding((await _git(top, ['log', '-1', '--format=%B', commit])).stdout as String);
+  return _commitTree(top, tree, onto, message, author: (name: meta[0], email: meta[1], date: meta[2]), sign: sign);
+}
+
+/// A landing commit that `commit.gpgSign` asks to sign and that couldn't be signed: nothing is landed unsigned.
+final class _SignFailed implements Exception {
+  const _SignFailed(this.detail);
+  final String detail;
+}
+
+/// Whether the user's config asks for signed commits in [top] (`commit.gpgSign`; the signing program is the
+/// user's own, see [repoGuard]).
+Future<bool> _signs(String top) async =>
+    '${(await _git(top, ['config', '--bool', '--get', 'commit.gpgsign'], check: false)).stdout}'.trim() == 'true';
+
+/// A commit of [tree] on [parent] with [message], signed when [sign]; the author is the configured identity unless
+/// [author] is given. Runs guarded, like every EveryAI git call.
+Future<String> _commitTree(
+  String top,
+  String tree,
+  String parent,
+  String message, {
+  ({String name, String email, String date})? author,
+  bool sign = false,
+}) async {
+  final env = {
+    if (author != null) ...{
+      'GIT_AUTHOR_NAME': author.name,
+      'GIT_AUTHOR_EMAIL': author.email,
+      'GIT_AUTHOR_DATE': author.date,
+    },
+  };
+  try {
+    return (await _piped(
+      top,
+      ['commit-tree', tree, '-p', parent, if (sign) '-S', '-F', '-'],
+      message.trim().isEmpty ? 'Workflow lane\n' : message,
+      env: env,
+    )).trim();
+  } on GitError catch (e) {
+    if (sign) throw _SignFailed(e.message);
+    rethrow;
+  }
+}
+
+Future<LaneLanding> landWithCommits(
+  SessionWorktree w, {
+  required List<LaneRef> lanes,
+  required List<String> paths,
+  required String message,
+  String? newBranch,
+}) async {
+  final name = newBranch?.trim();
+  if (name != null) {
+    if ((await _git(w.path, ['check-ref-format', '--branch', name], check: false)).exitCode != 0 ||
+        name.startsWith('-')) {
+      throw GitError('"$name" is not a branch name git accepts.');
+    }
+    if ((await _git(w.path, ['show-ref', '--verify', '--quiet', 'refs/heads/$name'], check: false)).exitCode == 0) {
+      throw GitError('There is a branch called $name already.');
+    }
+  }
+  // Paths from git diffs are relative to the top of the checkout.
+  final top = await _out(w.path, ['rev-parse', '--show-toplevel']);
+  final head = await _out(top, ['rev-parse', 'HEAD']);
+  // The branch HEAD is on ('' when detached): landing goes nowhere if it changes meanwhile.
+  final onRef = '${(await _git(top, ['symbolic-ref', '-q', 'HEAD'], check: false)).stdout}'.trim();
+  final sign = await _signs(top);
+  try {
+    return await _land(top, head, onRef, lanes, paths, message, name, sign: sign);
+  } on _SignFailed catch (e) {
+    throw GitError(
+      'Your git config signs commits (commit.gpgSign), and signing failed, so nothing was committed and the files '
+              'are as they were. Fix signing (or turn commit.gpgSign off) and try again. ${e.detail}'
+          .trim(),
+    );
+  }
+}
+
+Future<LaneLanding> _land(
+  String top,
+  String head,
+  String onRef,
+  List<LaneRef> lanes,
+  List<String> paths,
+  String message,
+  String? name, {
+  required bool sign,
+}) async {
+  var cur = head;
+  var replayed = 0;
+  final notes = <String>[];
+  final touched = <String>{};
+  var gitTooOld = false;
+  for (final lane in lanes) {
+    if (gitTooOld) break;
+    final log = await _git(top, [
+      'log',
+      '--reverse',
+      '--topo-order',
+      '--format=%H%x00%P%x00%ae%x00%s',
+      '${lane.base}..${lane.ref}',
+    ], check: false);
+    if (log.exitCode != 0) {
+      notes.add('${lane.label}: its commits are gone, so its changes are in the last commit.');
+      continue;
+    }
+    final commits = [
+      for (final l in const LineSplitter().convert('${log.stdout}'))
+        if (l.split('\x00') case [final sha, final parents, final email, final subject])
+          (sha: sha, merge: parents.contains(' '), leftover: _isForkLeftover(email, subject)),
+    ].where((c) => !c.leftover).toList();
+    if (commits.isEmpty) continue;
+    if (commits.any((c) => c.merge)) {
+      notes.add('${lane.label}: it has merge commits, so its changes are in the last commit.');
+      continue;
+    }
+    var laneCur = cur;
+    var laneMade = 0;
+    var clean = true;
+    try {
+      for (final c in commits) {
+        final next = await _replay(top, c.sha, laneCur, sign: sign);
+        if (next == null) {
+          clean = false;
+          break;
+        }
+        if (next != laneCur) laneMade++;
+        laneCur = next;
+      }
+    } on GitError {
+      gitTooOld = true;
+      notes.add(
+        'This git cannot replay commits without touching the folder (it needs git 2.40 or later), so the '
+        'lanes\' changes are in the last commit.',
+      );
+      break;
+    }
+    if (!clean) {
+      notes.add("${lane.label}: its commits didn't apply on top of the others, so its changes are in the last commit.");
+      continue;
+    }
+    for (final c in commits) {
+      final out = await _out(top, ['diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', '-z', c.sha]);
+      touched.addAll(out.split('\x00').where((p) => p.isNotEmpty));
+    }
+    cur = laneCur;
+    replayed += laneMade;
+  }
+  // The last commit: the folder's state of every path the run or a replayed lane touched, so the branch ends where
+  // the folder is (the integrate step's work, conflict fixes, lanes that weren't replayed).
+  final all = {...paths, ...touched}.toList()..sort();
+  final tmp = await Directory.systemTemp.createTemp('everyai-land');
+  try {
+    final env = {'GIT_INDEX_FILE': '${tmp.path}/index'};
+    await _git(top, ['read-tree', cur], env: env);
+    if (all.isNotEmpty) {
+      // Guarded: the repository's filters and index hooks don't run (a clean filter refuses, see [repoGuard]).
+      await _piped(top, ['update-index', '--add', '--remove', '-z', '--stdin'], '${all.join('\x00')}\x00', env: env);
+    }
+    final tree = await _out(top, ['write-tree'], env: env);
+    if (tree != await _out(top, ['rev-parse', '$cur^{tree}'])) {
+      cur = await _commitTree(top, tree, cur, stripBranding(message), sign: sign);
+    }
+  } finally {
+    await tmp.delete(recursive: true);
+  }
+  if (cur == head) return (head: null, laneCommits: 0, notes: notes);
+  // Nothing moved HEAD (a commit, a switch) while the commits were made.
+  final nowRef = '${(await _git(top, ['symbolic-ref', '-q', 'HEAD'], check: false)).stdout}'.trim();
+  if (nowRef != onRef || await _out(top, ['rev-parse', 'HEAD']) != head) {
+    throw const GitError(
+      'The checkout moved (a commit or a branch switch) while EveryAI was landing, so nothing was landed. '
+      'Try again.',
+    );
+  }
+  if (name != null) {
+    // Create-only: an empty old value fails when the branch appeared meanwhile.
+    await _git(top, ['update-ref', '-m', 'EveryAI: land a workflow on $name', 'refs/heads/$name', cur, '']);
+    await _git(top, ['symbolic-ref', '-m', 'EveryAI: land a workflow on $name', 'HEAD', 'refs/heads/$name']);
+  } else {
+    // Moves the branch HEAD is on (or a detached HEAD), only if nothing moved it meanwhile.
+    await _git(top, ['update-ref', '-m', 'EveryAI: land a workflow', 'HEAD', cur, head]);
+  }
+  // The index matches the new commit on those paths; the user's own staging elsewhere is kept. The paths are
+  // literal (a file named `b*` is not a pattern) and go on stdin (no argument limit).
+  if (all.isNotEmpty) {
+    try {
+      await _piped(
+        top,
+        ['reset', '-q', cur, '--pathspec-from-file=-', '--pathspec-file-nul'],
+        '${all.join('\x00')}\x00',
+        env: const {'GIT_LITERAL_PATHSPECS': '1'},
+      );
+    } on GitError {
+      // The commit landed; a stale index entry only shows as staged.
+    }
+  }
+  return (head: cur, laneCommits: replayed, notes: notes);
 }
 
 /// Git's empty tree, the base for a repository with no commit yet.

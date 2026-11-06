@@ -115,6 +115,7 @@ Future<String> sessionNoticeNonce(String sessionDir, String Function() make) asy
 Future<void> removeBriefing(String sessionDir) async {
   final nonce = File('$sessionDir/notice-nonce');
   if (nonce.existsSync()) await nonce.delete();
+  // `runtime-profiles` stays: it is the session's one rendering, for its next briefing or prompt.
   final root = '$sessionDir/briefing';
   switch (FileSystemEntity.typeSync(root, followLinks: false)) {
     case FileSystemEntityType.link:

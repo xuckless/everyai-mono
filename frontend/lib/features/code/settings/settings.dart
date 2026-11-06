@@ -60,7 +60,7 @@ Future<({String persona, String suffix})> agentPromptFor(
   final settings = await loadAgentSettings(projectDir);
   final style = await resolveCommitStyle(projectDir, settings.commitStyle);
   return (
-    persona: agentPersona(style: style, attribution: settings.attribution, isolated: isolated),
+    persona: agentPersona(style: style, isolated: isolated),
     suffix: agentPromptSuffix(settings, agents: agents, tier: tier, forks: forks, models: models),
   );
 }

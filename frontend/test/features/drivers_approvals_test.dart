@@ -6,6 +6,8 @@ import 'package:drift/native.dart';
 import 'package:every_ai/core/db/app_database.dart';
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/core/providers.dart';
+import 'package:every_ai/features/code/checks/post_edit_hooks.dart' show HookRun, TouchedPaths;
+import 'package:every_ai/features/code/checks/post_edit_hooks_provider.dart';
 import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
@@ -26,7 +28,7 @@ import 'package:every_ai/features/models/domain/model_catalog.dart';
 import 'package:every_ai/features/models/models_providers.dart';
 import 'package:every_ai/features/usage/usage_totals.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_riverpod/misc.dart' show ProviderListenable;
+import 'package:flutter_riverpod/misc.dart' show Override, ProviderListenable;
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/replay_transport.dart';
@@ -181,6 +183,7 @@ void main() {
     Map<String, HarnessDriver> extra = const {},
     SessionWorktree? worktree,
     bool reopen = false,
+    List<Override> more = const [],
   }) async {
     final prefs = await Preferences.load(db);
     prefs['code.projects'] = jsonEncode([CodeProject(id: 'p1', name: 'P', path: tmp.path).toJson()]);
@@ -230,6 +233,7 @@ void main() {
             ...extra,
           }),
         ),
+        ...more,
       ],
     );
     container.listen(codeSessionProvider('s1'), (_, _) {});
@@ -281,6 +285,65 @@ void main() {
     session.ask('Bash', 'TerminalAction', {'command': 'rm -rf ~'});
     expect((await answered()).accept, isFalse);
     expect(controller.policy, isNotNull);
+  });
+
+  test('a denied edit is not the lead\'s for the checks; one that ran is', () async {
+    session = _PerCallSession();
+    // Events count as new work at once (not a replayed history).
+    final live = CodeSessionController.liveAfter;
+    CodeSessionController.liveAfter = Duration.zero;
+    addTearDown(() => CodeSessionController.liveAfter = live);
+    final seen = <TouchedPaths>[];
+    final controller = await open(
+      AgentMode.ask,
+      more: [
+        postEditHooksProvider.overrideWithValue((
+          info, {
+          required shellDir,
+          required refusal,
+          required autoFormat,
+          required touched,
+          cancel,
+        }) async {
+          seen.add(touched);
+          return (report: '', skipped: '', tree: 't', slow: const <HookRun>[]);
+        }),
+      ],
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    session.add(stateEvent('run', ExecutionStatus.running));
+    // The user has their own change in f.txt; the agent's edit to it is denied.
+    session.ask('Edit', 'FileEditorAction', {'command': 'str_replace', 'path': '${tmp.path}/f.txt'});
+    await pending();
+    await controller.deny(null, ['a1']);
+    session.add(
+      HarnessEvent.decode({
+        'kind': 'UserRejectObservation',
+        'id': 'r1',
+        'action_id': 'a1',
+        'tool_name': 'Edit',
+        'rejection_reason': 'Denied',
+      }),
+    );
+    session.add(stateEvent('run2', ExecutionStatus.running));
+    session.ask('Edit', 'FileEditorAction', {'command': 'str_replace', 'path': '${tmp.path}/g.txt'});
+    await _when(
+      container,
+      codeSessionProvider('s1').select((s) => s.transcript.pending.map((c) => c.id).toList()),
+      (List<String> p) => p.contains('a2'),
+    );
+    await controller.approve(ApprovalScope.once, ['a2']);
+    session
+      ..add(stateEvent('run3', ExecutionStatus.running))
+      ..add(resultEvent(id: 'r2', actionId: 'a2', toolName: 'Edit', text: 'edited'))
+      ..add(stateEvent('end', ExecutionStatus.finished));
+    Set<String> written() => {for (final t in seen) ...t.written};
+    final end = DateTime.now().add(const Duration(seconds: 5));
+    while (!written().contains('g.txt') && DateTime.now().isBefore(end)) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    // Every round so far: the edit that ran, never the denied one.
+    expect(written(), {'g.txt'});
   });
 
   test('Ask: an outside floor hit waits on the card with a warning', () async {

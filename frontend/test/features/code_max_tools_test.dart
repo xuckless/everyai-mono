@@ -13,7 +13,7 @@ import 'package:every_ai/features/code/domain/code_session.dart';
 import 'package:every_ai/features/code/domain/notice.dart';
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/domain/subagents.dart';
-import 'package:every_ai/features/code/drivers/acp/acp_mapping.dart' show agentMessageEvent;
+import 'package:every_ai/features/code/drivers/acp/acp_mapping.dart' show agentMessageEvent, userMessageEvent;
 import 'package:every_ai/features/code/drivers/driver.dart';
 import 'package:every_ai/features/code/drivers/driver_events.dart';
 import 'package:every_ai/features/code/drivers/driver_registry.dart';
@@ -382,5 +382,57 @@ void main() {
     await pumpEventQueue();
     expect(File('${project.path}/b.txt').readAsStringSync(), 'from the fork\n');
     expect(notices(l.session).single, contains('Added b.txt.'));
+  });
+
+  test('a fork tied to a plan batch merges back only when the batch\'s check passes', () async {
+    final init = await Process.run('git', ['-C', project.path, 'init', '-q']);
+    expect(init.exitCode, 0, reason: '${init.stderr}');
+    File('${project.path}/a.txt').writeAsStringSync('one\n');
+    final l = await lead();
+    expect((await hostCall(l.info.id, forkHostTool, {'task': 'x', 'batch': 'b'})).text, contains('lists no batches'));
+    l.session
+      ..add(
+        actionEvent(
+          id: 'plan1',
+          toolName: 'present_plan',
+          kind: 'PresentPlanAction',
+          args: {
+            'title': 'Two files',
+            'steps': [
+              {
+                'id': 'bad',
+                'title': 'Add b',
+                'files': ['b.txt'],
+                'check': {'command': 'test -f nothing-here.txt'},
+              },
+              {
+                'id': 'good',
+                'title': 'Add c',
+                'files': ['c.txt'],
+                'check': {'command': 'test -f c.txt', 'full': false},
+              },
+            ],
+          },
+        ),
+      )
+      ..add(userMessageEvent('u-plan', planApprovedMessage));
+    await pumpEventQueue();
+    expect((await hostCall(l.info.id, forkHostTool, {'task': 'x', 'batch': 'nope'})).text, contains('no batch "nope"'));
+    // A gated batch gets its own worktree by default.
+    final bad = await fork(l.info.id, {'task': 'Add b.txt', 'batch': 'bad'});
+    final good = await fork(l.info.id, {'task': 'Add c.txt', 'batch': 'good'});
+    File('${bad.info.forkCopy!.path}/b.txt').writeAsStringSync('b\n');
+    File('${good.info.forkCopy!.path}/c.txt').writeAsStringSync('c\n');
+    finish(bad.session, 'Added b.txt.');
+    finish(good.session, 'Added c.txt.');
+    await whenValue(container, codeSessionsProvider, (List<CodeSessionInfo> all) {
+      return [bad, good].every((f) => all.any((s) => s.id == f.info.id && s.forkCopy == null));
+    });
+    await pumpEventQueue();
+    expect(File('${project.path}/b.txt').existsSync(), isFalse);
+    expect(File('${project.path}/c.txt').readAsStringSync(), 'c\n');
+    final sent = notices(l.session).join('\n');
+    expect(sent, contains("the app ran batch bad's check and it failed"));
+    expect(sent, contains("Batch good's check passed before the merge."));
   });
 }

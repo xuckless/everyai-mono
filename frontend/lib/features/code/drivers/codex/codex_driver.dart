@@ -372,7 +372,7 @@ final class CodexDriver
     if (spawn case final s?) return s(args: args, cwd: cwd, env: env, sessionTag: tag);
     return spawnDriver(
       executable: path,
-      args: ['app-server', ...args],
+      args: ['app-server', ...codexSessionArgs, ...args],
       cwd: cwd,
       sessionTag: tag,
       logPath: '${await _data()}/logs/$tag.log',
@@ -427,6 +427,11 @@ final class CodexDriver
     );
   }
 }
+
+/// Set on every app server we start, briefed or not: no `Co-authored-by: Codex` trailer on the commits it makes
+/// (`commit_attribution`, an empty string switches it off; owner: commits and PRs carry no AI identifiers). A
+/// per-process `-c`, so the user's `~/.codex/config.toml` is never written.
+const codexSessionArgs = ['-c', 'commit_attribution=""'];
 
 const _Launch _noBriefing = (args: <String>[], env: <String, String>{}, initRequests: <RpcCall>[], instructions: null);
 

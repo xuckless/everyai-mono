@@ -412,6 +412,25 @@ const presentPlanSpec = <String, Object?>{
               'items': {'type': 'string'},
               'description': 'Files created or changed',
             },
+            'id': {
+              'type': 'string',
+              'description':
+                  'For a change batch (one agent\'s work): a short slug (lowercase letters, digits, dashes), unique',
+            },
+            'check': {
+              'type': 'object',
+              'description':
+                  'For a change batch: how it is checked before it merges. Give one: files (the tests that cover it, '
+                  'preferred), command (one line), or full: true (the whole suite) only when nothing narrower checks it',
+              'properties': {
+                'files': {
+                  'type': 'array',
+                  'items': {'type': 'string'},
+                },
+                'command': {'type': 'string'},
+                'full': {'type': 'boolean'},
+              },
+            },
           },
           'required': ['title'],
         },

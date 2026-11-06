@@ -107,6 +107,8 @@ final class CodeSessionInfo {
     this.nativeMode = '',
     this.bypassChecks = false,
     this.pendingRewind = '',
+    this.checkedTree = '',
+    this.pendingChecks = '',
     this.workflow,
     this.toldWorkflow,
     this.environment = 'host',
@@ -165,6 +167,14 @@ final class CodeSessionInfo {
   /// rewound: it goes out with the next message, even after a restart. ''
   /// when none.
   final String pendingRewind;
+
+  /// The git tree the after-edit checks last ran on ('' before the first
+  /// run): the next run checks what changed since, even after a restart.
+  final String checkedTree;
+
+  /// The after-edit checks' report for the lead's next message ('' when
+  /// none); kept across a restart like [pendingRewind].
+  final String pendingChecks;
 
   /// Started on a harness the app no longer has.
   bool get removedHarness => harness == openHandsHarnessName;
@@ -253,6 +263,8 @@ final class CodeSessionInfo {
     String? nativeMode,
     bool? bypassChecks,
     String? pendingRewind,
+    String? checkedTree,
+    String? pendingChecks,
     bool merged = false,
     String? workflow,
     bool clearWorkflow = false,
@@ -290,6 +302,8 @@ final class CodeSessionInfo {
     nativeMode: nativeMode ?? (harness != null && harness != this.harness ? '' : this.nativeMode),
     bypassChecks: bypassChecks ?? this.bypassChecks,
     pendingRewind: pendingRewind ?? this.pendingRewind,
+    checkedTree: checkedTree ?? this.checkedTree,
+    pendingChecks: pendingChecks ?? this.pendingChecks,
     workflow: clearWorkflow ? null : workflow ?? this.workflow,
     toldWorkflow: clearToldWorkflow ? null : toldWorkflow ?? this.toldWorkflow,
     environment: environment,
@@ -339,6 +353,8 @@ final class CodeSessionInfo {
     nativeMode: json['native_mode'] as String? ?? '',
     bypassChecks: json['bypass_checks'] == true,
     pendingRewind: json['pending_rewind'] as String? ?? '',
+    checkedTree: json['checked_tree'] as String? ?? '',
+    pendingChecks: json['pending_checks'] as String? ?? '',
     workflow: json['workflow'] as String? ?? (json['tier'] == 'max' ? 'max' : null),
     // An old Max session's lead never heard of the workflow, so it is told on the next message.
     toldWorkflow: json['told_workflow'] as String?,
@@ -375,6 +391,8 @@ final class CodeSessionInfo {
     if (nativeMode.isNotEmpty) 'native_mode': nativeMode,
     if (bypassChecks) 'bypass_checks': true,
     if (pendingRewind.isNotEmpty) 'pending_rewind': pendingRewind,
+    if (checkedTree.isNotEmpty) 'checked_tree': checkedTree,
+    if (pendingChecks.isNotEmpty) 'pending_checks': pendingChecks,
     'workflow': ?workflow,
     'told_workflow': ?toldWorkflow,
     if (environment != 'host') 'environment': environment,

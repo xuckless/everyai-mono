@@ -321,6 +321,11 @@ void main() {
       expect(spawned.single.env, isEmpty);
       await s.close();
     });
+
+    test('every app server we start drops the Codex co-author trailer', () {
+      // Added in front of the launch args by the real spawn (the fake spawn above sees only the launch args).
+      expect(codexSessionArgs, ['-c', 'commit_attribution=""']);
+    });
   });
 
   test(
