@@ -34,9 +34,10 @@ class _LeadSkillsSectionState extends ConsumerState<LeadSkillsSection> {
     final off = project == null ? const <String>{} : skills.off(project.id, widget.lead);
     // A skill that is off may be left out of the CLI's own list: keep its switch so it can be turned back on.
     final names = {...skills.seen(widget.lead), ...off}.toList()..sort();
+    // Rows go on a card under the heading, like the rest of Settings.
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
+      children: KitGroupedList.fold([
         AdaptiveSectionHeader('${widget.label} skills'),
         if (project == null)
           AdaptiveListTile(
@@ -70,7 +71,7 @@ class _LeadSkillsSectionState extends ConsumerState<LeadSkillsSection> {
             ),
           for (final n in names)
             AdaptiveListTile(
-              title: Text(n),
+              title: Text(n, style: theme.type.callout.mono.tint(theme.text)),
               trailing: AdaptiveSwitch(
                 value: !off.contains(n),
                 onChanged: (on) => skills.setOff(project.id, widget.lead, n, off: !on),
@@ -79,13 +80,12 @@ class _LeadSkillsSectionState extends ConsumerState<LeadSkillsSection> {
           Padding(
             padding: const EdgeInsets.only(top: 6),
             child: Text(
-              'A skill turned off is switched off for ${widget.label} sessions in this project, from their next '
-              'start. Skills that come with a ${widget.label} plugin may stay on: the CLI does not always honour the switch.',
+              'Off applies from the next ${widget.label} session here. Plugin skills may stay on.',
               style: theme.type.caption.tint(theme.textMuted),
             ),
           ),
         ],
-      ],
+      ]),
     );
   }
 }

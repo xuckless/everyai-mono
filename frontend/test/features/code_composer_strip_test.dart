@@ -70,7 +70,12 @@ void main() {
   });
   tearDown(() => db.close());
 
-  AgentMenu menu({String harness = 'everyai', bool switchable = true, WorkflowPick? workflow}) => AgentMenu(
+  AgentMenu menu({
+    String harness = 'everyai',
+    bool switchable = true,
+    WorkflowPick? workflow,
+    ValueChanged<WorkflowPick?>? onWorkflow,
+  }) => AgentMenu(
     harness: harness,
     onHarness: switchable ? harnesses.add : null,
     model: harness == 'everyai' ? 'anthropic/claude-opus-5.5' : '',
@@ -79,7 +84,7 @@ void main() {
     level: HarnessTier.efficient,
     onLevel: (_) {},
     workflow: workflow,
-    onWorkflow: (_) {},
+    onWorkflow: onWorkflow ?? (_) {},
   );
 
   Future<ProviderContainer> pump(
@@ -172,12 +177,13 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.descendant(of: strip('harness'), matching: find.text('EveryAI')), findsOneWidget);
-      expect(find.descendant(of: strip('workflow'), matching: find.text('Workflows')), findsOneWidget);
+      expect(find.descendant(of: strip('workflow'), matching: find.text('Workflow')), findsOneWidget);
       expect(find.descendant(of: strip('skills'), matching: find.text('Skills 2')), findsOneWidget);
-      expect(find.descendant(of: strip('mcp'), matching: find.text('MCP 1')), findsOneWidget);
+      // MCP servers live in Settings; the composer has no chip for them.
+      expect(strip('mcp'), findsNothing);
     });
 
-    for (final section in [SettingsSection.skills, SettingsSection.mcp]) {
+    for (final section in [SettingsSection.skills]) {
       testWidgets('${section.name} opens Settings there, for this project', (tester) async {
         final c = await pump(tester, agent: menu());
         final targets = <SettingsTarget?>[];
@@ -249,13 +255,28 @@ void main() {
       expect(modes, [AgentMode.plan]);
     });
 
-    testWidgets('a picked workflow shows in the line and opens the Workflow page', (tester) async {
+    testWidgets('a picked workflow names the Workflow chip and opens the Workflow page', (tester) async {
       await pump(tester, agent: menu(workflow: const WorkflowPick.max()));
-      expect(find.descendant(of: line('workflow'), matching: find.text('Max')), findsOneWidget);
-      await tester.tap(line('workflow'));
+      expect(line('workflow'), findsNothing);
+      expect(find.descendant(of: strip('workflow'), matching: find.text('Max')), findsOneWidget);
+      await tester.tap(strip('workflow'));
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('agent-menu.workflow.none')), findsOneWidget);
       expect(find.byKey(const ValueKey('agent-menu.back')), findsNothing);
+    });
+
+    testWidgets('a picked workflow shows a chip above the field that removes it', (tester) async {
+      final picks = <WorkflowPick?>[];
+      await pump(
+        tester,
+        agent: menu(workflow: const WorkflowPick.max(), onWorkflow: picks.add),
+      );
+      expect(
+        find.descendant(of: find.byKey(const ValueKey('composer.workflow-chip')), matching: find.text('Max')),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const ValueKey('composer.workflow-chip.remove')));
+      expect(picks, [null]);
     });
 
     testWidgets("an outside harness's line shows its native mode", (tester) async {

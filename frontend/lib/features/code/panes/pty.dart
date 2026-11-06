@@ -13,6 +13,9 @@ abstract interface class ShellPty {
   void kill();
 }
 
+/// Where a terminal outside any session starts (Code home): `C:\\` on Windows, else the home folder.
+String get terminalHomeDir => impl.terminalHomeDir;
+
 /// Whether this platform can run [startShell].
 bool get shellSupported => impl.shellSupported;
 

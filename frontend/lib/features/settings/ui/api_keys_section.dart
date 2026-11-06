@@ -11,6 +11,7 @@ import '../domain/byok_providers.dart';
 import '../domain/key_check.dart';
 import '../settings_registry.dart';
 import 'settings_modal.dart';
+import '../../../core/ui/logos.dart';
 
 /// Preferences → Add API keys: one card per provider whose key EveryAI can
 /// use, and the Ultra spend cap on the user's keys. Keys stay in this
@@ -22,8 +23,7 @@ class ApiKeysSection extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = EveryTheme.of(context);
     final keys = ref.watch(byokKeysProvider).value ?? const <String, String>{};
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+    return KitGroupedList(
       children: [
         Container(
           key: const ValueKey('byok.banner'),
@@ -159,9 +159,12 @@ class _ProviderCardState extends ConsumerState<_ProviderCard> {
         minLead: 200,
         lead: Row(
           children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(9),
-              child: Image.asset(provider.logo, width: 34, height: 34, fit: BoxFit.cover),
+            LogoTile(
+              logo: Logo.vendor(provider.id),
+              letters: provider.name[0],
+              color: theme.accent,
+              size: 34,
+              label: provider.name,
             ),
             const SizedBox(width: 12),
             Expanded(

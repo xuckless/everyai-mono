@@ -4,15 +4,12 @@
 // text scale, collecting every layout problem (overflow, unbounded size, any FlutterError) instead of stopping at the
 // first.
 
-import 'package:cupertino_ui/cupertino_ui.dart' as c;
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/theme/every_theme.dart';
 import 'package:every_ai/core/theme/native_themes.dart';
-import 'package:fluent_ui/fluent_ui.dart' as f;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:macos_ui/macos_ui.dart' as mac;
 import 'package:material_ui/material_ui.dart' as m;
 
 /// [child] in the app shell of [language] (dark, like the owner runs it), as `home`.
@@ -27,32 +24,15 @@ class LayoutHost extends StatelessWidget {
   Widget build(BuildContext context) {
     Widget tokens(BuildContext context, Widget? c) =>
         EveryThemeScope(theme: EveryTheme.resolve(language, brightness), child: c ?? const SizedBox.shrink());
-    return switch (language) {
-      DesignLanguage.cupertino => c.CupertinoApp(
-        debugShowCheckedModeBanner: false,
-        theme: cupertinoTheme(brightness),
-        builder: tokens,
-        home: child,
-      ),
-      DesignLanguage.macos => mac.MacosApp(
-        debugShowCheckedModeBanner: false,
-        theme: macosTheme(brightness),
-        builder: tokens,
-        home: child,
-      ),
-      DesignLanguage.fluent => f.FluentApp(
-        debugShowCheckedModeBanner: false,
-        theme: fluentTheme(brightness),
-        builder: tokens,
-        home: child,
-      ),
-      DesignLanguage.material || DesignLanguage.adwaita => m.MaterialApp(
-        debugShowCheckedModeBanner: false,
-        theme: materialTheme(brightness, adwaita: language == DesignLanguage.adwaita),
-        builder: tokens,
-        home: child,
-      ),
-    };
+    // One look on every platform: the language only varies the tokens' compat field.
+    return m.MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: kitMaterialTheme(brightness),
+      darkTheme: kitMaterialTheme(Brightness.dark),
+      themeMode: brightness == Brightness.dark ? m.ThemeMode.dark : m.ThemeMode.light,
+      builder: tokens,
+      home: child,
+    );
   }
 }
 

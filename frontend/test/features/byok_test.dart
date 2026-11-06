@@ -15,6 +15,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/misc.dart' show Override;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:every_ai/core/ui/adaptive.dart';
 import 'package:material_ui/material_ui.dart' as m;
 
 final class _MemoryStore implements SecretStore {
@@ -142,7 +143,7 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('byok.openrouter.add')));
     await tester.pumpAndSettle();
-    final field = find.descendant(of: find.byType(m.AlertDialog), matching: find.byType(EditableText));
+    final field = find.descendant(of: find.byType(KitDialog), matching: find.byType(EditableText));
     expect(tester.widget<EditableText>(field).obscureText, isTrue);
     await tester.enterText(field, 'sk-or-v1-secret_ABCD');
     await tester.tap(find.text('Save'));
@@ -174,7 +175,7 @@ void main() {
     expect(find.text('\$25.00'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('byok.ultra-cap.edit')));
     await tester.pumpAndSettle();
-    final field = find.descendant(of: find.byType(m.AlertDialog), matching: find.byType(EditableText));
+    final field = find.descendant(of: find.byType(KitDialog), matching: find.byType(EditableText));
     await tester.enterText(field, '40');
     await tester.tap(find.text('Save'));
     await tester.pumpAndSettle();

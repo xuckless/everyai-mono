@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/platform/platform_kind.dart';
+import '../../core/preferences.dart';
 import '../../core/ui/every_icons.dart';
 
 /// The groups of the Settings section list, in order.
@@ -72,7 +73,7 @@ final class SettingsEntry {
 const settingsEntries = <SettingsEntry>[
   SettingsEntry(SettingsSection.general, 'General', keywords: ['preferences']),
   SettingsEntry(SettingsSection.general, 'Theme', anchor: 'theme', keywords: ['dark', 'light', 'appearance', 'mode']),
-  SettingsEntry(SettingsSection.general, 'Design', anchor: 'design', keywords: ['look', 'macos', 'material', 'fluent']),
+  SettingsEntry(SettingsSection.general, 'Pure black', anchor: 'pure-black', keywords: ['oled', 'black', 'dark']),
   SettingsEntry(SettingsSection.general, 'Default model', anchor: 'default-model', keywords: ['chat', 'model']),
   SettingsEntry(
     SettingsSection.general,
@@ -233,4 +234,24 @@ SettingsTarget? settingsTargetForLocation(Uri uri) {
     _ => SettingsSection.parse(rest) ?? SettingsSection.general,
   };
   return SettingsTarget(section, anchor: rest == 'notices' ? 'notices' : uri.queryParameters['anchor']);
+}
+
+/// The Settings list's groups the user folded away (prefs `settings.collapsed_groups`, names joined by commas).
+final settingsCollapsedGroupsProvider = NotifierProvider<SettingsCollapsedGroups, Set<SettingsGroup>>(
+  SettingsCollapsedGroups.new,
+);
+
+class SettingsCollapsedGroups extends Notifier<Set<SettingsGroup>> {
+  static const key = 'settings.collapsed_groups';
+
+  @override
+  Set<SettingsGroup> build() {
+    final raw = ref.watch(preferencesProvider)[key] ?? '';
+    return {for (final n in raw.split(',')) ?SettingsGroup.values.asNameMap()[n]};
+  }
+
+  void toggle(SettingsGroup g) {
+    state = state.contains(g) ? ({...state}..remove(g)) : {...state, g};
+    ref.read(preferencesProvider)[key] = state.isEmpty ? null : state.map((g) => g.name).join(',');
+  }
 }

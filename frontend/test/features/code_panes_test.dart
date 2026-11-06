@@ -103,6 +103,15 @@ void main() {
     expect(out, ['http://localhost:3000/app', 'http://localhost:5173/', 'http://localhost:9229/']);
   });
 
+  test('a drawer saved on a tab that moved to the panel opens on the terminal', () {
+    final prefs = Preferences.inMemory();
+    prefs['${codeLayoutPrefix}old'] = jsonEncode({'drawer': 'preview', 'drawer_last': 'processes'});
+    final c = ProviderContainer(overrides: [preferencesProvider.overrideWithValue(prefs)]);
+    addTearDown(c.dispose);
+    expect(c.read(codePaneProvider('old')).open, isNull);
+    expect(c.read(codePaneProvider('old')).last, CodePane.terminal);
+  });
+
   group('drawer state', () {
     ProviderContainer containerWith(Preferences prefs) {
       final c = ProviderContainer(overrides: [preferencesProvider.overrideWithValue(prefs)]);
@@ -116,11 +125,10 @@ void main() {
       expect(c.read(codePaneProvider('s')).open, isNull);
       drawer.toggleDrawer();
       expect(c.read(codePaneProvider('s')).open, CodePane.terminal);
-      drawer.show(CodePane.preview);
-      drawer.toggle(CodePane.preview);
+      drawer.toggle(CodePane.terminal);
       expect(c.read(codePaneProvider('s')).open, isNull);
       drawer.toggleDrawer();
-      expect(c.read(codePaneProvider('s')).open, CodePane.preview);
+      expect(c.read(codePaneProvider('s')).open, CodePane.terminal);
       expect(c.read(codePaneProvider('other')).open, isNull);
     });
 
@@ -141,25 +149,25 @@ void main() {
       final first = containerWith(prefs);
       first.read(consolePanelProvider('a').notifier).show(ConsoleView.diff);
       first.read(codePaneProvider('a').notifier)
-        ..show(CodePane.processes)
+        ..show(CodePane.terminal)
         ..setHeight(180, persist: false)
         ..setHeight(310);
       first.read(consolePanelProvider('a').notifier).setWidth(500);
       expect(jsonDecode(prefs['${codeLayoutPrefix}a']!), {
         'panel': 'diff',
         'panel_width': 500,
-        'drawer': 'processes',
-        'drawer_last': 'processes',
+        'drawer': 'terminal',
+        'drawer_last': 'terminal',
         'drawer_height': 310,
       });
 
       final again = containerWith(prefs);
-      expect(again.read(codePaneProvider('a')).open, CodePane.processes);
+      expect(again.read(codePaneProvider('a')).open, CodePane.terminal);
       expect(again.read(codePaneProvider('a')).height, 310);
       expect(again.read(consolePanelProvider('a')).view, ConsoleView.diff);
       // Closed, it still opens on the last tab.
       again.read(codePaneProvider('a').notifier).close();
-      expect(containerWith(prefs).read(codePaneProvider('a')).last, CodePane.processes);
+      expect(containerWith(prefs).read(codePaneProvider('a')).last, CodePane.terminal);
 
       await again.read(codeSessionsProvider.notifier).remove('a');
       expect(prefs['${codeLayoutPrefix}a'], isNull);

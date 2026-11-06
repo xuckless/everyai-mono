@@ -9,6 +9,7 @@ import '../../../../core/ui/every_icons.dart';
 import '../../domain/code_session.dart';
 import '../../panes/panes_providers.dart';
 import '../console/bottom_drawer.dart' show isDrawerToggle;
+import 'terminal_font.dart';
 
 /// The terminal's own key filter, which runs before the shell gets a key: ⌃` toggles the drawer ([toggle]) instead.
 /// It is handled here: a key the filter lets through goes to the shell, never up to the drawer's shortcut.
@@ -18,42 +19,65 @@ KeyEventResult terminalKeys(KeyEvent event, VoidCallback toggle) {
   return KeyEventResult.handled;
 }
 
-/// A shell in the session's folder (its worktree), kept running while the
-/// app is open; right click copies the selection or pastes.
-class TerminalPane extends ConsumerStatefulWidget {
-  const TerminalPane({super.key, required this.session});
+/// A session's shells, in its folder (its worktree), kept running while the app is open.
+class TerminalPane extends StatelessWidget {
+  const TerminalPane({super.key, required this.session, this.onToggle});
 
   final CodeSessionInfo session;
 
+  /// What ⌃` does inside the terminal: the drawer's toggle.
+  final VoidCallback? onToggle;
+
   @override
-  ConsumerState<TerminalPane> createState() => _TerminalPaneState();
+  Widget build(BuildContext context) =>
+      TerminalTabsView(owner: session.id, workingDir: session.workingDir, onToggle: onToggle);
 }
 
-class _TerminalPaneState extends ConsumerState<TerminalPane> {
-  final _controller = TerminalController();
+/// Terminal tabs for [owner] (a session, or [homeTerminalOwner]): a row of tabs with + to open another, and the
+/// showing tab's shell, started in [workingDir]. Right click copies the selection or pastes.
+class TerminalTabsView extends ConsumerStatefulWidget {
+  const TerminalTabsView({super.key, required this.owner, required this.workingDir, this.onToggle});
 
-  SessionTerminal get _shell => ref.read(sessionTerminalProvider(widget.session.id).notifier);
+  final String owner;
+  final String workingDir;
+  final VoidCallback? onToggle;
+
+  @override
+  ConsumerState<TerminalTabsView> createState() => _TerminalTabsViewState();
+}
+
+class _TerminalTabsViewState extends ConsumerState<TerminalTabsView> {
+  final _controllers = <String, TerminalController>{};
+
+  TerminalController _controller(String id) => _controllers.putIfAbsent(id, TerminalController.new);
+
+  SessionTerminal _shell(String id) => ref.read(sessionTerminalProvider(id).notifier);
+
+  /// Starts [id]'s shell after the next layout, so it starts at the view's size.
+  void _startAfterLayout(String id) => WidgetsBinding.instance.endOfFrame.then((_) {
+    if (mounted) _shell(id).start(widget.workingDir);
+  });
 
   @override
   void initState() {
     super.initState();
-    // After the first layout, so the shell starts at the view's size.
-    WidgetsBinding.instance.endOfFrame.then((_) {
-      if (mounted) _shell.start(widget.session.workingDir);
-    });
+    _startAfterLayout(ref.read(terminalTabsProvider(widget.owner)).activeId);
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    for (final c in _controllers.values) {
+      c.dispose();
+    }
     super.dispose();
   }
 
-  Future<void> _copyOrPaste() async {
-    final terminal = _shell.terminal;
-    if (_controller.selection case final selection?) {
+  Future<void> _copyOrPaste(String id) async {
+    final terminal = _shell(id).terminal;
+    final controller = _controller(id);
+    if (controller.selection case final selection?) {
       await Clipboard.setData(ClipboardData(text: terminal.buffer.getText(selection)));
-      _controller.clearSelection();
+      controller.clearSelection();
     } else if ((await Clipboard.getData(Clipboard.kTextPlain))?.text case final text?) {
       terminal.paste(text);
     }
@@ -62,26 +86,55 @@ class _TerminalPaneState extends ConsumerState<TerminalPane> {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    final status = ref.watch(sessionTerminalProvider(widget.session.id));
+    final tabs = ref.watch(terminalTabsProvider(widget.owner));
+    final tabsCtl = ref.read(terminalTabsProvider(widget.owner).notifier);
+    final id = tabs.activeId;
+    final status = ref.watch(sessionTerminalProvider(id));
+    // A tab shown for the first time starts its shell.
+    ref.listen(terminalTabsProvider(widget.owner).select((t) => t.activeId), (_, next) => _startAfterLayout(next));
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(14, 4, 6, 4),
+          padding: const EdgeInsets.fromLTRB(8, 4, 6, 4),
           child: Row(
             children: [
               Expanded(
-                child: Text(
-                  status.exitCode != null ? 'Exited (${status.exitCode})' : widget.session.workingDir,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.type.caption.tint(theme.textMuted),
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      for (final (i, tabId) in tabs.ids.indexed)
+                        _Tab(
+                          key: ValueKey('terminal.tab.$tabId'),
+                          label: '${i + 1}',
+                          active: i == tabs.active,
+                          closable: tabs.ids.length > 1,
+                          onTap: () => tabsCtl.show(i),
+                          onClose: () => tabsCtl.close(i),
+                        ),
+                      AdaptiveIconButton(
+                        key: const ValueKey('terminal.new-tab'),
+                        icon: EveryIcon.add,
+                        tooltip: 'New terminal',
+                        size: 15,
+                        onPressed: tabsCtl.add,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        status.exitCode != null ? 'Exited (${status.exitCode})' : widget.workingDir,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.type.caption.tint(theme.textSubtle),
+                      ),
+                    ],
+                  ),
                 ),
               ),
               AdaptiveIconButton(
                 icon: EveryIcon.retry,
                 tooltip: 'Restart shell',
                 size: 16,
-                onPressed: () => _shell.restart(widget.session.workingDir),
+                onPressed: () => _shell(id).restart(widget.workingDir),
               ),
             ],
           ),
@@ -90,21 +143,91 @@ class _TerminalPaneState extends ConsumerState<TerminalPane> {
           child: ColoredBox(
             color: TerminalThemes.defaultTheme.background,
             child: TerminalView(
-              _shell.terminal,
-              controller: _controller,
+              _shell(id).terminal,
+              key: ValueKey('terminal.view.$id'),
+              controller: _controller(id),
               autofocus: true,
               padding: const EdgeInsets.all(8),
               textStyle: TerminalStyle(
-                fontFamily: 'SourceCodePro',
+                fontFamily: 'GeistMono',
+                fontFamilyFallback: terminalFontFallback,
                 fontSize: EveryTheme.of(context).type.callout.fontSize!,
               ),
-              onSecondaryTapDown: (_, _) => _copyOrPaste(),
+              onSecondaryTapDown: (_, _) => _copyOrPaste(id),
               onKeyEvent: (_, event) =>
-                  terminalKeys(event, ref.read(codePaneProvider(widget.session.id).notifier).toggleDrawer),
+                  widget.onToggle == null ? KeyEventResult.ignored : terminalKeys(event, widget.onToggle!),
             ),
           ),
         ),
       ],
+    );
+  }
+}
+
+/// One terminal tab: its number, highlighted when showing, with a × on hover when there are several.
+class _Tab extends StatefulWidget {
+  const _Tab({
+    super.key,
+    required this.label,
+    required this.active,
+    required this.closable,
+    required this.onTap,
+    required this.onClose,
+  });
+
+  final String label;
+  final bool active;
+  final bool closable;
+  final VoidCallback onTap;
+  final VoidCallback onClose;
+
+  @override
+  State<_Tab> createState() => _TabState();
+}
+
+class _TabState extends State<_Tab> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTap,
+        child: Container(
+          margin: const EdgeInsets.only(right: 4),
+          padding: EdgeInsets.fromLTRB(8, 3, widget.closable ? 4 : 8, 3),
+          decoration: BoxDecoration(
+            color: widget.active ? theme.accent.withValues(alpha: 0.14) : (_hover ? theme.hover : null),
+            borderRadius: BorderRadius.circular(7),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AdaptiveIcon(EveryIcon.command, size: 12, color: widget.active ? theme.accent : theme.textMuted),
+              const SizedBox(width: 4),
+              Text(widget.label, style: theme.type.caption.mono.tint(widget.active ? theme.accent : theme.textMuted)),
+              if (widget.closable) ...[
+                const SizedBox(width: 2),
+                Opacity(
+                  opacity: _hover || widget.active ? 1 : 0,
+                  child: GestureDetector(
+                    onTap: widget.onClose,
+                    child: Padding(
+                      padding: const EdgeInsets.all(2),
+                      child: AdaptiveIcon(EveryIcon.close, size: 11, color: theme.textMuted),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

@@ -15,13 +15,16 @@ enum ThemePreference {
 
 @immutable
 final class Appearance {
-  const Appearance({required this.designOverride, required this.theme});
+  const Appearance({required this.theme, this.pureBlack = false});
 
-  /// Null follows the host platform.
-  final DesignLanguage? designOverride;
   final ThemePreference theme;
 
-  DesignLanguage get design => designOverride ?? DesignLanguage.host;
+  /// Dark theme on a #000 background.
+  final bool pureBlack;
+
+  /// The app has one look on every platform. Screens not yet rebuilt on the
+  /// kit render their Material layout under the single Material root.
+  DesignLanguage get design => DesignLanguage.material;
 
   Brightness brightness(Brightness platform) => switch (theme) {
     ThemePreference.system => platform,
@@ -33,8 +36,8 @@ final class Appearance {
 final appearanceProvider = NotifierProvider<AppearanceController, Appearance>(AppearanceController.new);
 
 final class AppearanceController extends Notifier<Appearance> {
-  static const _designKey = 'appearance.design';
   static const _themeKey = 'appearance.theme';
+  static const _pureBlackKey = 'appearance.pure_black';
 
   Preferences get _prefs => ref.read(preferencesProvider);
 
@@ -42,18 +45,18 @@ final class AppearanceController extends Notifier<Appearance> {
   Appearance build() {
     final prefs = ref.watch(preferencesProvider);
     return Appearance(
-      designOverride: DesignLanguage.values.asNameMap()[prefs[_designKey]],
       theme: ThemePreference.values.asNameMap()[prefs[_themeKey]] ?? ThemePreference.system,
+      pureBlack: prefs[_pureBlackKey] == 'true',
     );
-  }
-
-  void setDesign(DesignLanguage? design) {
-    _prefs[_designKey] = design?.name;
-    state = Appearance(designOverride: design, theme: state.theme);
   }
 
   void setTheme(ThemePreference theme) {
     _prefs[_themeKey] = theme.name;
-    state = Appearance(designOverride: state.designOverride, theme: theme);
+    state = Appearance(theme: theme, pureBlack: state.pureBlack);
+  }
+
+  void setPureBlack(bool on) {
+    _prefs[_pureBlackKey] = on ? 'true' : null;
+    state = Appearance(theme: state.theme, pureBlack: on);
   }
 }

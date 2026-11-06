@@ -29,13 +29,17 @@ import 'session_actions.dart';
 List<ConsoleView> consoleViewsFor(CodeSessionInfo info) => [
   ConsoleView.info,
   if (info.diffTarget != null) ConsoleView.diff,
+  if (hasLocalShell(info)) ConsoleView.preview,
   if (Host.isDesktop && !noLocalFolder(info.workingDir)) ConsoleView.files,
+  if (hasLocalShell(info)) ConsoleView.processes,
 ];
 
 EveryIcon _iconOf(ConsoleView view) => switch (view) {
   ConsoleView.info => EveryIcon.info,
   ConsoleView.diff => EveryIcon.code,
+  ConsoleView.preview => EveryIcon.globe,
   ConsoleView.files => EveryIcon.projects,
+  ConsoleView.processes => EveryIcon.activity,
 };
 
 /// The session title with its ▾ menu: rename, pin, fork, export, archive and delete. Fork and archive come later.
@@ -165,7 +169,7 @@ class ConsoleActions extends ConsumerWidget {
           ViewIcon(
             key: const ValueKey('console.icon.drawer'),
             icon: EveryIcon.command,
-            tooltip: drawerOpen ? 'Hide terminal (⌃`)' : 'Terminal, processes and preview (⌃`)',
+            tooltip: drawerOpen ? 'Hide terminal (⌃`)' : 'Terminal (⌃`)',
             active: drawerOpen,
             onPressed: ref.read(codePaneProvider(id).notifier).toggleDrawer,
           ),
@@ -188,19 +192,23 @@ class ViewIcon extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    return Semantics(
-      selected: active,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: active ? theme.accent.withValues(alpha: 0.14) : null,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: AdaptiveIconButton(
-          icon: icon,
-          tooltip: tooltip,
-          size: 16,
-          color: active ? theme.accent : theme.textMuted,
-          onPressed: onPressed,
+    // A small gap on each side, so two open views' highlights stay two rounded squares instead of one block.
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 2),
+      child: Semantics(
+        selected: active,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: active ? theme.accent.withValues(alpha: 0.14) : null,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: AdaptiveIconButton(
+            icon: icon,
+            tooltip: tooltip,
+            size: 16,
+            color: active ? theme.accent : theme.textMuted,
+            onPressed: onPressed,
+          ),
         ),
       ),
     );

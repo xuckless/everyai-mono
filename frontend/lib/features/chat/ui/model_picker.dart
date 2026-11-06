@@ -10,14 +10,28 @@ import '../../../core/ui/every_icons.dart';
 import '../../models/domain/model_catalog.dart';
 import '../../models/models_providers.dart';
 import '../../models/ui/model_avatar.dart';
+import '../domain/reasoning_effort.dart';
+import '../../../core/motion/motion.dart';
 
 /// Composer chip showing the active model. Opens a picker with My models
 /// (name + one-line description), a search over the whole shop, and a link to
 /// the shop window.
 class ModelChip extends ConsumerWidget {
-  const ModelChip({super.key, required this.selected, required this.onSelected, this.enabled = true, this.pickerKey});
+  const ModelChip({
+    super.key,
+    required this.selected,
+    required this.onSelected,
+    this.enabled = true,
+    this.pickerKey,
+    this.effort,
+    this.onEffortChanged,
+  });
 
   final ModelSpec selected;
+
+  /// Thinking effort, shown as a segmented row at the top of the picker (reasoning models).
+  final ReasoningEffort? effort;
+  final ValueChanged<ReasoningEffort>? onEffortChanged;
   final ValueChanged<ModelSpec> onSelected;
   final bool enabled;
 
@@ -26,27 +40,17 @@ class ModelChip extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final theme = EveryTheme.of(context);
     final chip = Semantics(
       button: true,
       label: 'Model: ${selected.name}',
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-        decoration: BoxDecoration(borderRadius: BorderRadius.circular(8)),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Flexible(
-              child: Text(
-                selected.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.type.callout.medium.tint(theme.textMuted),
-              ),
-            ),
-            const SizedBox(width: 3),
-            AdaptiveIcon(EveryIcon.chevronDown, size: 12, color: theme.textMuted),
-          ],
+      child: IgnorePointer(
+        // The popover around it takes the tap.
+        child: KitChip(
+          label: selected.name,
+          strong: true,
+          chevron: true,
+          leading: ModelAvatar(selected.provider, size: 18),
+          onTap: () {},
         ),
       ),
     );
@@ -55,6 +59,8 @@ class ModelChip extends ConsumerWidget {
       key: pickerKey,
       width: 320,
       builder: (context, close) => _ModelPickerPanel(
+        effort: effort,
+        onEffortChanged: onEffortChanged,
         selected: selected,
         onSelected: (spec) {
           close();
@@ -65,15 +71,23 @@ class ModelChip extends ConsumerWidget {
           context.go(Routes.models);
         },
       ),
-      child: _HoverPill(child: chip),
+      child: chip,
     );
   }
 }
 
 class _ModelPickerPanel extends ConsumerStatefulWidget {
-  const _ModelPickerPanel({required this.selected, required this.onSelected, required this.onBrowse});
+  const _ModelPickerPanel({
+    required this.selected,
+    required this.onSelected,
+    required this.onBrowse,
+    this.effort,
+    this.onEffortChanged,
+  });
 
   final ModelSpec selected;
+  final ReasoningEffort? effort;
+  final ValueChanged<ReasoningEffort>? onEffortChanged;
   final ValueChanged<ModelSpec> onSelected;
   final VoidCallback onBrowse;
 
@@ -83,6 +97,7 @@ class _ModelPickerPanel extends ConsumerStatefulWidget {
 
 class _ModelPickerPanelState extends ConsumerState<_ModelPickerPanel> {
   String _query = '';
+  late var _effort = widget.effort;
 
   @override
   Widget build(BuildContext context) {
@@ -105,14 +120,15 @@ class _ModelPickerPanelState extends ConsumerState<_ModelPickerPanel> {
               .take(20)
               .toList();
 
+    var index = 0;
     Widget row(ModelSpec spec) => PopoverRow(
-      leading: ModelAvatar(spec.provider, size: 20),
+      leading: ModelAvatar(spec.provider, size: 22),
       title: spec.name,
       subtitle: spec.free ? 'Free' : null,
-      trailing: spec == widget.selected ? AdaptiveIcon(EveryIcon.check, size: 15, color: theme.accent) : null,
+      trailing: spec == widget.selected ? AdaptiveIcon(EveryIcon.check, size: 15, color: theme.accentText) : null,
       selected: spec == widget.selected,
       onTap: () => widget.onSelected(spec),
-    );
+    ).rowIn(index < 12 ? index++ : 12);
 
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(vertical: 6),
@@ -120,6 +136,21 @@ class _ModelPickerPanelState extends ConsumerState<_ModelPickerPanel> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (_effort != null && widget.onEffortChanged != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 2, 8, 8),
+              child: KitSegmented<ReasoningEffort>(
+                key: const ValueKey('model-picker.effort'),
+                values: ReasoningEffort.values,
+                selected: _effort!,
+                width: double.infinity,
+                label: (e) => e.label,
+                onSelected: (e) {
+                  setState(() => _effort = e);
+                  widget.onEffortChanged!(e);
+                },
+              ),
+            ),
           Padding(
             padding: const EdgeInsets.fromLTRB(8, 2, 8, 6),
             child: AdaptiveTextField(
@@ -136,44 +167,13 @@ class _ModelPickerPanelState extends ConsumerState<_ModelPickerPanel> {
             for (final spec in pinned.where((s) => s.name.toLowerCase().contains(q))) row(spec),
             for (final spec in matches) row(spec),
           ],
-          Container(height: 1, margin: const EdgeInsets.symmetric(vertical: 6), color: theme.border),
+          const SizedBox(height: 4),
           PopoverRow(
-            title: 'Browse model shop…',
+            title: 'Model shop',
             leading: AdaptiveIcon(EveryIcon.models, size: 16, color: theme.textMuted),
             onTap: widget.onBrowse,
           ),
         ],
-      ),
-    );
-  }
-}
-
-/// Subtle hover background for chips and pill buttons in the composer.
-class _HoverPill extends StatefulWidget {
-  const _HoverPill({required this.child});
-
-  final Widget child;
-
-  @override
-  State<_HoverPill> createState() => _HoverPillState();
-}
-
-class _HoverPillState extends State<_HoverPill> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 120),
-        decoration: BoxDecoration(
-          color: _hover ? theme.text.withValues(alpha: 0.07) : null,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: widget.child,
       ),
     );
   }

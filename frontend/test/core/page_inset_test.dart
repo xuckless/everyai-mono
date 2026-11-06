@@ -4,11 +4,10 @@ import 'package:every_ai/core/theme/every_theme.dart';
 import 'package:every_ai/core/ui/adaptive_page.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:cupertino_ui/cupertino_ui.dart' as c;
 import 'package:material_ui/material_ui.dart' as m;
 
 void main() {
-  testWidgets('a page header sits below the translucent bar and stays there', (tester) async {
+  testWidgets('a page header sits below the bar and stays there', (tester) async {
     await tester.pumpWidget(
       m.MaterialApp(
         builder: (context, child) =>
@@ -25,7 +24,7 @@ void main() {
         ),
       ),
     );
-    final barBottom = tester.getBottomLeft(find.byType(c.CupertinoNavigationBar)).dy;
+    final barBottom = tester.getBottomLeft(find.text('Artifacts')).dy;
     expect(tester.getTopLeft(find.text('search')).dy, greaterThanOrEqualTo(barBottom));
     expect(tester.getTopLeft(find.text('row 0')).dy, greaterThanOrEqualTo(barBottom + 40));
 

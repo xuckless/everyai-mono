@@ -19,10 +19,12 @@ final _mono = EveryType.resolve().caption.mono.copyWith(height: 1.45);
 /// The session's changes since it branched: files, hunks (each revertable)
 /// and what to do with the work: commit, squash merge, push, PR, discard.
 class DiffPane extends ConsumerStatefulWidget {
-  const DiffPane({super.key, required this.session, required this.onClose});
+  const DiffPane({super.key, required this.session, this.onClose});
 
   final CodeSessionInfo session;
-  final VoidCallback onClose;
+
+  /// Null inside the session panel, whose tab row has the title and Close.
+  final VoidCallback? onClose;
 
   @override
   ConsumerState<DiffPane> createState() => _DiffPaneState();
@@ -128,30 +130,28 @@ class _DiffPaneState extends ConsumerState<DiffPane> {
     ref.watch(consolePanelProvider(widget.session.id).select((p) => p.focusSeq));
     if (git != null) _scrollToFocus(git);
 
+    final panel = widget.onClose == null;
     return DecoratedBox(
-      decoration: BoxDecoration(
-        color: theme.surface,
-        border: Border(left: BorderSide(color: theme.border)),
-      ),
+      decoration: BoxDecoration(color: theme.surface),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(14, 10, 6, 6),
+            padding: EdgeInsets.fromLTRB(14, panel ? 2 : 10, 6, 6),
             child: Row(
               children: [
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Changes', style: theme.type.headline.tint(theme.text)),
+                      if (!panel) Text('Changes', style: theme.type.headline.tint(theme.text)),
                       if (w != null)
                         Text(
                           '${w.branch} → ${w.baseBranch}'
                           '${git == null || git.ahead == 0 ? '' : ' · ${git.ahead} commit${git.ahead == 1 ? '' : 's'}'}'
                           '${git == null || git.behind == 0 ? '' : ' · ${w.baseBranch} moved ${git.behind} ahead'}',
                           overflow: TextOverflow.ellipsis,
-                          style: theme.type.caption.tint(theme.textMuted),
+                          style: theme.type.caption.tint(theme.textSubtle),
                         )
                       else if (baseline != null)
                         Text(
@@ -163,7 +163,8 @@ class _DiffPaneState extends ConsumerState<DiffPane> {
                   ),
                 ),
                 AdaptiveIconButton(icon: EveryIcon.retry, tooltip: 'Refresh', size: 16, onPressed: _git.refresh),
-                AdaptiveIconButton(icon: EveryIcon.close, tooltip: 'Close', size: 16, onPressed: widget.onClose),
+                if (!panel)
+                  AdaptiveIconButton(icon: EveryIcon.close, tooltip: 'Close', size: 16, onPressed: widget.onClose),
               ],
             ),
           ),

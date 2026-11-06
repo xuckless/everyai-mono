@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:every_ai/core/ui/adaptive.dart';
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/core/theme/every_theme.dart';
@@ -213,9 +214,7 @@ void main() {
       final saved = <SshRemote>[];
       await tester.pumpWidget(_app(SshRemoteForm(onSave: saved.add, onCancel: () {})));
       expect(find.textContaining('never asks for or stores a password'), findsOneWidget);
-      m.FilledButton save() => tester.widget(
-        find.descendant(of: find.byKey(const ValueKey('ssh-form.save')), matching: find.byType(m.FilledButton)),
-      );
+      AdaptiveButton save() => tester.widget(find.byKey(const ValueKey('ssh-form.save')));
       expect(save().onPressed, isNull);
       await tester.enterText(find.byKey(const ValueKey('ssh-form.target')), 'bad host');
       await tester.pump();

@@ -8,6 +8,7 @@ import '../../../app/router.dart';
 import '../../../core/links/app_link.dart';
 import '../../../core/links/link_providers.dart';
 import '../../../core/net/api_error.dart';
+import '../../../core/motion/motion.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/adaptive_page.dart';
@@ -30,7 +31,7 @@ import '../../settings/ui/settings_modal.dart';
 import '../../settings/settings_registry.dart';
 
 /// Readable line length for the transcript and composer on wide windows.
-const _maxContentWidth = 820.0;
+const _maxContentWidth = 760.0;
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key, required this.conversationId});
@@ -206,9 +207,7 @@ class _Home extends StatelessWidget {
                 children: [
                   const BrandMark(size: 26),
                   const SizedBox(width: 12),
-                  Flexible(
-                    child: Text(_greeting(DateTime.now()), style: theme.type.largeTitle.regular.tint(theme.text)),
-                  ),
+                  Flexible(child: Text(_greeting(DateTime.now()), style: theme.type.largeTitle.tint(theme.text))),
                 ],
               ),
               const SizedBox(height: 28),
@@ -219,59 +218,15 @@ class _Home extends StatelessWidget {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  for (final starter in chatStarters)
-                    _StarterChip(icon: starter.icon, label: starter.label, onTap: () => onStarter(starter)),
+                  for (final (i, starter) in chatStarters.indexed)
+                    KitChip(
+                      label: starter.label,
+                      leading: AdaptiveIcon(starter.icon, size: 14),
+                      onTap: () => onStarter(starter),
+                    ).rowIn(i, base: const Duration(milliseconds: 60)),
                 ],
               ),
             ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _StarterChip extends StatefulWidget {
-  const _StarterChip({required this.icon, required this.label, required this.onTap});
-
-  final EveryIcon icon;
-  final String label;
-  final VoidCallback onTap;
-
-  @override
-  State<_StarterChip> createState() => _StarterChipState();
-}
-
-class _StarterChipState extends State<_StarterChip> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    return Semantics(
-      button: true,
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        onEnter: (_) => setState(() => _hover = true),
-        onExit: (_) => setState(() => _hover = false),
-        child: GestureDetector(
-          onTap: widget.onTap,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 120),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-            decoration: BoxDecoration(
-              color: _hover ? theme.surfaceRaised : null,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: theme.border),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                AdaptiveIcon(widget.icon, size: 14, color: theme.textMuted),
-                const SizedBox(width: 6),
-                Text(widget.label, style: theme.type.callout.tint(theme.text)),
-              ],
-            ),
           ),
         ),
       ),
@@ -301,8 +256,11 @@ class _Transcript extends ConsumerWidget {
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: _maxContentWidth),
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                child: MessageView(message: message, conversationId: conversationId, isLatest: i == 0),
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 11),
+                // The newest turn settles in; older ones are already in place.
+                child: i < 2
+                    ? MessageView(message: message, conversationId: conversationId, isLatest: i == 0).settle()
+                    : MessageView(message: message, conversationId: conversationId, isLatest: i == 0),
               ),
             ),
           );
@@ -387,7 +345,11 @@ class _WithPanel extends ConsumerWidget {
             ],
           );
         }
-        return PanelSplit(maxWidth: constraints.maxWidth, panel: panel, child: child);
+        return PanelSplit(
+          maxWidth: constraints.maxWidth,
+          panel: MaskReveal(axis: Axis.horizontal, duration: Motion.sheetIn, child: panel),
+          child: child,
+        );
       },
     );
   }

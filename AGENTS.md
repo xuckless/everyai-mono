@@ -733,6 +733,118 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   - Full flutter test (2308) and zig tests pass. Nothing live-tested. Open: whether Bypass keeps the session budget
     stop; the host browser's eval/type are unguarded for outside leads.
 
+- **UI overhaul, phase 0 (2026-11-06; branch `ui-overhaul`, e935bb5).** Owner's plan and answers:
+  `~/.claude/plans/ui-overhaul.md`; design: the claude.ai artifact "EveryAI" (boards per surface, `project/everyai.css`).
+  One EveryAI look on every OS: the design-language picker is gone (Settings > Appearance has Pure black instead),
+  one Material root supplies only plumbing. Tokens in `EveryTheme` (kit roles, dark/light/Pure black), Geist + Geist
+  Mono bundled, Lucide icons, `core/motion/motion.dart` (the owner's 20 motion rules; entrances without timers;
+  `Motion.ambient` is off under test via `test/flutter_test_config.dart`), `core/ui/kit.dart` widgets; the `Adaptive*`
+  wrappers render the kit. Screens still use their old (Material-branch) layouts until their phase. Not checked
+  visually yet. Next: phase 1 shell + sidebar, then Chat, Code session, Board, Settings, the rest.
+- **UI overhaul, phases 1–3 (2026-11-06; 6bfa00f, d318a74, then phase 3).** Shell + sidebar (264pt, inset content
+  panel, phone drawer, Chat|Code segmented), Chat on the kit (model chip with vendor monogram + effort in its popover,
+  mode chip, round send/stop, quiet follow-ups, violet inline code), Code session: composer chips row (mode, Workflow
+  named after the pick, Skills) with harness · model · effort under the box (MCP chip gone, it lives in Settings),
+  `KitTabs` (one sliding underline) for the right panel (Session · Diff · Files) and the drawer (Terminal · Processes ·
+  Preview), kit status dots and shimmer.
+- **UI overhaul, phase 3b (2026-11-06).** Owner: the session panel has five tabs (Session · Diff · Preview · Files ·
+  Processes; `ConsoleView`), the bottom drawer keeps only the Terminal (`CodePane.terminal`; an old saved drawer tab
+  opens the terminal). Preview stays built once shown. New session page: random headline (`startWords`), the box, and
+  one quiet line under it (harness · model · effort · cap · In place/Worktree · where it runs · settings gear; the
+  explanations moved into the popovers' subtitles); `QuietTrigger` in the kit; a picked workflow also shows a removable
+  chip above the field.
+- **UI overhaul, phase 4: Board (2026-11-06).** `/code/board` (desktop; sidebar "Board" under New session),
+  `features/code/board/`: Needs you / Running / Done columns (`BoardColumn.of(status)`), harness filter (segmented,
+  only with 2+ harnesses), "This computer" host label, New session button. Cards: harness monogram
+  (`harnessMark`), title, project · branch/worktree/fork, age, one live activity line (`boardActivity`, only for
+  sessions with an open controller), Approve/Deny in place for approvals (pulse), Open/Answer for questions (answering
+  happens in the session). Forks show once detached (`boardDetachedProvider`, prefs `code.board.detached`; toggle in
+  the child chat header). Removed-harness sessions stay off. Not done: cards don't glide between columns; questions
+  aren't answered on the card.
+- **Board and list fixes (2026-11-06).** Board: Done cards clear (× on hover, Clear on the column; prefs
+  `code.board.dismissed`; a cleared session that runs again comes back), cards glide to their new column (`_Glide`,
+  one GlobalKey per card, ease-in-out with a shallow arc), hairline dividers resize the columns (prefs
+  `code.board.columns`, double-click evens), questions are answered on the card (the `QuestionCard`; waiting sessions
+  are opened so their card can answer). Closed sessions show what they last did: `ReadsRecentEvents` on the EveryAI
+  harness, Claude Code and ACP drivers reads the tail of their event file (`readEventTail`); Codex and OpenCode keep
+  no file, so they show status only. `KitListEditor` (`core/ui/list_editor.dart`): macOS Login Items-style table with
+  + / − and Delete, replacing comma/line-separated inputs for research sites (dialog + Settings), Rules, and MCP
+  environment variables and headers (secret-looking values hidden).
+- **UI overhaul, phase 5: Settings (2026-11-06).** The modal follows the artifact's Settings board: a solid surface
+  (r18, pop shadow, hairline on top) that eases in from 0.95; the left column (bg fill, 232pt) holds search and the
+  sections under quiet group labels, with one highlight that slides to the open section (`_SlidingSelection`); the
+  right side has the section title (StateSwap) and Close. Phones get grouped cards of sections, and a section slides
+  in from the right with a back control. `KitGroupedList` (adaptive.dart) folds a page's flat children into
+  `KitGroup` cards: runs of rows (`AdaptiveListTile`, `MenuRow`, or a `KitRowLike` such as `SettingsAnchor` around a
+  tile) share a card, an `AdaptiveSectionHeader` labels the next card, anything else stands alone. Every settings
+  page uses it. General: theme as three pictures (`ThemeCards`), Pure black (motion follows the system
+  setting; no app switch). Account: avatar, name, email · plan, Manage
+  plan. Code settings rows are quiet cards instead of ruled rows. Group headings in the list have a fine rule and
+  a chevron that folds the group (prefs `settings.collapsed_groups`).
+- **Window chrome on Windows/Linux (2026-11-06).** `core/platform/window_caption.dart`: the native title bar is
+  hidden (`TitleBarStyle.hidden`, window_manager) and the app draws its own. `WindowButtonsOverlay` (app root
+  builder) floats minimize / maximize-restore / close at the top right above every route and dialog (Windows: flat
+  46pt cells, red close; Linux: small round buttons); `WindowCaption` is the 36pt drag strip (double-click
+  maximizes) each layout keeps under them: the shell above the content panel beside the sidebar, and
+  `WithWindowCaption` around sign-in, onboarding and the full-window Settings. `WindowResizeEdges` adds resize
+  handles (all edges on Linux, top on Windows). Native: the Windows runner paints the app background and sets
+  `DWMWA_BORDER_COLOR` to none; the Linux runner paints the GTK window #07070A. Not built or seen on Windows or
+  Linux yet (widget tests only). macOS unchanged.
+- **UI overhaul, phase 6 (second pass), in steps (2026-11-06).** 6a onboarding: the board's layout (48pt top row with
+  the mark and version, one 480pt column with five progress pills, headline, body, then Back · Later · Continue).
+  The key step is the board's: provider switch across the column, one field with an inline ✓/✕ and Check, and a
+  status line (hint, shimmering Checking, works, or rejected with nothing saved).
+  6b model shop: one table (model with mark, vendor and capability line · context · price per M "in · out" ·
+  Add/Added with a pulse, "…" options on hover), a search, scope chips (All, My models, Free, On your keys), the six
+  biggest vendors plus More, and capability toggles (Tools, Vision, Reasoning, Makes images); rows re-enter staggered
+  when the filters change. Narrow widths fold the price under the name. Negative catalog prices (routers) show none.
+  6c cards: the question card has `KitTabs` (now with a `leading` mark: breathing dot for the current question, a
+  tick once answered) and "n of m", "Pick one/any", option rows with their number key, a pencil "Other" row, panes
+  that slide in from the side you move to, and Back · "n left" · Next / Submit ⌘↵. The plan card has "n steps · m
+  files", a dot per step with its files flush right (steps settle in), "Switches to Auto-edit", Keep planning,
+  Start building.
+  6d usage/billing: "This month" card (mono "$x of $y", a thin bar that fills in, plan · left, wallet), per-key rows
+  with a share bar and mono cost; billing uses the same bar and mono amounts.
+  6e MCP / Skills / Agents: one-line intros instead of paragraphs, skill and agent names in mono with one-line
+  descriptions, the Claude Code skills list on a card (`KitGroupedList.fold`).
+  6f Remote: host and device sections on cards, a status dot by the relay state, the security code in mono on the
+  right, Remove this host in red. Artifacts page and the inline renderers (flashcards, slides, quiz) already sat on
+  the kit; left as they are.
+  6g workflow progress (Session tab's running work): a thin bar per run (finished agents), status dots on workflow
+  agents and background commands, commands in mono. Not seen with a live Ultra run.
+- **Logos back (2026-11-06).** Owner: real icons for every model vendor, harness and editor, from Lobe Icons (MIT,
+  owner's pick; notice added), brand colour on a tile. `core/ui/logos.dart`: `Logo.vendor(slug)` / `.harness(id)` /
+  `.app(id)` map to `assets/logos/*.svg` (51 files); `LogoTile` draws a neutral tile (r 28%, hairline), `-color` files
+  keep their colours, one-colour marks take the text colour; no logo → the old monogram (`AgentGlyph`). EveryAI uses
+  the brand mark. `ModelAvatar` (shop, pickers, composer chip, message footer, Settings) and `HarnessLogo`
+  (`code/ui/harness_logo.dart`: Board cards, agent menu, Code composer line, harness rows in Settings/onboarding with
+  the status as a corner dot, Code home's Earlier list) use it; the API keys page too. Kimi uses the one-colour mark
+  (its colour K vanishes on dark). Missing in Lobe Icons: VS Code, Augment, Factory, Zed, TeleAI, Writer and other
+  small vendors (monograms). The old rasters in `assets/models/` are unused now.
+- **Reopens where it was closed (2026-11-06).** `app/router.dart`: every route change that `restorableLocation`
+  accepts (a chat, Code home, a Code session, the Board, Chats/Projects/Artifacts/Models; not sign-in or Settings) is
+  saved in Preferences `app.last_location`; the first router of a run starts there (`restoredLocation`; a removed Code
+  session falls back to `/code`; an `INITIAL_LOCATION` define still wins). Checked with a hot restart from the Board.
+- **Code sidebar (2026-11-06).** Project headings fold like Settings groups (name + chevron, hairline underneath,
+  Preferences `code.sidebar.folded`; searching shows all), with the session rows' insets so the ⋯ lines up. Each
+  session row starts with its harness's logo (`SessionStatusIcon(status, harness)`); its state is a dot on the
+  logo's corner (none when idle/done).
+  A project's ⋯ has New session: `Routes.newCodeSession(id)` = `/code?project=<id>`, read by `CodeHome(projectId:)`
+  (also on `didUpdateWidget`). The Code session panel opens at a third of the session screen (`consolePanelShare`
+  0.33 via `PanelSplit.defaultShare`; artifacts keep 0.52); sessions with a dragged width keep it, double-click
+  resets. Code home's earlier EveryAI sessions name their harness beside its logo.
+- **Plan report card (2026-11-06).** An outside lead's `/usage` text (the cost aside) is parsed by
+  `code/domain/plan_report.dart` (`parsePlanReport`: notes, limits `X: N% used · resets …`, headings + caption,
+  periods `Last 24h · …`, shares `N%  text · detail`, `Top …: a N%, …`; anything else stays a note) and drawn by
+  `ui/transcript/plan_report_view.dart` (limit bars amber ≥75%, red ≥90%; share rows; pills). All-notes text falls
+  back to mono. Fixed: the fill of every animated bar (usage, billing, workflow runs) had zero height.
+- **Terminal tabs, glyphs, Code home terminal (2026-11-06).** The terminal falls back to the bundled Nerd Fonts
+  Symbols font (`ui/panes/terminal_font.dart`), so Powerline/Nerd Font prompts draw. `TerminalTabsView(owner,
+  workingDir)` has tabs with + and × (`terminalTabsProvider`; the first tab's id is the owner's, so Processes/Preview
+  keep reading it; others `<owner>#<n>`, `EVERYAI_TERMINAL` stays the session id). Code home has a purple Terminal
+  chip in the top bar opening a resizable bottom terminal (owner `home`, starts in `terminalHomeDir`: `$HOME`, or
+  `C:\` on Windows; prefs `code.home.terminal`, `code.home.terminal_height`). Session header icons got a 2pt gap so
+  two open views' highlights don't merge.
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2

@@ -1,23 +1,21 @@
-import 'dart:ui' show ImageFilter;
-
-import 'package:cupertino_ui/cupertino_ui.dart' as c;
-import 'package:fluent_ui/fluent_ui.dart' as f;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
-import 'package:macos_ui/macos_ui.dart' as mac;
 import 'package:material_ui/material_ui.dart' as m;
 
+import '../motion/motion.dart';
 import '../platform/platform_kind.dart';
 import '../theme/every_theme.dart';
 import 'anchored_popover.dart';
 import 'every_icons.dart';
+import 'kit.dart';
 
-/// Design-language-aware building blocks. Screens compose these instead of
-/// importing a design system directly, so one screen definition renders
-/// natively as Cupertino, macOS, Material 3, Fluent or Adwaita.
-///
-/// Each design system lives behind an import prefix:
-/// `c` (cupertino_ui), `mac` (macos_ui), `m` (material_ui), `f` (fluent_ui).
+export 'kit.dart';
+export 'list_editor.dart';
+
+/// The building blocks screens compose. Since the 2026-11 overhaul they all
+/// render the EveryAI kit (`kit.dart`), the same on every platform; the names
+/// stay so screens didn't have to change at once. Material is only used as the
+/// text-editing engine under [AdaptiveTextField].
 
 DesignLanguage designOf(BuildContext context) => EveryTheme.of(context).design;
 
@@ -29,7 +27,7 @@ class AdaptiveIcon extends StatelessWidget {
   final Color? color;
 
   @override
-  Widget build(BuildContext context) => Icon(icon.of(designOf(context)), size: size, color: color);
+  Widget build(BuildContext context) => Icon(icon.data, size: size, color: color);
 }
 
 class AdaptiveIconButton extends StatelessWidget {
@@ -49,45 +47,8 @@ class AdaptiveIconButton extends StatelessWidget {
   final double? size;
 
   @override
-  Widget build(BuildContext context) {
-    final design = designOf(context);
-    final glyph = Icon(icon.of(design), size: size, color: color);
-    return switch (design) {
-      DesignLanguage.cupertino => Semantics(
-        label: tooltip,
-        button: true,
-        child: c.CupertinoButton(
-          padding: const EdgeInsets.all(8),
-          minimumSize: const Size.square(40),
-          onPressed: onPressed,
-          child: glyph,
-        ),
-      ),
-      DesignLanguage.macos => mac.MacosTooltip(
-        message: tooltip,
-        child: mac.MacosIconButton(
-          icon: Icon(
-            icon.of(design),
-            size: size ?? 18,
-            color: color ?? mac.MacosTheme.of(context).typography.body.color,
-          ),
-          semanticLabel: tooltip,
-          boxConstraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-          padding: const EdgeInsets.all(5),
-          onPressed: onPressed,
-        ),
-      ),
-      DesignLanguage.fluent => f.Tooltip(
-        message: tooltip,
-        child: f.IconButton(
-          icon: Icon(icon.of(design), size: size ?? 16, color: color),
-          onPressed: onPressed,
-        ),
-      ),
-      DesignLanguage.material ||
-      DesignLanguage.adwaita => onMaterial(context, m.IconButton(tooltip: tooltip, icon: glyph, onPressed: onPressed)),
-    };
-  }
+  Widget build(BuildContext context) =>
+      KitIconButton(icon: icon, tooltip: tooltip, onPressed: onPressed, color: color, size: size, touch: Host.isMobile);
 }
 
 enum ButtonEmphasis { primary, secondary, plain, destructive }
@@ -110,8 +71,7 @@ class AdaptiveButton extends StatelessWidget {
   final Widget? icon;
   final bool expand;
 
-  /// The native large size, for forms and full-width actions. Buttons inside
-  /// content (cards, rows) are compact. Defaults to [expand].
+  /// 44pt, for forms and full-width actions. Buttons inside content are 32pt.
   final bool large;
 
   /// Shows a spinner in place of the label and disables the button.
@@ -119,92 +79,21 @@ class AdaptiveButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    final onPressed = busy ? null : this.onPressed;
-    final content = busy
-        ? SizedBox.square(dimension: large ? 18 : 14, child: const AdaptiveProgress())
-        : Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (icon != null) ...[icon!, const SizedBox(width: 8)],
-              Flexible(
-                child: Text(
-                  label,
-                  overflow: TextOverflow.ellipsis,
-                  // Compact buttons share one label size across design languages.
-                  style: large ? null : theme.type.callout.medium,
-                ),
-              ),
-            ],
-          );
-    final destructive = emphasis == ButtonEmphasis.destructive;
-    final cupertinoSize = large ? c.CupertinoButtonSize.large : c.CupertinoButtonSize.small;
-    final materialSize = large
-        ? null
-        : m.ButtonStyle(
-            visualDensity: m.VisualDensity.compact,
-            minimumSize: const m.WidgetStatePropertyAll(Size(0, 34)),
-            padding: const m.WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 14)),
-            textStyle: m.WidgetStatePropertyAll(theme.type.callout.medium),
-          );
-
-    final Widget button = switch (theme.design) {
-      DesignLanguage.cupertino => switch (emphasis) {
-        // Filled buttons are brand violet 500 with white text.
-        ButtonEmphasis.primary => c.CupertinoButton.filled(
-          sizeStyle: cupertinoSize,
-          color: theme.primary,
-          onPressed: onPressed,
-          child: content,
-        ),
-        ButtonEmphasis.secondary => c.CupertinoButton.tinted(
-          sizeStyle: cupertinoSize,
-          onPressed: onPressed,
-          child: content,
-        ),
-        _ => c.CupertinoButton(
-          sizeStyle: cupertinoSize,
-          onPressed: onPressed,
-          child: DefaultTextStyle.merge(
-            style: TextStyle(color: destructive ? theme.danger : null),
-            child: content,
-          ),
-        ),
-      },
-      DesignLanguage.macos => mac.PushButton(
-        controlSize: large ? mac.ControlSize.large : mac.ControlSize.regular,
-        secondary: emphasis != ButtonEmphasis.primary,
-        color: destructive
-            ? theme.danger
-            : emphasis == ButtonEmphasis.primary
-            ? theme.primary
-            : null,
-        onPressed: onPressed,
-        child: content,
-      ),
-      DesignLanguage.fluent => switch (emphasis) {
-        ButtonEmphasis.primary => f.FilledButton(onPressed: onPressed, child: content),
-        ButtonEmphasis.plain => f.HyperlinkButton(onPressed: onPressed, child: content),
-        _ => f.Button(
-          onPressed: onPressed,
-          child: DefaultTextStyle.merge(
-            style: TextStyle(color: destructive ? theme.danger : null),
-            child: content,
-          ),
-        ),
-      },
-      DesignLanguage.material || DesignLanguage.adwaita => onMaterial(context, switch (emphasis) {
-        ButtonEmphasis.primary => m.FilledButton(style: materialSize, onPressed: onPressed, child: content),
-        ButtonEmphasis.secondary => m.FilledButton.tonal(style: materialSize, onPressed: onPressed, child: content),
-        ButtonEmphasis.plain => m.TextButton(style: materialSize, onPressed: onPressed, child: content),
-        ButtonEmphasis.destructive => m.TextButton(
-          style: m.TextButton.styleFrom(foregroundColor: theme.danger).merge(materialSize),
-          onPressed: onPressed,
-          child: content,
-        ),
-      }),
+    final style = switch (emphasis) {
+      ButtonEmphasis.primary => KitButtonStyle.primary,
+      ButtonEmphasis.secondary => KitButtonStyle.soft,
+      ButtonEmphasis.plain => KitButtonStyle.ghost,
+      ButtonEmphasis.destructive => KitButtonStyle.danger,
     };
-    return expand ? SizedBox(width: double.infinity, child: button) : button;
+    return KitButton(
+      label: label,
+      onPressed: onPressed,
+      style: style,
+      large: large,
+      expand: expand,
+      busy: busy,
+      leading: icon,
+    );
   }
 }
 
@@ -247,11 +136,16 @@ class AdaptiveTextField extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    return switch (theme.design) {
-      DesignLanguage.cupertino => c.CupertinoTextField(
+    final style = theme.type.body.copyWith(height: 1.45).tint(theme.text);
+    final hint = style.tint(theme.textSubtle);
+    final radius = BorderRadius.circular(10);
+    // Material's field is only the editing engine here (platform selection
+    // handles and menus); every visible part comes from the kit.
+    return onMaterial(
+      context,
+      m.TextField(
         controller: controller,
         focusNode: focusNode,
-        placeholder: placeholder,
         obscureText: obscureText,
         autofillHints: autofillHints,
         keyboardType: keyboardType,
@@ -261,86 +155,38 @@ class AdaptiveTextField extends StatelessWidget {
         minLines: minLines,
         maxLines: maxLines,
         autofocus: autofocus,
-        prefix: prefix == null ? null : Padding(padding: const EdgeInsets.only(left: 8), child: prefix),
-        padding: borderless ? EdgeInsets.zero : const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
-        placeholderStyle: theme.type.body.tint(theme.textMuted),
+        style: style,
+        cursorColor: theme.accent,
+        cursorWidth: 1.6,
         decoration: borderless
-            ? null
-            : BoxDecoration(color: theme.surfaceRaised, borderRadius: BorderRadius.circular(theme.radius)),
-        style: theme.type.body.tint(theme.text),
-      ),
-      DesignLanguage.macos => mac.MacosTextField(
-        controller: controller,
-        focusNode: focusNode,
-        placeholder: placeholder,
-        obscureText: obscureText,
-        autofillHints: autofillHints,
-        keyboardType: keyboardType,
-        textInputAction: textInputAction,
-        onSubmitted: onSubmitted,
-        onChanged: onChanged,
-        minLines: minLines,
-        maxLines: maxLines,
-        autofocus: autofocus,
-        prefix: prefix,
-        padding: borderless ? EdgeInsets.zero : const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-        style: (borderless ? theme.type.body : theme.type.callout).tint(theme.text),
-        placeholderStyle: (borderless ? theme.type.body : theme.type.callout).tint(
-          theme.textMuted.withValues(alpha: 0.8),
-        ),
-        // macos_ui paints a 3px focus ring onto any non-null focusedDecoration.
-        decoration: borderless ? null : mac.kDefaultRoundedBorderDecoration,
-        focusedDecoration: borderless ? null : mac.kDefaultFocusedBorderDecoration,
-      ),
-      DesignLanguage.fluent => f.TextBox(
-        controller: controller,
-        focusNode: focusNode,
-        placeholder: placeholder,
-        obscureText: obscureText,
-        autofillHints: autofillHints,
-        keyboardType: keyboardType,
-        textInputAction: textInputAction,
-        onSubmitted: onSubmitted,
-        onChanged: onChanged,
-        minLines: minLines,
-        maxLines: maxLines,
-        autofocus: autofocus,
-        prefix: prefix == null ? null : Padding(padding: const EdgeInsets.only(left: 8), child: prefix),
-        decoration: borderless ? const f.WidgetStatePropertyAll(BoxDecoration()) : null,
-        highlightColor: borderless ? const Color(0x00000000) : null,
-        unfocusedColor: borderless ? const Color(0x00000000) : null,
-      ),
-      DesignLanguage.material || DesignLanguage.adwaita => onMaterial(
-        context,
-        m.TextField(
-          controller: controller,
-          focusNode: focusNode,
-          obscureText: obscureText,
-          autofillHints: autofillHints,
-          keyboardType: keyboardType,
-          textInputAction: textInputAction,
-          onSubmitted: onSubmitted,
-          onChanged: onChanged,
-          minLines: minLines,
-          maxLines: maxLines,
-          autofocus: autofocus,
-          decoration: borderless
-              ? m.InputDecoration.collapsed(hintText: placeholder)
-              : m.InputDecoration(
-                  hintText: placeholder,
-                  prefixIcon: prefix,
-                  filled: true,
-                  isDense: true,
-                  border: m.OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(theme.radius),
-                    borderSide: theme.design == DesignLanguage.adwaita
-                        ? BorderSide(color: theme.border)
-                        : BorderSide.none,
-                  ),
+            ? m.InputDecoration.collapsed(hintText: placeholder, hintStyle: hint)
+            : m.InputDecoration(
+                hintText: placeholder,
+                hintStyle: hint,
+                prefixIcon: prefix == null
+                    ? null
+                    : Padding(padding: const EdgeInsets.only(left: 10, right: 6), child: prefix),
+                prefixIconConstraints: const BoxConstraints(minWidth: 0, minHeight: 0),
+                filled: true,
+                fillColor: theme.well,
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                hoverColor: const Color(0x00000000),
+                border: m.OutlineInputBorder(
+                  borderRadius: radius,
+                  borderSide: BorderSide(color: theme.border),
                 ),
-        ),
+                enabledBorder: m.OutlineInputBorder(
+                  borderRadius: radius,
+                  borderSide: BorderSide(color: theme.border),
+                ),
+                focusedBorder: m.OutlineInputBorder(
+                  borderRadius: radius,
+                  borderSide: BorderSide(color: theme.accent.withValues(alpha: 0.7)),
+                ),
+              ),
       ),
-    };
+    );
   }
 }
 
@@ -351,13 +197,7 @@ class AdaptiveSwitch extends StatelessWidget {
   final ValueChanged<bool>? onChanged;
 
   @override
-  Widget build(BuildContext context) => switch (designOf(context)) {
-    DesignLanguage.cupertino => c.CupertinoSwitch(value: value, onChanged: onChanged),
-    DesignLanguage.macos => mac.MacosSwitch(value: value, onChanged: onChanged),
-    DesignLanguage.fluent => f.ToggleSwitch(checked: value, onChanged: onChanged),
-    DesignLanguage.material ||
-    DesignLanguage.adwaita => onMaterial(context, m.Switch(value: value, onChanged: onChanged)),
-  };
+  Widget build(BuildContext context) => KitSwitch(value: value, onChanged: onChanged);
 }
 
 class AdaptiveProgress extends StatelessWidget {
@@ -366,12 +206,27 @@ class AdaptiveProgress extends StatelessWidget {
   final double? value;
 
   @override
-  Widget build(BuildContext context) => switch (designOf(context)) {
-    DesignLanguage.cupertino => const c.CupertinoActivityIndicator(),
-    DesignLanguage.macos => mac.ProgressCircle(value: value),
-    DesignLanguage.fluent => f.ProgressRing(value: value == null ? null : value! * 100, strokeWidth: 2.5),
-    DesignLanguage.material || DesignLanguage.adwaita => m.CircularProgressIndicator(value: value, strokeWidth: 2.5),
-  };
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    if (value == null) return const SizedBox.square(dimension: 18, child: KitSpinner());
+    return SizedBox(
+      width: 120,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(99),
+        child: Container(
+          height: 4,
+          color: theme.borderStrong,
+          alignment: AlignmentDirectional.centerStart,
+          child: AnimatedFractionallySizedBox(
+            duration: const Duration(milliseconds: 400),
+            curve: Motion.easeInOut,
+            widthFactor: value!.clamp(0, 1),
+            child: ColoredBox(color: theme.accent, child: const SizedBox.expand()),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// A row in a list: conversations, settings, models.
@@ -397,143 +252,38 @@ class AdaptiveListTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // A wide trailing widget (a value, a picker) never takes the title's room, in any design: at most 55% of the row.
-    return LayoutBuilder(builder: (context, box) => _tile(context, box.maxWidth));
-  }
-
-  Widget? _cappedTrailing(double width) => trailing == null
-      ? null
-      : ConstrainedBox(
-          constraints: BoxConstraints(maxWidth: width.isFinite ? width * 0.55 : double.infinity),
-          child: trailing,
-        );
-
-  Widget _tile(BuildContext context, double width) {
     final theme = EveryTheme.of(context);
-    final trailing = _cappedTrailing(width);
-    switch (theme.design) {
-      case DesignLanguage.fluent:
-        return f.ListTile.selectable(
-          leading: leading,
-          title: title,
-          subtitle: subtitle,
-          trailing: trailing,
-          selected: selected,
-          onPressed: onTap,
-        );
-      case DesignLanguage.material || DesignLanguage.adwaita:
-        return onMaterial(
-          context,
-          m.ListTile(
-            leading: leading,
-            title: title,
-            subtitle: subtitle,
-            trailing: trailing,
-            selected: selected,
-            dense: dense,
-            onTap: onTap,
-            shape: m.RoundedRectangleBorder(borderRadius: BorderRadius.circular(theme.radius)),
-          ),
-        );
-      case DesignLanguage.cupertino || DesignLanguage.macos:
-        // Apple lists: a rounded highlight for the selection, and secondary text in the label color.
-        final highlight = selected ? theme.accent.withValues(alpha: theme.isDark ? 0.22 : 0.14) : null;
-        return _PressableRow(
-          onTap: onTap,
-          highlight: highlight,
-          radius: theme.radius,
-          padding: EdgeInsets.symmetric(horizontal: 10, vertical: dense ? 6 : 10),
-          child: Builder(
-            builder: (context) => Row(
-              children: [
-                if (leading != null) ...[leading!, const SizedBox(width: 10)],
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      DefaultTextStyle.merge(
-                        style: (theme.design == DesignLanguage.macos ? theme.type.callout : theme.type.body).tint(
-                          theme.text,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        child: title,
-                      ),
-                      if (subtitle != null)
-                        DefaultTextStyle.merge(
-                          style: (theme.design == DesignLanguage.macos ? theme.type.footnote : theme.type.caption).tint(
-                            theme.textMuted,
-                          ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          child: subtitle!,
-                        ),
-                    ],
-                  ),
+    final touch = Host.isMobile;
+    // A wide trailing widget (a value, a picker) never takes the title's room: at most 55% of the row.
+    return LayoutBuilder(
+      builder: (context, box) => MenuRow(
+        onTap: onTap,
+        selected: selected,
+        touch: touch && !dense,
+        leading: leading,
+        padding: EdgeInsets.symmetric(horizontal: 12, vertical: dense ? 6 : (touch ? 10 : 8)),
+        trailing: trailing == null
+            ? null
+            : ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: box.maxWidth.isFinite ? box.maxWidth * 0.55 : double.infinity),
+                child: DefaultTextStyle.merge(style: theme.type.callout.tint(theme.textSubtle), child: trailing!),
+              ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            DefaultTextStyle.merge(maxLines: 1, overflow: TextOverflow.ellipsis, child: title),
+            if (subtitle != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 1),
+                child: DefaultTextStyle.merge(
+                  style: theme.type.caption.tint(theme.textSubtle),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  child: subtitle!,
                 ),
-                if (trailing != null) ...[const SizedBox(width: 8), trailing],
-              ],
-            ),
-          ),
-        );
-    }
-  }
-}
-
-class _PressableRow extends StatefulWidget {
-  const _PressableRow({
-    required this.child,
-    required this.onTap,
-    required this.highlight,
-    required this.radius,
-    required this.padding,
-  });
-
-  final Widget child;
-  final VoidCallback? onTap;
-  final Color? highlight;
-  final double radius;
-  final EdgeInsets padding;
-
-  @override
-  State<_PressableRow> createState() => _PressableRowState();
-}
-
-class _PressableRowState extends State<_PressableRow> {
-  bool _hover = false;
-  bool _down = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    final overlay = _down
-        ? theme.text.withValues(alpha: 0.10)
-        : _hover
-        ? theme.text.withValues(alpha: 0.05)
-        : null;
-    return MouseRegion(
-      cursor: widget.onTap == null ? MouseCursor.defer : SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTapDown: (_) => setState(() => _down = true),
-        onTapCancel: () => setState(() => _down = false),
-        onTapUp: (_) => setState(() => _down = false),
-        onTap: widget.onTap,
-        child: Semantics(
-          button: widget.onTap != null,
-          selected: widget.highlight != null,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 120),
-            padding: widget.padding,
-            decoration: BoxDecoration(
-              color: Color.alphaBlend(overlay ?? const Color(0x00000000), widget.highlight ?? const Color(0x00000000)),
-              borderRadius: BorderRadius.circular(widget.radius),
-            ),
-            child: widget.child,
-          ),
+              ),
+          ],
         ),
       ),
     );
@@ -547,20 +297,7 @@ class AdaptiveSectionHeader extends StatelessWidget {
   final String label;
 
   @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    final upper = theme.design == DesignLanguage.cupertino;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 16, 12, 6),
-      child: Text(
-        upper ? label.toUpperCase() : label,
-        style: (theme.design == DesignLanguage.macos ? theme.type.footnote : theme.type.caption).semibold.copyWith(
-          color: theme.textMuted,
-          letterSpacing: upper ? 0.4 : 0.1,
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => KitLabel(label, padding: const EdgeInsets.fromLTRB(12, 16, 12, 6));
 }
 
 /// A menu item for [AdaptiveMenuButton].
@@ -603,7 +340,7 @@ class AdaptiveMenuButton extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            for (final a in actions)
+            for (final (i, a) in actions.indexed)
               PopoverRow(
                 title: a.label,
                 destructive: a.destructive,
@@ -611,12 +348,12 @@ class AdaptiveMenuButton extends StatelessWidget {
                 leading: a.icon == null
                     ? null
                     : AdaptiveIcon(a.icon!, size: 16, color: a.destructive ? theme.danger : theme.textMuted),
-                trailing: a.checked ? Icon(EveryIcon.check.of(theme.design), size: 14, color: theme.accent) : null,
+                trailing: a.checked ? Icon(EveryIcon.check.data, size: 14, color: theme.accentText) : null,
                 onTap: () {
                   close();
                   a.onSelected();
                 },
-              ),
+              ).rowIn(i),
           ],
         ),
       ),
@@ -641,7 +378,7 @@ class MenuTrigger extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    final color = muted ? theme.textMuted : theme.accent;
+    final color = muted ? theme.textMuted : theme.text;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       child: Row(
@@ -657,14 +394,14 @@ class MenuTrigger extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 4),
-          Icon(EveryIcon.chevronUpDown.of(theme.design), size: 13, color: color),
+          Icon(EveryIcon.chevronDown.data, size: 13, color: theme.textSubtle),
         ],
       ),
     );
   }
 }
 
-/// Native confirmation dialog. Resolves to true when the user confirms.
+/// Confirmation dialog. Resolves to true when the user confirms.
 /// `detail` is shown in full below the message, in a scrolling box (for text
 /// the user is asked to approve, which must never be cut short).
 Future<bool> showAdaptiveConfirm(
@@ -675,83 +412,34 @@ Future<bool> showAdaptiveConfirm(
   bool destructive = false,
   String? detail,
 }) async {
-  final theme = EveryTheme.of(context);
-  Widget content({TextAlign align = TextAlign.start}) => detail == null
-      ? Text(message, textAlign: align)
-      : Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(message, textAlign: align),
-            const SizedBox(height: 10),
-            ConfirmDetail(detail),
-          ],
-        );
-  final Future<bool?> result = switch (theme.design) {
-    DesignLanguage.cupertino => c.showCupertinoDialog<bool>(
-      context: context,
-      builder: (ctx) => c.CupertinoAlertDialog(
-        title: Text(title),
-        content: content(),
-        actions: [
-          c.CupertinoDialogAction(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
-          c.CupertinoDialogAction(
-            isDestructiveAction: destructive,
-            isDefaultAction: !destructive,
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: Text(confirmLabel),
-          ),
+  final result = await showKitDialog<bool>(
+    context,
+    builder: (ctx) => KitDialog(
+      title: title,
+      body: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (message.isNotEmpty) Text(message),
+          if (detail != null) ...[const SizedBox(height: 10), ConfirmDetail(detail)],
         ],
       ),
-    ),
-    DesignLanguage.macos => mac.showMacosAlertDialog<bool>(
-      context: context,
-      builder: (ctx) => mac.MacosAlertDialog(
-        appIcon: AdaptiveIcon(destructive ? EveryIcon.delete : EveryIcon.spark, size: 40, color: theme.accent),
-        title: Text(title),
-        message: content(align: TextAlign.center),
-        primaryButton: mac.PushButton(
-          controlSize: mac.ControlSize.large,
-          color: destructive ? theme.danger : null,
-          onPressed: () => Navigator.of(ctx).pop(true),
-          child: Text(confirmLabel),
-        ),
-        secondaryButton: mac.PushButton(
-          controlSize: mac.ControlSize.large,
-          secondary: true,
+      actions: [
+        KitButton(
+          label: 'Cancel',
+          style: KitButtonStyle.ghost,
+          shortcut: 'esc',
           onPressed: () => Navigator.of(ctx).pop(false),
-          child: const Text('Cancel'),
         ),
-      ),
+        KitButton(
+          label: confirmLabel,
+          style: destructive ? KitButtonStyle.danger : KitButtonStyle.primary,
+          onPressed: () => Navigator.of(ctx).pop(true),
+        ),
+      ],
     ),
-    DesignLanguage.fluent => f.showDialog<bool>(
-      context: context,
-      builder: (ctx) => f.ContentDialog(
-        title: Text(title),
-        content: content(),
-        actions: [
-          f.FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: Text(confirmLabel)),
-          f.Button(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
-        ],
-      ),
-    ),
-    DesignLanguage.material || DesignLanguage.adwaita => m.showDialog<bool>(
-      context: context,
-      builder: (ctx) => m.AlertDialog(
-        title: Text(title),
-        content: content(),
-        actions: [
-          m.TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
-          m.FilledButton(
-            style: destructive ? m.FilledButton.styleFrom(backgroundColor: theme.danger) : null,
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: Text(confirmLabel),
-          ),
-        ],
-      ),
-    ),
-  };
-  return await result ?? false;
+  );
+  return result ?? false;
 }
 
 /// The full text a confirmation asks about, in a scrolling box.
@@ -790,77 +478,97 @@ Future<String?> showAdaptivePrompt(
   bool obscureText = false,
   String? placeholder,
 }) async {
-  final theme = EveryTheme.of(context);
   // The field owns its controller, so it outlives the dialog's closing animation.
   var text = initialValue;
-  Widget field(BuildContext ctx) => Padding(
-    padding: const EdgeInsets.only(top: 12),
-    child: _PromptField(
-      initialValue: initialValue,
-      obscureText: obscureText,
-      placeholder: placeholder,
-      onChanged: (v) => text = v,
-      onSubmitted: (value) => Navigator.of(ctx).pop(value),
+  return showKitDialog<String>(
+    context,
+    builder: (ctx) => KitDialog(
+      title: title,
+      body: _PromptField(
+        initialValue: initialValue,
+        obscureText: obscureText,
+        placeholder: placeholder,
+        onChanged: (v) => text = v,
+        onSubmitted: (value) => Navigator.of(ctx).pop(value),
+      ),
+      actions: [
+        KitButton(label: 'Cancel', style: KitButtonStyle.ghost, onPressed: () => Navigator.of(ctx).pop()),
+        KitButton(label: confirmLabel, onPressed: () => Navigator.of(ctx).pop(text)),
+      ],
     ),
   );
-  void cancel(BuildContext ctx) => Navigator.of(ctx).pop();
-  void confirm(BuildContext ctx) => Navigator.of(ctx).pop(text);
+}
 
-  final Future<String?> result = switch (theme.design) {
-    DesignLanguage.cupertino => c.showCupertinoDialog<String>(
-      context: context,
-      builder: (ctx) => c.CupertinoAlertDialog(
-        title: Text(title),
-        content: field(ctx),
-        actions: [
-          c.CupertinoDialogAction(onPressed: () => cancel(ctx), child: const Text('Cancel')),
-          c.CupertinoDialogAction(isDefaultAction: true, onPressed: () => confirm(ctx), child: Text(confirmLabel)),
-        ],
-      ),
-    ),
-    DesignLanguage.macos => mac.showMacosAlertDialog<String>(
-      context: context,
-      builder: (ctx) => mac.MacosAlertDialog(
-        appIcon: AdaptiveIcon(EveryIcon.edit, size: 40, color: theme.accent),
-        title: Text(title),
-        message: field(ctx),
-        primaryButton: mac.PushButton(
-          controlSize: mac.ControlSize.large,
-          onPressed: () => confirm(ctx),
-          child: Text(confirmLabel),
+/// Opens [builder] as a centred modal: scrim fades, the panel grows from 0.95
+/// with an ease-out (200ms) and leaves 20% faster.
+Future<T?> showKitDialog<T>(BuildContext context, {required WidgetBuilder builder, bool dismissible = true}) {
+  final theme = EveryTheme.of(context);
+  return showGeneralDialog<T>(
+    context: context,
+    barrierDismissible: dismissible,
+    barrierLabel: 'Dismiss',
+    barrierColor: theme.scrim,
+    transitionDuration: Motion.popIn,
+    pageBuilder: (ctx, _, _) => EveryThemeScope(theme: theme, child: builder(ctx)),
+    transitionBuilder: (ctx, animation, _, child) {
+      final curved = CurvedAnimation(parent: animation, curve: Motion.easeOut, reverseCurve: Motion.easeExit);
+      return FadeTransition(
+        opacity: curved,
+        child: ScaleTransition(
+          scale: Tween(begin: Motion.popoverStartScale, end: 1.0).animate(curved),
+          child: child,
         ),
-        secondaryButton: mac.PushButton(
-          controlSize: mac.ControlSize.large,
-          secondary: true,
-          onPressed: () => cancel(ctx),
-          child: const Text('Cancel'),
+      );
+    },
+  );
+}
+
+/// The kit's modal panel: a title, a body and right-aligned actions.
+class KitDialog extends StatelessWidget {
+  const KitDialog({super.key, required this.title, required this.body, this.actions = const [], this.width = 420});
+
+  final String title;
+  final Widget body;
+  final List<Widget> actions;
+  final double width;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: width),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(20, 18, 16, 14),
+            decoration: BoxDecoration(
+              color: theme.overlay,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: theme.borderStrong),
+              boxShadow: theme.shadowPop,
+            ),
+            child: DefaultTextStyle(
+              style: theme.type.callout.tint(theme.textMuted),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(title, style: theme.type.headline.tint(theme.text)),
+                  const SizedBox(height: 8),
+                  Flexible(child: SingleChildScrollView(child: body)),
+                  if (actions.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    Wrap(alignment: WrapAlignment.end, spacing: 6, runSpacing: 6, children: actions),
+                  ],
+                ],
+              ),
+            ),
+          ),
         ),
       ),
-    ),
-    DesignLanguage.fluent => f.showDialog<String>(
-      context: context,
-      builder: (ctx) => f.ContentDialog(
-        title: Text(title),
-        content: field(ctx),
-        actions: [
-          f.FilledButton(onPressed: () => confirm(ctx), child: Text(confirmLabel)),
-          f.Button(onPressed: () => cancel(ctx), child: const Text('Cancel')),
-        ],
-      ),
-    ),
-    DesignLanguage.material || DesignLanguage.adwaita => m.showDialog<String>(
-      context: context,
-      builder: (ctx) => m.AlertDialog(
-        title: Text(title),
-        content: field(ctx),
-        actions: [
-          m.TextButton(onPressed: () => cancel(ctx), child: const Text('Cancel')),
-          m.FilledButton(onPressed: () => confirm(ctx), child: Text(confirmLabel)),
-        ],
-      ),
-    ),
-  };
-  return result;
+    );
+  }
 }
 
 class _PromptField extends StatefulWidget {
@@ -904,42 +612,77 @@ class _PromptFieldState extends State<_PromptField> {
   );
 }
 
-/// Transient message: toast-style on desktop, snack bar on Material pages.
+/// Transient message: a pill near the bottom that settles in, stays 1.7s and
+/// fades out. Its lifetime runs on a ticker, so it goes with the tree.
 void showAdaptiveToast(BuildContext context, String message) {
   final theme = EveryTheme.of(context);
-  // A snack bar needs a Scaffold under the caller; dialogs (Settings) have
-  // none, so they get the overlay toast, which shows above them.
-  if ((theme.design == DesignLanguage.material || theme.design == DesignLanguage.adwaita) &&
-      m.Scaffold.maybeOf(context) != null) {
-    m.ScaffoldMessenger.maybeOf(context)?.showSnackBar(m.SnackBar(content: Text(message)));
-    return;
-  }
-  final overlay = Overlay.maybeOf(context);
+  final overlay = Overlay.maybeOf(context, rootOverlay: true);
   if (overlay == null) return;
+  final bottom = 32 + MediaQuery.paddingOf(context).bottom;
   late final OverlayEntry entry;
   entry = OverlayEntry(
-    builder: (_) => Positioned(
-      left: 0,
-      right: 0,
-      bottom: 32 + MediaQuery.paddingOf(context).bottom,
-      child: IgnorePointer(
-        child: Center(
-          // The overlay may sit above the app's theme scope.
-          child: EveryThemeScope(
-            theme: theme,
-            child: GlassSurface(
-              level: GlassLevel.thick,
-              radius: 999,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              child: Text(message, style: theme.type.body.tint(theme.text)),
-            ),
-          ),
-        ),
-      ),
+    builder: (_) => EveryThemeScope(
+      theme: theme,
+      child: _Toast(message: message, bottom: bottom, onDone: () => entry.remove()),
     ),
   );
   overlay.insert(entry);
-  Future<void>.delayed(const Duration(seconds: 2), entry.remove);
+}
+
+class _Toast extends StatefulWidget {
+  const _Toast({required this.message, required this.bottom, required this.onDone});
+  final String message;
+  final double bottom;
+  final VoidCallback onDone;
+
+  @override
+  State<_Toast> createState() => _ToastState();
+}
+
+class _ToastState extends State<_Toast> with SingleTickerProviderStateMixin {
+  static const _stay = Duration(milliseconds: 1700);
+  late final _c = AnimationController(vsync: this, duration: _stay + Motion.popOut)
+    ..forward().whenCompleteOrCancel(() {
+      if (mounted) widget.onDone();
+    });
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final total = (_stay + Motion.popOut).inMicroseconds;
+    final fade = CurvedAnimation(
+      parent: _c,
+      curve: Interval(_stay.inMicroseconds / total, 1, curve: Motion.easeExit),
+    );
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: widget.bottom,
+      child: IgnorePointer(
+        child: Center(
+          child: FadeTransition(
+            opacity: ReverseAnimation(fade),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: theme.overlay,
+                borderRadius: BorderRadius.circular(99),
+                border: Border.all(color: theme.borderStrong),
+                boxShadow: theme.shadowPop,
+              ),
+              child: Text(widget.message, style: theme.type.callout.tint(theme.text)),
+            ).settle(),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// The brand kit's glass levels.
@@ -997,47 +740,20 @@ class GlassSurface extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final r = BorderRadius.circular(radius ?? theme.radius);
-    return ClipRRect(
-      borderRadius: r,
-      child: BackdropFilter(
-        filter: ImageFilter.compose(
-          outer: ColorFilter.matrix(_saturation(level.saturate)),
-          inner: ImageFilter.blur(sigmaX: level.blur / 2, sigmaY: level.blur / 2),
-        ),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            borderRadius: r,
-            // Solid surfaces under the tint keep text legible over busy backdrops.
-            color: Color.alphaBlend(level.tint(theme), theme.surface.withValues(alpha: theme.isDark ? 0.5 : 0.0)),
-            border: Border.all(color: level.border(theme), width: 0.8),
-          ),
-          position: DecorationPosition.background,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              borderRadius: r,
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                stops: const [0, 0.04, 0.04],
-                colors: [level.highlight(theme), level.highlight(theme).withValues(alpha: 0), const Color(0x00FFFFFF)],
-              ),
-            ),
-            child: Padding(padding: padding ?? EdgeInsets.zero, child: child),
-          ),
-        ),
+    // The kit uses solid surfaces: overlays for popovers, raised for chrome.
+    final color = level == GlassLevel.thick ? theme.overlay : theme.surfaceRaised;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: r,
+        border: Border.all(color: level == GlassLevel.thick ? theme.borderStrong : theme.border),
+        boxShadow: level == GlassLevel.thick ? theme.shadowPop : null,
+      ),
+      child: ClipRRect(
+        borderRadius: r,
+        child: Padding(padding: padding ?? EdgeInsets.zero, child: child),
       ),
     );
-  }
-
-  static List<double> _saturation(double s) {
-    const r = 0.2126, g = 0.7152, b = 0.0722;
-    final i = 1 - s;
-    return [
-      i * r + s, i * g, i * b, 0, 0, //
-      i * r, i * g + s, i * b, 0, 0,
-      i * r, i * g, i * b + s, 0, 0,
-      0, 0, 0, 1, 0,
-    ];
   }
 }
 
@@ -1045,3 +761,63 @@ class GlassSurface extends StatelessWidget {
 /// one, so it works in any parent instead of throwing "No Material widget found".
 Widget onMaterial(BuildContext context, Widget child) =>
     m.Material.maybeOf(context) != null ? child : m.Material(type: m.MaterialType.transparency, child: child);
+
+/// A widget that sits in a [KitGroupedList] card like a row when [groupsInCard] says so (a wrapper such as a
+/// Settings anchor around a list tile).
+abstract interface class KitRowLike {
+  bool get groupsInCard;
+}
+
+/// Whether [w] is a settings-style row that belongs on a card.
+bool kitIsRow(Widget w) => w is AdaptiveListTile || w is MenuRow || (w is KitRowLike && (w as KitRowLike).groupsInCard);
+
+/// A scrolling settings page from a flat list of children: runs of rows (list tiles, or wrappers of them) go
+/// together on one [KitGroup] card, an [AdaptiveSectionHeader] becomes the label of the card after it, and anything
+/// else (an editor, a note, a chart) stands on its own between the cards.
+class KitGroupedList extends StatelessWidget {
+  const KitGroupedList({super.key, required this.children, this.padding = const EdgeInsets.fromLTRB(20, 4, 20, 28)});
+
+  final List<Widget> children;
+  final EdgeInsetsGeometry padding;
+
+  /// [children] folded into cards.
+  static List<Widget> fold(List<Widget> children) {
+    final out = <Widget>[];
+    String? label;
+    var run = <Widget>[];
+    void flush() {
+      if (run.isNotEmpty) {
+        out.add(KitGroup(label: label, children: run));
+      } else if (label case final l?) {
+        out.add(KitLabel(l, padding: const EdgeInsets.fromLTRB(8, 0, 8, 8)));
+      }
+      run = [];
+      label = null;
+    }
+
+    for (final c in children) {
+      if (c is AdaptiveSectionHeader) {
+        flush();
+        label = c.label;
+      } else if (kitIsRow(c)) {
+        run.add(c);
+      } else if (c is SizedBox && c.child == null) {
+        // Spacers between rows don't break a card.
+        if (run.isEmpty) out.add(c);
+      } else {
+        if (run.isNotEmpty) {
+          flush();
+        } else if (label case final l?) {
+          out.add(KitLabel(l, padding: const EdgeInsets.fromLTRB(8, 0, 8, 8)));
+          label = null;
+        }
+        out.add(Padding(padding: const EdgeInsets.only(bottom: 14), child: c));
+      }
+    }
+    flush();
+    return out;
+  }
+
+  @override
+  Widget build(BuildContext context) => ListView(padding: padding, children: fold(children));
+}

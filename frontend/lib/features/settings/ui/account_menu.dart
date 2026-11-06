@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/motion/motion.dart';
 import '../../../core/platform/platform_kind.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
@@ -47,9 +48,16 @@ class AccountAvatar extends StatelessWidget {
     return Container(
       width: size,
       height: size,
-      decoration: BoxDecoration(color: theme.accent.withValues(alpha: 0.25), shape: BoxShape.circle),
+      decoration: BoxDecoration(color: theme.userBubble, shape: BoxShape.circle),
       child: Center(
-        child: Text(name.isEmpty ? '?' : name[0].toUpperCase(), style: theme.type.callout.semibold.tint(theme.text)),
+        child: Text(
+          name.isEmpty ? '?' : name[0].toUpperCase(),
+          style: theme.type.caption.copyWith(
+            fontSize: size * 0.43,
+            fontWeight: FontWeight.w600,
+            color: theme.onUserBubble,
+          ),
+        ),
       ),
     );
   }
@@ -67,10 +75,14 @@ class AccountRow extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = EveryTheme.of(context);
     final (name, plan) = accountSummary(ref.watch(authProvider), ref.watch(profileProvider).value);
-    final avatar = AccountAvatar(name: name);
-    final trigger = Container(
-      padding: const EdgeInsets.all(6),
-      decoration: BoxDecoration(borderRadius: BorderRadius.circular(10)),
+    final avatar = AccountAvatar(name: name, size: Host.isMobile ? 32 : 28);
+    final trigger = Pressable(
+      builder: (context, st, child) => AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        padding: const EdgeInsets.fromLTRB(6, 5, 8, 5),
+        decoration: BoxDecoration(color: st.hovered ? theme.hover : null, borderRadius: BorderRadius.circular(10)),
+        child: child,
+      ),
       child: collapsed
           ? Center(child: avatar)
           : Row(
@@ -86,20 +98,18 @@ class AccountRow extends ConsumerWidget {
                         name,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: theme.type.body.semibold.tint(theme.text),
+                        style: theme.type.callout.medium.copyWith(height: 1.25).tint(theme.text),
                       ),
                       if (plan.isNotEmpty)
                         Text(
                           plan,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: theme.type.caption.tint(theme.textMuted),
+                          style: theme.type.caption.copyWith(height: 1.25).tint(theme.textSubtle),
                         ),
                     ],
                   ),
                 ),
-                const SizedBox(width: 4),
-                AdaptiveIcon(EveryIcon.chevronDown, size: 11, color: theme.textMuted),
               ],
             ),
     );
@@ -117,7 +127,7 @@ class AccountRow extends ConsumerWidget {
     return SafeArea(
       top: false,
       child: Padding(
-        padding: const EdgeInsets.all(8),
+        padding: const EdgeInsets.fromLTRB(8, 6, 8, 10),
         child: collapsed
             ? menu
             : Row(
@@ -126,11 +136,10 @@ class AccountRow extends ConsumerWidget {
                     child: Align(alignment: Alignment.centerLeft, child: menu),
                   ),
                   AdaptiveIconButton(
-                    key: const ValueKey('account.devices'),
-                    icon: EveryIcon.devices,
-                    tooltip: 'Remote devices',
-                    size: 16,
-                    onPressed: () => showSettings(context, section: SettingsSection.remote),
+                    key: const ValueKey('account.settings'),
+                    icon: EveryIcon.settings,
+                    tooltip: 'Settings',
+                    onPressed: () => showSettings(context),
                   ),
                 ],
               ),

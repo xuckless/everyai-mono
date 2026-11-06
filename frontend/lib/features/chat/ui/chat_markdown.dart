@@ -72,8 +72,8 @@ class ChatMarkdown extends StatelessWidget {
   static MarkdownStyle _styleFor(EveryTheme t, TextStyle ambient, Color? textColor) {
     final base = MarkdownStyle.fallback(t.brightness);
     // Reading text is the scale's body; on desktop one point up, since answers are long-form.
-    final size = t.type.body.fontSize! + (Host.isDesktop ? 1 : 0);
-    final body = ambient.merge(t.type.body).copyWith(color: textColor ?? t.text, fontSize: size, height: 1.55);
+    final size = t.type.body.fontSize! + (Host.isDesktop ? 0.5 : 0);
+    final body = ambient.merge(t.type.body).copyWith(color: textColor ?? t.text, fontSize: size, height: 1.65);
     TextStyle heading(double scale) => body.semibold.copyWith(fontSize: size * scale, height: 1.3);
     final mono = body.mono.copyWith(fontSize: size - 1.5, height: 1.5);
     return base.copyWith(
@@ -84,8 +84,10 @@ class ChatMarkdown extends StatelessWidget {
       h4: heading(1),
       h5: heading(0.93),
       h6: heading(0.87),
-      // Text color comes from the package's chip palette (warm on dark, plum on light).
-      inlineCode: base.inlineCode.mono.copyWith(fontSize: size - 2),
+      // The kit's inline code: violet text on a faint violet fill, no outline.
+      inlineCode: base.inlineCode.mono.copyWith(fontSize: size - 2, color: t.accentText),
+      inlineCodeBackground: t.accentBg,
+      inlineCodeBorder: const Color(0x00000000),
       codeBlock: mono,
       blockquote: body.copyWith(color: t.textMuted),
       // Underline on hover only (handled by the renderer).

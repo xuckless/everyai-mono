@@ -30,7 +30,8 @@ import 'layout_host.dart';
 
 const widths = [1000.0, 520.0, 300.0];
 const textScales = [1.0, 1.6];
-const languages = [DesignLanguage.cupertino, DesignLanguage.macos, DesignLanguage.material, DesignLanguage.fluent];
+// One EveryAI look on every platform since the 2026-11 overhaul.
+const languages = [DesignLanguage.material];
 
 /// A word with no break point, a path, a sentence: what real agents and users send.
 const word = 'supercalifragilisticexpialidocious_with_no_breaks_at_all_anywhere_in_it';

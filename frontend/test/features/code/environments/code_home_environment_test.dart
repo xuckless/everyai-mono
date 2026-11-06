@@ -21,7 +21,7 @@ import 'package:http/testing.dart';
 import '../../../layout/layout_host.dart';
 import 'env_fakes.dart';
 
-// The new-session page: "Runs in" sits next to the project picker and changes the project.
+// The new-session page: where it runs is a part of the line under the box and changes the project.
 
 void main() {
   testWidgets('the Runs in chip shows the project\'s environment and picking one updates the project', (tester) async {
@@ -54,7 +54,6 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Runs in'), findsOneWidget);
     expect(find.text('This computer'), findsOneWidget);
 
     await tester.tap(find.text('This computer'));

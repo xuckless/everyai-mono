@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/core/theme/every_theme.dart';
+import 'package:every_ai/core/ui/kit.dart';
 import 'package:every_ai/features/code/code_providers.dart' show codeProjectsProvider;
 import 'package:every_ai/features/code/drivers/lead_skills.dart';
 import 'package:every_ai/features/skills/ui/lead_skills_section.dart';
@@ -77,8 +78,8 @@ void main() {
     expect(container.read(codeProjectsProvider), hasLength(2));
     expect(find.text('pdf'), findsOneWidget);
     expect(find.text('review'), findsOneWidget);
-    final switches = find.byType(m.Switch);
-    expect(tester.widgetList<m.Switch>(switches).map((s) => s.value), [false, true]);
+    final switches = find.byType(KitSwitch);
+    expect(tester.widgetList<KitSwitch>(switches).map((s) => s.value), [false, true]);
     await tester.tap(switches.last);
     await tester.pumpAndSettle();
     expect(leadSkillsOff(prefs, 'p1', 'claude-code'), {'pdf', 'review'});
@@ -118,8 +119,8 @@ void main() {
       ),
     );
     expect(find.text('Beta'), findsOneWidget);
-    expect(tester.widgetList<m.Switch>(find.byType(m.Switch)).map((s) => s.value), [false, true]);
-    await tester.tap(find.byType(m.Switch).first);
+    expect(tester.widgetList<KitSwitch>(find.byType(KitSwitch)).map((s) => s.value), [false, true]);
+    await tester.tap(find.byType(KitSwitch).first);
     await tester.pumpAndSettle();
     expect(leadSkillsOff(prefs, 'p2', 'claude-code'), isEmpty);
   });

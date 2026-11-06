@@ -159,14 +159,14 @@ void main() {
     desktopTest('Pinned shows only with a pinned session, above Recents', (tester) async {
       await show(tester, [_s('a'), _s('b', pinned: true)]);
       expect(find.text('Pinned'), findsOneWidget);
-      expect(find.text('Recents'), findsOneWidget);
+      expect(find.text('Recent'), findsOneWidget);
       expect(tester.getTopLeft(find.text('Session b')).dy, lessThan(tester.getTopLeft(find.text('Session a')).dy));
     });
 
     desktopTest('without pins there is no Pinned or Recents label', (tester) async {
       await show(tester, [_s('a')]);
       expect(find.text('Pinned'), findsNothing);
-      expect(find.text('Recents'), findsNothing);
+      expect(find.text('Recent'), findsNothing);
       expect(find.text('Session a'), findsOneWidget);
     });
 

@@ -1,6 +1,7 @@
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+import '../../../core/motion/motion.dart';
 import '../../../core/platform/platform_kind.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
@@ -67,6 +68,9 @@ class _QuestionCardState extends State<QuestionCard> {
   late final List<FocusNode> _otherFocus = [for (final _ in widget.questions) FocusNode()];
   final _focus = FocusNode(debugLabel: 'question card');
   int _page = 0;
+
+  /// The way the last page change went: +1 forward, -1 back (the next pane slides in from that side).
+  int _dir = 1;
   bool _sent = false;
   final _files = <Attachment>[];
 
@@ -101,7 +105,12 @@ class _QuestionCardState extends State<QuestionCard> {
     // Single choice moves on to the next unanswered question.
     if (!question.multiSelect && q == _page && _page < _questions.length - 1) {
       Future.delayed(const Duration(milliseconds: 180), () {
-        if (mounted && _page == q) setState(() => _page++);
+        if (mounted && _page == q) {
+          setState(() {
+            _dir = 1;
+            _page++;
+          });
+        }
       });
     }
   }
@@ -113,8 +122,11 @@ class _QuestionCardState extends State<QuestionCard> {
   }
 
   void _go(int page) {
-    if (page < 0 || page >= _questions.length) return;
-    setState(() => _page = page);
+    if (page < 0 || page >= _questions.length || page == _page) return;
+    setState(() {
+      _dir = page > _page ? 1 : -1;
+      _page = page;
+    });
   }
 
   /// ↩: next question, or submit on the last one.
@@ -206,13 +218,21 @@ class _QuestionCardState extends State<QuestionCard> {
     ];
     final last = page == questions.length - 1;
 
+    final reduced = Motion.reduced(context);
+    final footnote = !enabled && !_sent
+        ? widget.closedLabel
+        : missing.isEmpty
+        ? ''
+        : _paged && last
+        ? '${missing.length} left'
+        : '';
     return Container(
+      clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
         color: theme.surfaceRaised,
-        border: Border.all(color: theme.accent.withValues(alpha: enabled ? 0.5 : 0.2)),
+        border: Border.all(color: theme.border),
         borderRadius: BorderRadius.circular(EveryTheme.cardRadius),
       ),
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
       child: CallbackShortcuts(
         bindings: _shortcuts,
         child: Focus(
@@ -220,99 +240,141 @@ class _QuestionCardState extends State<QuestionCard> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Row(
-                children: [
-                  AdaptiveIcon(EveryIcon.quiz, size: 15, color: theme.accent),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      questions.length == 1 ? 'A question for you' : '${questions.length} questions for you',
-                      style: theme.type.callout.semibold.tint(theme.text),
-                    ),
-                  ),
-                  if (_paged)
-                    Text('${page + 1} of ${questions.length}', style: theme.type.caption.tint(theme.textMuted)),
-                ],
-              ),
               if (_paged) ...[
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: [
-                    for (final (i, q) in questions.indexed)
-                      _QuestionTab(
-                        label: q.header.isNotEmpty ? q.header : 'Q${i + 1}',
-                        current: i == page,
-                        done: !_answers[i].isEmpty,
-                        onTap: () => _go(i),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 6, 14, 0),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        // Many questions scroll sideways rather than squeezing the tabs.
+                        child: SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: KitTabs<int>(
+                            key: const ValueKey('question.tabs'),
+                            values: [for (var i = 0; i < questions.length; i++) i],
+                            selected: page,
+                            onSelected: _go,
+                            label: (i) => questions[i].header.isNotEmpty ? questions[i].header : 'Q${i + 1}',
+                            leading: (i) => StateSwap(
+                              child: _answers[i].isEmpty
+                                  ? StatusDot(
+                                      i == page ? DotStatus.running : DotStatus.idle,
+                                      key: const ValueKey('todo'),
+                                      size: 6,
+                                    )
+                                  : AdaptiveIcon(
+                                      EveryIcon.check,
+                                      key: const ValueKey('done'),
+                                      size: 12,
+                                      color: theme.success,
+                                    ),
+                            ),
+                          ),
+                        ),
                       ),
-                  ],
+                      const SizedBox(width: 8),
+                      Text('${page + 1} of ${questions.length}', style: theme.type.caption.tint(theme.textSubtle)),
+                    ],
+                  ),
                 ),
+                Container(height: 1, color: theme.border),
               ],
-              const SizedBox(height: 12),
               ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 440),
+                constraints: const BoxConstraints(maxHeight: 460),
                 child: SingleChildScrollView(
-                  child: _QuestionPage(
-                    key: ValueKey(page),
-                    question: questions[page],
-                    showHeader: !_paged,
-                    answer: _answers[page],
-                    other: _other[page],
-                    otherFocus: _otherFocus[page],
-                    enabled: enabled,
-                    onPick: (oi) => _pick(page, oi),
-                    onOther: (t) => _typeOther(page, t),
-                    onOtherSubmitted: _advance,
-                    onAttach: widget.onSubmitWithFiles == null ? null : _attach,
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
+                  child: AnimatedSwitcher(
+                    duration: reduced ? Duration.zero : Motion.move,
+                    switchInCurve: Motion.easeInOut,
+                    switchOutCurve: Motion.easeInOut,
+                    layoutBuilder: (current, previous) => Stack(
+                      alignment: Alignment.topCenter,
+                      children: [
+                        ...previous.map((w) => Positioned(left: 0, right: 0, top: 0, child: w)),
+                        ?current,
+                      ],
+                    ),
+                    transitionBuilder: (child, animation) {
+                      // The new pane comes in from the side it lies on; the old one leaves the other way.
+                      final incoming = child.key == ValueKey(page);
+                      final dx = (incoming ? 18.0 : -18.0) * _dir;
+                      return FadeTransition(
+                        opacity: animation,
+                        child: AnimatedBuilder(
+                          animation: animation,
+                          builder: (context, c) =>
+                              Transform.translate(offset: Offset(dx * (1 - animation.value), 0), child: c),
+                          child: child,
+                        ),
+                      );
+                    },
+                    child: _QuestionPage(
+                      key: ValueKey(page),
+                      question: questions[page],
+                      showHeader: !_paged,
+                      answer: _answers[page],
+                      other: _other[page],
+                      otherFocus: _otherFocus[page],
+                      enabled: enabled,
+                      onPick: (oi) => _pick(page, oi),
+                      onOther: (t) => _typeOther(page, t),
+                      onOtherSubmitted: _advance,
+                      onAttach: widget.onSubmitWithFiles == null ? null : _attach,
+                    ),
                   ),
                 ),
               ),
-              if (_files.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                AttachmentTray(
-                  attachments: _files,
-                  model: widget.model,
-                  onRemove: (a) => setState(() => _files.remove(a)),
-                ),
-              ],
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      !enabled && !_sent
-                          ? widget.closedLabel
-                          : missing.isEmpty
-                          ? '${Host.enterKeys(command: true)} to submit'
-                          : _paged
-                          ? 'Still to answer: ${missing.join(', ')}'
-                          : 'Pick an answer to continue',
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.type.caption.tint(theme.textMuted),
-                    ),
+              if (_files.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                  child: AttachmentTray(
+                    attachments: _files,
+                    model: widget.model,
+                    onRemove: (a) => setState(() => _files.remove(a)),
                   ),
-                  if (_paged && page > 0) ...[
-                    AdaptiveButton(label: 'Back', emphasis: ButtonEmphasis.secondary, onPressed: () => _go(page - 1)),
-                    const SizedBox(width: 8),
+                ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+                child: Row(
+                  children: [
+                    if (_paged && page > 0)
+                      KitButton(
+                        key: const ValueKey('question.back'),
+                        label: 'Back',
+                        style: KitButtonStyle.ghost,
+                        onPressed: () => _go(page - 1),
+                      ),
+                    const Spacer(),
+                    if (footnote.isNotEmpty)
+                      Flexible(
+                        child: Padding(
+                          padding: const EdgeInsets.only(right: 10),
+                          child: Text(
+                            footnote,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.type.caption.tint(theme.textSubtle),
+                          ),
+                        ),
+                      ),
+                    if (_paged && !last)
+                      KitButton(
+                        key: const ValueKey('question.next'),
+                        label: 'Next',
+                        style: _complete ? KitButtonStyle.soft : KitButtonStyle.primary,
+                        onPressed: () => _go(page + 1),
+                      ),
+                    if (!_paged || last || _complete) ...[
+                      if (_paged && !last) const SizedBox(width: 6),
+                      KitButton(
+                        key: const ValueKey('question.submit'),
+                        label: questions.length == 1 ? 'Submit answer' : 'Submit answers',
+                        shortcut: Host.isDesktop ? Host.enterKeys(command: true) : null,
+                        onPressed: _complete && enabled && !_sent ? _submit : null,
+                      ),
+                    ],
                   ],
-                  if (_paged && !last)
-                    AdaptiveButton(
-                      label: 'Next',
-                      emphasis: _complete ? ButtonEmphasis.secondary : ButtonEmphasis.primary,
-                      onPressed: () => _go(page + 1),
-                    ),
-                  if (!_paged || last || _complete) ...[
-                    if (_paged && !last) const SizedBox(width: 8),
-                    AdaptiveButton(
-                      label: questions.length == 1 ? 'Submit answer' : 'Submit answers',
-                      busy: _sent,
-                      onPressed: _complete && enabled ? _submit : null,
-                    ),
-                  ],
-                ],
+                ),
               ),
             ],
           ),
@@ -356,17 +418,24 @@ class _QuestionPage extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if ((showHeader && q.header.isNotEmpty) || q.multiSelect) ...[
-          Row(
+        if (showHeader && q.header.isNotEmpty) ...[
+          Align(alignment: Alignment.centerLeft, child: _HeaderChip(q.header)),
+          const SizedBox(height: 8),
+        ],
+        Padding(
+          padding: const EdgeInsets.fromLTRB(2, 0, 2, 10),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (showHeader && q.header.isNotEmpty) ...[_HeaderChip(q.header), const SizedBox(width: 8)],
-              if (q.multiSelect) Text('Select all that apply', style: theme.type.caption.tint(theme.textMuted)),
+              Expanded(child: Text(q.question, style: theme.type.body.medium.tint(theme.text).copyWith(height: 1.35))),
+              const SizedBox(width: 10),
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text(q.multiSelect ? 'Pick any' : 'Pick one', style: theme.type.caption.tint(theme.textSubtle)),
+              ),
             ],
           ),
-          const SizedBox(height: 6),
-        ],
-        Text(q.question, style: theme.type.body.semibold.tint(theme.text).copyWith(height: 1.35)),
-        const SizedBox(height: 8),
+        ),
         for (final (oi, option) in q.options.indexed)
           _OptionRow(
             label: option.shownLabel,
@@ -403,58 +472,6 @@ class _HeaderChip extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
       decoration: BoxDecoration(color: theme.accent.withValues(alpha: 0.14), borderRadius: BorderRadius.circular(5)),
       child: Text(label, style: theme.type.footnote.medium.tint(theme.accent)),
-    );
-  }
-}
-
-/// A question's tab in a multi-question card: its header, a tick once answered.
-class _QuestionTab extends StatelessWidget {
-  const _QuestionTab({required this.label, required this.current, required this.done, required this.onTap});
-
-  final String label;
-  final bool current;
-  final bool done;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    return Semantics(
-      button: true,
-      selected: current,
-      label: '$label${done ? ', answered' : ''}',
-      excludeSemantics: true,
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        child: GestureDetector(
-          onTap: onTap,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 120),
-            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-            decoration: BoxDecoration(
-              color: current ? theme.accent.withValues(alpha: 0.16) : null,
-              border: Border.all(color: current ? theme.accent : theme.border),
-              borderRadius: BorderRadius.circular(7),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (done) ...[AdaptiveIcon(EveryIcon.check, size: 11, color: theme.accent), const SizedBox(width: 4)],
-                Flexible(
-                  child: Text(
-                    label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: (current ? theme.type.caption.semibold : theme.type.caption.medium).tint(
-                      current ? theme.accent : theme.text,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
     );
   }
 }
@@ -511,17 +528,18 @@ class _OptionRowState extends State<_OptionRow> {
         child: GestureDetector(
           onTap: widget.onTap,
           child: AnimatedContainer(
-            duration: const Duration(milliseconds: 120),
+            duration: const Duration(milliseconds: 200),
+            curve: Motion.easeInOut,
             margin: const EdgeInsets.only(bottom: 6),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             decoration: BoxDecoration(
               color: selected
                   ? theme.accent.withValues(alpha: 0.10)
                   : _hover && widget.onTap != null
-                  ? theme.text.withValues(alpha: 0.04)
+                  ? theme.hover
                   : null,
-              border: Border.all(color: selected ? theme.accent : theme.border),
-              borderRadius: BorderRadius.circular(9),
+              border: Border.all(color: selected ? theme.accent : theme.border, width: selected ? 1.5 : 1),
+              borderRadius: BorderRadius.circular(12),
             ),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -530,7 +548,7 @@ class _OptionRowState extends State<_OptionRow> {
                   padding: const EdgeInsets.only(top: 1),
                   child: ChoiceMark(multiple: widget.multiple, selected: selected),
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -542,23 +560,27 @@ class _OptionRowState extends State<_OptionRow> {
                             if (widget.recommended)
                               WidgetSpan(
                                 alignment: PlaceholderAlignment.middle,
-                                child: Padding(padding: const EdgeInsets.only(left: 6), child: _RecommendedTag()),
+                                child: Padding(padding: const EdgeInsets.only(left: 8), child: _RecommendedTag()),
                               ),
                           ],
                         ),
-                        style: theme.type.body.semibold.tint(theme.text),
+                        style: theme.type.body.medium.tint(theme.text),
                       ),
                       if (widget.description.isNotEmpty)
                         Padding(
-                          padding: const EdgeInsets.only(top: 2),
+                          padding: const EdgeInsets.only(top: 1),
                           child: Text(
                             widget.description,
-                            style: theme.type.callout.tint(theme.textMuted).copyWith(height: 1.3),
+                            style: theme.type.callout.tint(theme.textSubtle).copyWith(height: 1.35),
                           ),
                         ),
                     ],
                   ),
                 ),
+                if (widget.shortcut case final key? when Host.isDesktop) ...[
+                  const SizedBox(width: 10),
+                  Padding(padding: const EdgeInsets.only(top: 2), child: Kbd(key)),
+                ],
               ],
             ),
           ),
@@ -592,19 +614,24 @@ class _OtherRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    return Container(
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      curve: Motion.easeInOut,
       padding: const EdgeInsets.fromLTRB(12, 4, 8, 4),
       decoration: BoxDecoration(
         color: active ? theme.accent.withValues(alpha: 0.10) : null,
-        border: Border.all(color: active ? theme.accent : theme.border),
-        borderRadius: BorderRadius.circular(9),
+        border: Border.all(color: active ? theme.accent : theme.border, width: active ? 1.5 : 1),
+        borderRadius: BorderRadius.circular(12),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
             padding: const EdgeInsets.only(top: 9),
-            child: ChoiceMark(multiple: multiple, selected: active),
+            child: SizedBox(
+              width: 18,
+              child: AdaptiveIcon(EveryIcon.newChat, size: 14, color: active ? theme.accent : theme.textSubtle),
+            ),
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -613,7 +640,7 @@ class _OtherRow extends StatelessWidget {
               child: AdaptiveTextField(
                 controller: controller,
                 focusNode: focusNode,
-                placeholder: 'Other: type your own answer',
+                placeholder: 'Other',
                 borderless: true,
                 // Wraps and grows with a long answer; Enter still moves on (no newlines).
                 minLines: 1,

@@ -46,7 +46,8 @@ final class _Store implements SecretStore {
 /// Window sizes in logical pixels: wide desktop, medium, narrow (the panel overlays), phone, short.
 const sizes = [Size(1280, 800), Size(820, 600), Size(560, 720), Size(380, 420)];
 const textScales = [1.0, 1.6];
-const languages = [DesignLanguage.cupertino, DesignLanguage.macos, DesignLanguage.material, DesignLanguage.fluent];
+// One EveryAI look on every platform since the 2026-11 overhaul.
+const languages = [DesignLanguage.material];
 
 final screens = <String, Widget Function()>{
   'Models': () => const ModelsScreen(),
@@ -57,7 +58,7 @@ final screens = <String, Widget Function()>{
   'Code home': () => const CodeHome(),
   'Onboarding': () => const OnboardingScreen(desktop: true),
   'Settings modal': () => const SettingsModal(),
-  'Sidebar': () => Sidebar(location: '/chat/new', collapsed: false, onNavigate: (_) {}, onToggle: () {}),
+  'Sidebar': () => Sidebar(location: '/chat/new', onNavigate: (_) {}, onToggle: () {}),
   'Coming soon': () => const ComingSoonScreen(
     title: 'Something',
     icon: EveryIcon.info,

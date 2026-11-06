@@ -8,7 +8,7 @@ import 'driver.dart';
 
 /// The EveryAI harness as a driver: the agent loop in the app. It forwards
 /// to [inner] (`everyaiHarnessProvider`'s harness).
-final class EveryAIDriver implements HarnessDriver, ForksSessions, AttachesBriefed, AttachesWithMcp {
+final class EveryAIDriver implements HarnessDriver, ForksSessions, AttachesBriefed, AttachesWithMcp, ReadsRecentEvents {
   EveryAIDriver(this.inner);
 
   final Harness inner;
@@ -73,4 +73,8 @@ final class EveryAIDriver implements HarnessDriver, ForksSessions, AttachesBrief
 
   @override
   Future<Map<String, ExecutionStatus>> statuses(List<String> conversationIds) => inner.statuses(conversationIds);
+
+  @override
+  Future<List<HarnessEvent>> recentEvents(String conversationId) async =>
+      inner is ReadsRecentEvents ? (inner as ReadsRecentEvents).recentEvents(conversationId) : const [];
 }

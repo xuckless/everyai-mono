@@ -1,22 +1,10 @@
-import 'package:cupertino_ui/cupertino_ui.dart' as c;
-import 'package:fluent_ui/fluent_ui.dart' as f;
 import 'package:flutter/widgets.dart';
-import 'package:macos_ui/macos_ui.dart' as mac;
-import 'package:material_ui/material_ui.dart' as m;
 
 import '../../app/shell.dart';
 import '../platform/platform_kind.dart';
 import '../theme/every_theme.dart';
-import 'adaptive.dart';
+import 'kit.dart';
 import 'every_icons.dart';
-
-/// The width macos_ui's ToolBar keeps free for the traffic lights when no
-/// sidebar sits under them (our compact layout, where the sidebar is a drawer).
-const _macTrafficLights = 70.0;
-
-/// macos_ui ToolBar's horizontal padding plus the spacing NavigationToolbar
-/// puts on each side of the middle slot.
-const _macToolbarGutters = 8.0 * 2 + 8.0 * 2;
 
 /// Gives the [AdaptivePage]s below a back control when they don't set their
 /// own (Settings pages on narrow windows).
@@ -32,11 +20,8 @@ class PageBackScope extends InheritedWidget {
   bool updateShouldNotify(PageBackScope old) => onBack != old.onBack || tooltip != old.tooltip;
 }
 
-/// A top-level page with native chrome:
-/// - Cupertino: translucent navigation bar that content scrolls beneath (glass)
-/// - macOS: unified toolbar inside the window, sidebar toggle implied
-/// - Fluent: page header with a command row, on Mica
-/// - Material 3: top app bar; Adwaita: compact centered header bar
+/// A top-level page: a 52pt header (sidebar button when the sidebar is out of
+/// view, back, title, actions) over the body, inside the shell's panel.
 ///
 /// [body] starts below the bar on its own: no screen has to remember the bar's
 /// height. A body whose scroll view consumes `MediaQuery.padding` (a ListView
@@ -116,110 +101,63 @@ class AdaptivePage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    final shell = ShellScope.of(context);
-    final titleView = titleWidget ?? Text(title, overflow: TextOverflow.ellipsis, maxLines: 1);
-    final sidebarButton = shell.showSidebarButton && theme.design != DesignLanguage.macos
-        ? AdaptiveIconButton(icon: EveryIcon.menu, tooltip: 'Show sidebar', onPressed: shell.toggleSidebar)
+    final shell = ShellScope.maybeOf(context);
+    final touch = shell?.compact ?? Host.isMobile;
+    final titleView = DefaultTextStyle.merge(
+      style: theme.type.headline.tint(theme.text),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      child: titleWidget ?? Text(title, overflow: TextOverflow.ellipsis, maxLines: 1),
+    );
+    final sidebarButton = shell != null && shell.showSidebarButton
+        ? KitIconButton(
+            icon: touch ? EveryIcon.menu : EveryIcon.sidebar,
+            tooltip: 'Show sidebar',
+            touch: touch,
+            onPressed: shell.toggleSidebar,
+          )
         : null;
     final scope = PageBackScope.maybeOf(context);
     final back = onBack ?? scope?.onBack;
     final backButton = back == null
         ? null
-        : AdaptiveIconButton(
+        : KitIconButton(
             icon: EveryIcon.chevronLeft,
             tooltip: onBack != null ? backTooltip : scope!.tooltip,
+            touch: touch,
             onPressed: back,
           );
-    final leadingButtons = [?sidebarButton, ?backButton];
-    final leading = leadingButtons.isEmpty
-        ? null
-        : leadingButtons.length == 1
-        ? leadingButtons.single
-        : Row(mainAxisSize: MainAxisSize.min, children: leadingButtons);
-
-    switch (theme.design) {
-      case DesignLanguage.cupertino:
-        return c.CupertinoPageScaffold(
-          backgroundColor: theme.background,
-          navigationBar: c.CupertinoNavigationBar(
-            leading: leading,
-            middle: titleView,
-            trailing: actions.isEmpty ? null : Row(mainAxisSize: MainAxisSize.min, children: actions),
-            backgroundColor: theme.surface.withValues(alpha: 0.55),
-            automaticBackgroundVisibility: false,
-            enableBackgroundFilterBlur: true,
-            border: Border(bottom: BorderSide(color: theme.border, width: 0)),
+    final top = MediaQuery.paddingOf(context).top;
+    // 18pt before a bare title, less before a button.
+    final hasButton = sidebarButton != null || backButton != null;
+    final left = (shell?.leadingInset ?? 0) + (hasButton ? (touch ? 4 : 8) : (touch ? 16 : 18));
+    final bar = Padding(
+      padding: EdgeInsets.only(top: top, left: left, right: touch ? 6 : 10),
+      child: SizedBox(
+        height: 52,
+        child: Row(
+          children: [
+            ?sidebarButton,
+            ?backButton,
+            if (hasButton) const SizedBox(width: 4),
+            Expanded(child: titleView),
+            for (final a in actions) ...[const SizedBox(width: 2), a],
+          ],
+        ),
+      ),
+    );
+    return ColoredBox(
+      color: touch ? theme.background : const Color(0x00000000),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          bar,
+          Expanded(
+            child: MediaQuery.removePadding(context: context, removeTop: true, child: body),
           ),
-          child: body,
-        );
-      case DesignLanguage.macos:
-        // macos_ui's ToolBar gives the title a fixed width and moves actions
-        // into an overflow menu wholesale. Instead the whole bar is one row
-        // in the title slot, sized to the real width: the title takes what
-        // the actions leave and ellipsizes first.
-        return LayoutBuilder(
-          builder: (context, constraints) {
-            final lights = shell.compact ? _macTrafficLights : 0.0;
-            final width = (constraints.maxWidth - lights - _macToolbarGutters).clamp(0.0, double.infinity);
-            final window = mac.MacosWindowScope.maybeOf(context);
-            final bar = mac.ToolBar(
-              title: Row(
-                children: [
-                  ?backButton,
-                  if (backButton != null) const SizedBox(width: 4),
-                  Expanded(
-                    child: Align(alignment: Alignment.centerLeft, child: titleView),
-                  ),
-                  for (final a in actions) ...[const SizedBox(width: 6), a],
-                ],
-              ),
-              titleWidth: width,
-              enableBlur: true,
-            );
-            final scaffold = mac.MacosScaffold(
-              toolBar: bar,
-              children: [mac.ContentArea(builder: (context, _) => body)],
-            );
-            if (window == null) return scaffold;
-            // The ToolBar reserves the traffic-light inset unless it thinks a
-            // sidebar is showing; ours is always under the lights on wide
-            // windows.
-            return mac.MacosWindowScope(
-              constraints: window.constraints,
-              isSidebarShown: !shell.compact,
-              isEndSidebarShown: window.isEndSidebarShown,
-              sidebarToggler: window.toggleSidebar,
-              endSidebarToggler: window.toggleEndSidebar,
-              child: scaffold,
-            );
-          },
-        );
-      case DesignLanguage.fluent:
-        return f.ScaffoldPage(
-          padding: EdgeInsets.zero,
-          header: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-            child: f.PageHeader(
-              leading: leading == null ? null : Padding(padding: const EdgeInsets.only(right: 8), child: leading),
-              title: DefaultTextStyle.merge(style: theme.type.title, child: titleView),
-              commandBar: Row(mainAxisAlignment: MainAxisAlignment.end, children: actions),
-            ),
-          ),
-          content: body,
-        );
-      case DesignLanguage.material || DesignLanguage.adwaita:
-        return m.Scaffold(
-          backgroundColor: theme.background,
-          appBar: m.AppBar(
-            automaticallyImplyLeading: false,
-            leading: leading,
-            leadingWidth: leadingButtons.length > 1 ? 96 : null,
-            title: titleView,
-            actions: [...actions, const SizedBox(width: 8)],
-          ),
-          body: body,
-        );
-    }
+        ],
+      ),
+    );
   }
 }
 

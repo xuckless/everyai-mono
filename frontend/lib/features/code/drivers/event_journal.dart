@@ -18,3 +18,12 @@ abstract interface class EventJournal {
 }
 
 EventJournal openEventJournal(String dir, String conversationId) => impl.openEventJournal(dir, conversationId);
+
+/// The last events in the JSON-lines file at [path] (at most its final [maxBytes]; a cut first line is skipped).
+/// Empty when the file is missing or off this platform. For lists that show what a closed session last did.
+Future<List<HarnessEvent>> readEventTail(String path, {int maxBytes = 96 * 1024}) =>
+    impl.readEventTail(path, maxBytes: maxBytes);
+
+/// The file [openEventJournal] keeps [conversationId]'s events in.
+String eventJournalPath(String dir, String conversationId) =>
+    '$dir/${conversationId.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_')}.jsonl';

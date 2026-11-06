@@ -1,12 +1,11 @@
 import 'dart:async';
 
-import '../../../core/ui/brand.dart';
-
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../app/router.dart';
+import '../../../core/motion/motion.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/adaptive_page.dart';
@@ -735,9 +734,9 @@ class _Working extends StatelessWidget {
     final theme = EveryTheme.of(context);
     return Row(
       children: [
-        const EveryMarkActivity(size: 16),
+        const StatusDot(DotStatus.running),
         const SizedBox(width: 10),
-        Text('Working…', style: theme.type.callout.tint(theme.textMuted)),
+        ShimmerText('Working', style: theme.type.callout),
       ],
     );
   }
@@ -752,24 +751,15 @@ class StartBuildingBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     return Container(
-      padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
-      decoration: BoxDecoration(
-        color: theme.accent.withValues(alpha: 0.08),
-        border: Border.all(color: theme.accent.withValues(alpha: 0.4)),
-        borderRadius: BorderRadius.circular(EveryTheme.cardRadius),
-      ),
+      padding: const EdgeInsets.fromLTRB(14, 8, 8, 8),
+      decoration: BoxDecoration(color: theme.accentBg, borderRadius: BorderRadius.circular(EveryTheme.cardRadius)),
       child: Row(
         children: [
-          Expanded(
-            child: Text(
-              'Happy with the plan? Start building switches to Auto-edit.',
-              style: theme.type.callout.tint(theme.text),
-            ),
-          ),
-          AdaptiveButton(label: 'Start building', onPressed: onStart),
+          Expanded(child: Text('Plan ready', style: theme.type.callout.medium.tint(theme.accentText))),
+          KitButton(label: 'Start building', onPressed: onStart),
         ],
       ),
-    );
+    ).settle();
   }
 }
 
@@ -783,7 +773,7 @@ class StatusPill extends StatelessWidget {
   final double minWidth;
 
   static Color colorOf(SessionStatus s, EveryTheme theme) => switch (s) {
-    SessionStatus.running || SessionStatus.starting => theme.accent,
+    SessionStatus.running || SessionStatus.starting => theme.cyan,
     SessionStatus.needsInput => theme.warning,
     SessionStatus.failed => theme.danger,
     SessionStatus.done => theme.success,
@@ -793,12 +783,13 @@ class StatusPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    final color = colorOf(status, theme);
-    final dot = Container(
-      width: 8,
-      height: 8,
-      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-    );
+    final dot = StatusDot(switch (status) {
+      SessionStatus.running || SessionStatus.starting => DotStatus.running,
+      SessionStatus.needsInput => DotStatus.waiting,
+      SessionStatus.failed => DotStatus.failed,
+      SessionStatus.done => DotStatus.done,
+      SessionStatus.idle => DotStatus.idle,
+    });
     if (dense) return Semantics(label: status.label, child: dot);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 6),
@@ -809,7 +800,14 @@ class StatusPill extends StatelessWidget {
           children: [
             dot,
             const SizedBox(width: 6),
-            Text(status.label, maxLines: 1, style: theme.type.callout.tint(theme.textMuted)),
+            StateSwap(
+              child: Text(
+                status.label,
+                key: ValueKey(status),
+                maxLines: 1,
+                style: theme.type.callout.tint(theme.textMuted),
+              ),
+            ),
           ],
         ),
       ),

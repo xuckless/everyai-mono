@@ -18,3 +18,5 @@ Future<ShellPty?> startProgram({
   int columns = 80,
   Map<String, String> env = const {},
 }) async => null;
+
+String get terminalHomeDir => '';

@@ -35,6 +35,7 @@ import '../../onboarding/domain/harness_rows.dart';
 import '../../onboarding/git_bash_stub.dart';
 import '../../onboarding/onboarding_harness_providers.dart';
 import 'harness_setup_row.dart';
+import 'research_sites_editor.dart' show researchSiteProblem, siteOf;
 
 /// Settings → Code: the layers a session's settings come from (Global, a
 /// project, a session), each as rows of typed controls. Rows a layer doesn't
@@ -134,8 +135,7 @@ class _CodeSettingsSectionState extends ConsumerState<CodeSettingsSection> {
         if (d.addable && !shown.contains(d)) d,
     ];
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+    return KitGroupedList(
       children: [
         Wrap(
           spacing: 10,
@@ -338,15 +338,18 @@ class _CodeSettingsSectionState extends ConsumerState<CodeSettingsSection> {
       case SettingKind.chips:
         block = true;
         final items = [...?value as List<String>?];
-        control = _Chips(
+        final sites = d.key == 'researchSites';
+        control = KitListEditor(
+          key: ValueKey('code-settings.list.${d.key}.${l.scope.name}'),
           items: items,
-          addLabel: d.key == 'researchSites' ? '+ Add site' : '+ Add rule',
-          onAdd: () async {
-            final text = await showAdaptivePrompt(context, title: 'Add to ${d.title}', confirmLabel: 'Add');
-            if (text == null || text.trim().isEmpty) return;
-            await _set(d, l, [...items, text.trim()]);
-          },
-          onRemove: (s) => _set(d, l, [...items]..remove(s)),
+          itemLabel: sites ? 'Site' : 'Rule',
+          kindLabel: sites ? 'Covers' : null,
+          kindOf: sites ? (s) => s.startsWith('*.') ? 'Site and subdomains' : 'This site' : null,
+          placeholder: sites ? 'docs.python.org or *.example.com' : 'Run dart format -l 120 on changed files',
+          empty: sites ? 'Empty: the defaults apply' : 'No rules',
+          validate: sites ? researchSiteProblem : null,
+          onChanged: (next) => _set(d, l, sites ? [for (final s in next) siteOf(s)] : next),
+          onReset: sites && d.fallback is List<String> ? () => _set(d, l, d.fallback) : null,
         );
       case SettingKind.prompt:
         block = true;
@@ -431,9 +434,13 @@ class _CodeSettingsSectionState extends ConsumerState<CodeSettingsSection> {
     );
     return Container(
       key: ValueKey('code-settings.row.${d.key}'),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+      // Each setting on its own quiet card: space separates them, not rules.
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
-        border: Border(bottom: BorderSide(color: theme.border.withValues(alpha: 0.6))),
+        color: theme.surfaceRaised.withValues(alpha: theme.isDark ? 0.55 : 0.6),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: theme.border),
       ),
       child: block
           ? Column(
@@ -715,25 +722,6 @@ String harnessStatusLine(String id, DriverStatus s) => [
 ].join(' · ');
 
 /// A wrap of removable chips and an add chip.
-class _Chips extends StatelessWidget {
-  const _Chips({required this.items, required this.addLabel, required this.onAdd, required this.onRemove});
-
-  final List<String> items;
-  final String addLabel;
-  final VoidCallback onAdd;
-  final ValueChanged<String> onRemove;
-
-  @override
-  Widget build(BuildContext context) => Wrap(
-    spacing: 6,
-    runSpacing: 6,
-    children: [
-      for (final s in items) RuleChip(label: s, onRemove: () => onRemove(s)),
-      RuleChip(label: addLabel, add: true, onTap: onAdd),
-    ],
-  );
-}
-
 /// One chip: a rule or a value, with ✕; or the "+ Add" chip.
 class RuleChip extends StatelessWidget {
   const RuleChip({
@@ -857,14 +845,15 @@ class _PromptEditorState extends State<_PromptEditor> {
           onChanged: (_) => setState(() {}),
         ),
         const SizedBox(height: 8),
-        Row(
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
           children: [
             AdaptiveButton(
               key: const ValueKey('code-settings.prompt.save'),
               label: 'Save',
               onPressed: dirty ? () => widget.onSave(_controller.text) : null,
             ),
-            const SizedBox(width: 8),
             AdaptiveButton(
               label: 'Revert',
               emphasis: ButtonEmphasis.secondary,
@@ -1213,8 +1202,7 @@ class PermissionsSection extends ConsumerWidget {
       );
     }
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+    return KitGroupedList(
       children: [
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12),

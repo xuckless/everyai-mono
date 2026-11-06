@@ -41,6 +41,11 @@ Future<void> main() async {
         await windowManager.waitUntilReadyToShow(
           WindowOptions(
             title: 'EveryAI',
+            // The app draws its own caption (core/platform/window_caption.dart), so no system title bar or
+            // light frame shows; the background matches the app's until the first frame paints.
+            titleBarStyle: TitleBarStyle.hidden,
+            windowButtonVisibility: false,
+            backgroundColor: const Color(0xFF07070A),
             minimumSize: WindowBounds.minimum,
             size: saved?.rect.size ?? const Size(1200, 800),
             center: saved == null,

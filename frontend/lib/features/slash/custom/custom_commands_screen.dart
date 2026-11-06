@@ -108,8 +108,7 @@ class CustomCommandsBody extends ConsumerWidget {
       ],
     );
 
-    return ListView(
-      padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
+    return KitGroupedList(
       children: [
         Padding(
           padding: const EdgeInsets.only(bottom: 8),

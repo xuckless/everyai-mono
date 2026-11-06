@@ -25,8 +25,7 @@ class RemoteSettingsBody extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return ListView(
-      padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
+    return KitGroupedList(
       // A computer hosts its sessions; other devices pair with one to follow them.
       children: [if (Host.isDesktop) const _HostSection() else const _PairedHostsSection()],
     );
@@ -159,20 +158,27 @@ class _HostSectionState extends ConsumerState<_HostSection> {
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
+      children: KitGroupedList.fold([
         const AdaptiveSectionHeader('This computer'),
         AdaptiveListTile(
           title: const Text('Host Code sessions'),
-          subtitle: Text(status),
+          subtitle: Row(
+            children: [
+              if (hosting.enabled && !link.revoked && !link.replaced)
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: StatusDot(link.connected ? DotStatus.running : DotStatus.waiting, size: 7),
+                ),
+              Flexible(child: Text(status)),
+            ],
+          ),
           trailing: AdaptiveSwitch(value: hosting.enabled, onChanged: _busy || !hosting.loaded ? null : _toggle),
         ),
         if (hosting.enabled) ...[
           AdaptiveListTile(
             title: const Text('Security code'),
-            subtitle: Text(
-              '${hosting.fingerprint}\nDevices check this when they pair. Messages are encrypted end to end; '
-              'the server only relays them.',
-            ),
+            subtitle: const Text('Devices check it when they pair. Messages are end-to-end encrypted.'),
+            trailing: Text(hosting.fingerprint, style: theme.type.callout.mono.tint(theme.text)),
           ),
           for (final r in link.pending) _PairRequestCard(request: r, busy: _busy, onDecide: _decide),
           if (_code case final code?)
@@ -218,13 +224,13 @@ class _HostSectionState extends ConsumerState<_HostSection> {
               alignment: Alignment.centerLeft,
               child: AdaptiveButton(
                 label: 'Remove this host',
-                emphasis: ButtonEmphasis.plain,
+                emphasis: ButtonEmphasis.destructive,
                 onPressed: _busy ? null : _forget,
               ),
             ),
           ),
         ],
-      ],
+      ]),
     );
   }
 }
@@ -437,7 +443,7 @@ class _PairedHostsSectionState extends ConsumerState<_PairedHostsSection> {
     final hosts = ref.watch(pairedHostsProvider).value ?? const <PairedHost>[];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
+      children: KitGroupedList.fold([
         const AdaptiveSectionHeader('Computers this device uses'),
         if (hosts.isEmpty)
           AdaptiveListTile(
@@ -501,7 +507,7 @@ class _PairedHostsSectionState extends ConsumerState<_PairedHostsSection> {
             ],
           ),
         ),
-      ],
+      ]),
     );
   }
 }

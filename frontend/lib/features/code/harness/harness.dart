@@ -583,6 +583,12 @@ abstract interface class ReportsMcpTools {
   Future<Map<String, McpToolsReport>> get mcpReport;
 }
 
+/// A harness that keeps its sessions' events on disk and can hand back the latest ones without reopening a session
+/// (the Board's "what it last did" line).
+abstract interface class ReadsRecentEvents {
+  Future<List<HarnessEvent>> recentEvents(String conversationId);
+}
+
 /// Starts and reopens agent sessions.
 abstract interface class Harness {
   Future<HarnessSession> start(SessionSpec spec);

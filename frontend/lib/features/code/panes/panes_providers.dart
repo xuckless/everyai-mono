@@ -11,11 +11,10 @@ import '../domain/local_ports.dart';
 import 'processes.dart';
 import 'pty.dart';
 
-/// The tabs of a Code session's bottom drawer.
+/// The tabs of a Code session's bottom drawer: the terminal only (Preview and Processes are tabs of the session
+/// panel, `ConsoleView`).
 enum CodePane {
-  terminal('Terminal'),
-  processes('Processes'),
-  preview('Preview');
+  terminal('Terminal');
 
   const CodePane(this.label);
   final String label;
@@ -132,7 +131,8 @@ final class SessionTerminal extends Notifier<TerminalStatus> {
       workingDir: workingDir,
       rows: terminal.viewHeight,
       columns: terminal.viewWidth,
-      env: {'EVERYAI_TERMINAL': sessionId},
+      // Every tab of a session carries the session's id (a tab's own id is `<session>#<n>`).
+      env: {'EVERYAI_TERMINAL': sessionId.split('#').first},
     );
     if (pty == null) {
       terminal.write('No shell on this platform.\r\n');
@@ -178,6 +178,50 @@ final class SessionTerminal extends Notifier<TerminalStatus> {
     _sub = null;
     _pty?.kill();
     _pty = null;
+  }
+}
+
+/// The terminal tabs of one owner (a Code session's id, or [homeTerminalOwner] for the terminal outside sessions):
+/// their terminal ids, in order, and the one showing. The first tab's id is the owner's own, so the session's
+/// Processes and Preview keep reading the shell they always did; the others are `<owner>#<n>`.
+@immutable
+final class TerminalTabsState {
+  const TerminalTabsState(this.ids, this.active);
+  final List<String> ids;
+  final int active;
+
+  String get activeId => ids[active.clamp(0, ids.length - 1)];
+}
+
+/// The owner id of the terminal on Code home (no session), started in the home folder.
+const homeTerminalOwner = 'home';
+
+final terminalTabsProvider = NotifierProvider.family<TerminalTabs, TerminalTabsState, String>(TerminalTabs.new);
+
+final class TerminalTabs extends Notifier<TerminalTabsState> {
+  TerminalTabs(this.owner);
+  final String owner;
+  int _next = 2;
+
+  @override
+  TerminalTabsState build() => TerminalTabsState([owner], 0);
+
+  /// Opens a new tab and shows it.
+  void add() {
+    final ids = [...state.ids, '$owner#${_next++}'];
+    state = TerminalTabsState(ids, ids.length - 1);
+  }
+
+  void show(int index) => state = TerminalTabsState(state.ids, index.clamp(0, state.ids.length - 1));
+
+  /// Closes the tab at [index] and ends its shell; the last tab stays (restart it instead).
+  void close(int index) {
+    if (state.ids.length < 2) return;
+    final id = state.ids[index];
+    final ids = [...state.ids]..removeAt(index);
+    final active = state.active > index || state.active == ids.length ? state.active - 1 : state.active;
+    state = TerminalTabsState(ids, active.clamp(0, ids.length - 1));
+    ref.invalidate(sessionTerminalProvider(id));
   }
 }
 

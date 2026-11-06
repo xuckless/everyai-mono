@@ -103,8 +103,7 @@ class _ScheduledTasksBodyState extends ConsumerState<ScheduledTasksBody> {
       );
     }
 
-    return ListView(
-      padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
+    return KitGroupedList(
       children: [
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),

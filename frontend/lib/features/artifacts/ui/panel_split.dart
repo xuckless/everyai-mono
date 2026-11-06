@@ -17,6 +17,7 @@ class PanelSplit extends ConsumerStatefulWidget {
     required this.panel,
     this.width,
     this.onWidth,
+    this.defaultShare = 0.52,
   });
 
   /// The width available to both sides.
@@ -29,13 +30,17 @@ class PanelSplit extends ConsumerStatefulWidget {
   final double? width;
   final void Function(double? width, {bool persist})? onWidth;
 
+  /// The panel's share of [maxWidth] while no width is saved: about half for an artifact, a third for a Code
+  /// session's panel.
+  final double defaultShare;
+
   /// The narrowest either side may get.
   static const minSide = 360.0;
 
   /// The panel's width for [saved] (null: the default share) in [maxWidth].
-  static double widthFor(double? saved, double maxWidth) {
+  static double widthFor(double? saved, double maxWidth, {double share = 0.52}) {
     final upper = (maxWidth - minSide).clamp(minSide, double.infinity);
-    return (saved ?? (maxWidth * 0.52).clamp(minSide, 780.0)).clamp(minSide, upper);
+    return (saved ?? (maxWidth * share).clamp(minSide, 780.0)).clamp(minSide, upper);
   }
 
   @override
@@ -64,6 +69,7 @@ class _PanelSplitState extends ConsumerState<PanelSplit> {
     final width = PanelSplit.widthFor(
       own != null ? widget.width : ref.watch(artifactPanelWidthProvider),
       widget.maxWidth,
+      share: widget.defaultShare,
     );
     final active = _hover || _dragging;
     return Row(
@@ -83,8 +89,11 @@ class _PanelSplitState extends ConsumerState<PanelSplit> {
             }),
             onHorizontalDragUpdate: (d) {
               // Read the latest width: several updates can arrive between frames.
-              final current = PanelSplit.widthFor(saved(), widget.maxWidth);
-              store(PanelSplit.widthFor(current - d.delta.dx, widget.maxWidth), persist: false);
+              final current = PanelSplit.widthFor(saved(), widget.maxWidth, share: widget.defaultShare);
+              store(
+                PanelSplit.widthFor(current - d.delta.dx, widget.maxWidth, share: widget.defaultShare),
+                persist: false,
+              );
             },
             onHorizontalDragEnd: (_) {
               store(saved() ?? width);

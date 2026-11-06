@@ -79,8 +79,7 @@ class MemoryBody extends ConsumerWidget {
       );
     }
 
-    return ListView(
-      padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
+    return KitGroupedList(
       children: [
         AdaptiveListTile(
           title: const Text('Use memory'),

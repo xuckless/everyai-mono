@@ -27,6 +27,8 @@ import '../settings/agent_prompt.dart' show HarnessTier;
 import '../settings/code_settings.dart' show budgetPresets;
 import '../workflows/workflow_library.dart';
 import '../workflows/workflow_picker.dart';
+import 'harness_logo.dart';
+import '../../models/ui/model_avatar.dart';
 
 /// The Model page's groups with [model] picked, built once for every part
 /// of the menu (the composer shows several, rebuilt as the session streams).
@@ -239,7 +241,7 @@ class AgentMenuPart extends ConsumerWidget {
   /// What the part says, as its label reads.
   static String _labelOf(AgentMenu m, AgentMenuPage page, _Resolved r) => switch (page) {
     AgentMenuPage.harness => r.lead.label,
-    AgentMenuPage.workflow => m.workflow?.title ?? 'Workflows',
+    AgentMenuPage.workflow => m.workflow?.title ?? 'Workflow',
     AgentMenuPage.model => r.modelName,
     AgentMenuPage.effort => [
       if (r.reasons) m.effort.isEmpty ? 'Default effort' : effortLabel(m.effort),
@@ -521,6 +523,7 @@ class _AgentMenuPanelState extends State<AgentMenuPanel> {
         if (widget.leads.length > 1 || (widget.leads.isNotEmpty && widget.onHarness == null))
           PopoverRow(
             key: const ValueKey('agent-menu.harness'),
+            leading: HarnessLogo(_harness, size: 20),
             title: 'Harness',
             subtitle: [
               lead?.info.label ?? _harness,
@@ -632,6 +635,7 @@ class _AgentMenuPanelState extends State<AgentMenuPanel> {
         for (final l in widget.leads)
           PopoverRow(
             key: ValueKey('agent-menu.harness.${l.info.id}'),
+            leading: HarnessLogo(l.info.id, size: 20),
             title: l.info.label,
             subtitle: l.blocked ?? (l.detail.isEmpty ? null : l.detail),
             selected: l.info.id == _harness,
@@ -684,6 +688,7 @@ class _AgentMenuPanelState extends State<AgentMenuPanel> {
           for (final m in models)
             PopoverRow(
               key: ValueKey('agent-menu.model.${m.model}'),
+              leading: ModelAvatar(vendor, size: 20),
               title: m.name,
               subtitle: m.tierHint.isEmpty ? null : m.tierHint,
               selected: m.model == _model,

@@ -8,7 +8,9 @@ import '../../panes/panes_providers.dart' show readCodeLayout, writeCodeLayout;
 enum ConsoleView {
   info('Session info'),
   diff('Diff'),
-  files('Files');
+  preview('Preview'),
+  files('Files'),
+  processes('Processes');
 
   const ConsoleView(this.label);
   final String label;

@@ -10,6 +10,7 @@ import '../../onboarding/git_bash_stub.dart';
 import '../../onboarding/onboarding_harness_providers.dart';
 import 'code_settings_section.dart' show harnessStatusLine;
 import 'setup_button.dart';
+import 'harness_logo.dart';
 
 /// One harness as the setup step and Settings → Harnesses show it: a dot, the name (with its environment when that
 /// is not this computer), what was found, and one button by state (a check mark when Ready, Sign in, Set up).
@@ -58,19 +59,31 @@ class HarnessSetupRow extends ConsumerWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Padding(
-            padding: const EdgeInsets.only(top: 5),
-            child: Container(
-              width: 9,
-              height: 9,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: switch (row.state) {
-                  RowState.ready => theme.success,
-                  RowState.signIn || RowState.setUp => theme.accent,
-                  _ => row.state == RowState.checking ? theme.textMuted : theme.border,
-                },
-              ),
+          // The harness's logo, with its state as a dot on the corner.
+          SizedBox.square(
+            dimension: 32,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                HarnessLogo(row.id, size: 30, label: title ?? row.title),
+                Positioned(
+                  right: -1,
+                  bottom: -1,
+                  child: Container(
+                    width: 11,
+                    height: 11,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(color: theme.surface, width: 2),
+                      color: switch (row.state) {
+                        RowState.ready => theme.success,
+                        RowState.signIn || RowState.setUp => theme.accent,
+                        _ => row.state == RowState.checking ? theme.textMuted : theme.border,
+                      },
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
           const SizedBox(width: 12),

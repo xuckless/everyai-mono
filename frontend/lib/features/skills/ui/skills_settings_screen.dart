@@ -52,13 +52,10 @@ class SkillsSettingsBody extends ConsumerWidget {
           ],
         );
 
-    return ListView(
-      padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 8, 16, 32),
+    return KitGroupedList(
       children: [
         Text(
-          'A skill is a folder with a SKILL.md: instructions, and sometimes scripts and reference files, that the '
-          'Code agent loads when a task calls for it. Chat can use the EveryAI and ~/.agents/skills ones too, '
-          'except skills that run programs. Only the name and description sit in the prompt until a skill is used.',
+          'Instructions the agent loads when a task calls for them. Only the name and description sit in the prompt.',
           style: theme.type.caption.tint(theme.textMuted),
         ),
         Padding(
@@ -237,11 +234,11 @@ class _SkillTile extends ConsumerWidget {
       if (status != null && status != 'Off') status,
     ];
     return AdaptiveListTile(
-      title: Text(s.name),
+      title: Text(s.name, style: theme.type.callout.mono.tint(theme.text)),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (s.manifest case final m?) Text(m.description, maxLines: 2, overflow: TextOverflow.ellipsis),
+          if (s.manifest case final m?) Text(m.description, maxLines: 1, overflow: TextOverflow.ellipsis),
           if (notes.isNotEmpty)
             Text(
               notes.join(' · '),

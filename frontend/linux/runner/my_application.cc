@@ -54,6 +54,18 @@ static void my_application_activate(GApplication* application) {
 
   gtk_window_set_default_size(window, 1280, 720);
 
+  // The app hides the header bar and draws its own caption; paint the GTK
+  // window in the app's background so no light frame shows before the first
+  // frame or around the client-side decorations.
+  GtkCssProvider* css = gtk_css_provider_new();
+  gtk_css_provider_load_from_data(
+      css, "window, window.background { background-color: #07070A; }", -1,
+      nullptr);
+  gtk_style_context_add_provider_for_screen(
+      gtk_widget_get_screen(GTK_WIDGET(window)), GTK_STYLE_PROVIDER(css),
+      GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+  g_object_unref(css);
+
   // The window icon ships in the bundle's data directory.
   g_autofree gchar* exe = g_file_read_link("/proc/self/exe", nullptr);
   if (exe != nullptr) {
