@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/motion/motion.dart';
 import '../../../core/platform/platform_kind.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
@@ -246,10 +247,8 @@ class ComposerState extends ConsumerState<Composer> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
     final suggestions = _suggestions();
-    // Brand card radius; Fluent stays native-tight.
-    final radius = theme.design == DesignLanguage.fluent ? 8.0 : EveryTheme.cardRadius;
+    const radius = EveryTheme.composerRadius;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -282,7 +281,7 @@ class ComposerState extends ConsumerState<Composer> {
           attachLongText: !(widget.busy && widget.replying),
           child: GlassSurface(
             radius: radius,
-            padding: const EdgeInsets.fromLTRB(16, 14, 10, 10),
+            padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -311,47 +310,47 @@ class ComposerState extends ConsumerState<Composer> {
                     autofocus: !Host.isMobile,
                   ),
                 ),
-                const SizedBox(height: 10),
-                LayoutBuilder(
-                  // Narrow composers (beside the artifact panel, phones) fold the
-                  // mode switcher into a menu.
-                  builder: (context, constraints) => Row(
-                    children: [
-                      _ToolsButton(
-                        model: widget.model,
-                        onAttach: _pick,
-                        mode: widget.mode,
-                        onModeChanged: widget.onModeChanged,
-                        toolsEnabled: widget.toolsEnabled,
-                        onToolsChanged: widget.onToolsChanged,
-                      ),
-                      const SizedBox(width: 4),
-                      if (constraints.maxWidth < 720)
-                        _ModeMenu(mode: widget.mode, onChanged: widget.onModeChanged)
-                      else
-                        _ModeSelector(mode: widget.mode, onChanged: widget.onModeChanged),
-                      if (widget.mode == ChatMode.research && widget.onResearchDepthChanged != null) ...[
-                        const SizedBox(width: 4),
-                        _DepthMenu(depth: widget.researchDepth, onChanged: widget.onResearchDepthChanged!),
-                      ],
-                      Expanded(
-                        child: Align(
-                          alignment: Alignment.centerRight,
-                          child: ModelChip(
-                            selected: widget.model,
-                            enabled: !widget.busy,
-                            onSelected: widget.onModelChanged,
-                            pickerKey: _modelPicker,
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    _ToolsButton(
+                      model: widget.model,
+                      onAttach: _pick,
+                      mode: widget.mode,
+                      onModeChanged: widget.onModeChanged,
+                      toolsEnabled: widget.toolsEnabled,
+                      onToolsChanged: widget.onToolsChanged,
+                    ),
+                    const SizedBox(width: 2),
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Flexible(
+                            child: ModelChip(
+                              selected: widget.model,
+                              enabled: !widget.busy,
+                              onSelected: widget.onModelChanged,
+                              pickerKey: _modelPicker,
+                              effort: widget.model.reasoning ? widget.effort : null,
+                              onEffortChanged: widget.onEffortChanged,
+                            ),
                           ),
-                        ),
+                          const SizedBox(width: 2),
+                          Flexible(
+                            child: _ModeMenu(
+                              mode: widget.mode,
+                              onChanged: widget.onModeChanged,
+                              depth: widget.researchDepth,
+                              onDepthChanged: widget.onResearchDepthChanged,
+                            ),
+                          ),
+                        ],
                       ),
-                      if (widget.model.reasoning && widget.onEffortChanged != null)
-                        EffortMenu(effort: widget.effort, onChanged: widget.onEffortChanged!),
-                      ?widget.meter,
-                      const SizedBox(width: 6),
-                      _SendButton(busy: _showsStop, enabled: _canSend, onSend: _send, onStop: widget.onStop),
-                    ],
-                  ),
+                    ),
+                    ?widget.meter,
+                    const SizedBox(width: 6),
+                    _SendButton(busy: _showsStop, enabled: _canSend, onSend: _send, onStop: widget.onStop),
+                  ],
                 ),
               ],
             ),
@@ -415,19 +414,9 @@ class _ToolsButton extends StatelessWidget {
               },
             ),
             PopoverRow(
-              leading: const BrandGlyph('search', size: 18),
-              title: 'Web search',
-              subtitle: 'Answer with cited sources',
-              trailing: mode == ChatMode.search ? AdaptiveIcon(EveryIcon.check, size: 14, color: theme.accent) : null,
-              onTap: () {
-                close();
-                onModeChanged(mode == ChatMode.search ? ChatMode.chat : ChatMode.search);
-              },
-            ),
-            PopoverRow(
-              leading: const BrandGlyph('artifacts', size: 18),
+              leading: icon(EveryIcon.artifacts),
               title: 'Rich answers',
-              subtitle: 'Documents, diagrams, charts, quizzes, slides',
+              subtitle: 'Docs, diagrams, charts, quizzes',
               trailing: toolsEnabled ? AdaptiveIcon(EveryIcon.check, size: 14, color: theme.accent) : null,
               onTap: onToolsChanged == null
                   ? null
@@ -436,74 +425,16 @@ class _ToolsButton extends StatelessWidget {
                       onToolsChanged!(!toolsEnabled);
                     },
             ),
-            Container(height: 1, margin: const EdgeInsets.symmetric(vertical: 6), color: theme.border),
-            PopoverRow(
-              leading: const BrandGlyph('connectors', size: 18),
-              title: 'Connectors (MCP)',
-              subtitle: 'Coming soon',
-            ),
           ],
         ),
       ),
-      child: _RoundIcon(icon: EveryIcon.add, tooltip: 'Add files and tools'),
+      child: const _RoundIcon(icon: EveryIcon.add, tooltip: 'Add files and tools'),
     );
   }
 }
 
 /// Thinking effort for reasoning models: a small pill beside the model chip
 /// that opens a popover of levels.
-/// Research depth: Quick, Standard or Deep.
-class _DepthMenu extends StatelessWidget {
-  const _DepthMenu({required this.depth, required this.onChanged});
-
-  final ResearchDepth depth;
-  final ValueChanged<ResearchDepth> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    return AnchoredPopover(
-      width: 280,
-      builder: (context, close) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 6),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const PopoverHeader('Research depth'),
-            for (final d in ResearchDepth.values)
-              PopoverRow(
-                title: d.label,
-                subtitle: d.description,
-                selected: d == depth,
-                trailing: d == depth ? AdaptiveIcon(EveryIcon.check, size: 14, color: theme.accent) : null,
-                onTap: () {
-                  close();
-                  onChanged(d);
-                },
-              ),
-          ],
-        ),
-      ),
-      child: Semantics(
-        button: true,
-        label: 'Research depth: ${depth.label}',
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(depth.label, style: theme.type.callout.medium.tint(theme.textMuted)),
-              const SizedBox(width: 3),
-              AdaptiveIcon(EveryIcon.chevronDown, size: 11, color: theme.textMuted),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class EffortMenu extends StatelessWidget {
   const EffortMenu({super.key, required this.effort, required this.onChanged});
 
@@ -557,94 +488,94 @@ class EffortMenu extends StatelessWidget {
   }
 }
 
-/// Chat · Search · Research. A compact segmented control.
-/// The answer mode as one pill with a menu, for narrow composers.
+/// The answer mode as a chip beside the model: a menu of modes, and for
+/// Research the depth as a segmented row under it.
 class _ModeMenu extends StatelessWidget {
-  const _ModeMenu({required this.mode, required this.onChanged});
+  const _ModeMenu({required this.mode, required this.onChanged, required this.depth, this.onDepthChanged});
 
   final ChatMode mode;
   final ValueChanged<ChatMode> onChanged;
+  final ResearchDepth depth;
+  final ValueChanged<ResearchDepth>? onDepthChanged;
 
   @override
   Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
+    final label = mode == ChatMode.research && onDepthChanged != null ? '${mode.label} · ${depth.label}' : mode.label;
     return AnchoredPopover(
-      width: 240,
-      builder: (context, close) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 6),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            for (final m in ChatMode.values)
-              PopoverRow(
-                title: m.label,
-                subtitle: m.description,
-                selected: m == mode,
-                trailing: m == mode ? AdaptiveIcon(EveryIcon.check, size: 14, color: theme.accent) : null,
-                onTap: () {
-                  close();
-                  onChanged(m);
-                },
-              ),
-          ],
-        ),
+      width: 260,
+      builder: (context, close) => _ModePanel(
+        mode: mode,
+        depth: depth,
+        onDepthChanged: onDepthChanged,
+        onPick: (m) {
+          onChanged(m);
+          if (m != ChatMode.research || onDepthChanged == null) close();
+        },
       ),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        decoration: BoxDecoration(color: theme.text.withValues(alpha: 0.06), borderRadius: BorderRadius.circular(9)),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(mode.label, style: theme.type.callout.medium.tint(theme.text)),
-            const SizedBox(width: 3),
-            AdaptiveIcon(EveryIcon.chevronDown, size: 11, color: theme.textMuted),
-          ],
+      child: Semantics(
+        button: true,
+        label: 'Mode: $label',
+        child: IgnorePointer(
+          child: KitChip(label: label, chevron: true, strong: mode != ChatMode.chat, onTap: () {}),
         ),
       ),
     );
   }
 }
 
-class _ModeSelector extends StatelessWidget {
-  const _ModeSelector({required this.mode, required this.onChanged});
+class _ModePanel extends StatefulWidget {
+  const _ModePanel({required this.mode, required this.depth, required this.onPick, this.onDepthChanged});
 
   final ChatMode mode;
-  final ValueChanged<ChatMode> onChanged;
+  final ResearchDepth depth;
+  final ValueChanged<ChatMode> onPick;
+  final ValueChanged<ResearchDepth>? onDepthChanged;
+
+  @override
+  State<_ModePanel> createState() => _ModePanelState();
+}
+
+class _ModePanelState extends State<_ModePanel> {
+  late var _mode = widget.mode;
+  late var _depth = widget.depth;
 
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    return Container(
-      padding: const EdgeInsets.all(2),
-      decoration: BoxDecoration(color: theme.text.withValues(alpha: 0.06), borderRadius: BorderRadius.circular(9)),
-      child: Row(
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(
         mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          for (final m in ChatMode.values)
-            Semantics(
-              button: true,
-              selected: m == mode,
-              label: '${m.label} mode',
-              child: GestureDetector(
-                onTap: () => onChanged(m),
-                child: MouseRegion(
-                  cursor: SystemMouseCursors.click,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 150),
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: m == mode ? theme.surface : null,
-                      borderRadius: BorderRadius.circular(7),
-                      boxShadow: m == mode
-                          ? const [BoxShadow(color: Color(0x22000000), blurRadius: 3, offset: Offset(0, 1))]
-                          : null,
-                    ),
-                    child: Text(
-                      m.label,
-                      style: theme.type.callout.medium.tint(m == mode ? theme.text : theme.textMuted),
-                    ),
-                  ),
+          for (final (i, m) in ChatMode.values.indexed)
+            PopoverRow(
+              title: m.label,
+              subtitle: m.description,
+              selected: m == _mode,
+              trailing: IconSwap(
+                child: m == _mode
+                    ? AdaptiveIcon(EveryIcon.check, key: const ValueKey('on'), size: 14, color: theme.accentText)
+                    : const SizedBox(key: ValueKey('off'), width: 14),
+              ),
+              onTap: () {
+                setState(() => _mode = m);
+                widget.onPick(m);
+              },
+            ).rowIn(i),
+          if (_mode == ChatMode.research && widget.onDepthChanged != null)
+            MaskReveal(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 6, 12, 4),
+                child: KitSegmented<ResearchDepth>(
+                  values: ResearchDepth.values,
+                  selected: _depth,
+                  width: double.infinity,
+                  label: (d) => d.label,
+                  onSelected: (d) {
+                    setState(() => _depth = d);
+                    widget.onDepthChanged!(d);
+                  },
                 ),
               ),
             ),
@@ -654,42 +585,17 @@ class _ModeSelector extends StatelessWidget {
   }
 }
 
-class _RoundIcon extends StatefulWidget {
+class _RoundIcon extends StatelessWidget {
   const _RoundIcon({required this.icon, required this.tooltip});
 
   final EveryIcon icon;
   final String tooltip;
 
   @override
-  State<_RoundIcon> createState() => _RoundIconState();
-}
-
-class _RoundIconState extends State<_RoundIcon> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    return Semantics(
-      button: true,
-      label: widget.tooltip,
-      child: MouseRegion(
-        onEnter: (_) => setState(() => _hover = true),
-        onExit: (_) => setState(() => _hover = false),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 120),
-          width: 32,
-          height: 32,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(color: theme.border),
-            color: _hover ? theme.text.withValues(alpha: 0.07) : null,
-          ),
-          child: Center(child: AdaptiveIcon(widget.icon, size: 16, color: theme.text)),
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => IgnorePointer(
+    // The popover around it takes the tap.
+    child: KitIconButton(icon: icon, tooltip: tooltip, round: true, onPressed: () {}, size: 18),
+  );
 }
 
 class _SendButton extends StatelessWidget {
@@ -703,26 +609,34 @@ class _SendButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    final active = busy || enabled;
-    // Plain glyphs inside our own filled circle, in every design language.
-    final glyph = (busy ? EveryIcon.stop : EveryIcon.send).of(DesignLanguage.material);
-    return Semantics(
-      button: true,
-      label: busy ? 'Stop generating' : 'Send message',
-      child: GestureDetector(
-        onTap: busy ? onStop : (enabled ? onSend : null),
-        child: MouseRegion(
-          cursor: active ? SystemMouseCursors.click : SystemMouseCursors.basic,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 150),
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(10),
-              color: active ? theme.primary : theme.text.withValues(alpha: 0.10),
-            ),
-            child: Icon(glyph, size: 19, color: active ? theme.onPrimary : theme.textMuted),
-          ),
+    // Empty: a quiet circle; text: violet; running: a text-coloured stop.
+    final bg = busy
+        ? theme.text
+        : enabled
+        ? theme.primary
+        : theme.overlay;
+    final fg = busy
+        ? theme.background
+        : enabled
+        ? theme.onPrimary
+        : theme.textSubtle;
+    return Pressable(
+      onTap: busy ? onStop : (enabled ? onSend : null),
+      semanticLabel: busy ? 'Stop generating' : 'Send message',
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        width: 32,
+        height: 32,
+        decoration: BoxDecoration(shape: BoxShape.circle, color: bg),
+        child: IconSwap(
+          child: busy
+              ? Container(
+                  key: const ValueKey('stop'),
+                  width: 11,
+                  height: 11,
+                  decoration: BoxDecoration(color: fg, borderRadius: BorderRadius.circular(2.5)),
+                )
+              : Icon(EveryIcon.send.data, key: const ValueKey('send'), size: 17, color: fg),
         ),
       ),
     );

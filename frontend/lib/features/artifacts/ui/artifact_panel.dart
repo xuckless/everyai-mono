@@ -81,19 +81,14 @@ class ArtifactPanel extends ConsumerWidget {
           children: [
             Container(
               height: 52,
-              padding: EdgeInsets.only(left: fullScreen ? 4 : 16, right: 6),
-              decoration: BoxDecoration(
-                border: Border(bottom: BorderSide(color: theme.border)),
-              ),
+              padding: EdgeInsets.only(left: fullScreen ? 4 : 18, right: 8),
               child: Row(
                 children: [
                   if (fullScreen) ...[
                     AdaptiveIconButton(icon: EveryIcon.chevronLeft, tooltip: 'Back to chat', onPressed: close),
                     const SizedBox(width: 2),
-                  ] else ...[
-                    AdaptiveIcon(iconOf(v.kind), size: 17, color: theme.accent),
-                    const SizedBox(width: 10),
-                  ],
+                  ] else
+                    ...[],
                   Expanded(
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
@@ -103,7 +98,7 @@ class ArtifactPanel extends ConsumerWidget {
                           artifact?.title ?? v.title,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: theme.type.body.semibold.tint(theme.text),
+                          style: theme.type.headline.tint(theme.text),
                         ),
                         Text(
                           [
@@ -120,7 +115,7 @@ class ArtifactPanel extends ConsumerWidget {
                               if (v.editedByUser) 'Edited by you',
                             ],
                           ].join(' · '),
-                          style: theme.type.caption.tint(theme.textMuted),
+                          style: theme.type.caption.tint(theme.textSubtle),
                         ),
                       ],
                     ),

@@ -1,10 +1,9 @@
-import '../../../core/ui/brand.dart';
-
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/platform/platform_kind.dart';
+import '../../../core/motion/motion.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/anchored_popover.dart';
@@ -266,31 +265,26 @@ class _AssistantMessage extends ConsumerWidget {
       builder: (context, show) => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              if (spec != null) ModelAvatar(spec.provider, size: 22),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  spec?.name ?? message.model?.value ?? 'Assistant',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.type.callout.semibold.tint(theme.textMuted),
-                ),
-              ),
-              if (route != null) ...[
-                const SizedBox(width: 8),
-                _RouteChip(route: route, conversationId: conversationId, offerRerun: isLatest && !inFlight),
-              ],
-            ],
-          ),
-          const SizedBox(height: 8),
           ...body,
           if (!inFlight)
             _Reveal(
               visible: show,
-              child: _AssistantActions(message: message, conversationId: conversationId, isLatest: isLatest),
-            ),
+              child: _AssistantActions(
+                message: message,
+                conversationId: conversationId,
+                isLatest: isLatest,
+                answeredBy: route != null
+                    ? _RouteChip(route: route, conversationId: conversationId, offerRerun: isLatest)
+                    : Text(
+                        spec?.name ?? message.model?.value ?? '',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.type.caption.tint(theme.textSubtle),
+                      ),
+              ),
+            ).settle(delay: const Duration(milliseconds: 90))
+          else if (route != null)
+            _RouteChip(route: route, conversationId: conversationId, offerRerun: false),
         ],
       ),
     );
@@ -330,65 +324,73 @@ class _LiveBody extends ConsumerWidget {
 }
 
 class _AssistantActions extends ConsumerWidget {
-  const _AssistantActions({required this.message, required this.conversationId, required this.isLatest});
+  const _AssistantActions({
+    required this.message,
+    required this.conversationId,
+    required this.isLatest,
+    required this.answeredBy,
+  });
 
   final Message message;
   final String conversationId;
   final bool isLatest;
 
+  /// Who answered (the model's name, or the Auto route chip), at the row's end.
+  final Widget answeredBy;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final theme = EveryTheme.of(context);
     final controller = ref.read(chatSessionProvider(conversationId).notifier);
     final busy = ref.watch(chatSessionProvider(conversationId).select((s) => s.phase.busy));
     final library = ref.watch(libraryProvider).value ?? const [];
     return Padding(
       padding: const EdgeInsets.only(top: 6),
-      child: Row(
-        children: [
-          if (message.plainText.isNotEmpty) _CopyAction(text: message.plainText),
-          if (isLatest) ...[
-            _ActionIcon(icon: EveryIcon.retry, tooltip: 'Retry', onPressed: busy ? null : controller.regenerate),
-            if (!busy)
-              AnchoredPopover(
-                width: 260,
-                builder: (context, close) => SingleChildScrollView(
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      const PopoverHeader('Retry with'),
-                      for (final spec in library)
-                        PopoverRow(
-                          leading: ModelAvatar(spec.provider, size: 18),
-                          title: spec.name,
-                          onTap: () {
-                            close();
-                            controller.regenerate(model: spec);
-                          },
-                        ),
-                    ],
+      child: Transform.translate(
+        offset: const Offset(-8, 0),
+        child: Row(
+          children: [
+            if (message.plainText.isNotEmpty) _CopyAction(text: message.plainText),
+            if (isLatest) ...[
+              _ActionIcon(icon: EveryIcon.retry, tooltip: 'Retry', onPressed: busy ? null : controller.regenerate),
+              if (!busy)
+                AnchoredPopover(
+                  width: 240,
+                  builder: (context, close) => SingleChildScrollView(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const PopoverHeader('Retry with'),
+                        for (final (i, spec) in library.indexed)
+                          PopoverRow(
+                            leading: ModelAvatar(spec.provider, size: 18),
+                            title: spec.name,
+                            onTap: () {
+                              close();
+                              controller.regenerate(model: spec);
+                            },
+                          ).rowIn(i),
+                      ],
+                    ),
+                  ),
+                  child: const IgnorePointer(
+                    child: KitIconButton(icon: EveryIcon.more, tooltip: 'More', onPressed: _noop),
                   ),
                 ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text('Retry with', style: theme.type.callout.tint(theme.textMuted)),
-                      const SizedBox(width: 2),
-                      AdaptiveIcon(EveryIcon.chevronDown, size: 11, color: theme.textMuted),
-                    ],
-                  ),
-                ),
-              ),
+            ],
+            const SizedBox(width: 8),
+            Expanded(
+              child: Align(alignment: Alignment.centerRight, child: answeredBy),
+            ),
           ],
-        ],
+        ),
       ),
     );
   }
 }
+
+void _noop() {}
 
 class _ActionIcon extends StatelessWidget {
   const _ActionIcon({required this.icon, required this.tooltip, required this.onPressed});
@@ -398,13 +400,7 @@ class _ActionIcon extends StatelessWidget {
   final VoidCallback? onPressed;
 
   @override
-  Widget build(BuildContext context) => AdaptiveIconButton(
-    icon: icon,
-    tooltip: tooltip,
-    size: 15,
-    color: EveryTheme.of(context).textMuted,
-    onPressed: onPressed,
-  );
+  Widget build(BuildContext context) => KitIconButton(icon: icon, tooltip: tooltip, size: 15, onPressed: onPressed);
 }
 
 class _CopyAction extends StatefulWidget {
@@ -418,19 +414,37 @@ class _CopyAction extends StatefulWidget {
 
 class _CopyActionState extends State<_CopyAction> {
   bool _copied = false;
+  int _pulse = 0;
 
   @override
-  Widget build(BuildContext context) => _ActionIcon(
-    icon: _copied ? EveryIcon.check : EveryIcon.copy,
-    tooltip: _copied ? 'Copied' : 'Copy',
-    onPressed: () async {
-      await Clipboard.setData(ClipboardData(text: widget.text));
-      if (!mounted) return;
-      setState(() => _copied = true);
-      await Future<void>.delayed(const Duration(seconds: 2));
-      if (mounted) setState(() => _copied = false);
-    },
-  );
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return SuccessPulse(
+      trigger: _pulse == 0 ? null : _pulse,
+      color: theme.success,
+      radius: 9,
+      spread: 8,
+      child: KitIconButton(
+        icon: EveryIcon.copy,
+        tooltip: _copied ? 'Copied' : 'Copy',
+        onPressed: () async {
+          await Clipboard.setData(ClipboardData(text: widget.text));
+          if (!mounted) return;
+          setState(() {
+            _copied = true;
+            _pulse++;
+          });
+          await Future<void>.delayed(const Duration(milliseconds: 1400));
+          if (mounted) setState(() => _copied = false);
+        },
+        child: IconSwap(
+          child: _copied
+              ? Icon(EveryIcon.check.data, key: const ValueKey('check'), size: 15, color: theme.success)
+              : Icon(EveryIcon.copy.data, key: const ValueKey('copy'), size: 15),
+        ),
+      ),
+    );
+  }
 }
 
 /// "N sources" and a horizontal row of source cards (search modes).
@@ -573,20 +587,19 @@ class _FollowUps extends ConsumerWidget {
     final theme = EveryTheme.of(context);
     final controller = ref.read(chatSessionProvider(conversationId).notifier);
     return Padding(
-      padding: const EdgeInsets.only(top: 16, bottom: 4),
+      padding: const EdgeInsets.only(top: 14, bottom: 2),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('Related', style: theme.type.headline.tint(theme.text)),
-          const SizedBox(height: 6),
-          for (final q in questions) ...[
-            Container(height: 1, color: theme.border),
-            PopoverRow(
-              title: q,
-              trailing: AdaptiveIcon(EveryIcon.add, size: 14, color: theme.accent),
-              onTap: () => controller.send(q),
-            ),
-          ],
+          for (final (i, q) in questions.indexed)
+            Transform.translate(
+              offset: const Offset(-10, 0),
+              child: MenuRow(
+                leading: AdaptiveIcon(EveryIcon.arrowUpRight, size: 15, color: theme.textSubtle),
+                onTap: () => controller.send(q),
+                child: Text(q, style: theme.type.callout.tint(theme.textMuted)),
+              ),
+            ).rowIn(i),
         ],
       ),
     );
@@ -707,8 +720,8 @@ class _TypingIndicator extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => const SizedBox(
-    height: 22,
-    child: Align(alignment: Alignment.centerLeft, child: EveryMarkActivity(size: 18)),
+    height: 24,
+    child: Align(alignment: Alignment.centerLeft, child: ShimmerText('Thinking')),
   );
 }
 

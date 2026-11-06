@@ -134,9 +134,13 @@ class KitIconButton extends StatelessWidget {
     this.size,
     this.round = false,
     this.selected = false,
+    this.child,
   });
 
   final EveryIcon icon;
+
+  /// Drawn in place of [icon] (an [IconSwap] between two glyphs).
+  final Widget? child;
   final String tooltip;
   final VoidCallback? onPressed;
   final bool touch;
@@ -174,7 +178,10 @@ class KitIconButton extends StatelessWidget {
           child: child,
         ),
       ),
-      child: Icon(icon.data, size: size ?? (touch ? 20 : 16)),
+      child: IconTheme.merge(
+        data: IconThemeData(size: size ?? (touch ? 20 : 16)),
+        child: child ?? Icon(icon.data, size: size ?? (touch ? 20 : 16)),
+      ),
     );
   }
 }
