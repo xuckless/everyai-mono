@@ -40,6 +40,7 @@ final class AgentType {
 /// {
 ///   "instructions": ["Run `dart format -l 120` on changed files"],
 ///   "git": {"commitStyle": "auto", "attribution": false},
+///   "checks": {"afterEdit": true, "autoFormat": false},
 ///   "agents": {"reviewer": {"description": "Reviews a diff for bugs", "prompt": "…"}},
 ///   "permissions": {"allow": [], "deny": []}
 /// }
@@ -50,6 +51,8 @@ final class AgentSettings {
     this.instructions = const [],
     this.commitStyle = CommitStyle.auto,
     this.attribution = false,
+    this.afterEditChecks = true,
+    this.autoFormat = false,
     this.agents = const {},
     this.allow = const [],
     this.deny = const [],
@@ -64,6 +67,14 @@ final class AgentSettings {
   /// Whether commits and PRs may name the agent, the tool or its maker
   /// (Co-authored-by trailers, "Generated with …"). Off by default.
   final bool attribution;
+
+  /// Whether the app runs the project's formatter check, lint and typecheck
+  /// on the files a lead's turn changed (see `post_edit_hooks.dart`). On by default.
+  final bool afterEditChecks;
+
+  /// Whether those checks let the formatters rewrite files. Off by default,
+  /// and only the user's own settings can turn it on (see [untrusted]).
+  final bool autoFormat;
   final Map<String, AgentType> agents;
 
   /// Permission rules (see `PermissionRules`). Only the user's own settings
@@ -76,6 +87,7 @@ final class AgentSettings {
     final perms = json['permissions'] is Map<String, Object?>
         ? json['permissions']! as Map<String, Object?>
         : const <String, Object?>{};
+    final checks = _checks(json);
     final agents = json['agents'] is Map<String, Object?>
         ? json['agents']! as Map<String, Object?>
         : const <String, Object?>{};
@@ -91,6 +103,8 @@ final class AgentSettings {
       instructions: strings(json['instructions']),
       commitStyle: CommitStyle.parse(git['commitStyle']),
       attribution: git['attribution'] == true,
+      afterEditChecks: checks['afterEdit'] != false,
+      autoFormat: checks['autoFormat'] == true,
       agents: {
         for (final e in agents.entries)
           if (e.value case final Map<String, Object?> a when _agentName.hasMatch(e.key))
@@ -113,6 +127,8 @@ final class AgentSettings {
       instructions: [...instructions, ...over.instructions],
       commitStyle: git.containsKey('commitStyle') ? over.commitStyle : commitStyle,
       attribution: git.containsKey('attribution') ? over.attribution : attribution,
+      afterEditChecks: _checks(raw).containsKey('afterEdit') ? over.afterEditChecks : afterEditChecks,
+      autoFormat: _checks(raw).containsKey('autoFormat') ? over.autoFormat : autoFormat,
       agents: {...agents, ...over.agents},
       allow: [...allow, ...over.allow],
       deny: [...deny, ...over.deny],
@@ -124,6 +140,8 @@ final class AgentSettings {
   /// dropped, since they would approve commands and edits on the user's
   /// behalf, and its instructions and agent texts go through the same
   /// injection scan as AGENTS.md. `deny` rules only tighten, so they stay.
+  /// Its `checks.autoFormat` goes too: a committed file must not make the
+  /// app rewrite files; it may still turn the checks off.
   static Map<String, Object?> untrusted(Map<String, Object?> raw) {
     Object? scan(Object? v) => switch (v) {
       final String s => scanContextText(s).text,
@@ -133,6 +151,7 @@ final class AgentSettings {
     return {
       ...raw,
       if (raw['permissions'] case final Map<String, Object?> p) 'permissions': {...p}..remove('allow'),
+      if (raw['checks'] case final Map<String, Object?> c) 'checks': {...c}..remove('autoFormat'),
       if (raw.containsKey('instructions')) 'instructions': scan(raw['instructions']),
       if (raw['agents'] case final Map<String, Object?> agents)
         'agents': {
@@ -157,6 +176,9 @@ final class AgentSettings {
     return s;
   }
 }
+
+Map<String, Object?> _checks(Map<String, Object?> raw) =>
+    raw['checks'] is Map<String, Object?> ? raw['checks']! as Map<String, Object?> : const <String, Object?>{};
 
 /// Agent type names go into the system prompt as they are.
 final _agentName = RegExp(r'^[A-Za-z0-9_.-]{1,64}$');

@@ -30,6 +30,7 @@ Future<String?> commitOnNewBranch(SessionWorktree w, String branch, String messa
     _unsupported();
 Future<String> snapshotTree(SessionWorktree w) async => _unsupported();
 Future<List<String>> changedSince(SessionWorktree w, String tree) async => _unsupported();
+Future<List<String>> changedBetween(SessionWorktree w, String from, String to) async => _unsupported();
 Future<bool> isDirtyAmong(SessionWorktree w, List<String> paths) async => false;
 Future<String> checkpoint(SessionWorktree w, int turn) async => _unsupported();
 Future<void> restoreCheckpoint(SessionWorktree w, String ref) async => _unsupported();

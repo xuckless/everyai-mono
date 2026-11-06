@@ -56,6 +56,17 @@ void main() {
       expect(bare, isEmpty, reason: 'an emptied parent goes too');
     });
 
+    test('the after-edit check toggles read and write their paths', () {
+      final checks = settingDef('afterEditChecks'), format = settingDef('autoFormat');
+      expect(checks.fallback, isTrue);
+      expect(format.fallback, isFalse);
+      final set = writeFileValue(format, writeFileValue(checks, const {}, false), true);
+      expect(set['checks'], {'afterEdit': false, 'autoFormat': true});
+      expect(readFileValue(checks, set), isFalse);
+      expect(readFileValue(format, set), isTrue);
+      expect(clearFileValue(format, clearFileValue(checks, set)), isEmpty);
+    });
+
     test('permission rules add once and remove cleanly', () {
       var raw = <String, Object?>{'x': 1};
       raw = addFileRule(raw, 'npm test *', allow: true);

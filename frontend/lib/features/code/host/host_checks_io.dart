@@ -5,6 +5,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 
+import '../domain/plan_batches.dart';
 import '../harness/everyai/repro_paths_io.dart';
 import '../harness/everyai/shell_io.dart';
 import 'host.dart';
@@ -13,10 +14,22 @@ import 'host_checks.dart';
 /// The longest a check's command may run.
 const _runLimit = Duration(minutes: 10);
 
-Future<({int exit, String out})> _run(HostCheckContext c, String command, Future<void> cancel) async {
-  if (c.run case final run?) return run(command, cancel);
+/// Runs [command]; [timed] tells [HostCheckContext.timed] how long it took.
+Future<({int exit, String out})> _run(
+  HostCheckContext c,
+  String command,
+  Future<void> cancel, {
+  bool timed = true,
+}) async {
+  final clock = Stopwatch()..start();
+  if (c.run case final run?) {
+    final r = await run(command, cancel);
+    if (timed) await c.timed?.call(command, clock.elapsed);
+    return r;
+  }
   final shell = SessionShell(root: c.workingDir, sessionTag: c.sessionId, scratchDir: '${c.stateDir}/shell');
   final r = await shell.run(command, timeout: _runLimit, cancel: cancel);
+  if (timed && !r.timedOut && !r.cancelled) await c.timed?.call(command, clock.elapsed);
   final note = r.timedOut ? '\n[Stopped after ${_runLimit.inMinutes} minutes.]' : '';
   return (exit: r.exitCode, out: '${r.output}$note');
 }
@@ -26,7 +39,7 @@ Future<({int exit, String out})> _run(HostCheckContext c, String command, Future
 Future<HostResult> hostDiffStatsHere(HostCheckContext c, Future<void> cancel) async {
   const command = 'git diff --stat HEAD && git ls-files --others --exclude-standard';
   if (c.refusal(command) case final why?) return (text: '$why\n(command: $command)', isError: true);
-  final r = await _run(c, command, cancel);
+  final r = await _run(c, command, cancel, timed: false);
   if (r.exit != 0) {
     return (
       text: 'This folder is not a git repository with a commit, so there is nothing to count from.',
@@ -55,8 +68,20 @@ Future<HostResult> hostDiffStatsHere(HostCheckContext c, Future<void> cancel) as
 }
 
 Future<HostResult> hostCheck(HostCheckContext c, List<String> files, Future<void> cancel) async {
+  final r = await _checks(c, files, cancel);
+  return (text: r.text, isError: r.failed);
+}
+
+/// The tests that cover [files] ([full]: their projects' whole suites), run in [c]'s folder.
+Future<({String text, bool failed, bool refused})> _checks(
+  HostCheckContext c,
+  List<String> files,
+  Future<void> cancel, {
+  bool full = false,
+}) async {
   final found = detectChecks(
     files,
+    full: full,
     exists: (p) => FileSystemEntity.typeSync('${c.workingDir}/$p') != FileSystemEntityType.notFound,
     read: (p) {
       try {
@@ -72,22 +97,41 @@ Future<HostResult> hostCheck(HostCheckContext c, List<String> files, Future<void
       text:
           '$missed Pass the test files themselves (they run as given), or run the right tests yourself. The app knows '
           'Dart/Flutter, jest, vitest, Go, Cargo and pytest projects.',
-      isError: true,
+      failed: true,
+      refused: false,
     );
   }
   final out = <String>[];
   var failed = false;
   for (final run in found.runs) {
     final command = checkCommand(run);
-    if (c.refusal(command) case final why?) return (text: '$why\n(command: $command)', isError: true);
+    if (c.refusal(command) case final why?) return (text: '$why\n(command: $command)', failed: true, refused: true);
     final r = await _run(c, command, cancel);
     failed |= r.exit != 0;
     out.add('\$ $command\n[exit ${r.exit}]\n${r.out.trimRight()}');
   }
   return (
     text: [failed ? 'Some tests failed.' : 'The tests passed.', if (missed.isNotEmpty) missed, ...out].join('\n\n'),
-    isError: failed,
+    failed: failed,
+    refused: false,
   );
+}
+
+Future<BatchVerdict> runBatchCheck(HostCheckContext c, PlanBatch batch, Future<void> cancel) async {
+  final r = switch (batch.check) {
+    null => (text: '', failed: false, refused: false),
+    FilesCheck(:final files) => await _checks(c, files.isEmpty ? batch.files : files, cancel),
+    FullCheck() => await _checks(c, batch.files, cancel, full: true),
+    CommandCheck(:final command) => switch (c.refusal(command)) {
+      final why? => (text: '$why\n(command: $command)', failed: true, refused: true),
+      null => await _run(
+        c,
+        command,
+        cancel,
+      ).then((r) => (text: '\$ $command\n[exit ${r.exit}]\n${r.out.trimRight()}', failed: r.exit != 0, refused: false)),
+    },
+  };
+  return (passed: !r.failed, output: r.failed ? _tail(r.text) : '', refused: r.refused);
 }
 
 String _tail(String out) => out.length > 3000 ? '…${out.substring(out.length - 3000)}' : out;

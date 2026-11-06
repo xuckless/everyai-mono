@@ -3,6 +3,24 @@ import 'package:every_ai/features/code/settings/agent_settings.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('after-edit checks: on by default, auto-format off, and a project file cannot turn auto-format on', () {
+    expect(AgentSettings.defaults.afterEditChecks, isTrue);
+    expect(AgentSettings.defaults.autoFormat, isFalse);
+    final user = {
+      'checks': {'autoFormat': true},
+    };
+    final project = AgentSettings.untrusted({
+      'checks': {'afterEdit': false, 'autoFormat': true},
+    });
+    expect(project['checks'], {'afterEdit': false});
+    final s = AgentSettings.layered([user, project]);
+    expect(s.afterEditChecks, isFalse);
+    expect(s.autoFormat, isTrue, reason: "the user's own layer still counts");
+    expect(AgentSettings.layered([project]).autoFormat, isFalse);
+    // A layer that doesn't mention them keeps what is below.
+    expect(AgentSettings.layered([user, const {}]).autoFormat, isTrue);
+  });
+
   test('layers merge: scalars override when set, lists add up, agents merge by name', () {
     final user = {
       'instructions': 'Keep functions small',

@@ -145,6 +145,30 @@ const settingDefs = <SettingDef>[
     fallback: false,
   ),
   SettingDef(
+    key: 'afterEditChecks',
+    title: 'Checks after each turn',
+    help:
+        'When a lead\'s turn ends, run the formatter check, lint and typecheck on the files it changed, and tell '
+        'the lead about problems with its next message.',
+    scopes: _gp,
+    kind: SettingKind.toggle,
+    store: SettingStore.file,
+    path: ['checks', 'afterEdit'],
+    fallback: true,
+  ),
+  SettingDef(
+    key: 'autoFormat',
+    title: 'Auto-format',
+    help:
+        'Let those checks run the formatters for real, so they rewrite the files the lead changed. Only your own '
+        'settings can turn this on.',
+    scopes: _g,
+    kind: SettingKind.toggle,
+    store: SettingStore.file,
+    path: ['checks', 'autoFormat'],
+    fallback: false,
+  ),
+  SettingDef(
     key: 'tier',
     title: 'Effort level',
     help: 'How much care new EveryAI sessions take. Max, Ultra and Bug fix are workflows in the agent menu.',

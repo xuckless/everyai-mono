@@ -6,6 +6,7 @@ import '../domain/agent_mode.dart';
 import '../domain/goal.dart';
 import '../domain/permissions.dart';
 import '../domain/phases.dart' show bugCheckTool;
+import '../domain/plan_batches.dart';
 import '../drivers/briefing/session_skill.dart' show HostToolInfo;
 import '../drivers/driver_policy.dart' show hostToolOf;
 import '../git/git_service.dart';
@@ -44,6 +45,26 @@ Map<String, Object?> bugCheckRecord(Map<String, Object?>? saved, {String? hostle
     'files': saved?['files'] is Map ? saved!['files'] : const <String, Object?>{},
   };
 }
+
+/// What a workflow script reads of a batch check ([runBatchCheck]'s
+/// verdict): `{passed: true}`, `{passed: false, output}`, or `{skipped: true, output}` when the session's
+/// permissions refused the command. A skipped check didn't run, so it doesn't gate: the work merges unchecked,
+/// as it would with no check (the app can't ask the user from a gate).
+Map<String, Object?> batchCheckRecord(BatchVerdict v) => v.refused
+    ? {'skipped': true, 'output': v.output}
+    : v.passed
+    ? const {'passed': true}
+    : {'passed': false, 'output': v.output};
+
+/// A batch check's outcome: [output] is the tail of what ran (or why it couldn't); [refused]: the session's
+/// permissions refused the command.
+typedef BatchVerdict = ({bool passed, String output, bool refused});
+
+/// Runs [batch]'s check in [c]'s folder (the batch agent's worktree) and returns the verdict: the one entry point
+/// for gating a batch's merge (workflow agents now, Lead Mode later). A command passes [HostCheckContext.refusal]
+/// first, like the check tool's. A batch without a check passes.
+Future<BatchVerdict> runBatchCheck(HostCheckContext c, PlanBatch batch, Future<void> cancel) =>
+    impl.runBatchCheck(c, batch, cancel);
 
 /// The host's own bug_check: the deterministic steps of Bug fix mode's
 /// (no triage, no review by another model), which a workflow sequences.
@@ -155,6 +176,7 @@ final class HostCheckContext {
     this.worktree,
     this.goal,
     this.run,
+    this.timed,
   });
 
   final String sessionId;
@@ -172,6 +194,10 @@ final class HostCheckContext {
 
   /// The command runner; null runs in the user's login shell.
   final HostRun? run;
+
+  /// Told how long each check or bug_check command ran (not one that timed out or was cancelled); the run's
+  /// result waits for it.
+  final Future<void> Function(String command, Duration took)? timed;
 }
 
 /// Answers a check tool call ([checkToolNames]).
@@ -322,11 +348,13 @@ typedef CheckRun = ({String dir, String command});
 
 /// The test commands that cover [files] (relative to the session folder),
 /// one per project they are in, and the files no test was found for.
-/// [exists] and [read] see paths relative to the session folder.
+/// [exists] and [read] see paths relative to the session folder. [full]:
+/// each project's whole suite instead (the bare test command).
 ({List<CheckRun> runs, List<String> unmatched}) detectChecks(
   List<String> files, {
   required bool Function(String path) exists,
   required String? Function(String path) read,
+  bool full = false,
 }) {
   const markers = ['pubspec.yaml', 'package.json', 'go.mod', 'Cargo.toml', 'pyproject.toml', 'pytest.ini', 'setup.py'];
   String join(String dir, String name) => dir.isEmpty ? name : '$dir/$name';
@@ -352,6 +380,26 @@ typedef CheckRun = ({String dir, String command});
   }
   final runs = <CheckRun>[];
   for (final MapEntry(key: (dir, marker), value: inside) in groups.entries) {
+    if (full) {
+      final tool = switch (marker) {
+        'pubspec.yaml' =>
+          RegExp(r'sdk:\s*flutter').hasMatch(read(join(dir, marker)) ?? '') ? 'flutter test' : 'dart test',
+        'package.json' => switch (read(join(dir, marker)) ?? '') {
+          final p when p.contains('"vitest"') => 'npx vitest run',
+          final p when p.contains('"jest"') => 'npx jest',
+          _ => null,
+        },
+        'go.mod' => 'go test ./...',
+        'Cargo.toml' => 'cargo test',
+        _ => 'python -m pytest',
+      };
+      if (tool == null) {
+        unmatched.addAll(inside.map((f) => join(dir, f)));
+      } else {
+        runs.add((dir: dir, command: tool));
+      }
+      continue;
+    }
     final tests = <String>{};
     for (final f in inside) {
       final found = switch (marker) {

@@ -5,6 +5,7 @@ import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
 
+import '../domain/plan_batches.dart';
 import 'json_schema_lite.dart';
 import 'workflow_bridge.dart';
 import 'workflow_journal.dart';
@@ -30,6 +31,7 @@ final class WorkflowAgentCall {
     this.readOnly = false,
     this.schema,
     this.bugCheck,
+    this.batch,
   });
 
   final String key;
@@ -57,6 +59,11 @@ final class WorkflowAgentCall {
   /// as `bug_check` (see [AgentLauncher.bugCheckOf]). Empty starts afresh; an
   /// earlier agent's record starts it from that repro. Null: no record.
   final Map<String, Object?>? bugCheck;
+
+  /// The plan batch it builds. With a check and a [worktree], the app runs
+  /// that check in the worktree before merging, and the answer gets the
+  /// verdict as `batch_check` (see [AgentLauncher.batchCheckOf]).
+  final PlanBatch? batch;
 
   /// What the child is sent: the prompt, and with a schema how to answer.
   String get brief => schema == null ? prompt : '$prompt\n\n${schemaInstruction(schema!)}';
@@ -88,6 +95,11 @@ abstract interface class AgentLauncher {
   /// not the agent's word): `{available: true, state, command, …}`, or
   /// `{available: false, why}`.
   Future<Map<String, Object?>> bugCheckOf(String childId);
+
+  /// Runs [batch]'s check in the child's worktree, before its merge:
+  /// `{passed: true}`, `{passed: false, output}`, or `{skipped: true, output}`
+  /// when it couldn't run (see `batchCheckRecord`); only a failed one blocks the merge. [stop] cancels a check that is running.
+  Future<Map<String, Object?>> batchCheckOf(String childId, PlanBatch batch);
 
   void stop(String childId);
 }
@@ -376,6 +388,7 @@ final class WorkflowEngine {
     _emit();
   }
 
+  /// [a]'s call; a bad `batch` option throws a [FormatException].
   WorkflowAgentCall _callOf(Map<String, Object?> a) {
     String? str(String k) => a[k] is String && (a[k] as String).isNotEmpty ? a[k] as String : null;
     final prompt = '${a['prompt'] ?? ''}';
@@ -387,6 +400,12 @@ final class WorkflowEngine {
       final Map<Object?, Object?> m => m.cast<String, Object?>(),
       _ => null,
     };
+    PlanBatch? batch;
+    if (a['batch'] != null) {
+      final r = parseBatch(a['batch']);
+      if (r.batch == null) throw FormatException('batch: ${r.problems.join('; ')}');
+      batch = r.batch;
+    }
     final base = sha256
         .convert(
           utf8.encode(
@@ -402,6 +421,7 @@ final class WorkflowEngine {
               // Left out when off, so calls journalled before it existed keep their keys.
               if (readOnly) 'readOnly',
               if (bugCheck != null) {'bugCheck': bugCheck},
+              if (batch != null) {'batch': batch.toJson()},
             ]),
           ),
         )
@@ -421,6 +441,7 @@ final class WorkflowEngine {
       readOnly: readOnly,
       schema: schema,
       bugCheck: bugCheck,
+      batch: batch,
     );
   }
 
@@ -439,7 +460,13 @@ final class WorkflowEngine {
   }
 
   Future<void> _agent(Object? id, Map<String, Object?> args) async {
-    final call = _callOf(args);
+    final WorkflowAgentCall call;
+    try {
+      call = _callOf(args);
+    } on FormatException catch (e) {
+      // Nothing started: the script fixes its call.
+      return bridge.reply(id, error: e.message);
+    }
     // A phase named only in an agent's options (Ultra's Review and Refix) still gets its place on the card.
     if (call.phase.isNotEmpty && !_phases.contains(call.phase)) _phases.add(call.phase);
     final base = WorkflowAgentView(key: call.key, label: call.label, phase: call.phase);
@@ -508,12 +535,39 @@ final class WorkflowEngine {
         sends++;
         r = await launcher.followUp(childId, schemaRepair(problems));
       }
+      // The batch's check gates the merge. The child stays live meanwhile, so a stop cancels the check too.
+      Map<String, Object?>? gate;
+      if (call.batch?.check != null && call.worktree && problem == null && _halted == null) {
+        gate = await launcher.batchCheckOf(childId, call.batch!);
+      }
       _live.remove(childId);
+      if (gate != null && _halted != null) {
+        // Stopped during the check: its verdict isn't the agent's answer.
+        gate = null;
+        problem = _error ?? 'Stopped.';
+      }
       // The app's record, over anything the agent wrote there itself.
       if (call.bugCheck != null && value is Map && problem == null) {
         value = {...value.cast<String, Object?>(), 'bug_check': await launcher.bugCheckOf(childId)};
       }
-      final note = await launcher.finish(childId, ok: problem == null);
+      final failed = gate != null && gate['passed'] == false;
+      var note = await launcher.finish(childId, ok: problem == null && !failed);
+      if (gate != null) {
+        // A failed check is still the agent's answer: the script gets the output and where the work is kept.
+        value = {
+          ...(value is Map ? value.cast<String, Object?>() : {'text': value}),
+          'batch_check': {...gate, if (failed && note != null) 'kept': note},
+        };
+        if (failed) {
+          _log('${call.label}: its batch check failed, so it was not merged', phase: call.phase);
+          note = null;
+        } else if (gate['skipped'] == true) {
+          _log(
+            '${call.label}: its batch check was not run (the session\'s permissions), so it merged unchecked',
+            phase: call.phase,
+          );
+        }
+      }
       if (note != null) {
         if (value is String) {
           value = '$value\n\n$note';

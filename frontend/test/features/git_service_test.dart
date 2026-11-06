@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:every_ai/features/code/checks/post_edit_hooks_io.dart';
 import 'package:every_ai/features/code/git/git_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -133,6 +134,15 @@ void main() {
     File('${w.path}/lib/new.txt').writeAsStringSync('fresh, changed\n');
     File('${w.path}/lib/more.txt').writeAsStringSync('more\n');
     expect((await GitService.changedSince(w, tree))..sort(), ['lib/more.txt', 'lib/new.txt']);
+    final later = await GitService.snapshotTree(w);
+    expect((await GitService.changedBetween(w, tree, later))..sort(), ['lib/more.txt', 'lib/new.txt']);
+    expect(await GitService.changedBetween(w, later, later), isEmpty);
+    // From the base commit: everything the session has done.
+    expect((await GitService.changedBetween(w, w.baseCommit, later))..sort(), [
+      'lib/mine.txt',
+      'lib/more.txt',
+      'lib/new.txt',
+    ]);
     expect(await GitService.isDirtyAmong(w, ['lib/new.txt']), isTrue);
     expect(await GitService.isDirtyAmong(w, []), isFalse);
 
@@ -148,6 +158,47 @@ void main() {
     final sha = await GitService.commitOnNewBranch(w, 'everyai/more', 'More', paths: ['lib/more.txt']);
     expect(sha, await _git(w.path, ['rev-parse', 'HEAD']));
     expect(await _git(w.path, ['show', '--name-only', '--format=', 'HEAD']), 'lib/more.txt');
+  });
+
+  test('after-edit checks see only the files changed since their last run, deletions and .everyai left out', () async {
+    final w = await start();
+    File('${w.path}/pubspec.yaml').writeAsStringSync('name: app\n');
+    File('${w.path}/lib/a.dart').writeAsStringSync('void a() {}\n');
+    File('${w.path}/lib/c.dart').writeAsStringSync('void c() {}\n');
+    final asked = <String>[];
+    Future<String?> round(String? tree) async {
+      asked.clear();
+      final r = await runPostEditHooks(
+        workingDir: w.path,
+        sessionTag: 'test',
+        shellDir: '${tmp.path}/shell',
+        target: w,
+        tree: tree,
+        // Records what would run, and runs nothing.
+        refusal: (command) {
+          asked.add(command);
+          return 'not in this test';
+        },
+        autoFormat: false,
+      );
+      expect(r.report, isEmpty, reason: 'skips alone are no report');
+      return r.tree;
+    }
+
+    // The first round has no snapshot: everything since the session's base.
+    final first = await round(null);
+    expect(first, isNotNull);
+    expect(asked.first, 'dart format --output=none --set-exit-if-changed lib/a.dart lib/c.dart');
+
+    File('${w.path}/lib/b.dart').writeAsStringSync('void b() {}\n');
+    File('${w.path}/lib/c.dart').deleteSync();
+    Directory('${w.path}/.everyai').createSync();
+    File('${w.path}/.everyai/x.dart').writeAsStringSync('void x() {}\n');
+    final second = await round(first);
+    expect(asked, ['dart format --output=none --set-exit-if-changed lib/b.dart', 'dart analyze lib/b.dart']);
+
+    await round(second);
+    expect(asked, isEmpty, reason: 'nothing changed since');
   });
 
   test('a commit that fails after the switch goes back and removes the new branch', () async {

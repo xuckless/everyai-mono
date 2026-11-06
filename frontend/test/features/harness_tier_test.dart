@@ -10,6 +10,7 @@ void main() {
     expect(tierBlock(HarnessTier.ultraEfficient), contains('smallest sound change'));
     expect(tierBlock(HarnessTier.efficient), contains('one polish pass'));
     expect(tierBlock(HarnessTier.thorough), contains('showcase'));
+    expect(tierBlock(HarnessTier.thorough), contains('Check per part, not per edit'));
     expect(tierBlock(HarnessTier.efficient), isNot(contains('fork')));
     expect(tierBlock(HarnessTier.efficient, forks: true), contains('fork yourself'));
     expect(tierBlock(HarnessTier.ultraEfficient, forks: true), isNot(contains('fork')));
@@ -98,6 +99,9 @@ void main() {
   });
 
   test('moving a running session to another level sends the new rules', () {
-    expect(tierChangeNote(HarnessTier.thorough), allOf(contains('Thorough tier'), contains('showcase')));
+    expect(
+      tierChangeNote(HarnessTier.thorough),
+      allOf(contains('Thorough tier'), contains('showcase'), contains('Check per part, not per edit')),
+    );
   });
 }

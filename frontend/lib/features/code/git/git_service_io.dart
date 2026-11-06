@@ -333,6 +333,15 @@ Future<List<String>> changedSince(SessionWorktree w, String tree) => _withSnapsh
   ];
 });
 
+/// The paths whose content differs between trees (or commits) [from] and [to].
+Future<List<String>> changedBetween(SessionWorktree w, String from, String to) async {
+  final out = await _out(w.path, ['diff', '--name-only', '--no-renames', '-z', from, to]);
+  return [
+    for (final p in out.split('\x00'))
+      if (p.isNotEmpty) p,
+  ];
+}
+
 /// Whether any of [paths] has changes not committed.
 Future<bool> isDirtyAmong(SessionWorktree w, List<String> paths) async =>
     paths.isNotEmpty && (await _out(w.path, ['status', '--porcelain', '--', ...paths])).isNotEmpty;

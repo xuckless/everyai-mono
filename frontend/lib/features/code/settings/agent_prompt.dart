@@ -166,6 +166,8 @@ const _efficientRules =
 const _thoroughRules =
     '- Treat the result as a showcase. Plan with a todo list, build in sections, and verify each part as a user '
     'would: run it, screenshot and look, try the edge cases.\n'
+    '- Check per part, not per edit: finish a coherent part, then run its checks once, since every test or build '
+    'run costs wall-clock time. Run the nearest tests for the part, and the full suite once at the end.\n'
     '- Keep improving until a fresh look finds nothing worth fixing: correctness first, then feel and polish. '
     'Going beyond the minimum is welcome where it clearly makes the result better.';
 

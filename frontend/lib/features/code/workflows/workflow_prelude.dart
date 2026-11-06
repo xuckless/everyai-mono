@@ -15,7 +15,7 @@ import 'dart:convert';
 // Date.now() or Math.random() misses the journal and runs those agents again.
 
 /// The globals a workflow gets: `args`, `ctx`, `agent`, `parallel`,
-/// `pipeline`, `phase`, `log`, `mergeFindings` (and `console.log` goes to `log`). `__ARGS__`
+/// `pipeline`, `phase`, `log`, `mergeFindings`, `batchOf`, `batchAgent` (and `console.log` goes to `log`). `__ARGS__`
 /// is replaced by the run's arguments; their [workflowCtxKey] entry becomes
 /// `ctx` (`{runId, lead, review}`) and is taken out of `args`.
 const _prelude = r'''
@@ -142,6 +142,49 @@ __g.mergeFindings = (findings) => {
 };
 ''';
 
+/// `batchOf(b)`: a plan batch `{id, intent, files, check}` checked by the same rules as `parseBatch`
+/// (domain/plan_batches.dart), so a bad one throws before anything is spent; returns the clean batch. `check` is
+/// `{files: [...]}`, `{command: "..."}`, `"full"` or absent (not gated). `batchAgent(b, prompt, opts)`: one batch's
+/// agent() call, in its own worktree; the app runs the batch's check there before merging, and the answer holds the
+/// verdict as `batch_check` (`{passed: false, output, kept}` when it failed and nothing merged; `{skipped: true, output}`
+/// when the session's permissions refused the command, and the work merged unchecked).
+const batchJs = r'''
+const __pathProblem = (p) =>
+  !p ? "a path must be a non-empty string"
+  : /^([\\/~]|[A-Za-z]:[\\/])/.test(p) ? `${p}: paths are relative to the project`
+  : p.split(/[\\/]/).includes("..") ? `${p}: a path may not contain ..`
+  : null;
+function __paths(v, where, problems) {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v)) { problems.push(`${where} must be a list of paths`); return []; }
+  const out = [];
+  for (const q of v) { const p = typeof q === "string" ? q.trim() : ""; const why = __pathProblem(p); why ? problems.push(`${where}: ${why}`) : out.push(p); }
+  return out;
+}
+__g.batchOf = (b) => {
+  const problems = [];
+  if (!b || typeof b !== "object" || Array.isArray(b)) throw new Error("batch: a batch must be an object {id, intent, files, check}");
+  if (typeof b.id !== "string" || !/^[a-z0-9][a-z0-9-]{0,31}$/.test(b.id)) problems.push("id must be a short slug (lowercase letters, digits and dashes, at most 32)");
+  if (typeof b.intent !== "string" || !b.intent.trim()) problems.push("intent must say what the batch changes");
+  const files = __paths(b.files, "files", problems);
+  let check;
+  const c = b.check;
+  const keys = c && typeof c === "object" ? Object.keys(c) : [];
+  if (c === undefined || c === null) check = undefined;
+  else if (c === "full") check = "full";
+  else if (keys.length === 1 && keys[0] === "files") check = { files: __paths(c.files, "check.files", problems) };
+  else if (keys.length === 1 && keys[0] === "command") {
+    if (typeof c.command !== "string" || !c.command.trim()) problems.push("check.command must be a non-empty string");
+    else if (c.command.includes("\n")) problems.push("check.command must be one line");
+    else check = { command: c.command.trim() };
+  } else problems.push('check must be {"files": [...]}, {"command": "..."} or "full"');
+  if (!files.length && (check === "full" || (check && check.files && !check.files.length))) problems.push('a "full" check, or {"files": []}, needs the batch\'s files');
+  if (problems.length) throw new Error(`batch: ${problems.join("; ")}`);
+  return { id: b.id, intent: b.intent.trim(), files, ...(check === undefined ? {} : { check }) };
+};
+__g.batchAgent = (b, prompt, opts = {}) => agent(prompt, { ...opts, worktree: true, batch: __g.batchOf(b) });
+''';
+
 /// The key of the run's arguments the app fills with what the script may
 /// know about its session (`ctx`), so it is journalled with them.
 const workflowCtxKey = '_ctx';
@@ -149,7 +192,7 @@ const workflowCtxKey = '_ctx';
 /// The prelude with [args] in place.
 String workflowPrelude(Map<String, Object?> args) =>
     // The marker goes first: the arguments are user text and may hold the marker's name.
-    _prelude.replaceFirst('__MERGE__', mergeFindingsJs).replaceFirst('__ARGS__', jsonEncode(args));
+    _prelude.replaceFirst('__MERGE__', '$mergeFindingsJs$batchJs').replaceFirst('__ARGS__', jsonEncode(args));
 
 /// [source] as a module whose default export runs it: top-level `export`s
 /// become plain declarations and the body goes inside an async function, so a

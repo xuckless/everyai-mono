@@ -25,6 +25,8 @@ import '../slash/skills/learn.dart';
 import '../slash/skills/learn_sources.dart';
 import '../slash/skills/skill_draft.dart' show skillDrafterProvider;
 import '../usage/usage_totals.dart';
+import 'checks/post_edit_hooks_provider.dart';
+import 'checks/runtime_profiles.dart';
 import 'domain/agent_mode.dart';
 import 'domain/approval_reason.dart';
 import 'domain/code_session.dart';
@@ -40,6 +42,7 @@ import 'domain/rewind.dart';
 import 'domain/spill.dart';
 import 'domain/fork_files.dart';
 import 'domain/notice.dart';
+import 'domain/plan_batches.dart';
 import 'domain/subagents.dart';
 import 'domain/temp_dirs.dart';
 import 'domain/questions.dart';
@@ -814,6 +817,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     bool keepCurrent = false,
     bool asFork = false,
     Set<String>? hostOnly,
+    String? profilesOf,
   }) async {
     if (consentProblem(driver.info, ref.read(codeSettingsProvider).ownClis) case final why?) throw HarnessError(why);
     ref.read(driverShutdownProvider);
@@ -833,6 +837,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         model: model,
         asFork: asFork,
         hostOnly: hostOnly,
+        profilesOf: profilesOf,
       );
       tokens[id] = token.token;
       final briefing = DriverBriefing(
@@ -864,7 +869,9 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
   /// start of a resumed conversation's prompt, so it must not change when
   /// other harnesses lead meanwhile (the handoff names them). A fork
   /// ([asFork]) can't start forks, so its text leaves the Max tools out; a
-  /// workflow agent ([hostOnly]) sees only those tools and no workflows.
+  /// workflow agent ([hostOnly]) sees only those tools and no workflows. A
+  /// child reads its parent's ([profilesOf]) runtime profiles, so lead and
+  /// fork are told the same.
   Future<({String skillDir, String text})> _exportBriefing(
     String id, {
     required String projectDir,
@@ -873,6 +880,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     required String model,
     bool asFork = false,
     Set<String>? hostOnly,
+    String? profilesOf,
   }) async {
     final projectId = ref.read(codeProjectsProvider).where((p) => p.path == projectDir).firstOrNull?.id;
     final notes = await hostProjectNotes(workingDir);
@@ -902,6 +910,10 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
               for (final w in await _workflowsOfIn(ref, projectDir))
                 if (w.origin == WorkflowOrigin.bundled) (id: w.id, when: w.whenToUse.isEmpty ? w.title : w.whenToUse),
           ],
+          // Read once per session, so the text stays the same on resume and lead switch.
+          runtimeProfiles: isDemoPath(projectDir)
+              ? const []
+              : await sessionRuntimeProfiles(await _driverDir(profilesOf ?? byId(id)?.parentId ?? id), projectDir),
         ),
       ),
       // Volatile, so last; the memory is text earlier sessions wrote.
@@ -1314,6 +1326,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
           ready: saved.future,
           asFork: hostOnly == null,
           hostOnly: hostOnly,
+          profilesOf: parent.id,
         );
       } else if (hostOnly != null) {
         briefing = await _restrictedHost(id, harness, workingDir, projectDir, hostOnly, saved.future);
@@ -1828,6 +1841,9 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// Events before this are history being replayed, which never raise a loop card.
   bool _live = false;
 
+  /// Times the terminal calls for the project's runtime profiles.
+  final _timer = CommandTimer();
+
   /// Completes once [_live] is set (or connecting failed).
   final _historyIn = Completer<void>();
 
@@ -1954,6 +1970,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
             command: command,
             approved: _hostRunGrants,
           ),
+          timed: _recordRuntime,
         );
         return hostFit(dir, 'host-${DateTime.now().millisecondsSinceEpoch}-$name', await hostCheckTool(call, context));
       case runWorkflowTool:
@@ -2294,6 +2311,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     try {
       final s = await loadAgentSettings(project?.path ?? info.workingDir);
       _settingsRules = PermissionRules(allow: s.allow, deny: s.deny);
+      _afterEdit = s.afterEditChecks;
+      _autoFormat = s.autoFormat;
     } on Object {
       return;
     }
@@ -2404,6 +2423,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (!_mirror.isClosed) _mirror.add(event);
     final transcript = _builder.snapshot;
     state = state.copyWith(transcript: transcript);
+    if (_live) _timeCommand(event, transcript);
     if (_bugAsk != null) _watchBugAsk();
     if (_hostWaits.isNotEmpty) {
       _bindHostWaits();
@@ -2437,6 +2457,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     _autoRespond(transcript);
     _syncSubagents();
     _syncForkTools();
+    // First, so nothing this handler sends (reports, the goal, the queue) goes out while they run.
+    if (_live && wasRunning && ended && _afterEdit && !_isSubagent) _startChecks();
     _deliver();
     _sendForkNotices();
     _goalTick(turnEnded: wasRunning && !transcript.running);
@@ -2451,10 +2473,39 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     unawaited(_maybeHandOff());
   }
 
+  /// Feeds [event] to the command timer; a finished terminal call that ran long enough goes into the profiles.
+  void _timeCommand(HarnessEvent event, Transcript transcript) {
+    if (_timer.observe(event, transcript) case final r? when r.took >= minRecordedRuntime) {
+      unawaited(_recordRuntime(r.command, r.took, cwd: r.cwd));
+    }
+  }
+
+  /// Adds [command]'s run to the project's runtime profiles (not a demo project's).
+  Future<void> _recordRuntime(String command, Duration took, {String cwd = ''}) async {
+    final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
+    if (info == null || noLocalFolder(info.workingDir)) return;
+    final root =
+        ref.read(codeProjectsProvider).where((p) => p.id == info.projectId).firstOrNull?.path ?? info.workingDir;
+    if (isDemoPath(root)) return;
+    final key = normaliseCommand(command, worktree: info.workingDir, projectRoot: root, cwd: cwd);
+    if (key != null) await recordRuntime(root, key.command, key.dir, took);
+  }
+
+  /// While [_sendQueued]'s message is on its way.
+  bool _dequeuing = false;
+
   /// Sends the next queued message once nothing runs or waits (and no lead switch is under way).
   void _sendQueued() {
     final t = state.transcript;
-    if (_switching || _rewinding || t.running || t.pending.isNotEmpty || t.openSubagents.isNotEmpty) return;
+    if (_switching ||
+        _rewinding ||
+        _checking ||
+        _dequeuing ||
+        t.running ||
+        t.pending.isNotEmpty ||
+        t.openSubagents.isNotEmpty) {
+      return;
+    }
     // A workflow's result first: the app made it, so Stop and the user's queue don't touch it.
     if (_workflowResults.isNotEmpty && _session != null) {
       final r = _workflowResults.removeAt(0);
@@ -2466,7 +2517,14 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     final [next, ...rest] = state.queued;
     state = state.copyWith(queued: rest);
     if (_withinBudget()) {
-      unawaited(_checkpoint().then((_) => _sendNow(next)));
+      // Until it is out, the next event must not send the one after it too.
+      _dequeuing = true;
+      unawaited(
+        _checkpoint()
+            .then((_) => _sendNow(next))
+            .whenComplete(() => _dequeuing = false)
+            .catchError((Object _) => false),
+      );
     } else {
       _droppedNote(next);
     }
@@ -2533,7 +2591,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     }
     // It becomes a user turn like any other, so it gets a checkpoint to rewind to.
     await _checkpoint();
-    await session.send(_noted(text));
+    await _checksRun;
+    await (_session ?? session).send(_noted(text));
   }
 
   void _trackContext(HarnessEvent event) {
@@ -2749,6 +2808,86 @@ final class CodeSessionController extends Notifier<CodeSessionState>
 
   String _tierNote = '';
 
+  /// From the settings files: whether a lead's turn end runs the after-edit
+  /// checks, and whether their formatters write.
+  bool _afterEdit = true;
+  bool _autoFormat = false;
+
+  /// The after-edit checks of the last turn while they run; their report
+  /// waits for the next message in [CodeSessionInfo.pendingChecks].
+  Future<void>? _checksRun;
+
+  /// The last 'did not run' list shown, so the same one isn't shown each turn.
+  String _checksSkipped = '';
+
+  /// While [_checksRun] runs: messages queue, and the lead gets nothing
+  /// (reports, answers) until it is done, so its next turn neither runs
+  /// beside a formatter nor goes without the report.
+  bool _checking = false;
+
+  /// Runs the after-edit checks on what the turn changed (see
+  /// [postEditHooksProvider]); a report waits in [CodeSessionInfo.pendingChecks],
+  /// and tools that did not run are shown to the user (not sent to the lead).
+  void _startChecks() {
+    if (ref.read(codeSessionsProvider.notifier).byId(sessionId) == null) return;
+    final hooks = ref.read(postEditHooksProvider);
+    final before = _checksRun;
+    _checking = true;
+    late final Future<void> run;
+    run = _checksRun = () async {
+      await before;
+      try {
+        final sessions = ref.read(codeSessionsProvider.notifier);
+        // Read now: a round before this one may have moved the snapshot.
+        final info = sessions.byId(sessionId);
+        if (info == null) return;
+        final r = await hooks(
+          info,
+          shellDir: () async => '${await sessions._driverDir(sessionId)}/shell',
+          refusal: _checksRefusal,
+          autoFormat: _autoFormat,
+        );
+        if (!ref.mounted) return;
+        if (sessions.byId(sessionId) case final now?) {
+          sessions.update(now.copyWith(checkedTree: r.tree, pendingChecks: r.report.isEmpty ? null : r.report));
+        }
+        if (r.skipped.isNotEmpty && r.skipped != _checksSkipped) {
+          _builder.addNotice(NoticeItem('checks-skipped-${_events.length}', checksSkippedNotice, detail: r.skipped));
+          state = state.copyWith(transcript: _builder.snapshot);
+        }
+        _checksSkipped = r.skipped;
+      } on Object {
+        // Without them the next message just goes without a report.
+      } finally {
+        // A later round may have started meanwhile; it releases the queue when it ends.
+        if (ref.mounted && identical(_checksRun, run)) {
+          _checking = false;
+          _deliver();
+          _sendQueued();
+        }
+      }
+    }();
+  }
+
+  /// Why the after-edit checks won't run [command]: the session's
+  /// permissions refuse it, or would ask (nobody is there to approve a
+  /// check the app starts on its own), else null.
+  String? _checksRefusal(String command) {
+    const tool = 'after_edit_checks';
+    if (hostRunDenial(policy: policy, mode: checkMode, tool: tool, command: command) case final why?) {
+      return why.replaceFirst('Not run: ', '');
+    }
+    final asks = hostRunRefusal(
+      policy: policy,
+      mode: checkMode,
+      tool: tool,
+      args: const {},
+      command: command,
+      approved: [],
+    );
+    return asks == null ? null : 'this mode asks before such commands; allow it in Permissions to run it';
+  }
+
   /// While [rewind] runs: messages wait, so none goes out mid-restore or without the note.
   bool _rewinding = false;
 
@@ -2875,8 +3014,12 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     final sessions = ref.read(codeSessionsProvider.notifier);
     final info = sessions.byId(sessionId);
     final rewound = info?.pendingRewind ?? '';
-    if (info != null && rewound.isNotEmpty) sessions.update(info.copyWith(pendingRewind: ''));
+    final checks = info?.pendingChecks ?? '';
+    if (info != null && (rewound.isNotEmpty || checks.isNotEmpty)) {
+      sessions.update(info.copyWith(pendingRewind: '', pendingChecks: ''));
+    }
     final context = [
+      checks,
       _context?.takeNote() ?? '',
       _workflowNote(),
       rewound,
@@ -2940,7 +3083,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     _releaseHostCards();
     final t = state.transcript;
     // During a lead switch it waits for the new lead, during a rewind for the files.
-    if (_switching || _rewinding || t.running || t.pending.isNotEmpty || t.openSubagents.isNotEmpty) {
+    // While the last turn's checks run it waits in the queue too (they go with it, see [_startChecks]).
+    if (_switching || _rewinding || _checking || t.running || t.pending.isNotEmpty || t.openSubagents.isNotEmpty) {
       state = state.copyWith(queued: [...state.queued, out]);
       return true;
     }
@@ -2985,6 +3129,9 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// Sends [out]. A card or plan still held for the user is closed first: the
   /// call's result says the user replied in chat, and the message follows.
   Future<bool> _sendNow(Outgoing out) async {
+    // The last turn's checks go with this message, so wait for them (they have a time cap; a
+    // message normally queues behind them instead, see [_sendOut]).
+    await _checksRun;
     final session = _session;
     if (session == null) return false;
     _releaseHostCards();
@@ -3686,6 +3833,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       }
       if (!ref.mounted) return const LeadSwitchOutcome.failed('The session was closed.');
     }
+    // The old lead's checks go to the new one with its first message.
+    if (run) await _checksRun;
     if (run && imported != null) {
       await live.send(_noted(cutTurn.isEmpty ? carryOn : '$cutTurn\n\n$carryOn'));
     } else if (run && handoff.kind == HandoffKind.delta) {
@@ -4039,6 +4188,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
 
   Future<void> stop() async {
     _doomOpen = false;
+    _timer.clear();
     // A Bug fix card still waiting for its start note won't show now.
     if (_bugAsk case final ask? when !ask.shown) _endBugAsk();
     _pauseGoal('Stopped by you. Set the goal again to carry on.');
@@ -5138,7 +5288,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       if (!t.held.any((c) => reports.containsKey(c.id))) return;
       sent = _replyInCall(session, subagentReason(reports));
     } else {
-      if (t.running || t.pending.isNotEmpty) return;
+      if (_checking || t.running || t.pending.isNotEmpty) return;
       sent = session.send(_noted(subagentMessage(reports)));
     }
     _delivering = true;
@@ -5280,7 +5430,9 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (_isHeld(item.call)) {
       await _replyInCall(session, answersReason(item.questions, answers));
     } else {
-      await session.send(_noted(answersMessage(item.questions, answers)));
+      // A new turn: the last one's checks go with it.
+      await _checksRun;
+      await (_session ?? session).send(_noted(answersMessage(item.questions, answers)));
     }
   }
 
@@ -5964,6 +6116,9 @@ final class _WorkflowLauncher implements AgentLauncher {
   /// Turns being watched, by child id, so a stop can end them.
   final _watching = <String, Completer<WorkflowAgentResult>>{};
 
+  /// Batch checks running, by child id: completing one cancels its command.
+  final _checking = <String, Completer<void>>{};
+
   /// What each harness reported this run (asked once, not per agent).
   final _detected = <String, Future<DriverStatus>>{};
   final _models = <String, Future<List<DriverModel>>>{};
@@ -6037,6 +6192,48 @@ final class _WorkflowLauncher implements AgentLauncher {
     final hostless = _ref.read(_hostlessProvider)[childId];
     if (hostless != null) return bugCheckRecord(null, hostless: hostless);
     return bugCheckRecord(await readBugCheckState(await _sessions._driverDir(childId)));
+  }
+
+  /// Runs in the child's worktree with the child's own permissions, like its check tool; with no approved call
+  /// to use, a command that would ask is refused (and the check skipped, see [batchCheckRecord]). The app runs it,
+  /// so a child without EveryAI's tools is checked all the same.
+  @override
+  Future<Map<String, Object?>> batchCheckOf(String childId, PlanBatch batch) async {
+    final info = _sessions.byId(childId);
+    if (info == null) return batchCheckRecord((passed: false, output: 'The agent\'s session is gone.', refused: false));
+    final controller = _ref.read(codeSessionProvider(childId).notifier);
+    final policy = controller.policy;
+    final mode = controller.checkMode;
+    final cancel = _checking[childId] = Completer<void>();
+    try {
+      final verdict = await runBatchCheck(
+        HostCheckContext(
+          sessionId: childId,
+          workingDir: info.workingDir,
+          stateDir: await _sessions._driverDir(childId),
+          worktree: info.worktree,
+          refusal: (command) =>
+              hostRunRefusal(
+                    policy: policy,
+                    mode: mode,
+                    tool: checkTool,
+                    args: const {},
+                    command: command,
+                    approved: [],
+                  ) ==
+                  null
+              ? null
+              : hostRunDenial(policy: policy, mode: mode, tool: checkTool, command: command) ??
+                    'Not run: the session asks before this command, and the app runs a batch check without asking. '
+                        'Allow the test command with a rule, or use Full auto, to have it gate the merge.',
+        ),
+        batch,
+        cancel.future,
+      );
+      return batchCheckRecord(verdict);
+    } finally {
+      if (_checking[childId] == cancel) _checking.remove(childId);
+    }
   }
 
   /// The model [asked] for on [harness]: one it lists, else the newest
@@ -6191,6 +6388,8 @@ final class _WorkflowLauncher implements AgentLauncher {
 
   @override
   void stop(String childId) {
+    final check = _checking.remove(childId);
+    if (check != null && !check.isCompleted) check.complete();
     final turn = _watching.remove(childId);
     if (turn != null && !turn.isCompleted) turn.complete((text: '', error: 'Stopped.', spentMicros: null));
     unawaited(_ref.read(_liveProvider)[childId]?.interrupt());

@@ -22,13 +22,13 @@ The tools named here (`fork`, `check_forks`, `answer_fork`, `present_plan`, `ask
 
 ## 3. Plan
 - Call `present_plan` with a title, a short summary and the steps.
-- For each step, say which files it touches and how you will check it works.
+- List the change as batches, not prose: each batch is one step with an `id` (a short slug), its `files` and its `check`. The check is how that batch proves itself before it merges: prefer `{files: [the tests that cover it]}`, else `{command: "one line"}`; use `{full: true}` only when nothing narrower checks it. The saved plan carries them as a ```json batches block.
 - Mark the steps that don't depend on each other: those can run in parallel.
 - Wait for the user's answer. Change the plan if they ask for changes.
 
 ## 4. Build in forks
 - Give each independent step to a `fork`, with `worktree` on so parallel forks don't edit the same files. At most 4 run at once.
-- A fork sees nothing of this conversation. Its task must stand alone: the goal, the files, the plan step, the conventions to keep, and how to check the work.
+- A fork sees nothing of this conversation. Its task must stand alone: the goal, the files, the plan step, the conventions to keep, and its batch's check (the tests or command to run before it reports).
 - Do the steps that depend on others yourself, or start their fork once the step before has reported.
 - Don't sleep or poll. Each fork's report comes as a `<task-notification>` inside an `<everyai-notice>` (see the notices rule in the session briefing). Use `check_forks` when you want to see how they are doing.
 - A `<fork-question>` is yours to answer with `answer_fork`. When the user should decide, ask them with `ask_user_question` first and pass their answer on.
@@ -37,5 +37,5 @@ The tools named here (`fork`, `check_forks`, `answer_fork`, `present_plan`, `ask
 
 ## 5. Verify
 - Read each report and its merge note. Fix any conflict a merge left.
-- Run the project's tests and its build or linter. Fix what fails.
+- Run the project's full test suite once, here, with its build or linter, unless the plan says otherwise. Fix what fails.
 - Finish with a short report: what changed, where, and what you checked. Say plainly what is left or didn't work.

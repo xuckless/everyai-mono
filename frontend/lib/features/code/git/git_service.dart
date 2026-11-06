@@ -101,6 +101,10 @@ abstract final class GitService {
   /// The paths that differ between snapshot [tree] and the folder now.
   static Future<List<String>> changedSince(SessionWorktree w, String tree) => impl.changedSince(w, tree);
 
+  /// The paths that differ between trees (or commits) [from] and [to].
+  static Future<List<String>> changedBetween(SessionWorktree w, String from, String to) =>
+      impl.changedBetween(w, from, to);
+
   /// Whether any of [paths] has uncommitted changes.
   static Future<bool> isDirtyAmong(SessionWorktree w, List<String> paths) => impl.isDirtyAmong(w, paths);
 

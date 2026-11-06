@@ -100,6 +100,8 @@ Future<String> sessionNoticeNonce(String sessionDir, String Function() make) asy
 Future<void> removeBriefing(String sessionDir) async {
   final nonce = File('$sessionDir/notice-nonce');
   if (nonce.existsSync()) await nonce.delete();
+  final profiles = File('$sessionDir/runtime-profiles');
+  if (profiles.existsSync()) await profiles.delete();
   final root = '$sessionDir/briefing';
   switch (FileSystemEntity.typeSync(root, followLinks: false)) {
     case FileSystemEntityType.link:

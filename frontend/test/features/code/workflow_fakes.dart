@@ -3,6 +3,7 @@
 
 import 'dart:async';
 
+import 'package:every_ai/features/code/domain/plan_batches.dart';
 import 'package:every_ai/features/code/workflows/workflow_bridge.dart';
 import 'package:every_ai/features/code/workflows/workflow_engine.dart';
 
@@ -92,6 +93,13 @@ final class FakeLauncher implements AgentLauncher {
   Map<String, Object?> Function(String childId) bugCheck = (id) => {'available': true, 'state': 'verified'};
   final bugChecked = <String>[];
 
+  /// The verdict of a child's batch check (see [AgentLauncher.batchCheckOf]); it may hold.
+  Future<Map<String, Object?>> Function(String childId, PlanBatch batch) batchCheck = (id, b) async => {'passed': true};
+  final batchChecked = <(String, String)>[];
+
+  /// What [finish] returns (the merge note).
+  String? Function(String childId, bool ok) finishNote = (id, ok) => null;
+
   @override
   Future<WorkflowChild> start(WorkflowAgentCall call) async {
     final id = 'child-${++_n}-${call.prompt}';
@@ -135,7 +143,13 @@ final class FakeLauncher implements AgentLauncher {
   @override
   Future<String?> finish(String childId, {required bool ok}) async {
     finished.add((childId, ok));
-    return null;
+    return finishNote(childId, ok);
+  }
+
+  @override
+  Future<Map<String, Object?>> batchCheckOf(String childId, PlanBatch batch) {
+    batchChecked.add((childId, batch.id));
+    return batchCheck(childId, batch);
   }
 
   @override

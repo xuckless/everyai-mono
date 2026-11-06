@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -5,6 +6,7 @@ import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/goal.dart';
 import 'package:every_ai/features/code/domain/permissions.dart';
 import 'package:every_ai/features/code/domain/phases.dart' show bugCheckTool;
+import 'package:every_ai/features/code/domain/plan_batches.dart';
 import 'package:every_ai/features/code/domain/spill.dart';
 import 'package:every_ai/features/code/drivers/briefing/session_skill.dart';
 import 'package:every_ai/features/code/drivers/claude/claude_wire.dart' show answeredBySession;
@@ -238,6 +240,31 @@ void main() {
       expect(runs, ['dart test test/foo_test.dart']);
     });
 
+    test('each command run is timed; diff_stats is not', () async {
+      write('pubspec.yaml', 'name: p\n');
+      write('test/foo_test.dart');
+      final timed = <String>[];
+      final c = HostCheckContext(
+        sessionId: 's1',
+        workingDir: dir,
+        stateDir: stateDir,
+        refusal: (_) => null,
+        run: (command, _) async => (exit: 0, out: 'ok'),
+        timed: (command, took) async {
+          expect(took.isNegative, false);
+          timed.add(command);
+        },
+      );
+      await hostCheckTool(
+        call(checkTool, {
+          'files': ['test/foo_test.dart'],
+        }),
+        c,
+      );
+      await hostCheckTool(call(diffStatsTool), c);
+      expect(timed, ['dart test test/foo_test.dart']);
+    });
+
     test('nothing to test is said plainly', () async {
       write('notes.txt');
       final r = await hostCheckTool(
@@ -249,6 +276,77 @@ void main() {
       expect(r.isError, true);
       expect(r.text, contains('No test found for: notes.txt'));
       expect((await hostCheckTool(call(checkTool), context())).text, contains('name the files'));
+    });
+  });
+
+  group('batch check', () {
+    PlanBatch batch(BatchCheck? check) =>
+        PlanBatch(id: 'a', intent: 'A', files: const ['app/lib/a.dart'], check: check);
+    final cancel = Completer<void>().future;
+
+    setUp(() {
+      write('app/pubspec.yaml', 'name: p\n');
+      write('app/lib/a.dart');
+      write('app/test/a_test.dart');
+      write('svc/go.mod', 'module x');
+      write('svc/q/q.go');
+    });
+
+    test('files run the tests that cover them (the batch\'s own when none are named)', () async {
+      final runs = <String>[];
+      var v = await runBatchCheck(context(runs: runs), batch(const FilesCheck([])), cancel);
+      expect((v.passed, v.output, v.refused), (true, '', false));
+      v = await runBatchCheck(
+        context(runs: runs, answer: (_) => (exit: 1, out: 'Expected: 2')),
+        batch(const FilesCheck(['app/test/a_test.dart'])),
+        cancel,
+      );
+      expect(runs, ['cd app && dart test test/a_test.dart', 'cd app && dart test test/a_test.dart']);
+      expect(v.passed, isFalse);
+      expect(v.output, allOf(contains('[exit 1]'), contains('Expected: 2')));
+      expect(batchCheckRecord(v), {'passed': false, 'output': v.output});
+    });
+
+    test('a command passes on exit 0 and goes through the gate first', () async {
+      final runs = <String>[];
+      var v = await runBatchCheck(context(runs: runs), batch(const CommandCheck('make test')), cancel);
+      expect(v.passed, isTrue);
+      expect(batchCheckRecord(v), {'passed': true});
+      v = await runBatchCheck(
+        context(runs: runs, answer: (_) => (exit: 2, out: 'x' * 5000)),
+        batch(const CommandCheck('make test')),
+        cancel,
+      );
+      expect(v.passed, isFalse);
+      expect(v.output.length, lessThan(3100));
+      v = await runBatchCheck(
+        context(runs: runs, refusal: (c) => 'Not run: $c'),
+        batch(const CommandCheck('make test')),
+        cancel,
+      );
+      expect((v.passed, v.refused), (false, true));
+      expect(v.output, startsWith('Not run: make test'));
+      // Refused isn't failed: the gate is skipped, and the work merges unchecked.
+      expect(batchCheckRecord(v), {'skipped': true, 'output': v.output});
+      expect(runs, ['make test', 'make test']);
+    });
+
+    test('full runs each project\'s whole suite; no project fails with why', () async {
+      final runs = <String>[];
+      final v = await runBatchCheck(
+        context(runs: runs),
+        PlanBatch(id: 'a', intent: 'A', files: const ['app/lib/a.dart', 'svc/q/q.go'], check: const FullCheck()),
+        cancel,
+      );
+      expect(v.passed, isTrue);
+      expect(runs, ['cd app && dart test', 'cd svc && go test ./...']);
+      final none = await runBatchCheck(
+        context(runs: runs),
+        PlanBatch(id: 'a', intent: 'A', files: const ['README.md'], check: const FullCheck()),
+        cancel,
+      );
+      expect(none.passed, isFalse);
+      expect(none.output, contains('No test found'));
     });
   });
 
