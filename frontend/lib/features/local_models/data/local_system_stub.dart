@@ -24,3 +24,5 @@ final class _NoLocalSystem implements LocalSystem {
   @override
   Future<void> stopStarted() async {}
 }
+
+bool get runningUnderTest => false;

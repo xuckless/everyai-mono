@@ -27,3 +27,7 @@ abstract interface class LocalSystem {
 }
 
 LocalSystem createLocalSystem() => impl.createLocalSystem();
+
+/// True inside `flutter test` (which sets FLUTTER_TEST): app-wide providers then don't probe this computer's ports
+/// and programs unless a test asks for it.
+bool get runningUnderTest => impl.runningUnderTest;

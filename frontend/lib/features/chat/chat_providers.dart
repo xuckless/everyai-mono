@@ -25,6 +25,7 @@ import 'domain/reasoning_effort.dart';
 import 'domain/security_alert.dart';
 import '../settings/byok_keys.dart' show modelBillingProvider;
 import '../../core/local_backend/local_backend_providers.dart';
+import '../local_models/local_model_bridge.dart' show chatTurnHeaders;
 import '../../core/net/api_client.dart';
 import '../settings/reply_language.dart';
 
@@ -56,8 +57,35 @@ final chatTransportProvider = Provider<ChatTransport>((ref) {
 /// the backend (a fake transport in tests), so no title call goes out either.
 final chatTitlerProvider = Provider<ChatTitler?>((ref) {
   if (ref.watch(chatTransportProvider) is! SplitTransport) return null;
-  return HttpChatTitler(ref.watch(apiClientProvider), authenticated: !ref.watch(appConfigProvider).devSkipAuth);
+  final local = ref.watch(localApiProvider);
+  return _SplitTitler(
+    HttpChatTitler(ref.watch(apiClientProvider), authenticated: !ref.watch(appConfigProvider).devSkipAuth),
+    () async => switch (await local.client()) {
+      final ApiClient c => HttpChatTitler(c),
+      null => null,
+    },
+  );
 });
+
+/// Titles a chat where its turns ran: on the bundled server for local-model
+/// and own-key chats (their headers say so), else on ours.
+final class _SplitTitler implements ChatTitler {
+  const _SplitTitler(this.remote, this.local);
+
+  final ChatTitler remote;
+  final Future<ChatTitler?> Function() local;
+
+  @override
+  Future<String?> title({
+    required String user,
+    required String assistant,
+    required String session,
+    Map<String, String> headers = const {},
+  }) async {
+    final titler = headers.isEmpty ? remote : await local() ?? remote;
+    return titler.title(user: user, assistant: assistant, session: session, headers: headers);
+  }
+}
 
 /// Answers client-executed tool calls (`POST /v1/chat/tool_result`).
 final toolResultsProvider = Provider<ToolResults>((ref) {
@@ -486,7 +514,7 @@ final class ChatController extends Notifier<ChatSessionState> {
             effort: state.effort.wireFor(model),
             replyLanguage: ref.read(replyLanguageProvider.notifier).wire,
             forceTool: state.toolsEnabled ? forceTool : null,
-            providerKeys: ref.read(modelBillingProvider).headersFor(model.id),
+            providerKeys: chatTurnHeaders(model.id.value, ref.read(modelBillingProvider).headersFor(model.id)),
             researchDepth: state.researchDepth,
           ),
           cancel: cancel.future,
@@ -646,7 +674,7 @@ final class ChatController extends Notifier<ChatSessionState> {
       user: untitled.prompt,
       assistant: reply,
       session: conversationId,
-      headers: ref.read(modelBillingProvider).headersFor(untitled.model.id),
+      headers: chatTurnHeaders(untitled.model.id.value, ref.read(modelBillingProvider).headersFor(untitled.model.id)),
     );
     if (title == null || title == untitled.placeholder) return;
     final renamed = await repo.renameIf(conversationId, from: untitled.placeholder, to: title);

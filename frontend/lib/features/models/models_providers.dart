@@ -8,6 +8,9 @@ import '../../core/db/app_database.dart';
 import '../../core/net/api_client.dart';
 import '../../core/preferences.dart';
 import '../../core/providers.dart';
+import '../local_models/local_model_bridge.dart';
+import 'domain/local_routes.dart';
+import '../settings/byok_keys.dart' show byokKeysProvider;
 import 'domain/model_catalog.dart';
 
 /// The model shop: the backend's catalog (`GET /v1/models`). Starts from the
@@ -26,15 +29,31 @@ class CatalogController extends Notifier<ModelCatalog> {
   /// Whether the last refresh failed (the shop shows a retry banner).
   bool lastRefreshFailed = false;
 
+  /// The backend's catalog, before the local models are added.
+  ModelCatalog _remote = builtInCatalog;
+
   @override
   ModelCatalog build() {
     final cached = _prefs[_cacheKey];
-    final catalog = (cached == null ? null : _parse(cached)) ?? builtInCatalog;
+    _remote = (cached == null ? null : _parse(cached)) ?? builtInCatalog;
     final fetched = DateTime.tryParse(_prefs[_fetchedKey] ?? '');
     if (fetched == null || DateTime.now().difference(fetched) > _maxAge || cached == null) {
       Future.microtask(refresh);
     }
-    return catalog;
+    return _withLocal(_remote);
+  }
+
+  /// [remote] plus the models on this computer. New chats default to Apple's
+  /// on-device model when it's there (macOS), else, with no key of the user's,
+  /// to the smallest local model; otherwise the backend's default.
+  ModelCatalog _withLocal(ModelCatalog remote, {bool watch = true}) {
+    final local = watch ? ref.watch(localModelSpecsProvider) : ref.read(localModelSpecsProvider);
+    if (local.isEmpty) return remote;
+    final keys = (watch ? ref.watch(byokKeysProvider) : ref.read(byokKeysProvider)).value ?? const {};
+    final apple = local.where((s) => s.id == appleModelId).firstOrNull;
+    final smallest = LocalRoutes.aux;
+    final fallback = apple?.id ?? (keys.isEmpty && smallest != null ? ModelId('local/${smallest.name}') : null);
+    return ModelCatalog([...remote.all, ...local], defaultModel: fallback ?? remote.defaultModel.id);
   }
 
   Future<void> refresh() async {
@@ -43,7 +62,8 @@ class CatalogController extends Notifier<ModelCatalog> {
       final catalog = _fromJson(json);
       if (catalog == null || !ref.mounted) return;
       lastRefreshFailed = false;
-      state = catalog;
+      _remote = catalog;
+      state = _withLocal(catalog, watch: false);
       _prefs[_cacheKey] = jsonEncode(json);
       _prefs[_fetchedKey] = DateTime.now().toIso8601String();
     } on Object {

@@ -2,9 +2,6 @@
 
 import 'dart:async';
 
-import 'dart:ui' show AppExitResponse;
-
-import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../net/api_client.dart';
@@ -14,17 +11,8 @@ import 'local_backend.dart';
 /// The bundled server; stopped when the app quits (provider disposal doesn't run then).
 final localBackendProvider = Provider<LocalBackend>((ref) {
   final backend = createLocalBackend();
-  final lifecycle = AppLifecycleListener(
-    onExitRequested: () async {
-      await backend.stop();
-      return AppExitResponse.exit;
-    },
-    onDetach: () => unawaited(backend.stop()),
-  );
-  ref.onDispose(() {
-    lifecycle.dispose();
-    unawaited(backend.stop());
-  });
+  // Quitting stops it through localShutdownProvider (local_model_bridge.dart).
+  ref.onDispose(() => unawaited(backend.stop()));
   return backend;
 });
 

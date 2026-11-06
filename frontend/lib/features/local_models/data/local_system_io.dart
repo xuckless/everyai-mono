@@ -146,3 +146,5 @@ Future<({int code, String out})?> runProgram(String exe, List<String> args) asyn
     return null;
   }
 }
+
+bool get runningUnderTest => Platform.environment['FLUTTER_TEST'] == 'true';
