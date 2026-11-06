@@ -29,6 +29,7 @@ import '../workflows/workflow_library.dart';
 import '../workflows/workflow_picker.dart';
 import 'harness_logo.dart';
 import '../../models/ui/model_avatar.dart';
+import '../../local_models/local_model_bridge.dart' show everyaiHasNoModelProvider, localModelSpecsProvider;
 
 /// The Model page's groups with [model] picked, built once for every part
 /// of the menu (the composer shows several, rebuilt as the session streams).
@@ -38,8 +39,10 @@ final _menuGroupsProvider = Provider.autoDispose.family<List<(ModelProvider, Lis
 ) {
   final specs = ref.watch(modelCatalogProvider);
   final library = ref.watch(libraryProvider).value ?? const <ModelSpec>[];
+  // Local models that call tools join as their own group, "On this computer".
+  final local = ref.watch(localModelSpecsProvider);
   return libraryMenuGroups(
-    library,
+    [...library.where((s) => !local.contains(s)), ...local],
     ref.watch(agentCatalogProvider),
     current: model,
     nameOf: (id) => specs[ModelId(id)]?.name,
@@ -165,6 +168,8 @@ class AgentMenu extends ConsumerWidget {
           ? ref.watch(driverStatusesProvider).value
           : ref.watch(driverStatusesInProvider(environment)).value;
       final own = ref.watch(codeSettingsProvider.select((s) => s.ownClis));
+      // The EveryAI harness needs a model; outside agents run on their own logins.
+      final everyaiIdle = ref.watch(everyaiHasNoModelProvider);
       leads = [
         for (final l in leadOptions([for (final d in registry.listed) d.info], statuses, own, current: harness))
           // EveryAI runs on this computer only, and nothing starts on an ssh remote yet (see harnessFor).
@@ -172,6 +177,8 @@ class AgentMenu extends ConsumerWidget {
             (info: named(l.info), blocked: "Agents can't run here yet", detail: '')
           else if (env != null && !env.isHost && l.info.id == everyaiHarnessName)
             (info: l.info, blocked: 'Runs on this computer only', detail: '')
+          else if (everyaiIdle && l.info.id == everyaiHarnessName)
+            (info: l.info, blocked: 'Needs a model: add an API key or get a local model', detail: '')
           else
             (info: named(l.info), blocked: l.blocked, detail: l.detail),
       ];

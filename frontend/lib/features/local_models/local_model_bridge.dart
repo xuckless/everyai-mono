@@ -124,3 +124,27 @@ final localShutdownProvider = Provider<void>((ref) {
   );
   ref.onDispose(lifecycle.dispose);
 });
+
+/// The local model new Code sessions default to when the user has no key: one
+/// that calls tools, a coding model first ("coder", "coding" in its name),
+/// else the one with the biggest window. Apple's model is never picked (its
+/// window is too small for the harness). Null when there's none.
+final localCodeModelProvider = Provider<ModelSpec?>((ref) {
+  final tools = [
+    for (final s in ref.watch(localModelSpecsProvider))
+      if (s.tools && s.id != appleModelId) s,
+  ];
+  if (tools.isEmpty) return null;
+  final coders = tools.where((s) => s.id.value.toLowerCase().contains('cod')).toList();
+  final pool = coders.isEmpty ? tools : coders;
+  return pool.reduce((a, b) => b.contextLength > a.contextLength ? b : a);
+});
+
+/// Whether the EveryAI harness has nothing to run on: no key of the user's
+/// and no local model that calls tools (in the app on a desktop; never in
+/// tests). Outside agents run on their own logins and don't need either.
+final everyaiHasNoModelProvider = Provider<bool>((ref) {
+  if (!ref.watch(localDetectionProvider)) return false;
+  final keys = ref.watch(byokKeysProvider);
+  return keys.hasValue && keys.value!.isEmpty && ref.watch(localCodeModelProvider) == null;
+});

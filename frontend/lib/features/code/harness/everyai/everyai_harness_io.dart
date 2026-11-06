@@ -95,7 +95,9 @@ final class EveryAIHarness implements Harness, ForksSessions, AttachesBriefed, A
     if (!dir.existsSync()) {
       throw const HarnessError("This session's history is no longer on this computer, so it can't be resumed.");
     }
-    final session = await EveryAISession._load(conversationId, dir, await gatewayKey(), client);
+    // Offline (a local-model session) the gateway key can't be fetched; local calls don't need it.
+    final key = await gatewayKey().then((k) => k, onError: (Object _) => '');
+    final session = await EveryAISession._load(conversationId, dir, key, client);
     _sessions[conversationId] = session;
     return session;
   }

@@ -35,7 +35,9 @@ import 'session_view.dart';
 import 'code_top_bar.dart' show SessionSettingsList;
 import 'console/session_actions.dart';
 import '../code_settings_providers.dart';
-import '../drivers/driver_registry.dart' show driverRegistryProvider;
+import '../drivers/driver_policy.dart' show leadBlocked;
+import '../drivers/driver_registry.dart' show driverRegistryProvider, driverStatusesProvider;
+import '../../local_models/local_model_bridge.dart' show everyaiHasNoModelProvider;
 import '../environments/environment_picker.dart';
 import '../harness/events.dart' show HarnessEvent;
 import '../resume/past_sessions.dart';
@@ -157,8 +159,26 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
   }
 
   /// The lead the new session runs on: the pick, except that the scripted demo always runs its own.
-  String _leadFor(CodeProject project) =>
-      isDemoPath(project.path) ? everyaiHarnessName : ref.read(codeLeadProvider).harness;
+  /// With no model for the EveryAI harness (no key, no local model) and no
+  /// lead picked yet, the first outside agent ready here leads instead.
+  String _leadFor(CodeProject project) {
+    if (isDemoPath(project.path)) return everyaiHarnessName;
+    final pick = ref.read(codeLeadProvider).harness;
+    final picked = ref.read(preferencesProvider)[CodeLead.key] != null;
+    if (pick != everyaiHarnessName || picked || !ref.read(everyaiHasNoModelProvider)) return pick;
+    final statuses = ref.read(driverStatusesProvider).value ?? const {};
+    final own = ref.read(codeSettingsProvider).ownClis;
+    for (final d in ref.read(driverRegistryProvider).listed) {
+      if (d.info.id == everyaiHarnessName) continue;
+      final status = statuses[d.info.id];
+      if (status != null &&
+          status.installed &&
+          leadBlocked(d.info, status, consented: own.contains(d.info.consentId)) == null) {
+        return d.info.id;
+      }
+    }
+    return pick;
+  }
 
   /// The model and effort for [harness]: an outside lead's own pick, else the EveryAI harness's.
   ({String model, String effort}) _modelFor(String harness) => harness == everyaiHarnessName
