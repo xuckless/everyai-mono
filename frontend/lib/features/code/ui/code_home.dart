@@ -59,7 +59,10 @@ const demoProjectPath = '${demoScheme}counter-app';
 
 /// Code landing: pick a project, describe the task, start a session.
 class CodeHome extends ConsumerStatefulWidget {
-  const CodeHome({super.key});
+  const CodeHome({super.key, this.projectId});
+
+  /// The project to pick for the new session (a project's New session in the sidebar), else the last one shown.
+  final String? projectId;
 
   @override
   ConsumerState<CodeHome> createState() => _CodeHomeState();
@@ -67,7 +70,7 @@ class CodeHome extends ConsumerStatefulWidget {
 
 class _CodeHomeState extends ConsumerState<CodeHome> {
   final _headline = startWords[Random().nextInt(startWords.length)];
-  String? _projectId;
+  late String? _projectId = widget.projectId;
   AgentMode? _picked;
   bool _isolated = false;
 
@@ -80,6 +83,18 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
 
   /// A prompt from an everyai:// link, put in the box for the user to review.
   ({String text, int seq})? _prefill;
+
+  @override
+  void didUpdateWidget(CodeHome old) {
+    super.didUpdateWidget(old);
+    // New session from another project's menu while Code home is already showing.
+    if (widget.projectId != null && widget.projectId != old.projectId) {
+      setState(() {
+        _projectId = widget.projectId;
+        _picked = null;
+      });
+    }
+  }
 
   /// Takes a pending link prompt: the project it names (else the one showing) and its text. Never starts a session.
   void _takeLinkPrompt() {
@@ -324,7 +339,8 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                         SessionTile(
                           key: ValueKey('code-home.earlier.${s.id}'),
                           info: s,
-                          badge: 'EveryAI',
+                          // The harness it ran on, by name beside its logo (like the earlier outside sessions).
+                          badge: ref.read(driverRegistryProvider).resolve(s.harness)?.info.label ?? s.harness,
                           onOpen: () => context.go(Routes.codeSession(s.id)),
                         ).rowIn(i)
                       else if (row.past case final p?)

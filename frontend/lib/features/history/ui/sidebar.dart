@@ -357,6 +357,7 @@ class CodeSessionList extends ConsumerWidget {
               // A search shows every match, folded or not.
               open: searching || !folded.contains(p.id),
               onToggle: searching ? null : () => ref.read(sidebarFoldedProjectsProvider.notifier).toggle(p.id),
+              onNewSession: () => onNavigate(Routes.newCodeSession(p.id)),
             ),
             AnimatedSize(
               duration: Motion.reduced(context) ? Duration.zero : Motion.move,
@@ -386,13 +387,22 @@ class CodeSessionList extends ConsumerWidget {
 /// A project's name in the Code list, with where it runs when that isn't this computer, and a ⋯ (on hover) to
 /// change that or remove the project from the list.
 class _ProjectHeader extends ConsumerStatefulWidget {
-  const _ProjectHeader({super.key, required this.project, required this.open, this.onToggle});
+  const _ProjectHeader({
+    super.key,
+    required this.project,
+    required this.open,
+    required this.onNewSession,
+    this.onToggle,
+  });
 
   final CodeProject project;
 
   /// Whether its sessions show; [onToggle] folds or opens them (null while searching).
   final bool open;
   final VoidCallback? onToggle;
+
+  /// Opens Code home with this project picked.
+  final VoidCallback onNewSession;
 
   @override
   ConsumerState<_ProjectHeader> createState() => _ProjectHeaderState();
@@ -471,7 +481,8 @@ class _ProjectHeaderState extends ConsumerState<_ProjectHeader> {
                   opacity: _hover || Host.isMobile ? 1 : 0,
                   child: AnchoredPopover(
                     width: 300,
-                    builder: (context, close) => _ProjectOptions(project: p, close: close),
+                    builder: (context, close) =>
+                        _ProjectOptions(project: p, close: close, onNewSession: widget.onNewSession),
                     child: Padding(
                       key: ValueKey('sidebar.project.${p.id}.options'),
                       padding: const EdgeInsets.only(left: 6),
@@ -508,7 +519,9 @@ final class SidebarFoldedProjects extends Notifier<Set<String>> {
 
 /// The ⋯ popover: Environment (opens the list in place), Remove from list.
 class _ProjectOptions extends ConsumerStatefulWidget {
-  const _ProjectOptions({required this.project, required this.close});
+  final VoidCallback onNewSession;
+
+  const _ProjectOptions({required this.project, required this.close, required this.onNewSession});
 
   final CodeProject project;
   final VoidCallback close;
@@ -538,6 +551,16 @@ class _ProjectOptionsState extends ConsumerState<_ProjectOptions> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          PopoverRow(
+            key: const ValueKey('sidebar.project.new-session'),
+            leading: AdaptiveIcon(EveryIcon.add, size: 15, color: theme.textMuted),
+            title: 'New session',
+            subtitle: 'In ${p.name}',
+            onTap: () {
+              widget.close();
+              widget.onNewSession();
+            },
+          ),
           PopoverRow(
             key: const ValueKey('sidebar.project.environment'),
             leading: AdaptiveIcon(EveryIcon.command, size: 15, color: theme.textMuted),

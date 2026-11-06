@@ -31,6 +31,10 @@ class ConsoleLayout extends ConsumerStatefulWidget {
   ConsumerState<ConsoleLayout> createState() => _ConsoleLayoutState();
 }
 
+/// The session panel's share of the session screen until its divider is dragged: about a third, the rest for the
+/// transcript.
+const consolePanelShare = 0.33;
+
 /// From this width the panel sits beside the transcript, each at least [PanelSplit.minSide] wide. Below the header's
 /// wide tier too: a Linux or Windows window is often under 1000 logical pixels, and an overlay there closed on every
 /// card and couldn't be resized.
@@ -78,6 +82,7 @@ class _ConsoleLayoutState extends ConsumerState<ConsoleLayout> {
             maxWidth: box.maxWidth,
             width: width,
             onWidth: notifier.setWidth,
+            defaultShare: consolePanelShare,
             panel: panel,
             child: child,
           );
@@ -99,7 +104,11 @@ class _ConsoleLayoutState extends ConsumerState<ConsoleLayout> {
               top: 0,
               bottom: 0,
               right: 0,
-              width: PanelSplit.widthFor(width, box.maxWidth).clamp(0, box.maxWidth - 40).toDouble(),
+              width: PanelSplit.widthFor(
+                width,
+                box.maxWidth,
+                share: consolePanelShare,
+              ).clamp(0, box.maxWidth - 40).toDouble(),
               child: panel,
             ),
           ],

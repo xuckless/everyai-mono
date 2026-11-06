@@ -48,6 +48,9 @@ abstract final class Routes {
   static const board = '/code/board';
   static String chat(String id) => '/chat/$id';
   static String codeSession(String id) => '/code/s/$id';
+
+  /// Code home with [projectId] picked for the new session.
+  static String newCodeSession(String projectId) => Uri(path: code, queryParameters: {'project': projectId}).toString();
   static const codeSettingsPath = '/code/settings';
 }
 
@@ -165,7 +168,11 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: Routes.code,
             // Phones, tablets and the web follow a paired computer's sessions.
-            pageBuilder: (_, _) => NoTransitionPage(child: Host.isDesktop ? const CodeHome() : const RemoteCodeHome()),
+            pageBuilder: (_, state) => NoTransitionPage(
+              child: Host.isDesktop
+                  ? CodeHome(projectId: state.uri.queryParameters['project'])
+                  : const RemoteCodeHome(),
+            ),
           ),
           GoRoute(
             path: Routes.board,

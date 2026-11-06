@@ -829,6 +829,10 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   Preferences `code.sidebar.folded`; searching shows all), with the session rows' insets so the ⋯ lines up. Each
   session row starts with its harness's logo (`SessionStatusIcon(status, harness)`); its state is a dot on the
   logo's corner (none when idle/done).
+  A project's ⋯ has New session: `Routes.newCodeSession(id)` = `/code?project=<id>`, read by `CodeHome(projectId:)`
+  (also on `didUpdateWidget`). The Code session panel opens at a third of the session screen (`consolePanelShare`
+  0.33 via `PanelSplit.defaultShare`; artifacts keep 0.52); sessions with a dragged width keep it, double-click
+  resets. Code home's earlier EveryAI sessions name their harness beside its logo.
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2
