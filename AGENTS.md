@@ -861,6 +861,17 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   lists Docker/Podman containers (`containers.dart`: compose dir, bind mount, or ids the session's docker commands
   printed) with logs/shell-inside tabs (`TerminalTabs.addCommand`), and tails the stdout file of processes EveryAI
   didn't start (`outputFileOf`).
+- **Live web Preview (2026-11-06; d2b72c7).** `code/live/`: `ChromeHost.of(profileDir)` runs one headless Chrome per
+  project profile (`browserProfileDir`, App Support `browser-profiles/<sha1>`), `HeadlessBrowser` takes a page target
+  in it; `LiveBrowsers.forSession(codeSessionId)` is the page the EveryAI harness (`SessionSpec.liveId`/
+  `browserProfile`), the host browser tool and `PreviewPane` all use. The page outlives runs; released on session
+  remove, all stopped at quit. Preview paints `Page.startScreencast` (first picture captured at start), forwards input
+  unguarded (`userMouse/userKey/userText`), `LiveControl` = driver lock (user input takes over, agent actions wait 2
+  min, `gaveBackText`), ghost cursor from `control.activity`. Agent API: `FrameBook` frame ids (`f_N`, geometry check,
+  zoom regions), `pageSnapshotJs` element list with `ref_N`, `evalRefusal` (cookies/storage/other-site requests),
+  eval results scrubbed. Chrome for Testing download pinned in `live/chrome_pin.dart` by
+  `tool/pin_chrome_for_testing.sh`. Dev MCP test rig: `tool/live_mcp/live_mcp_serve_test.dart` (env
+  `EVERYAI_LIVE_MCP_OUT`) serves the host browser tool + a demo shop for an outside agent to review.
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2
