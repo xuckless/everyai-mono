@@ -82,7 +82,7 @@ void main() {
   });
 
   test("a command with a value from the project's .env isn't kept", () async {
-    File('$root/.env').writeAsStringSync('DEPLOY_HOOK=zq81-hook-value\n');
+    File('$root/.env').writeAsStringSync('DEPLOY_TOKEN=zq81-hook-value\n');
     await recordRuntime(root, 'deploy zq81-hook-value', '', const Duration(seconds: 9));
     await recordRuntime(root, 'make', '', const Duration(seconds: 9));
     expect(await sessionRuntimeProfiles(sessionDir, root), ['`make`: ~9s (1 run)']);

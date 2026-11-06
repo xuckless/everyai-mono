@@ -945,9 +945,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       pathMap: pathMap,
       briefing: briefing,
       // Outside leads read them in their briefing; the same rendering, once per session (see _exportBriefing).
-      runtimeProfiles: !local || demo
-          ? const []
-          : await sessionRuntimeProfiles(await _driverDir(byId(sessionId)?.parentId ?? sessionId), projectDir),
+      runtimeProfiles: !local || demo ? const [] : await _profilesFor(sessionId, projectDir),
       skillsOff: !outside
           ? const {}
           : leadSkillsOff(ref.read(preferencesProvider), projectId, harness ?? byId(sessionId)?.harness ?? ''),
@@ -1120,6 +1118,16 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
   }
 
   Future<String> _driverDir(String id) async => '${await ref.read(driverDataDirProvider)()}/driver-sessions/$id';
+
+  /// The session's one rendering of the project's runtime profiles (a child reads its parent's); none when the app's
+  /// data folder can't be reached. Best effort: profiles are a hint, never a reason a session can't start.
+  Future<List<String>> _profilesFor(String sessionId, String projectDir) async {
+    try {
+      return await sessionRuntimeProfiles(await _driverDir(byId(sessionId)?.parentId ?? sessionId), projectDir);
+    } on Object {
+      return const [];
+    }
+  }
 
   /// The MCP host's address as [env] reaches it, served there for [token]
   /// only ([HostServer.reachFrom]). WSL in NAT mode reaches Windows at its
