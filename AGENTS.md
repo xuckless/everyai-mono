@@ -733,6 +733,14 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   - Full flutter test (2308) and zig tests pass. Nothing live-tested. Open: whether Bypass keeps the session budget
     stop; the host browser's eval/type are unguarded for outside leads.
 
+- **UI overhaul, phase 0 (2026-11-06; branch `ui-overhaul`, e935bb5).** Owner's plan and answers:
+  `~/.claude/plans/ui-overhaul.md`; design: the claude.ai artifact "EveryAI" (boards per surface, `project/everyai.css`).
+  One EveryAI look on every OS: the design-language picker is gone (Settings > Appearance has Pure black instead),
+  one Material root supplies only plumbing. Tokens in `EveryTheme` (kit roles, dark/light/Pure black), Geist + Geist
+  Mono bundled, Lucide icons, `core/motion/motion.dart` (the owner's 20 motion rules; entrances without timers;
+  `Motion.ambient` is off under test via `test/flutter_test_config.dart`), `core/ui/kit.dart` widgets; the `Adaptive*`
+  wrappers render the kit. Screens still use their old (Material-branch) layouts until their phase. Not checked
+  visually yet. Next: phase 1 shell + sidebar, then Chat, Code session, Board, Settings, the rest.
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2
