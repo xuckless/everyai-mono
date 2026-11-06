@@ -58,7 +58,7 @@ final screens = <String, Widget Function()>{
   'Code home': () => const CodeHome(),
   'Onboarding': () => const OnboardingScreen(desktop: true),
   'Settings modal': () => const SettingsModal(),
-  'Sidebar': () => Sidebar(location: '/chat/new', collapsed: false, onNavigate: (_) {}, onToggle: () {}),
+  'Sidebar': () => Sidebar(location: '/chat/new', onNavigate: (_) {}, onToggle: () {}),
   'Coming soon': () => const ComingSoonScreen(
     title: 'Something',
     icon: EveryIcon.info,

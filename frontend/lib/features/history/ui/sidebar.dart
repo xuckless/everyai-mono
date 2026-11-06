@@ -3,13 +3,13 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../../app/router.dart';
 import '../../../core/platform/platform_kind.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/anchored_popover.dart';
+import '../../../core/motion/motion.dart';
 import '../../../core/ui/brand.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../chat/chat_providers.dart';
@@ -25,22 +25,22 @@ import '../../remote/ui/remote_code.dart' show RemoteSessionList;
 import '../../settings/ui/account_menu.dart';
 import '../../updates/ui/update_banner.dart';
 
-/// Width of the collapsed rail. macOS needs room for the traffic lights above it.
-double sidebarRailWidth(DesignLanguage design) => Host.hasTrafficLights ? 92 : 60;
-
-/// The app sidebar, Claude-desktop style. Expanded: destinations, then recent
-/// chats, then the account. Collapsed: an icon rail with the same destinations.
+/// The app sidebar: Chat | Code, destinations, the recent list, the account.
+/// On wide windows it collapses away entirely (pages then show a button to
+/// bring it back); on phones it is a drawer.
 class Sidebar extends ConsumerStatefulWidget {
   const Sidebar({
     super.key,
     required this.location,
-    required this.collapsed,
     required this.onNavigate,
     required this.onToggle,
+    this.compact = false,
   });
 
   final String location;
-  final bool collapsed;
+
+  /// A phone drawer: touch-sized rows, no collapse button.
+  final bool compact;
   final ValueChanged<String> onNavigate;
   final VoidCallback onToggle;
 
@@ -69,7 +69,6 @@ class _SidebarState extends ConsumerState<Sidebar> {
   }
 
   void _openSearch() {
-    if (widget.collapsed) widget.onToggle();
     setState(() => _searching = true);
     WidgetsBinding.instance.addPostFrameCallback((_) => _searchFocus.requestFocus());
   }
@@ -119,34 +118,29 @@ class _SidebarState extends ConsumerState<Sidebar> {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    final macos = theme.design == DesignLanguage.macos;
     // The title-bar row is shared with the traffic lights on any macOS window.
     final lights = Host.hasTrafficLights;
-    final collapsed = widget.collapsed;
+    final touch = widget.compact;
     final loc = widget.location;
+    final newKeys = Host.isApple ? '⌘N' : 'Ctrl+N';
 
     final codeMode = loc.startsWith(Routes.code);
     final destinations = codeMode
         ? <_Destination>[
             // Sessions start on the computer; other devices list them.
             if (Host.isDesktop)
-              _Destination(EveryIcon.add, 'New session', loc == Routes.code, Routes.code, accent: true)
+              _Destination(EveryIcon.add, 'New session', loc == Routes.code, Routes.code)
             else
               _Destination(EveryIcon.projects, 'Sessions', loc == Routes.code, Routes.code),
-            if (Host.isDesktop) ...[
+            if (Host.isDesktop)
               _Destination(
                 EveryIcon.search,
                 'Search',
                 _searching,
                 null,
                 onTap: _searching ? _closeSearch : _openSearch,
-                glyph: 'search',
               ),
-              // Projects: the picker lives on the Code home page, which New session already opens. A row of its
-              // own waits for a target of its own.
-            ],
-            if (collapsed) _Destination(EveryIcon.chat, 'Chat', false, Routes.newChat, glyph: 'chat'),
-            _Destination(EveryIcon.models, 'Models', loc == Routes.models, Routes.models, glyph: 'models'),
+            _Destination(EveryIcon.models, 'Models', loc == Routes.models, Routes.models),
           ]
         : <_Destination>[
             _Destination(
@@ -154,116 +148,86 @@ class _SidebarState extends ConsumerState<Sidebar> {
               'New chat',
               loc.startsWith('/chat/') && _isBlankChat(loc),
               Routes.newChat,
-              accent: true,
+              keys: Host.isDesktop ? newKeys : null,
             ),
-            _Destination(
-              EveryIcon.search,
-              'Search',
-              _searching,
-              null,
-              onTap: _searching ? _closeSearch : _openSearch,
-              glyph: 'search',
-            ),
-            _Destination(EveryIcon.chat, 'Chats', loc == Routes.chats, Routes.chats, glyph: 'chat'),
-            _Destination(EveryIcon.projects, 'Projects', loc == Routes.projects, Routes.projects, glyph: 'projects'),
-            _Destination(
-              EveryIcon.artifacts,
-              'Artifacts',
-              loc == Routes.artifacts,
-              Routes.artifacts,
-              glyph: 'artifacts',
-            ),
-            if (collapsed) _Destination(EveryIcon.code, 'Code', false, Routes.code, glyph: 'code'),
-            _Destination(EveryIcon.models, 'Models', loc == Routes.models, Routes.models, glyph: 'models'),
+            _Destination(EveryIcon.search, 'Search', _searching, null, onTap: _searching ? _closeSearch : _openSearch),
+            _Destination(EveryIcon.chat, 'Chats', loc == Routes.chats, Routes.chats),
+            _Destination(EveryIcon.projects, 'Projects', loc == Routes.projects, Routes.projects),
+            _Destination(EveryIcon.artifacts, 'Artifacts', loc == Routes.artifacts, Routes.artifacts),
+            _Destination(EveryIcon.models, 'Models', loc == Routes.models, Routes.models),
           ];
 
     final header = SizedBox(
-      // macOS: the title-bar row, clear of the traffic lights.
-      height: lights ? 52 : 56,
-      child: collapsed
-          ? (lights ? null : Center(child: _toggleButton()))
-          : Padding(
-              padding: EdgeInsets.only(left: lights ? 92 : 16, right: 8),
-              child: Row(
-                children: [
-                  // The lockup: mark plus the outlined wordmark (never typeset live).
-                  Expanded(
-                    child: Semantics(
-                      label: 'EveryAI',
-                      child: Row(
-                        children: [
-                          BrandMark(size: macos ? 18 : 22),
-                          const SizedBox(width: 8),
-                          SvgPicture.asset(
-                            theme.isDark
-                                ? 'assets/brand/logo/wordmark-white.svg'
-                                : 'assets/brand/logo/wordmark-ink.svg',
-                            height: macos ? 13 : 16,
-                            excludeFromSemantics: true,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  _toggleButton(),
-                ],
+      height: touch ? 52 : 48,
+      child: Padding(
+        // macOS: the title-bar row, clear of the traffic lights.
+        padding: EdgeInsets.only(left: lights && !touch ? 78 : 14, right: 6),
+        child: Row(
+          children: [
+            if (!lights || touch)
+              Semantics(
+                label: 'EveryAI',
+                child: BrandMark(size: touch ? 22 : 18),
               ),
-            ),
+            const Spacer(),
+            if (!touch) _toggleButton(),
+          ],
+        ),
+      ),
     );
 
     final top = <Widget>[
       header,
-      if (collapsed && lights) Center(child: _toggleButton()),
-      // Code runs on desktop hosts; other devices follow a paired one's
-      // sessions (and offer pairing until there is one).
-      if (!collapsed)
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-          child: _SpaceSwitch(
-            code: codeMode,
-            onChanged: (code) => widget.onNavigate(code ? Routes.code : Routes.newChat),
-          ),
-        ),
       Padding(
-        padding: EdgeInsets.symmetric(horizontal: collapsed ? 0 : 8, vertical: 2),
+        padding: const EdgeInsets.fromLTRB(10, 2, 10, 10),
+        child: KitSegmented<bool>(
+          key: const ValueKey('sidebar.space'),
+          values: const [false, true],
+          selected: codeMode,
+          touch: touch,
+          width: double.infinity,
+          label: (code) => code ? 'Code' : 'Chat',
+          onSelected: (code) => widget.onNavigate(code ? Routes.code : Routes.newChat),
+        ),
+      ),
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10),
         child: Column(
-          crossAxisAlignment: collapsed ? CrossAxisAlignment.center : CrossAxisAlignment.stretch,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            for (final d in destinations)
+            for (final (i, d) in destinations.indexed)
               _NavItem(
                 icon: d.icon,
                 label: d.label,
                 selected: d.selected,
-                accent: d.accent,
-                glyph: d.glyph,
-                collapsed: collapsed,
+                keys: d.keys,
+                touch: touch,
                 onTap: d.onTap ?? () => widget.onNavigate(d.route!),
-              ),
+              ).rowIn(i),
           ],
         ),
       ),
-      if (!collapsed && _searching && (!codeMode || Host.isDesktop))
+      if (_searching && (!codeMode || Host.isDesktop))
         Padding(
-          padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
+          padding: const EdgeInsets.fromLTRB(10, 6, 10, 2),
           child: CallbackShortcuts(
             bindings: {const SingleActivator(LogicalKeyboardKey.escape): _closeSearch},
             child: AdaptiveTextField(
               controller: _search,
               focusNode: _searchFocus,
               placeholder: codeMode ? 'Search sessions' : 'Search chats',
-              prefix: AdaptiveIcon(EveryIcon.search, size: 15, color: theme.textMuted),
+              prefix: AdaptiveIcon(EveryIcon.search, size: 15, color: theme.textSubtle),
               onChanged: _onQuery,
               textInputAction: TextInputAction.search,
             ),
-          ),
+          ).settle(),
         ),
     ];
     return LayoutBuilder(
       builder: (context, box) => Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // On a short window the fixed top (header, switch, destinations, search) takes at most 60% of the height and
-          // scrolls; the list keeps the rest.
+          // On a short window the fixed top takes at most 60% of the height and scrolls; the list keeps the rest.
           ConstrainedBox(
             constraints: BoxConstraints(maxHeight: box.maxHeight.isFinite ? box.maxHeight * 0.6 : double.infinity),
             child: SingleChildScrollView(
@@ -276,88 +240,25 @@ class _SidebarState extends ConsumerState<Sidebar> {
             ),
           ),
           Expanded(
-            child: collapsed
-                ? const SizedBox.shrink()
-                : codeMode
+            child: codeMode
                 ? CodeSessionList(location: loc, query: _codeQuery, onNavigate: widget.onNavigate)
                 : _Recents(location: loc, matches: _matches, onNavigate: widget.onNavigate),
           ),
-          UpdateBanner(collapsed: collapsed),
-          Container(height: 1, color: theme.border),
-          AccountRow(collapsed: collapsed),
+          const UpdateBanner(collapsed: false),
+          const AccountRow(collapsed: false),
         ],
       ),
     );
   }
 
-  Widget _toggleButton() => AdaptiveIconButton(
-    icon: EveryIcon.sidebar,
-    tooltip: widget.collapsed ? 'Expand sidebar' : 'Collapse sidebar',
-    onPressed: widget.onToggle,
-  );
+  Widget _toggleButton() =>
+      AdaptiveIconButton(icon: EveryIcon.sidebar, tooltip: 'Collapse sidebar', onPressed: widget.onToggle);
 
   /// The current chat is "new" when it has no stored conversation yet.
   bool _isBlankChat(String location) {
     final id = location.substring('/chat/'.length);
     final all = ref.watch(conversationsProvider).value;
     return all != null && !all.any((c) => c.id == id);
-  }
-}
-
-/// Chat | Code.
-class _SpaceSwitch extends StatelessWidget {
-  const _SpaceSwitch({required this.code, required this.onChanged});
-
-  final bool code;
-  final ValueChanged<bool> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    Widget segment(String label, String glyph, bool selected, bool value) => Expanded(
-      child: Semantics(
-        button: true,
-        selected: selected,
-        label: label,
-        excludeSemantics: true,
-        child: MouseRegion(
-          cursor: SystemMouseCursors.click,
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: selected ? null : () => onChanged(value),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 120),
-              padding: const EdgeInsets.symmetric(vertical: 5),
-              decoration: BoxDecoration(
-                color: selected ? theme.surfaceRaised : null,
-                borderRadius: BorderRadius.circular(7),
-                boxShadow: [
-                  if (selected) const BoxShadow(color: Color(0x1A000000), blurRadius: 3, offset: Offset(0, 1)),
-                ],
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  BrandGlyph(glyph, active: selected, size: 16),
-                  const SizedBox(width: 6),
-                  Text(
-                    label,
-                    style: (selected ? theme.type.callout.semibold : theme.type.callout.medium).tint(
-                      selected ? theme.text : theme.textMuted,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-    return Container(
-      padding: const EdgeInsets.all(2),
-      decoration: BoxDecoration(color: theme.text.withValues(alpha: 0.06), borderRadius: BorderRadius.circular(9)),
-      child: Row(children: [segment('Chat', 'chat', !code, false), segment('Code', 'code', code, true)]),
-    );
   }
 }
 
@@ -429,10 +330,7 @@ class CodeSessionList extends ConsumerWidget {
         child: Text('No matching sessions.', style: theme.type.callout.tint(theme.textMuted)),
       );
     }
-    Widget label(String text) => Padding(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
-      child: Text(text, style: theme.type.caption.semibold.tint(theme.textMuted)),
-    );
+    Widget label(String text) => KitLabel(text, padding: const EdgeInsets.fromLTRB(20, 14, 20, 6));
     return ListView(
       padding: const EdgeInsets.only(bottom: 8),
       children: [
@@ -446,7 +344,7 @@ class CodeSessionList extends ConsumerWidget {
               caption: names[s.projectId],
               onOpen: () => onNavigate(Routes.codeSession(s.id)),
             ),
-          if (groups.recent.isNotEmpty) label('Recents'),
+          if (groups.recent.isNotEmpty) label('Recent'),
         ],
         for (final p in projects)
           if (!searching || groups.recent.any((s) => s.projectId == p.id)) ...[
@@ -589,112 +487,50 @@ class _ProjectOptionsState extends ConsumerState<_ProjectOptions> {
 }
 
 final class _Destination {
-  const _Destination(this.icon, this.label, this.selected, this.route, {this.onTap, this.accent = false, this.glyph});
+  const _Destination(this.icon, this.label, this.selected, this.route, {this.onTap, this.keys});
 
   final EveryIcon icon;
   final String label;
   final bool selected;
   final String? route;
   final VoidCallback? onTap;
-  final bool accent;
 
-  /// A brand feature glyph, drawn instead of [icon].
-  final String? glyph;
+  /// Its keyboard shortcut, shown at the row's end.
+  final String? keys;
 }
 
-class _NavItem extends StatefulWidget {
+class _NavItem extends StatelessWidget {
   const _NavItem({
     required this.icon,
     required this.label,
     required this.selected,
-    required this.collapsed,
     required this.onTap,
-    this.accent = false,
-    this.glyph,
+    this.keys,
+    this.touch = false,
   });
 
   final EveryIcon icon;
-  final String? glyph;
   final String label;
   final bool selected;
-  final bool collapsed;
-  final bool accent;
+  final String? keys;
+  final bool touch;
   final VoidCallback onTap;
 
   @override
-  State<_NavItem> createState() => _NavItemState();
-}
-
-class _NavItemState extends State<_NavItem> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    final fill = widget.selected
-        ? theme.text.withValues(alpha: 0.09)
-        : _hover
-        ? theme.text.withValues(alpha: 0.05)
-        : null;
-    final icon = widget.accent
-        ? Container(
-            width: 24,
-            height: 24,
-            decoration: BoxDecoration(color: theme.primary, shape: BoxShape.circle),
-            child: Center(child: AdaptiveIcon(EveryIcon.add, size: 15, color: theme.onPrimary)),
-          )
-        : SizedBox(
-            width: 24,
-            child: Center(
-              child: widget.glyph != null
-                  ? BrandGlyph(widget.glyph!, active: widget.selected, size: 20)
-                  : AdaptiveIcon(widget.icon, size: 18, color: theme.text.withValues(alpha: 0.85)),
-            ),
-          );
-    final content = widget.collapsed
-        ? SizedBox(width: 40, height: 36, child: Center(child: icon))
-        : Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-            child: Row(
-              children: [
-                icon,
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    widget.label,
-                    overflow: TextOverflow.ellipsis,
-                    style: (widget.accent || widget.selected ? theme.type.body.medium : theme.type.body).tint(
-                      widget.accent ? theme.accent : theme.text,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          );
-    return Semantics(
-      button: true,
-      selected: widget.selected,
-      label: widget.label,
-      excludeSemantics: true,
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        onEnter: (_) => setState(() => _hover = true),
-        onExit: (_) => setState(() => _hover = false),
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: widget.onTap,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 1),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 100),
-              decoration: BoxDecoration(color: fill, borderRadius: BorderRadius.circular(8)),
-              child: content,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Semantics(
+    label: label,
+    selected: selected,
+    excludeSemantics: true,
+    button: true,
+    child: MenuRow(
+      onTap: onTap,
+      selected: selected,
+      touch: touch,
+      leading: AdaptiveIcon(icon, size: touch ? 20 : 16),
+      trailing: keys == null ? null : Kbd(keys!),
+      child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+    ),
+  );
 }
 
 class _Recents extends ConsumerWidget {
@@ -718,30 +554,32 @@ class _Recents extends ConsumerWidget {
     if (visible.isEmpty) {
       return Padding(
         padding: const EdgeInsets.all(20),
-        child: Text(
-          matches != null ? 'No chats match.' : 'Your chats will appear here.',
-          style: theme.type.callout.tint(theme.textMuted),
-        ),
+        child: Text(matches != null ? 'No matches' : 'No chats yet', style: theme.type.callout.tint(theme.textSubtle)),
       );
     }
 
-    Widget label(String text) => Padding(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
-      child: Text(text, style: theme.type.caption.semibold.tint(theme.textMuted)),
-    );
+    Widget label(String text) => KitLabel(text, padding: const EdgeInsets.fromLTRB(20, 14, 20, 6));
 
     return ListView(
       padding: const EdgeInsets.only(bottom: 8),
       children: [
         if (pinned.isNotEmpty) ...[
           label('Starred'),
-          for (final c in pinned)
-            ConversationTile(conversation: c, selected: c.id == activeId, onOpen: () => onNavigate(Routes.chat(c.id))),
+          for (final (i, c) in pinned.indexed)
+            ConversationTile(
+              conversation: c,
+              selected: c.id == activeId,
+              onOpen: () => onNavigate(Routes.chat(c.id)),
+            ).rowIn(i < 16 ? i : 16),
         ],
         if (recent.isNotEmpty) ...[
-          label(matches == null ? 'Recents' : 'Results'),
-          for (final c in recent)
-            ConversationTile(conversation: c, selected: c.id == activeId, onOpen: () => onNavigate(Routes.chat(c.id))),
+          label(matches == null ? 'Recent' : 'Results'),
+          for (final (i, c) in recent.indexed)
+            ConversationTile(
+              conversation: c,
+              selected: c.id == activeId,
+              onOpen: () => onNavigate(Routes.chat(c.id)),
+            ).rowIn(pinned.length + i < 16 ? pinned.length + i : 16),
         ],
       ],
     );
@@ -787,16 +625,12 @@ class _ConversationTileState extends ConsumerState<ConversationTile> {
           button: true,
           selected: widget.selected,
           child: Container(
-            margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
-            padding: const EdgeInsets.fromLTRB(10, 2, 2, 2),
-            constraints: const BoxConstraints(minHeight: 34),
+            margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 0.5),
+            padding: const EdgeInsets.fromLTRB(10, 0, 2, 0),
+            constraints: BoxConstraints(minHeight: Host.isMobile ? 44 : 32),
             decoration: BoxDecoration(
-              color: widget.selected
-                  ? theme.text.withValues(alpha: 0.09)
-                  : _hover
-                  ? theme.text.withValues(alpha: 0.05)
-                  : null,
-              borderRadius: BorderRadius.circular(8),
+              color: widget.selected || _hover ? theme.hover : null,
+              borderRadius: BorderRadius.circular(9),
             ),
             child: Row(
               children: [
@@ -809,7 +643,9 @@ class _ConversationTileState extends ConsumerState<ConversationTile> {
                         c.title,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: theme.type.callout.tint(theme.text),
+                        style: (Host.isMobile ? theme.type.body : theme.type.callout).tint(
+                          widget.selected ? theme.text : theme.textMuted,
+                        ),
                       ),
                       if (widget.subtitle != null)
                         Text(widget.subtitle!, style: theme.type.caption.tint(theme.textMuted)),

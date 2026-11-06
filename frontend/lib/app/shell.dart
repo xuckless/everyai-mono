@@ -1,18 +1,16 @@
 import 'dart:async';
 
-import 'package:fluent_ui/fluent_ui.dart' as f;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:macos_ui/macos_ui.dart' as mac;
-import 'package:macos_window_utils/widgets/transparent_macos_sidebar.dart';
 import 'package:material_ui/material_ui.dart' as m;
 
 import 'package:app_links/app_links.dart';
 
 import '../core/links/app_link.dart';
+import '../core/motion/motion.dart';
 import '../core/links/link_providers.dart';
 import '../core/platform/platform_kind.dart';
 import '../core/net/api_client.dart' show ServerStatus;
@@ -47,11 +45,18 @@ class ShellScope extends InheritedWidget {
   final bool compact;
   final VoidCallback toggleSidebar;
 
-  /// Pages show a sidebar button only when the sidebar is an overlay drawer;
-  /// on wide windows it collapses to a rail that is always present.
-  bool get showSidebarButton => compact;
+  /// Pages show a sidebar button whenever the sidebar is out of view (a closed
+  /// drawer on phones, a collapsed sidebar on wider windows).
+  bool get showSidebarButton => !sidebarVisible || compact;
+
+  /// Room a page header leaves on its left for the macOS traffic lights, which
+  /// sit over the content panel once the sidebar is collapsed.
+  double get leadingInset => Host.hasTrafficLights && !compact && !sidebarVisible ? 70 : 0;
 
   static ShellScope of(BuildContext context) => context.dependOnInheritedWidgetOfExactType<ShellScope>()!;
+
+  /// Null outside the shell (tests, dialogs).
+  static ShellScope? maybeOf(BuildContext context) => context.dependOnInheritedWidgetOfExactType<ShellScope>();
 
   @override
   bool updateShouldNotify(ShellScope old) => sidebarVisible != old.sidebarVisible || compact != old.compact;
@@ -195,10 +200,7 @@ class _AppShellState extends ConsumerState<AppShell> {
 
     // The pre-alpha entry screen, once per build version, before anything else.
     if (!ref.watch(onboardingAcceptedProvider)) {
-      const tour = OnboardingScreen();
-      return theme.design == DesignLanguage.material || theme.design == DesignLanguage.adwaita
-          ? m.Material(color: theme.background, child: tour)
-          : tour;
+      return m.Material(color: theme.background, child: const OnboardingScreen());
     }
 
     Widget body = _SplitView(
@@ -206,22 +208,19 @@ class _AppShellState extends ConsumerState<AppShell> {
       collapsed: _collapsed,
       drawerOpen: _drawerOpen,
       onDismissDrawer: () => setState(() => _drawerOpen = false),
-      sidebar: _SidebarSurface(
+      sidebar: SafeArea(
+        right: false,
         child: Sidebar(
           location: widget.location,
-          collapsed: !compact && _collapsed,
+          compact: compact,
           onNavigate: _navigate,
           onToggle: () => _toggle(compact),
         ),
       ),
       content: widget.child,
     );
-    // macOS: MacosWindow supplies the window chrome; the sidebar draws its own
-    // vibrancy so it can collapse to a rail (macos_ui's Sidebar only hides).
-    if (theme.design == DesignLanguage.macos) body = mac.MacosWindow(child: body);
-
     body = ShellScope(
-      sidebarVisible: compact ? _drawerOpen : true,
+      sidebarVisible: compact ? _drawerOpen : !_collapsed,
       compact: compact,
       toggleSidebar: () => _toggle(compact),
       child: body,
@@ -321,11 +320,8 @@ class _AppShellState extends ConsumerState<AppShell> {
       );
     }
 
-    // Material widgets need a Material ancestor for ink and text styles.
-    if (theme.design == DesignLanguage.material || theme.design == DesignLanguage.adwaita) {
-      body = m.Material(color: theme.background, child: body);
-    }
-    return body;
+    // Material widgets need a Material ancestor for text editing.
+    return m.Material(color: theme.background, child: body);
   }
 }
 
@@ -364,8 +360,9 @@ class _ServerBanner extends ConsumerWidget {
   }
 }
 
-/// Sidebar + content. Wide: side by side; the sidebar collapses to an icon rail.
-/// Compact: an overlay drawer with the full sidebar.
+/// Sidebar + content. Wide: the sidebar on the window background and the page
+/// in an inset panel; collapsing slides the sidebar away (ease-in-out).
+/// Compact: the page fills the window and the sidebar is a drawer over a scrim.
 class _SplitView extends StatelessWidget {
   const _SplitView({
     required this.compact,
@@ -383,100 +380,89 @@ class _SplitView extends StatelessWidget {
   final Widget sidebar;
   final Widget content;
 
-  static const _width = 272.0;
-  static const _duration = Duration(milliseconds: 220);
+  static const sidebarWidth = 264.0;
 
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    final reduceMotion = MediaQuery.disableAnimationsOf(context);
-    final duration = reduceMotion ? Duration.zero : _duration;
+    final reduced = Motion.reduced(context);
 
     if (!compact) {
-      return Row(
-        children: [
-          AnimatedContainer(
-            duration: duration,
-            curve: Curves.easeOutCubic,
-            width: collapsed ? sidebarRailWidth(theme.design) : _width,
-            child: ClipRect(child: sidebar),
-          ),
-          Container(width: 1, color: theme.border),
-          Expanded(child: content),
-        ],
+      final duration = reduced ? Duration.zero : Motion.move;
+      return ColoredBox(
+        color: theme.background,
+        child: Row(
+          children: [
+            AnimatedContainer(
+              duration: duration,
+              curve: Motion.easeInOut,
+              width: collapsed ? 0 : sidebarWidth,
+              child: ClipRect(
+                child: OverflowBox(
+                  alignment: Alignment.centerRight,
+                  minWidth: sidebarWidth,
+                  maxWidth: sidebarWidth,
+                  child: ExcludeFocus(excluding: collapsed, child: sidebar),
+                ),
+              ),
+            ),
+            Expanded(
+              child: AnimatedPadding(
+                duration: duration,
+                curve: Motion.easeInOut,
+                padding: EdgeInsets.fromLTRB(collapsed ? 8 : 0, 8, 8, 8),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: theme.surface,
+                    borderRadius: BorderRadius.circular(EveryTheme.panelRadius),
+                    border: theme.hairline,
+                  ),
+                  child: ClipRRect(borderRadius: BorderRadius.circular(EveryTheme.panelRadius), child: content),
+                ),
+              ),
+            ),
+          ],
+        ),
       );
     }
 
-    final width = (MediaQuery.sizeOf(context).width * 0.85).clamp(0.0, 320.0);
+    final width = (MediaQuery.sizeOf(context).width * 0.85).clamp(0.0, 318.0);
+    final duration = reduced ? Duration.zero : (drawerOpen ? Motion.sheetIn : Motion.sheetOut);
+    final curve = drawerOpen ? Motion.easeOut : Motion.easeExit;
     return Stack(
       children: [
-        Positioned.fill(child: content),
+        Positioned.fill(
+          child: ColoredBox(color: theme.background, child: content),
+        ),
         IgnorePointer(
           ignoring: !drawerOpen,
           child: GestureDetector(
             onTap: onDismissDrawer,
             child: AnimatedContainer(
               duration: duration,
-              color: drawerOpen ? const Color(0x66000000) : const Color(0x00000000),
+              curve: curve,
+              color: drawerOpen ? theme.scrim : theme.scrim.withValues(alpha: 0),
             ),
           ),
         ),
         AnimatedPositioned(
           duration: duration,
-          curve: Curves.easeOutCubic,
+          curve: curve,
           top: 0,
           bottom: 0,
-          left: drawerOpen ? 0 : -width - 8,
+          left: drawerOpen ? 0 : -width - 24,
           width: width,
           child: GestureDetector(
             onHorizontalDragEnd: (d) {
               if ((d.primaryVelocity ?? 0) < -300) onDismissDrawer();
             },
             child: DecoratedBox(
-              decoration: BoxDecoration(
-                boxShadow: [if (drawerOpen) const BoxShadow(color: Color(0x40000000), blurRadius: 24)],
-              ),
-              child: sidebar,
+              decoration: BoxDecoration(color: theme.surface, boxShadow: drawerOpen ? theme.shadowPop : null),
+              child: ExcludeFocus(excluding: !drawerOpen, child: sidebar),
             ),
           ),
         ),
       ],
     );
-  }
-}
-
-/// Native sidebar material per design language.
-class _SidebarSurface extends StatelessWidget {
-  const _SidebarSurface({required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    final content = SafeArea(right: false, child: child);
-    return switch (theme.design) {
-      // Native NSVisualEffectView vibrancy behind a cleared Flutter layer. The
-      // native view only resizes when this widget builds, so rebuild on every
-      // constraint change (rail ↔ expanded animation, window resize).
-      DesignLanguage.macos when !kIsWeb => LayoutBuilder(
-        builder: (context, constraints) => TransparentMacOSSidebar(
-          child: DecoratedBox(
-            decoration: const BoxDecoration(color: Color(0xFF000000), backgroundBlendMode: BlendMode.clear),
-            child: content,
-          ),
-        ),
-      ),
-      DesignLanguage.fluent => f.Mica(child: content),
-      DesignLanguage.cupertino => ColoredBox(
-        color: theme.isDark ? EveryPalette.ink900 : const Color(0xFFF2F2F7),
-        child: content,
-      ),
-      DesignLanguage.adwaita => ColoredBox(
-        color: theme.isDark ? EveryPalette.ink900 : const Color(0xFFEBEBED),
-        child: content,
-      ),
-      _ => m.Material(color: theme.surface, child: content),
-    };
   }
 }

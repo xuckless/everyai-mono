@@ -467,3 +467,24 @@ POSSIBILITY OF SUCH DAMAGE.
 - **What:** the `app_links` Dart package, used as a dependency (no code copied) to receive `everyai://prompt` links.
 - **Where:** `frontend/pubspec.yaml`; resolved from pub.dev.
 - **License:** Apache-2.0
+
+## Geist and Geist Mono 1.9.2 (vercel/geist-font)
+
+- **What:** the Geist and Geist Mono typefaces, as static TTF files (Light to Bold, plus Italic), bundled as the app's
+  only UI and code fonts.
+- **Where:** `frontend/assets/fonts/Geist/`, `frontend/assets/fonts/GeistMono/`; the licence sits beside them as
+  `OFL.txt`.
+- **License:** SIL Open Font License 1.1
+
+## lucide_icons_flutter 4.0.2 (vqh2602/lucide-flutter-main), Lucide icons
+
+- **What:** the `lucide_icons_flutter` package and the Lucide icon font it ships, used as a dependency (no code copied)
+  for every icon in the app (`frontend/lib/core/ui/every_icons.dart`).
+- **Where:** `frontend/pubspec.yaml`; resolved from pub.dev.
+- **License:** MIT (the package); ISC (the Lucide icons)
+
+## flutter_animate 4.5.2 (gskinner/flutter_animate)
+
+- **What:** the `flutter_animate` package, used as a dependency (no code copied) for ambient loops in the UI kit.
+- **Where:** `frontend/pubspec.yaml`; resolved from pub.dev.
+- **License:** BSD-3-Clause
