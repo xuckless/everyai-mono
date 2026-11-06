@@ -180,8 +180,9 @@ final class ModelSpec {
   /// "$2.30 / $11.50" per million input / output tokens, or "Free".
   String? get priceLabel {
     if (free) return 'Free';
-    if (promptPrice == null || completionPrice == null) return null;
-    return '${_usd(promptPrice!)} / ${_usd(completionPrice!)}';
+    // OpenRouter marks routers whose price depends on the model they pick with a negative price.
+    if (promptPrice == null || completionPrice == null || promptPrice! < 0 || completionPrice! < 0) return null;
+    return '${_usd(promptPrice!)} · ${_usd(completionPrice!)}';
   }
 
   /// "1M", "262K".

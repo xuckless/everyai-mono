@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/adaptive_page.dart';
-import '../../../core/ui/brand.dart';
+import '../../../core/motion/motion.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../settings/byok_keys.dart' show modelBillersProvider, modelBillingProvider;
 import '../../settings/domain/byok_providers.dart' show Biller, ModelBilling;
@@ -12,14 +12,11 @@ import '../domain/model_catalog.dart';
 import '../models_providers.dart';
 import 'model_avatar.dart';
 
+/// The shop's scope: one at a time.
 enum _Filter {
   all('All'),
   mine('My models'),
   free('Free'),
-  image('Image'),
-  vision('Vision'),
-  tools('Tools'),
-  reasoning('Reasoning'),
   ownKey('On your keys');
 
   const _Filter(this.label);
@@ -30,16 +27,30 @@ enum _Filter {
     _Filter.mine => mine.contains(s.id),
     ownKey => billing.billersFor(s.id).any((b) => b.isOwnKey),
     free => s.free,
-    image => s.output == Modality.image,
-    vision => s.imageInput,
-    tools => s.tools,
-    reasoning => s.reasoning,
   };
 }
 
-/// The model shop: every model the backend offers, searchable and filterable,
-/// with prices (per million input / output tokens). "Add" puts a model in My
-/// models, the composer's picker list.
+/// What a model can do; any number at once, a model must have them all.
+enum _Cap {
+  tools('Tools'),
+  vision('Vision'),
+  reasoning('Reasoning'),
+  image('Makes images');
+
+  const _Cap(this.label);
+  final String label;
+
+  bool test(ModelSpec s) => switch (this) {
+    tools => s.tools,
+    vision => s.imageInput,
+    reasoning => s.reasoning,
+    image => s.output == Modality.image,
+  };
+}
+
+/// The model shop: every model the backend offers in one table (model, context, price per million tokens in · out,
+/// Add), with a search, a scope, the biggest vendors and capability toggles. "Add" puts a model in My models, the
+/// composer's picker list.
 class ModelsScreen extends ConsumerStatefulWidget {
   const ModelsScreen({super.key});
 
@@ -50,7 +61,16 @@ class ModelsScreen extends ConsumerStatefulWidget {
 class _ModelsScreenState extends ConsumerState<ModelsScreen> {
   _Filter _filter = _Filter.all;
   ModelProvider? _provider;
+  final _caps = <_Cap>{};
   String _query = '';
+
+  /// Bumped when the filters change, so the rows enter again (staggered).
+  int _generation = 0;
+
+  void _refilter(VoidCallback change) => setState(() {
+    change();
+    _generation++;
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -62,15 +82,18 @@ class _ModelsScreenState extends ConsumerState<ModelsScreen> {
     final billing = ref.watch(modelBillingProvider);
     final q = _query.trim().toLowerCase();
 
-    // Providers with the most models first.
+    // Vendors with the most models first; the top few get a chip, the rest a menu.
     final providers = catalog.providers.toList()
       ..sort((a, b) => catalog.byProvider(b).length.compareTo(catalog.byProvider(a).length));
+    final shown = providers.take(6).toList();
+    final more = providers.skip(6).toList();
 
     final source = _filter == _Filter.mine ? library : catalog.all;
     final models = source
         .where(
           (s) =>
               _filter.test(s, mine, billing) &&
+              _caps.every((c) => c.test(s)) &&
               (_provider == null || s.provider == _provider) &&
               (q.isEmpty ||
                   s.name.toLowerCase().contains(q) ||
@@ -80,86 +103,123 @@ class _ModelsScreenState extends ConsumerState<ModelsScreen> {
         )
         .toList(growable: false);
 
-    final header = <Widget>[
-      AdaptiveTextField(
-        placeholder: 'Search ${catalog.length} models',
-        prefix: AdaptiveIcon(EveryIcon.search, size: 16, color: theme.textMuted),
-        onChanged: (v) => setState(() => _query = v),
-      ),
-      const SizedBox(height: 12),
-      Wrap(
-        spacing: 8,
-        runSpacing: 8,
+    final header = Padding(
+      padding: const EdgeInsets.fromLTRB(22, 4, 22, 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          for (final f in _Filter.values)
-            if (f != _Filter.ownKey || billing.hasKeys)
-              _FilterChip(
-                label: f == _Filter.mine ? '${f.label} (${library.length})' : f.label,
-                selected: _filter == f,
-                onTap: () => setState(() => _filter = f),
-              ),
-        ],
-      ),
-      const SizedBox(height: 8),
-      SizedBox(
-        height: 34,
-        child: ListView(
-          scrollDirection: Axis.horizontal,
-          children: [
-            for (final p in [null, ...providers.take(24)])
-              Padding(
-                padding: const EdgeInsets.only(right: 6),
-                child: _FilterChip(
-                  label: p == null ? 'Any provider' : p.company,
-                  leading: p == null ? null : ModelAvatar(p, size: 16),
-                  selected: _provider == p,
-                  subtle: true,
-                  onTap: () => setState(() => _provider = p),
+          Row(
+            children: [
+              Flexible(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 420),
+                  child: AdaptiveTextField(
+                    key: const ValueKey('shop.search'),
+                    placeholder: 'Search ${catalog.length} models',
+                    prefix: AdaptiveIcon(EveryIcon.search, size: 14, color: theme.textSubtle),
+                    onChanged: (v) => setState(() => _query = v),
+                  ),
                 ),
               ),
-          ],
-        ),
+              const SizedBox(width: 12),
+              const Spacer(),
+              Text('${library.length} in My models', style: theme.type.caption.tint(theme.textSubtle)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 4,
+            runSpacing: 6,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              for (final f in _Filter.values)
+                if (f != _Filter.ownKey || billing.hasKeys)
+                  KitChip(
+                    key: ValueKey('shop.filter.${f.name}'),
+                    label: f.label,
+                    on: _filter == f,
+                    onTap: () => _refilter(() => _filter = f),
+                  ),
+              const SizedBox(width: 10),
+              for (final p in shown)
+                KitChip(
+                  key: ValueKey('shop.vendor.${p.company}'),
+                  label: p.company,
+                  on: _provider == p,
+                  onTap: () => _refilter(() => _provider = _provider == p ? null : p),
+                ),
+              if (more.isNotEmpty)
+                AdaptiveMenuButton(
+                  width: 240,
+                  actions: [
+                    for (final p in more)
+                      MenuAction(
+                        label: p.company,
+                        checked: _provider == p,
+                        onSelected: () => _refilter(() => _provider = _provider == p ? null : p),
+                      ),
+                  ],
+                  child: KitChip(
+                    label: _provider != null && more.contains(_provider) ? _provider!.company : 'More',
+                    on: _provider != null && more.contains(_provider),
+                    chevron: true,
+                  ),
+                ),
+              const SizedBox(width: 10),
+              for (final c in _Cap.values)
+                KitChip(
+                  key: ValueKey('shop.cap.${c.name}'),
+                  label: c.label,
+                  on: _caps.contains(c),
+                  leading: StateSwap(
+                    child: AdaptiveIcon(
+                      _caps.contains(c) ? EveryIcon.check : EveryIcon.add,
+                      key: ValueKey(_caps.contains(c)),
+                      size: 12,
+                    ),
+                  ),
+                  onTap: () => _refilter(() => _caps.contains(c) ? _caps.remove(c) : _caps.add(c)),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _Columns(
+            model: Text('Model', style: theme.type.caption.tint(theme.textSubtle)),
+            context: Text('Context', style: theme.type.caption.tint(theme.textSubtle)),
+            price: Text('In · Out per M', style: theme.type.caption.tint(theme.textSubtle)),
+            action: const SizedBox(),
+            indentModel: true,
+          ),
+        ],
       ),
-      Padding(
-        padding: const EdgeInsets.only(top: 10, bottom: 4),
-        child: Text(
-          '${models.length} models · prices per million input / output tokens',
-          style: theme.type.caption.tint(theme.textMuted),
-        ),
-      ),
-    ];
+    );
 
     return AdaptivePage(
-      title: 'Model shop',
-      header: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: header),
-      ),
+      title: 'Models',
+      header: header,
       body: ListView.builder(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
+        padding: const EdgeInsets.fromLTRB(10, 0, 10, 32),
         itemCount: models.isEmpty ? 1 : models.length,
         itemBuilder: (context, i) {
           if (models.isEmpty) {
-            final filtered = q.isNotEmpty || _provider != null || _filter != _Filter.all;
+            final filtered = q.isNotEmpty || _provider != null || _filter != _Filter.all || _caps.isNotEmpty;
             return Padding(
               padding: const EdgeInsets.only(top: 48),
-              child: BrandEmptyState(
-                kind: 'no-results',
-                title: _filter == _Filter.mine && q.isEmpty && _provider == null
-                    ? 'No models yet'
-                    : filtered
-                    ? 'No models match'
-                    : 'The catalog is empty',
-                message: _filter == _Filter.mine && q.isEmpty && _provider == null
-                    ? 'Add models from All to see them in the picker.'
-                    : filtered
-                    ? 'Try another search or clear the filters.'
-                    : 'It could not be loaded. Check the connection and reopen this page.',
-              ),
+              child: Center(
+                child: Text(
+                  _filter == _Filter.mine && !filtered
+                      ? 'No models yet'
+                      : filtered
+                      ? 'No models match'
+                      : "The catalog couldn't be loaded",
+                  style: theme.type.callout.tint(theme.textSubtle),
+                ),
+              ).settle(),
             );
           }
           final spec = models[i];
-          return _ModelTile(
+          final row = _ModelRow(
+            key: ValueKey('shop.row.${spec.id.value}'),
             spec: spec,
             added: mine.contains(spec.id),
             isDefault: spec == defaultModel,
@@ -173,14 +233,95 @@ class _ModelsScreenState extends ConsumerState<ModelsScreen> {
             },
             onMakeDefault: () => ref.read(defaultModelProvider.notifier).set(spec),
           );
+          // The first screenful enters staggered after a filter change.
+          return i < 14 ? KeyedSubtree(key: ValueKey('g$_generation.$i'), child: row.rowIn(i)) : row;
         },
       ),
     );
   }
 }
 
-class _ModelTile extends StatelessWidget {
-  const _ModelTile({
+/// The table's columns: model (fills), context, price, action.
+class _Columns extends StatelessWidget {
+  const _Columns({
+    required this.model,
+    required this.context,
+    required this.price,
+    required this.action,
+    this.indentModel = false,
+  });
+
+  final Widget model;
+  final Widget context;
+  final Widget price;
+  final Widget action;
+
+  /// The header's "Model" lines up with the names, after the marks.
+  final bool indentModel;
+
+  @override
+  Widget build(BuildContext ctx) => LayoutBuilder(
+    builder: (ctx, box) {
+      final roomy = box.maxWidth > 560;
+      // Narrow windows: the price goes under the model, and the action takes only its own width.
+      final compact = box.maxWidth < 480;
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: Row(
+          children: [
+            Expanded(
+              child: Padding(
+                padding: EdgeInsets.only(left: indentModel ? 38 : 0),
+                child: compact
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          model,
+                          Padding(
+                            padding: EdgeInsets.only(left: indentModel ? 0 : 38),
+                            child: price,
+                          ),
+                        ],
+                      )
+                    : model,
+              ),
+            ),
+            if (roomy) ...[
+              const SizedBox(width: 14),
+              SizedBox(
+                width: 70,
+                child: Align(alignment: Alignment.centerRight, child: context),
+              ),
+            ],
+            if (!compact) ...[
+              const SizedBox(width: 14),
+              SizedBox(
+                width: 120,
+                child: Align(alignment: Alignment.centerRight, child: price),
+              ),
+            ],
+            const SizedBox(width: 10),
+            if (compact)
+              action
+            else
+              SizedBox(
+                width: 124,
+                // Large text scales the button down rather than pushing the columns apart.
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: FittedBox(fit: BoxFit.scaleDown, child: action),
+                ),
+              ),
+          ],
+        ),
+      );
+    },
+  );
+}
+
+class _ModelRow extends StatefulWidget {
+  const _ModelRow({
+    super.key,
     required this.spec,
     required this.added,
     required this.isDefault,
@@ -205,158 +346,155 @@ class _ModelTile extends StatelessWidget {
   final VoidCallback onMakeDefault;
 
   @override
+  State<_ModelRow> createState() => _ModelRowState();
+}
+
+class _ModelRowState extends State<_ModelRow> {
+  bool _hover = false;
+
+  /// Bumped on Add, so the button pulses once.
+  int _added = 0;
+
+  @override
+  void didUpdateWidget(_ModelRow old) {
+    super.didUpdateWidget(old);
+    if (widget.added && !old.added) _added++;
+  }
+
+  @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    final meta = [
-      spec.provider.company,
-      if (spec.contextLength > 0) '${spec.contextLabel} context',
-      if (spec.output == Modality.image) 'Image output',
-      if (isDefault) 'Default for new chats',
-      if (biller.isOwnKey) 'Bills to your ${biller.provider!.name} key',
+    final spec = widget.spec;
+    final tags = [
+      if (spec.tools) 'Tools',
+      if (spec.imageInput) 'Vision',
+      if (spec.reasoning) 'Reasoning',
+      if (spec.output == Modality.image) 'Makes images',
+      if (widget.isDefault) 'Default for new chats',
+      if (widget.biller.isOwnKey) 'Bills to your ${widget.biller.provider!.name} key',
     ].join(' · ');
-    final choose = billers.length > 1;
-    return AdaptiveListTile(
-      leading: ModelAvatar(spec.provider, size: 32),
-      title: Row(
-        children: [
-          Flexible(child: Text(spec.name, overflow: TextOverflow.ellipsis)),
-          if (spec.priceLabel case final price?) ...[const SizedBox(width: 8), _Badge(price, highlight: spec.free)],
-        ],
-      ),
-      subtitle: Text(spec.blurb.isEmpty ? meta : '${spec.blurb}\n$meta', maxLines: 3, overflow: TextOverflow.ellipsis),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          AdaptiveMenuButton(
-            tooltip: 'Model options',
+    final choose = widget.billers.length > 1;
+    final mono = theme.type.caption.mono;
+    final add = choose && !widget.added
+        ? AdaptiveMenuButton(
+            key: ValueKey('shop.add.${spec.id.value}'),
+            tooltip: 'Add and choose who pays',
+            width: 260,
             actions: [
-              MenuAction(label: 'Use for new chats', checked: isDefault, onSelected: onMakeDefault),
-              MenuAction(label: added ? 'Remove from My models' : 'Add to My models', onSelected: onToggle),
-              if (choose && added)
-                for (final b in billers)
-                  MenuAction(label: 'Bill to ${b.label}', checked: b == biller, onSelected: () => onAddBilledTo(b)),
+              for (final b in widget.billers)
+                MenuAction(
+                  label: 'Bill to ${b.label}',
+                  checked: b == widget.biller,
+                  onSelected: () => widget.onAddBilledTo(b),
+                ),
             ],
-            child: Padding(
-              padding: const EdgeInsets.all(6),
-              child: AdaptiveIcon(EveryIcon.more, size: 16, color: theme.textMuted),
+            // The menu takes the tap; the button only shows it.
+            child: const IgnorePointer(
+              child: KitButton(label: 'Add…', onPressed: _noop),
             ),
+          )
+        : SuccessPulse(
+            trigger: _added == 0 ? null : _added,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minWidth: 84),
+              child: KitButton(
+                key: ValueKey('shop.toggle.${spec.id.value}'),
+                label: widget.added ? 'Added' : 'Add',
+                icon: widget.added ? EveryIcon.check : null,
+                style: widget.added ? KitButtonStyle.soft : KitButtonStyle.primary,
+                onPressed: widget.onToggle,
+              ),
+            ),
+          );
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        constraints: const BoxConstraints(minHeight: 56),
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        decoration: BoxDecoration(color: _hover ? theme.hover : null, borderRadius: BorderRadius.circular(12)),
+        child: _Columns(
+          model: Row(
+            children: [
+              ModelAvatar(spec.provider, size: 24),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          flex: 3,
+                          child: Text(
+                            spec.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.type.body.medium.tint(theme.text),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            spec.provider.company,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.type.caption.tint(theme.textSubtle),
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (tags.isNotEmpty)
+                      Text(
+                        tags,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.type.caption.tint(theme.textSubtle),
+                      ),
+                  ],
+                ),
+              ),
+            ],
           ),
-          const SizedBox(width: 4),
-          if (choose && !added)
-            AdaptiveMenuButton(
-              key: ValueKey('shop.add.${spec.id.value}'),
-              tooltip: 'Add and choose who pays',
-              width: 260,
-              actions: [
-                for (final b in billers)
-                  MenuAction(label: 'Bill to ${b.label}', checked: b == biller, onSelected: () => onAddBilledTo(b)),
-              ],
-              child: const _AddPill(),
-            )
-          else
-            AdaptiveButton(
-              label: added ? 'Added' : 'Add',
-              emphasis: added ? ButtonEmphasis.secondary : ButtonEmphasis.primary,
-              onPressed: onToggle,
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-/// "Add ▾": the Add button's look for a model more than one account can pay
-/// for (the menu around it handles the tap).
-class _AddPill extends StatelessWidget {
-  const _AddPill();
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-      decoration: BoxDecoration(color: theme.primary, borderRadius: BorderRadius.circular(theme.radius)),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text('Add', style: theme.type.callout.medium.tint(theme.onPrimary)),
-          const SizedBox(width: 4),
-          AdaptiveIcon(EveryIcon.chevronDown, size: 11, color: theme.onPrimary),
-        ],
-      ),
-    );
-  }
-}
-
-class _Badge extends StatelessWidget {
-  const _Badge(this.text, {this.highlight = false});
-
-  final String text;
-  final bool highlight;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: highlight ? theme.accent.withValues(alpha: 0.15) : theme.surfaceRaised,
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Text(
-        text,
-        style: theme.type.footnote.medium.copyWith(
-          color: highlight ? theme.accent : theme.textMuted,
-          fontFeatures: const [FontFeature.tabularFigures()],
-        ),
-      ),
-    );
-  }
-}
-
-class _FilterChip extends StatelessWidget {
-  const _FilterChip({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-    this.leading,
-    this.subtle = false,
-  });
-
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-  final Widget? leading;
-  final bool subtle;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    final fg = selected ? theme.onPrimary : theme.text;
-    return Semantics(
-      button: true,
-      selected: selected,
-      child: GestureDetector(
-        onTap: onTap,
-        child: MouseRegion(
-          cursor: SystemMouseCursors.click,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 150),
-            padding: EdgeInsets.symmetric(horizontal: subtle ? 10 : 14, vertical: subtle ? 6 : 7),
-            decoration: BoxDecoration(
-              color: selected ? theme.primary : theme.surfaceRaised,
-              borderRadius: BorderRadius.circular(999),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (leading != null) ...[leading!, const SizedBox(width: 6)],
-                Text(label, style: (subtle ? theme.type.caption : theme.type.callout).medium.tint(fg)),
-              ],
-            ),
+          context: Text(spec.contextLength > 0 ? spec.contextLabel : '', style: mono.tint(theme.textMuted)),
+          price: Text(spec.priceLabel ?? '', style: mono.tint(spec.free ? theme.success : theme.textMuted)),
+          action: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AnimatedOpacity(
+                opacity: _hover ? 1 : 0,
+                duration: const Duration(milliseconds: 120),
+                child: AdaptiveMenuButton(
+                  tooltip: 'Model options',
+                  actions: [
+                    MenuAction(label: 'Use for new chats', checked: widget.isDefault, onSelected: widget.onMakeDefault),
+                    MenuAction(
+                      label: widget.added ? 'Remove from My models' : 'Add to My models',
+                      onSelected: widget.onToggle,
+                    ),
+                    if (choose && widget.added)
+                      for (final b in widget.billers)
+                        MenuAction(
+                          label: 'Bill to ${b.label}',
+                          checked: b == widget.biller,
+                          onSelected: () => widget.onAddBilledTo(b),
+                        ),
+                  ],
+                  child: Padding(
+                    padding: const EdgeInsets.all(6),
+                    child: AdaptiveIcon(EveryIcon.more, size: 15, color: theme.textMuted),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 4),
+              add,
+            ],
           ),
         ),
       ),
     );
   }
 }
+
+void _noop() {}

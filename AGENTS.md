@@ -794,6 +794,10 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   the mark and version, one 480pt column with five progress pills, headline, body, then Back · Later · Continue).
   The key step is the board's: provider switch across the column, one field with an inline ✓/✕ and Check, and a
   status line (hint, shimmering Checking, works, or rejected with nothing saved).
+  6b model shop: one table (model with mark, vendor and capability line · context · price per M "in · out" ·
+  Add/Added with a pulse, "…" options on hover), a search, scope chips (All, My models, Free, On your keys), the six
+  biggest vendors plus More, and capability toggles (Tools, Vision, Reasoning, Makes images); rows re-enter staggered
+  when the filters change. Narrow widths fold the price under the name. Negative catalog prices (routers) show none.
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2

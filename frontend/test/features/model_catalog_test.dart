@@ -61,11 +61,22 @@ void main() {
 
   test('fromJson reads prices, modalities and vendors', () {
     final haiku = remote[const ModelId('anthropic/claude-haiku-5.5')]!;
-    expect(haiku.priceLabel, matches(RegExp(r'^\$0\.1\d / \$0\.5\d$')));
+    expect(haiku.priceLabel, matches(RegExp(r'^\$0\.1\d · \$0\.5\d$')));
     expect(haiku.contextLabel, '1M');
     expect(haiku.imageInput, isTrue);
     expect(remote[const ModelId('google/gemini-3.1-flash-image')]!.output, Modality.image);
     expect(remote[const ModelId('qwen/qwen4-32b:free')]!.priceLabel, 'Free');
+    // A router's price depends on what it picks: OpenRouter sends a negative price, shown as none.
+    expect(
+      ModelSpec(
+        id: const ModelId('openrouter/auto'),
+        name: 'Auto Router',
+        provider: ModelProvider.of('openrouter'),
+        promptPrice: -1,
+        completionPrice: -1,
+      ).priceLabel,
+      isNull,
+    );
     // "~openai/…" aliases belong to the vendor.
     expect(remote[const ModelId('~openai/gpt-latest')]!.provider, ModelProvider.openai);
     expect(ModelProvider.of('some-new-lab').label, 'Some New Lab');
