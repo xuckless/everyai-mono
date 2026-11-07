@@ -111,6 +111,10 @@ final class DesktopWindow implements DeviceScreen {
   /// The window to act on: a title (or part of one) the agent picked, else the app's main window.
   String? window;
 
+  /// Clicks per tap for the current call: 2 a double click, 3 a triple click (selects a line of text). More than
+  /// one is always real pointer input.
+  int clicks = 1;
+
   @override
   ViewGeometry get geometry => ViewGeometry(width.round(), height.round());
   List<AppNode> get lastTree => _last;
@@ -259,6 +263,12 @@ final class DesktopWindow implements DeviceScreen {
     // An entry of a list or table (a file in an open panel): selecting its row is what a click does.
     // An entry's own press (a file name's text field) does nothing useful there.
     final row = action == null || const {'textbox', 'text', 'row'}.contains(n.role) ? _rows[ref] : null;
+    if (clicks > 1) {
+      if (!n.placed) throw AppError('${nodeText(n)} has no place on screen to click.');
+      await _needReal('a ${_clickWord()} click is real pointer input');
+      await _click(n.centreX, n.centreY, count: clicks);
+      return '${_clickWord(capital: true)}-clicked ${nodeText(n)} (the window came to the front).';
+    }
     if (row != null) {
       await _actAt(row, 'show');
       await _actAt(row, 'select');
@@ -275,8 +285,19 @@ final class DesktopWindow implements DeviceScreen {
     return 'Pressed ${nodeText(n)}.';
   }
 
+  String _clickWord({bool capital = false}) {
+    final w = clicks == 2 ? 'double' : 'triple';
+    return capital ? '${w[0].toUpperCase()}${w.substring(1)}' : w;
+  }
+
   @override
   Future<String> tapAt(double x, double y) async {
+    if (clicks > 1) {
+      await _needReal('a ${_clickWord()} click is real pointer input');
+      control.report(LiveActivity('click', x: x, y: y, caption: '${_clickWord(capital: true)}-clicking'));
+      await _click(x, y, count: clicks);
+      return '${_clickWord(capital: true)}-clicked at (${x.round()}, ${y.round()}) (the window came to the front).';
+    }
     final nodes = await _fresh();
     // The smallest pressable element under the point.
     AppNode? hit;
@@ -337,7 +358,8 @@ final class DesktopWindow implements DeviceScreen {
       // The field ignored it: click into it, select all, type.
       if (!n.placed) throw AppError("$ref didn't take the text through accessibility and has no place to click.");
       await _needReal("$ref didn't take the text through accessibility, so it needs real typing");
-      await _click(n.centreX, n.centreY);
+      // A triple click selects the field's text where Cmd+A isn't bound (Tk); Cmd+A then covers multi-line fields.
+      await _click(n.centreX, n.centreY, count: 3);
       await _real('key', ['--keycode', '0', '--mods', 'cmd']);
       await _real('key', ['--text', text]);
     }

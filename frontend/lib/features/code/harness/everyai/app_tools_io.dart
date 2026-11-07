@@ -93,7 +93,9 @@ Future<ToolOutput> runAppTool(
       scrub,
     ),
     AppKind.desktop => await _device(
-      DesktopWindows.driver(int.parse(app.endpoint.uri.path))..window = (args['window'] as String?)?.trim(),
+      DesktopWindows.driver(int.parse(app.endpoint.uri.path))
+        ..window = (args['window'] as String?)?.trim()
+        ..clicks = ((args['count'] as num?)?.toInt() ?? 1).clamp(1, 3),
       DesktopWindows.holds,
       app.endpoint.uri.path,
       action,
@@ -690,6 +692,9 @@ Future<ToolOutput> _device(
         shot = true;
         did = 'Zoomed into (${from.x.round()}, ${from.y.round()}) ${zoom.width.round()}×${zoom.height.round()} pt.';
       case 'tap':
+        if (((args['count'] as num?) ?? 1) > 1 && a is! DesktopWindow) {
+          return const ToolOutput('Error: count (double and triple clicks) is for desktop windows.', isError: true);
+        }
         if (str('ref') case final ref?) {
           did = await a.tap(ref);
         } else if (at('x') != null && at('y') != null) {

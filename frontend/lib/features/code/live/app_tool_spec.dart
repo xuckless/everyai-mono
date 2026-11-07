@@ -89,6 +89,10 @@ const appToolProperties = <String, Object?>{
   'device': {'type': 'string', 'description': 'boot: a name from devices (iPhone 16, Pixel_9_API_36)'},
   'key': {'type': 'string', 'description': 'key: a key or shortcut (Enter, Escape, Tab, cmd+s, ctrl+a)'},
   'window': {'type': 'string', 'description': 'desktop: which window, by (part of) its title'},
+  'count': {
+    'type': 'integer',
+    'description': 'tap on a desktop window: 2 double-clicks, 3 triple-clicks (selects a field\'s text to type over)',
+  },
   'path': {'type': 'string', 'description': 'install: the built app (.app for iOS, .apk for Android)'},
   'bundle': {'type': 'string', 'description': 'launch: the bundle id (iOS) or package (Android), com.example.app'},
   'screenshot': {'type': 'boolean', 'description': 'Also return a screenshot after the action'},

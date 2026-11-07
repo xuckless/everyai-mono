@@ -932,7 +932,7 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   Code (Global, "Driving apps"); no dialog (tests, rigs) = no, `EVERYAI_REAL_INPUT=1|0` overrides. Pictures (`shot`)
   include the app's pop-ups and dialogs over the window; the Preview stream shows the window alone. Verified on the
   futoshiki copy: Load through the native panel, AC-3 picked from Tk's pop-up list, solved, Timeout typed (Tk has no
-  Cmd+A: triple-click selects). New `key` action on iOS (AXe HID codes) and Android (keyevents/keycombination) via
+  Cmd+A: `tap {count: 3}` triple-clicks to select; the real-typing fallback does too). New `key` action on iOS (AXe HID codes) and Android (keyevents/keycombination) via
   `DeviceScreen.key`.
   Preview `DesktopWindowView`: the live stream; clicks press through AX, else a real click (same consent); Bring to
   front. Probe
