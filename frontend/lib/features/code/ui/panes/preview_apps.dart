@@ -15,6 +15,7 @@ import '../../live/app_endpoints.dart';
 import '../../live/app_sources.dart';
 import '../../live/app_view.dart';
 import '../../live/axe_install.dart';
+import '../../live/desktop_window_io.dart';
 import '../../live/flutter_app_io.dart';
 import '../../live/h264_texture.dart';
 import '../../live/ios_simulator_io.dart';
@@ -1071,6 +1072,190 @@ class _AndroidDeviceViewState extends State<AndroidDeviceView> {
             c == null
                 ? 'Click to tap, drag to swipe (screenshots each second: scrcpy isn\'t running).'
                 : 'Click, drag and scroll as on the device; click it, then type on your keyboard.',
+            style: theme.type.caption.tint(theme.textMuted),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// A desktop app's window, live (ScreenCaptureKit through the window helper). A click is pressed through
+/// accessibility when the element there can be pressed, else sent to the app's process; Bring to front raises the
+/// real window for anything else.
+class DesktopWindowView extends StatefulWidget {
+  const DesktopWindowView({super.key, required this.window, required this.visible});
+
+  final DesktopWindow window;
+  final bool visible;
+
+  @override
+  State<DesktopWindowView> createState() => _DesktopWindowViewState();
+}
+
+class _DesktopWindowViewState extends State<DesktopWindowView> {
+  ui.Image? _image;
+  StreamSubscription<Uint8List>? _frames;
+  StreamSubscription<LiveActivity>? _activity;
+  var _decoding = false;
+  String? _problem;
+  LiveActivity? _ghost;
+  Timer? _ghostTimer;
+  var _scale = 1.0;
+
+  DesktopWindow get _window => widget.window;
+
+  @override
+  void initState() {
+    super.initState();
+    _activity = _window.control.activity.listen((a) {
+      _ghostTimer?.cancel();
+      setState(() => _ghost = a);
+      _ghostTimer = Timer(const Duration(milliseconds: 1600), () {
+        if (mounted) setState(() => _ghost = null);
+      });
+    });
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(DesktopWindowView old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.window, widget.window)) _stop();
+    _sync();
+  }
+
+  @override
+  void dispose() {
+    _stop();
+    unawaited(_activity?.cancel());
+    _ghostTimer?.cancel();
+    _image?.dispose();
+    super.dispose();
+  }
+
+  void _stop() {
+    unawaited(_frames?.cancel());
+    _frames = null;
+  }
+
+  void _sync() {
+    if (!widget.visible) {
+      _stop();
+      return;
+    }
+    if (_frames != null) return;
+    _frames = _window.stream().listen(
+      _paint,
+      onError: (Object e) {
+        if (mounted) setState(() => _problem = e is AppError ? e.message : '$e');
+      },
+      onDone: () => _frames = null,
+    );
+  }
+
+  Future<void> _paint(Uint8List jpeg) async {
+    if (_decoding) return;
+    _decoding = true;
+    try {
+      final codec = await ui.instantiateImageCodec(jpeg);
+      final frame = await codec.getNextFrame();
+      if (!mounted) {
+        frame.image.dispose();
+        return;
+      }
+      setState(() {
+        _image?.dispose();
+        _image = frame.image;
+        _problem = null;
+      });
+    } on Object {
+      // A broken frame: the next one.
+    } finally {
+      _decoding = false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final image = _image;
+    final ghost = _ghost;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        AppDriverBar(
+          control: _window.control,
+          actions: [
+            AdaptiveButton(
+              label: 'Bring to front',
+              emphasis: ButtonEmphasis.secondary,
+              onPressed: () => _window.raise().catchError((Object _) {}),
+            ),
+          ],
+        ),
+        Expanded(
+          child: image == null
+              ? Center(
+                  child: Text(
+                    _problem ?? 'Starting the window view…',
+                    textAlign: TextAlign.center,
+                    style: theme.type.callout.tint(theme.textMuted),
+                  ),
+                )
+              : LayoutBuilder(
+                  builder: (context, box) {
+                    // The window's size in points (as the agent sees it), else the picture's.
+                    final w = _window.width > 0 ? _window.width : image.width.toDouble();
+                    final h = _window.width > 0 ? _window.height : image.height.toDouble();
+                    _scale = ((box.maxWidth - 16) / w).clamp(0.05, 2.0);
+                    if (h * _scale > box.maxHeight - 16) _scale = ((box.maxHeight - 16) / h).clamp(0.05, 2.0);
+                    return Center(
+                      child: Listener(
+                        onPointerUp: (e) {
+                          final c = _window.control;
+                          if (!c.userDriving) c.take();
+                          final p = e.localPosition / _scale;
+                          unawaited(_window.userClick(p.dx, p.dy).catchError((Object _) => false));
+                        },
+                        child: SizedBox(
+                          width: w * _scale,
+                          height: h * _scale,
+                          child: Stack(
+                            children: [
+                              Positioned.fill(
+                                child: RawImage(image: image, fit: BoxFit.fill, filterQuality: FilterQuality.medium),
+                              ),
+                              if (ghost != null && ghost.x != null && ghost.y != null)
+                                Positioned(
+                                  left: ghost.x! * _scale - 12,
+                                  top: ghost.y! * _scale - 12,
+                                  child: IgnorePointer(
+                                    child: Container(
+                                      width: 24,
+                                      height: 24,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        border: Border.all(color: theme.accent, width: 2),
+                                        color: theme.accent.withValues(alpha: 0.18),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              if (ghost != null && ghost.caption.isNotEmpty)
+                                Positioned(left: 0, right: 0, bottom: 10, child: _Caption('Agent: ${ghost.caption}')),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+          child: Text(
+            'Clicks press what accessibility can press, in place. To type or drag yourself, bring the window to the front.',
             style: theme.type.caption.tint(theme.textMuted),
           ),
         ),

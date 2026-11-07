@@ -33,3 +33,4 @@ if [[ "${CODE_SIGNING_ALLOWED:-NO}" == YES && -n "$IDENTITY" ]]; then
       --entitlements "$PROJECT_DIR/scripts/deno.entitlements" "$DEST/deno"
   fi
 fi
+"$PROJECT_DIR/scripts/bundle_ax_helper.sh"

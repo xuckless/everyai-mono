@@ -1,0 +1,87 @@
+// Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
+
+import 'package:every_ai/features/code/live/desktop_window_io.dart';
+import 'package:every_ai/features/code/live/device_screen.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  test('the helper tree: roles, window-relative places, chrome left out, secrets, refs only where acting', () {
+    Map<String, Object?> n(
+      String path,
+      String role, {
+      String? sub,
+      String? title,
+      String? value,
+      String? desc,
+      List<String> actions = const [],
+      bool enabled = true,
+      double x = 110,
+      double y = 220,
+    }) => {
+      'path': path,
+      'role': role,
+      'subrole': ?sub,
+      'title': ?title,
+      'value': ?value,
+      'desc': ?desc,
+      'actions': actions,
+      'enabled': enabled,
+      'x': x,
+      'y': y,
+      'w': 80,
+      'h': 20,
+    };
+    final out = flattenAxHelperTree(
+      {
+        'nodes': [
+          n('0', 'AXWindow', title: 'Main'),
+          n('0.0', 'AXButton', sub: 'AXCloseButton', actions: ['AXPress']),
+          n('0.1', 'AXButton', title: 'Save', actions: ['AXPress']),
+          n('0.2', 'AXTextField', desc: 'Name', value: 'Ada'),
+          n('0.3', 'AXTextField', sub: 'AXSecureTextField', desc: 'Password', value: '••••'),
+          n('0.4', 'AXCheckBox', title: 'Remember', value: '1', actions: ['AXPress']),
+          n('0.5', 'AXStaticText', value: 'Ready'),
+          n('0.6', 'AXImage', desc: 'logo'),
+          n('0.7', 'AXButton', title: 'Off', enabled: false, actions: ['AXPress']),
+        ],
+      },
+      left: 100,
+      top: 200,
+    );
+    final lines = [
+      for (final (node, path, _) in out)
+        '$path ${node.ref.isEmpty ? '-' : 'ref'} ${node.role} ${node.name} '
+            '${node.value} ${node.state} ${node.left},${node.top}',
+    ];
+    expect(lines, [
+      '0.1 ref button Save null [] 10.0,20.0',
+      '0.2 ref textbox Name Ada [] 10.0,20.0',
+      '0.3 ref textbox Password null [] 10.0,20.0',
+      '0.4 ref checkbox Remember null [checked] 10.0,20.0',
+      '0.5 - text Ready null [] 10.0,20.0',
+      '0.7 ref button Off null [disabled] 10.0,20.0',
+    ]);
+    expect(out[2].$1.secret, isTrue);
+  });
+
+  test('a list entry belongs to its row', () {
+    final rows = axRowPaths({
+      'nodes': [
+        {'path': '0', 'role': 'AXWindow'},
+        {'path': '0.3.1', 'role': 'AXRow'},
+        {'path': '0.3.1.0.0', 'role': 'AXTextField'},
+      ],
+    });
+    expect(rowOf('0.3.1.0.0', rows), '0.3.1');
+    expect(rowOf('0.3.1', rows), '0.3.1');
+    expect(rowOf('0.2', rows), isNull);
+  });
+
+  test('key combos', () {
+    final c = splitKeyCombo('cmd+Shift+S');
+    expect(c.mods, ['cmd', 'shift']);
+    expect(c.key, 's');
+    expect(splitKeyCombo('Enter').mods, isEmpty);
+    expect(splitKeyCombo('Enter').key, 'enter');
+  });
+}

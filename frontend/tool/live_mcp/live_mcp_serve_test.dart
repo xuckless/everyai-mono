@@ -1,6 +1,6 @@
-// Dev only: serves EveryAI's host MCP tools (browser, and app when EVERYAI_LIVE_FLUTTER_LOG names a `flutter run`
-// output file) on loopback with a token, plus a small demo web app, so an outside agent can be pointed at them and
-// review them. Not part of `flutter test` (it lives outside test/).
+// Dev only: serves EveryAI's host MCP tools (browser, and app: a `flutter run` output file in
+// EVERYAI_LIVE_FLUTTER_LOG, a desktop app's command line in EVERYAI_LIVE_WINDOW_MATCH) on loopback with a token,
+// plus a small demo web app, so an outside agent can be pointed at them and review them. Not part of `flutter test` (it lives outside test/).
 //
 //   EVERYAI_LIVE_MCP_OUT=/path/live.json flutter test tool/live_mcp/live_mcp_serve_test.dart
 //
@@ -39,6 +39,14 @@ final class _Tools implements HostTools {
           vision: true,
           fit: fit,
           scrub: Scrubber.forProject(root).redact,
+          // The outside agent's own processes aren't ours to see: EVERYAI_LIVE_WINDOW_MATCH names the command line
+          // of the desktop app it starts (pgrep -f), so its windows count as the session's.
+          windowPids: () async {
+            final match = Platform.environment['EVERYAI_LIVE_WINDOW_MATCH'];
+            if (match == null || match.isEmpty) return <int>{};
+            final r = await Process.run('pgrep', ['-f', match]);
+            return {for (final l in '${r.stdout}'.split('\n')) ?int.tryParse(l.trim())};
+          },
         );
       } else if (call.name == 'browser') {
         r = await runBrowser(

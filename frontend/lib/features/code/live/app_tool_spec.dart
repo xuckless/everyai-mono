@@ -15,7 +15,7 @@ const appToolDescription =
     '- action: list · look · snapshot · screenshot · zoom {x, y, width, height, frame?} · tap {ref, or x and y '
     'with frame} · long_press {ref} · type {ref, text, submit?: replaces the field\'s text} · submit · '
     'adjust {ref, steps: a slider\'s steps, negative for down} · drag {x, y, to_x, to_y, frame?} · '
-    'scroll {dy, ref?} · back · home · reload · restart · logs · eval {script} · devices · boot {device} · install {path} · launch {bundle}.\n'
+    'scroll {dy, ref?} · back · home · reload · restart · logs · eval {script} · key {key} · devices · boot {device} · install {path} · launch {bundle}.\n'
     '- snapshot is the element list: `[s12] button "Add"`, text fields with their values, plain text as `text '
     '"…"`. Tap and type by ref. look is a screenshot for a model that can see pictures, else the element list.\n'
     '- After tap, type, scroll and back the result says what changed on screen (text that appeared or went away); '
@@ -29,6 +29,12 @@ const appToolDescription =
     'starts one headless, install puts a built app on it (.app, .apk), launch starts one fresh (bundle: its bundle '
     'id or package). logs is logcat of the app in front on Android; eval, reload, restart and adjust don\'t apply to '
     'device screens. One session drives a device at a time.\n'
+    '- Desktop windows (source "desktop", macOS): any app this session started or built here that has a window. '
+    'Acted on through accessibility only, so the user\'s mouse and keyboard stay theirs: tap presses an element '
+    '(a list entry: selects its row), type sets a text field, scroll uses its scroll bar, long_press opens its '
+    'menu; no keys or drags. Screenshots show the window with its pop-ups and dialogs. window: a title when it has '
+    'several. Apps with no accessibility elements (Tk, games, canvases) can be seen but not driven: test their '
+    'logic in code, or ask the user to click.\n'
     '- Every action reports what the app logged since the last one (prints, errors); logs reads it alone.\n'
     '- The user may take control in the Preview; your actions then wait until they give it back. It never types '
     'into password fields: the user does that.';
@@ -43,6 +49,7 @@ const appToolActions = [
   'long_press',
   'type',
   'submit',
+  'key',
   'adjust',
   'drag',
   'scroll',
@@ -63,7 +70,8 @@ const appToolProperties = <String, Object?>{
   'source': {
     'type': 'string',
     'description':
-        'Which app: flutter, react-native, electron, ios, android, a shell id (bg_2), or an address it printed',
+        'Which app: flutter, react-native, electron, ios, android, desktop, a shell id (bg_2), or an address it '
+        'printed',
   },
   'ref': {'type': 'string', 'description': 'An element of the last element list (s12, r3, ref_4)'},
   'frame': {'type': 'string', 'description': 'The screenshot (f_N) that x and y are in'},
@@ -79,6 +87,8 @@ const appToolProperties = <String, Object?>{
   'steps': {'type': 'integer', 'description': "adjust: the slider's steps to move (negative: down)"},
   'script': {'type': 'string'},
   'device': {'type': 'string', 'description': 'boot: a name from devices (iPhone 16, Pixel_9_API_36)'},
+  'key': {'type': 'string', 'description': 'key: a key or shortcut (Enter, Escape, Tab, cmd+s, ctrl+a)'},
+  'window': {'type': 'string', 'description': 'desktop: which window, by (part of) its title'},
   'path': {'type': 'string', 'description': 'install: the built app (.app for iOS, .apk for Android)'},
   'bundle': {'type': 'string', 'description': 'launch: the bundle id (iOS) or package (Android), com.example.app'},
   'screenshot': {'type': 'boolean', 'description': 'Also return a screenshot after the action'},

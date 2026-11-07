@@ -829,6 +829,7 @@ final class ToolRunner {
           vision: vision,
           fit: _fit,
           scrub: scrubber.redact,
+          windowPids: shell.processes,
         ),
         _ => ToolOutput('Error: there is no tool called $tool.', isError: true),
       };

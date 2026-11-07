@@ -11,12 +11,14 @@ import '../../live/flutter_app_io.dart';
 import '../../live/frames.dart';
 import '../../live/adb_io.dart';
 import '../../live/android_device_io.dart';
+import '../../live/desktop_window_io.dart';
 import '../../live/device_screen.dart';
 import '../../live/ios_simulator_io.dart';
 import '../../live/live_session.dart';
 import '../../live/react_native_io.dart';
 import 'screen_tools_io.dart' show runBrowser;
 import 'tools_io.dart' show ToolOutput, imageDataUrl;
+import 'window_capture_io.dart' show executableOf;
 
 // The `app` tool's work (see `app_tool_spec.dart`), shared by the EveryAI harness and the app's MCP host.
 
@@ -32,13 +34,29 @@ Future<ToolOutput> runAppTool(
   required bool vision,
   required String Function(String text, String name) fit,
   String Function(String text)? scrub,
+  Future<Set<int>> Function()? windowPids,
 }) async {
   final action = (args['action'] as String?)?.trim().isNotEmpty ?? false ? args['action']! as String : 'look';
   if (action == 'devices' || action == 'boot') return _devices(action, args, sessions.first);
   await Future.wait([IosSimulators.refresh(), AndroidDevices.refresh()]);
-  final apps = AppSources.running(sessions);
-  if (action == 'list') return ToolOutput(appListText(apps));
   final source = (args['source'] as String?)?.trim() ?? '';
+  // Metro started where this session can't see it: its usual address answers for "react-native".
+  if (source == 'react-native' || source == 'rn' || (action == 'list' && source.isEmpty)) {
+    if (!AppSources.running(sessions).any((a) => a.kind == AppKind.reactNative) && await _metroAt(_defaultMetro)) {
+      AppSources.point(sessions.first, AppEndpoint(AppKind.reactNative, _defaultMetro));
+    }
+  }
+  // Desktop apps the session started (or built in its folder) that have a window now.
+  if (windowPids != null) await _findWindows(sessions.first, windowPids, root);
+  if (action == 'list' && source.contains('://')) {
+    if (endpointFromUrl(source) case final ep?) AppSources.point(sessions.first, ep);
+  }
+  final apps = AppSources.running(sessions);
+  if (action == 'list') {
+    final rn = apps.where((a) => a.kind == AppKind.reactNative).toList();
+    final notes = [for (final a in rn) await _metroNote(a.endpoint.uri)];
+    return ToolOutput([appListText(apps), ...notes.nonNulls].join('\n'));
+  }
   final SessionApp app;
   if (source.contains('://')) {
     final ep = endpointFromUrl(source);
@@ -74,6 +92,17 @@ Future<ToolOutput> runAppTool(
       vision,
       scrub,
     ),
+    AppKind.desktop => await _device(
+      DesktopWindows.driver(int.parse(app.endpoint.uri.path))..window = (args['window'] as String?)?.trim(),
+      DesktopWindows.holds,
+      app.endpoint.uri.path,
+      action,
+      args,
+      sessions.first,
+      root,
+      vision,
+      scrub,
+    ),
     AppKind.android => await _device(
       AndroidDevices.driver(app.endpoint.uri.path),
       AndroidDevices.holds,
@@ -96,6 +125,62 @@ Future<ToolOutput> runAppTool(
   };
   if (also.isEmpty) return out;
   return ToolOutput('$also${out.text}', isError: out.isError, images: out.images);
+}
+
+final _defaultMetro = Uri.parse('http://127.0.0.1:8081');
+
+/// Points [session] at the desktop windows of processes it started ([windowPids]) or whose program is inside
+/// [root] (an app built in the project), on macOS with the window helper.
+Future<void> _findWindows(String session, Future<Set<int>> Function() windowPids, String root) async {
+  if (!Platform.isMacOS || axHelperPath() == null) return;
+  try {
+    final pids = await windowPids();
+    final mine = <int>{};
+    for (final w in await helperWindows(const [])) {
+      if (pids.contains(w.pid) || (await executableOf(w.pid)).startsWith('$root/')) {
+        mine.add(w.pid);
+        DesktopWindows.driver(w.pid).known(w);
+      }
+    }
+    for (final pid in mine) {
+      AppSources.point(session, AppEndpoint(AppKind.desktop, Uri.parse('window:$pid')));
+    }
+  } on Object {
+    // No windows to add (the helper failed): the other sources still work.
+  }
+}
+
+/// Whether Metro answers at [metro].
+Future<bool> _metroAt(Uri metro) async {
+  final client = HttpClient()..connectionTimeout = const Duration(milliseconds: 600);
+  try {
+    final res = await (await client.getUrl(metro.replace(path: '/status'))).close().timeout(const Duration(seconds: 2));
+    return (await res.transform(const SystemEncoding().decoder).join()).contains('packager-status:running');
+  } on Object {
+    return false;
+  } finally {
+    client.close(force: true);
+  }
+}
+
+/// Whether an app is connected to Metro at [metro], for `list`.
+Future<String?> _metroNote(Uri metro) async {
+  final client = HttpClient()..connectionTimeout = const Duration(milliseconds: 600);
+  try {
+    final res = await (await client.getUrl(metro.replace(path: '/json/list')))
+        .close()
+        .timeout(const Duration(seconds: 2));
+    final body = await res.transform(const SystemEncoding().decoder).join();
+    final targets = body.trim().startsWith('[') ? body.split('"webSocketDebuggerUrl"').length - 1 : 0;
+    return targets == 0
+        ? 'Metro at $metro is running, but no app is connected to it yet: open the app on the simulator or emulator '
+              '(pointed at this Metro), then use source "react-native".'
+        : 'Metro at $metro has $targets app connection${targets == 1 ? '' : 's'}.';
+  } on Object {
+    return "Metro at $metro doesn't answer (is the dev server running?).";
+  } finally {
+    client.close(force: true);
+  }
 }
 
 /// `devices` (iOS Simulators, Android devices and virtual devices here) and `boot {device}` (starts one and holds it
@@ -134,12 +219,18 @@ Future<ToolOutput> _devices(String action, Map<String, Object?> args, String ses
         if (running.isEmpty && off.isEmpty) lines.add('- none (make a virtual device in Android Studio)');
       }
       if (lines.isEmpty) return const ToolOutput('No iOS Simulators or Android devices here.');
-      return ToolOutput(['Boot one with action boot and its name.', ...lines].join('\n'));
+      return ToolOutput(
+        [
+          'Boot one with action boot and its name (a simulator name on several iOS versions: "iPhone 16e (iOS 18.6)").',
+          ...lines,
+        ].join('\n'),
+      );
     }
     final device = (args['device'] as String?)?.trim() ?? '';
     if (device.isEmpty) return const ToolOutput('Error: boot needs a device (a name from devices).', isError: true);
     final sims = Platform.isMacOS ? await IosSimulators.list() : const <SimDevice>[];
-    final isSim = sims.any((d) => d.udid == device || d.name.toLowerCase() == device.toLowerCase());
+    final base = device.replaceFirst(RegExp(r'\s*\(i(?:Pad)?OS [\d.]+\)$'), '').toLowerCase();
+    final isSim = sims.any((d) => d.udid == device || d.name.toLowerCase() == base);
     if (isSim) {
       final d = await IosSimulators.boot(device);
       if (IosSimulators.claim(d.udid, session) case final other?) {
@@ -194,7 +285,8 @@ String noAppText(List<SessionApp> apps, String source) {
 
 /// The app [source] names among [apps] (a kind, a shell id), or the newest when [source] is empty.
 SessionApp? pickApp(List<SessionApp> apps, String source) {
-  if (source.isEmpty) return apps.lastOrNull;
+  // With nothing named, a framework source (richer) wins over the same app's bare window.
+  if (source.isEmpty) return apps.where((a) => a.kind != AppKind.desktop).lastOrNull ?? apps.lastOrNull;
   final s = source.toLowerCase().replaceAll('_', '-');
   return apps.where((a) => a.kind.id == s || (s == 'rn' && a.kind == AppKind.reactNative)).lastOrNull ??
       apps.where((a) => a.shell?.id == source).lastOrNull;
@@ -557,7 +649,18 @@ Future<ToolOutput> _device(
       a.frames.latest == null && str('frame') == null ? FramePoint(x, y) : a.frames.map(str('frame'), x, y, a.geometry);
   try {
     final before =
-        const {'tap', 'type', 'submit', 'scroll', 'back', 'home', 'long_press', 'drag', 'launch'}.contains(action)
+        const {
+          'tap',
+          'type',
+          'submit',
+          'key',
+          'scroll',
+          'back',
+          'home',
+          'long_press',
+          'drag',
+          'launch',
+        }.contains(action)
         ? await a.tree()
         : null;
     final String did;
@@ -623,6 +726,10 @@ Future<ToolOutput> _device(
         did = await a.back();
       case 'home':
         did = await a.home();
+      case 'key':
+        final k = str('key') ?? str('text');
+        if (k == null) return const ToolOutput('Error: key needs key ("Enter", "Escape", "cmd+s").', isError: true);
+        did = await a.key(k);
       case 'install':
         final path = str('path');
         if (path == null) return ToolOutput('Error: install needs a path (${a.installs}).', isError: true);
@@ -679,6 +786,11 @@ Future<ToolOutput> _device(
         await a.tree();
         changed = a.changedSince(before) ?? 'Nothing visible changed on screen.';
       }
+      // A window with no accessibility elements can't say what changed: show it instead.
+      if (a is DesktopWindow && !a.hasElements && changed == 'Nothing visible changed on screen.') {
+        changed = 'This window has no accessibility elements to compare, so here is how it looks now.';
+        shot = vision;
+      }
     }
     final listed = list ? await a.snapshot() : null;
     final body = _body(
@@ -695,7 +807,8 @@ Future<ToolOutput> _device(
     a.control.report(const LiveActivity('look', caption: 'Looking'));
     final (png, frame) = await a.frameShot(region: zoom);
     final dir = Directory('$root/.everyai/scratch/screenshots')..createSync(recursive: true);
-    final path = '${dir.path}/${android ? 'android' : 'sim'}-${DateTime.now().millisecondsSinceEpoch}.png';
+    final path =
+        '${dir.path}/${a is DesktopWindow ? 'window' : (android ? 'android' : 'sim')}-${DateTime.now().millisecondsSinceEpoch}.png';
     File(path).writeAsBytesSync(png);
     final shown = path.startsWith('$root/') ? path.substring(root.length + 1) : path;
     final url = vision ? await Isolate.run(() => imageDataUrl(png, 'png')) : null;

@@ -917,6 +917,27 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   through scrcpy's control socket. Checked in a real macOS build with `tool/live_apps/device_view_demo.dart` (both
   device views; a tap sent through the view opened the app). Dev probe `tool/live_apps/android_probe_test.dart`
   (`EVERYAI_ANDROID`).
+- **Desktop windows (2026-11-06).** The `app` tool's source "desktop" (macOS) drives the windows of apps the session
+  started (its shells' process trees; outside leads: the pids the host passes) or built in the project
+  (`live/desktop_window_io.dart`). Through `everyai-ax`, our own Swift helper (`tool/ax_helper/main.swift`; dev build
+  `tool/build_ax_helper.sh` → `frontend/.tools/`, `EVERYAI_AX_HELPER` overrides; the macOS build compiles it into
+  `Contents/Resources` from `macos/scripts/bundle_ax_helper.sh`, called by `bundle_deno.sh`; release signing covers
+  it). **Accessibility only** (owner's rule, no synthetic events): tap = AXPress (an entry inside a table/list row
+  selects the row: `show` + `select`), type = set the value (never into secure fields), scroll = the scroll bar's
+  increment, long_press = AXShowMenu; `key`/drag/tap at a point with nothing pressable are refused with what works.
+  Tk and canvas apps (no AX elements) can be seen, not driven. Pictures (`shot`) include the app's pop-ups and
+  dialogs over the window (display filter cut to the window); the Preview stream shows the window alone. The helper
+  still has `click`/`key`/`drag`/`scroll --front` (unused). New `key` action on iOS (AXe HID codes) and Android
+  (keyevents/keycombination) via `DeviceScreen.key`.
+  Preview `DesktopWindowView`: the live stream; clicks press through AX; Bring to front. Probe
+  `tool/live_apps/desktop_probe_test.dart` (`EVERYAI_DESKTOP_PID`); the MCP rig takes `EVERYAI_LIVE_WINDOW_MATCH`.
+- **Real-project testing (2026-11-06).** Outside agents drove the owner's projects through the MCP rig (copies or
+  read-only runs; no project files touched): pixl-playroom (Electron, 6/10 → 8/10 after the browser fixes in
+  3387f20), tranzit (Expo; its dev build isn't installed and can't be built here because its gitignored
+  `ios/.xcode.env.local` points NODE_BINARY at a removed Homebrew node; owner to rebuild), futoshiki (Tk, desktop
+  windows: 6/10 with front-posted clicks, before the switch to accessibility only). RN fixes from it: Metro's usual address is tried for "react-native", `list` says whether an app is
+  connected to Metro, `launch` says when the app isn't installed, simulator names on several iOS versions need
+  "(iOS 18.6)".
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2

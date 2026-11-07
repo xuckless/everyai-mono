@@ -50,6 +50,7 @@ ScreenAccess screenAccess() => ScreenAccess(
         vision: true,
         fit: (text, _) => _cut(text),
         scrub: Scrubber.forProject(root).redact,
+        windowPids: () async => pids,
       ),
     );
   },

@@ -351,6 +351,73 @@ final class AndroidDevice implements DeviceScreen {
     return 'Typed into $ref${n.name.isEmpty ? '' : ' "${n.name}"'}$shown${submit ? ' and pressed Enter' : ''}.';
   }
 
+  static const _keys = <String, int>{
+    'enter': 66,
+    'return': 66,
+    'escape': 111,
+    'esc': 111,
+    'backspace': 67,
+    'tab': 61,
+    'space': 62,
+    'up': 19,
+    'down': 20,
+    'left': 21,
+    'right': 22,
+    'arrowup': 19,
+    'arrowdown': 20,
+    'arrowleft': 21,
+    'arrowright': 22,
+    'delete': 112,
+    'home': 122,
+    'end': 123,
+    'pageup': 92,
+    'pagedown': 93,
+    'menu': 82,
+    'search': 84,
+  };
+  static const _mods = <String, int>{
+    'ctrl': 113,
+    'control': 113,
+    'shift': 59,
+    'alt': 57,
+    'option': 57,
+    'cmd': 117,
+    'meta': 117,
+  };
+
+  static int? _keyOf(String k) {
+    if (_keys[k] case final c?) return c;
+    if (k.length == 1) {
+      final u = k.codeUnitAt(0);
+      if (u >= 0x61 && u <= 0x7a) return 29 + u - 0x61;
+      if (u >= 0x30 && u <= 0x39) return 7 + u - 0x30;
+    }
+    return null;
+  }
+
+  @override
+  Future<String> key(String combo) async {
+    final (:mods, :key) = splitKeyCombo(combo);
+    final code = _keyOf(key);
+    control.report(LiveActivity('type', caption: 'Pressing $combo'));
+    if (code == null || (mods.isEmpty && key.length == 1)) {
+      if (mods.isNotEmpty) throw AppError('Unknown key "$key" in "$combo".');
+      if (RegExp(r'^[\x20-\x7e]*$').hasMatch(combo) && !combo.contains('%')) {
+        await _shell(['input', 'text', combo.replaceAll(' ', '%s')]);
+      } else {
+        (await scrcpy()).paste(combo);
+      }
+      return 'Typed "$combo".';
+    }
+    if (mods.isEmpty) {
+      await _shell(['input', 'keyevent', '$code']);
+    } else {
+      final m = [for (final x in mods) _mods[x] ?? (throw AppError('Unknown modifier "$x" in "$combo".'))];
+      await _shell(['input', 'keycombination', ...m.map((c) => '$c'), '$code']);
+    }
+    return 'Pressed $combo.';
+  }
+
   @override
   Future<String> submit() async {
     await _shell(['input', 'keyevent', '66']);
@@ -408,6 +475,8 @@ final class AndroidDevice implements DeviceScreen {
   @override
   Future<String> launch(String app) async {
     control.report(LiveActivity('look', caption: 'Launching $app'));
+    final there = await _shell(['pm', 'path', app]).catchError((Object _) => '');
+    if (!there.contains('package:')) throw AppError('$app is not installed on this device: install its .apk first.');
     await _shell(['am', 'force-stop', app]);
     final out = await _shell(['monkey', '-p', app, '-c', 'android.intent.category.LAUNCHER', '1']);
     if (out.contains('No activities found')) throw AppError('$app has no launcher activity on this device.');

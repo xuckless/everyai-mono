@@ -8,7 +8,8 @@ enum AppKind {
   reactNative('React Native'),
   electron('Electron'),
   ios('iOS Simulator'),
-  android('Android');
+  android('Android'),
+  desktop('Desktop window');
 
   const AppKind(this.label);
   final String label;
@@ -20,6 +21,7 @@ enum AppKind {
     electron => 'electron',
     ios => 'ios',
     android => 'android',
+    desktop => 'desktop',
   };
 }
 
@@ -31,7 +33,8 @@ final class AppEndpoint {
   /// Flutter: the VM service (`http://127.0.0.1:PORT/TOKEN=/`); Electron: the browser's DevTools socket
   /// (`ws://127.0.0.1:PORT/devtools/browser/ID`); React Native: Metro's server (`http://127.0.0.1:8081`); iOS
   /// Simulator: `simulator:<udid>`, or `simulator-name:<name>` for one an output names (resolved against the booted
-  /// ones); Android: `android:<serial>`, or `android-name:<model>` (resolved against the devices adb sees).
+  /// ones); Android: `android:<serial>`, or `android-name:<model>` (resolved against the devices adb sees); a
+  /// desktop app's windows: `window:<pid>`.
   final Uri uri;
 
   @override

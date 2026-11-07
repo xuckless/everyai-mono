@@ -5,6 +5,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import 'app_view.dart';
 import 'axe_install.dart';
 import 'device_screen.dart';
@@ -59,13 +61,35 @@ abstract final class IosSimulators {
     return parseSimctlDevices('${r.stdout}');
   }
 
-  /// Boots [device] (a name or udid) without opening Simulator.app, and waits until it is up.
-  static Future<SimDevice> boot(String device) async {
-    final all = await list();
+  /// The simulator [device] names among [all]: a udid, or a name, with its runtime ("iPhone 16e (iOS 18.6)") when
+  /// the name is on several runtimes and none of them is booted.
+  @visibleForTesting
+  static SimDevice pickSimulator(List<SimDevice> all, String device) {
+    final m = RegExp(r'^(.*?)\s*\((i(?:Pad)?OS [\d.]+)\)$').firstMatch(device.trim());
+    final name = (m?.group(1) ?? device).trim().toLowerCase();
+    final runtime = m?.group(2)?.toLowerCase();
+    final named = [
+      for (final x in all)
+        if (x.name.toLowerCase() == name && (runtime == null || x.runtime.toLowerCase() == runtime)) x,
+    ];
     final d =
         all.where((x) => x.udid == device).firstOrNull ??
-        all.where((x) => x.name.toLowerCase() == device.toLowerCase()).firstOrNull;
-    if (d == null) throw AppError('No simulator called "$device". Simulators: ${all.map((x) => x.name).join(', ')}.');
+        (named.length == 1 ? named.first : named.where((x) => x.booted).firstOrNull);
+    if (d == null && named.length > 1) {
+      throw AppError(
+        '"$device" is on ${named.map((x) => x.runtime).join(' and ')}: pass "${named.first.name} '
+        '(${named.first.runtime})" or a udid.',
+      );
+    }
+    if (d == null) {
+      throw AppError('No simulator called "$device". Simulators: ${all.map((x) => x.name).toSet().join(', ')}.');
+    }
+    return d;
+  }
+
+  /// Boots [device] (a name or udid) without opening Simulator.app, and waits until it is up.
+  static Future<SimDevice> boot(String device) async {
+    final d = pickSimulator(await list(), device);
     if (!d.booted) {
       final r = await Process.run('xcrun', ['simctl', 'boot', d.udid]);
       if (r.exitCode != 0 && !'${r.stderr}'.contains('current state: Booted')) {
@@ -294,6 +318,68 @@ final class IosSimulator implements DeviceScreen {
     return 'Typed into $ref${n.name.isEmpty ? '' : ' "${n.name}"'}$shown${submit ? ' and pressed Return' : ''}.';
   }
 
+  static const _hid = <String, int>{
+    'enter': 40,
+    'return': 40,
+    'escape': 41,
+    'esc': 41,
+    'backspace': 42,
+    'tab': 43,
+    'space': 44,
+    'right': 79,
+    'left': 80,
+    'down': 81,
+    'up': 82,
+    'arrowright': 79,
+    'arrowleft': 80,
+    'arrowdown': 81,
+    'arrowup': 82,
+    'delete': 76,
+    'home': 74,
+    'end': 77,
+    'pageup': 75,
+    'pagedown': 78,
+  };
+  static const _hidMods = <String, int>{
+    'ctrl': 224,
+    'control': 224,
+    'shift': 225,
+    'alt': 226,
+    'option': 226,
+    'cmd': 227,
+    'command': 227,
+  };
+
+  static int? _hidOf(String k) {
+    if (_hid[k] case final c?) return c;
+    if (k.length == 1) {
+      final u = k.codeUnitAt(0);
+      if (u >= 0x61 && u <= 0x7a) return 4 + u - 0x61;
+      if (u >= 0x31 && u <= 0x39) return 30 + u - 0x31;
+      if (u == 0x30) return 39;
+    }
+    return null;
+  }
+
+  @override
+  Future<String> key(String combo) async {
+    final (:mods, :key) = splitKeyCombo(combo);
+    final code = _hidOf(key);
+    control.report(LiveActivity('type', caption: 'Pressing $combo'));
+    if (code == null || (mods.isEmpty && key.length == 1)) {
+      if (mods.isNotEmpty) throw AppError('Unknown key "$key" in "$combo".');
+      await _axe(['type', '--stdin'], stdin: combo);
+      return 'Typed "$combo".';
+    }
+    if (mods.isEmpty) {
+      await _axe(['key', '$code']);
+    } else {
+      final m = [for (final x in mods) _hidMods[x] ?? (throw AppError('Unknown modifier "$x" in "$combo".'))];
+      await _axe(['key-combo', '--modifiers', m.join(','), '--key', '$code']);
+    }
+    return 'Pressed $combo.';
+  }
+
   /// Presses Return (the keyboard's action key).
   @override
   Future<String> submit() async {
@@ -392,6 +478,12 @@ final class IosSimulator implements DeviceScreen {
   @override
   Future<String> launch(String app) async {
     final bundle = app;
+    final there = await Process.run('xcrun', ['simctl', 'get_app_container', udid, bundle]);
+    if (there.exitCode != 0) {
+      throw AppError(
+        '$bundle is not installed on this simulator: build it for the simulator and install the .app first.',
+      );
+    }
     control.report(LiveActivity('look', caption: 'Launching $bundle'));
     final r = await Process.run('xcrun', ['simctl', 'launch', '--terminate-running-process', udid, bundle]);
     if (r.exitCode != 0) throw AppError("Couldn't launch $bundle: ${'${r.stderr}'.trim()}");

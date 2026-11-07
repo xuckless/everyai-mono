@@ -11,6 +11,7 @@ import '../shells/shell_registry.dart';
 import 'app_endpoints.dart';
 import 'flutter_app_io.dart';
 import 'android_device_io.dart';
+import 'desktop_window_io.dart';
 import 'ios_simulator_io.dart';
 import 'react_native_io.dart';
 
@@ -31,6 +32,7 @@ final class SessionApp {
       return IosSimulators.booted.where((d) => d.udid == udid).firstOrNull?.name ?? 'iOS Simulator';
     }
     if (kind == AppKind.android) return AndroidDevices.driver(endpoint.uri.path).label;
+    if (kind == AppKind.desktop) return DesktopWindows.driver(int.parse(endpoint.uri.path)).label;
     final where = shell == null ? endpoint.uri.toString() : '${shell!.id}: ${shell!.title}';
     return '${kind.label} app ($where)';
   }
@@ -63,6 +65,8 @@ abstract final class AppSources {
       final resolved = switch (ep.kind) {
         AppKind.ios => _bootedSimulator(ep, ids),
         AppKind.android => _readyAndroid(ep, ids),
+        // A desktop app's process that has ended has no windows to drive.
+        AppKind.desktop => Process.killPid(int.tryParse(ep.uri.path) ?? -1, ProcessSignal.sigcont) ? ep : null,
         _ => ep,
       };
       if (resolved != null && seen.add(resolved)) out.add(SessionApp(resolved, shell: shell));
@@ -191,6 +195,7 @@ abstract final class AppSources {
     AppKind.electron => _electron[app.endpoint.uri],
     AppKind.ios => IosSimulators.driver(app.endpoint.uri.path),
     AppKind.android => AndroidDevices.driver(app.endpoint.uri.path),
+    AppKind.desktop => DesktopWindows.driver(int.parse(app.endpoint.uri.path)),
   };
 
   /// Disconnects from apps whose shells ended and forgets session [session]'s pointed apps (the session was
@@ -199,6 +204,7 @@ abstract final class AppSources {
     _pointed.remove(session);
     IosSimulators.release(session);
     AndroidDevices.holds.release(session);
+    DesktopWindows.holds.release(session);
     final live = {
       for (final s in ShellRegistry.instance.sessions)
         for (final a in running([s])) a.endpoint.uri,

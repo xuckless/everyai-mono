@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:every_ai/features/code/live/app_endpoints.dart';
+import 'package:every_ai/features/code/live/app_view.dart';
 import 'package:every_ai/features/code/live/ios_simulator_io.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -26,6 +27,24 @@ void main() {
     expect(d.first.runtime, 'iOS 18.6');
     expect(d.first.booted, isTrue);
     expect(parseSimctlDevices('not json'), isEmpty);
+  });
+
+  test('picking a simulator by name: runtime suffix, booted one preferred, ambiguity explained', () {
+    const all = [
+      SimDevice(udid: 'A', name: 'iPhone 16', runtime: 'iOS 18.6', booted: false),
+      SimDevice(udid: 'B', name: 'iPhone 16', runtime: 'iOS 26.0', booted: false),
+      SimDevice(udid: 'C', name: 'iPhone 16e', runtime: 'iOS 18.6', booted: false),
+    ];
+    expect(IosSimulators.pickSimulator(all, 'iPhone 16 (iOS 26.0)').udid, 'B');
+    expect(IosSimulators.pickSimulator(all, 'iphone 16e').udid, 'C');
+    expect(IosSimulators.pickSimulator(all, 'A').udid, 'A');
+    expect(
+      () => IosSimulators.pickSimulator(all, 'iPhone 16'),
+      throwsA(isA<AppError>().having((e) => e.message, 'message', contains('"iPhone 16 (iOS 18.6)"'))),
+    );
+    final booted = [...all.take(1), const SimDevice(udid: 'B', name: 'iPhone 16', runtime: 'iOS 26.0', booted: true)];
+    expect(IosSimulators.pickSimulator(booted, 'iPhone 16').udid, 'B');
+    expect(() => IosSimulators.pickSimulator(all, 'Pixel'), throwsA(isA<AppError>()));
   });
 
   test('accessibility tree: roles, states, secrets, keyboard folded, reading order', () {

@@ -33,6 +33,10 @@ abstract interface class DeviceScreen {
   Future<String> longPress(String ref);
   Future<String> type(String ref, String text, {bool submit = false});
   Future<String> submit();
+
+  /// A key or shortcut ("Enter", "Escape", "Tab", "Backspace", arrows, "cmd+s", "ctrl+a"), or text to type when it
+  /// names no key.
+  Future<String> key(String combo);
   Future<String> scroll(double dy, {String? ref});
   Future<String> drag(double x, double y, double toX, double toY);
   Future<String> back();
@@ -69,6 +73,13 @@ final class DeviceHolds {
   ];
 
   void release(String session) => _holders.removeWhere((_, s) => s == session);
+}
+
+/// [combo] ("cmd+shift+s") as its modifiers and its key, lower-case.
+({List<String> mods, String key}) splitKeyCombo(String combo) {
+  final parts = combo.split('+').map((s) => s.trim().toLowerCase()).where((s) => s.isNotEmpty).toList();
+  if (parts.isEmpty) return (mods: const [], key: '');
+  return (mods: parts.sublist(0, parts.length - 1), key: parts.last);
 }
 
 /// The smallest placed node under (x, y).

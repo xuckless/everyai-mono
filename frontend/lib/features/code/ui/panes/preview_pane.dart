@@ -20,6 +20,7 @@ import '../../live/app_endpoints.dart';
 import '../../live/app_sources.dart';
 import '../../live/chrome_download.dart';
 import '../../live/android_device_io.dart';
+import '../../live/desktop_window_io.dart';
 import '../../live/ios_simulator_io.dart';
 import '../../live/live_browsers.dart';
 import '../../live/live_session.dart';
@@ -414,6 +415,10 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
               AppKind.reactNative => ReactNativeAppView(app: AppSources.reactNative(src.uri), visible: _visible),
               AppKind.ios => IosSimulatorView(sim: IosSimulators.driver(src.uri.path), visible: _visible),
               AppKind.android => AndroidDeviceView(device: AndroidDevices.driver(src.uri.path), visible: _visible),
+              AppKind.desktop => DesktopWindowView(
+                window: DesktopWindows.driver(int.parse(src.uri.path)),
+                visible: _visible,
+              ),
               AppKind.electron =>
                 b == null || (_image == null && _problem != null)
                     ? _Note(_problem ?? 'Connecting to the app…')
