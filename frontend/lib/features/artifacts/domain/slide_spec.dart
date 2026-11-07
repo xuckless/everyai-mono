@@ -585,3 +585,33 @@ List<String> pictureRefsOf(List<DeckSlide> deck) => {
     for (final e in s.elements)
       if (e is PictureElement) e.ref,
 }.toList();
+
+/// A picture as a deck shows it: its id and the colour behind it (charts take colours that read on it).
+typedef PictureUse = ({String ref, Color on});
+
+/// Each picture a deck shows with the colour behind it, in order, without repeats.
+List<PictureUse> pictureUsesOf(List<DeckSlide> deck) => {
+  for (final s in deck)
+    for (final e in s.elements)
+      if (e is PictureElement) (ref: e.ref, on: colourBehind(s, e) ?? s.background),
+}.toList();
+
+/// The colour behind [e] on [slide]: the topmost opaque filled shape or text box under it, else the
+/// slide's background; null when a picture is under it (its colours aren't known).
+Color? colourBehind(DeckSlide slide, SlideElement e) {
+  final index = slide.elements.indexOf(e);
+  for (final under in slide.elements.take(index < 0 ? slide.elements.length : index).toList().reversed) {
+    if (!under.box.overlaps(e.box)) continue;
+    switch (under) {
+      case PictureElement():
+        return null;
+      case ShapeElement(:final fill?)
+          when fill.a > 0.5 && under.kind != ShapeKind.line && under.kind != ShapeKind.arrow:
+        return fill;
+      case TextElement(:final fill?) when fill.a > 0.5:
+        return fill;
+      default:
+    }
+  }
+  return slide.background;
+}

@@ -1104,8 +1104,11 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
     agent trials drove the tools; their fixes are in the commits.
   - Charts: `colors` field, word units named once on the axis. svg_lint follows translate/scale transforms, curves
     and the colour under each label.
-  - Not done: wide Markdown tables cut in page pictures, page breaks splitting a line, charts on dark decks drawn as
-    a white card, text-crossing checks for rotated groups. No live model run.
+  - Follow-ups: page pictures cut in the gap between lines (`pageBreaks`), and `StillLayout` (everyai_markdown)
+    shrinks wide tables and display math to the page and wraps code; a chart on a slide is a `ChartSource` drawn
+    per colour behind it (`pictureUsesOf`, `colourBehind`; no white card, light text on dark), in PPTX too; the
+    SVG checks place everything through full affine transforms, and a rotated label is checked in its own frame.
+  - Not done: no live model run.
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),

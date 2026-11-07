@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:everyai_markdown/everyai_markdown.dart' show StillLayout;
 import 'package:flutter/widgets.dart';
 
 import '../../../core/platform/platform_kind.dart';
@@ -195,7 +196,8 @@ class Looker {
     final what = pageCount == 0
         ? 'document ($words words, $headings headings; the pictures are its figures in order)'
         : 'document ($words words, $headings headings): the first $pageCount picture(s) are its pages, where each '
-              'SVG or Mermaid figure is a placeholder line; the rest are those figures, in order';
+              'SVG or Mermaid figure is a placeholder line, and a table or code block too wide for the page is shown '
+              'shrunk (in the chat it scrolls sideways); the rest are those figures, in order';
     return _answer(id, what, pictures, findings);
   }
 
@@ -207,7 +209,7 @@ class Looker {
     }
     final indexes = only != null ? [only - 1] : [for (var i = 0; i < deck.length && i < _maxPictures; i++) i];
     final art = await drawSlideArt(
-      pictureRefsOf(deck),
+      pictureUsesOf(deck),
       slideSourcesOf(artifacts),
       diagrams: diagrams,
       prepare: prepareSvg,
@@ -277,7 +279,11 @@ Future<List<Uint8List>> _capturePages(String markdown) async {
         child: Builder(
           builder: (context) => ColoredBox(
             color: const Color(0xFFFFFFFF),
-            child: Padding(padding: const EdgeInsets.all(28), child: ChatMarkdown(text)),
+            // Still: a wide table or code line is shrunk to fit the page instead of cut off at its edge.
+            child: Padding(
+              padding: const EdgeInsets.all(28),
+              child: StillLayout(child: ChatMarkdown(text)),
+            ),
           ),
         ),
       ),

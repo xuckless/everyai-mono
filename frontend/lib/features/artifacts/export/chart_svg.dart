@@ -3,12 +3,42 @@ import 'dart:math' as math;
 import '../domain/chart_spec.dart';
 
 // A chart as a self-contained SVG on white, for PDF and Word downloads (via
-// the SVG rasterizer) and the chart's SVG download. Same spec, colors and
-// rules as the app's fl_chart view; laid out for print.
+// the SVG rasterizer) and the chart's SVG download, or on a slide's own colour.
+// Same spec, colors and rules as the app's fl_chart view; laid out for print.
 
 const _width = 640.0;
 const _font = "font-family=\"'Noto Sans', 'Helvetica Neue', Arial, sans-serif\"";
-const _ink = '#1C1C1E', _muted = '#636368', _grid = '#E5E5EA';
+
+/// The chart's own colours: text, secondary text, grid lines, the fill of point markers and slice gaps, and the
+/// card behind it (null: none, the chart sits on what is behind it).
+typedef _Palette = ({String ink, String muted, String grid, String surface, String? card});
+
+const _paper = (ink: '#1C1C1E', muted: '#636368', grid: '#E5E5EA', surface: '#FFFFFF', card: '#FFFFFF');
+
+/// Colours for a chart drawn straight on [backdrop] (ARGB): light text and faint grid on a dark colour, the print
+/// colours on a light one, and no card either way.
+_Palette _on(int backdrop) {
+  double channel(int c) {
+    final v = c / 255;
+    return v <= 0.03928 ? v / 12.92 : math.pow((v + 0.055) / 1.055, 2.4).toDouble();
+  }
+
+  final luminance =
+      0.2126 * channel(backdrop >> 16 & 0xFF) +
+      0.7152 * channel(backdrop >> 8 & 0xFF) +
+      0.0722 * channel(backdrop & 0xFF);
+  final surface = _hex(backdrop);
+  // Grid lines: the backdrop moved a little toward white or black (a plain colour every renderer draws).
+  String toward(int target, double t) {
+    int mix(int shift) => ((backdrop >> shift & 0xFF) * (1 - t) + (target >> shift & 0xFF) * t).round();
+    return _hex(mix(16) << 16 | mix(8) << 8 | mix(0));
+  }
+
+  // Below this, white text reads better than ink (the WCAG crossover).
+  return luminance < 0.18
+      ? (ink: '#F2F2F7', muted: '#AEAEB2', grid: toward(0xFFFFFF, 0.2), surface: surface, card: null)
+      : (ink: _paper.ink, muted: _paper.muted, grid: toward(0x000000, 0.12), surface: surface, card: null);
+}
 
 String _hex(int argb) => '#${(argb & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase()}';
 
@@ -54,40 +84,44 @@ List<double> niceTicks(double lo, double hi, {int count = 5}) {
   return [for (var v = start; v <= end + step / 2; v += step) double.parse(v.toStringAsFixed(10))];
 }
 
-/// [spec] drawn as SVG; null when it has no data.
-String? chartSvg(ChartSpec spec) {
+/// [spec] drawn as SVG; null when it has no data. On white by default; with [on] (an ARGB colour, a slide's) it has
+/// no card and takes colours that read on it.
+String? chartSvg(ChartSpec spec, {int? on}) {
   if (spec.isEmpty) return null;
+  final pal = on == null ? _paper : _on(on);
   final out = StringBuffer();
   var y = 16.0;
   if (spec.title.isNotEmpty) {
     y += 16;
-    out.writeln('<text x="20" y="${_n(y)}" font-size="16" font-weight="600" fill="$_ink">${_esc(spec.title)}</text>');
+    out.writeln(
+      '<text x="20" y="${_n(y)}" font-size="16" font-weight="600" fill="${pal.ink}">${_esc(spec.title)}</text>',
+    );
     y += 10;
   }
   if (spec.isRound) {
-    y = _round(out, spec, y);
+    y = _round(out, spec, y, pal);
   } else {
-    if (spec.series.length > 1) y = _legend(out, spec, y);
-    y = _cartesian(out, spec, y);
+    if (spec.series.length > 1) y = _legend(out, spec, y, pal);
+    y = _cartesian(out, spec, y, pal);
   }
   // Caption and source.
   y += 6;
   for (final line in _wrap(spec.caption, _width - 40)) {
     y += 16;
-    out.writeln('<text x="20" y="${_n(y)}" font-size="12" fill="$_ink">${_esc(line)}</text>');
+    out.writeln('<text x="20" y="${_n(y)}" font-size="12" fill="${pal.ink}">${_esc(line)}</text>');
   }
   if (spec.source.isNotEmpty) {
     for (final line in _wrap('Source: ${spec.source}', _width - 40, size: 11)) {
       y += 15;
-      out.writeln('<text x="20" y="${_n(y)}" font-size="11" fill="$_muted">${_esc(line)}</text>');
+      out.writeln('<text x="20" y="${_n(y)}" font-size="11" fill="${pal.muted}">${_esc(line)}</text>');
     }
   }
   y += 16;
   return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${_n(_width)} ${_n(y)}" $_font>\n'
-      '<rect width="100%" height="100%" fill="#FFFFFF"/>\n$out</svg>';
+      '${pal.card == null ? '' : '<rect width="100%" height="100%" fill="${pal.card}"/>\n'}$out</svg>';
 }
 
-double _legend(StringBuffer out, ChartSpec spec, double top) {
+double _legend(StringBuffer out, ChartSpec spec, double top, _Palette pal) {
   var x = 20.0, y = top + 12;
   for (final (i, _) in spec.series.indexed) {
     final name = _fit(spec.seriesName(i), 160);
@@ -98,13 +132,13 @@ double _legend(StringBuffer out, ChartSpec spec, double top) {
     }
     out
       ..writeln('<rect x="${_n(x)}" y="${_n(y - 9)}" width="10" height="10" rx="2" fill="${_hex(spec.colorAt(i))}"/>')
-      ..writeln('<text x="${_n(x + 15)}" y="${_n(y)}" font-size="12" fill="$_ink">${_esc(name)}</text>');
+      ..writeln('<text x="${_n(x + 15)}" y="${_n(y)}" font-size="12" fill="${pal.ink}">${_esc(name)}</text>');
     x += w;
   }
   return y + 10;
 }
 
-double _cartesian(StringBuffer out, ChartSpec spec, double top) {
+double _cartesian(StringBuffer out, ChartSpec spec, double top, _Palette pal) {
   final horizontal = spec.type == ChartType.bar && spec.horizontal;
   final cats = spec.categories;
   final (lo0, hi0) = spec.valueRange;
@@ -159,16 +193,16 @@ double _cartesian(StringBuffer out, ChartSpec spec, double top) {
     before = tick;
     if (horizontal) {
       out
-        ..writeln('<line x1="${_n(p)}" y1="${_n(plotTop)}" x2="${_n(p)}" y2="${_n(plotBottom)}" stroke="$_grid"/>')
+        ..writeln('<line x1="${_n(p)}" y1="${_n(plotTop)}" x2="${_n(p)}" y2="${_n(plotBottom)}" stroke="${pal.grid}"/>')
         ..writeln(
-          '<text x="${_n(p)}" y="${_n(plotBottom + 16)}" font-size="11" fill="$_muted" text-anchor="middle">'
+          '<text x="${_n(p)}" y="${_n(plotBottom + 16)}" font-size="11" fill="${pal.muted}" text-anchor="middle">'
           '${_esc(shown)}</text>',
         );
     } else {
       out
-        ..writeln('<line x1="${_n(left)}" y1="${_n(p)}" x2="${_n(right)}" y2="${_n(p)}" stroke="$_grid"/>')
+        ..writeln('<line x1="${_n(left)}" y1="${_n(p)}" x2="${_n(right)}" y2="${_n(p)}" stroke="${pal.grid}"/>')
         ..writeln(
-          '<text x="${_n(left - 6)}" y="${_n(p + 4)}" font-size="11" fill="$_muted" text-anchor="end">'
+          '<text x="${_n(left - 6)}" y="${_n(p + 4)}" font-size="11" fill="${pal.muted}" text-anchor="end">'
           '${_esc(shown)}</text>',
         );
     }
@@ -178,7 +212,7 @@ double _cartesian(StringBuffer out, ChartSpec spec, double top) {
   if (numericX) {
     for (final t in xticks) {
       out.writeln(
-        '<text x="${_n(xPos(t))}" y="${_n(plotBottom + 16)}" font-size="11" fill="$_muted" text-anchor="middle">'
+        '<text x="${_n(xPos(t))}" y="${_n(plotBottom + 16)}" font-size="11" fill="${pal.muted}" text-anchor="middle">'
         '${_esc(formatNumber(t))}</text>',
       );
     }
@@ -188,12 +222,12 @@ double _cartesian(StringBuffer out, ChartSpec spec, double top) {
       if (i % every != 0) continue;
       if (horizontal) {
         out.writeln(
-          '<text x="${_n(left - 8)}" y="${_n(catCenter(i) + 4)}" font-size="11" fill="$_ink" text-anchor="end">'
+          '<text x="${_n(left - 8)}" y="${_n(catCenter(i) + 4)}" font-size="11" fill="${pal.ink}" text-anchor="end">'
           '${_esc(_fit(c, catLabelWidth - 10))}</text>',
         );
       } else {
         out.writeln(
-          '<text x="${_n(catCenter(i))}" y="${_n(plotBottom + 16)}" font-size="11" fill="$_muted" '
+          '<text x="${_n(catCenter(i))}" y="${_n(plotBottom + 16)}" font-size="11" fill="${pal.muted}" '
           'text-anchor="middle">${_esc(_fit(c, band * every - 4))}</text>',
         );
       }
@@ -205,8 +239,8 @@ double _cartesian(StringBuffer out, ChartSpec spec, double top) {
     final z = vPos(0);
     out.writeln(
       horizontal
-          ? '<line x1="${_n(z)}" y1="${_n(plotTop)}" x2="${_n(z)}" y2="${_n(plotBottom)}" stroke="$_muted"/>'
-          : '<line x1="${_n(left)}" y1="${_n(z)}" x2="${_n(right)}" y2="${_n(z)}" stroke="$_muted"/>',
+          ? '<line x1="${_n(z)}" y1="${_n(plotTop)}" x2="${_n(z)}" y2="${_n(plotBottom)}" stroke="${pal.muted}"/>'
+          : '<line x1="${_n(left)}" y1="${_n(z)}" x2="${_n(right)}" y2="${_n(z)}" stroke="${pal.muted}"/>',
     );
   }
 
@@ -278,7 +312,7 @@ double _cartesian(StringBuffer out, ChartSpec spec, double top) {
         if (pts.length <= 24) {
           for (final (x, y) in pts) {
             out.writeln(
-              '<circle cx="${_n(x)}" cy="${_n(y)}" r="3" fill="#FFFFFF" stroke="${_hex(spec.colorAt(si))}" stroke-width="2"/>',
+              '<circle cx="${_n(x)}" cy="${_n(y)}" r="3" fill="${pal.surface}" stroke="${_hex(spec.colorAt(si))}" stroke-width="2"/>',
             );
           }
         }
@@ -291,12 +325,12 @@ double _cartesian(StringBuffer out, ChartSpec spec, double top) {
     final label = _esc(r.label.isEmpty ? spec.format(r.y) : '${r.label} (${spec.format(r.y)})');
     out.writeln(
       horizontal
-          ? '<line x1="${_n(p)}" y1="${_n(plotTop)}" x2="${_n(p)}" y2="${_n(plotBottom)}" stroke="$_ink" '
+          ? '<line x1="${_n(p)}" y1="${_n(plotTop)}" x2="${_n(p)}" y2="${_n(plotBottom)}" stroke="${pal.ink}" '
                 'stroke-width="1.2" stroke-dasharray="5 4"/>\n'
-                '<text x="${_n(p + 4)}" y="${_n(plotTop - 3)}" font-size="11" fill="$_ink">$label</text>'
-          : '<line x1="${_n(left)}" y1="${_n(p)}" x2="${_n(right)}" y2="${_n(p)}" stroke="$_ink" '
+                '<text x="${_n(p + 4)}" y="${_n(plotTop - 3)}" font-size="11" fill="${pal.ink}">$label</text>'
+          : '<line x1="${_n(left)}" y1="${_n(p)}" x2="${_n(right)}" y2="${_n(p)}" stroke="${pal.ink}" '
                 'stroke-width="1.2" stroke-dasharray="5 4"/>\n'
-                '<text x="${_n(right)}" y="${_n(p - 5)}" font-size="11" fill="$_ink" text-anchor="end">$label</text>',
+                '<text x="${_n(right)}" y="${_n(p - 5)}" font-size="11" fill="${pal.ink}" text-anchor="end">$label</text>',
     );
   }
 
@@ -308,11 +342,11 @@ double _cartesian(StringBuffer out, ChartSpec spec, double top) {
     final anchor = x > right - 80 ? 'end' : (x < left + 80 ? 'start' : 'middle');
     out
       ..writeln(
-        '<line x1="${_n(x)}" y1="${_n(ly + 4)}" x2="${_n(x)}" y2="${_n(plotBottom)}" stroke="$_muted" '
+        '<line x1="${_n(x)}" y1="${_n(ly + 4)}" x2="${_n(x)}" y2="${_n(plotBottom)}" stroke="${pal.muted}" '
         'stroke-dasharray="3 3"/>',
       )
       ..writeln(
-        '<text x="${_n(x)}" y="${_n(ly)}" font-size="11" fill="$_ink" text-anchor="$anchor">'
+        '<text x="${_n(x)}" y="${_n(ly)}" font-size="11" fill="${pal.ink}" text-anchor="$anchor">'
         '${_esc(_fit(a.label, 150))}</text>',
       );
   }
@@ -322,21 +356,21 @@ double _cartesian(StringBuffer out, ChartSpec spec, double top) {
   if (xLabel.isNotEmpty) {
     bottom += 14;
     out.writeln(
-      '<text x="${_n(left + plotW / 2)}" y="${_n(bottom)}" font-size="12" fill="$_muted" text-anchor="middle">'
+      '<text x="${_n(left + plotW / 2)}" y="${_n(bottom)}" font-size="12" fill="${pal.muted}" text-anchor="middle">'
       '${_esc(xLabel)}</text>',
     );
   }
   if (!horizontal && spec.valueAxisName.isNotEmpty) {
     final cy = plotTop + plotHeight / 2;
     out.writeln(
-      '<text x="26" y="${_n(cy)}" font-size="12" fill="$_muted" text-anchor="middle" '
+      '<text x="26" y="${_n(cy)}" font-size="12" fill="${pal.muted}" text-anchor="middle" '
       'transform="rotate(-90 26 ${_n(cy)})">${_esc(spec.valueAxisName)}</text>',
     );
   }
   return bottom;
 }
 
-double _round(StringBuffer out, ChartSpec spec, double top) {
+double _round(StringBuffer out, ChartSpec spec, double top, _Palette pal) {
   final slices = spec.slices;
   final total = slices.fold(0.0, (t, s) => t + s.value);
   const r = 120.0;
@@ -356,7 +390,7 @@ double _round(StringBuffer out, ChartSpec spec, double top) {
           ? 'M${pt(r, angle)} A${_n(r)} ${_n(r)} 0 $large 1 ${pt(r, a2)} L${pt(inner, a2)} '
                 'A${_n(inner)} ${_n(inner)} 0 $large 0 ${pt(inner, angle)} Z'
           : 'M${_n(cx)} ${_n(cy)} L${pt(r, angle)} A${_n(r)} ${_n(r)} 0 $large 1 ${pt(r, a2)} Z';
-      out.writeln('<path d="$d" fill="${colorOf(i)}" stroke="#FFFFFF" stroke-width="2"/>');
+      out.writeln('<path d="$d" fill="${colorOf(i)}" stroke="${pal.surface}" stroke-width="2"/>');
     }
     // The share on the slice, when it fits.
     final share = s.value / total;
@@ -375,11 +409,11 @@ double _round(StringBuffer out, ChartSpec spec, double top) {
   if (inner > 0 && !shares) {
     out
       ..writeln(
-        '<text x="${_n(cx)}" y="${_n(cy + 2)}" font-size="18" font-weight="600" fill="$_ink" text-anchor="middle">'
+        '<text x="${_n(cx)}" y="${_n(cy + 2)}" font-size="18" font-weight="600" fill="${pal.ink}" text-anchor="middle">'
         '${_esc(spec.format(total))}</text>',
       )
       ..writeln(
-        '<text x="${_n(cx)}" y="${_n(cy + 18)}" font-size="11" fill="$_muted" text-anchor="middle">Total</text>',
+        '<text x="${_n(cx)}" y="${_n(cy + 18)}" font-size="11" fill="${pal.muted}" text-anchor="middle">Total</text>',
       );
   }
   // The legend: label, value and share.
@@ -389,8 +423,8 @@ double _round(StringBuffer out, ChartSpec spec, double top) {
     out
       ..writeln('<rect x="${_n(lx)}" y="${_n(ly - 9)}" width="10" height="10" rx="2" fill="${colorOf(i)}"/>')
       ..writeln(
-        '<text x="${_n(lx + 16)}" y="${_n(ly)}" font-size="12" fill="$_ink">${_esc(_fit(s.label, 170, size: 12))}'
-        '<tspan fill="$_muted">  ${shares ? '' : '${_esc(spec.format(s.value))} · '}${_pct(s.value / total)}</tspan></text>',
+        '<text x="${_n(lx + 16)}" y="${_n(ly)}" font-size="12" fill="${pal.ink}">${_esc(_fit(s.label, 170, size: 12))}'
+        '<tspan fill="${pal.muted}">  ${shares ? '' : '${_esc(spec.format(s.value))} · '}${_pct(s.value / total)}</tspan></text>',
       );
     ly += 22;
   }

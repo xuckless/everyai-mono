@@ -48,10 +48,13 @@ final class SlideArtBook {
   final Map<String, SlideArt> art;
   final bool _pending;
 
-  SlideArt of(String ref) => _pending ? const PendingArt() : art[ref] ?? const MissingArt('not in this chat');
+  /// The picture [ref] names; drawn for [on] (the colour behind it) when it was drawn per backdrop (a chart).
+  SlideArt of(String ref, {Color? on}) => _pending
+      ? const PendingArt()
+      : (on == null ? null : art[_toned(ref, on)]) ?? art[ref] ?? const MissingArt('not in this chat');
 
   void dispose() {
-    for (final a in art.values) {
+    for (final a in art.values.toSet()) {
       switch (a) {
         case VectorArt(:final picture):
           picture.dispose();
@@ -63,19 +66,34 @@ final class SlideArtBook {
   }
 }
 
-/// Draws every picture [refs] name from [sources]; Mermaid through [diagrams] where there is one.
+/// The key of [ref] drawn on [on].
+String _toned(String ref, Color on) => '$ref@${on.toARGB32()}';
+
+/// Draws every picture [uses] name from [sources]; Mermaid through [diagrams] where there is one. A chart is drawn
+/// once for each colour it sits on.
 Future<SlideArtBook> drawSlideArt(
-  Iterable<String> refs,
+  Iterable<PictureUse> uses,
   Map<String, SlideSource> sources, {
   DiagramRenderer? diagrams,
   String Function(String svg) prepare = _same,
 }) async {
   final art = <String, SlideArt>{};
-  for (final ref in refs) {
+  for (final (:ref, :on) in uses) {
     final source = sources[ref];
+    if (source case ChartSource()) {
+      final drawn = switch (source.svgOn(on.toARGB32())) {
+        final svg? => await _vector(prepare(svg)),
+        null => const MissingArt('a chart with no data'),
+      };
+      art[_toned(ref, on)] = drawn;
+      art.putIfAbsent(ref, () => drawn);
+      continue;
+    }
+    if (art.containsKey(ref)) continue;
     art[ref] = switch (source) {
       null => const MissingArt('not in this chat'),
       SvgSource(:final svg) => await _vector(prepare(svg)),
+      ChartSource() => const MissingArt('not in this chat'),
       RasterSource(:final bytes) => await _raster(bytes),
       MermaidSource(:final source) => await _mermaid(source, diagrams),
     };
@@ -148,7 +166,7 @@ class SlideCanvas extends StatelessWidget {
       TextElement() => _TextBox(e),
       ShapeElement() => _Shape(e),
       TableElement() => _Table(e),
-      PictureElement() => _Picture(e, art.of(e.ref)),
+      PictureElement() => _Picture(e, art.of(e.ref, on: colourBehind(slide, e) ?? slide.background)),
     };
     if (e.opacity < 1) child = Opacity(opacity: e.opacity, child: child);
     if (e.rotation != 0) child = Transform.rotate(angle: e.rotation * math.pi / 180, child: child);

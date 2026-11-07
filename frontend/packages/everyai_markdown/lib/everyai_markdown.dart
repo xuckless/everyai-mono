@@ -10,5 +10,6 @@ export 'src/parser/document.dart' show MarkdownBlock, MarkdownDocument, Markdown
 export 'src/render/chips.dart' show CitationBuilder, CitationChip, defaultCitationBuilder;
 export 'src/render/markdown_view.dart' show MarkdownView;
 export 'src/render/math.dart' show MathBuilder, defaultMathBuilder;
+export 'src/render/scroll.dart' show StillLayout;
 export 'src/style.dart' show MarkdownStyle;
 export 'src/code/syntax_themes.dart' show githubLightSyntaxTheme, oneDarkSyntaxTheme;

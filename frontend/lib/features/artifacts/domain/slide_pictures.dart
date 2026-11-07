@@ -10,10 +10,20 @@ sealed class SlideSource {
   const SlideSource();
 }
 
-/// An SVG figure (a chart is drawn as SVG, as in the PDF and Word exports).
+/// An SVG figure.
 final class SvgSource extends SlideSource {
   const SvgSource(this.svg);
   final String svg;
+}
+
+/// A chart: drawn as SVG (as in the PDF and Word exports) in colours that read on what is behind it on the slide,
+/// without the white card it has on a page.
+final class ChartSource extends SlideSource {
+  const ChartSource(this.spec);
+  final ChartSpec spec;
+
+  /// The chart's SVG on [backdrop].
+  String? svgOn(int backdrop) => chartSvg(spec, on: backdrop);
 }
 
 /// A Mermaid diagram: drawn by the app's webview renderer when there is one.
@@ -39,9 +49,9 @@ Map<String, SlideSource> slideSourcesOf(Iterable<Artifact> artifacts) {
         final String svg when svg.contains('<svg') => SvgSource(svg),
         _ => null,
       },
-      VisualKind.chart => switch (chartSvg(ChartSpec.tryParse(v.str('content')) ?? ChartSpec.fromJson(v.args))) {
-        final String svg => SvgSource(svg),
-        null => null,
+      VisualKind.chart => switch (ChartSpec.tryParse(v.str('content')) ?? ChartSpec.fromJson(v.args)) {
+        final spec when !spec.isEmpty => ChartSource(spec),
+        _ => null,
       },
       VisualKind.diagram => MermaidSource(v.args['mermaid'] as String? ?? v.str('content')),
       VisualKind.image => switch (v.args['bytes']) {
@@ -63,6 +73,7 @@ Map<String, SlideSource> slideSourcesOf(Iterable<Artifact> artifacts) {
 /// A short fingerprint of a source, for caches keyed by what is drawn.
 String sourceKey(SlideSource s) => switch (s) {
   SvgSource(:final svg) => 'svg:${svg.hashCode}:${svg.length}',
+  ChartSource(:final spec) => 'chart:${chartSvg(spec).hashCode}',
   MermaidSource(:final source) => 'mmd:${source.hashCode}',
   RasterSource(:final bytes) => 'png:${bytes.length}:${base64Encode(bytes.take(32).toList())}',
 };

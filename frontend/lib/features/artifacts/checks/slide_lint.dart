@@ -48,7 +48,7 @@ List<String> slideFindings(DeckSlide slide, SlideArtBook art) {
         if (e.size < _minSize) {
           out.add('${e.label} is ${e.size.round()} px; under ${_minSize.round()} it is hard to read on a screen.');
         }
-        final behind = e.fill ?? _behind(slide, e);
+        final behind = e.fill ?? colourBehind(slide, e);
         if (behind != null && _contrast(e.color, behind) < 3) {
           out.add('${e.label} has too little contrast against what is behind it.');
         }
@@ -134,25 +134,6 @@ double _tableHeight(TableElement e) {
     height += math.max(tallest + e.size * 0.8, e.box.height / e.rows.length) + 1;
   }
   return height;
-}
-
-/// The colour behind a text box without its own fill: the topmost filled shape under it, else the slide's
-/// background; null over a picture (its colours aren't known).
-Color? _behind(DeckSlide slide, TextElement text) {
-  final index = slide.elements.indexOf(text);
-  for (final e in slide.elements.take(index).toList().reversed) {
-    if (!e.box.overlaps(text.box)) continue;
-    switch (e) {
-      case PictureElement():
-        return null;
-      case ShapeElement(:final fill?) when fill.a > 0.5 && e.kind != ShapeKind.line && e.kind != ShapeKind.arrow:
-        return fill;
-      case TextElement(:final fill?) when fill.a > 0.5:
-        return fill;
-      default:
-    }
-  }
-  return slide.background;
 }
 
 double _contrast(Color a, Color b) {

@@ -13,20 +13,26 @@ import '../../domain/slide_spec.dart';
 import 'slide_canvas.dart';
 
 /// The pictures a deck shows, drawn once per set of references and redrawn when the chat's figures change (an
-/// edit to a figure shows on every slide that uses it). Keyed by conversation and the references, one per line.
+/// edit to a figure shows on every slide that uses it). Keyed by conversation and the pictures, one per line as
+/// `ref<tab>argb` (the colour behind it).
 final slideArtProvider = FutureProvider.autoDispose.family<SlideArtBook, (String, String)>((ref, key) async {
   final (conversationId, refs) = key;
   final sources = slideSourcesOf(ref.watch(conversationArtifactsProvider(conversationId)));
-  final book = await drawSlideArt(refs.split('\n').where((r) => r.isNotEmpty), sources, diagrams: appDiagramRenderer);
+  final uses = [
+    for (final line in refs.split('\n'))
+      if (line.split('\t') case [final r, final on] when r.isNotEmpty) (ref: r, on: Color(int.parse(on))),
+  ];
+  final book = await drawSlideArt(uses, sources, diagrams: appDiagramRenderer);
   ref.onDispose(book.dispose);
   return book;
 });
 
 /// The art for [deck]: drawn pictures, or [SlideArtBook.pending] while they draw (or if drawing failed).
 SlideArtBook watchSlideArt(WidgetRef ref, String conversationId, List<DeckSlide> deck) {
-  final refs = pictureRefsOf(deck);
-  if (refs.isEmpty) return SlideArtBook(const {});
-  return switch (ref.watch(slideArtProvider((conversationId, refs.join('\n'))))) {
+  final uses = pictureUsesOf(deck);
+  if (uses.isEmpty) return SlideArtBook(const {});
+  final key = [for (final u in uses) '${u.ref}\t${u.on.toARGB32()}'].join('\n');
+  return switch (ref.watch(slideArtProvider((conversationId, key)))) {
     AsyncData(:final value) => value,
     AsyncError() || AsyncLoading() => SlideArtBook.pending(),
   };

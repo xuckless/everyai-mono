@@ -214,9 +214,17 @@ _documentImages(String markdown, SvgRasterizer svg, DiagramRasterizer diagram, M
 Future<Uint8List> pptxOf(Visual v, {Iterable<Artifact> artifacts = const [], DiagramRenderer? diagrams}) async {
   final deck = deckOf(v);
   final sources = slideSourcesOf(artifacts);
-  final drawn = <String, PptxPicture>{};
-  for (final ref in pictureRefsOf(deck)) {
-    if (await _pptxPicture(sources[ref], diagrams) case final pic?) drawn[ref] = pic;
+  // Keyed by use: a chart is drawn in colours for what is behind it, so it can differ from slide to slide.
+  final drawn = <PictureUse, PptxPicture>{};
+  final byRef = <String, PptxPicture?>{};
+  for (final use in pictureUsesOf(deck)) {
+    final source = sources[use.ref];
+    final pic = source is ChartSource
+        ? await _pptxPicture(source, diagrams, on: use.on.toARGB32())
+        : byRef.containsKey(use.ref)
+        ? byRef[use.ref]
+        : byRef[use.ref] = await _pptxPicture(source, diagrams);
+    if (pic != null) drawn[use] = pic;
   }
   return buildPptx(
     title: v.title,
@@ -226,17 +234,22 @@ Future<Uint8List> pptxOf(Visual v, {Iterable<Artifact> artifacts = const [], Dia
           slide: s,
           pictures: {
             for (final e in s.elements)
-              if (e is PictureElement && drawn[e.ref] != null) e.ref: drawn[e.ref]!,
+              if (e is PictureElement) e.ref: ?drawn[(ref: e.ref, on: colourBehind(s, e) ?? s.background)],
           },
         ),
     ],
   );
 }
 
-Future<PptxPicture?> _pptxPicture(SlideSource? source, DiagramRenderer? diagrams) async {
+Future<PptxPicture?> _pptxPicture(SlideSource? source, DiagramRenderer? diagrams, {int on = 0xFFFFFFFF}) async {
   switch (source) {
     case null:
       return null;
+    case ChartSource():
+      final svg = source.svgOn(on);
+      if (svg == null) return null;
+      final r = await rasterizeSvg(svg, maxWidth: 960, scale: 2);
+      return r == null ? null : (png: r.png, svg: svg, width: r.width, height: r.height);
     case SvgSource(:final svg):
       final clean = sanitizeSvg(svg);
       final r = await rasterizeSvg(clean, maxWidth: 960, scale: 2);
