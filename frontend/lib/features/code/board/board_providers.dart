@@ -32,7 +32,8 @@ enum BoardColumn {
 /// user puts it under Needs you.
 SessionStatus boardStatus(SessionStatus own, {required bool workRunning, required bool childWaits}) {
   if (own == SessionStatus.needsInput || childWaits) return SessionStatus.needsInput;
-  if (workRunning && BoardColumn.of(own) == BoardColumn.done) return SessionStatus.running;
+  // A failed session stays failed (broken, or its budget spent) even while a workflow still runs: Running would hide it.
+  if (workRunning && (own == SessionStatus.idle || own == SessionStatus.done)) return SessionStatus.running;
   return own;
 }
 

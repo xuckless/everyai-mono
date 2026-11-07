@@ -898,6 +898,10 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   `BudgetReached`). Billing: a different checkout while one opens is refused instead of getting its answer. Esc + Close
   on the setup terminals closes once (it popped the page under them), pairing runs once from Enter/QR/button, and
   Customize makes one copy. Tests: `chat_session_test`, `billing_checkout_test`.
+  Then an audit of the UI merged since (#35, #38, #41): queued messages' Send now / remove ignore a second click within
+  a double click's length (the next message moves under the pointer; `_queueAction` in the composer), a failed
+  session stays failed on the Board while a workflow runs (`boardStatus`), the take-control reminder settles in like
+  the other cards above the composer. Test: `queued_send_now_test`, `board_test`.
 - **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
   `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
   `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,

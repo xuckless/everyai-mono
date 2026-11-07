@@ -2,6 +2,7 @@
 
 import 'package:flutter/widgets.dart';
 
+import '../../../../core/motion/motion.dart';
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/every_icons.dart';
@@ -54,6 +55,7 @@ class TakeControlReminder extends StatelessWidget {
       if (waiting.isEmpty) return const SizedBox.shrink();
       final theme = EveryTheme.of(context);
       final what = {for (final w in waiting) w.what}.join(' and ');
+      // Settles in like the other cards above the composer, instead of popping into place.
       return Padding(
         padding: const EdgeInsets.only(bottom: 8),
         child: Container(
@@ -94,7 +96,7 @@ class TakeControlReminder extends StatelessWidget {
               ),
             ],
           ),
-        ),
+        ).settle(),
       );
     },
   );
