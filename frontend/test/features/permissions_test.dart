@@ -641,6 +641,16 @@ void main() {
       expect(all.decide(_edit('/p/lib/deep/b.dart'), AgentMode.ask).verdict, Verdict.allow);
       expect(all.decide(_sh('git push --force origin main'), AgentMode.ask).verdict, isNot(Verdict.allow));
       expect(all.decide(_edit('/etc/hosts'), AgentMode.ask).verdict, Verdict.ask, reason: 'outside the project');
+      // "All commands" covers what the chain parser can't split; risky work hidden inside still asks.
+      expect(
+        all.decide(_sh(r'f=$(grep -rln "class X" lib | head -2); grep -n x $f'), AgentMode.ask).verdict,
+        Verdict.allow,
+      );
+      expect(all.decide(_sh(r'echo $(rm -rf build)'), AgentMode.ask).verdict, Verdict.ask);
+      expect(all.decide(_sh(r'x=$(sudo cat /etc/shadow)'), AgentMode.ask).verdict, isNot(Verdict.allow));
+      // A narrower rule still covers simple commands only.
+      final some = const PermissionPolicy(workingDir: '/p', session: {'grep *'});
+      expect(some.decide(_sh(r'grep -n x $(ls)'), AgentMode.ask).verdict, Verdict.ask);
     });
 
     test('bypass runs everything, floor and deny rules included', () {
