@@ -1799,14 +1799,49 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
   }
 }
 
+/// The session's connection to its harness:
+///
+/// ```text
+///  connecting ──attached──► live ──dropped──► reconnecting ──back──► live
+///      └──couldn't attach──► broken(why)
+/// ```
+/// Only [CodeSessionController._connect] and the harness's `ConnectionChange` events move it.
+enum SessionLink { connecting, live, reconnecting, broken }
+
+/// A note over the session that isn't the run's own state (shown above the composer):
+///
+/// ```text
+///  none ──budget spent──► BudgetReached ──budget raised──► none
+///  none ──a send failed─► SendFailed ──the next send goes out──► none
+/// ```
+/// A budget note makes the session [SessionStatus.failed] (nothing more runs until it is raised); a failed send
+/// doesn't: the agent and the run are fine, only that message didn't go.
+sealed class SessionNotice {
+  const SessionNotice(this.message);
+  final String message;
+}
+
+final class BudgetReached extends SessionNotice {
+  const BudgetReached(super.message);
+}
+
+final class SendFailed extends SessionNotice {
+  const SendFailed(super.message);
+}
+
 @immutable
 final class CodeSessionState {
+  /// [connected] and [error] build the link from a mirrored snapshot (a device following the host's session):
+  /// an error there means the session failed.
   const CodeSessionState({
     this.transcript = const Transcript(),
     this.mode = AgentMode.ask,
     this.queued = const [],
-    this.connected = false,
-    this.error,
+    SessionLink? link,
+    String? brokenBy,
+    this.notice,
+    bool connected = false,
+    String? error,
     this.subagentNeedsInput = false,
     this.asides = const [],
     this.goal,
@@ -1819,7 +1854,8 @@ final class CodeSessionState {
     this.nativeMode,
     this.armed,
     this.sideWork = false,
-  });
+  }) : link = link ?? (error != null ? SessionLink.broken : (connected ? SessionLink.live : SessionLink.connecting)),
+       _brokenBy = brokenBy ?? error;
 
   final Transcript transcript;
 
@@ -1888,11 +1924,23 @@ final class CodeSessionState {
 
   /// Messages typed while the agent was busy; sent when it stops.
   final List<Outgoing> queued;
-  final bool connected;
-  final String? error;
+  final SessionLink link;
+  final String? _brokenBy;
+  final SessionNotice? notice;
+
+  bool get connected => link == SessionLink.live;
+
+  /// Why the session couldn't attach (only while [SessionLink.broken]).
+  String? get brokenBy => link == SessionLink.broken ? (_brokenBy ?? 'The session could not be opened.') : null;
+
+  /// What stops the session: it couldn't attach, or its budget is spent.
+  String? get failure => brokenBy ?? (notice is BudgetReached ? notice!.message : null);
+
+  /// The line to show over the session, if any: [failure], else a send that failed.
+  String? get error => failure ?? notice?.message;
 
   SessionStatus get status => switch (transcript) {
-    _ when error != null => SessionStatus.failed,
+    _ when failure != null => SessionStatus.failed,
     Transcript(pending: [_, ...]) => SessionStatus.needsInput,
     final t when t.openQuestion != null || t.openPlan != null => SessionStatus.needsInput,
     // The agent stopped on a security alert: the user decides how to go on.
@@ -1912,13 +1960,14 @@ final class CodeSessionState {
     Transcript? transcript,
     AgentMode? mode,
     List<Outgoing>? queued,
-    bool? connected,
-    String? error,
+    SessionLink? link,
+    String? brokenBy,
+    SessionNotice? notice,
     bool? subagentNeedsInput,
     List<Aside>? asides,
     Goal? goal,
     bool clearGoal = false,
-    bool clearError = false,
+    bool clearNotice = false,
     Map<String, bool>? decided,
     String? waited,
     bool? switching,
@@ -1944,8 +1993,9 @@ final class CodeSessionState {
     transcript: transcript ?? this.transcript,
     mode: mode ?? this.mode,
     queued: queued ?? this.queued,
-    connected: connected ?? this.connected,
-    error: clearError ? null : error ?? this.error,
+    link: link ?? this.link,
+    brokenBy: brokenBy ?? _brokenBy,
+    notice: clearNotice ? null : notice ?? this.notice,
     subagentNeedsInput: subagentNeedsInput ?? this.subagentNeedsInput,
     asides: asides ?? this.asides,
     goal: clearGoal ? null : goal ?? this.goal,
@@ -2396,7 +2446,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (!ref.mounted) return;
     final note = budgetReached;
     if (note == null) {
-      if (state.error == _budgetNote) state = state.copyWith(clearError: true);
+      if (state.notice is BudgetReached) state = state.copyWith(clearNotice: true);
       _budgetNote = null;
     } else {
       final t = state.transcript;
@@ -2407,7 +2457,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         _budgetStoppedAt = DateTime.now();
         unawaited(stop());
       }
-      if (_budgetNote != note) state = state.copyWith(error: _budgetNote = note);
+      if (_budgetNote != note) state = state.copyWith(notice: BudgetReached(_budgetNote = note));
     }
     // A child billed under its own id: its spend only reaches the owner's
     // budget through here (after this listener returns).
@@ -2430,11 +2480,11 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   bool _withinBudget() {
     final note = budgetReached;
     if (note == null) {
-      if (_budgetNote != null && state.error == _budgetNote) state = state.copyWith(clearError: true);
+      if (state.notice is BudgetReached) state = state.copyWith(clearNotice: true);
       _budgetNote = null;
       return true;
     }
-    state = state.copyWith(error: _budgetNote = note);
+    state = state.copyWith(notice: BudgetReached(_budgetNote = note));
     return false;
   }
 
@@ -2470,13 +2520,13 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         // Calls still waiting after the history replayed (an app restart).
         _syncSubagents();
       });
-      state = state.copyWith(connected: true);
+      state = state.copyWith(link: SessionLink.live);
       await _loadSettingsRules(info);
     } on Object catch (e) {
       if (!_historyIn.isCompleted) _historyIn.complete();
       // Closed while it connected (the app quit): nothing is left to tell.
       if (!ref.mounted) return;
-      state = state.copyWith(error: '$e');
+      state = state.copyWith(link: SessionLink.broken, brokenBy: '$e');
     }
   }
 
@@ -2675,7 +2725,10 @@ final class CodeSessionController extends Notifier<CodeSessionState>
 
   void _onEvent(HarnessEvent event) {
     if (event is ConnectionChange) {
-      state = state.copyWith(connected: event.connected);
+      // Events only flow once attached: a drop is a reconnect, not a first connect.
+      if (state.link != SessionLink.broken) {
+        state = state.copyWith(link: event.connected ? SessionLink.live : SessionLink.reconnecting);
+      }
       return;
     }
     // An imported conversation's history is earlier leads' work: none of it is new, not even its states.
@@ -3609,9 +3662,11 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
     if (info == null) return Outgoing(t);
     try {
-      return await prepareMessage(ref, text: t, workingDir: info.workingDir, model: info.model, files: files);
+      final out = await prepareMessage(ref, text: t, workingDir: info.workingDir, model: info.model, files: files);
+      if (state.notice is SendFailed) state = state.copyWith(clearNotice: true);
+      return out;
     } on Object catch (e) {
-      state = state.copyWith(error: "Couldn't save the attachments: $e");
+      state = state.copyWith(notice: SendFailed("Couldn't save the attachments: $e"));
       return null;
     }
   }
@@ -4929,7 +4984,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
 
   void _onSubagent(String callId, CodeSessionState child) {
     if (!_childOf.containsKey(callId)) return;
-    final outcome = subagentOutcome(child.transcript, error: child.error);
+    final outcome = subagentOutcome(child.transcript, error: child.failure);
     if (outcome?.status == SubagentStatus.failed && _retryOnParentModel(callId, outcome!)) return;
     if (outcome != null) return _finishChild(callId, outcome);
     final question = child.transcript.openQuestion;
@@ -5967,7 +6022,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       _ when t?.openQuestion != null => 'waiting on your answer to its question',
       _ when t!.pending.isNotEmpty => 'waiting for the user to approve ${t.pending.length} action(s)',
       _ when t.retry != null => 'retrying a failed model call',
-      _ when live.error != null => 'failed: ${live.error}',
+      _ when live.failure != null => 'failed: ${live.failure}',
       _ => live.status.name,
     };
     final steps = ref.exists(codeSessionProvider(childId))
@@ -6411,8 +6466,9 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     _autoRespond(state.transcript);
   }
 
-  /// Approves the plan and tells the agent to go; Plan mode moves to Auto-edit.
-  Future<void> startBuilding() async {
+  /// Approves the plan and tells the agent to go; Plan mode moves to Auto-edit. False when the approval couldn't be
+  /// sent (the budget is spent): the plan card opens again.
+  Future<bool> startBuilding() async {
     final open = state.transcript.openPlan;
     final held = open?.call;
     final switching = state.mode == AgentMode.plan ? setMode(AgentMode.autoEdit) : Future<void>.value();
@@ -6427,15 +6483,15 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       _builder.settlePlan(open.call.id, PlanVerdict.approved);
       state = state.copyWith(transcript: _builder.snapshot);
       await switching;
-      return;
+      return true;
     }
     await switching;
     final session = _session;
     if (session != null && held != null && _isHeld(held)) {
       await _replyInCall(session, planApprovedReason);
-    } else {
-      await send(planApprovedMessage);
+      return true;
     }
+    return send(planApprovedMessage);
   }
 }
 
@@ -7103,7 +7159,7 @@ final class _WorkflowLauncher implements AgentLauncher {
       final controller = _ref.read(child.notifier);
       await controller._historyIn.future;
       final now = _ref.read(child);
-      if (!controller._attachedFresh || subagentOutcome(now.transcript, error: now.error) != null) {
+      if (!controller._attachedFresh || subagentOutcome(now.transcript, error: now.failure) != null) {
         return await _turnEnd(childId, null);
       }
       final before = _texts(now.transcript);
@@ -7142,7 +7198,7 @@ final class _WorkflowLauncher implements AgentLauncher {
     final sub = _ref.listen(codeSessionProvider(childId), (_, next) {
       if (done.isCompleted || ending) return;
       _waiting(callId, next.status == SessionStatus.needsInput);
-      final outcome = subagentOutcome(next.transcript, error: next.error);
+      final outcome = subagentOutcome(next.transcript, error: next.failure);
       if (outcome == null) {
         busy = true;
         return;

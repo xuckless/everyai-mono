@@ -67,7 +67,14 @@ class KitListEditor extends StatefulWidget {
 }
 
 class _KitListEditorState extends State<KitListEditor> {
-  int? _selected;
+  /// The selected row's item (items are unique), not its index: a list changed from outside can't move the selection
+  /// onto another row, so Delete never removes a row the user didn't pick.
+  String? _selectedItem;
+  int? get _selected {
+    final i = _selectedItem == null ? -1 : widget.items.indexOf(_selectedItem!);
+    return i < 0 ? null : i;
+  }
+
   bool _adding = false;
   String? _error;
   final _text = TextEditingController();
@@ -77,7 +84,7 @@ class _KitListEditorState extends State<KitListEditor> {
   @override
   void didUpdateWidget(KitListEditor old) {
     super.didUpdateWidget(old);
-    if (_selected case final i? when i >= widget.items.length) _selected = null;
+    if (_selectedItem case final item? when !widget.items.contains(item)) _selectedItem = null;
   }
 
   @override
@@ -92,7 +99,7 @@ class _KitListEditorState extends State<KitListEditor> {
     setState(() {
       _adding = true;
       _error = null;
-      _selected = null;
+      _selectedItem = null;
       _text.clear();
     });
     WidgetsBinding.instance.addPostFrameCallback((_) => _field.requestFocus());
@@ -107,7 +114,7 @@ class _KitListEditorState extends State<KitListEditor> {
     setState(() {
       _adding = false;
       _error = null;
-      _selected = widget.items.length;
+      _selectedItem = text;
     });
     _table.requestFocus();
   }
@@ -122,9 +129,10 @@ class _KitListEditorState extends State<KitListEditor> {
 
   void _remove() {
     final i = _selected;
-    if (i == null || i >= widget.items.length) return;
-    widget.onChanged([...widget.items]..removeAt(i));
-    setState(() => _selected = widget.items.length <= 1 ? null : (i == 0 ? 0 : i - 1));
+    if (i == null) return;
+    final rest = [...widget.items]..removeAt(i);
+    widget.onChanged(rest);
+    setState(() => _selectedItem = rest.isEmpty ? null : rest[i == 0 ? 0 : i - 1]);
   }
 
   @override
@@ -150,7 +158,7 @@ class _KitListEditorState extends State<KitListEditor> {
         onTap: () {
           _table.requestFocus();
           setState(() {
-            _selected = selected ? null : i;
+            _selectedItem = selected ? null : item;
             if (_adding) _adding = false;
           });
         },

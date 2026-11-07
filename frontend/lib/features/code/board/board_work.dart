@@ -9,6 +9,7 @@ import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../questions/ui/question_card.dart';
 import '../code_providers.dart';
+import '../domain/permissions.dart';
 import '../domain/code_session.dart';
 import '../domain/doom_loop.dart' show loopedStep;
 import '../domain/transcript.dart' show QuestionItem, Transcript;
@@ -336,13 +337,13 @@ class _ChildLine extends ConsumerWidget {
                       KitButton(
                         key: ValueKey('board.work.approve.${child.id}'),
                         label: waits.pending.length > 1 ? 'Approve ${waits.pending.length}' : 'Approve',
-                        onPressed: controller.approve,
+                        onPressed: () => controller.approve(ApprovalScope.once, [for (final c in waits.pending) c.id]),
                       ),
                       KitButton(
                         key: ValueKey('board.work.deny.${child.id}'),
                         label: 'Deny',
                         style: KitButtonStyle.ghost,
-                        onPressed: controller.deny,
+                        onPressed: () => controller.deny(null, [for (final c in waits.pending) c.id]),
                       ),
                       KitButton(label: 'Open', style: KitButtonStyle.soft, onPressed: openIt),
                     ],
@@ -350,7 +351,7 @@ class _ChildLine extends ConsumerWidget {
                 ],
               ),
               (pending: _, question: final q?) => QuestionCard(
-                key: ValueKey('board.work.question.${child.id}'),
+                key: ValueKey('board.work.question.${child.id}.${q.call.id}'),
                 questions: q.questions,
                 onSubmit: (answers) => controller.answer(q, answers),
               ),

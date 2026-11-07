@@ -242,7 +242,8 @@ final class TerminalTabs extends Notifier<TerminalTabsState> {
 
   /// Closes the tab at [index] and ends its shell; the last tab stays (restart it instead).
   void close(int index) {
-    if (state.ids.length < 2) return;
+    // A stale index (the tab closed meanwhile, e.g. during a restart) closes nothing.
+    if (state.ids.length < 2 || index < 0 || index >= state.ids.length) return;
     final id = state.ids[index];
     final ids = [...state.ids]..removeAt(index);
     final active = state.active > index || state.active == ids.length ? state.active - 1 : state.active;

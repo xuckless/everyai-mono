@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:file_selector/file_selector.dart' show XFile;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -76,7 +78,11 @@ class CodeComposer extends ConsumerStatefulWidget {
   final bool busy;
   final AgentMode mode;
   final ValueChanged<AgentMode> onModeChanged;
-  final void Function(String text, List<Attachment> files) onSend;
+
+  /// Sends or queues the message. A `false` or `Future<bool>` of false means nothing went out, and the composer puts
+  /// the text and files back; anything else (callers that return nothing) counts as sent. `dynamic` so plain
+  /// `void` callbacks still fit.
+  final dynamic Function(String text, List<Attachment> files) onSend;
   final void Function(String text, List<Attachment> files)? onSteer;
   final VoidCallback? onStop;
   final List<String> queued;
@@ -260,10 +266,33 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
         }
       }
     }
-    (steer && widget.busy && widget.onSteer != null ? widget.onSteer! : widget.onSend)(text, List.unmodifiable(_files));
+    final files = List<Attachment>.unmodifiable(_files);
+    // Cleared at once so sending feels instant; put back when the send says nothing went out.
     _controller.clear();
     setState(_files.clear);
     _focus.requestFocus();
+    if (steer && widget.busy && widget.onSteer != null) {
+      widget.onSteer!(text, files);
+      return;
+    }
+    final Object? sent = widget.onSend(text, files);
+    if (sent is Future<bool>) {
+      unawaited(
+        sent.then((ok) => _restoreUnless(ok, text, files), onError: (Object _) => _restoreUnless(false, text, files)),
+      );
+    } else if (sent == false) {
+      _restoreUnless(false, text, files);
+    }
+  }
+
+  void _restoreUnless(bool sent, String text, List<Attachment> files) {
+    // Not if the user has started the next message meanwhile.
+    if (sent || !mounted || _hasText) return;
+    _controller.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    setState(() => _files.addAll(files));
   }
 
   /// Any file can go to the agent: it is saved into the project.

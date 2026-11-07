@@ -64,8 +64,8 @@ class QuestionCard extends StatefulWidget {
 
 class _QuestionCardState extends State<QuestionCard> {
   late List<QuestionAnswer> _answers = [for (final _ in widget.questions) const QuestionAnswer()];
-  late final List<TextEditingController> _other = [for (final _ in widget.questions) TextEditingController()];
-  late final List<FocusNode> _otherFocus = [for (final _ in widget.questions) FocusNode()];
+  late List<TextEditingController> _other = [for (final _ in widget.questions) TextEditingController()];
+  late List<FocusNode> _otherFocus = [for (final _ in widget.questions) FocusNode()];
   final _focus = FocusNode(debugLabel: 'question card');
   int _page = 0;
 
@@ -75,13 +75,43 @@ class _QuestionCardState extends State<QuestionCard> {
   final _files = <Attachment>[];
 
   @override
-  void dispose() {
+  void didUpdateWidget(QuestionCard old) {
+    super.didUpdateWidget(old);
+    // Another question in the same place (the last one was answered elsewhere): picks, typed text and the sent
+    // state belonged to the old one.
+    if (!_sameQuestions(old.questions, widget.questions)) {
+      _disposeFields();
+      _answers = [for (final _ in widget.questions) const QuestionAnswer()];
+      _other = [for (final _ in widget.questions) TextEditingController()];
+      _otherFocus = [for (final _ in widget.questions) FocusNode()];
+      _page = 0;
+      _dir = 1;
+      _sent = false;
+      _files.clear();
+    }
+  }
+
+  static bool _sameQuestions(List<Question> a, List<Question> b) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].question != b[i].question || a[i].options.length != b[i].options.length) return false;
+    }
+    return true;
+  }
+
+  void _disposeFields() {
     for (final c in _other) {
       c.dispose();
     }
     for (final f in _otherFocus) {
       f.dispose();
     }
+  }
+
+  @override
+  void dispose() {
+    _disposeFields();
     _focus.dispose();
     super.dispose();
   }
@@ -147,9 +177,12 @@ class _QuestionCardState extends State<QuestionCard> {
     }
     setState(() => _sent = true);
     if (widget.onSubmitWithFiles case final submit?) {
-      submit(_answers, List.unmodifiable(_files)).then((ok) {
-        if (!ok && mounted) setState(() => _sent = false);
-      });
+      // Refused or failed: the card opens again with the picks kept.
+      void reopen() {
+        if (mounted) setState(() => _sent = false);
+      }
+
+      submit(_answers, List.unmodifiable(_files)).then((ok) => ok ? null : reopen(), onError: (Object _) => reopen());
       return;
     }
     widget.onSubmit(_answers);

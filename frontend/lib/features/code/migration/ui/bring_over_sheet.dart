@@ -32,28 +32,55 @@ class BringOverSheet extends ConsumerStatefulWidget {
   ConsumerState<BringOverSheet> createState() => _BringOverSheetState();
 }
 
+/// The sheet's steps:
+///
+/// ```text
+///  picking ──Import selected──► importing ──done (or failed)──► result(lines)
+/// ```
+/// It can't close while importing: the import still asks through this sheet (skills) and reports here.
+sealed class _BringOverStep {
+  const _BringOverStep();
+}
+
+final class _Picking extends _BringOverStep {
+  const _Picking();
+}
+
+final class _Importing extends _BringOverStep {
+  const _Importing();
+}
+
+final class _Done extends _BringOverStep {
+  const _Done(this.lines);
+  final List<String> lines;
+}
+
 class _BringOverSheetState extends ConsumerState<BringOverSheet> {
   /// Rows the user ticked or unticked; the rest start as the scan says.
   final _picked = <String, bool>{};
-  List<String>? _result;
-  bool _busy = false;
+  _BringOverStep _step = const _Picking();
 
   static String _key(ImportItem i) => '${i.kind.name}|${i.source}|${i.scope}|${i.title}';
 
   bool _on(ImportItem i) => i.selectable && (_picked[_key(i)] ?? i.checked);
 
   Future<void> _import(List<ImportItem> items) async {
-    setState(() => _busy = true);
-    final lines = await ref.read(importApplierProvider)([
-      for (final i in items)
-        if (_on(i)) i,
-    ], skills: (candidates) => importSkillCandidates(context, ref, candidates));
-    if (mounted) {
-      setState(() {
-        _busy = false;
-        _result = lines;
-      });
+    if (_step is! _Picking) return;
+    setState(() => _step = const _Importing());
+    List<String> lines;
+    try {
+      lines = await ref.read(importApplierProvider)([
+        for (final i in items)
+          if (_on(i)) i,
+      ], skills: (candidates) => importSkillCandidates(context, ref, candidates));
+    } on Object catch (e) {
+      lines = ["Couldn't finish the import: $e"];
     }
+    if (mounted) setState(() => _step = _Done(lines));
+  }
+
+  void _close() {
+    if (_step is! _Importing) Navigator.of(context).pop();
   }
 
   @override
@@ -62,63 +89,68 @@ class _BringOverSheetState extends ConsumerState<BringOverSheet> {
     final scan = ref.watch(migrationScanProvider);
     final items = scan.value ?? const <ImportItem>[];
     final chosen = items.where(_on).length;
-    return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 560, maxHeight: 640),
-        child: GlassSurface(
-          level: GlassLevel.thick,
-          radius: EveryTheme.cardRadius,
-          padding: const EdgeInsets.all(18),
-          child: DefaultTextStyle(
-            style: theme.type.body.tint(theme.text),
-            child: CallbackShortcuts(
-              bindings: {const SingleActivator(LogicalKeyboardKey.escape): () => Navigator.of(context).pop()},
-              child: FocusScope(
-                autofocus: true,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text('Bring over from other tools', style: theme.type.headline.tint(theme.text)),
-                    const SizedBox(height: 4),
-                    Text(
-                      "Tick what you want in EveryAI. Nothing is copied until you press Import, and the other tools' "
-                      'files are never changed.',
-                      style: theme.type.caption.tint(theme.textMuted),
-                    ),
-                    const SizedBox(height: 12),
-                    Expanded(
-                      child: switch (scan) {
-                        _ when _result != null => _Result(lines: _result!),
-                        AsyncError() => Text(
-                          "Couldn't look through the other tools' folders.",
-                          style: theme.type.callout.tint(theme.textMuted),
-                        ),
-                        AsyncLoading() => const Center(child: AdaptiveProgress()),
-                        _ => _List(items: items, on: _on, toggle: (i) => setState(() => _picked[_key(i)] = !_on(i))),
-                      },
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        AdaptiveButton(
-                          key: const ValueKey('bring-over.close'),
-                          label: _result == null ? 'Cancel' : 'Done',
-                          emphasis: ButtonEmphasis.secondary,
-                          onPressed: () => Navigator.of(context).pop(),
-                        ),
-                        if (_result == null) ...[
-                          const SizedBox(width: 8),
-                          AdaptiveButton(
-                            key: const ValueKey('bring-over.import'),
-                            label: 'Import selected ($chosen)',
-                            busy: _busy,
-                            onPressed: chosen == 0 ? null : () => _import(items),
+    final step = _step;
+    return PopScope(
+      // A tap outside the sheet waits for the import too.
+      canPop: _step is! _Importing,
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560, maxHeight: 640),
+          child: GlassSurface(
+            level: GlassLevel.thick,
+            radius: EveryTheme.cardRadius,
+            padding: const EdgeInsets.all(18),
+            child: DefaultTextStyle(
+              style: theme.type.body.tint(theme.text),
+              child: CallbackShortcuts(
+                bindings: {const SingleActivator(LogicalKeyboardKey.escape): _close},
+                child: FocusScope(
+                  autofocus: true,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text('Bring over from other tools', style: theme.type.headline.tint(theme.text)),
+                      const SizedBox(height: 4),
+                      Text(
+                        "Tick what you want in EveryAI. Nothing is copied until you press Import, and the other tools' "
+                        'files are never changed.',
+                        style: theme.type.caption.tint(theme.textMuted),
+                      ),
+                      const SizedBox(height: 12),
+                      Expanded(
+                        child: switch (scan) {
+                          _ when step is _Done => _Result(lines: step.lines),
+                          AsyncError() => Text(
+                            "Couldn't look through the other tools' folders.",
+                            style: theme.type.callout.tint(theme.textMuted),
                           ),
+                          AsyncLoading() => const Center(child: AdaptiveProgress()),
+                          _ => _List(items: items, on: _on, toggle: (i) => setState(() => _picked[_key(i)] = !_on(i))),
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          AdaptiveButton(
+                            key: const ValueKey('bring-over.close'),
+                            label: _step is _Done ? 'Done' : 'Cancel',
+                            emphasis: ButtonEmphasis.secondary,
+                            onPressed: _step is _Importing ? null : _close,
+                          ),
+                          if (_step is! _Done) ...[
+                            const SizedBox(width: 8),
+                            AdaptiveButton(
+                              key: const ValueKey('bring-over.import'),
+                              label: 'Import selected ($chosen)',
+                              busy: _step is _Importing,
+                              onPressed: chosen == 0 || _step is! _Picking ? null : () => _import(items),
+                            ),
+                          ],
                         ],
-                      ],
-                    ),
-                  ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),

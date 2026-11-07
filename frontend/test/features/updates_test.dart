@@ -87,6 +87,7 @@ void main() {
       Map<String, String> prefs = const {},
       SparkleBridge? sparkle,
       Future<void> Function(Release, {required http.Client client, void Function(double)? onProgress})? stage,
+      Duration sparkleTimeout = const Duration(minutes: 15),
     }) {
       requested = [];
       final c = ProviderContainer(
@@ -103,6 +104,7 @@ void main() {
               }),
               stage: stage ?? (r, {required client, onProgress}) async => onProgress?.call(1),
               restartImage: () async {},
+              sparkleTimeout: sparkleTimeout,
             ),
           ),
         ],
@@ -212,6 +214,43 @@ void main() {
       expect(c.read(updateProvider).phase, UpdatePhase.ready);
       await c.read(updateProvider.notifier).restart();
       expect(calls.last.method, 'installNow');
+    });
+
+    test('Sparkle events: a ready install stays ready; outside a download only "ready" counts', () {
+      final release = Release.fromJson(
+        _release('v0.1.0-alpha.2', files: ['EveryAI-0.1.0-alpha.2.dmg', 'appcast.xml']),
+      )!;
+      UpdateState at(UpdatePhase p) => UpdateState(kind: InstallKind.sparkle, phase: p, release: release);
+      final t = UpdateController.sparkleTransition;
+      expect(t(at(UpdatePhase.ready), const SparkleNone()), isNull);
+      expect(t(at(UpdatePhase.ready), const SparkleFailed('busy')), isNull);
+      expect(t(at(UpdatePhase.downloading), const SparkleReady('2'))!.phase, UpdatePhase.ready);
+      final none = t(at(UpdatePhase.downloading), const SparkleNone())!;
+      expect(none.phase, UpdatePhase.upToDate);
+      expect(none.release, isNull);
+      expect(t(at(UpdatePhase.downloading), const SparkleFailed('x'))!.error, 'x');
+      // A scheduled check of Sparkle's own: an error or "nothing newer" outside a download is no news.
+      expect(t(at(UpdatePhase.failed), const SparkleNone()), isNull);
+      expect(t(at(UpdatePhase.upToDate), const SparkleFailed('x')), isNull);
+      expect(t(at(UpdatePhase.upToDate), const SparkleReady('2'))!.phase, UpdatePhase.ready);
+    });
+
+    testWidgets('a Sparkle download with no answer fails in time instead of downloading forever', (tester) async {
+      const channel = MethodChannel('everyai/updater-timeout');
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async => true);
+      late ProviderContainer c;
+      await tester.runAsync(() async {
+        c = container(
+          kind: InstallKind.sparkle,
+          sparkle: SparkleBridge(channel),
+          sparkleTimeout: const Duration(milliseconds: 30),
+          releases: _release('v0.1.0-alpha.2', files: ['EveryAI-0.1.0-alpha.2.dmg', 'appcast.xml']),
+        );
+        await c.read(updateProvider.notifier).check();
+        expect(c.read(updateProvider).phase, UpdatePhase.downloading);
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+      });
+      expect(c.read(updateProvider).phase, UpdatePhase.failed);
     });
   });
 }

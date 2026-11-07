@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -29,16 +30,35 @@ Future<Map<String, Object?>> readLayer(String path) async {
   return json;
 }
 
-Future<Map<String, Object?>> writeLayer(
-  String path,
-  Map<String, Object?> Function(Map<String, Object?> current) edit,
-) async {
+/// Edits the layer at [path]. Writes to one file run one after another (each reads what the last wrote), so two quick
+/// toggles can't lose one; each write goes through its own temp file and lands with a rename.
+Future<Map<String, Object?>> writeLayer(String path, Map<String, Object?> Function(Map<String, Object?> current) edit) {
+  final before = _writes[path] ?? Future<void>.value();
+  final run = before.then((_) => _writeLayer(path, edit));
+  final tail = _writes[path] = run.then<void>((_) {}, onError: (Object _) {});
+  unawaited(
+    tail.whenComplete(() {
+      if (identical(_writes[path], tail)) _writes.remove(path);
+    }),
+  );
+  return run;
+}
+
+final _writes = <String, Future<void>>{};
+var _tmpSeq = 0;
+
+Future<Map<String, Object?>> _writeLayer(String path, Map<String, Object?> Function(Map<String, Object?>) edit) async {
   final next = edit(await readLayer(path));
   final f = File(path);
   await f.parent.create(recursive: true);
-  final tmp = File('$path.$pid.tmp');
-  await tmp.writeAsString('${const JsonEncoder.withIndent('  ').convert(next)}\n', flush: true);
-  await tmp.rename(path);
+  final tmp = File('$path.$pid.${_tmpSeq++}.tmp');
+  try {
+    await tmp.writeAsString('${const JsonEncoder.withIndent('  ').convert(next)}\n', flush: true);
+    await tmp.rename(path);
+  } on Object {
+    if (tmp.existsSync()) await tmp.delete().catchError((Object _) => tmp);
+    rethrow;
+  }
   return next;
 }
 

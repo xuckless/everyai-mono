@@ -14,6 +14,7 @@ import '../../../core/ui/adaptive_page.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../questions/ui/question_card.dart';
 import '../code_providers.dart';
+import '../domain/permissions.dart';
 import '../domain/code_session.dart';
 import '../drivers/driver_registry.dart' show driverRegistryProvider;
 import '../ui/harness_logo.dart';
@@ -60,7 +61,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       }
       // Until an opened session has connected, the polled status stands (no flicker to Done and back).
       final live = ref.exists(codeSessionProvider(s.id))
-          ? ref.watch(codeSessionProvider(s.id).select((st) => st.connected ? st.status : null))
+          ? ref.watch(codeSessionProvider(s.id).select((st) => st.connected || st.failure != null ? st.status : null))
           : null;
       return live ?? statuses[s.id] ?? SessionStatus.idle;
     }
@@ -544,6 +545,8 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                 key: ValueKey('board.question.${info.id}'),
                 padding: const EdgeInsets.only(top: 10),
                 child: QuestionCard(
+                  // A new question is a new card: picks and the sent state belong to one call.
+                  key: ValueKey('board.question.card.${question.call.id}'),
                   questions: question.questions,
                   onSubmit: (answers) async {
                     await ref.read(codeSessionProvider(info.id).notifier).answer(question, answers);
@@ -566,7 +569,10 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                           key: ValueKey('board.approve.${info.id}'),
                           label: 'Approve',
                           onPressed: () async {
-                            await ref.read(codeSessionProvider(info.id).notifier).approve();
+                            // The calls this card showed: a batch that came in since then waits for its own look.
+                            await ref.read(codeSessionProvider(info.id).notifier).approve(ApprovalScope.once, [
+                              for (final c in pending) c.id,
+                            ]);
                             if (mounted) setState(() => _approved++);
                           },
                         ),
@@ -575,7 +581,8 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                         key: ValueKey('board.deny.${info.id}'),
                         label: 'Deny',
                         style: KitButtonStyle.ghost,
-                        onPressed: () => ref.read(codeSessionProvider(info.id).notifier).deny(),
+                        onPressed: () =>
+                            ref.read(codeSessionProvider(info.id).notifier).deny(null, [for (final c in pending) c.id]),
                       ),
                     ],
                     KitButton(

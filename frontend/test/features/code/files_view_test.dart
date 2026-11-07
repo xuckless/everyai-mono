@@ -384,6 +384,39 @@ void main() {
     expect((editor.state.path, editor.state.opened, editor.state.dirty), (null, null, false));
   });
 
+  testWidgets('the file opened last wins, even when an earlier one reads slower', (tester) async {
+    await setUpRepo(tester);
+    final editor = container.read(filesEditorProvider('s1').notifier);
+    await tester.runAsync(() async {
+      // Both reads start before either answers; the first finishing last must not replace the second.
+      final first = editor.open(path('lib/a.dart'));
+      final second = editor.open(path('README.md'));
+      await Future.wait([first, second]);
+      expect(editor.state.path, path('README.md'));
+      // Closed while a read is out: it stays closed.
+      final late = editor.open(path('lib/a.dart'));
+      editor.close();
+      await late;
+    });
+    expect(editor.state.path, isNull);
+  });
+
+  testWidgets('two quick saves run in turn: no false conflict from the second', (tester) async {
+    await setUpRepo(tester);
+    final editor = container.read(filesEditorProvider('s1').notifier);
+    final out = await tester.runAsync(() async {
+      await editor.open(path('README.md'));
+      editor.edit('# One\n');
+      final a = editor.save();
+      editor.edit('# Two\n');
+      final b = editor.save();
+      return Future.wait([a, b]);
+    });
+    expect(out, [null, null]);
+    expect(File(path('README.md')).readAsStringSync(), '# Two\n');
+    expect((editor.state.conflict, editor.state.dirty), (false, false));
+  });
+
   testWidgets('a minified one-line file opens as plain text', (tester) async {
     await tester.pumpWidget(_app(const SizedBox(key: ValueKey('host'))));
     final context = tester.element(find.byKey(const ValueKey('host')));

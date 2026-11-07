@@ -67,7 +67,17 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   StreamSubscription<String>? _made;
   StreamSubscription<LiveActivity>? _activity;
   ui.Image? _image;
-  var _casting = false;
+
+  /// The page's screencast, kept in step with [_wantCast] by [_syncCasting]:
+  ///
+  /// ```text
+  ///  off ──want──► starting ──ok──► on ──!want──► off
+  ///                   └──fail──► off (+ _problem; the next change retries)
+  /// ```
+  /// Each start or stop takes a new [_castGen]; a reply for an older one is dropped, so a late failure can't undo a
+  /// newer stop or leave the pane thinking it casts.
+  var _cast = _Cast.off;
+  var _castGen = 0;
   var _decoding = false;
   DateTime _lastAck = DateTime.fromMillisecondsSinceEpoch(0);
   var _appVisible = true;
@@ -175,7 +185,10 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // Minimised or hidden: no frames until it shows again.
-    _appVisible = state == AppLifecycleState.resumed || state == AppLifecycleState.inactive;
+    final visible = state == AppLifecycleState.resumed || state == AppLifecycleState.inactive;
+    if (visible == _appVisible) return;
+    // The app views read [_visible] when they build: rebuild them so they stop and start too.
+    setState(() => _appVisible = visible);
     _syncCasting();
   }
 
@@ -222,8 +235,8 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     b.control.removeListener(_controlChanged);
     unawaited(_activity?.cancel());
     unawaited(_frames?.cancel());
-    if (_casting) unawaited(b.stopScreencast());
-    _casting = false;
+    if (_cast != _Cast.off) unawaited(b.stopScreencast().catchError((Object _) {}));
+    _castOff();
     _browser = null;
   }
 
@@ -231,6 +244,8 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     final url = _browser?.page.value.url ?? '';
     if (!_fieldFocus.hasFocus && url.isNotEmpty && url != 'about:blank') _field.text = url;
     if (mounted) setState(() {});
+    // The agent's first navigation is what makes the page worth casting.
+    _syncCasting();
   }
 
   void _controlChanged() {
@@ -238,17 +253,36 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   }
 
   /// Paints only while the Preview shows.
+  bool _wantCast(HeadlessBrowser b) => _visible && (b.attachTo != null || b.page.value.url.isNotEmpty || b.running);
+
   void _syncCasting() {
     final b = _browser;
     if (b == null) return;
-    final want = _visible && (b.attachTo != null || b.page.value.url.isNotEmpty || b.running);
-    if (want == _casting) return;
-    _casting = want;
-    unawaited(
-      (want ? b.startScreencast() : b.stopScreencast()).catchError((Object e) {
+    final want = _wantCast(b);
+    if (want == (_cast != _Cast.off)) return;
+    if (!want) {
+      _castOff();
+      unawaited(b.stopScreencast().catchError((Object _) {}));
+      return;
+    }
+    final gen = ++_castGen;
+    _cast = _Cast.starting;
+    b.startScreencast().then(
+      (_) {
+        if (gen == _castGen) _cast = _Cast.on;
+      },
+      onError: (Object e) {
+        if (gen != _castGen) return;
+        _cast = _Cast.off;
         if (mounted) setState(() => _problem = '$e');
-      }),
+      },
     );
+  }
+
+  /// The browser stopped casting (closed, detached, or told to stop); any start still answering is stale.
+  void _castOff() {
+    _castGen++;
+    _cast = _Cast.off;
   }
 
   Future<void> _paint(ScreencastFrame f) async {
@@ -282,6 +316,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   }
 
   void _showGhost(LiveActivity a) {
+    if (!mounted) return;
     _ghostTimer?.cancel();
     setState(() => _ghost = a);
     _ghostTimer = Timer(const Duration(milliseconds: 1600), () {
@@ -327,8 +362,15 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   }
 
   Future<void> _signIn() async {
-    final b = await _ensure();
+    if (_signingIn) return;
     setState(() => _signingIn = true);
+    final HeadlessBrowser b;
+    try {
+      b = await _ensure();
+    } on Object {
+      if (mounted) setState(() => _signingIn = false);
+      rethrow;
+    }
     final url = b.page.value.url;
     try {
       await b.close();
@@ -338,7 +380,8 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
       if (mounted) setState(() => _problem = e.message);
     } finally {
       if (mounted) setState(() => _signingIn = false);
-      _casting = false;
+      // close() ended the cast.
+      _castOff();
       _syncCasting();
     }
   }
@@ -357,8 +400,13 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     final b = await _ensure();
     await b.close();
     await b.host.clear();
-    _casting = false;
-    if (mounted) setState(() => _image = null);
+    _castOff();
+    if (!mounted) return;
+    setState(() {
+      _image?.dispose();
+      _image = null;
+    });
+    _syncCasting();
   }
 
   Future<void> _download() async {
@@ -412,11 +460,29 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
             ),
           Expanded(
             child: switch (src.kind) {
-              AppKind.flutter => FlutterAppView(app: AppSources.flutter(src.uri), visible: _visible),
-              AppKind.reactNative => ReactNativeAppView(app: AppSources.reactNative(src.uri), visible: _visible),
-              AppKind.ios => IosSimulatorView(sim: IosSimulators.driver(src.uri.path), visible: _visible),
-              AppKind.android => AndroidDeviceView(device: AndroidDevices.driver(src.uri.path), visible: _visible),
+              // Keyed by source: each view's state (stream, picture, pending input) belongs to one target.
+              AppKind.flutter => FlutterAppView(
+                key: ValueKey(src),
+                app: AppSources.flutter(src.uri),
+                visible: _visible,
+              ),
+              AppKind.reactNative => ReactNativeAppView(
+                key: ValueKey(src),
+                app: AppSources.reactNative(src.uri),
+                visible: _visible,
+              ),
+              AppKind.ios => IosSimulatorView(
+                key: ValueKey(src),
+                sim: IosSimulators.driver(src.uri.path),
+                visible: _visible,
+              ),
+              AppKind.android => AndroidDeviceView(
+                key: ValueKey(src),
+                device: AndroidDevices.driver(src.uri.path),
+                visible: _visible,
+              ),
               AppKind.desktop => DesktopWindowView(
+                key: ValueKey(src),
                 window: DesktopWindows.driver(int.parse(src.uri.path)),
                 visible: _visible,
               ),
@@ -1008,3 +1074,5 @@ List<String> editingCommands(LogicalKeyboardKey k, {required bool shift}) {
   if (k == LogicalKeyboardKey.keyX) return const ['cut'];
   return const [];
 }
+
+enum _Cast { off, starting, on }

@@ -29,8 +29,11 @@ class PlanCard extends StatefulWidget {
 
   /// In Plan mode, approving moves the session to Auto-edit.
   final bool switchesToAutoEdit;
-  final VoidCallback onApprove;
-  final ValueChanged<String> onRevise;
+
+  /// Each may return `false` or a `Future<bool>` of false when nothing was sent (a spent budget): the card opens
+  /// again. `dynamic` so plain `void` callbacks still fit.
+  final dynamic Function() onApprove;
+  final dynamic Function(String text) onRevise;
 
   @override
   State<PlanCard> createState() => _PlanCardState();
@@ -39,6 +42,12 @@ class PlanCard extends StatefulWidget {
 class _PlanCardState extends State<PlanCard> {
   final _feedback = TextEditingController();
   bool _revising = false;
+
+  /// Answering the plan:
+  ///
+  /// ```text
+  ///  open ──Start building / Revise──► sent ──refused (false)──► open
+  /// ```
   bool _sent = false;
 
   @override
@@ -50,14 +59,27 @@ class _PlanCardState extends State<PlanCard> {
   void _approve() {
     if (_sent) return;
     setState(() => _sent = true);
-    widget.onApprove();
+    _settle(widget.onApprove());
   }
 
   void _revise() {
     final text = _feedback.text.trim();
     if (text.isEmpty || _sent) return;
     setState(() => _sent = true);
-    widget.onRevise(text);
+    _settle(widget.onRevise(text));
+  }
+
+  /// Opens the card again when the answer didn't go out.
+  void _settle(Object? sent) {
+    void reopen() {
+      if (mounted) setState(() => _sent = false);
+    }
+
+    if (sent is Future<bool>) {
+      sent.then((ok) => ok ? null : reopen(), onError: (Object _) => reopen());
+    } else if (sent == false) {
+      reopen();
+    }
   }
 
   @override

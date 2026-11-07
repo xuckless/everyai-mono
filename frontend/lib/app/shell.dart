@@ -98,14 +98,18 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   AppLifecycleListener? _lifecycle;
   StreamSubscription<Uri>? _links;
-  PromptLink? _awaitingLink;
+
+  /// A prompt link waiting for the page it opened: offered when the shell arrives at [route], dropped when the
+  /// navigation lands anywhere else (a redirect), so an unrelated page never takes it later.
+  ({PromptLink link, String route})? _awaitingLink;
 
   @override
   void didUpdateWidget(AppShell old) {
     super.didUpdateWidget(old);
-    if (widget.location != old.location && _awaitingLink != null) {
-      final link = _awaitingLink!;
+    if (widget.location == old.location) return;
+    if (_awaitingLink case (:final link, :final route)) {
       _awaitingLink = null;
+      if (Uri.parse(widget.location).path != Uri.parse(route).path) return;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) ref.read(pendingPromptProvider.notifier).offer(link);
       });
@@ -124,7 +128,7 @@ class _AppShellState extends ConsumerState<AppShell> {
             ref.read(pendingPromptProvider.notifier).offer(offered); // the page is already showing
           } else {
             // Offered once the new page is up: the page being left must not take it.
-            _awaitingLink = offered;
+            _awaitingLink = (link: offered, route: to);
             context.go(to);
           }
         });

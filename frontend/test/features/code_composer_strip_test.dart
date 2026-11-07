@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:drift/native.dart';
@@ -92,6 +93,7 @@ void main() {
     AgentMenu? agent,
     List<InstalledSkill> skills = const [],
     bool native = false,
+    dynamic Function(String, List<Object>)? onSend,
   }) async {
     tester.view.physicalSize = const Size(1200, 900);
     tester.view.devicePixelRatio = 1;
@@ -126,7 +128,7 @@ void main() {
                   busy: false,
                   mode: AgentMode.ask,
                   onModeChanged: modes.add,
-                  onSend: (_, _) {},
+                  onSend: onSend ?? (_, _) {},
                   project: _project,
                   agent: agent,
                   nativeModes: native ? claudeModes(autoMode: false) : null,
@@ -298,6 +300,54 @@ void main() {
       await mouse.moveTo(tester.getCenter(line('model')));
       await tester.pump();
       expect(colour(), isNot(rest));
+    });
+  });
+
+  group('sending', () {
+    Future<void> send(WidgetTester tester, String text) async {
+      await tester.enterText(find.byType(EditableText), text);
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('send')));
+      await tester.pump();
+    }
+
+    String draft(WidgetTester tester) => tester.widget<EditableText>(find.byType(EditableText)).controller.text;
+
+    testWidgets('a refused send puts the text back', (tester) async {
+      final sent = <String>[];
+      final answer = Completer<bool>();
+      await pump(
+        tester,
+        agent: menu(),
+        onSend: (t, _) {
+          sent.add(t);
+          return answer.future;
+        },
+      );
+      await send(tester, 'build the thing');
+      expect(sent, ['build the thing']);
+      // Cleared at once while the send runs.
+      expect(draft(tester), isEmpty);
+      answer.complete(false);
+      await tester.pump();
+      expect(draft(tester), 'build the thing');
+    });
+
+    testWidgets('a send that went out stays cleared', (tester) async {
+      await pump(tester, agent: menu(), onSend: (_, _) async => true);
+      await send(tester, 'build the thing');
+      await tester.pump();
+      expect(draft(tester), isEmpty);
+    });
+
+    testWidgets('a refused send leaves a newer draft alone', (tester) async {
+      final answer = Completer<bool>();
+      await pump(tester, agent: menu(), onSend: (_, _) => answer.future);
+      await send(tester, 'first');
+      await tester.enterText(find.byType(EditableText), 'second');
+      answer.complete(false);
+      await tester.pump();
+      expect(draft(tester), 'second');
     });
   });
 }

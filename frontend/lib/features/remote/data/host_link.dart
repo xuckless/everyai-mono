@@ -110,40 +110,44 @@ final class WebhookDelivery {
 /// A paired device connected through the relay right now.
 typedef ConnectedDevice = ({int channel, String deviceId, String deviceName});
 
+/// Where this host's relay socket stands:
+///
+/// ```text
+///  connecting ──hello──► online ──socket dropped──► connecting (reconnects)
+///       │                  │
+///       └──── replaced / revoked (from either) ────► replaced | revoked   (final: no reconnect)
+/// ```
+enum HostLinkStatus {
+  connecting,
+  online,
+
+  /// Another copy of this host connected (it took over).
+  replaced,
+
+  /// The backend removed this host; hosting must be set up again.
+  revoked;
+
+  bool get ended => this == replaced || this == revoked;
+}
+
 @immutable
 final class HostLinkState {
-  const HostLinkState({
-    this.connected = false,
-    this.clients = const [],
-    this.pending = const [],
-    this.revoked = false,
-    this.replaced = false,
-  });
+  const HostLinkState({this.status = HostLinkStatus.connecting, this.clients = const [], this.pending = const []});
 
-  /// The relay socket is up (devices can reach this host).
-  final bool connected;
+  final HostLinkStatus status;
   final List<ConnectedDevice> clients;
   final List<PairRequest> pending;
 
-  /// The backend removed this host; hosting must be set up again.
-  final bool revoked;
+  /// The relay socket is up (devices can reach this host).
+  bool get connected => status == HostLinkStatus.online;
+  bool get revoked => status == HostLinkStatus.revoked;
+  bool get replaced => status == HostLinkStatus.replaced;
 
-  /// Another copy of this host connected (it took over).
-  final bool replaced;
+  /// Moves to [next] unless the link already ended (a hello or a drop after `replaced` changes nothing).
+  HostLinkState to(HostLinkStatus next) => status.ended ? this : copyWith(status: next);
 
-  HostLinkState copyWith({
-    bool? connected,
-    List<ConnectedDevice>? clients,
-    List<PairRequest>? pending,
-    bool? revoked,
-    bool? replaced,
-  }) => HostLinkState(
-    connected: connected ?? this.connected,
-    clients: clients ?? this.clients,
-    pending: pending ?? this.pending,
-    revoked: revoked ?? this.revoked,
-    replaced: replaced ?? this.replaced,
-  );
+  HostLinkState copyWith({HostLinkStatus? status, List<ConnectedDevice>? clients, List<PairRequest>? pending}) =>
+      HostLinkState(status: status ?? this.status, clients: clients ?? this.clients, pending: pending ?? this.pending);
 }
 
 /// This desktop's socket to the relay (`WS /v1/remote/host`): it keeps it up,
@@ -244,8 +248,8 @@ final class RemoteHostLink {
     if (_ws != ws) return;
     _ws = null;
     _bridge.closeAll();
-    _set(_state.copyWith(connected: false, clients: const []));
-    if (!_state.revoked && !_state.replaced) _scheduleReconnect();
+    _set(_state.to(HostLinkStatus.connecting).copyWith(clients: const []));
+    if (!_state.status.ended) _scheduleReconnect();
   }
 
   void _scheduleReconnect() {
@@ -272,14 +276,15 @@ final class RemoteHostLink {
           if (c is Map<String, Object?>) clients.addAll(_open(c));
         }
         _set(
-          _state.copyWith(
-            connected: true,
-            clients: clients,
-            pending: [
-              for (final p in n['pending_pairings'] as List<Object?>? ?? const [])
-                if (p is Map<String, Object?>) ?PairRequest.fromJson(p),
-            ],
-          ),
+          _state
+              .to(HostLinkStatus.online)
+              .copyWith(
+                clients: clients,
+                pending: [
+                  for (final p in n['pending_pairings'] as List<Object?>? ?? const [])
+                    if (p is Map<String, Object?>) ?PairRequest.fromJson(p),
+                ],
+              ),
         );
       case 'client_open':
         final opened = _open(n);
@@ -300,9 +305,9 @@ final class RemoteHostLink {
       case 'webhook':
         if (WebhookDelivery.fromJson(n) case final d?) onWebhook?.call(d);
       case 'replaced':
-        _set(_state.copyWith(replaced: true));
+        _set(_state.to(HostLinkStatus.replaced));
       case 'revoked':
-        _set(_state.copyWith(revoked: true));
+        _set(_state.to(HostLinkStatus.revoked));
     }
   }
 

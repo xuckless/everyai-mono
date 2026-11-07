@@ -24,6 +24,19 @@ import 'update_key.dart';
 /// Preferences key: offer GitHub pre-releases too ('1'), not only the latest release.
 const prereleasesPref = 'updates.prereleases';
 
+/// An update's lifecycle ([UpdateController] owns every transition):
+///
+/// ```text
+///  idle ──check──► checking ──nothing newer──► upToDate ──check──► checking
+///                     │ ──can't apply here──► manual
+///                     │ ──fetch──► downloading ──verified──► ready ──restart──► (relaunch)
+///                     │                │ ──Sparkle: nothing newer──► upToDate
+///                     │                │ ──error, or no answer in time──► failed ──check──► checking
+///                     └──error──► failed
+/// ```
+/// Once [ready], only a restart (or a refused install: failed) moves it: Sparkle's own scheduled checks reporting
+/// "nothing newer" or an error don't hide an install that still waits. Sparkle events outside a download change
+/// nothing, except a ready download (a scheduled check that fetched one).
 enum UpdatePhase {
   /// Not checked yet, or this install doesn't update in the app.
   idle,
@@ -80,10 +93,11 @@ final class UpdateState {
     bool? dismissed,
     DateTime? checkedAt,
     bool clearProgress = false,
+    bool clearRelease = false,
   }) => UpdateState(
     kind: kind ?? this.kind,
     phase: phase ?? this.phase,
-    release: release ?? this.release,
+    release: clearRelease ? null : release ?? this.release,
     progress: clearProgress ? null : progress ?? this.progress,
     error: phase == null || phase == UpdatePhase.failed ? error ?? this.error : error,
     dismissed: dismissed ?? this.dismissed,
@@ -101,6 +115,7 @@ final class UpdateEnv {
     this.stage = stageAppImage,
     this.restartImage = restartAppImage,
     this.launchCheckAfter,
+    this.sparkleTimeout = const Duration(minutes: 15),
     String? releasesApi,
   }) : releasesApi = releasesApi ?? 'https://api.github.com/repos/$releasesRepo/releases',
        _sparkle = sparkle; // ignore: prefer_initializing_formals
@@ -116,6 +131,9 @@ final class UpdateEnv {
 
   /// The check each launch makes, this long after start; null makes none (tests).
   final Duration? launchCheckAfter;
+
+  /// How long a Sparkle download may go without an answer before it counts as failed (so "Downloading…" can't stick).
+  final Duration sparkleTimeout;
   SparkleBridge? _sparkle;
   SparkleBridge get sparkle => _sparkle ??= SparkleBridge();
 
@@ -141,12 +159,16 @@ final updateProvider = NotifierProvider<UpdateController, UpdateState>(UpdateCon
 final class UpdateController extends Notifier<UpdateState> {
   StreamSubscription<SparkleEvent>? _sparkleEvents;
   Future<void>? _running;
+  Timer? _sparkleWait;
 
   UpdateEnv get _env => ref.read(updateEnvProvider);
 
   @override
   UpdateState build() {
-    ref.onDispose(() => _sparkleEvents?.cancel());
+    ref.onDispose(() {
+      _sparkleEvents?.cancel();
+      _sparkleWait?.cancel();
+    });
     // Once per launch, after the first frame's work.
     if (_env.launchCheckAfter case final delay?) {
       final timer = Timer(delay, () => ref.mounted ? check() : null);
@@ -159,7 +181,9 @@ final class UpdateController extends Notifier<UpdateState> {
 
   Future<void> setPrereleases(bool on) async {
     ref.read(preferencesProvider)[prereleasesPref] = on ? '1' : null;
-    await check();
+    // A check already running asked the old channel: let it finish, then ask the new one.
+    if (_running case final running?) await running;
+    if (ref.mounted) await check();
   }
 
   /// Looks for a newer release and, where the install can, fetches it. One check at a time; a finished download
@@ -181,7 +205,7 @@ final class UpdateController extends Notifier<UpdateState> {
       final release = pickUpdate(await _releases(client), env.current, prereleases: prereleases);
       if (!ref.mounted) return;
       if (release == null) {
-        state = state.copyWith(phase: UpdatePhase.upToDate, checkedAt: DateTime.now());
+        state = state.copyWith(phase: UpdatePhase.upToDate, checkedAt: DateTime.now(), clearRelease: true);
         return;
       }
       state = state.copyWith(release: release, checkedAt: DateTime.now());
@@ -189,6 +213,12 @@ final class UpdateController extends Notifier<UpdateState> {
         case InstallKind.sparkle when release.appcast != null:
           _listenSparkle(env.sparkle);
           state = state.copyWith(phase: UpdatePhase.downloading, clearProgress: true);
+          _sparkleWait?.cancel();
+          _sparkleWait = Timer(env.sparkleTimeout, () {
+            if (ref.mounted && state.phase == UpdatePhase.downloading) {
+              state = state.copyWith(phase: UpdatePhase.failed, error: "The download didn't finish; check again.");
+            }
+          });
           await env.sparkle.check(release.appcast!.url);
         case InstallKind.appImage when release.appImage != null && release.checksumsSignature != null:
           state = state.copyWith(phase: UpdatePhase.downloading, progress: 0);
@@ -214,13 +244,32 @@ final class UpdateController extends Notifier<UpdateState> {
   void _listenSparkle(SparkleBridge bridge) {
     _sparkleEvents ??= bridge.events.listen((e) {
       if (!ref.mounted) return;
-      state = switch (e) {
-        SparkleReady() => state.copyWith(phase: UpdatePhase.ready),
-        SparkleNone() => state.copyWith(phase: UpdatePhase.upToDate),
-        SparkleFailed(:final message) => state.copyWith(phase: UpdatePhase.failed, error: message),
-      };
+      final next = sparkleTransition(state, e);
+      if (next == null) return;
+      if (next.phase != UpdatePhase.downloading) _sparkleWait?.cancel();
+      state = next;
     });
   }
+
+  /// What a Sparkle event does in each phase (null: nothing). Only a download in progress takes "nothing newer" or
+  /// an error; a ready install is never knocked down; a ready download is taken from any phase.
+  @visibleForTesting
+  static UpdateState? sparkleTransition(UpdateState s, SparkleEvent e) => switch ((s.phase, e)) {
+    (UpdatePhase.ready, _) => null,
+    (_, SparkleReady()) => s.copyWith(phase: UpdatePhase.ready, clearProgress: true),
+    (UpdatePhase.downloading, SparkleNone()) => s.copyWith(
+      phase: UpdatePhase.upToDate,
+      checkedAt: DateTime.now(),
+      clearProgress: true,
+      clearRelease: true,
+    ),
+    (UpdatePhase.downloading, SparkleFailed(:final message)) => s.copyWith(
+      phase: UpdatePhase.failed,
+      error: message,
+      clearProgress: true,
+    ),
+    _ => null,
+  };
 
   /// Restart into the new version (only when it is ready).
   Future<void> restart() async {

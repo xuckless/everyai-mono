@@ -74,9 +74,11 @@ final class ManualServers extends Notifier<List<ManualServer>> {
     final url = normaliseBaseUrl(baseUrl);
     if (url == null) return null;
     var n = 1;
-    while (state.any((s) => s.id == 'custom:$n')) {
+    while (state.any((s) => s.id == 'custom:$n') || _reserved.contains('custom:$n')) {
       n++;
     }
+    // Held through the keychain write, so an add that starts meanwhile picks the next id.
+    _reserved.add('custom:$n');
     final key = apiKey?.trim() ?? '';
     final server = ManualServer(
       id: 'custom:$n',
@@ -84,10 +86,17 @@ final class ManualServers extends Notifier<List<ManualServer>> {
       baseUrl: url,
       hasKey: key.isNotEmpty,
     );
-    if (key.isNotEmpty) await ref.read(secretStoreProvider).write(server.keyStoreName, key);
-    _save([...state, server]);
+    try {
+      if (key.isNotEmpty) await ref.read(secretStoreProvider).write(server.keyStoreName, key);
+      _save([...state, server]);
+    } finally {
+      _reserved.remove(server.id);
+    }
     return server;
   }
+
+  /// Ids an [add] still under way has taken.
+  final _reserved = <String>{};
 
   Future<void> remove(String id) async {
     final server = state.where((s) => s.id == id).firstOrNull;

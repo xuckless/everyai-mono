@@ -533,13 +533,54 @@ class _AddServerDialog extends ConsumerStatefulWidget {
   ConsumerState<_AddServerDialog> createState() => _AddServerDialogState();
 }
 
+/// What the Add a server dialog last learnt about the URL in the field:
+///
+/// ```text
+///  none ──Test──► testing(url) ──answer──► answered(url, n) | problem(msg)
+///    ▲                 │
+///    └── URL edited ───┘ (from any state; a test still under way is then dropped)
+/// ```
+sealed class _ServerTest {
+  const _ServerTest();
+}
+
+final class _Testing extends _ServerTest {
+  const _Testing(this.url);
+  final String url;
+}
+
+final class _Answered extends _ServerTest {
+  const _Answered(this.url, this.models);
+  final String url;
+  final int models;
+}
+
+final class _Problem extends _ServerTest {
+  const _Problem(this.message);
+  final String message;
+}
+
 class _AddServerDialogState extends ConsumerState<_AddServerDialog> {
   final _url = TextEditingController();
   final _label = TextEditingController();
   final _key = TextEditingController();
-  String? _result;
-  var _ok = false;
-  var _busy = false;
+  _ServerTest? _check;
+  var _adding = false;
+  late String _lastUrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _lastUrl = _url.text;
+    _url.addListener(_urlChanged);
+  }
+
+  void _urlChanged() {
+    if (_url.text == _lastUrl) return;
+    _lastUrl = _url.text;
+    // A result belongs to the URL it was for.
+    if (_check != null) setState(() => _check = null);
+  }
 
   @override
   void dispose() {
@@ -562,31 +603,36 @@ class _AddServerDialogState extends ConsumerState<_AddServerDialog> {
   }
 
   Future<void> _test() async {
+    if (_check is _Testing) return;
     final draft = _draft;
     if (draft == null) {
-      setState(() => _result = 'Enter an http or https URL');
+      setState(() => _check = const _Problem('Enter an http or https URL'));
       return;
     }
-    setState(() => _busy = true);
+    final testing = _Testing(draft.baseUrl);
+    setState(() => _check = testing);
     final r = await testServer(ref.read(localHttpProvider), draft);
-    if (!mounted) return;
-    setState(() {
-      _busy = false;
-      _ok = r.problem == null;
-      _result = r.problem ?? 'It answered with ${r.models.length} model${r.models.length == 1 ? '' : 's'}';
-    });
+    // Edited or closed meanwhile: this answer is for another URL.
+    if (!mounted || !identical(_check, testing)) return;
+    setState(() => _check = r.problem == null ? _Answered(draft.baseUrl, r.models.length) : _Problem(r.problem!));
   }
 
   Future<void> _add() async {
-    final added = await ref
-        .read(manualServersProvider.notifier)
-        .add(baseUrl: _url.text, label: _label.text, apiKey: _key.text);
-    if (!mounted) return;
-    if (added == null) {
-      setState(() => _result = 'Enter an http or https URL');
-      return;
+    if (_adding) return;
+    setState(() => _adding = true);
+    try {
+      final added = await ref
+          .read(manualServersProvider.notifier)
+          .add(baseUrl: _url.text, label: _label.text, apiKey: _key.text);
+      if (!mounted) return;
+      if (added == null) {
+        setState(() => _check = const _Problem('Enter an http or https URL'));
+        return;
+      }
+      Navigator.of(context).pop();
+    } finally {
+      if (mounted) setState(() => _adding = false);
     }
-    Navigator.of(context).pop();
   }
 
   @override
@@ -614,13 +660,14 @@ class _AddServerDialogState extends ConsumerState<_AddServerDialog> {
             placeholder: 'API key (optional)',
             obscureText: true,
           ),
-          if (_result case final r?) ...[
+          if (switch (_check) {
+                _Answered(:final models) => ('It answered with $models model${models == 1 ? '' : 's'}', theme.success),
+                _Problem(:final message) => (message, theme.danger),
+                _Testing() || null => null,
+              }
+              case (final text, final colour)) ...[
             const SizedBox(height: 8),
-            Text(
-              r,
-              key: const ValueKey('local.add.result'),
-              style: theme.type.caption.tint(_ok ? theme.success : theme.danger),
-            ),
+            Text(text, key: const ValueKey('local.add.result'), style: theme.type.caption.tint(colour)),
           ],
         ],
       ),
@@ -630,10 +677,15 @@ class _AddServerDialogState extends ConsumerState<_AddServerDialog> {
           key: const ValueKey('local.add.test'),
           label: 'Test',
           emphasis: ButtonEmphasis.secondary,
-          busy: _busy,
-          onPressed: _busy ? null : _test,
+          busy: _check is _Testing,
+          onPressed: _check is _Testing ? null : _test,
         ),
-        AdaptiveButton(key: const ValueKey('local.add.save'), label: 'Add', onPressed: _add),
+        AdaptiveButton(
+          key: const ValueKey('local.add.save'),
+          label: 'Add',
+          busy: _adding,
+          onPressed: _adding ? null : _add,
+        ),
       ],
     );
   }

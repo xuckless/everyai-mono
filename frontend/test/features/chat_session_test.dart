@@ -160,6 +160,26 @@ void main() {
     ]);
   });
 
+  test('a turn is Starting from the call on: a second send waits out, Stop cancels before the request', () async {
+    await settle();
+    final first = ctl().send('One');
+    expect(state().phase, isA<Starting>());
+    expect(state().phase.busy, isTrue);
+    // A second message while the first is still being set up doesn't start a second turn.
+    final second = ctl().send('Two');
+    ctl().cancel();
+    expect(state().phase, isA<Idle>());
+    await first;
+    await second;
+    await settle();
+    expect(transport.turns, isEmpty);
+    expect(state().phase, isA<Idle>());
+
+    await ctl().send('Three');
+    expect(state().phase, isA<Awaiting>());
+    expect(transport.turns, hasLength(1));
+  });
+
   group('backend titles', () {
     Future<void> firstTurn(String prompt, String reply) async {
       await settle();

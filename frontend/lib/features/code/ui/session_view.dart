@@ -249,12 +249,13 @@ class CodeSessionScreen extends ConsumerWidget {
                               mainAxisSize: MainAxisSize.min,
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
-                                if (state.error case final error?)
+                                if (state.failure case final error?)
                                   Padding(
                                     padding: const EdgeInsets.symmetric(horizontal: 16),
                                     child: NoticeView(item: NoticeItem('error', error, error: true)),
                                   )
-                                else if (!state.connected && t.items.isNotEmpty)
+                                else if (state.link == SessionLink.reconnecting ||
+                                    (state.link == SessionLink.connecting && t.items.isNotEmpty))
                                   Padding(
                                     padding: const EdgeInsets.symmetric(horizontal: 16),
                                     child: NoticeView(
@@ -269,6 +270,12 @@ class CodeSessionScreen extends ConsumerWidget {
                                       onRetryNow: controller.retryNow,
                                       onStop: controller.stop,
                                     ),
+                                  ),
+                                // A message that didn't go out: the run itself is fine.
+                                if (state.notice case SendFailed(:final message) when state.failure == null)
+                                  Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                                    child: NoticeView(item: NoticeItem('send-failed', message, error: true)),
                                   ),
                                 SafeArea(
                                   top: false,
@@ -600,8 +607,10 @@ class TranscriptList extends StatelessWidget {
 
   /// Restores the files to before user turn n (1-based); null without git.
   final void Function(int turn)? onRewind;
-  final VoidCallback onApprovePlan;
-  final ValueChanged<String> onRevisePlan;
+
+  /// See [PlanCard.onApprove]: false (or a Future of it) reopens the card.
+  final dynamic Function() onApprovePlan;
+  final dynamic Function(String text) onRevisePlan;
 
   /// Offered at the end while the session is failed or stuck.
   final VoidCallback onRetry;

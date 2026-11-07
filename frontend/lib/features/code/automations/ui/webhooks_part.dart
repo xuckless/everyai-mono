@@ -45,6 +45,11 @@ class _WebhooksPartState extends ConsumerState<WebhooksPart> {
   ({String name, String url, String secret})? _revealed;
   String? _error;
   bool _busy = false;
+  bool _enabling = false;
+
+  /// Bumped by each refresh and each local change to the list: an older refresh that answers late is dropped, so it
+  /// can't bring back a hook deleted meanwhile.
+  int _listGen = 0;
 
   @override
   void initState() {
@@ -54,9 +59,10 @@ class _WebhooksPartState extends ConsumerState<WebhooksPart> {
   }
 
   Future<void> _refresh() async {
+    final gen = ++_listGen;
     try {
       final hooks = await ref.read(remoteApiProvider).hooks();
-      if (mounted) setState(() => _server = hooks);
+      if (mounted && gen == _listGen) setState(() => _server = hooks);
     } on Object {
       // Offline or signed out: the local list still shows.
     }
@@ -109,6 +115,7 @@ class _WebhooksPartState extends ConsumerState<WebhooksPart> {
       destructive: true,
     );
     if (!ok || !mounted) return;
+    setState(() => _error = null);
     try {
       await ref.read(remoteApiProvider).deleteHook(hookId);
     } on Object catch (e) {
@@ -119,6 +126,7 @@ class _WebhooksPartState extends ConsumerState<WebhooksPart> {
       }
     }
     ref.read(webhookAutomationsProvider.notifier).remove(hookId);
+    _listGen++;
     if (mounted) setState(() => _server = _server?.where((h) => h.id != hookId).toList());
   }
 
@@ -216,13 +224,22 @@ class _WebhooksPartState extends ConsumerState<WebhooksPart> {
             ),
             trailing: AdaptiveButton(
               label: 'Turn on hosting',
-              onPressed: () async {
-                try {
-                  await ref.read(remoteHostingProvider.notifier).enable();
-                } on Object catch (e) {
-                  if (mounted) setState(() => _error = "Couldn't turn hosting on: ${_message(e)}");
-                }
-              },
+              busy: _enabling,
+              onPressed: _enabling
+                  ? null
+                  : () async {
+                      setState(() {
+                        _enabling = true;
+                        _error = null;
+                      });
+                      try {
+                        await ref.read(remoteHostingProvider.notifier).enable();
+                      } on Object catch (e) {
+                        if (mounted) setState(() => _error = "Couldn't turn hosting on: ${_message(e)}");
+                      } finally {
+                        if (mounted) setState(() => _enabling = false);
+                      }
+                    },
             ),
           ),
         ] else ...[

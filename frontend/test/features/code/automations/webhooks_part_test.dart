@@ -52,6 +52,11 @@ final class _Hooks {
       hooks.add(hook);
       return http.Response(jsonEncode({...hook, 'secret': 'whk_shown-once'}), 201);
     }
+    if (r.method == 'POST' && r.url.path == '/v1/remote/hosts') {
+      // Slow enough that a second click lands while the first registers.
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      return http.Response(jsonEncode({'id': 'host-new', 'host_token': 'rh_new'}), 201);
+    }
     if (r.method == 'GET' && r.url.path == '/v1/hooks') return http.Response(jsonEncode(hooks), 200);
     if (r.method == 'DELETE') {
       hooks.removeWhere((h) => r.url.path.endsWith('/${h['id']}'));
@@ -112,6 +117,17 @@ void main() {
     await _pump(tester, hosting: false, api: _Hooks());
     expect(find.text('Turn on remote hosting to receive webhooks'), findsOneWidget);
     expect(find.text('Add webhook'), findsNothing);
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('turning hosting on twice at once registers one host', (tester) async {
+    final api = _Hooks();
+    final container = await _pump(tester, hosting: false, api: api);
+    final hosting = container.read(remoteHostingProvider.notifier);
+    await tester.runAsync(() => Future.wait([hosting.enable(), hosting.enable()]));
+    await tester.pumpAndSettle();
+    expect(api.calls.where((c) => c == 'POST /v1/remote/hosts'), hasLength(1));
+    expect(container.read(remoteHostingProvider).enabled, isTrue);
     debugDefaultTargetPlatformOverride = null;
   });
 

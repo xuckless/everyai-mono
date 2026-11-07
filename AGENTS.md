@@ -871,6 +871,19 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   (`answerFromOrchestrator` answers them; the orchestrator's word decides, worded neutrally); approvals, host consents
   and workflow agents' questions stay the user's. A user who answers a forwarded question first tells the orchestrator
   (`forkAnsweredByUser`, `askedLead`). Test: `code_max_tools_test` (fork stuck repeating a step), `board_test`.
+- **UI state machines (2026-11-07; branch `ui-state-machines`).** An audit of lifecycles kept in loose flags, and
+  fixes in the house style (sealed/enum with a transition diagram, generation numbers for answers that land late,
+  one in-flight future for actions clicked twice). Code session: `SessionLink` (connecting/live/reconnecting/broken)
+  and `SessionNotice` (`BudgetReached` stops the session, `SendFailed` doesn't and clears on the next send) replace the
+  one `error` string; `failure` is what `status` reads, the wire keys are unchanged. Composer, plan card and question
+  card reopen or restore when a send is refused; Code home `_Launch`; Board approvals pass the shown call ids.
+  Preview: `_Cast` with generations (the agent's first page now casts), views keyed by source, the Android feed
+  sealed (`_DeviceFeed`, a dead stream falls back to pictures), iOS/desktop streams end with Retry. Shell restart joins
+  one in flight and keeps the shell's cwd. Elsewhere: onboarding key check (`_KeyCheckState`, saved under the
+  provider it was checked for), sidebar and Chats search drop late results, Sparkle events through
+  `sparkleTransition` (a ready install isn't knocked down; Swift re-sends ready), chat `TurnPhase.Starting`, hosting
+  `enable()` joins one in flight, add-server test result, files editor open/save, settings writes queued per path,
+  Bring over steps, `HostLinkStatus`, billing checkout, list editor selection by item. Not live-tested.
 - **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
   `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
   `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,
