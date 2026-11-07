@@ -190,6 +190,8 @@ func post(_ event: CGEvent?, pid: pid_t, front: Bool) {
 func raise(pid: pid_t, window w: String?) {
   // A background process can't activate another app any more (cooperative activation); accessibility can make it
   // frontmost. Its key window (a dialog it shows, say) keeps the keyboard; a named window is raised too.
+  // Already in front: raising again would close its open pop-up list or menu.
+  if w == nil, NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { return }
   let app = AXUIElementCreateApplication(pid)
   if AXIsProcessTrusted() {
     AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
@@ -208,7 +210,7 @@ func raise(pid: pid_t, window w: String?) {
 }
 
 func click(pid: pid_t, at p: CGPoint, count: Int, right: Bool, front: Bool) {
-  if front { raise(pid: pid, window: nil) }
+  if front { raise(pid: pid, window: value("window")) }
   let source = CGEventSource(stateID: .hidSystemState)
   let (down, up, button): (CGEventType, CGEventType, CGMouseButton) =
     right ? (.rightMouseDown, .rightMouseUp, .right) : (.leftMouseDown, .leftMouseUp, .left)
@@ -223,7 +225,7 @@ func click(pid: pid_t, at p: CGPoint, count: Int, right: Bool, front: Bool) {
 }
 
 func drag(pid: pid_t, from a: CGPoint, to b: CGPoint, front: Bool) {
-  if front { raise(pid: pid, window: nil) }
+  if front { raise(pid: pid, window: value("window")) }
   let source = CGEventSource(stateID: .hidSystemState)
   post(CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: a, mouseButton: .left), pid: pid, front: front)
   let steps = 16
@@ -237,7 +239,7 @@ func drag(pid: pid_t, from a: CGPoint, to b: CGPoint, front: Bool) {
 }
 
 func scroll(pid: pid_t, at p: CGPoint, dy: Double, front: Bool) {
-  if front { raise(pid: pid, window: nil) }
+  if front { raise(pid: pid, window: value("window")) }
   // Scroll events go where the pointer is: move it there first when posting to the system.
   if front { CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left)?.post(tap: .cghidEventTap) }
   let e = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: Int32(-dy), wheel2: 0, wheel3: 0)
@@ -260,7 +262,7 @@ func modifiers(_ s: String?) -> CGEventFlags {
 }
 
 func key(pid: pid_t, text: String?, keycode: Int?, mods: String?, front: Bool) {
-  if front { raise(pid: pid, window: nil) }
+  if front { raise(pid: pid, window: value("window")) }
   let source = CGEventSource(stateID: .hidSystemState)
   if let keycode {
     for down in [true, false] {

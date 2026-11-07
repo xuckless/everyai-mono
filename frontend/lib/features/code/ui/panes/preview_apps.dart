@@ -1255,7 +1255,7 @@ class _DesktopWindowViewState extends State<DesktopWindowView> {
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
           child: Text(
-            'Clicks press what accessibility can press, in place. To type or drag yourself, bring the window to the front.',
+            'Clicks press in place where they can; elsewhere they bring the window to the front. To type, bring it forward.',
             style: theme.type.caption.tint(theme.textMuted),
           ),
         ),

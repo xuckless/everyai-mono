@@ -7,6 +7,7 @@ import 'dart:typed_data';
 
 import 'app_view.dart';
 import 'device_screen.dart';
+import 'real_input.dart';
 import 'frames.dart';
 import 'live_session.dart';
 
@@ -75,9 +76,9 @@ abstract final class DesktopWindows {
 }
 
 /// The front window of a desktop app (process [pid]) on macOS, through `everyai-ax`: its accessibility tree (points
-/// from the window's top-left), actions through accessibility only (press, set the value, show a menu, scroll bars:
-/// the user's cursor and keyboard stay theirs; the owner's rule), and pictures through ScreenCaptureKit. Apps with no
-/// accessibility tree (Tk, games, canvases) can be seen but not driven.
+/// from the window's top-left), accessibility actions first (press, set the value, select rows, show a menu, scroll
+/// bars: the user's cursor and keyboard stay theirs), the real pointer and keyboard when those can't do it and the
+/// user allows it ([RealInput]), and pictures through ScreenCaptureKit.
 final class DesktopWindow implements DeviceScreen {
   DesktopWindow(this.pid);
 
@@ -217,10 +218,29 @@ final class DesktopWindow implements DeviceScreen {
     if (text != null) ...['--text', text],
   ]);
 
-  /// The owner's rule for desktop windows: EveryAI acts through accessibility only, never synthetic mouse or key
-  /// events (they would move the user's cursor or type into whatever has the focus).
-  static const _axOnly =
-      'EveryAI acts on desktop windows through accessibility only (no synthetic clicks or keys), and this needs one';
+  /// Accessibility first (in place, the user's pointer and keyboard stay theirs); the real pointer and keyboard when
+  /// accessibility can't do it and the user allows it ([RealInput], asked once). Real input brings the window to
+  /// the front and moves the cursor.
+  Future<void> _needReal(String what) async {
+    if (!await RealInput.ensure()) throw AppError('${RealInput.refused}: $what.');
+  }
+
+  /// Runs a helper input command as real input to the window, its app brought to the front as it is (its key
+  /// window, an open pop-up list or dialog, keeps the keyboard).
+  Future<void> _real(String command, List<String> args) => axHelper([command, '--pid', '$pid', ...args, '--front']);
+
+  // Window points to screen points.
+  String _sx(double x) => (x + _left).toStringAsFixed(1);
+  String _sy(double y) => (y + _top).toStringAsFixed(1);
+
+  /// A real click at window point (x, y).
+  Future<void> _click(double x, double y, {int count = 1}) => _real('click', [
+    '--x',
+    _sx(x),
+    '--y',
+    _sy(y),
+    if (count > 1) ...['--count', '$count'],
+  ]);
 
   @override
   Future<String> tap(String ref) async {
@@ -246,7 +266,10 @@ final class DesktopWindow implements DeviceScreen {
       return 'Selected the row of $ref${what.isEmpty ? '' : ' "$what"'}.';
     }
     if (action == null) {
-      throw AppError('${nodeText(n)} has no press action. $_axOnly: try the control around it, or a menu item.');
+      if (!n.placed) throw AppError('${nodeText(n)} has no press action and no place on screen to click.');
+      await _needReal('${nodeText(n)} has no press action, so it needs a real click');
+      await _click(n.centreX, n.centreY);
+      return 'Clicked ${nodeText(n)} (the window came to the front).';
     }
     await _act(ref, action);
     return 'Pressed ${nodeText(n)}.';
@@ -264,10 +287,10 @@ final class DesktopWindow implements DeviceScreen {
       if (hit == null || area(n) < area(hit)) hit = n;
     }
     if (hit == null) {
-      throw AppError(
-        'Nothing at (${x.round()}, ${y.round()}) can be pressed through accessibility. $_axOnly: '
-        '${hasElements ? 'tap an element by ref (snapshot lists them)' : 'this app exposes no accessibility elements, so EveryAI can show it but not click in it; ask the user to click, or test its logic another way'}.',
-      );
+      await _needReal('nothing at (${x.round()}, ${y.round()}) can be pressed through accessibility');
+      control.report(LiveActivity('click', x: x, y: y, caption: 'Clicking'));
+      await _click(x, y);
+      return 'Clicked at (${x.round()}, ${y.round()}) (the window came to the front).';
     }
     control.report(LiveActivity('click', x: x, y: y, caption: 'Pressing ${hit.name}'));
     await _act(hit.ref, 'AXPress');
@@ -278,7 +301,12 @@ final class DesktopWindow implements DeviceScreen {
   Future<String> longPress(String ref) async {
     await _fresh();
     final n = _node(ref);
-    if (!(_actions[ref]?.contains('AXShowMenu') ?? false)) throw AppError('${nodeText(n)} has no menu to show.');
+    if (!(_actions[ref]?.contains('AXShowMenu') ?? false)) {
+      if (!n.placed) throw AppError('${nodeText(n)} has no menu to show.');
+      await _needReal('${nodeText(n)} has no menu action, so it needs a real right-click');
+      await _real('click', ['--x', _sx(n.centreX), '--y', _sy(n.centreY), '--right']);
+      return 'Right-clicked ${nodeText(n)} (the window came to the front).';
+    }
     await _act(ref, 'AXShowMenu');
     return 'Opened the menu of ${nodeText(n)}.';
   }
@@ -293,33 +321,151 @@ final class DesktopWindow implements DeviceScreen {
     if (n.role != 'textbox') throw AppError('$ref is a ${n.role}, not a text field.');
     control.report(LiveActivity('type', x: n.centreX, y: n.centreY, caption: 'Typing into ${n.name}'));
     // Setting the value through accessibility replaces the text without touching the keyboard focus.
-    await _act(ref, 'setvalue', text: text);
+    var real = false;
+    try {
+      await _act(ref, 'setvalue', text: text);
+    } on AppError {
+      real = true;
+    }
+    if (!real) {
+      await settle();
+      await tree();
+      final now = _nodes[ref]?.value;
+      real = now != null && now != text && now == (n.value ?? '');
+    }
+    if (real) {
+      // The field ignored it: click into it, select all, type.
+      if (!n.placed) throw AppError("$ref didn't take the text through accessibility and has no place to click.");
+      await _needReal("$ref didn't take the text through accessibility, so it needs real typing");
+      await _click(n.centreX, n.centreY);
+      await _real('key', ['--keycode', '0', '--mods', 'cmd']);
+      await _real('key', ['--text', text]);
+    }
     if (submit) {
-      if (_actions[ref]?.contains('AXConfirm') ?? false) {
+      if (!real && (_actions[ref]?.contains('AXConfirm') ?? false)) {
         await _act(ref, 'AXConfirm');
       } else {
-        throw AppError('Set $ref, but it has no confirm action for submit. $_axOnly: press the form\'s button by ref.');
+        await _needReal('submitting $ref needs a real Return key');
+        await _real('key', ['--keycode', '36']);
       }
     }
     await settle();
     await tree();
     final held = _nodes[ref]?.value;
-    if (held != null && held != text && held == (n.value ?? '')) {
-      throw AppError("$ref didn't take the text through accessibility (it still holds \"$held\"). $_axOnly.");
-    }
     final shown = held == null || held == text ? '' : ' (the field shows "$held")';
-    return 'Set $ref${n.name.isEmpty ? '' : ' "${n.name}"'} to the text$shown${submit ? ' and confirmed it' : ''}.';
+    return '${real ? 'Typed into' : 'Set'} $ref${n.name.isEmpty ? '' : ' "${n.name}"'}${real ? '' : ' to the text'}'
+        '$shown${submit ? ' and confirmed it' : ''}.';
   }
 
   @override
   Future<String> submit() => key('enter');
 
-  /// Keys would be synthetic input: refused (the owner's rule), with what works instead.
+  static const _keycodes = <String, int>{
+    'a': 0,
+    's': 1,
+    'd': 2,
+    'f': 3,
+    'h': 4,
+    'g': 5,
+    'z': 6,
+    'x': 7,
+    'c': 8,
+    'v': 9,
+    'b': 11,
+    'q': 12,
+    'w': 13,
+    'e': 14,
+    'r': 15,
+    'y': 16,
+    't': 17,
+    '1': 18,
+    '2': 19,
+    '3': 20,
+    '4': 21,
+    '6': 22,
+    '5': 23,
+    '=': 24,
+    '9': 25,
+    '7': 26,
+    '-': 27,
+    '8': 28,
+    '0': 29,
+    ']': 30,
+    'o': 31,
+    'u': 32,
+    '[': 33,
+    'i': 34,
+    'p': 35,
+    'l': 37,
+    'j': 38,
+    "'": 39,
+    'k': 40,
+    ';': 41,
+    '\\': 42,
+    ',': 43,
+    '/': 44,
+    'n': 45,
+    'm': 46,
+    '.': 47,
+    '`': 50,
+    'enter': 36,
+    'return': 36,
+    'tab': 48,
+    'space': 49,
+    'backspace': 51,
+    'escape': 53,
+    'esc': 53,
+    'delete': 117,
+    'home': 115,
+    'end': 119,
+    'pageup': 116,
+    'pagedown': 121,
+    'left': 123,
+    'right': 124,
+    'down': 125,
+    'up': 126,
+    'arrowleft': 123,
+    'arrowright': 124,
+    'arrowdown': 125,
+    'arrowup': 126,
+    'f1': 122,
+    'f2': 120,
+    'f3': 99,
+    'f4': 118,
+    'f5': 96,
+    'f6': 97,
+    'f7': 98,
+    'f8': 100,
+    'f9': 101,
+    'f10': 109,
+    'f11': 103,
+    'f12': 111,
+  };
+
+  /// A key or shortcut (or text when it names no key), as real keyboard input to the window.
   @override
-  Future<String> key(String combo) async => throw AppError(
-    'Keys can\'t be sent to a desktop window. $_axOnly: set text fields with type, and press buttons (OK, Cancel, '
-    'Done) by ref.',
-  );
+  Future<String> key(String combo) async {
+    final (:mods, key: name) = splitKeyCombo(combo);
+    final code = _keycodes[name];
+    for (final m in mods) {
+      if (!const {'cmd', 'command', 'shift', 'alt', 'option', 'ctrl', 'control'}.contains(m)) {
+        throw AppError('Unknown modifier "$m" in "$combo".');
+      }
+    }
+    if (code == null && mods.isNotEmpty) throw AppError('Unknown key "$name" in "$combo".');
+    await _needReal('keys are real keyboard input');
+    control.report(LiveActivity('type', caption: 'Pressing $combo'));
+    if (code == null) {
+      await _real('key', ['--text', combo]);
+      return 'Typed "$combo" (the window came to the front).';
+    }
+    await _real('key', [
+      '--keycode',
+      '$code',
+      if (mods.isNotEmpty) ...['--mods', mods.join(',')],
+    ]);
+    return 'Pressed $combo (the window came to the front).';
+  }
 
   @override
   Future<String> scroll(double dy, {String? ref}) async {
@@ -329,8 +475,18 @@ final class DesktopWindow implements DeviceScreen {
       for (final n in _last)
         if (n.role == 'slider' && n.name.toLowerCase().contains('scroll')) n,
     ];
-    final bar = bars.firstOrNull;
-    if (bar == null) throw AppError('No scroll bar here to scroll with. $_axOnly.');
+    final target = ref == null ? null : _nodes[ref];
+    final bar = target == null ? bars.firstOrNull : null;
+    if (bar == null) {
+      // The wheel, over the element or the window's middle.
+      await _needReal('there is no scroll bar to scroll through accessibility, so it needs the real wheel');
+      final over = target != null && target.placed;
+      final x = over ? target.centreX : width / 2, y = over ? target.centreY : height / 2;
+      control.report(LiveActivity('scroll', x: x, y: y, caption: 'Scrolling'));
+      await _real('scroll', ['--x', _sx(x), '--y', _sy(y), '--dy', '${dy.round()}']);
+      return 'Scrolled ${dy >= 0 ? 'down' : 'up'} about ${dy.abs().round()} pt with the wheel (the window came to '
+          'the front).';
+    }
     final step = dy >= 0 ? 'AXIncrement' : 'AXDecrement';
     for (var i = 0; i < (dy.abs() / 120).ceil().clamp(1, 20); i++) {
       await _act(bar.ref, step);
@@ -339,10 +495,13 @@ final class DesktopWindow implements DeviceScreen {
   }
 
   @override
-  Future<String> drag(double x, double y, double toX, double toY) async => throw const AppError(
-    'Drags would be synthetic input: $_axOnly. Sliders: adjust is not here; set by ref if '
-    'they take a value.',
-  );
+  Future<String> drag(double x, double y, double toX, double toY) async {
+    await _needReal('drags are real pointer input');
+    control.report(LiveActivity('drag', x: toX, y: toY, caption: 'Dragging'));
+    await _real('drag', ['--x', _sx(x), '--y', _sy(y), '--to-x', _sx(toX), '--to-y', _sy(toY)]);
+    return 'Dragged from (${x.round()}, ${y.round()}) to (${toX.round()}, ${toY.round()}) (the window came to the '
+        'front).';
+  }
 
   @override
   Future<String> back() => throw const AppError('A desktop window has no back: use key ("Escape", "cmd+[").');
@@ -403,14 +562,16 @@ final class DesktopWindow implements DeviceScreen {
   }
 
   /// The user's click in the Preview (window points): pressed through accessibility when the element there has a
-  /// press action; otherwise nothing (the user brings the window to the front to use it).
+  /// press action, else a real click when the user allows real input (it brings the window to the front).
   Future<bool> userClick(double x, double y) async {
     final hit = hitNode(await _fresh(), x, y);
     if (hit != null && hit.ref.isNotEmpty && (_actions[hit.ref]?.contains('AXPress') ?? false)) {
       await _act(hit.ref, 'AXPress');
       return true;
     }
-    return false;
+    if (!await RealInput.ensure()) return false;
+    await _click(x, y);
+    return true;
   }
 
   /// Brings the window to the front (the Preview's button).

@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../resume/resume_providers.dart' show resumeUnsupportedProvider;
 import '../../../core/theme/every_theme.dart';
+import '../../../core/platform/platform_kind.dart' show Host;
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/anchored_popover.dart';
 import '../../../core/ui/every_icons.dart';
@@ -25,6 +26,7 @@ import '../domain/code_session.dart';
 import '../drivers/detection/install_commands.dart';
 import '../drivers/driver.dart' show DriverInfo, DriverStatus;
 import '../drivers/driver_registry.dart';
+import '../live/real_input.dart';
 import '../drivers/registry_install/ui/add_agent_list.dart' show AddAgentEntry;
 import '../permissions_providers.dart';
 import '../settings/setting_defs.dart';
@@ -241,6 +243,25 @@ class _CodeSettingsSectionState extends ConsumerState<CodeSettingsSection> {
               ),
             ),
           ),
+        if (scope == SettingsScope.global && Host.isDesktop) ...[
+          const AdaptiveSectionHeader('Driving apps'),
+          SettingsAnchor(
+            section: SettingsSection.code,
+            id: 'real-input',
+            child: AdaptiveListTile(
+              title: const Text('Use the real mouse and keyboard'),
+              subtitle: const Text(
+                'When an app window can\'t be operated in the background, agents bring it to the front, move your '
+                'pointer and type into it.',
+              ),
+              trailing: AdaptiveSwitch(
+                key: const ValueKey('code-settings.real-input'),
+                value: RealInput.allowed ?? false,
+                onChanged: (v) => setState(() => RealInput.set(v)),
+              ),
+            ),
+          ),
+        ],
         const SizedBox(height: 16),
         SettingsAnchor(section: SettingsSection.code, id: 'json', child: _jsonView(theme, layer, session, project?.id)),
         if (project != null) _FullPrompt(projectDir: project.path, projectId: project.id),

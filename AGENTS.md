@@ -922,14 +922,20 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   (`live/desktop_window_io.dart`). Through `everyai-ax`, our own Swift helper (`tool/ax_helper/main.swift`; dev build
   `tool/build_ax_helper.sh` → `frontend/.tools/`, `EVERYAI_AX_HELPER` overrides; the macOS build compiles it into
   `Contents/Resources` from `macos/scripts/bundle_ax_helper.sh`, called by `bundle_deno.sh`; release signing covers
-  it). **Accessibility only** (owner's rule, no synthetic events): tap = AXPress (an entry inside a table/list row
-  selects the row: `show` + `select`), type = set the value (never into secure fields), scroll = the scroll bar's
-  increment, long_press = AXShowMenu; `key`/drag/tap at a point with nothing pressable are refused with what works.
-  Tk and canvas apps (no AX elements) can be seen, not driven. Pictures (`shot`) include the app's pop-ups and
-  dialogs over the window (display filter cut to the window); the Preview stream shows the window alone. The helper
-  still has `click`/`key`/`drag`/`scroll --front` (unused). New `key` action on iOS (AXe HID codes) and Android
-  (keyevents/keycombination) via `DeviceScreen.key`.
-  Preview `DesktopWindowView`: the live stream; clicks press through AX; Bring to front. Probe
+  it). **Accessibility first**: tap = AXPress (an entry inside a table/list row selects the row: `show` + `select`),
+  type = set the value (never into secure fields), scroll = the scroll bar, long_press = AXShowMenu. **Then the real
+  pointer and keyboard** (owner, 2026-11-07) for what AX can't do: taps at a point with nothing pressable (Tk, games,
+  canvases), elements with no press, fields that ignore set-value, `key`, drag, the wheel. The helper's `--front`
+  makes the app frontmost (not again when it already is, which would close Tk's pop-up lists) and posts to the HID
+  tap. Gate `live/real_input.dart` `RealInput`: asked once by a dialog (`ui/real_input_consent.dart`,
+  `connectRealInput` in the shell), remembered in prefs `code.desktop.real_input` ('1'/'0'), switch in Settings >
+  Code (Global, "Driving apps"); no dialog (tests, rigs) = no, `EVERYAI_REAL_INPUT=1|0` overrides. Pictures (`shot`)
+  include the app's pop-ups and dialogs over the window; the Preview stream shows the window alone. Verified on the
+  futoshiki copy: Load through the native panel, AC-3 picked from Tk's pop-up list, solved, Timeout typed (Tk has no
+  Cmd+A: triple-click selects). New `key` action on iOS (AXe HID codes) and Android (keyevents/keycombination) via
+  `DeviceScreen.key`.
+  Preview `DesktopWindowView`: the live stream; clicks press through AX, else a real click (same consent); Bring to
+  front. Probe
   `tool/live_apps/desktop_probe_test.dart` (`EVERYAI_DESKTOP_PID`); the MCP rig takes `EVERYAI_LIVE_WINDOW_MATCH`.
 - **Real-project testing (2026-11-06).** Outside agents drove the owner's projects through the MCP rig (copies or
   read-only runs; no project files touched): pixl-playroom (Electron, 6/10 → 8/10 after the browser fixes in
