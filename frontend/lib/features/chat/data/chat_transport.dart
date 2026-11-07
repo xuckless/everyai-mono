@@ -416,7 +416,7 @@ Map<String, String> toolOutputsByMessage(List<Message> history) {
       }
       final visual = Visual.fromPart(call);
       if (visual == null) continue;
-      if (artifactTools.contains(call.toolName)) {
+      if (isArtifactCall(call)) {
         final id = visual.str('id').isEmpty ? visual.callId : visual.str('id');
         if (latest[call.callId ?? visual.callId] case final artifact?) {
           final v = artifact.latest;

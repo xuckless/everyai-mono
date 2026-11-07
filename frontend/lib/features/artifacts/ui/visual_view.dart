@@ -10,6 +10,7 @@ import '../../chat/domain/message.dart';
 import '../../chat/ui/chat_markdown.dart';
 import '../artifact_providers.dart';
 import '../domain/artifact.dart';
+import '../domain/figures.dart';
 import '../domain/drawing.dart';
 import 'download_button.dart';
 import 'image_view.dart';
@@ -48,7 +49,9 @@ class VisualBody extends ConsumerWidget {
     final dark = EveryTheme.of(context).brightness == Brightness.dark;
     final content = visual.str('content');
     return switch (visual.kind) {
-      VisualKind.document => ChatMarkdown(content),
+      VisualKind.document => ChatMarkdown(
+        expandFigureRefs(content, figuresOf(ref.watch(conversationArtifactsProvider(conversationId)))),
+      ),
       VisualKind.code => ChatMarkdown('```${visual.str('language')}\n$content\n```'),
       VisualKind.html => WebContentView(
         html: content,
@@ -123,7 +126,7 @@ class InlineVisual extends ConsumerWidget {
       return Text('Used ${part.toolName}', style: theme.type.callout.tint(theme.textMuted));
     }
     final panel = ref.read(artifactPanelProvider(conversationId).notifier);
-    final isArtifact = artifactTools.contains(part.toolName);
+    final isArtifact = isArtifactCall(part);
     // An artifact call shows the version it made (an edit only carries its
     // find-and-replace pairs).
     final made = !isArtifact
@@ -207,7 +210,8 @@ class InlineVisual extends ConsumerWidget {
             ],
           ),
         ),
-        if (!kIsWeb) DownloadButton(visual: visual),
+        if (!kIsWeb)
+          DownloadButton(visual: visual, figures: figuresOf(ref.watch(conversationArtifactsProvider(conversationId)))),
         AdaptiveIconButton(icon: EveryIcon.openPanel, tooltip: 'Open in side panel', onPressed: open),
       ],
     );

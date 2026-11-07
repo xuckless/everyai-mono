@@ -9,6 +9,7 @@ import '../../../core/ui/every_icons.dart';
 import '../artifact_providers.dart';
 import '../../chat/chat_providers.dart';
 import '../domain/artifact.dart';
+import '../domain/figures.dart';
 import '../domain/drawing.dart';
 import '../export/downloads.dart';
 import '../polish/figure_polish.dart';
@@ -192,7 +193,11 @@ class ArtifactPanel extends ConsumerWidget {
                       if (context.mounted) showAdaptiveToast(context, 'Copied');
                     },
                   ),
-                  if (!kIsWeb) DownloadButton(visual: v),
+                  if (!kIsWeb)
+                    DownloadButton(
+                      visual: v,
+                      figures: figuresOf(ref.watch(conversationArtifactsProvider(conversationId))),
+                    ),
                   if (!fullScreen) AdaptiveIconButton(icon: EveryIcon.close, tooltip: 'Close panel', onPressed: close),
                 ],
               ),

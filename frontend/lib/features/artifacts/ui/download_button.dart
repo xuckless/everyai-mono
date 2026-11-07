@@ -7,14 +7,18 @@ import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/every_icons.dart';
 import '../domain/artifact.dart';
+import '../domain/figures.dart';
 import '../export/downloads.dart';
 
 /// Saves a visual: straight away when it has one format, otherwise a menu
 /// (Markdown, PDF, Word… for documents).
 class DownloadButton extends StatelessWidget {
-  const DownloadButton({super.key, required this.visual});
+  const DownloadButton({super.key, required this.visual, this.figures = const {}});
 
   final Visual visual;
+
+  /// The chat's figures, which documents and slides show by id (`figure:<id>`).
+  final Map<String, Figure> figures;
 
   static Future<void> save(BuildContext context, Visual visual, DownloadOption option) async {
     final location = await getSaveLocation(suggestedName: '${exportOf(visual).name}.${option.extension}');
@@ -29,7 +33,7 @@ class DownloadButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final options = downloadsOf(visual);
+    final options = downloadsOf(visual, figures: figures);
     if (options.length == 1) {
       return AdaptiveIconButton(
         icon: EveryIcon.download,

@@ -719,6 +719,11 @@ const Artifacts = struct {
             if (openrouter.jsonString(args, "content")) |c| try self.map.put(arena, id, c);
             return null;
         }
+        // A figure (a figure call with an id) is an artifact too: its source is what edit_artifact edits.
+        if (try figureSource(arena, tool, args)) |source| {
+            try self.map.put(arena, id, source);
+            return null;
+        }
         if (!std.mem.eql(u8, tool, "edit_artifact")) return null;
         var content = self.map.get(id) orelse return .{
             .applied = 0,
@@ -747,6 +752,43 @@ const Artifacts = struct {
         return .{ .applied = applied, .message = message };
     }
 };
+
+/// A figure call's source as the app keeps it (SVG, Mermaid, or the chart spec as JSON without its id); null for
+/// other tools.
+fn figureSource(arena: std.mem.Allocator, tool: []const u8, args: std.json.Value) !?[]const u8 {
+    if (std.mem.eql(u8, tool, "render_svg")) return openrouter.jsonString(args, "svg") orelse "";
+    if (std.mem.eql(u8, tool, "render_diagram")) return openrouter.jsonString(args, "mermaid") orelse "";
+    if (!std.mem.eql(u8, tool, "render_chart") or args != .object) return null;
+    var spec: std.json.ObjectMap = .empty;
+    var it = args.object.iterator();
+    while (it.next()) |e| if (!std.mem.eql(u8, e.key_ptr.*, "id")) try spec.put(arena, e.key_ptr.*, e.value_ptr.*);
+    return try std.json.Stringify.valueAlloc(arena, std.json.Value{ .object = spec }, .{});
+}
+
+test "artifacts: a figure with an id can be edited like an artifact" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var docs: Artifacts = .{};
+    const svg = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"id":"fig-sun","svg":"<svg viewBox=\"0 0 10 10\"><circle id=\"sun\" fill=\"#fc0\"/></svg>"}
+    , .{});
+    try std.testing.expect(try docs.track(a, "render_svg", svg) == null);
+    const edit = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"id":"fig-sun","edits":[{"old_text":"#fc0","new_text":"#f60"}]}
+    , .{});
+    const out = (try docs.track(a, "edit_artifact", edit)).?;
+    try std.testing.expectEqual(@as(usize, 1), out.applied);
+    try std.testing.expect(std.mem.indexOf(u8, docs.map.get("fig-sun").?, "#f60") != null);
+    // A figure call without an id is a one-off: nothing to track.
+    const loose = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"svg\":\"<svg/>\"}", .{});
+    try std.testing.expect(try docs.track(a, "render_svg", loose) == null);
+    const chart = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"id":"fig-sales","type":"bar","labels":["a"]}
+    , .{});
+    _ = try docs.track(a, "render_chart", chart);
+    try std.testing.expectEqualStrings("{\"type\":\"bar\",\"labels\":[\"a\"]}", docs.map.get("fig-sales").?);
+}
 
 test "artifacts: seed from history, edit, report misses" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);

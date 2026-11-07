@@ -7,6 +7,7 @@ import '../checks/math_raster.dart';
 import '../checks/web_scripts.dart';
 import '../checks/webview_diagram_renderer.dart';
 import '../domain/artifact.dart';
+import '../domain/figures.dart';
 import '../domain/chart_spec.dart';
 import '../ui/renderers/sandbox.dart';
 import '../ui/renderers/slides_view.dart';
@@ -30,12 +31,12 @@ final class DownloadOption {
 /// What a visual can be saved as, the most useful first. Documents (and
 /// quizzes) get Markdown, PDF and Word, plus a zip with separate figure files
 /// when they hold SVG figures.
-List<DownloadOption> downloadsOf(Visual v) {
+List<DownloadOption> downloadsOf(Visual v, {Map<String, Figure> figures = const {}}) {
   final export = exportOf(v);
   Future<Uint8List> utf8Of(String text) async => Uint8List.fromList(utf8.encode(text));
   switch (v.kind) {
     case VisualKind.document || VisualKind.quiz:
-      final markdown = export.text;
+      final markdown = expandFigureRefs(export.text, figures);
       return [
         DownloadOption('Markdown', 'md', () => utf8Of(markdownWithInlineSvg(markdown))),
         if (svgFiguresIn(markdown).isNotEmpty)
