@@ -884,6 +884,13 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   `sparkleTransition` (a ready install isn't knocked down; Swift re-sends ready), chat `TurnPhase.Starting`, hosting
   `enable()` joins one in flight, add-server test result, files editor open/save, settings writes queued per path,
   Bring over steps, `HostLinkStatus`, billing checkout, list editor selection by item. Not live-tested.
+- **#39 follow-ups (2026-11-07; branch `fix/ui-state-followups`).** Review found two bugs. `everyai://prompt` chat
+  links filled nothing: the shell matched the landing path, but `/chat/new` redirects to `/chat/<id>`
+  (`landedOn` in `app/shell.dart` now counts any chat page for a new chat). Stop then an immediate send ran two chat
+  turns: the stopped start saw the new `Starting` as its own; `Starting(turn)` is numbered and `_beforeTurn` checks
+  it, and both turns share one conversation insert (`_creating`), renamed to the sent message when the row was made
+  for the stopped one. Tests: `chat_session_test`,
+  `test/app/prompt_link_landing_test.dart`.
 - **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
   `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
   `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,

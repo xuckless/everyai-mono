@@ -129,6 +129,13 @@ final class ChatController extends Notifier<ChatSessionState> {
 
   final String conversationId;
   Completer<void>? _cancel;
+
+  /// Numbers each turn's [Starting], so a stopped start can't mistake a newer one for its own.
+  var _turns = 0;
+
+  /// The conversation's row being made by the first turn (see [_startTurn]).
+  Future<Conversation>? _creating;
+  Starting _starting() => Starting(++_turns);
   StreamSubscription<ChatEvent>? _turn;
   final _buffer = StringBuffer();
   final _reasoning = StringBuffer();
@@ -249,7 +256,7 @@ final class ChatController extends Notifier<ChatSessionState> {
     if (lastUser == -1) return;
     final dropped = state.messages.sublist(lastUser + 1);
     final previousModel = dropped.map((m) => m.model).nonNulls.map((id) => _catalog[id]).nonNulls.firstOrNull;
-    state = state.copyWith(messages: List.unmodifiable(state.messages.take(lastUser + 1)), phase: const Starting());
+    state = state.copyWith(messages: List.unmodifiable(state.messages.take(lastUser + 1)), phase: _starting());
     if (!await _beforeTurn(() => _repo.deleteMessages(dropped.map((m) => m.id)))) return;
     final (model: mentioned, :prompt) = parseMention(state.messages[lastUser].plainText, _catalog);
     await _startTurn(prompt: prompt, model: model ?? previousModel ?? mentioned ?? state.model, userText: null);
@@ -263,7 +270,7 @@ final class ChatController extends Notifier<ChatSessionState> {
     final dropped = state.messages.sublist(index);
     // The edited message keeps its attachments.
     final attachments = dropped.first.attachments;
-    state = state.copyWith(messages: List.unmodifiable(state.messages.take(index)), phase: const Starting());
+    state = state.copyWith(messages: List.unmodifiable(state.messages.take(index)), phase: _starting());
     if (!await _beforeTurn(() => _repo.deleteMessages(dropped.map((m) => m.id)))) return;
     final (:model, :prompt) = parseMention(text, _catalog);
     await _startTurn(prompt: prompt, model: model ?? state.model, userText: text.trim(), attachments: attachments);
@@ -397,14 +404,21 @@ final class ChatController extends Notifier<ChatSessionState> {
 
   /// Runs one step of a turn's [Starting] work. False when the turn shouldn't go on: the chat closed, or Stop was
   /// pressed meanwhile. A failure puts the chat back to Idle (it can't be stuck Starting) and is rethrown.
+  ///
+  /// Only this turn's own start counts: after Stop and a new send the phase is Starting again, but another turn's.
   Future<bool> _beforeTurn(Future<void> Function() step) async {
+    final mine = switch (state.phase) {
+      Starting(:final turn) => turn,
+      _ => null,
+    };
+    bool current() => ref.mounted && mine != null && state.phase is Starting && (state.phase as Starting).turn == mine;
     try {
       await step();
     } on Object {
-      if (ref.mounted && state.phase is Starting) state = state.copyWith(phase: const Idle());
+      if (current()) state = state.copyWith(phase: const Idle());
       rethrow;
     }
-    return ref.mounted && state.phase is Starting;
+    return current();
   }
 
   /// [userText] null: answer the last user message again (retry, regenerate).
@@ -417,17 +431,24 @@ final class ChatController extends Notifier<ChatSessionState> {
     String context = '',
   }) async {
     // Synchronous from the caller's entry: nothing else starts a turn from here on.
-    if (state.phase is! Starting) state = state.copyWith(phase: const Starting());
+    if (state.phase is! Starting) state = state.copyWith(phase: _starting());
     if (state.title == null) {
       final ok = await _beforeTurn(() async {
-        final c = await _repo.createConversationWithId(
-          id: conversationId,
-          title: titleFromPrompt(prompt.isNotEmpty ? prompt : attachments.firstOrNull?.name ?? 'Attachment'),
-          model: state.model.id,
-        );
+        final title = titleFromPrompt(prompt.isNotEmpty ? prompt : attachments.firstOrNull?.name ?? 'Attachment');
+        // One row per chat: a turn stopped mid-create and the next send share the same insert.
+        final c = await (_creating ??= _repo
+            .createConversationWithId(id: conversationId, title: title, model: state.model.id)
+            .catchError((Object e, StackTrace st) {
+              _creating = null; // the next send tries again
+              Error.throwWithStackTrace(e, st);
+            }));
         if (!ref.mounted) return;
-        state = state.copyWith(title: c.title);
-        _untitled = (placeholder: c.title, prompt: prompt, model: model);
+        // The row was made for a turn that was stopped: this turn's message names the chat.
+        var named = c.title;
+        if (named != title && await _repo.renameIf(conversationId, from: named, to: title)) named = title;
+        if (!ref.mounted) return;
+        state = state.copyWith(title: named);
+        _untitled = (placeholder: named, prompt: prompt, model: model);
       });
       if (!ok) return;
     }

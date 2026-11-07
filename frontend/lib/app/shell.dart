@@ -109,7 +109,7 @@ class _AppShellState extends ConsumerState<AppShell> {
     if (widget.location == old.location) return;
     if (_awaitingLink case (:final link, :final route)) {
       _awaitingLink = null;
-      if (Uri.parse(widget.location).path != Uri.parse(route).path) return;
+      if (!landedOn(route, widget.location)) return;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) ref.read(pendingPromptProvider.notifier).offer(link);
       });
@@ -506,4 +506,13 @@ class ShellSplitView extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Whether navigating to [route] ended at [location]. A new chat is redirected to the chat it makes
+/// (`/chat/new` → `/chat/<id>`), so any chat page counts for it; other routes must match by path.
+@visibleForTesting
+bool landedOn(String route, String location) {
+  final want = Uri.parse(route).path, at = Uri.parse(location).path;
+  if (want == Routes.newChat) return at.startsWith('/chat/') && at != Routes.newChat;
+  return want == at;
 }
