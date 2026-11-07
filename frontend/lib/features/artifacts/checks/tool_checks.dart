@@ -7,6 +7,7 @@ import '../domain/artifact.dart';
 import '../domain/drawing.dart';
 import '../export/doc_model.dart';
 import 'diagram_render.dart';
+import 'look.dart';
 import 'math_check.dart';
 import 'webview_diagram_renderer.dart';
 
@@ -124,3 +125,6 @@ class AppToolChecker {
 
 /// The checker the chat uses: Mermaid where a hidden webview can draw it.
 final appToolCheckerProvider = Provider<AppToolChecker>((ref) => AppToolChecker(diagrams: appDiagramRenderer));
+
+/// Draws what the model made for `look` (Mermaid where a hidden webview can draw it).
+final lookerProvider = Provider<Looker>((ref) => Looker(diagrams: appDiagramRenderer));

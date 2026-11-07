@@ -12,8 +12,6 @@ const _ink = '#1C1C1E', _muted = '#636368', _grid = '#E5E5EA';
 
 String _hex(int argb) => '#${(argb & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase()}';
 
-String _color(int i) => _hex(chartPalette[i % chartPalette.length]);
-
 String _esc(String s) =>
     s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 
@@ -99,7 +97,7 @@ double _legend(StringBuffer out, ChartSpec spec, double top) {
       y += 18;
     }
     out
-      ..writeln('<rect x="${_n(x)}" y="${_n(y - 9)}" width="10" height="10" rx="2" fill="${_color(i)}"/>')
+      ..writeln('<rect x="${_n(x)}" y="${_n(y - 9)}" width="10" height="10" rx="2" fill="${_hex(spec.colorAt(i))}"/>')
       ..writeln('<text x="${_n(x + 15)}" y="${_n(y)}" font-size="12" fill="$_ink">${_esc(name)}</text>');
     x += w;
   }
@@ -129,7 +127,12 @@ double _cartesian(StringBuffer out, ChartSpec spec, double top) {
   }
 
   final catLabelWidth = horizontal ? math.min(170.0, 14 + cats.fold(0, (m, c) => math.max(m, c.length)) * 6.4) : 0.0;
-  final double left = 20 + (spec.yLabel.isNotEmpty && !horizontal ? 18 : 0) + (horizontal ? catLabelWidth : 48);
+  // Room for the widest tick label, so the axis name never sits on it.
+  final tickWidth = ticks.fold(0.0, (m, t) => math.max(m, spec.tickLabel(t).length * 6.4)) + 12;
+  final double left =
+      20 +
+      (spec.valueAxisName.isNotEmpty && !horizontal ? 18 : 0) +
+      (horizontal ? catLabelWidth : math.max(48, tickWidth));
   final right = _width - 24;
   final plotTop = top + (horizontal && spec.referenceLines.isNotEmpty ? 24 : 14);
   final plotHeight = horizontal ? math.max(160.0, cats.length * 30.0) : 280.0;
@@ -147,22 +150,26 @@ double _cartesian(StringBuffer out, ChartSpec spec, double top) {
     return i < 0 ? double.nan : catCenter(i);
   }
 
-  // Grid and value labels.
+  // Grid and value labels; a label equal to the one before (rounding) isn't repeated.
+  String? before;
   for (final t in ticks) {
     final p = vPos(t);
+    final tick = spec.tickLabel(t);
+    final shown = tick == before ? '' : tick;
+    before = tick;
     if (horizontal) {
       out
         ..writeln('<line x1="${_n(p)}" y1="${_n(plotTop)}" x2="${_n(p)}" y2="${_n(plotBottom)}" stroke="$_grid"/>')
         ..writeln(
           '<text x="${_n(p)}" y="${_n(plotBottom + 16)}" font-size="11" fill="$_muted" text-anchor="middle">'
-          '${_esc(spec.format(t))}</text>',
+          '${_esc(shown)}</text>',
         );
     } else {
       out
         ..writeln('<line x1="${_n(left)}" y1="${_n(p)}" x2="${_n(right)}" y2="${_n(p)}" stroke="$_grid"/>')
         ..writeln(
           '<text x="${_n(left - 6)}" y="${_n(p + 4)}" font-size="11" fill="$_muted" text-anchor="end">'
-          '${_esc(spec.format(t))}</text>',
+          '${_esc(shown)}</text>',
         );
     }
   }
@@ -235,7 +242,7 @@ double _cartesian(StringBuffer out, ChartSpec spec, double top) {
                     'width="${_n((b - a).abs())}" height="${_n(thickness - 2 * gap)}"'
               : 'x="${_n(catCenter(ci) + offset + gap)}" y="${_n(math.min(a, b))}" '
                     'width="${_n(thickness - 2 * gap)}" height="${_n((b - a).abs())}"';
-          out.writeln('<rect $rect rx="${spec.stacked ? 0 : 2}" fill="${_color(si)}"/>');
+          out.writeln('<rect $rect rx="${spec.stacked ? 0 : 2}" fill="${_hex(spec.colorAt(si))}"/>');
         }
       }
     case ChartType.scatter:
@@ -243,7 +250,9 @@ double _cartesian(StringBuffer out, ChartSpec spec, double top) {
         for (final p in s.points) {
           final x = xPos(p.x);
           if (x.isNaN) continue;
-          out.writeln('<circle cx="${_n(x)}" cy="${_n(vPos(p.y))}" r="4" fill="${_color(si)}" fill-opacity="0.85"/>');
+          out.writeln(
+            '<circle cx="${_n(x)}" cy="${_n(vPos(p.y))}" r="4" fill="${_hex(spec.colorAt(si))}" fill-opacity="0.85"/>',
+          );
         }
       }
     case ChartType.line || ChartType.area || ChartType.pie || ChartType.donut:
@@ -259,17 +268,17 @@ double _cartesian(StringBuffer out, ChartSpec spec, double top) {
           final base = vPos(math.max(lo, math.min(0, hi)));
           out.writeln(
             '<path d="$line L${_n(pts.last.$1)} ${_n(base)} L${_n(pts.first.$1)} ${_n(base)} Z" '
-            'fill="${_color(si)}" fill-opacity="0.18"/>',
+            'fill="${_hex(spec.colorAt(si))}" fill-opacity="0.18"/>',
           );
         }
         out.writeln(
-          '<path d="$line" fill="none" stroke="${_color(si)}" stroke-width="2.5" stroke-linejoin="round" '
+          '<path d="$line" fill="none" stroke="${_hex(spec.colorAt(si))}" stroke-width="2.5" stroke-linejoin="round" '
           'stroke-linecap="round"/>',
         );
         if (pts.length <= 24) {
           for (final (x, y) in pts) {
             out.writeln(
-              '<circle cx="${_n(x)}" cy="${_n(y)}" r="3" fill="#FFFFFF" stroke="${_color(si)}" stroke-width="2"/>',
+              '<circle cx="${_n(x)}" cy="${_n(y)}" r="3" fill="#FFFFFF" stroke="${_hex(spec.colorAt(si))}" stroke-width="2"/>',
             );
           }
         }
@@ -309,7 +318,7 @@ double _cartesian(StringBuffer out, ChartSpec spec, double top) {
   }
 
   var bottom = plotBottom + 22;
-  final xLabel = horizontal ? spec.yLabel : spec.xLabel;
+  final xLabel = horizontal ? spec.valueAxisName : spec.xLabel;
   if (xLabel.isNotEmpty) {
     bottom += 14;
     out.writeln(
@@ -317,11 +326,11 @@ double _cartesian(StringBuffer out, ChartSpec spec, double top) {
       '${_esc(xLabel)}</text>',
     );
   }
-  if (!horizontal && spec.yLabel.isNotEmpty) {
+  if (!horizontal && spec.valueAxisName.isNotEmpty) {
     final cy = plotTop + plotHeight / 2;
     out.writeln(
       '<text x="26" y="${_n(cy)}" font-size="12" fill="$_muted" text-anchor="middle" '
-      'transform="rotate(-90 26 ${_n(cy)})">${_esc(spec.yLabel)}</text>',
+      'transform="rotate(-90 26 ${_n(cy)})">${_esc(spec.valueAxisName)}</text>',
     );
   }
   return bottom;
@@ -333,7 +342,7 @@ double _round(StringBuffer out, ChartSpec spec, double top) {
   const r = 120.0;
   final cx = 20 + r + 10, cy = top + 12 + r;
   final inner = spec.type == ChartType.donut ? r * 0.58 : 0.0;
-  String colorOf(int i) => slices[i].other ? _hex(chartOtherColor) : _color(i);
+  String colorOf(int i) => slices[i].other ? _hex(chartOtherColor) : _hex(spec.colorAt(i));
   var angle = -math.pi / 2;
   for (final (i, s) in slices.indexed) {
     final sweep = s.value / total * 2 * math.pi;

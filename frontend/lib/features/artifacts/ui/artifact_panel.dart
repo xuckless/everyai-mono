@@ -192,7 +192,8 @@ class ArtifactPanel extends ConsumerWidget {
                       if (context.mounted) showAdaptiveToast(context, 'Copied');
                     },
                   ),
-                  if (!kIsWeb) DownloadButton(visual: v),
+                  if (!kIsWeb)
+                    DownloadButton(visual: v, artifacts: ref.watch(conversationArtifactsProvider(conversationId))),
                   if (!fullScreen) AdaptiveIconButton(icon: EveryIcon.close, tooltip: 'Close panel', onPressed: close),
                 ],
               ),

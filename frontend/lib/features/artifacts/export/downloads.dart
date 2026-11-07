@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:ui' as ui;
 
 import 'package:archive/archive.dart';
 import 'package:flutter/services.dart';
@@ -7,9 +8,12 @@ import '../checks/math_raster.dart';
 import '../checks/web_scripts.dart';
 import '../checks/webview_diagram_renderer.dart';
 import '../domain/artifact.dart';
+import '../checks/diagram_render.dart';
+import '../domain/figures.dart';
+import '../domain/slide_pictures.dart';
+import '../domain/slide_spec.dart';
 import '../domain/chart_spec.dart';
 import '../ui/renderers/sandbox.dart';
-import '../ui/renderers/slides_view.dart';
 import '../ui/renderers/svg_view.dart';
 import 'chart_svg.dart';
 import 'diagram_raster.dart';
@@ -30,12 +34,13 @@ final class DownloadOption {
 /// What a visual can be saved as, the most useful first. Documents (and
 /// quizzes) get Markdown, PDF and Word, plus a zip with separate figure files
 /// when they hold SVG figures.
-List<DownloadOption> downloadsOf(Visual v) {
+List<DownloadOption> downloadsOf(Visual v, {Iterable<Artifact> artifacts = const []}) {
   final export = exportOf(v);
+  final figures = figuresOf(artifacts);
   Future<Uint8List> utf8Of(String text) async => Uint8List.fromList(utf8.encode(text));
   switch (v.kind) {
     case VisualKind.document || VisualKind.quiz:
-      final markdown = export.text;
+      final markdown = expandFigureRefs(export.text, figures);
       return [
         DownloadOption('Markdown', 'md', () => utf8Of(markdownWithInlineSvg(markdown))),
         if (svgFiguresIn(markdown).isNotEmpty)
@@ -45,7 +50,7 @@ List<DownloadOption> downloadsOf(Visual v) {
       ];
     case VisualKind.slides:
       return [
-        DownloadOption('PowerPoint', 'pptx', () async => pptxOf(v)),
+        DownloadOption('PowerPoint', 'pptx', () => pptxOf(v, artifacts: artifacts, diagrams: appDiagramRenderer)),
         DownloadOption('Markdown', 'md', () => utf8Of(export.text)),
       ];
     case VisualKind.image:
@@ -205,19 +210,60 @@ _documentImages(String markdown, SvgRasterizer svg, DiagramRasterizer diagram, M
   equations: await rasterizeAll(displayMathIn(markdown), math),
 );
 
-/// The deck in [v] as a PowerPoint file.
-Uint8List pptxOf(Visual v) {
-  final deck = DeckTheme.of(v.str('theme'));
-  String hex(Color c) => (c.toARGB32() & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase();
-  final slides = slidesOf(v);
+/// The deck in [v] as a PowerPoint file, its figures and images drawn from the chat's [artifacts].
+Future<Uint8List> pptxOf(Visual v, {Iterable<Artifact> artifacts = const [], DiagramRenderer? diagrams}) async {
+  final deck = deckOf(v);
+  final sources = slideSourcesOf(artifacts);
+  final drawn = <String, PptxPicture>{};
+  for (final ref in pictureRefsOf(deck)) {
+    if (await _pptxPicture(sources[ref], diagrams) case final pic?) drawn[ref] = pic;
+  }
   return buildPptx(
     title: v.title,
-    colors: (background: hex(deck.background), title: hex(deck.title), text: hex(deck.text), accent: hex(deck.accent)),
-    slides: [
-      for (final (i, s) in slides.indexed)
-        (title: s.title, bullets: s.bullets, body: s.body, notes: s.notes, isTitle: i == 0),
+    pages: [
+      for (final s in deck)
+        (
+          slide: s,
+          pictures: {
+            for (final e in s.elements)
+              if (e is PictureElement && drawn[e.ref] != null) e.ref: drawn[e.ref]!,
+          },
+        ),
     ],
   );
+}
+
+Future<PptxPicture?> _pptxPicture(SlideSource? source, DiagramRenderer? diagrams) async {
+  switch (source) {
+    case null:
+      return null;
+    case SvgSource(:final svg):
+      final clean = sanitizeSvg(svg);
+      final r = await rasterizeSvg(clean, maxWidth: 960, scale: 2);
+      return r == null ? null : (png: r.png, svg: clean, width: r.width, height: r.height);
+    case RasterSource(:final bytes):
+      try {
+        final codec = await ui.instantiateImageCodec(bytes);
+        final frame = await codec.getNextFrame();
+        final size = (w: frame.image.width.toDouble(), h: frame.image.height.toDouble());
+        frame.image.dispose();
+        codec.dispose();
+        return (png: bytes, svg: null, width: size.w, height: size.h);
+      } on Object {
+        return null;
+      }
+    case MermaidSource(:final source):
+      if (diagrams == null) return null;
+      try {
+        if (await diagrams.render(source) case DiagramDrawn(:final svg, :final width, :final height, :final png)) {
+          final picture = png ?? (await rasterizeSvg(svg, maxWidth: 960, scale: 2))?.png;
+          return picture == null ? null : (png: picture, svg: svg, width: width, height: height);
+        }
+      } on DiagramUnavailable {
+        return null;
+      }
+      return null;
+  }
 }
 
 /// What Copy produces for a visual (and the plain download).
@@ -244,14 +290,23 @@ Uint8List pptxOf(Visual v) {
     VisualKind.image => (text: v.str('prompt'), name: safe, extension: imageExtension(v.str('mime'))),
     VisualKind.drawing => (text: v.str('content'), name: safe, extension: 'excalidraw'),
     VisualKind.slides => (
-      text: [
-        for (final s in slidesOf(v))
-          ['# ${s.title}', for (final b in s.bullets) '- $b', if (s.body.isNotEmpty) s.body].join('\n'),
-      ].join('\n\n---\n\n'),
+      text: [for (final slide in deckOf(v)) _slideOutline(slide)].join('\n\n---\n\n'),
       name: safe,
       extension: 'md',
     ),
   };
+}
+
+/// A slide as Markdown: its title as a heading, then each other text box (bullets as "- " lines), then notes.
+String _slideOutline(DeckSlide slide) {
+  String textOf(TextElement e) =>
+      [for (final p in e.paragraphs) '${p.bullet ? '- ' : ''}${p.runs.map((r) => r.text).join()}'].join('\n');
+  return [
+    if (slide.title.isNotEmpty) '# ${slide.title}',
+    for (final e in slide.elements)
+      if (e is TextElement && e.plainText.trim().isNotEmpty && e.plainText.trim() != slide.title.trim()) textOf(e),
+    if (slide.notes.isNotEmpty) '> Notes: ${slide.notes}',
+  ].join('\n');
 }
 
 /// `image/jpeg` → `jpg`, and so on; png when unknown.
