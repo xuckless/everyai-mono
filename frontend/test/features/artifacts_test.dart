@@ -197,6 +197,25 @@ void main() {
     if (Platform.environment['EXPORT_OUT'] case final dir?) File('$dir/report.pdf').writeAsBytesSync(bytes);
   });
 
+  test('pdf export draws SVG figures as vectors, not pictures (EXPORT_FIGURE takes an SVG file)', () async {
+    final svg = switch (Platform.environment['EXPORT_FIGURE']) {
+      final String path => File(path).readAsStringSync(),
+      null =>
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100"><defs><linearGradient id="g">'
+            '<stop offset="0" stop-color="#e07a2f"/><stop offset="1" stop-color="#6e56cf"/></linearGradient></defs>'
+            '<rect width="200" height="100" fill="url(#g)"/><text x="20" y="60" font-size="24" fill="#fff">Vector</text></svg>',
+    };
+    final bytes = await pdfOf(
+      'Figures',
+      '# Figures\n\n```svg\n$svg\n```\n',
+      rasterize: _fakeRaster,
+      drawDiagram: (_) async => null,
+      drawMath: (_) async => null,
+    );
+    expect(latin1.decode(bytes).contains('/Subtype /Image'), isFalse);
+    if (Platform.environment['EXPORT_OUT'] case final dir?) File('$dir/figures.pdf').writeAsBytesSync(bytes);
+  });
+
   test('artifacts collect their versions across messages; updates keep kind and language', () {
     final artifacts = artifactsIn([
       _assistant('m1', [

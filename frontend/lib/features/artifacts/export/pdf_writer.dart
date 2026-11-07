@@ -4,6 +4,7 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
 import 'doc_model.dart';
+import '../ui/renderers/svg_view.dart';
 import 'svg_raster.dart';
 
 /// Fonts for [buildPdf]: a Unicode body family and a monospace one.
@@ -28,14 +29,18 @@ Future<Uint8List> buildPdf({
   Map<String, RasterFigure> equations = const {},
 }) {
   final mono = pw.Font.ttf(fonts.mono);
+  final regular = pw.Font.ttf(fonts.regular);
+  final boldFont = pw.Font.ttf(fonts.bold);
+  final italic = pw.Font.ttf(fonts.italic);
+  final boldItalic = pw.Font.ttf(fonts.boldItalic);
   final doc = pw.Document(
     title: title,
     creator: 'EveryAI',
     theme: pw.ThemeData.withFont(
-      base: pw.Font.ttf(fonts.regular),
-      bold: pw.Font.ttf(fonts.bold),
-      italic: pw.Font.ttf(fonts.italic),
-      boldItalic: pw.Font.ttf(fonts.boldItalic),
+      base: regular,
+      bold: boldFont,
+      italic: italic,
+      boldItalic: boldItalic,
     ).copyWith(defaultTextStyle: const pw.TextStyle(fontSize: 10.5, lineSpacing: 2.5, color: _ink)),
   );
 
@@ -95,6 +100,29 @@ Future<Uint8List> buildPdf({
   pw.Widget figure(RasterFigure? f) =>
       image(f) ?? pw.Text('[Figure could not be drawn]', style: const pw.TextStyle(color: _muted));
 
+  /// Text inside an SVG figure, in the document's own faces (a monospace family gets the code face).
+  pw.Font svgFont(String family, String style, String weight) {
+    if (RegExp('mono|courier|consolas|menlo', caseSensitive: false).hasMatch(family)) return mono;
+    final heavy = weight == 'bold' || (int.tryParse(weight) ?? 400) >= 600;
+    final slanted = style == 'italic' || style == 'oblique';
+    return heavy ? (slanted ? boldItalic : boldFont) : (slanted ? italic : regular);
+  }
+
+  /// An SVG figure drawn as vectors (sharp at any zoom, its text selectable), at the size its raster would take;
+  /// the raster when the PDF's SVG reader can't take it.
+  pw.Widget vectorFigure(String svg, RasterFigure? f) {
+    if (f != null) {
+      try {
+        return pw.Center(
+          child: pw.SvgImage(svg: sanitizeSvg(svg), width: f.width, height: f.height, customFontLookup: svgFont),
+        );
+      } on Object {
+        // Falls through to the picture.
+      }
+    }
+    return figure(f);
+  }
+
   // Every block becomes its own top-level widget (nested ones indented), so
   // MultiPage can break between any two of them.
   List<pw.Widget> render(List<DocBlock> blocks, {double indent = 0, bool quoted = false}) {
@@ -135,7 +163,7 @@ Future<Uint8List> buildPdf({
         ),
         ParagraphBlock(:final runs) => text(runs, style: quoted ? const pw.TextStyle(color: _muted) : null),
         CodeBlock(:final language, text: final code) => codeBox(code, caption: language.isEmpty ? null : language),
-        FigureBlock(:final svg) => figure(figures[svg]),
+        FigureBlock(:final svg) => vectorFigure(svg, figures[svg]),
         DiagramBlock(:final source) => image(diagrams[source]) ?? codeBox(source, caption: 'Diagram (Mermaid source)'),
         MathBlock(:final tex) =>
           image(equations[tex]) ??
