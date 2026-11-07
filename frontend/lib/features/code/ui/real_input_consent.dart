@@ -37,20 +37,12 @@ Future<bool> showRealInputConsent(BuildContext context) async {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const Text(
-              'An agent is testing an app window that EveryAI can\'t operate in the background (some apps, like Tk, '
-              'games and canvases, offer no accessibility controls).',
+              'Some app windows (Tk, games, canvases) can\'t be driven in the background. The agent would bring the '
+              'window forward and use your real pointer and keyboard. Avoid using them meanwhile. It never types '
+              'into password fields.',
             ),
             const SizedBox(height: 10),
-            const Text(
-              'If you allow it, the agent brings that window to the front and uses the real pointer and keyboard: '
-              'your cursor moves, and keys go to that window. Avoid typing or clicking while it works. It never '
-              'types into password fields.',
-            ),
-            const SizedBox(height: 10),
-            Text(
-              'EveryAI remembers your answer. Change it in Settings > Code.',
-              style: theme.type.caption.tint(theme.textMuted),
-            ),
+            Text('Change this later in Settings > Code.', style: theme.type.caption.tint(theme.textMuted)),
           ],
         ),
         actions: [

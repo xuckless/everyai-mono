@@ -263,7 +263,7 @@ class _NeedsModelCard extends StatelessWidget {
           Text(
             Host.isDesktop
                 ? 'Run one on this computer, free and private, or add an API key.'
-                : 'Add an API key, or run a model on your computer and use EveryAI there.',
+                : 'Add an API key, or run a model on your computer.',
             style: theme.type.body.tint(theme.textMuted),
             textAlign: TextAlign.center,
           ),

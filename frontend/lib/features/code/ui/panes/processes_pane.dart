@@ -97,10 +97,7 @@ class ProcessesPane extends ConsumerWidget {
     ].take(8).toList();
     final others = otherProcesses(groups, list);
     final empty = groups.isEmpty && others.isEmpty && containers.isEmpty;
-    Widget header(String text) => Padding(
-      padding: const EdgeInsets.fromLTRB(4, 14, 4, 4),
-      child: Text(text, style: theme.type.micro.semibold.tint(theme.textSubtle)),
-    );
+    Widget header(String text) => KitLabel(text, padding: const EdgeInsets.fromLTRB(4, 14, 4, 4));
     Widget shellRow(ShellGroup g) => _ShellRow(
       group: g,
       onOpen: () => _open(ref, g.shell),
@@ -150,9 +147,9 @@ class ProcessesPane extends ConsumerWidget {
               : ListView(
                   padding: const EdgeInsets.fromLTRB(10, 0, 10, 12),
                   children: [
-                    if (running.isNotEmpty) ...[header('RUNNING'), for (final g in running) shellRow(g)],
+                    if (running.isNotEmpty) ...[header('Running'), for (final g in running) shellRow(g)],
                     if (others.isNotEmpty) ...[
-                      header(running.isEmpty ? 'RUNNING' : 'OTHER PROCESSES'),
+                      header(running.isEmpty ? 'Running' : 'Other processes'),
                       for (final p in others)
                         _ProcessRow(
                           process: p,
@@ -163,7 +160,7 @@ class ProcessesPane extends ConsumerWidget {
                         ),
                     ],
                     if (containers.isNotEmpty) ...[
-                      header('CONTAINERS'),
+                      header('Containers'),
                       for (final c in containers)
                         _ContainerRow(
                           container: c,
@@ -177,8 +174,8 @@ class ProcessesPane extends ConsumerWidget {
                           onPreview: (port) => _preview(ref, port),
                         ),
                     ],
-                    if (ended.isNotEmpty) ...[header('ENDED'), for (final g in ended) shellRow(g)],
-                    if (recent.isNotEmpty) ...[header('RECENT COMMANDS'), for (final g in recent) shellRow(g)],
+                    if (ended.isNotEmpty) ...[header('Ended'), for (final g in ended) shellRow(g)],
+                    if (recent.isNotEmpty) ...[header('Recent commands'), for (final g in recent) shellRow(g)],
                   ],
                 ),
         ),

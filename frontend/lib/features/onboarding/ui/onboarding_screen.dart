@@ -39,7 +39,7 @@ const devBuildTerms = [
 ];
 
 /// The alpha entry screen: a short guided tour that ends with the user
-/// accepting the dev-build terms. Shown once per [appVersion].
+/// accepting the dev-build terms. Shown once; updates show What's new instead.
 class OnboardingScreen extends ConsumerStatefulWidget {
   const OnboardingScreen({super.key, this.desktop});
 

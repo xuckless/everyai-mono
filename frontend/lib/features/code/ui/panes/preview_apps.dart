@@ -454,7 +454,7 @@ class _ReactNativeAppViewState extends State<ReactNativeAppView> {
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
           child: Text(
-            "React Native draws in its simulator or emulator: this is the app's element list, as the agent reads it.",
+            "The app's element list, as the agent reads it.",
             style: theme.type.caption.tint(theme.textMuted),
           ),
         ),
@@ -609,14 +609,13 @@ class _IosSimulatorViewState extends State<IosSimulatorView> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                'Seeing and driving the simulator needs AXe (MIT, 8 MB), downloaded once from its GitHub release and '
-                'checked against a pinned hash. The agent downloads it too on first use.',
+                'The simulator view needs AXe (8 MB, downloaded once and checked).',
                 textAlign: TextAlign.center,
                 style: theme.type.callout.tint(theme.textMuted),
               ),
               const SizedBox(height: 12),
               if (_installing != null)
-                Text('Downloading… ${(_installing! * 100).round()}%', style: theme.type.caption)
+                Text('Downloading… ${(_installing! * 100).round()}%', style: theme.type.caption.tint(theme.textMuted))
               else
                 AdaptiveButton(label: 'Install simulator support', onPressed: _install),
               if (_problem != null) ...[
@@ -738,7 +737,7 @@ class _IosSimulatorViewState extends State<IosSimulatorView> {
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
           child: Text(
-            'Click to tap, drag to swipe, the wheel scrolls. Type on your keyboard in the Simulator app, or ask the agent.',
+            'Click to tap, drag to swipe, scroll with the wheel. Type in the Simulator app.',
             style: theme.type.caption.tint(theme.textMuted),
           ),
         ),
@@ -1070,8 +1069,8 @@ class _AndroidDeviceViewState extends State<AndroidDeviceView> {
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
           child: Text(
             c == null
-                ? 'Click to tap, drag to swipe (screenshots each second: scrcpy isn\'t running).'
-                : 'Click, drag and scroll as on the device; click it, then type on your keyboard.',
+                ? "Click to tap, drag to swipe. Screenshots each second (scrcpy isn't running)."
+                : 'Click, drag and scroll as on the device. Click it, then type.',
             style: theme.type.caption.tint(theme.textMuted),
           ),
         ),
@@ -1255,7 +1254,7 @@ class _DesktopWindowViewState extends State<DesktopWindowView> {
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
           child: Text(
-            'Clicks press in place where they can; elsewhere they bring the window to the front. To type, bring it forward.',
+            'Clicks press in place where they can, else bring the window forward. Bring it forward to type.',
             style: theme.type.caption.tint(theme.textMuted),
           ),
         ),

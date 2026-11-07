@@ -7,6 +7,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../../../core/motion/motion.dart';
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/every_icons.dart';
@@ -525,8 +526,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
               ? _NeedsBrowser(progress: _downloading, problem: _problem, onDownload: _download)
               : _signingIn
               ? const _Note(
-                  'Sign in in the Chrome window that opened. Close that window when you are done: the Preview '
-                  'and the agent then use the new sign-ins.',
+                  'Sign in in the Chrome window that opened, then close it. The Preview and the agent use the new sign-ins.',
                 )
               : _problem != null && _image == null
               ? _Note(_problem!)
@@ -839,7 +839,7 @@ class _RippleState extends State<_Ripple> with SingleTickerProviderStateMixin {
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: _c,
     builder: (context, _) {
-      final t = Curves.easeOut.transform(_c.value);
+      final t = Motion.easeOut.transform(_c.value);
       return SizedBox(
         width: 28,
         height: 28,
@@ -886,8 +886,7 @@ class _NeedsBrowser extends StatelessWidget {
             Text('Preview needs a browser', style: theme.type.headline.tint(theme.text)),
             const SizedBox(height: 6),
             Text(
-              'No Chrome, Edge, Brave or Chromium was found. EveryAI can download Chrome for Testing '
-              '(about 200 MB, kept in its own folder), or set EVERYAI_CHROME to a browser of yours.',
+              'No Chrome, Edge, Brave or Chromium found. Download Chrome for Testing (about 200 MB), or set EVERYAI_CHROME.',
               textAlign: TextAlign.center,
               style: theme.type.callout.tint(theme.textMuted),
             ),
@@ -939,8 +938,7 @@ class _Empty extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              'Start a dev server in the Terminal, or ask the agent to; its address shows up here. You can also type '
-              'one above. The agent and you share this page.',
+              'Start a dev server, or ask the agent to. Its address shows up here, or type one above.',
               textAlign: TextAlign.center,
               style: theme.type.callout.tint(theme.textMuted),
             ),

@@ -178,7 +178,7 @@ class AgentMenu extends ConsumerWidget {
           else if (env != null && !env.isHost && l.info.id == everyaiHarnessName)
             (info: l.info, blocked: 'Runs on this computer only', detail: '')
           else if (everyaiIdle && l.info.id == everyaiHarnessName)
-            (info: l.info, blocked: 'Needs a model: add an API key or get a local model', detail: '')
+            (info: l.info, blocked: 'Needs an API key or a local model', detail: '')
           else
             (info: named(l.info), blocked: l.blocked, detail: l.detail),
       ];

@@ -18,6 +18,7 @@ import '../core/net/api_client.dart' show ServerStatus;
 import '../core/preferences.dart';
 import '../core/providers.dart' show apiClientProvider, serverStatusProvider;
 import '../features/updates/update_providers.dart' show updateProvider;
+import '../features/updates/ui/whats_new_dialog.dart' show showWhatsNewOnce;
 import '../core/theme/every_theme.dart';
 import '../core/ui/adaptive.dart' show AdaptiveButton, AdaptiveProgress, GlassSurface, GlassLevel, showAdaptiveToast;
 import '../features/code/automations/schedule_providers.dart' show scheduleRunnerProvider;
@@ -149,6 +150,8 @@ class _AppShellState extends ConsumerState<AppShell> {
       if (mounted && Host.isDesktop) ref.read(driverStatusesProvider);
       // Updates: one check per launch (the controller waits a moment, and does nothing on dev or store installs).
       if (mounted && Host.isDesktop) ref.read(updateProvider);
+      // After an update: this build's notes, once (never over the entry screen).
+      if (mounted && ref.read(onboardingAcceptedProvider)) showWhatsNewOnce(context, ref);
     });
     if (Host.isDesktop) {
       // Agents driving app windows ask once before they use the real pointer and keyboard.
@@ -206,7 +209,7 @@ class _AppShellState extends ConsumerState<AppShell> {
       if (next != null) _openPendingSettings();
     });
 
-    // The pre-alpha entry screen, once per build version, before anything else.
+    // The entry screen, once (updates keep it accepted), before anything else.
     if (!ref.watch(onboardingAcceptedProvider)) {
       return m.Material(
         color: theme.background,

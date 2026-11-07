@@ -180,9 +180,7 @@ class _ModelPickerPanelState extends ConsumerState<_ModelPickerPanel> {
                   key: const ValueKey('model-picker.get-local'),
                   title: local.isEmpty ? 'Get local models' : 'More local models',
                   leading: AdaptiveIcon(EveryIcon.add, size: 16, color: theme.textMuted),
-                  onTap: () {
-                    widget.onBrowseLocal();
-                  },
+                  onTap: widget.onBrowseLocal,
                 ),
             ],
           ] else if (matches.isEmpty && !pinned.any((s) => s.name.toLowerCase().contains(q)))

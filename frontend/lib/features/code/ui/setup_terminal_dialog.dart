@@ -30,13 +30,10 @@ Future<void> showSetupTerminal(
   required HarnessDriver driver,
   ExecEnv env = HostEnv.instance,
   bool signIn = false,
-}) => showGeneralDialog<void>(
-  context: context,
-  useRootNavigator: true,
-  barrierDismissible: false,
-  barrierLabel: 'Close setup',
-  barrierColor: const Color(0x66000000),
-  pageBuilder: (_, _, _) => SetupTerminalDialog(driver: driver, env: env, signIn: signIn),
+}) => showKitDialog<void>(
+  context,
+  dismissible: false,
+  builder: (_) => SetupTerminalDialog(driver: driver, env: env, signIn: signIn),
 );
 
 /// [path] as one word for the shell of [os].
@@ -148,7 +145,7 @@ class _SetupTerminalDialogState extends ConsumerState<SetupTerminalDialog> {
               child: DecoratedBox(
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(EveryTheme.panelRadius),
-                  boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 60, offset: Offset(0, 30))],
+                  boxShadow: theme.shadowPop,
                 ),
                 child: GlassSurface(
                   level: GlassLevel.thick,
