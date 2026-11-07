@@ -25,6 +25,47 @@ final class WhatsNewItem {
 /// nothing after the update.
 const releaseNotes = <ReleaseNote>[
   ReleaseNote(
+    version: '0.1.0-alpha.6',
+    title: 'The lead stays free, and a steadier app',
+    date: 'Nov 7',
+    items: [
+      WhatsNewItem(
+        'Keep talking while work runs',
+        'Forks always run in the background, so the lead stays free to chat. Each report arrives when it is done.',
+      ),
+      WhatsNewItem(
+        'Send now and Stop all',
+        'Send a queued message right away, or stop the lead, its forks and its workflows in one go, from the chat or '
+            'a Board card.',
+      ),
+      WhatsNewItem(
+        'More on the Board',
+        "Each card folds a session's workflows, forks and commands into one line, opens it when something needs you, "
+            'and keeps a session with a running workflow under Running.',
+      ),
+      WhatsNewItem(
+        'One approval for a whole review',
+        "Allow all commands on one workflow agent's card covers its read-only siblings. In Full auto they run "
+            'commands without asking and still ask before edits.',
+      ),
+      WhatsNewItem(
+        'A tidier Processes tab',
+        'Finished shells and commands fold into one Done list, with when they ended.',
+      ),
+      WhatsNewItem(
+        'Tighter security',
+        "Only your desktop pairs devices and manages its webhooks, and a repository's git config can't sneak a "
+            'program past the git guard.',
+      ),
+      WhatsNewItem(
+        'A steadier app',
+        'Double clicks run once, late answers are dropped, and Stop while a chat starts keeps your message. Prompt '
+            'links fill the new chat again.',
+      ),
+      WhatsNewItem('Source favicons', "Chat sources show each site's icon, and selecting text near them works again."),
+    ],
+  ),
+  ReleaseNote(
     version: '0.1.0-alpha.5',
     title: 'A new look, local models, and tools to test your app',
     date: 'Nov 7',

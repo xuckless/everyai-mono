@@ -3,6 +3,47 @@
 EveryAI is in alpha. Signed releases start at `0.1.0-alpha.1`; the earlier unsigned dev build was
 `0.1.0-dev-nonsigned`. Earlier changes are listed by date and pull request.
 
+## 0.1.0-alpha.6 (2026-11-07): the lead stays free, and a steadier app
+
+### Sessions that keep talking
+- **Forks always run in the background.** The lead stays free to chat while its forks work; each report arrives
+  when it's done, the same as with workflows.
+- **Send now** on a queued message interrupts the agent and sends it (or just sends it when nothing runs).
+- **Stop all** beside Send and on Board cards stops the lead's turn, its background forks and its workflows at once,
+  and nothing wakes the lead afterwards.
+- **Take-control reminder:** when an agent step waits on a browser, simulator or window you took over in Preview, the
+  chat says so, with Allow to hand it back.
+- Claude Code: after an interrupt, the stopped turn's late result no longer marks the session paused.
+
+### Board and Processes
+- **Work inside a session** folds into one line on its card (workflow runs, forks, background commands) and opens by
+  itself when a child waits on you. Questions are answered right on the card.
+- A session running a workflow stays under **Running**, or **Needs you** when one of its agents asks; a failed session
+  isn't hidden behind its workflow.
+- A fork's loop-guard and bug questions go to its lead; you see only approvals and decisions.
+- **Processes:** finished shells and commands go into one foldable **Done** list, with when they ended.
+
+### Approvals
+- In a workflow, **Allow all commands** on one agent's card covers its read-only siblings too, without loosening the
+  lead's own approvals. It now also covers chained commands and `$(…)`; risky commands still ask.
+- Read-only workflow agents of a lead in Full auto or Bypass run commands without asking, and still ask before edits.
+
+### Security
+- A repository whose git config names a filter, hook or merge driver with "=" in it can no longer slip past EveryAI's
+  git guard; EveryAI's git calls stop there until it's removed.
+- Only the desktop itself (its host token) pairs devices, removes itself, and adds or deletes its webhooks; a device
+  can unpair itself. Host control frames are size- and rate-limited.
+
+### A steadier app
+- Lifecycles across the app (Code session connection, Preview, onboarding's key check, updates, remote hosting,
+  settings writes and more) are explicit states now: late answers are dropped, and double clicks run once.
+- Stop while a chat turn is starting keeps your message and ends as a stopped answer you can retry; Stop then a
+  quick send runs one turn.
+- `everyai://prompt` links fill the new chat again.
+- The `app` tool's `android` and `ios` sources drive a running device the session didn't start.
+- Chat sources show each site's favicon (through DuckDuckGo's icon service, so the sites aren't contacted), and a
+  drag on the sources row no longer breaks text selection.
+
 ## 0.1.0-alpha.5 (2026-11-07): a new look, local models, and tools to test your app
 
 ### A new look
