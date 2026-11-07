@@ -578,6 +578,10 @@ final class ClaudeSession
   var _interrupting = false;
   var _continueAfter = false;
 
+  /// Turns stopped while a new message already went in (an interrupt-and-send): the CLI still ends each with its own
+  /// `result`, which arrives after the new message started. Those aren't the end of the turn the user sees running.
+  var _staleResults = 0;
+
   /// The process runs with an old effort or briefing: replaced once the turn ends.
   var _respawn = false;
   var _closed = false;
@@ -703,6 +707,7 @@ final class ClaudeSession
   /// command or a continue goes without it, and it waits on in the record too.
   Future<void> _turn(String body, {List<String> images = const []}) async {
     final c = await _ensure();
+    if (_running && _interrupting) _staleResults++;
     if (!_meta.sent || _meta.carry.length != _carry.length) {
       await _save(_meta.copyWith(sent: true, carry: List.unmodifiable(_carry)));
     }
@@ -943,11 +948,18 @@ final class ClaudeSession
         if (line case {'type': 'system', 'subtype': 'init', 'skills': final List<Object?> l}) _skillsListed(l);
         if (line case {'type': 'system', 'permissionMode': final String mode}) _modeSaid(mode);
         final events = _decoder.decode(line);
+        // The stopped turn's end: the new message's turn runs on (no paused state, the queue doesn't flush yet).
+        final stale = line['type'] == 'result' && _staleResults > 0;
+        if (stale) {
+          _staleResults--;
+          _interrupting = false;
+        }
         for (final e in events) {
+          if (stale && e is StateChange) continue;
           _emit(e);
           if (e is ActionCall && _selfAnswered(e.toolName)) _letRun(e.id);
         }
-        if (line['type'] == 'result') _ended();
+        if (line['type'] == 'result' && !stale) _ended();
     }
   }
 
@@ -1033,6 +1045,7 @@ final class ClaudeSession
     _waiting = false;
     _interrupting = false;
     _continueAfter = false;
+    _staleResults = 0;
     _respawn = false;
     if (_closed || !_running) return;
     _running = false;

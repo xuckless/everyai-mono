@@ -10,11 +10,13 @@ import '../live/real_input.dart';
 /// Connects [RealInput] to the app: the remembered answer from [prefs], and the one-time dialog shown over
 /// [context] (the shell's) the first time an agent needs the real pointer or keyboard.
 void connectRealInput(Preferences prefs, BuildContext Function() context) {
-  RealInput.allowed ??= switch (prefs[RealInput.prefKey]) {
-    '1' => true,
-    '0' => false,
-    _ => null,
-  };
+  if (RealInput.consent == RealInputConsent.unasked) {
+    RealInput.consent = switch (prefs[RealInput.prefKey]) {
+      '1' => RealInputConsent.allowed,
+      '0' => RealInputConsent.refused,
+      _ => RealInputConsent.unasked,
+    };
+  }
   RealInput.save = (yes) => prefs[RealInput.prefKey] = yes ? '1' : '0';
   RealInput.ask = () {
     final c = context();

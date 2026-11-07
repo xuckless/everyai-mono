@@ -320,7 +320,7 @@ void main() {
     CodeSessionInfo childOf(String parent) =>
         container.read(codeSessionsProvider).singleWhere((s) => s.parentId == parent);
 
-    test('a task call runs a child conversation and its report goes back to the agent', () async {
+    test('a task call runs a child conversation in the background and its report goes back to the agent', () async {
       final (id, parent) = await startDemo(AgentMode.autoEdit);
       CodeSessionState parentState() => container.read(codeSessionProvider(id));
 
@@ -331,7 +331,13 @@ void main() {
       expect(child!.title, 'Write Counter tests');
       expect(child.mode, AgentMode.autoEdit);
       expect(child.workingDir, '${demoScheme}counter-app');
-      final card = parentState().transcript.openSubagents.single;
+      // Forks run in the background: the call returns at once, so the lead is free while the child works.
+      final card = await _until(
+        () => parentState().transcript.items.whereType<SubagentItem>().singleOrNull,
+        (c) => c?.report != null,
+      );
+      expect(card!.report!.status, SubagentStatus.background);
+      expect(parentState().transcript.openSubagents, isEmpty);
       expect(child.parentCallId, card.step.call.id);
 
       // The child's test run waits for approval in Auto-edit; the parent shows it needs the user.
@@ -343,27 +349,22 @@ void main() {
       await _until(parentState, (s) => s.status == SessionStatus.needsInput);
       await container.read(codeSessionProvider(child.id).notifier).approve();
 
+      // Its report reaches the lead as a task notification.
       final reported = await _until(
         parentState,
-        (s) => s.transcript.items.whereType<SubagentItem>().single.report != null,
+        (s) => s.transcript.items.whereType<NoticeItem>().any((n) => n.message.contains('finished in the background')),
       );
-      final report = reported.transcript.items.whereType<SubagentItem>().single.report!;
-      expect(report.status, SubagentStatus.completed);
-      expect(report.text, contains('Added three tests'));
-
-      // The parent's next turn runs its own test command, then finishes.
-      await _until(parentState, (s) => s.transcript.pending.isNotEmpty);
-      await parent.approve();
-      final done = await _until(parentState, (s) => s.transcript.status == ExecutionStatus.finished);
-      expect(done.transcript.items.whereType<UserTurn>(), hasLength(1));
-      expect((done.transcript.items.last as AgentText).text, contains('A subagent added three tests'));
+      final notice = reported.transcript.items.whereType<NoticeItem>().firstWhere(
+        (n) => n.message.contains('finished in the background'),
+      );
+      expect(notice.detail, contains('Added three tests'));
 
       // Removing the session removes its subagent too.
       await container.read(codeSessionsProvider.notifier).remove(id);
       expect(container.read(codeSessionsProvider), isEmpty);
     });
 
-    test('Stop ends the subagents and closes their cards', () async {
+    test("Stop ends the lead's turn; a background fork carries on", () async {
       final (id, parent) = await startDemo(AgentMode.autoEdit);
       final child = await _until(
         () => container.read(codeSessionsProvider).where((s) => s.parentId == id).firstOrNull,
@@ -373,9 +374,29 @@ void main() {
       await parent.stop();
       final state = container.read(codeSessionProvider(id));
       expect(state.transcript.openSubagents, isEmpty);
-      expect(state.transcript.items.whereType<SubagentItem>().single.report!.status, SubagentStatus.stopped);
+      expect(state.transcript.items.whereType<SubagentItem>().single.report!.status, SubagentStatus.background);
+      expect(container.read(codeSessionProvider(child!.id)).transcript.pending, isNotEmpty);
       expect(state.status, isNot(SessionStatus.running));
       expect(childOf(id).isSubagent, isTrue);
+    });
+
+    test('Stop all ends the background forks too, and their reports never wake the lead', () async {
+      final (id, parent) = await startDemo(AgentMode.autoEdit);
+      final child = await _until(
+        () => container.read(codeSessionsProvider).where((s) => s.parentId == id).firstOrNull,
+        (c) => c != null,
+      );
+      await _until(() => container.read(codeSessionProvider(child!.id)), (s) => s.transcript.pending.isNotEmpty);
+      expect(parent.runningWork.forks, 1);
+      await parent.stopAll();
+      expect(parent.runningWork.forks, 0);
+      final kid = container.read(codeSessionProvider(child!.id));
+      expect(kid.transcript.pending, isEmpty);
+      expect(kid.transcript.running, isFalse);
+      expect(container.read(codeSessionProvider(id)).sideWork, isFalse);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      final notices = container.read(codeSessionProvider(id)).transcript.items.whereType<NoticeItem>();
+      expect(notices.where((n) => n.message.contains('in the background')), isEmpty);
     });
   });
 
@@ -406,6 +427,7 @@ void main() {
     final notice = b.snapshot.items.single as NoticeItem;
     expect(notice.message, 'Find callers finished in the background');
     expect(notice.detail, contains('lib/a.dart:4'));
-    expect(forkingTaskSpec().toString(), contains('run_in_background'));
+    expect(forkingTaskSpec().toString(), contains('It runs in the background'));
+    expect(forkingTaskSpec().toString(), isNot(contains('run_in_background')));
   });
 }

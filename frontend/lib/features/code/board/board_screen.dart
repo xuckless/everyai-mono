@@ -20,8 +20,10 @@ import '../drivers/driver_registry.dart' show driverRegistryProvider;
 import '../ui/harness_logo.dart';
 import 'board_providers.dart';
 import 'board_work.dart';
-import '../workflows/workflow_engine.dart' show WorkflowStatus;
 import '../workflows/workflow_runs.dart' show workflowRunsProvider;
+import '../domain/session_work.dart';
+import '../ui/stop_all_button.dart';
+import '../workflows/workflow_engine.dart' show WorkflowStatus;
 
 /// Every session at a glance: Needs you, Running, Done, side by side with hairlines between them (drag one to
 /// resize; double-click to even them). Approvals and questions are answered on the card, Done cards can be cleared,
@@ -444,6 +446,20 @@ class _BoardCardState extends ConsumerState<BoardCard> {
       if (info.parentId != null) 'fork',
     ].join(' · ');
     final waiting = widget.status == SessionStatus.needsInput;
+    // Stop all, while an open session runs anything (the lead's turn, forks, a workflow).
+    final controller = open ? ref.read(codeSessionProvider(info.id).notifier) : null;
+    if (open) ref.watch(workflowRunsProvider(info.id));
+    final work = controller?.runningWork;
+    final leadBusy = live != null && (live.running || live.pending.isNotEmpty);
+    final stopAll = controller != null && work != null && (leadBusy || hasSideWork(work))
+        ? StopAllButton(
+            key: ValueKey('board.stop-all.${info.id}'),
+            work: work,
+            leadBusy: leadBusy,
+            onStopAll: controller.stopAll,
+            size: 22,
+          )
+        : null;
     // A question is answered right on the card, open from the start.
     final asking = waiting && question != null;
     void openSession() => context.go(Routes.codeSession(info.id));
@@ -518,6 +534,7 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                             padding: EdgeInsets.only(right: widget.onDismiss == null ? 0 : 14),
                             child: Text(_age(info.createdAt), style: theme.type.caption.mono.tint(theme.textSubtle)),
                           ),
+                          if (stopAll != null) ...[const SizedBox(width: 6), stopAll],
                         ],
                       ),
                       if (where.isNotEmpty)

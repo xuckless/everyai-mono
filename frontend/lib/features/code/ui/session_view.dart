@@ -45,6 +45,9 @@ import 'console/console_state.dart';
 import 'console/bottom_drawer.dart';
 import 'console/console_layout.dart';
 import '../panes/panes_providers.dart' show codePaneProvider;
+import 'panes/take_control_reminder.dart';
+import 'stop_all_button.dart';
+import '../domain/session_work.dart';
 import 'transcript/approval_card.dart';
 import 'transcript/session_approval.dart';
 import 'transcript/aside_card.dart';
@@ -82,6 +85,9 @@ class CodeSessionScreen extends ConsumerWidget {
     final controller = ref.read(provider.notifier);
     final t = state.transcript;
     final busy = t.running || t.pending.isNotEmpty;
+    // Watched so Stop all appears and goes with the session's workflow runs (forks come with [state]).
+    ref.watch(workflowRunsProvider(sessionId));
+    final work = controller.runningWork;
 
     final showStartBuilding =
         state.mode == AgentMode.plan &&
@@ -288,6 +294,7 @@ class CodeSessionScreen extends ConsumerWidget {
                                           mainAxisSize: MainAxisSize.min,
                                           crossAxisAlignment: CrossAxisAlignment.stretch,
                                           children: [
+                                            TakeControlReminder(sessionId: sessionId),
                                             if (t.pending.isNotEmpty)
                                               Padding(
                                                 padding: const EdgeInsets.only(bottom: 8),
@@ -407,6 +414,14 @@ class CodeSessionScreen extends ConsumerWidget {
                                               onStop: controller.stop,
                                               queued: [for (final q in state.queued) q.text],
                                               onUnqueue: controller.unqueue,
+                                              onSendQueuedNow: controller.sendQueuedNow,
+                                              stopAll: hasSideWork(work)
+                                                  ? StopAllButton(
+                                                      work: work,
+                                                      leadBusy: busy,
+                                                      onStopAll: controller.stopAll,
+                                                    )
+                                                  : null,
                                               placeholder: t.openQuestion != null
                                                   ? 'Answer the questions above, or reply in your own words'
                                                   : info.parentId != null

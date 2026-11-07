@@ -26,6 +26,7 @@ enum EveryIcon {
   attach(LucideIcons300.paperclip),
   mention(LucideIcons300.atSign),
   chevronDown(LucideIcons300.chevronDown),
+  chevronUp(LucideIcons300.chevronUp),
   chevronUpDown(LucideIcons300.chevronsUpDown),
   more(LucideIcons300.ellipsis),
   chat(LucideIcons300.messagesSquare),

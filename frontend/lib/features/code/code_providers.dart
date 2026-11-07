@@ -116,6 +116,7 @@ import 'uploads/uploads.dart';
 import 'workflows/bug_report.dart';
 import 'workflows/workflow_bridge.dart'
     show WorkflowBridge, appendJournalFile, listJournalFiles, readJournalFile, retireJournalFile;
+import 'domain/session_work.dart';
 import 'workflows/workflow_engine.dart';
 import 'workflows/workflow_journal.dart';
 import 'workflows/workflow_landing.dart';
@@ -3799,8 +3800,28 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (!_withinBudget()) return;
     _releaseSecurityHold();
     final out = await _outgoing(text, files);
+    if (out != null) await _steerOut(out);
+  }
+
+  /// Sends queued message [index] now, interrupting the agent (the queue's "Send now").
+  Future<void> sendQueuedNow(int index) async {
+    if (index < 0 || index >= state.queued.length || !_withinBudget()) return;
+    final out = state.queued[index];
+    state = state.copyWith(queued: [...state.queued]..removeAt(index));
+    _releaseSecurityHold();
+    // Nothing runs any more (the turn ended meanwhile): it just goes.
+    final t = state.transcript;
+    if (!t.running && t.pending.isEmpty) {
+      await _sendOut(out);
+      return;
+    }
+    await _steerOut(out);
+  }
+
+  /// Interrupts the agent and sends [out] (see [steer]).
+  Future<void> _steerOut(Outgoing out) async {
     final session = _session;
-    if (out == null || session == null) return;
+    if (session == null) return;
     // The lead is changing: it goes to the new one, like a message (and waits out a rewind too).
     if (_switching || _rewinding) {
       state = state.copyWith(queued: [...state.queued, out]);
@@ -3949,6 +3970,30 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       return false;
     }
     return _background.isNotEmpty;
+  }
+
+  /// What Stop all would stop besides the lead's turn, read as the UI builds (it rebuilds on [CodeSessionState]
+  /// and the session's workflow runs).
+  SessionWork get runningWork => (
+    forks: _background.length,
+    workflows: [
+      for (final r in ref.read(workflowRunsProvider(sessionId)))
+        if (r.status == WorkflowStatus.running) r.name,
+    ],
+  );
+
+  /// Workflow runs Stop all ended: their results aren't sent to the lead.
+  final _quietRuns = <String>{};
+
+  /// Stops everything in the session: the lead's turn, its background forks and its workflow runs (their agents
+  /// with them). Their reports and results are dropped, so nothing wakes the lead afterwards.
+  Future<void> stopAll() async {
+    for (final MapEntry(key: runId, value: engine) in _workflows.entries) {
+      _quietRuns.add(runId);
+      engine.stop();
+    }
+    await _stopEveryaiChildren();
+    await stop();
   }
 
   /// Stops the background forks; their reports don't go to the next lead.
@@ -4972,7 +5017,12 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       _spawning.remove(callId);
       // It asked for its own copy and couldn't have one (no git repository here).
       if (call.str('isolation') == 'worktree' && child.forkCopy == null) _fellBack[callId] = sharedFolderNote;
-      if (call.action['run_in_background'] == true && !onParentModel) {
+      // Every fork runs in the background (owner, 2026-11-07): the lead stays free to talk while it works. A retry on
+      // the session's model ([_retryOnParentModel]) was already started there: it only follows the new child.
+      if (_background[callId] case final b?) {
+        _background[callId] = (childId: child.id, title: b.title);
+        _syncSideWork();
+      } else {
         _background[callId] = (childId: child.id, title: child.title);
         _syncSideWork();
         _reports[callId] = backgroundStarted(child.id, note: _fellBack.remove(callId));
@@ -5404,6 +5454,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// spent budget skips): the run's journal is retired by now, so this is
   /// the only copy.
   void _toLead(String text, {String? runId}) {
+    // Stopped with Stop all: the user stopped everything, so its end doesn't wake the lead (the card shows it).
+    if (runId != null && _quietRuns.remove(runId)) return;
     _workflowResults.add((id: runId ?? 'workflow', text: text));
     _sendQueued();
   }

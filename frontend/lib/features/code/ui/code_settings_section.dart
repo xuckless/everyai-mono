@@ -253,7 +253,7 @@ class _CodeSettingsSectionState extends ConsumerState<CodeSettingsSection> {
               subtitle: const Text("For apps that can't be driven in the background"),
               trailing: AdaptiveSwitch(
                 key: const ValueKey('code-settings.real-input'),
-                value: RealInput.allowed ?? false,
+                value: RealInput.consent == RealInputConsent.allowed,
                 onChanged: (v) => setState(() => RealInput.set(v)),
               ),
             ),
