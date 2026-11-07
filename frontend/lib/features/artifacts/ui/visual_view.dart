@@ -11,6 +11,7 @@ import '../../chat/ui/chat_markdown.dart';
 import '../artifact_providers.dart';
 import '../domain/artifact.dart';
 import '../domain/figures.dart';
+import '../domain/slide_spec.dart';
 import '../domain/drawing.dart';
 import 'download_button.dart';
 import 'image_view.dart';
@@ -80,7 +81,7 @@ class VisualBody extends ConsumerWidget {
       VisualKind.chart => ChartView(spec: ChartSpec.fromJson(visual.args), height: expanded ? 380 : 260),
       VisualKind.quiz => QuizView(visual: visual, conversationId: conversationId),
       VisualKind.flashcards => FlashcardsView(visual: visual, height: expanded ? 300 : 210),
-      VisualKind.slides => SlidesView(visual: visual, showNotes: expanded),
+      VisualKind.slides => SlidesView(visual: visual, conversationId: conversationId, showNotes: expanded),
       VisualKind.image => RasterImageView(bytes: visual.args['bytes'] as Uint8List?, maxHeight: expanded ? 900 : 512),
       VisualKind.drawing => WebContentView(
         html: drawingPage(scene: content, mermaid: visual.args['mermaid'] as String?, dark: dark),
@@ -172,7 +173,7 @@ class InlineVisual extends ConsumerWidget {
       switch (visual.kind) {
         VisualKind.quiz => '${(visual.args['questions'] as List?)?.length ?? 0} questions',
         VisualKind.flashcards => '${(visual.args['cards'] as List?)?.length ?? 0} cards',
-        VisualKind.slides => '${slidesOf(visual).length} slides',
+        VisualKind.slides => '${deckOf(visual).length} slides',
         VisualKind.drawing => switch (drawingElementCount(visual.str('content'))) {
           0 => null,
           1 => '1 element',
@@ -211,7 +212,7 @@ class InlineVisual extends ConsumerWidget {
           ),
         ),
         if (!kIsWeb)
-          DownloadButton(visual: visual, figures: figuresOf(ref.watch(conversationArtifactsProvider(conversationId)))),
+          DownloadButton(visual: visual, artifacts: ref.watch(conversationArtifactsProvider(conversationId))),
         AdaptiveIconButton(icon: EveryIcon.openPanel, tooltip: 'Open in side panel', onPressed: open),
       ],
     );
@@ -243,11 +244,7 @@ class InlineVisual extends ConsumerWidget {
                 constraints: const BoxConstraints(maxWidth: 360),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(theme.radius),
-                  child: SlideCanvas(
-                    slide: slidesOf(visual).first,
-                    theme: DeckTheme.of(visual.str('theme')),
-                    isTitle: true,
-                  ),
+                  child: SlidePreview(visual: visual, conversationId: conversationId),
                 ),
               ),
             ),

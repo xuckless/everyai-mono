@@ -74,6 +74,9 @@ void main() {
   group('look', () {
     final drawn = <String>[];
     Looker looker() => Looker(
+      capturePages: (markdown) async => [
+        Uint8List.fromList([9]),
+      ],
       rasterize: (svg) async {
         drawn.add(svg);
         return (png: Uint8List.fromList([1, 2, 3]), width: 10.0, height: 10.0);
@@ -108,7 +111,9 @@ void main() {
         ]),
       ];
       final answer = await looker().look('{"id":"report"}', history);
-      expect(answer.pictures, hasLength(1));
+      // One page, then the figure.
+      expect(answer.pictures, hasLength(2));
+      expect(answer.text, contains('the first 1 picture(s) are its pages'));
       expect(drawn.single, contains('Hello'));
       expect(answer.text, contains('figure "fig-nope", which is not in this chat'));
       expect(answer.text, contains('1 headings'));

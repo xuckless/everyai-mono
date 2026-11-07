@@ -6,11 +6,15 @@ import 'artifact.dart';
 /// call with the same id revise it) that documents and slides can show by id (`figure:<id>`).
 const figureTools = {'render_svg', 'render_chart', 'render_diagram'};
 
-/// A figure call's arguments as an artifact version: `content` holds its source (SVG, chart JSON or Mermaid) and
+/// Tools whose call, with an `id`, is a versioned artifact: the figure tools and slide decks.
+const versionedTools = {...figureTools, 'make_slides'};
+
+/// A versioned call's arguments as an artifact version: `content` holds its source (SVG, chart JSON or Mermaid) and
 /// `kind` says which, so edit_artifact can revise it like any artifact.
 Map<String, Object?> figureArgs(String tool, Map<String, Object?> args) => switch (tool) {
   'render_svg' => {...args, 'kind': 'svg', 'content': args['svg'] as String? ?? ''},
   'render_diagram' => {...args, 'kind': 'mermaid', 'content': args['mermaid'] as String? ?? ''},
+  'make_slides' => {...args, 'kind': 'slides', 'content': jsonEncode(_chartSpec(args))},
   _ => {...args, 'kind': 'chart', 'content': jsonEncode(_chartSpec(args))},
 };
 
@@ -24,7 +28,7 @@ Map<String, Object?> _chartSpec(Map<String, Object?> args) => {
 Map<String, Object?> withFigureContent(Map<String, Object?> previous, String content) => switch (previous['kind']) {
   'svg' when previous.containsKey('svg') => {...previous, 'content': content, 'svg': content},
   'mermaid' when previous.containsKey('mermaid') => {...previous, 'content': content, 'mermaid': content},
-  'chart' => {...previous, ...?_decodeObject(content), 'content': content},
+  'chart' || 'slides' => {...previous, ...?_decodeObject(content), 'content': content},
   _ => {...previous, 'content': content},
 };
 

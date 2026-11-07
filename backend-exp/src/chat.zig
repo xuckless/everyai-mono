@@ -753,12 +753,12 @@ const Artifacts = struct {
     }
 };
 
-/// A figure call's source as the app keeps it (SVG, Mermaid, or the chart spec as JSON without its id); null for
-/// other tools.
+/// A figure or deck call's source as the app keeps it (SVG, Mermaid, or a chart's or deck's arguments as JSON
+/// without its id); null for other tools.
 fn figureSource(arena: std.mem.Allocator, tool: []const u8, args: std.json.Value) !?[]const u8 {
     if (std.mem.eql(u8, tool, "render_svg")) return openrouter.jsonString(args, "svg") orelse "";
     if (std.mem.eql(u8, tool, "render_diagram")) return openrouter.jsonString(args, "mermaid") orelse "";
-    if (!std.mem.eql(u8, tool, "render_chart") or args != .object) return null;
+    if (!(std.mem.eql(u8, tool, "render_chart") or std.mem.eql(u8, tool, "make_slides")) or args != .object) return null;
     var spec: std.json.ObjectMap = .empty;
     var it = args.object.iterator();
     while (it.next()) |e| if (!std.mem.eql(u8, e.key_ptr.*, "id")) try spec.put(arena, e.key_ptr.*, e.value_ptr.*);

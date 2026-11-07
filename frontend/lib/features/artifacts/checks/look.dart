@@ -1,6 +1,12 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/widgets.dart';
+
+import '../../../core/platform/platform_kind.dart';
+import '../../../core/theme/every_theme.dart';
+import '../../chat/ui/chat_markdown.dart';
+
 import '../../chat/domain/message.dart';
 import '../domain/artifact.dart';
 import '../domain/chart_spec.dart';
@@ -8,8 +14,13 @@ import '../domain/figures.dart';
 import '../export/chart_svg.dart';
 import '../export/doc_model.dart';
 import '../export/svg_raster.dart';
+import '../domain/slide_pictures.dart';
+import '../domain/slide_spec.dart';
+import '../ui/renderers/slide_canvas.dart';
+import 'capture.dart';
 import 'diagram_render.dart';
 import 'math_check.dart';
+import 'slide_lint.dart';
 import 'svg_lint.dart';
 
 /// The client tool that shows the model what it made.
@@ -25,7 +36,16 @@ typedef LookAnswer = ({String text, bool isError, List<Uint8List> pictures});
 /// answers `look` with the pictures and the findings, so the model can check its work and revise it, as the
 /// coding tools' screenshot does for an app.
 class Looker {
-  const Looker({this.diagrams, this.rasterize = _lookRaster});
+  const Looker({
+    this.diagrams,
+    this.rasterize = _lookRaster,
+    this.captureSlide = _captureSlide,
+    this.capturePages = _capturePages,
+    this.prepareSvg = _same,
+  });
+
+  /// Applied to a figure's SVG before a slide draws it (the figure rig names a bundled font).
+  final String Function(String svg) prepareSvg;
 
   /// Draws Mermaid; null where the platform has no webview.
   final DiagramRenderer? diagrams;
@@ -33,10 +53,17 @@ class Looker {
   /// Draws an SVG to a PNG (flutter_svg, as the app shows it).
   final SvgRasterizer rasterize;
 
+  /// Draws one slide as presented, or null when it can't.
+  final Future<Uint8List?> Function(DeckSlide slide, SlideArtBook art) captureSlide;
+
+  /// Draws a markdown document's pages (empty when it can't).
+  final Future<List<Uint8List>> Function(String markdown) capturePages;
+
   /// Answers one `look` call ([argumentsJson] as the model sent it) against the chat so far, this turn included.
   /// Never throws.
   Future<LookAnswer> look(String argumentsJson, Iterable<Message> history) async {
-    final id = switch (_decode(argumentsJson)['id']) {
+    final args = _decode(argumentsJson);
+    final id = switch (args['id']) {
       final String s when s.trim().isNotEmpty => s.trim(),
       _ => null,
     };
@@ -55,8 +82,12 @@ class Looker {
         'chart' => await _chart(id, v),
         'mermaid' => await _diagram(id, v.str('content')),
         'markdown' || '' when v.kind == VisualKind.document => await _document(id, v.str('content'), figures),
+        'slides' => await _deck(id, v, artifacts, switch (args['slide']) {
+          final num n => n.toInt(),
+          _ => null,
+        }),
         final kind => _error(
-          'Error: look can draw figures, charts, diagrams and markdown documents; "$id" is ${kind.isEmpty ? v.kind.label.toLowerCase() : kind}.',
+          'Error: look can draw figures, charts, diagrams, slide decks and markdown documents; "$id" is ${kind.isEmpty ? v.kind.label.toLowerCase() : kind}.',
         ),
       };
     } on Object catch (e) {
@@ -101,7 +132,8 @@ class Looker {
       for (final p in mathProblems(markdown)) 'Math $p',
     ];
     final expanded = expandFigureRefs(markdown, figures);
-    final pictures = <Uint8List>[];
+    final pictures = [...await capturePages(expanded)];
+    final pageCount = pictures.length;
     for (final (i, svg) in svgFiguresIn(expanded).indexed) {
       for (final f in svgFindings(svg)) {
         findings.add('Figure ${i + 1}: $f');
@@ -127,8 +159,42 @@ class Looker {
     }
     final words = RegExp(r'\S+').allMatches(expanded.replaceAll(RegExp(r'```[\s\S]*?```'), '')).length;
     final headings = RegExp(r'^#{1,6} ', multiLine: true).allMatches(expanded).length;
-    final what = 'document ($words words, $headings headings; the pictures are its figures in order)';
+    final what = pageCount == 0
+        ? 'document ($words words, $headings headings; the pictures are its figures in order)'
+        : 'document ($words words, $headings headings): the first $pageCount picture(s) are its pages, where each '
+              'SVG or Mermaid figure is a placeholder line; the rest are those figures, in order';
     return _answer(id, what, pictures, findings);
+  }
+
+  /// A deck's slides as presented (all of them up to six, or slide [only]), with each slide's findings.
+  Future<LookAnswer> _deck(String id, Visual v, List<Artifact> artifacts, int? only) async {
+    final deck = deckOf(v);
+    if (only != null && (only < 1 || only > deck.length)) {
+      return _error('Error: "$id" has slides 1 to ${deck.length} (slide 1 is the title slide).');
+    }
+    final indexes = only != null ? [only - 1] : [for (var i = 0; i < deck.length && i < _maxPictures; i++) i];
+    final art = await drawSlideArt(
+      pictureRefsOf(deck),
+      slideSourcesOf(artifacts),
+      diagrams: diagrams,
+      prepare: prepareSvg,
+    );
+    try {
+      final pictures = <Uint8List>[];
+      final findings = <String>[];
+      for (final i in indexes) {
+        if (await captureSlide(deck[i], art) case final png?) pictures.add(png);
+        for (final f in slideFindings(deck[i], art)) {
+          findings.add('Slide ${i + 1}: $f');
+        }
+      }
+      final shown = only != null
+          ? 'slide $only of ${deck.length}'
+          : 'slide deck, slides 1-${indexes.length} of ${deck.length}${deck.length > indexes.length ? ' (pass slide: N to see the others)' : ''}';
+      return _answer(id, shown, pictures, findings);
+    } finally {
+      art.dispose();
+    }
   }
 
   LookAnswer _answer(String id, String what, List<Uint8List> pictures, List<String> findings) {
@@ -144,6 +210,55 @@ class Looker {
   }
 
   static LookAnswer _error(String text) => (text: text, isError: true, pictures: const []);
+}
+
+String _same(String svg) => svg;
+
+/// A slide at 768×432, as the canvas draws it.
+Future<Uint8List?> _captureSlide(DeckSlide slide, SlideArtBook art) async {
+  try {
+    return await captureWidget(
+      SlideCanvas(slide: slide, art: art),
+      size: const Size(slideWidth, slideHeight),
+      pixelRatio: 0.8,
+    );
+  } on Object {
+    return null;
+  }
+}
+
+/// A document as the chat draws it, 720 wide on white, cut into pages 960 tall (at most 4). SVG and Mermaid
+/// blocks become a placeholder line: the look returns them as their own pictures, and the webview can't draw
+/// offscreen.
+Future<List<Uint8List>> _capturePages(String markdown) async {
+  var n = 0;
+  final text = markdown.replaceAllMapped(
+    RegExp(r'^```(svg|mermaid)\s*\n[\s\S]*?^```\s*$', multiLine: true),
+    (m) => '> *[${m.group(1) == 'svg' ? 'Figure' : 'Diagram'} ${++n}: drawn in its own picture]*',
+  );
+  try {
+    final image = await captureImage(
+      EveryThemeScope(
+        theme: EveryTheme.resolve(DesignLanguage.material, Brightness.light),
+        child: Builder(
+          builder: (context) => ColoredBox(
+            color: const Color(0xFFFFFFFF),
+            child: Padding(padding: const EdgeInsets.all(28), child: ChatMarkdown(text)),
+          ),
+        ),
+      ),
+      size: const Size(720, 9600),
+      fitHeight: true,
+    );
+    if (image == null) return const [];
+    try {
+      return await pagesOf(image, pageHeight: 960, max: 4);
+    } finally {
+      image.dispose();
+    }
+  } on Object {
+    return const [];
+  }
 }
 
 /// Pictures for the model: at most 768 px across, so a look costs about one image's tokens.

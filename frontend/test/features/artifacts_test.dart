@@ -252,7 +252,7 @@ void main() {
     expect(exportOf(deck).text, '# Deck\n\n---\n\n# One\n- a\n- b');
   });
 
-  test('PowerPoint export is a zip with one part per slide (PPTX_OUT writes it for inspection)', () {
+  test('PowerPoint export is a zip with one part per slide (PPTX_OUT writes it for inspection)', () async {
     final deck = Visual.fromPart(
       _call('make_slides', {
         'title': 'Riverpod & <you>',
@@ -268,7 +268,7 @@ void main() {
         ],
       }, 'deck'),
     )!;
-    final bytes = pptxOf(deck);
+    final bytes = await pptxOf(deck);
     final zip = ZipDecoder().decodeBytes(bytes);
     final names = zip.files.map((f) => f.name).toSet();
     expect(names, containsAll(['ppt/presentation.xml', 'ppt/slides/slide3.xml', 'ppt/theme/theme1.xml']));

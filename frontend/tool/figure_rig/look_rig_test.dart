@@ -4,6 +4,7 @@
 //   EVERYAI_LOOK_CALLS=calls.json EVERYAI_LOOK_ID=fig-x EVERYAI_LOOK_OUT=out/ \
 //     flutter test tool/figure_rig/look_rig_test.dart
 //
+// EVERYAI_LOOK_SLIDE=N looks at one slide of a deck.
 // calls.json: the chat's UI tool calls in order, [{"tool": "render_svg", "args": {...}}, ...]. The rig writes
 // out/look.txt (what the model would read) and out/picture_N.png (what it would see). Mermaid needs the app's
 // webview, so diagrams aren't drawn here.
@@ -41,7 +42,9 @@ Future<void> _loadFonts() async {
 /// As the app's look draws (768 px across), with text in Geist. The app's SVG renderer takes a font-family list
 /// as one name it doesn't have, so text there falls back to the system font; the test engine has none, so the rig
 /// names a bundled font everywhere instead (monospace lists get Geist Mono).
-Future<RasterFigure?> _rigRaster(String svg) {
+Future<RasterFigure?> _rigRaster(String svg) => rasterizeSvg(_rigFonts(svg), maxWidth: 384, scale: 2);
+
+String _rigFonts(String svg) {
   var out = svg.replaceAllMapped(RegExp(r'font-family\s*=\s*("[^"]*"|\x27[^\x27]*\x27)'), (m) {
     final mono = RegExp('mono|courier|consolas|menlo', caseSensitive: false).hasMatch(m.group(1)!);
     return 'font-family="${mono ? 'GeistMono' : 'Geist'}"';
@@ -51,7 +54,7 @@ Future<RasterFigure?> _rigRaster(String svg) {
   if (root != null && !root.group(0)!.contains('font-family')) {
     out = out.replaceFirst('<svg', '<svg font-family="Geist"');
   }
-  return rasterizeSvg(out, maxWidth: 384, scale: 2);
+  return out;
 }
 
 void main() {
@@ -76,7 +79,10 @@ void main() {
             ToolCallPart(toolName: c['tool']! as String, argumentsJson: jsonEncode(c['args']), callId: 'call_$i'),
         ],
       );
-      final answer = await Looker(rasterize: _rigRaster).look(jsonEncode({'id': id}), [message]);
+      final answer = await Looker(rasterize: _rigRaster, prepareSvg: _rigFonts).look(
+        jsonEncode({'id': id, 'slide': ?int.tryParse(Platform.environment['EVERYAI_LOOK_SLIDE'] ?? '')}),
+        [message],
+      );
       final dir = Directory(out)..createSync(recursive: true);
       for (final f in dir.listSync().whereType<File>().where((f) => f.path.contains('picture_'))) {
         f.deleteSync();

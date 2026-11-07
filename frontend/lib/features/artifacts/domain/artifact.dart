@@ -110,10 +110,10 @@ final class Artifact {
 /// The tools that create or revise an artifact.
 const artifactTools = {'create_artifact', 'update_artifact', 'edit_artifact'};
 
-/// Whether [part] makes an artifact version: an artifact tool, or a figure call ([figureTools]) with an id.
+/// Whether [part] makes an artifact version: an artifact tool, or a figure or deck call ([versionedTools]) with an id.
 bool isArtifactCall(ToolCallPart part) =>
     artifactTools.contains(part.toolName) ||
-    (figureTools.contains(part.toolName) && part.argumentsJson.contains('"id"') && _figureId(part).isNotEmpty);
+    (versionedTools.contains(part.toolName) && part.argumentsJson.contains('"id"') && _figureId(part).isNotEmpty);
 
 String _figureId(ToolCallPart part) {
   try {
@@ -147,7 +147,7 @@ List<Artifact> artifactsIn(Iterable<Message> messages) {
       if (!isArtifactCall(part)) continue;
       var visual = Visual.fromPart(part);
       if (visual == null) continue;
-      if (figureTools.contains(part.toolName)) {
+      if (versionedTools.contains(part.toolName)) {
         visual = Visual(
           callId: visual.callId,
           kind: visual.kind,
