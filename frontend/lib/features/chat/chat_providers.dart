@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/net/api_error.dart';
 import '../../core/preferences.dart';
 import '../../core/providers.dart';
+import '../artifacts/checks/look.dart';
 import '../artifacts/checks/tool_checks.dart';
 import '../attachments/attachment.dart';
 import '../code/session_notifications.dart' show appFocusedProvider, systemNotifierProvider;
@@ -101,13 +102,14 @@ final toolResultsProvider = Provider<ToolResults>((ref) {
 });
 
 /// UI tools the app runs itself and answers with [ChatController.resolveTool]
-/// (sent as `client_tools`): the question card (`ask_user`).
+/// (sent as `client_tools`): the question card (`ask_user`), `look` (pictures of what the model made).
 final chatClientToolsProvider = Provider<Set<String>>(
   // …and the artifact and diagram checks (Mermaid errors, bad TeX).
   // …and, with memory on, the local memory and chat-search tools.
   // …and, when the user has skills for Chat, load_skill and read_skill_file.
   (ref) => {
     askUserTool,
+    lookTool,
     ...ref.watch(appToolCheckerProvider).tools,
     ...ref.watch(enabledLocalChatToolsProvider),
     if (ref.watch(chatSkillsProvider).isNotEmpty) ...skillChatTools,
@@ -327,10 +329,39 @@ final class ChatController extends Notifier<ChatSessionState> {
   /// [ChatSessionState.pendingTools]). [result] is a string or any JSON;
   /// [isError] says the app could not run it. False when the call isn't
   /// pending or the server no longer waits for it (timed out, turn over).
-  Future<bool> resolveTool(String callId, Object? result, {bool isError = false}) async {
+  Future<bool> resolveTool(
+    String callId,
+    Object? result, {
+    bool isError = false,
+    List<String> images = const [],
+  }) async {
     if (!state.pendingTools.any((t) => t.id == callId)) return false;
     _settleTool(callId);
-    return ref.read(toolResultsProvider).resolve(callId, result, isError: isError);
+    return ref.read(toolResultsProvider).resolve(callId, result, isError: isError, images: images);
+  }
+
+  /// Answers a `look` call: draws what the model named, this turn's own calls included, and sends the pictures
+  /// with the findings.
+  Future<void> _answerLook(ToolWait wait) async {
+    final turn = Message(
+      id: '_live',
+      conversationId: conversationId,
+      role: Role.assistant,
+      parts: state.liveParts,
+      createdAt: DateTime.now(),
+    );
+    final answer = await ref.read(lookerProvider).look(wait.argumentsJson, [...state.messages, turn]);
+    if (!ref.mounted) return;
+    try {
+      await resolveTool(
+        wait.id,
+        answer.text,
+        isError: answer.isError,
+        images: [for (final p in answer.pictures) pngDataUrl(p)],
+      );
+    } on Object {
+      // The turn ended or the server stopped waiting; it times out on its own.
+    }
   }
 
   /// Answers a pending `ask_user` card: the outcome is kept on its part (so
@@ -613,6 +644,7 @@ final class ChatController extends Notifier<ChatSessionState> {
               pendingTools: List.unmodifiable([...state.pendingTools, wait]),
             );
             if (ref.read(appToolCheckerProvider).handles(wait.name)) unawaited(_answerCheck(wait));
+            if (wait.name == lookTool) unawaited(_answerLook(wait));
             if (ref.read(localChatToolsProvider).handles(wait.name)) unawaited(_answerLocal(wait));
           // The server stopped waiting (answered elsewhere, or timed out). A
           // question card shows its own state, and a checked visual its own
