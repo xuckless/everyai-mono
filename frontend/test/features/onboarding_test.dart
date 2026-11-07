@@ -8,6 +8,7 @@ import 'package:every_ai/features/code/gateway_key.dart';
 import 'package:every_ai/features/onboarding/onboarding_providers.dart';
 import 'package:every_ai/features/onboarding/ui/onboarding_screen.dart';
 import 'package:every_ai/features/settings/domain/key_check.dart';
+import 'package:every_ai/features/updates/whats_new_providers.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -30,21 +31,23 @@ void main() {
     expect(version, appVersion);
   });
 
-  test('acceptance is per version: an older build\'s acceptance asks again', () {
+  test('acceptance survives updates, and a fresh install has seen this build\'s notes', () {
     final old = ProviderContainer(
       overrides: [
         preferencesProvider.overrideWithValue(Preferences.inMemory({OnboardingAccepted.key: '0.0.9'})),
       ],
     );
     addTearDown(old.dispose);
-    expect(old.read(onboardingAcceptedProvider), isFalse);
+    expect(old.read(onboardingAcceptedProvider), isTrue);
 
     final prefs = Preferences.inMemory();
     final c = ProviderContainer(overrides: [preferencesProvider.overrideWithValue(prefs)]);
     addTearDown(c.dispose);
+    expect(c.read(onboardingAcceptedProvider), isFalse);
     c.read(onboardingAcceptedProvider.notifier).accept();
     expect(c.read(onboardingAcceptedProvider), isTrue);
     expect(prefs[OnboardingAccepted.key], appVersion);
+    expect(prefs[WhatsNew.key], appVersion);
   });
 
   test('bug reports open a GitHub issue carrying the version', () {

@@ -849,6 +849,15 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   chip in the top bar opening a resizable bottom terminal (owner `home`, starts in `terminalHomeDir`: `$HOME`, or
   `C:\` on Windows; prefs `code.home.terminal`, `code.home.terminal_height`). Session header icons got a 2pt gap so
   two open views' highlights don't merge.
+- **UI audit, onboarding once, What's new (2026-11-07; branch `ui-audit`).** The surfaces built since the overhaul
+  (Processes, Preview and its device views, terminal tabs, real-input consent, local models, the setup terminals, chat's
+  no-model card) checked against the UI rules: sentence-case `KitLabel` headers instead of ALL CAPS, `KitCard`,
+  `showKitDialog` + `theme.shadowPop` instead of hand-made backdrops/shadows, `Motion` curves, shorter copy. Device
+  bezels keep their fixed dark colour on purpose. Onboarding is done once (`onboarding.accepted` holds the version it was
+  accepted in; any value counts). After an update, `features/updates/`: `releaseNotes` (`domain/whats_new.dart`, empty
+  until a release adds its entry) → `whatsNewProvider` shows this build's notes once at launch (`whats_new.seen`; a
+  fresh install marks them seen on accepting the onboarding) in `ui/whats_new_dialog.dart` (KitDialog 520pt, scrolls,
+  wraps long lines); Settings → About has "What's new" when the build has notes.
 - **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
   `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
   `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,

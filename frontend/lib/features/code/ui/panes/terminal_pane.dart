@@ -133,7 +133,7 @@ class _TerminalTabsViewState extends ConsumerState<TerminalTabsView> {
       if (e?.restart case final restart?)
         AdaptiveIconButton(
           icon: EveryIcon.retry,
-          tooltip: 'Restart (same command and folder)',
+          tooltip: 'Restart',
           size: 15,
           onPressed: () async {
             await restart();
@@ -149,14 +149,14 @@ class _TerminalTabsViewState extends ConsumerState<TerminalTabsView> {
         ),
       AdaptiveIconButton(
         icon: EveryIcon.copy,
-        tooltip: 'Copy (the selection, or everything)',
+        tooltip: 'Copy selection or all',
         size: 15,
         onPressed: () => Clipboard.setData(ClipboardData(text: selectedOrAll())),
       ),
       if (e != null)
         AdaptiveIconButton(
           icon: EveryIcon.send,
-          tooltip: 'Send to the agent (the selection, or the last 80 lines)',
+          tooltip: 'Send to agent',
           size: 15,
           onPressed: () {
             final sel = _controller(id).selection;

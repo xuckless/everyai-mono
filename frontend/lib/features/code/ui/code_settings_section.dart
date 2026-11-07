@@ -250,10 +250,7 @@ class _CodeSettingsSectionState extends ConsumerState<CodeSettingsSection> {
             id: 'real-input',
             child: AdaptiveListTile(
               title: const Text('Use the real mouse and keyboard'),
-              subtitle: const Text(
-                'When an app window can\'t be operated in the background, agents bring it to the front, move your '
-                'pointer and type into it.',
-              ),
+              subtitle: const Text("For apps that can't be driven in the background"),
               trailing: AdaptiveSwitch(
                 key: const ValueKey('code-settings.real-input'),
                 value: RealInput.allowed ?? false,

@@ -32,6 +32,8 @@ import '../dev_upstream.dart';
 import '../reply_language.dart';
 import '../settings_registry.dart';
 import '../../updates/ui/update_banner.dart';
+import '../../updates/ui/whats_new_dialog.dart';
+import '../../updates/whats_new_providers.dart';
 import '../../../core/config/version.dart';
 import 'account_menu.dart';
 import 'api_keys_section.dart';
@@ -339,6 +341,14 @@ class _AboutSectionState extends ConsumerState<AboutSection> {
     return KitGroupedList(
       children: [
         AdaptiveListTile(title: const Text('Version'), subtitle: const Text(appVersion)),
+        if (ref.watch(currentReleaseNoteProvider) case final note?)
+          AdaptiveListTile(
+            key: const ValueKey('settings.whats-new'),
+            title: const Text("What's new"),
+            subtitle: Text(note.title ?? 'In $appVersion'),
+            trailing: AdaptiveIcon(EveryIcon.chevronRight, size: 13, color: theme.textMuted),
+            onTap: () => showWhatsNew(context, note),
+          ),
         const UpdateSettingsTiles(),
         AdaptiveListTile(title: const Text('Server'), subtitle: Text(config.apiBaseUrl.toString())),
         AdaptiveListTile(

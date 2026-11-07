@@ -47,7 +47,7 @@ class LocalModelsSection extends ConsumerWidget {
           AdaptiveListTile(
             key: const ValueKey('local.none'),
             title: const Text('No model servers found'),
-            subtitle: const Text('Download a starter pack above, or start Ollama, LM Studio or another server.'),
+            subtitle: const Text('Download a pack above, or start Ollama or LM Studio'),
           ),
         SettingsAnchor(
           section: SettingsSection.localModels,
@@ -125,14 +125,9 @@ class _LocalPacksPickerState extends ConsumerState<LocalPacksPicker> {
         list.where((f) => f.pack.id == _picked && f.fits).firstOrNull ??
         list.where((f) => f.best).firstOrNull ??
         list.where((f) => f.fits).firstOrNull;
-    return Container(
+    return KitCard(
       key: const ValueKey('local.packs'),
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: theme.surfaceRaised,
-        borderRadius: BorderRadius.circular(theme.radius),
-        border: Border.all(color: theme.border),
-      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -332,9 +327,7 @@ Future<void> openOllamaSetup(BuildContext context, WidgetRef ref) async {
     context,
     title: 'Set up Ollama',
     line: commands.install,
-    explanation:
-        'Ollama runs models on this computer. This is its own install line, typed below but not run: press Enter to '
-        'run it. If it asks for a password, type it in the terminal.',
+    explanation: "Ollama's own install line, typed below. Press Enter to run it; type your password if asked.",
     source: commands.source,
     onCheck: () => ref.read(localServersProvider.notifier).refresh(),
   );
@@ -345,9 +338,7 @@ Future<void> openFmLicence(BuildContext context, WidgetRef ref) => showLocalSetu
   context,
   title: 'Set up Apple Intelligence',
   line: fmLicenceCommand,
-  explanation:
-      "Apple's on-device model needs its terms agreed once for this Mac. This command shows them; it is typed below "
-      'but not run: press Enter, type your password in the terminal, read the terms and agree.',
+  explanation: "Apple's terms, agreed once per Mac. Press Enter, type your password, then read and agree.",
   onCheck: () => ref.read(localServersProvider.notifier).refresh(),
 );
 
@@ -517,7 +508,7 @@ class _ModelRow extends ConsumerWidget {
                 final ok = await showAdaptiveConfirm(
                   context,
                   title: 'Delete ${m.name}?',
-                  message: 'It is removed from Ollama on this computer. You can download it again later.',
+                  message: 'You can download it again later.',
                   confirmLabel: 'Delete',
                   destructive: true,
                 );
@@ -606,7 +597,7 @@ class _AddServerDialogState extends ConsumerState<_AddServerDialog> {
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('An OpenAI-compatible server on this computer or your network.'),
+          const Text('On this computer or your network'),
           const SizedBox(height: 10),
           AdaptiveTextField(
             key: const ValueKey('local.add.url'),

@@ -29,13 +29,10 @@ Future<void> showLocalSetupTerminal(
   required String explanation,
   String? source,
   required Future<void> Function() onCheck,
-}) => m.showGeneralDialog<void>(
-  context: context,
-  useRootNavigator: true,
-  barrierDismissible: false,
-  barrierLabel: 'Close setup',
-  barrierColor: const Color(0x66000000),
-  pageBuilder: (_, _, _) =>
+}) => showKitDialog<void>(
+  context,
+  dismissible: false,
+  builder: (_) =>
       LocalSetupTerminalDialog(title: title, line: line, explanation: explanation, source: source, onCheck: onCheck),
 );
 
@@ -124,7 +121,7 @@ class _LocalSetupTerminalDialogState extends ConsumerState<LocalSetupTerminalDia
               child: DecoratedBox(
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(EveryTheme.panelRadius),
-                  boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 60, offset: Offset(0, 30))],
+                  boxShadow: theme.shadowPop,
                 ),
                 child: GlassSurface(
                   level: GlassLevel.thick,
@@ -194,12 +191,7 @@ class _LocalSetupTerminalDialogState extends ConsumerState<LocalSetupTerminalDia
                             padding: const EdgeInsets.fromLTRB(20, 10, 20, 14),
                             child: Row(
                               children: [
-                                Expanded(
-                                  child: Text(
-                                    'When it has finished, check again.',
-                                    style: theme.type.caption.tint(theme.textMuted),
-                                  ),
-                                ),
+                                const Spacer(),
                                 AdaptiveButton(
                                   key: const ValueKey('local.setup.check'),
                                   label: 'Check again',
