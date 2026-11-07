@@ -75,7 +75,7 @@ class Looker {
     final svg = chartSvg(spec);
     if (svg == null) return _error('Error: the chart "$id" has no data the app can draw.');
     final png = (await rasterize(svg))?.png;
-    return _answer(id, 'chart (as exported to PDF and Word)', [?png], const []);
+    return _answer(id, 'chart (as exported to PDF and Word)', [?png], svgFindings(svg));
   }
 
   Future<LookAnswer> _diagram(String id, String source) async {

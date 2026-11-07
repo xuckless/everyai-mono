@@ -38,13 +38,20 @@ Future<void> _loadFonts() async {
   }
 }
 
-/// As the app's look draws (768 px across), with text in Geist where the figure names no font: the app uses
-/// the system font there, which the test engine lacks.
+/// As the app's look draws (768 px across), with text in Geist. The app's SVG renderer takes a font-family list
+/// as one name it doesn't have, so text there falls back to the system font; the test engine has none, so the rig
+/// names a bundled font everywhere instead (monospace lists get Geist Mono).
 Future<RasterFigure?> _rigRaster(String svg) {
-  final root = RegExp(r'<svg\b[^>]*>').firstMatch(svg);
-  final named = root != null && root.group(0)!.contains('font-family');
-  final withFont = root == null || named ? svg : svg.replaceFirst('<svg', '<svg font-family="Geist"');
-  return rasterizeSvg(withFont, maxWidth: 384, scale: 2);
+  var out = svg.replaceAllMapped(RegExp(r'font-family\s*=\s*("[^"]*"|\x27[^\x27]*\x27)'), (m) {
+    final mono = RegExp('mono|courier|consolas|menlo', caseSensitive: false).hasMatch(m.group(1)!);
+    return 'font-family="${mono ? 'GeistMono' : 'Geist'}"';
+  });
+  out = out.replaceAllMapped(RegExp(r'font-family\s*:\s*[^;"]+'), (m) => 'font-family: Geist');
+  final root = RegExp(r'<svg\b[^>]*>').firstMatch(out);
+  if (root != null && !root.group(0)!.contains('font-family')) {
+    out = out.replaceFirst('<svg', '<svg font-family="Geist"');
+  }
+  return rasterizeSvg(out, maxWidth: 384, scale: 2);
 }
 
 void main() {

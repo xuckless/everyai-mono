@@ -32,12 +32,20 @@ List<String> svgFindings(String svg) {
   final ids = <String, int>{};
   final refs = <String>{};
   final stripped = <String>{};
+  final undrawn = <String>{};
   for (final e in root.descendantElements.followedBy([root])) {
     final id = e.getAttribute('id');
     if (id != null && id.isNotEmpty) ids[id] = (ids[id] ?? 0) + 1;
     switch (e.localName) {
       case 'script' || 'foreignObject' || 'iframe':
         stripped.add('<${e.localName}>');
+      case final name when _notDrawn.containsKey(name):
+        undrawn.add(name);
+    }
+    for (final a in ['marker-start', 'marker-mid', 'marker-end', 'filter']) {
+      if (e.getAttribute(a) != null || (e.getAttribute('style')?.contains('$a:') ?? false)) {
+        undrawn.add(a.startsWith('marker') ? 'marker' : 'filter');
+      }
     }
     for (final a in e.attributes) {
       final v = a.value;
@@ -61,6 +69,9 @@ List<String> svgFindings(String svg) {
     if (!ids.containsKey(r)) out.add('Something points at #$r, which is not defined, so it draws without it.');
   }
   if (stripped.isNotEmpty) out.add('The app removes ${stripped.join(', ')} before drawing.');
+  for (final name in undrawn) {
+    out.add(_notDrawn[name]!);
+  }
 
   if (box == null) return out;
   final background = _backgroundOf(root, box);
@@ -69,6 +80,8 @@ List<String> svgFindings(String svg) {
   final offCanvas = <String>[];
   final overflowing = <String>[];
   final faint = <String>[];
+  final texts = <({String text, _Box box})>[];
+  final strokes = <(double, double, double, double)>[];
   for (final e in root.descendantElements) {
     if (_transformed(e)) continue;
     final name = e.localName;
@@ -87,17 +100,27 @@ List<String> svgFindings(String svg) {
         'end' => (x - width, x),
         _ => (x, x + width),
       };
+      texts.add((text: text, box: (x: left, y: y - size * 0.8, width: right - left, height: size)));
       if (y < box.y || y - size > box.bottom || right < box.x || left > box.right) {
         offCanvas.add(label);
       } else if (left < box.x - 1 || right > box.right + 1) {
-        overflowing.add('"${text.length > 24 ? '${text.substring(0, 24)}…' : text}"');
+        overflowing.add(_short(text));
       }
       final fill = _color(_inherited(e, 'fill') ?? '#000');
       if (fill != null && background != null && _contrast(fill, background) < 3) {
-        faint.add('"${text.length > 24 ? '${text.substring(0, 24)}…' : text}"');
+        faint.add(_short(text));
       }
       continue;
     }
+    if (name == 'line') {
+      final l = _line(e)!;
+      final x1 = _num(e.getAttribute('x1')) ?? 0, y1 = _num(e.getAttribute('y1')) ?? 0;
+      final x2 = _num(e.getAttribute('x2')) ?? 0, y2 = _num(e.getAttribute('y2')) ?? 0;
+      strokes.add((x1, y1, x2, y2));
+      if (!l.overlaps(box)) offCanvas.add(label);
+      continue;
+    }
+    if (name == 'path' || name == 'polyline') strokes.addAll(_segments(e));
     final bounds = switch (name) {
       'rect' || 'image' || 'use' => _rect(e),
       'circle' => _circle(e, 'r', 'r'),
@@ -106,6 +129,24 @@ List<String> svgFindings(String svg) {
       _ => null,
     };
     if (bounds != null && !bounds.overlaps(box)) offCanvas.add(label);
+  }
+  final overlapping = <String>[];
+  for (var i = 0; i < texts.length; i++) {
+    for (var j = i + 1; j < texts.length; j++) {
+      final a = texts[i], b = texts[j];
+      if (_shrink(a.box).overlaps(_shrink(b.box))) overlapping.add('${_short(a.text)} and ${_short(b.text)}');
+    }
+  }
+  if (overlapping.isNotEmpty) out.add('Text overlaps other text: ${_some(overlapping)}. Move one of each pair.');
+  final crossed = <String>{
+    for (final t in texts)
+      for (final s in strokes)
+        if (_crosses(s, _shrink(t.box))) _short(t.text),
+  };
+  if (crossed.isNotEmpty) {
+    out.add(
+      'A line or arrow runs through text: ${_some(crossed.toList())}. Route it around, or put the label clear of it.',
+    );
   }
   if (tiny > 0) {
     out.add('$tiny text element(s) are under ${_minTextPx.round()} px when shown in the chat; enlarge them.');
@@ -240,4 +281,82 @@ double _luminance(int rgb) {
 double _contrast(int a, int b) {
   final la = _luminance(a), lb = _luminance(b);
   return (math.max(la, lb) + 0.05) / (math.min(la, lb) + 0.05);
+}
+
+/// SVG features the app's renderer does not draw, and what to do instead.
+const _notDrawn = {
+  'marker': '<marker> arrowheads are not drawn by the app: draw each arrowhead as a small <path> or <polygon>.',
+  'filter': 'Filters (blur, drop shadows) are not drawn by the app: fake a shadow with an offset, darker shape.',
+  'textPath': '<textPath> is not drawn by the app: place plain <text> (rotate it if needed).',
+  'animate': 'Animation is not shown by the app (it draws one still frame).',
+  'animateTransform': 'Animation is not shown by the app (it draws one still frame).',
+  'animateMotion': 'Animation is not shown by the app (it draws one still frame).',
+  'set': 'Animation is not shown by the app (it draws one still frame).',
+};
+
+String _short(String text) => '"${text.length > 24 ? '${text.substring(0, 24)}…' : text}"';
+
+/// A text box made a little smaller, so glyphs that merely touch don't count as overlapping.
+_Box _shrink(_Box b) =>
+    (x: b.x + b.width * 0.08, y: b.y + b.height * 0.2, width: b.width * 0.84, height: b.height * 0.6);
+
+/// The straight segments of a path made only of absolute M/L/H/V/Z commands, or of a polyline; curves and
+/// relative commands are skipped (their shape can't be known without drawing them).
+List<(double, double, double, double)> _segments(XmlElement e) {
+  final out = <(double, double, double, double)>[];
+  if (e.localName == 'polyline') {
+    final n = RegExp(r'-?[\d.]+(?:e-?\d+)?')
+        .allMatches(e.getAttribute('points') ?? '')
+        .map((m) => double.parse(m.group(0)!))
+        .toList();
+    for (var i = 0; i + 3 < n.length; i += 2) {
+      out.add((n[i], n[i + 1], n[i + 2], n[i + 3]));
+    }
+    return out;
+  }
+  final d = e.getAttribute('d') ?? '';
+  if (RegExp('[a-zA-Z]').allMatches(d).any((m) => !'MLHVZ'.contains(m.group(0)!))) return out;
+  var x = 0.0, y = 0.0;
+  var started = false;
+  for (final m in RegExp(r'([MLHVZ])([^MLHVZ]*)').allMatches(d)) {
+    final n = RegExp(r'-?[\d.]+(?:e-?\d+)?').allMatches(m.group(2)!).map((v) => double.parse(v.group(0)!)).toList();
+    switch (m.group(1)) {
+      case 'M' when n.length >= 2:
+        (x, y, started) = (n[0], n[1], true);
+      case 'L' when n.length >= 2 && started:
+        for (var i = 0; i + 1 < n.length; i += 2) {
+          out.add((x, y, n[i], n[i + 1]));
+          (x, y) = (n[i], n[i + 1]);
+        }
+      case 'H' when n.isNotEmpty && started:
+        out.add((x, y, n.last, y));
+        x = n.last;
+      case 'V' when n.isNotEmpty && started:
+        out.add((x, y, x, n.last));
+        y = n.last;
+    }
+  }
+  return out;
+}
+
+/// Whether segment [s] passes through box [b] (Liang–Barsky clipping).
+bool _crosses((double, double, double, double) s, _Box b) {
+  final (x1, y1, x2, y2) = s;
+  final dx = x2 - x1, dy = y2 - y1;
+  var t0 = 0.0, t1 = 1.0;
+  for (final (p, q) in [(-dx, x1 - b.x), (dx, b.right - x1), (-dy, y1 - b.y), (dy, b.bottom - y1)]) {
+    if (p == 0) {
+      if (q < 0) return false;
+    } else {
+      final r = q / p;
+      if (p < 0) {
+        if (r > t1) return false;
+        if (r > t0) t0 = r;
+      } else {
+        if (r < t0) return false;
+        if (r < t1) t1 = r;
+      }
+    }
+  }
+  return t0 <= t1;
 }

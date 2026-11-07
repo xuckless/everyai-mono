@@ -51,6 +51,26 @@ void main() {
     });
   });
 
+  test('what the app does not draw, overlapping text, and lines through labels', () {
+    const svg =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200">'
+        '<defs><marker id="head"><path d="M0 0 L10 5 L0 10 Z"/></marker></defs>'
+        '<line x1="20" y1="100" x2="380" y2="100" stroke="#000" marker-end="url(#head)"/>'
+        '<text x="150" y="105" font-size="20">Evaporation</text>'
+        '<text x="40" y="40" font-size="20">Condensation</text>'
+        '<text x="60" y="44" font-size="20">Title here</text>'
+        '<path d="M300 20 C 320 40, 340 60, 360 80"/></svg>';
+    final f = svgFindings(svg).join('\n');
+    expect(f, contains('<marker> arrowheads are not drawn'));
+    expect(f, contains('Text overlaps other text: "Condensation" and "Title here"'));
+    expect(f, contains('runs through text: "Evaporation"'));
+    // A curve's shape isn't guessed at.
+    const curve =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200">'
+        '<text x="150" y="105" font-size="20">Label</text><path d="M100 100 C 200 100, 250 100, 300 100"/></svg>';
+    expect(svgFindings(curve), isEmpty);
+  });
+
   group('look', () {
     final drawn = <String>[];
     Looker looker() => Looker(
