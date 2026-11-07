@@ -192,6 +192,7 @@ fn title(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const model = modelFor(app.cfg, .title);
     app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
     const aux = try app.aux(req);
+    if (aux.unavailable) return res.fail(.service_unavailable, "No model for side jobs: add an API key or a local model.");
     billing.preflight(app, req, who.user_id, app.catalog.facts(req.io, model).free or aux.byok) catch |err| switch (err) {
         error.PaymentRequired => {
             res.status = .payment_required;
@@ -380,6 +381,7 @@ fn skillDraft(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const model = modelFor(app.cfg, .compaction);
     app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
     const aux = try app.aux(req);
+    if (aux.unavailable) return res.fail(.service_unavailable, "No model for side jobs: add an API key or a local model.");
     billing.preflight(app, req, who.user_id, app.catalog.facts(req.io, model).free or aux.byok) catch |err| switch (err) {
         error.PaymentRequired => {
             res.status = .payment_required;

@@ -5,7 +5,7 @@
 <br/>
 
 **Every coding agent, one workspace.**<br/>
-<sub>Bring Claude Code, Codex, OpenCode, Antigravity and more, or our own agent, or all of them at once. EveryAI adds the workflows, checks and orchestration on top. Your keys, your subscriptions, and local models soon.</sub>
+<sub>Bring Claude Code, Codex, OpenCode, Antigravity and more, or our own agent, or all of them at once. EveryAI adds the workflows, checks and orchestration on top. Your keys, your subscriptions, and models on your own computer.</sub>
 
 <br/><br/>
 
@@ -26,7 +26,7 @@
 
 - **Runs the coding agents you already use** in one native app: Claude Code, Codex, OpenCode, Antigravity, Cursor, Copilot, Qwen, Kiro, Grok and any ACP agent, plus **the EveryAI harness**, our own agent for any model.
 - **Makes them better together**: our workflows, checks, rewind and tools work in every agent, and a session can move from one agent to another without losing a step.
-- **On your terms**: your own API keys (BYOK), your existing subscriptions, and local models (coming soon). EveryAI spends nothing on sessions it doesn't lead.
+- **On your terms**: your own API keys (BYOK), your existing subscriptions, and local models (Apple's on-device model, Ollama, LM Studio, llama.cpp and more). EveryAI spends nothing on sessions it doesn't lead.
 
 ## ✦ How it works
 
@@ -63,7 +63,7 @@ flowchart LR
 </tr>
 <tr>
 <td valign="top"><img src="docs/readme/approval.webp" alt="An approval card"/><br/>🛡️ <b>Safe by default</b><br/><sub>Per-call approvals, a safety floor for risky commands, and a checkpoint every turn.</sub></td>
-<td valign="top"><img src="docs/readme/keys.webp" alt="Adding your own API key"/><br/>🔑 <b>Your keys, your models</b><br/><sub>OpenRouter or Anthropic keys stay in your keychain. Local models are coming soon.</sub></td>
+<td valign="top"><img src="docs/readme/keys.webp" alt="Adding your own API key"/><br/>🔑 <b>Your keys, your models</b><br/><sub>OpenRouter or Anthropic keys stay in your keychain, or run a model on your own computer.</sub></td>
 </tr>
 </table>
 

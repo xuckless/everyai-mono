@@ -18,6 +18,7 @@ import 'package:every_ai/features/code/drivers/usage_limit.dart';
 import 'package:every_ai/features/code/harness/everyai/scrub.dart';
 import 'package:every_ai/features/code/harness/everyai/tools_io.dart';
 import 'package:every_ai/features/code/host/host.dart';
+import 'package:every_ai/features/models/domain/local_routes.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -549,6 +550,45 @@ void main() {
     final last = gateway.requests.last['messages']! as List;
     expect(jsonEncode(last), contains('do the new thing instead'));
     expect(events.whereType<StateChange>().last.executionStatus, ExecutionStatus.finished);
+  });
+
+  test('a small local model is called on its own server with the light profile', () async {
+    LocalRoutes.current = {
+      'local/qwen3:8b': LocalRoute(baseUrl: gateway.baseUrl, name: 'qwen3:8b', contextTokens: 8192, tools: true),
+    };
+    addTearDown(() => LocalRoutes.current = const {});
+    gateway.reply(text: 'Hi.');
+    final session = await harness.start(
+      SessionSpec(
+        workingDir: work,
+        model: 'local/qwen3:8b',
+        mode: AgentMode.fullAuto,
+        // Never used: a local model doesn't go through our gateway.
+        llmBaseUrl: 'http://127.0.0.1:9/v1',
+        llmApiKey: 'k',
+        sessionTag: 't',
+        initialMessage: 'hi',
+      ),
+    );
+    await drive(session);
+    final first = gateway.requests.first;
+    expect(first['model'], 'qwen3:8b');
+    final tools = {for (final t in first['tools']! as List) ((t as Map)['function'] as Map)['name']};
+    expect(tools, containsAll(lightTools));
+    expect(tools, isNot(contains('browser')));
+    expect(tools, isNot(contains('run_script')));
+    final system = ((first['messages']! as List).first as Map)['content']! as String;
+    expect(system, contains('You are a coding agent in EveryAI Code.'));
+    expect(system.length, lessThan(harnessRules.length));
+  });
+
+  test('a local model that is not running fails with a plain reason', () async {
+    LocalRoutes.current = const {};
+    final client = GatewayClient(baseUrl: 'http://127.0.0.1:9/v1', apiKey: '');
+    expect(
+      client.complete(model: 'local/gone', messages: const [], tools: const [], sessionTag: 't'),
+      throwsA(isA<LlmError>().having((e) => e.message, 'message', contains('not running'))),
+    );
   });
 
   test('a Claude session keeps edit and write and gets no rules block', () async {

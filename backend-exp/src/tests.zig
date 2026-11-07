@@ -4,4 +4,5 @@ test {
     _ = @import("remote_test.zig");
     _ = @import("hooks_test.zig");
     _ = @import("usage_test.zig");
+    _ = @import("local_test.zig");
 }

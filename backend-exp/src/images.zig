@@ -140,6 +140,11 @@ fn mimeOf(format: ?[]const u8, b64: []const u8) []const u8 {
 pub fn generate(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, o: Options, err_message: ?*[]const u8) ![]const Image {
     app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
     const aux = try app.aux(req);
+    // Images come from OpenRouter only; a local route can't make them.
+    if (aux.unavailable or aux.local) {
+        if (err_message) |m| m.* = "image generation needs an OpenRouter key (Settings → API keys)";
+        return error.UpstreamFailed;
+    }
     const free = app.catalog.facts(req.io, o.model).free or aux.byok;
     try billing.preflight(app, req, who.user_id, free);
     // Images are billed after the fact, so a request must fit what is left.

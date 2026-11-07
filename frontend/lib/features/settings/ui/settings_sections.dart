@@ -19,6 +19,7 @@ import '../../code/automations/ui/scheduled_tasks_body.dart';
 import '../../code/code_settings_providers.dart' show SettingsScope;
 import '../../code/ui/code_settings_section.dart';
 import '../../code/ui/mcp_settings_screen.dart';
+import '../../local_models/ui/local_models_section.dart';
 import '../../memory/ui/memory_screen.dart';
 import '../../models/models_providers.dart';
 import '../../models/ui/model_avatar.dart';
@@ -45,6 +46,7 @@ Widget settingsSectionBody(SettingsSection section, Map<String, String> args) =>
   SettingsSection.billing => const BillingBody(),
   SettingsSection.usage => const UsageBody(),
   SettingsSection.models => const ModelsSection(),
+  SettingsSection.localModels => const LocalModelsSection(),
   SettingsSection.memory => const MemoryBody(),
   SettingsSection.code => CodeSettingsSection(
     projectId: args['project'],

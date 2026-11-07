@@ -10,6 +10,9 @@ import '../../../core/ui/every_icons.dart';
 import '../../models/domain/model_catalog.dart';
 import '../../models/models_providers.dart';
 import '../../models/ui/model_avatar.dart';
+import '../../local_models/local_model_bridge.dart';
+import '../../local_models/ui/local_models_section.dart' show showLocalModelSetup;
+import '../../../core/platform/platform_kind.dart';
 import '../domain/reasoning_effort.dart';
 import '../../../core/motion/motion.dart';
 
@@ -70,6 +73,10 @@ class ModelChip extends ConsumerWidget {
           close();
           context.go(Routes.models);
         },
+        onBrowseLocal: () {
+          close();
+          showLocalModelSetup(context);
+        },
       ),
       child: chip,
     );
@@ -81,11 +88,13 @@ class _ModelPickerPanel extends ConsumerStatefulWidget {
     required this.selected,
     required this.onSelected,
     required this.onBrowse,
+    required this.onBrowseLocal,
     this.effort,
     this.onEffortChanged,
   });
 
   final ModelSpec selected;
+  final VoidCallback onBrowseLocal;
   final ReasoningEffort? effort;
   final ValueChanged<ReasoningEffort>? onEffortChanged;
   final ValueChanged<ModelSpec> onSelected;
@@ -104,7 +113,8 @@ class _ModelPickerPanelState extends ConsumerState<_ModelPickerPanel> {
     final theme = EveryTheme.of(context);
     final catalog = ref.watch(modelCatalogProvider);
     final library = ref.watch(libraryProvider).value ?? const <ModelSpec>[];
-    final pinned = {...library, widget.selected}.toList();
+    final local = ref.watch(localModelSpecsProvider);
+    final pinned = {...library, widget.selected}.where((s) => !local.contains(s)).toList();
     final q = _query.trim().toLowerCase();
     final matches = q.isEmpty
         ? const <ModelSpec>[]
@@ -159,9 +169,23 @@ class _ModelPickerPanelState extends ConsumerState<_ModelPickerPanel> {
               onChanged: (v) => setState(() => _query = v),
             ),
           ),
-          if (q.isEmpty)
-            for (final spec in pinned) row(spec)
-          else if (matches.isEmpty && !pinned.any((s) => s.name.toLowerCase().contains(q)))
+          if (q.isEmpty) ...[
+            for (final spec in pinned) row(spec),
+            // Models on this computer, and the way to get some (desktops).
+            if (local.isNotEmpty || Host.isDesktop) ...[
+              const PopoverHeader('On this computer'),
+              for (final spec in local) row(spec),
+              if (Host.isDesktop)
+                PopoverRow(
+                  key: const ValueKey('model-picker.get-local'),
+                  title: local.isEmpty ? 'Get local models' : 'More local models',
+                  leading: AdaptiveIcon(EveryIcon.add, size: 16, color: theme.textMuted),
+                  onTap: () {
+                    widget.onBrowseLocal();
+                  },
+                ),
+            ],
+          ] else if (matches.isEmpty && !pinned.any((s) => s.name.toLowerCase().contains(q)))
             PopoverRow(title: 'No models match "$_query"')
           else ...[
             for (final spec in pinned.where((s) => s.name.toLowerCase().contains(q))) row(spec),

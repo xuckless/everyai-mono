@@ -37,10 +37,15 @@ final class ApiClient {
     AccessTokenSource? tokens,
     this.waitForServer = false,
     this.wakeBackoff = const Duration(milliseconds: 500),
+    this.defaultHeaders = const {},
   }) : _client = client, // ignore: prefer_initializing_formals
        _tokens = tokens; // ignore: prefer_initializing_formals
 
   final Uri baseUrl;
+
+  /// Sent with every request, under the call's own headers (the bundled
+  /// server's `X-EveryAI-Local` token).
+  final Map<String, String> defaultHeaders;
   final http.Client _client;
   final AccessTokenSource? _tokens;
 
@@ -238,7 +243,9 @@ final class ApiClient {
     bool isRetry = false,
   }) async {
     if (waitForServer) await awaitOnline();
-    final request = http.AbortableRequest(method, resolve(path), abortTrigger: cancel)..headers.addAll(headers);
+    final request = http.AbortableRequest(method, resolve(path), abortTrigger: cancel)
+      ..headers.addAll(defaultHeaders)
+      ..headers.addAll(headers);
     if (json != null) {
       request
         ..headers['Content-Type'] = 'application/json; charset=utf-8'

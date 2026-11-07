@@ -104,7 +104,8 @@ pub fn available(app: *App, ctx: anytype, user_id: []const u8) !i64 {
 
 /// 402 before a paid call when nothing is left. Free models always pass.
 pub fn preflight(app: *App, ctx: anytype, user_id: []const u8, model_is_free: bool) !void {
-    if (model_is_free) return;
+    // The app's sidecar (local.zig) charges nothing.
+    if (model_is_free or app.cfg.local_mode) return;
     if (try available(app, ctx, user_id) <= 0) return error.PaymentRequired;
 }
 
@@ -144,7 +145,10 @@ pub fn charge(app: *App, ctx: anytype, user_id: []const u8, u: Usage) !Charge {
             return chargeIn(tx, c, user, call, markup);
         }
     };
-    return app.db.transaction(ctx, .{ .retries = 3 }, Run.run, .{ ctx, user_id, u, app.cfg.markup });
+    var call = u;
+    // The sidecar records usage but never charges (local models, own keys).
+    if (app.cfg.local_mode) call.byok = true;
+    return app.db.transaction(ctx, .{ .retries = 3 }, Run.run, .{ ctx, user_id, call, app.cfg.markup });
 }
 
 fn chargeIn(db: anytype, ctx: anytype, user_id: []const u8, u: Usage, markup: f64) !Charge {
@@ -169,6 +173,7 @@ fn chargeIn(db: anytype, ctx: anytype, user_id: []const u8, u: Usage, markup: f6
 
 /// usage_events.provider: "openrouter" | "anthropic", with "-byok" on the user's key.
 fn providerLabel(u: Usage) []const u8 {
+    if (std.mem.eql(u8, u.provider, "local")) return "local";
     if (!u.byok) return u.provider;
     return if (std.mem.eql(u8, u.provider, "anthropic")) "anthropic-byok" else "openrouter-byok";
 }

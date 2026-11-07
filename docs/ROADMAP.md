@@ -15,8 +15,9 @@ and adds what they don't have:
    product.
 2. **BYOK.** Users bring their own API keys and their own subscriptions. EveryAI holds no provider keys in the dev
    build and spends nothing on sessions it doesn't lead.
-3. **Local AI.** Local models (Ollama, LM Studio, llama.cpp) get the same harness and tools as online ones. Coming
-   next.
+3. **Local AI.** Models on the user's computer (Apple's on-device model, Ollama, LM Studio, llama.cpp, Jan, vLLM, MLX)
+   run Chat and the EveryAI harness. A bundled copy of the backend runs chats on them, and on the user's own keys, on
+   the computer itself; small models get a lighter harness profile.
 4. **What exists works.** Chat with artifacts, Code with approvals, worktrees and checkpoints, remote control, skills
    and MCP are built and run on macOS (pre-alpha:
    expect bugs).
@@ -54,8 +55,9 @@ In order:
 1. **Easy setup and migration:** desktop apps detected (Claude, Cursor, Antigravity, Codex), the agent's official
    installer and its own sign-in run in EveryAI's terminal, and the user's MCP servers, rules and sessions brought over
    with a yes.
-2. **Local models:** Ollama, LM Studio and llama.cpp called from the app, a lighter harness profile for small models,
-   and an offline mode.
+2. **Local models (built 2026-11-06, not live-tested):** servers found on this computer, Apple's model as the macOS
+   chat default, sized starter packs downloaded in one click, Chat through the bundled backend, the EveryAI harness
+   straight to the server. Next: outside harnesses on local models, and local models inside WSL-like environments.
 3. **Windows parity:** a Windows shell for the EveryAI harness, WSL as a per-project environment, process cleanup, and
    a test pass on real machines.
 4. **The standalone package:** the same MCP server, skills and workflows as a plugin for Claude Code, Codex and

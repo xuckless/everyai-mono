@@ -21,6 +21,10 @@ import '../../artifacts/ui/panel_split.dart';
 import '../../slash/chat_actions.dart';
 import '../../usage/ui/usage_meter.dart';
 import '../chat_providers.dart';
+import '../data/chat_transport.dart' show SplitTransport;
+import '../../local_models/local_model_bridge.dart' show chatNeedsModelProvider;
+import '../../local_models/ui/local_models_section.dart' show showLocalModelSetup;
+import '../../../core/platform/platform_kind.dart';
 import '../domain/ask_user.dart';
 import '../domain/message.dart';
 import '../domain/chat_session.dart';
@@ -59,6 +63,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final usage = ref.watch(provider.select((s) => s.usage));
     final asking = ref.watch(provider.select((s) => s.pendingTools.any((t) => t.name == askUserTool)));
     final home = isEmpty && phase is! Loading;
+    // Only with the real transport (tests drive a fake one, with no keys and no models).
+    final needsModel = home && ref.watch(chatTransportProvider) is SplitTransport && ref.watch(chatNeedsModelProvider);
 
     // Like Claude: a new or revised artifact (or a deck) opens the side panel.
     ref.listen(provider.select((s) => s.liveParts), (previous, next) {
@@ -132,7 +138,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         child: switch (phase) {
           Loading() => const Center(child: AdaptiveProgress()),
           _ when home => _Home(
-            composer: composer,
+            composer: needsModel ? _NoModelComposer(composer: composer) : composer,
+            needsModel: needsModel,
             onStarter: (starter) {
               controller.setMode(starter.mode);
               _composer.currentState?.prefill(starter.prompt);
@@ -178,9 +185,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
 /// New-chat landing: greeting, a large centered composer and starter prompts.
 class _Home extends StatelessWidget {
-  const _Home({required this.composer, required this.onStarter});
+  const _Home({required this.composer, required this.onStarter, this.needsModel = false});
 
   final Widget composer;
+
+  /// No key and no local model: the "Chat needs a model" card leads.
+  final bool needsModel;
   final ValueChanged<Starter> onStarter;
 
   static String _greeting(DateTime now) => switch (now.hour) {
@@ -211,27 +221,91 @@ class _Home extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 28),
+              if (needsModel) ...[const _NeedsModelCard(), const SizedBox(height: 16)],
               composer,
               const SizedBox(height: 16),
-              Wrap(
-                alignment: WrapAlignment.center,
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final (i, starter) in chatStarters.indexed)
-                    KitChip(
-                      label: starter.label,
-                      leading: AdaptiveIcon(starter.icon, size: 14),
-                      onTap: () => onStarter(starter),
-                    ).rowIn(i, base: const Duration(milliseconds: 60)),
-                ],
-              ),
+              if (!needsModel)
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final (i, starter) in chatStarters.indexed)
+                      KitChip(
+                        label: starter.label,
+                        leading: AdaptiveIcon(starter.icon, size: 14),
+                        onTap: () => onStarter(starter),
+                      ).rowIn(i, base: const Duration(milliseconds: 60)),
+                  ],
+                ),
             ],
           ),
         ),
       ),
     );
   }
+}
+
+/// No key and no local model: what to do about it, in place of the starters.
+class _NeedsModelCard extends StatelessWidget {
+  const _NeedsModelCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return KitCard(
+      key: const ValueKey('chat.needs-model'),
+      padding: const EdgeInsets.fromLTRB(24, 22, 24, 22),
+      child: Column(
+        children: [
+          Text('Chat needs a model', style: theme.type.headline.tint(theme.text), textAlign: TextAlign.center),
+          const SizedBox(height: 6),
+          Text(
+            Host.isDesktop
+                ? 'Run one on this computer, free and private, or add an API key.'
+                : 'Add an API key, or run a model on your computer and use EveryAI there.',
+            style: theme.type.body.tint(theme.textMuted),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 16),
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              if (Host.isDesktop)
+                KitButton(
+                  key: const ValueKey('chat.needs-model.local'),
+                  label: 'Set up a local model',
+                  onPressed: () => showLocalModelSetup(context),
+                ),
+              KitButton(
+                key: const ValueKey('chat.needs-model.key'),
+                label: 'Add API key',
+                style: Host.isDesktop ? KitButtonStyle.soft : KitButtonStyle.primary,
+                onPressed: () => showSettings(context, section: SettingsSection.apiKeys),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The composer, visible but closed until a model is set up.
+class _NoModelComposer extends StatelessWidget {
+  const _NoModelComposer({required this.composer});
+
+  final Widget composer;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    label: 'Set up a model to start chatting',
+    child: IgnorePointer(
+      child: Opacity(opacity: 0.45, child: ExcludeSemantics(child: composer)),
+    ),
+  );
 }
 
 class _Transcript extends ConsumerWidget {

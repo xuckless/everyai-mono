@@ -17,6 +17,7 @@ const _vendorHosts = {
   'docs.augmentcode.com',
   'docs.factory.ai',
   'x.ai',
+  'ollama.com',
 };
 
 void main() {

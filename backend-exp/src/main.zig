@@ -30,6 +30,7 @@ pub const remote = @import("remote.zig");
 pub const hooks = @import("hooks.zig");
 pub const byok = @import("byok.zig");
 pub const decide = @import("decide.zig");
+pub const local = @import("local.zig");
 
 pub const std_options = anole.std_options;
 
@@ -55,6 +56,11 @@ pub const App = struct {
     /// Tests: the transport for calls on a user's own key, instead of a
     /// client built with that key (the Anthropic adapter still wraps it).
     keyed_transport: ?openrouter.Upstream = null,
+    /// Tests: the transport for local-model calls (local.zig), instead of a
+    /// client on the server the app named.
+    local_transport: ?openrouter.Upstream = null,
+    /// Tests: keyless and keyed web searches answered without the network.
+    search_fake: ?local.SearchFake = null,
     catalog: models.Catalog,
     /// Chat turns parked on a tool the app runs (`POST /v1/chat/tool_result`).
     waits: tool_wait.Waits = .{},
@@ -78,6 +84,14 @@ pub const App = struct {
         provider: []const u8,
         /// On the user's own key (byok.zig): recorded, never charged.
         byok: bool = false,
+        /// A local model (local.zig): the model the server is asked for is set by the route.
+        local: bool = false,
+        /// Side jobs only: nowhere to send them (local mode, no key, no local
+        /// side-job model); callers skip the job.
+        unavailable: bool = false,
+        /// Web searches on this route go to this engine instead of OpenRouter's
+        /// web plugin (no OpenRouter key here, or a local model).
+        search: ?local.Engine = null,
     };
 
     /// Where a call to `model` goes. `native_ok` is false for calls that need
@@ -93,6 +107,10 @@ pub const App = struct {
     /// goes out on that key and isn't charged. An Anthropic key takes
     /// `anthropic/*` models natively; an OpenRouter key takes the rest.
     pub fn routeFor(self: *App, req: *anole.Request, model: []const u8, native_ok: bool) !Route {
+        if (self.cfg.local_mode and local.isLocalId(model)) {
+            const server = local.serverOf(req, .chat) orelse return error.NoLocalServer;
+            return self.onLocal(req, server, model);
+        }
         const keys = byok.Keys.of(req);
         if (native_ok and byok.isAnthropic(model)) if (keys.anthropic) |k| {
             const adapter = try req.arena.create(anthropic.Adapter);
@@ -118,7 +136,36 @@ pub const App = struct {
     /// OpenRouter models: on the user's OpenRouter key when there is one.
     pub fn aux(self: *App, req: *anole.Request) !Route {
         if (byok.Keys.of(req).openrouter) |k| return self.onOpenRouterKey(req, k);
+        if (self.cfg.openrouter_api_key == null and self.cfg.local_mode) {
+            // No OpenRouter anywhere: the app's local side-job model, else nothing.
+            const engine = local.engineOf(req);
+            if (local.auxModel(req)) |m| if (local.serverOf(req, .aux)) |server| {
+                var r = try self.onLocal(req, server, m);
+                r.search = engine;
+                return r;
+            };
+            return .{ .up = self.upstream, .provider = "local", .byok = true, .unavailable = true, .search = engine };
+        }
         return .{ .up = self.upstream, .provider = "openrouter" };
+    }
+
+    /// Whether `model` is a local one this request can run (local mode, a server named).
+    pub fn isLocal(self: *App, req: *anole.Request, model: []const u8) bool {
+        return self.cfg.local_mode and local.isLocalId(model) and local.serverOf(req, .chat) != null;
+    }
+
+    fn onLocal(self: *App, req: *anole.Request, server: local.Server, model: []const u8) !Route {
+        const rw = try req.arena.create(local.Rewrite);
+        rw.* = .{
+            .model = model,
+            .inner = self.local_transport orelse inner: {
+                const client = try req.arena.create(openrouter.Client);
+                // A local server usually wants no key; the client needs one to send anything.
+                client.* = .{ .base_url = server.base_url, .api_key = if (server.api_key.len > 0) server.api_key else "local" };
+                break :inner client.upstream();
+            },
+        };
+        return .{ .up = rw.upstream(), .provider = "local", .byok = true, .local = true, .search = local.engineOf(req) };
     }
 
     fn onOpenRouterKey(self: *App, req: *anole.Request, key: []const u8) !Route {
@@ -150,6 +197,8 @@ pub fn routes(app: *anole.Server(App), state: *App) !void {
         .window = .fromSeconds(60),
         .on_error = .deny,
     }));
+    // Local mode (the app's sidecar): every route but the probes needs the launch token.
+    if (state.cfg.local_mode) app.use(local.Guard{ .token = if (state.cfg.local_token) |t| t.expose() else "" });
     // /readyz waits for the model catalog: without it chat can't price or route.
     try app.health(.{}).addCheck("catalog", catalogLoaded, state);
     app.openapi(.{ .info = .{ .title = "EveryAI API", .version = "0.1.0-dev-nonsigned" } });
@@ -195,6 +244,10 @@ pub fn main(init: std.process.Init) !void {
     const env_files: []const []const u8 = if (anole.env.environment() == .development) &.{ ".env", "../.env" } else &.{};
     const cfg = try anole.config.load(config.Config, init, .{ .env_files = env_files });
 
+    if (local.startProblem(cfg)) |problem| {
+        std.log.err("refusing to start: {s}", .{problem});
+        return error.BadLocalMode;
+    }
     if (config.lanExposure(cfg)) {
         std.log.err("refusing to start: HOST={s} is reachable from the network and DEV_AUTH=true lets anyone there use the dev account. " ++
             "Set DEV_AUTH=false, bind HOST=127.0.0.1, or set DEV_AUTH_LAN=true to accept this on a trusted LAN.", .{cfg.host});
@@ -320,6 +373,7 @@ test {
     _ = hooks;
     _ = byok;
     _ = decide;
+    _ = local;
     // Modules the app reaches only through others: listed so their tests run too.
     _ = @import("auth.zig");
     _ = @import("config.zig");

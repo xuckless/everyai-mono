@@ -258,6 +258,8 @@ pub fn body(arena: std.mem.Allocator, model: []const u8, questions: []const Ques
 pub fn decide(app: *App, cx: anytype, user_id: []const u8, aux: App.Route, questions: []const Question, text: []const u8, opts: Options) !Outcome {
     const arena = cx.arena;
     const model = routing.modelFor(app.cfg, .decide);
+    // Local mode with no side-job model: every answer is "unsure".
+    if (aux.unavailable) return .{ .answers = try parseAnswers(arena, questions, ""), .model = "" };
     try billing.preflight(app, cx, user_id, app.catalog.facts(cx.io, model).free or aux.byok);
     const req_body = try body(arena, model, questions, text, opts.instructions);
     const s = try aux.up.post(openrouter.ctxOf(cx), "/chat/completions", req_body, &.{});

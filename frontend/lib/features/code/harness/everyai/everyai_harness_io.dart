@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 
+import '../../../models/domain/local_routes.dart';
 import '../../domain/agent_mode.dart';
 import '../../domain/compaction.dart';
 import '../../domain/mcp_tool_check.dart' show McpToolsReport;
@@ -94,7 +95,9 @@ final class EveryAIHarness implements Harness, ForksSessions, AttachesBriefed, A
     if (!dir.existsSync()) {
       throw const HarnessError("This session's history is no longer on this computer, so it can't be resumed.");
     }
-    final session = await EveryAISession._load(conversationId, dir, await gatewayKey(), client);
+    // Offline (a local-model session) the gateway key can't be fetched; local calls don't need it.
+    final key = await gatewayKey().then((k) => k, onError: (Object _) => '');
+    final session = await EveryAISession._load(conversationId, dir, key, client);
     _sessions[conversationId] = session;
     return session;
   }
@@ -553,6 +556,18 @@ final class EveryAISession
   /// (fixed for the session, so the cached prefix holds after a model switch).
   late ModelFamily family = familyOf(_spec.model);
 
+  /// The model's window: the session's, or what its local server reports.
+  int get _window => _spec.maxInputTokens ?? LocalRoutes.of(_spec.model)?.contextTokens ?? 0;
+
+  /// A small local model (a window of 32K or less, or unknown): the short
+  /// rules and the core tools only ([lightTools]), so the prompt leaves room
+  /// for the work. Big local models get the full harness.
+  bool get _light {
+    if (!LocalRoute.isLocal(_spec.model)) return false;
+    final window = _window;
+    return window <= 32768;
+  }
+
   static Map<String, Object?> _specToJson(SessionSpec s) => {
     'working_dir': s.workingDir,
     'model': s.model,
@@ -610,7 +625,7 @@ final class EveryAISession
     final suffix = spec.promptSuffix == null ? '' : forHeldClientTools(spec.promptSuffix!);
     const prompt = ContextKind.systemPrompt;
     final parts = [
-      const ContextPart(prompt, harnessRules),
+      ContextPart(prompt, _light ? lightHarnessRules : harnessRules),
       if (familyRules(family) case final rules?) ContextPart(prompt, rules),
       if (spec.persona case final persona?) ContextPart(prompt, persona),
       if (suffix.isNotEmpty) ContextPart(prompt, suffix),
@@ -687,8 +702,8 @@ final class EveryAISession
   List<Map<String, Object?>> get _toolSpecs =>
       _forkTools ??
       [
-        ...builtInToolSpecs(only: _spec.tools, applyPatch: family == ModelFamily.gpt),
-        if (_scripting) runScriptSpec,
+        ...builtInToolSpecs(only: _spec.tools ?? (_light ? lightTools : null), applyPatch: family == ModelFamily.gpt),
+        if (_scripting && !_light) runScriptSpec,
         // A workflow agent reads the memory in its prompt; the lead decides what is kept.
         if (!_hosted) memoryToolSpec,
         ..._mcp.specs,
@@ -1165,7 +1180,7 @@ final class EveryAISession
   /// The reply's token limit: the session's, or what the window has left
   /// after the last call's input (less a margin), but never under 8K.
   int _outputRoom() {
-    final window = _spec.maxInputTokens ?? 0;
+    final window = _window;
     if (window <= 0 || lastPromptTokens <= 0) return _spec.maxOutputTokens;
     final room = window - lastPromptTokens - 4000;
     final floor = _spec.maxOutputTokens < 8192 ? _spec.maxOutputTokens : 8192;
@@ -1179,7 +1194,7 @@ final class EveryAISession
   Future<void> _maybeCompact() async {
     // First the cheap step: old tool output goes (rarely, so the cached prefix holds).
     if (clearOldToolOutput(_messages, needed: await _stillNeeded()) > 0) _rewriteMessages();
-    final window = _spec.maxInputTokens ?? 0;
+    final window = _window;
     if (window <= 0 || _spec.autoCompactAt <= 0 || lastPromptTokens < window * _spec.autoCompactAt) return;
     await compact();
   }

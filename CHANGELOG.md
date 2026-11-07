@@ -3,6 +3,21 @@
 EveryAI is in alpha. Signed releases start at `0.1.0-alpha.1`; the earlier unsigned dev build was
 `0.1.0-dev-nonsigned`. Earlier changes are listed by date and pull request.
 
+## Unreleased: local models
+
+- **Models on your computer.** EveryAI finds Ollama, LM Studio, llama.cpp, Jan, vLLM and MLX servers, and Apple's
+  on-device model through `fm serve` (after you agree to Apple's terms once in EveryAI's terminal). Add any other
+  server by its URL.
+- **One-click packs.** Settings → Local models reads your RAM, GPU memory and free disk and offers Light, Balanced and
+  Best packs (a chat and a coding model), greyed out when they won't fit. Ollama downloads them in the background;
+  without Ollama, its official installer is typed into EveryAI's terminal for you.
+- **Chat runs where the model is.** A copy of the EveryAI server ships in the app and runs chats on local models and
+  on your own keys on your computer, so your keys no longer pass through our server. Web search works without a key.
+- **Apple's model is the default chat model on macOS** when it's there. With no key and no local model, Chat says
+  what to set up instead of failing.
+- **Code on local models.** The EveryAI harness calls the local server directly; small models get a lighter set of
+  tools and rules. Outside agents keep working with no key and no model.
+
 ## 0.1.0-alpha.4 (2026-11-06): a cheaper execution loop, and no AI credit in commits
 
 - **Runtime profiles.** Commands that take 3 s or more are timed on every harness (approval waits left out) and kept
