@@ -86,7 +86,12 @@ const appToolProperties = <String, Object?>{
   'to_y': {'type': 'number'},
   'steps': {'type': 'integer', 'description': "adjust: the slider's steps to move (negative: down)"},
   'script': {'type': 'string'},
-  'device': {'type': 'string', 'description': 'boot: a name from devices (iPhone 16, Pixel_9_API_36)'},
+  'device': {
+    'type': 'string',
+    'description':
+        'boot: a name from devices (iPhone 16, Pixel_9_API_36). With source ios or android: which running device '
+        'to drive when several are',
+  },
   'key': {'type': 'string', 'description': 'key: a key or shortcut (Enter, Escape, Tab, cmd+s, ctrl+a)'},
   'window': {'type': 'string', 'description': 'desktop: which window, by (part of) its title'},
   'count': {

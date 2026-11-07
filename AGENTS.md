@@ -929,6 +929,10 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   through scrcpy's control socket. Checked in a real macOS build with `tool/live_apps/device_view_demo.dart` (both
   device views; a tap sent through the view opened the app). Dev probe `tool/live_apps/android_probe_test.dart`
   (`EVERYAI_ANDROID`).
+  Fix #31 (2026-11-07): `source: "android"`/`"ios"` with no device of the session's yet (an outside lead, an emulator
+  its shells never named) takes the one running device no other session holds (`claimNamedDevice`; several: `device`
+  picks). React Native: `reload` detaches the inspector socket, every attach sends `Runtime.runIfWaitingForDebugger`,
+  a 20 s timeout drops the socket (the reported freeze after reload wasn't reproduced; no RN app here).
 - **Desktop windows (2026-11-06).** The `app` tool's source "desktop" (macOS) drives the windows of apps the session
   started (its shells' process trees; outside leads: the pids the host passes) or built in the project
   (`live/desktop_window_io.dart`). Through `everyai-ax`, our own Swift helper (`tool/ax_helper/main.swift`; dev build

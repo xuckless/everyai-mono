@@ -3,6 +3,8 @@
 import 'dart:io';
 import 'dart:isolate';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import '../../../../core/security/untrusted.dart';
 import '../../live/app_endpoints.dart';
 import '../../live/app_sources.dart';
@@ -59,6 +61,9 @@ Future<ToolOutput> runAppTool(
       if (await _foreignDevTools(ep, windowPids, root) case final why?) return ToolOutput('Error: $why', isError: true);
       AppSources.point(sessions.first, ep);
     }
+  }
+  if (action != 'list') {
+    if (claimNamedDevice(source, args, sessions) case final why?) return ToolOutput('Error: $why', isError: true);
   }
   final apps = AppSources.running(sessions);
   if (action == 'list') {
@@ -300,6 +305,54 @@ Future<ToolOutput> _devices(String action, Map<String, Object?> args, String ses
   } on AppError catch (e) {
     return ToolOutput('Error: ${e.message}', isError: true);
   }
+}
+
+/// `source: "android"` or `"ios"` while this session has no such device yet (an outside lead, or an emulator started
+/// where its shells don't show): takes the running device no other session holds, or the one `device` names. Why
+/// none could be taken, or null (taken, or nothing to do).
+String? claimNamedDevice(
+  String source,
+  Map<String, Object?> args,
+  List<String> sessions, {
+  @visibleForTesting List<AdbDevice>? android,
+  @visibleForTesting List<SimDevice>? simulators,
+}) {
+  final s = source.toLowerCase();
+  final kind = switch (s) {
+    'android' => AppKind.android,
+    'ios' => AppKind.ios,
+    _ => null,
+  };
+  if (kind == null || AppSources.running(sessions).any((a) => a.kind == kind)) return null;
+  final isAndroid = kind == AppKind.android;
+  final want = ((args['device'] as String?) ?? '').trim().toLowerCase().replaceAll('_', ' ');
+  bool named(List<String> names) => want.isEmpty || names.any((n) => n.toLowerCase().replaceAll('_', ' ') == want);
+  final DeviceHolds holds = isAndroid ? AndroidDevices.holds : IosSimulators.holds;
+  final all = isAndroid
+      ? [
+          for (final d in android ?? AndroidDevices.ready)
+            if (named([d.serial, d.model, d.name, ?d.avd])) (d.serial, '${d.name} (${d.serial})'),
+        ]
+      : [
+          for (final d in simulators ?? IosSimulators.booted)
+            if (named([d.udid, d.name])) (d.udid, '${d.name} (${d.runtime})'),
+        ];
+  final free = all.where((d) => holds.holder(d.$1) == null || sessions.contains(holds.holder(d.$1))).toList();
+  final what = isAndroid ? 'Android emulator or device' : 'iOS Simulator';
+  final up = isAndroid ? 'running' : 'booted';
+  if (free.length == 1) {
+    holds.claim(free.single.$1, sessions.first);
+    return null;
+  }
+  if (free.length > 1) {
+    return 'several ${what}s are $up: ${free.map((d) => d.$2).join('; ')}. Pass device with the one to use.';
+  }
+  if (all.isNotEmpty) {
+    return '${all.map((d) => d.$2).join('; ')} ${all.length == 1 ? 'is' : 'are'} in use by another session.';
+  }
+  return want.isEmpty
+      ? 'no $up $what (devices lists them; boot starts one).'
+      : 'no $up $what called "${args['device']}" (devices lists them).';
 }
 
 String _heldText(DeviceHolds holds, String id, String session) {
