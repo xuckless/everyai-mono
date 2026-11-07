@@ -87,3 +87,21 @@ Future<ui.Image?> captureImage(
     build.finalizeTree();
   }
 }
+
+/// [pngs] scaled down to [width] pixels across (kept as they are when smaller or undecodable), for thumbnails.
+Future<List<Uint8List>> shrinkPngs(Iterable<Uint8List> pngs, {int width = 320}) async {
+  final out = <Uint8List>[];
+  for (final png in pngs) {
+    try {
+      final codec = await ui.instantiateImageCodec(png, targetWidth: width);
+      final frame = await codec.getNextFrame();
+      codec.dispose();
+      final small = await pngOf(frame.image);
+      frame.image.dispose();
+      out.add(small != null && small.length < png.length ? small : png);
+    } on Object {
+      out.add(png);
+    }
+  }
+  return out;
+}

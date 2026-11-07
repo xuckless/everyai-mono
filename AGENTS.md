@@ -1079,6 +1079,33 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   their reports and results dropped (`_quietRuns`), so nothing wakes the lead; `runningWork` (`SessionWork` in
   `domain/session_work.dart`) says what runs. UI: `StopAllButton` (a small up-chevron opening one kit menu row) beside
   Send/Stop while more than the lead's turn runs, and on Board cards while an open session runs anything.
+- **SVG maker: figures, look, slides, svg_script (2026-11-07; branch `feat/svg-maker`, plan
+  `~/.claude/plans/svg-maker.md`).** Owner: render + look tool, figures by id, vector exports where possible, svg_script
+  in a Deno sandbox (desktop), unbounded slide design (presets plus a free layout), one quiet check row, and Point and
+  ask / Figures page / Insert into… / basic hand edits.
+  - `tool_result` takes `images` (≤6 PNG/JPEG/WebP data URLs, 24 MiB): `chat.zig` `Looks` adds them as a user message
+    after the step's tool results. Client tools `look {id, slide?}` and `svg_script {id?, title?, code}`.
+  - Figures (`artifacts/domain/figures.dart`): render_svg / svg_script / render_chart / render_diagram with an `id` are
+    versioned artifacts (edit_artifact edits the markup, Mermaid, or the chart's compact JSON);
+    `![caption](figure:id)` in Markdown expands at render and export time. `make_slides` with an id is versioned too.
+  - Slides: `domain/slide_spec.dart` compiles every slide to positioned elements on 960×540 (presets title, bullets,
+    figure_right/left, figure, background, grid, free; any layout adds elements; a first `title` slide replaces the
+    automatic one); `SlideCanvas` draws them, pictures pre-drawn by `slideArtProvider`. PPTX is native elements
+    (text boxes, shapes, arrows, tables, pictures with PNG + svgBlip); PDF draws SVG figures as vectors.
+  - Checks (`artifacts/checks/`): `svg_lint`, `slide_lint` (TextPainter-measured), offscreen `capture`, `look.dart`
+    (`Looker`: figures, charts, decks up to 6 slides, document pages + their figures).
+  - `artifacts/script/`: svg_script runs Deno with no permissions, 15 s, vendored d3-shape 3.2.0 + Rough.js 4.6.6
+    (`assets/svg_script/`, notices added); off on the web.
+  - UI: `ui/look_row.dart` (sealed `LookOutcome`; "Checked fig-x · 2 to fix", opens to the pictures and findings);
+    figure cards get a ⋯ menu (`ui/figure_actions.dart`): Point and ask (`FigureCardMode` viewing/picking, the part's
+    id goes to the composer via `composerInsertProvider`), Edit colours and text (`domain/svg_parts.dart`), Insert
+    into a document / Add as a slide (user versions). Artifacts page: All | Figures, with where each is used.
+  - Rig for agents: `frontend/tool/figure_rig/look_rig_test.dart` (calls.json in, look.txt + pictures out). Three
+    agent trials drove the tools; their fixes are in the commits.
+  - Charts: `colors` field, word units named once on the axis. svg_lint follows translate/scale transforms, curves
+    and the colour under each label.
+  - Not done: wide Markdown tables cut in page pictures, page breaks splitting a line, charts on dark decks drawn as
+    a white card, text-crossing checks for rotated groups. No live model run.
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),

@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/net/api_error.dart';
 import '../../core/preferences.dart';
 import '../../core/providers.dart';
+import '../artifacts/checks/capture.dart' show shrinkPngs;
 import '../artifacts/checks/look.dart';
 import '../artifacts/script/svg_script.dart';
 import '../artifacts/checks/tool_checks.dart';
@@ -382,6 +383,12 @@ final class ChatController extends Notifier<ChatSessionState> {
       createdAt: DateTime.now(),
     );
     final answer = await ref.read(lookerProvider).look(wait.argumentsJson, [...state.messages, turn]);
+    if (!ref.mounted) return;
+    final id = switch (_decodeArgs(wait.argumentsJson)) {
+      {'id': final String id} => id,
+      _ => '',
+    };
+    _recordResult?.call(wait.id, lookRecord(id, answer, thumbnails: await shrinkPngs(answer.pictures.take(3))));
     if (!ref.mounted) return;
     try {
       await resolveTool(

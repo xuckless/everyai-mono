@@ -14,6 +14,7 @@ import '../domain/figures.dart';
 import '../domain/slide_spec.dart';
 import '../domain/drawing.dart';
 import 'download_button.dart';
+import 'figure_actions.dart';
 import 'image_view.dart';
 import '../domain/chart_spec.dart';
 import 'renderers/chart_view.dart';
@@ -184,6 +185,14 @@ class InlineVisual extends ConsumerWidget {
       },
     ].nonNulls.join(' · ');
 
+    // A figure (an SVG, chart or diagram with an id) gets the figure menu, and an SVG one can be pointed at.
+    final figureId =
+        isArtifact &&
+            const {VisualKind.svg, VisualKind.chart, VisualKind.diagram}.contains(visual.kind) &&
+            visual.str('id').isNotEmpty
+        ? visual.str('id')
+        : null;
+    final picking = figureId != null && ref.watch(figureCardModeProvider(visual.callId)) == FigureCardMode.picking;
     final header = Row(
       children: [
         Container(
@@ -211,6 +220,7 @@ class InlineVisual extends ConsumerWidget {
             ],
           ),
         ),
+        if (figureId != null) FigureMenu(visual: visual, figureId: figureId, conversationId: conversationId),
         if (!kIsWeb)
           DownloadButton(visual: visual, artifacts: ref.watch(conversationArtifactsProvider(conversationId))),
         AdaptiveIconButton(icon: EveryIcon.openPanel, tooltip: 'Open in side panel', onPressed: open),
@@ -234,7 +244,14 @@ class InlineVisual extends ConsumerWidget {
             const SizedBox(height: 12),
             Padding(
               padding: const EdgeInsets.only(right: 6),
-              child: VisualBody(visual: visual, conversationId: conversationId),
+              child: picking
+                  ? FigurePicker(
+                      svg: visual.args['svg'] as String? ?? visual.str('content'),
+                      figureId: figureId,
+                      callId: visual.callId,
+                      conversationId: conversationId,
+                    )
+                  : VisualBody(visual: visual, conversationId: conversationId),
             ),
           ] else if (visual.kind == VisualKind.slides) ...[
             const SizedBox(height: 12),

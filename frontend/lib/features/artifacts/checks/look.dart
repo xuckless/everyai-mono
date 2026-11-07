@@ -30,7 +30,16 @@ const lookTool = 'look';
 const _maxPictures = 6;
 
 /// What a look found: the text the model reads and the PNGs it sees with it.
-typedef LookAnswer = ({String text, bool isError, List<Uint8List> pictures});
+typedef LookAnswer = ({String text, bool isError, List<Uint8List> pictures, List<String> findings});
+
+/// What the chat keeps of a look on its call (the check row shows it): the findings, and the first pictures
+/// shrunk, so the row can show what the model saw without storing every slide.
+String lookRecord(String id, LookAnswer a, {List<Uint8List> thumbnails = const []}) => jsonEncode({
+  'id': id,
+  'error': a.isError ? a.text : null,
+  'findings': a.findings,
+  'pictures': [for (final t in thumbnails.take(3)) base64Encode(t)],
+});
 
 /// Draws what the model made (a figure, chart, diagram or document) the way the user sees it, lints it, and
 /// answers `look` with the pictures and the findings, so the model can check its work and revise it, as the
@@ -78,7 +87,12 @@ class Looker {
     final figures = figuresOf(artifacts);
     try {
       return switch (v.str('kind')) {
-        'svg' => await _figure(id, v.str('content'), 'SVG figure'),
+        'svg' => await _figure(
+          id,
+          v.str('content'),
+          'SVG figure',
+          script: artifact.versions.last.args.containsKey('code'),
+        ),
         'chart' => await _chart(id, v),
         'mermaid' => await _diagram(id, v.str('content')),
         'markdown' || '' when v.kind == VisualKind.document => await _document(id, v.str('content'), figures),
@@ -96,12 +110,22 @@ class Looker {
   }
 
   /// An SVG [svg] just made (by `svg_script`), as `look` would show the figure [id].
-  Future<LookAnswer> figure(String id, String svg, String what) => _figure(id, svg, what);
+  Future<LookAnswer> figure(String id, String svg, String what) => _figure(id, svg, what, script: true);
 
-  Future<LookAnswer> _figure(String id, String svg, String what) async {
+  /// [script]: the figure comes from svg_script, so it is revised by running the program again.
+  Future<LookAnswer> _figure(String id, String svg, String what, {bool script = false}) async {
     final findings = svgFindings(svg);
     final png = (await rasterize(svg))?.png;
-    return _answer(id, what, [?png], findings);
+    return _answer(
+      id,
+      what,
+      [?png],
+      findings,
+      fix: script
+          ? 'svg_script again with id "$id" and the program changed (a new run replaces the figure, including any '
+                'edit_artifact changes)'
+          : null,
+    );
   }
 
   Future<LookAnswer> _chart(String id, Visual v) async {
@@ -206,19 +230,20 @@ class Looker {
     }
   }
 
-  LookAnswer _answer(String id, String what, List<Uint8List> pictures, List<String> findings) {
+  LookAnswer _answer(String id, String what, List<Uint8List> pictures, List<String> findings, {String? fix}) {
+    final how = fix ?? 'edit_artifact on "$id"';
     final shown = pictures.isEmpty
         ? 'Could not draw a picture of "$id" ($what).'
         : 'The ${pictures.length == 1 ? 'picture shows' : '${pictures.length} pictures show'} "$id", $what, as the user sees it.';
     final checks = findings.isEmpty
         ? 'The checks found nothing wrong. Judge the picture yourself: does it show what was asked, is everything '
-              'legible, aligned and balanced, nothing cut off or hidden? Fix what is off with edit_artifact on "$id".'
-        : 'The checks found:\n${findings.map((f) => '- $f').join('\n')}\nFix these with edit_artifact on "$id", and '
+              'legible, aligned and balanced, nothing cut off or hidden? Fix what is off with $how.'
+        : 'The checks found:\n${findings.map((f) => '- $f').join('\n')}\nFix these with $how, and '
               'anything else the picture shows is off.';
-    return (text: '$shown\n$checks', isError: false, pictures: pictures);
+    return (text: '$shown\n$checks', isError: false, pictures: pictures, findings: findings);
   }
 
-  static LookAnswer _error(String text) => (text: text, isError: true, pictures: const []);
+  static LookAnswer _error(String text) => (text: text, isError: true, pictures: const [], findings: const []);
 }
 
 String _same(String svg) => svg;

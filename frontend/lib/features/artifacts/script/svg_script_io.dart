@@ -88,6 +88,11 @@ Future<SvgScriptRun> runSvgScript(String code) async {
 
 /// Deno's error without the temp folder's paths.
 String _cleanError(String stderr, String dir) {
-  final text = stderr.replaceAll('file://$dir/', '').replaceAll('$dir/', '').trim();
+  // Deno names the real path (/private/var/… on macOS), not the temp folder's link.
+  var text = stderr;
+  for (final d in {Directory(dir).resolveSymbolicLinksSync(), dir}) {
+    text = text.replaceAll('file://$d/', '').replaceAll('$d/', '');
+  }
+  text = text.trim();
   return text.length > 2000 ? '${text.substring(0, 2000)}…' : (text.isEmpty ? 'it failed.' : text);
 }

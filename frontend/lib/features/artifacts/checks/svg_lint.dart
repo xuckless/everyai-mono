@@ -80,64 +80,104 @@ List<String> svgFindings(String svg) {
   final offCanvas = <String>[];
   final overflowing = <String>[];
   final faint = <String>[];
-  // Paint order matters: a filled shape drawn after a line hides it under a label.
+  // Paint order matters: a filled shape drawn after a line hides it under a label, and the colour behind a label
+  // is the last filled shape under it. Elements under translate/scale transforms are placed; rotated, skewed
+  // or matrix-transformed ones are skipped.
   final texts = <({String text, _Box box, int order})>[];
   final strokes = <({(double, double, double, double) seg, int order})>[];
   final covers = <({_Box box, int order})>[];
+  final fills = <_Fill>[];
   var order = 0;
   for (final e in root.descendantElements) {
     order++;
-    if (_transformed(e)) continue;
+    final t = _placement(e);
+    if (t == null) continue;
+    double px(double x) => t.dx + x * t.k;
+    double py(double y) => t.dy + y * t.k;
+    _Box map(_Box b) => (x: px(b.x), y: py(b.y), width: b.width * t.k, height: b.height * t.k);
     final name = e.localName;
     final label = _label(e);
     if (name == 'text') {
-      final size = _fontSize(e);
+      final size = _fontSize(e) * t.k;
       final text = e.innerText.trim();
       if (text.isEmpty) continue;
       if (size * scale < _minTextPx) tiny++;
-      final x = _num(e.getAttribute('x')) ?? 0;
-      final y = _num(e.getAttribute('y')) ?? 0;
-      final width = 0.56 * size * text.length;
+      final x = px(_num(e.getAttribute('x')) ?? _num(e.findElements('tspan').firstOrNull?.getAttribute('x')) ?? 0);
+      final y = py(_num(e.getAttribute('y')) ?? _num(e.findElements('tspan').firstOrNull?.getAttribute('y')) ?? 0);
+      final bold = (_inherited(e, 'font-weight') ?? '').contains(RegExp('bold|[6-9]00'));
+      final width = (bold ? 0.6 : 0.56) * size * text.length;
       final anchor = _inherited(e, 'text-anchor') ?? 'start';
       final (left, right) = switch (anchor) {
         'middle' => (x - width / 2, x + width / 2),
         'end' => (x - width, x),
         _ => (x, x + width),
       };
-      texts.add((text: text, box: (x: left, y: y - size * 0.8, width: right - left, height: size), order: order));
+      final textBox = (x: left, y: y - size * 0.8, width: right - left, height: size);
+      texts.add((text: text, box: textBox, order: order));
       if (y < box.y || y - size > box.bottom || right < box.x || left > box.right) {
         offCanvas.add(label);
       } else if (left < box.x - 1 || right > box.right + 1) {
         overflowing.add(_short(text));
       }
       final fill = _color(_inherited(e, 'fill') ?? '#000');
-      if (fill != null && background != null && _contrast(fill, background) < 3) {
+      final behind = _behind(fills, textBox) ?? background;
+      if (fill != null && behind != null && behind >= 0 && _contrast(fill, behind) < 3) {
         faint.add(_short(text));
       }
       continue;
     }
     if (name == 'line') {
-      final l = _line(e)!;
-      final x1 = _num(e.getAttribute('x1')) ?? 0, y1 = _num(e.getAttribute('y1')) ?? 0;
-      final x2 = _num(e.getAttribute('x2')) ?? 0, y2 = _num(e.getAttribute('y2')) ?? 0;
+      final x1 = px(_num(e.getAttribute('x1')) ?? 0), y1 = py(_num(e.getAttribute('y1')) ?? 0);
+      final x2 = px(_num(e.getAttribute('x2')) ?? 0), y2 = py(_num(e.getAttribute('y2')) ?? 0);
       strokes.add((seg: (x1, y1, x2, y2), order: order));
-      if (!l.overlaps(box)) offCanvas.add(label);
+      if (!map(_line(e)!).overlaps(box)) offCanvas.add(label);
       continue;
     }
-    if (name == 'path' || name == 'polyline') {
-      strokes.addAll([for (final seg in _segments(e)) (seg: seg, order: order)]);
+    final fillRaw = _inherited(e, 'fill');
+    final filled = fillRaw != 'none' && fillRaw != 'transparent';
+    if (name == 'path' || name == 'polyline' || name == 'polygon') {
+      final shapes = [
+        for (final sub in _outline(e)) [for (final (x, y) in sub) (px(x), py(y))],
+      ];
+      final stroked = (_inherited(e, 'stroke') ?? 'none') != 'none';
+      // Many separate strokes in one path are a fill pattern (Rough.js hachures), not a line to route around.
+      if ((stroked || !filled) && shapes.length <= 6) {
+        for (final sub in shapes) {
+          for (var i = 0; i + 1 < sub.length; i++) {
+            strokes.add((seg: (sub[i].$1, sub[i].$2, sub[i + 1].$1, sub[i + 1].$2), order: order));
+          }
+        }
+      }
+      final points = shapes.expand((p) => p).toList();
+      if (points.isEmpty) continue;
+      final xs = points.map((p) => p.$1), ys = points.map((p) => p.$2);
+      final bounds = (
+        x: xs.reduce(math.min),
+        y: ys.reduce(math.min),
+        width: xs.reduce(math.max) - xs.reduce(math.min),
+        height: ys.reduce(math.max) - ys.reduce(math.min),
+      );
+      if (!bounds.overlaps(box)) offCanvas.add(label);
+      if (filled && name != 'polyline') {
+        final colour = _color(fillRaw ?? '#000');
+        covers.add((box: bounds, order: order));
+        fills.add(_Fill(colour, bounds, shapes));
+      }
+      continue;
     }
-    final bounds = switch (name) {
+    final local = switch (name) {
       'rect' || 'image' || 'use' => _rect(e),
       'circle' => _circle(e, 'r', 'r'),
       'ellipse' => _circle(e, 'rx', 'ry'),
-      'line' => _line(e),
       _ => null,
     };
-    if (bounds != null && !bounds.overlaps(box)) offCanvas.add(label);
-    final fill = _inherited(e, 'fill');
-    if (bounds != null && name != 'line' && fill != 'none' && fill != 'transparent') {
+    if (local == null) continue;
+    final bounds = map(local);
+    if (!bounds.overlaps(box)) offCanvas.add(label);
+    if (filled) {
       covers.add((box: bounds, order: order));
+      // An image's colours aren't known: text over it isn't judged.
+      fills.add(_Fill(name == 'image' ? null : _color(fillRaw ?? '#000'), bounds, null));
     }
   }
   final overlapping = <String>[];
@@ -195,16 +235,70 @@ _Box? _viewBox(String? raw) {
 
 double? _num(String? raw) => raw == null ? null : double.tryParse(raw.trim().replaceFirst(RegExp(r'px$'), ''));
 
-bool _transformed(XmlElement e) {
+/// Where [e]'s coordinates land in the viewBox: root = local × k + (dx, dy), from translate and uniform scale
+/// transforms on it and its ancestors. Null when it isn't drawn (defs, symbols, clip paths, masks), sits in a nested
+/// `svg`, or has a rotation, skew, matrix or uneven scale.
+({double dx, double dy, double k})? _placement(XmlElement e) {
+  final chain = <XmlElement>[];
   for (XmlNode? n = e; n is XmlElement; n = n.parent) {
-    if (n.getAttribute('transform') != null) return true;
-    if (n.localName == 'defs' || n.localName == 'symbol' || n.localName == 'clipPath' || n.localName == 'mask') {
-      return true;
-    }
-    // A nested <svg> has its own coordinates.
-    if (n.localName == 'svg' && n.parent is XmlElement) return true;
+    if (const {'defs', 'symbol', 'clipPath', 'mask', 'marker', 'pattern'}.contains(n.localName)) return null;
+    if (n.localName == 'svg' && n.parent is XmlElement) return null;
+    chain.add(n);
   }
-  return false;
+  var (dx, dy, k) = (0.0, 0.0, 1.0);
+  for (final n in chain.reversed) {
+    final raw = n.getAttribute('transform');
+    if (raw == null) continue;
+    for (final m in RegExp(r'([a-zA-Z]+)\s*\(([^)]*)\)').allMatches(raw)) {
+      final a = RegExp(r'-?\d*\.?\d+(?:e-?\d+)?')
+          .allMatches(m.group(2)!)
+          .map((v) => double.parse(v.group(0)!))
+          .toList();
+      switch (m.group(1)) {
+        case 'translate' when a.isNotEmpty:
+          dx += a[0] * k;
+          dy += (a.length > 1 ? a[1] : 0) * k;
+        case 'scale' when a.length == 1 || (a.length == 2 && a[0] == a[1]):
+          k *= a[0];
+        default:
+          return null;
+      }
+    }
+  }
+  return (dx: dx, dy: dy, k: k);
+}
+
+/// A filled shape: its colour (null when unknown: gradients, images), box, and outline for paths (null: the box).
+final class _Fill {
+  const _Fill(this.colour, this.box, this.outline);
+  final int? colour;
+  final _Box box;
+  final List<List<(double, double)>>? outline;
+
+  bool holds(double x, double y) {
+    if (x < box.x || x > box.right || y < box.y || y > box.bottom) return false;
+    final o = outline;
+    if (o == null) return true;
+    // Even-odd over all subpaths, so a donut's hole is not inside it.
+    var inside = false;
+    for (final p in o) {
+      for (var i = 0, j = p.length - 1; i < p.length; j = i++) {
+        final (xi, yi) = p[i];
+        final (xj, yj) = p[j];
+        if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+      }
+    }
+    return inside;
+  }
+}
+
+/// The colour of the last filled shape under the middle of [b] (null: unknown, or none, so the background).
+int? _behind(List<_Fill> fills, _Box b) {
+  final (x, y) = (b.x + b.width / 2, b.y + b.height / 2);
+  for (final f in fills.reversed) {
+    if (f.holds(x, y)) return f.colour ?? -1;
+  }
+  return null;
 }
 
 /// A presentation property on [e] or its ancestors (attribute or inline style).
@@ -312,40 +406,105 @@ _Box _shrink(_Box b) =>
 
 /// The straight segments of a path made only of absolute M/L/H/V/Z commands, or of a polyline; curves and
 /// relative commands are skipped (their shape can't be known without drawing them).
-List<(double, double, double, double)> _segments(XmlElement e) {
-  final out = <(double, double, double, double)>[];
-  if (e.localName == 'polyline') {
-    final n = RegExp(r'-?[\d.]+(?:e-?\d+)?')
-        .allMatches(e.getAttribute('points') ?? '')
-        .map((m) => double.parse(m.group(0)!))
-        .toList();
-    for (var i = 0; i + 3 < n.length; i += 2) {
-      out.add((n[i], n[i + 1], n[i + 2], n[i + 3]));
-    }
-    return out;
+/// The outline of a path, polyline or polygon as subpaths of points: curves sampled, arcs as their chords, relative
+/// commands resolved.
+List<List<(double, double)>> _outline(XmlElement e) {
+  List<double> nums(String s) =>
+      RegExp(r'-?\d*\.?\d+(?:e[-+]?\d+)?').allMatches(s).map((v) => double.parse(v.group(0)!)).toList();
+  if (e.localName != 'path') {
+    final n = nums(e.getAttribute('points') ?? '');
+    final pts = [for (var i = 0; i + 1 < n.length; i += 2) (n[i], n[i + 1])];
+    if (e.localName == 'polygon' && pts.isNotEmpty) pts.add(pts.first);
+    return [pts];
   }
-  final d = e.getAttribute('d') ?? '';
-  if (RegExp('[a-zA-Z]').allMatches(d).any((m) => !'MLHVZ'.contains(m.group(0)!))) return out;
-  var x = 0.0, y = 0.0;
-  var started = false;
-  for (final m in RegExp(r'([MLHVZ])([^MLHVZ]*)').allMatches(d)) {
-    final n = RegExp(r'-?[\d.]+(?:e-?\d+)?').allMatches(m.group(2)!).map((v) => double.parse(v.group(0)!)).toList();
-    switch (m.group(1)) {
-      case 'M' when n.length >= 2:
-        (x, y, started) = (n[0], n[1], true);
-      case 'L' when n.length >= 2 && started:
+  final out = <List<(double, double)>>[];
+  var current = <(double, double)>[];
+  var (x, y) = (0.0, 0.0);
+  var (sx, sy) = (0.0, 0.0);
+  (double, double)? lastControl;
+  for (final m in RegExp(r'([MmLlHhVvCcSsQqTtAaZz])([^MmLlHhVvCcSsQqTtAaZz]*)').allMatches(e.getAttribute('d') ?? '')) {
+    final cmd = m.group(1)!;
+    final rel = cmd == cmd.toLowerCase();
+    final n = nums(m.group(2)!);
+    (double, double) at(double a, double b) => rel ? (x + a, y + b) : (a, b);
+    void cubic((double, double) c1, (double, double) c2, (double, double) end) {
+      for (final t in const [0.25, 0.5, 0.75, 1.0]) {
+        final u = 1 - t;
+        current.add((
+          u * u * u * x + 3 * u * u * t * c1.$1 + 3 * u * t * t * c2.$1 + t * t * t * end.$1,
+          u * u * u * y + 3 * u * u * t * c1.$2 + 3 * u * t * t * c2.$2 + t * t * t * end.$2,
+        ));
+      }
+      lastControl = c2;
+      (x, y) = end;
+    }
+
+    switch (cmd.toUpperCase()) {
+      case 'M':
         for (var i = 0; i + 1 < n.length; i += 2) {
-          out.add((x, y, n[i], n[i + 1]));
-          (x, y) = (n[i], n[i + 1]);
+          final p = at(n[i], n[i + 1]);
+          if (i == 0) {
+            if (current.length > 1) out.add(current);
+            current = [p];
+            (sx, sy) = p;
+          } else {
+            current.add(p);
+          }
+          (x, y) = p;
         }
-      case 'H' when n.isNotEmpty && started:
-        out.add((x, y, n.last, y));
-        x = n.last;
-      case 'V' when n.isNotEmpty && started:
-        out.add((x, y, x, n.last));
-        y = n.last;
+        lastControl = null;
+      case 'L' || 'T':
+        for (var i = 0; i + 1 < n.length; i += 2) {
+          final p = at(n[i], n[i + 1]);
+          current.add(p);
+          (x, y) = p;
+        }
+        lastControl = null;
+      case 'H':
+        for (final v in n) {
+          x = rel ? x + v : v;
+          current.add((x, y));
+        }
+      case 'V':
+        for (final v in n) {
+          y = rel ? y + v : v;
+          current.add((x, y));
+        }
+      case 'C':
+        for (var i = 0; i + 5 < n.length; i += 6) {
+          cubic(at(n[i], n[i + 1]), at(n[i + 2], n[i + 3]), at(n[i + 4], n[i + 5]));
+        }
+      case 'S':
+        for (var i = 0; i + 3 < n.length; i += 4) {
+          final c1 = switch (lastControl) {
+            final c? => (2 * x - c.$1, 2 * y - c.$2),
+            null => (x, y),
+          };
+          cubic(c1, at(n[i], n[i + 1]), at(n[i + 2], n[i + 3]));
+        }
+      case 'Q':
+        for (var i = 0; i + 3 < n.length; i += 4) {
+          final c = at(n[i], n[i + 1]), end = at(n[i + 2], n[i + 3]);
+          cubic(
+            (x + 2 / 3 * (c.$1 - x), y + 2 / 3 * (c.$2 - y)),
+            (end.$1 + 2 / 3 * (c.$1 - end.$1), end.$2 + 2 / 3 * (c.$2 - end.$2)),
+            end,
+          );
+        }
+      case 'A':
+        for (var i = 0; i + 6 < n.length; i += 7) {
+          final p = at(n[i + 5], n[i + 6]);
+          current.add(p);
+          (x, y) = p;
+        }
+        lastControl = null;
+      case 'Z':
+        current.add((sx, sy));
+        (x, y) = (sx, sy);
+        lastControl = null;
     }
   }
+  if (current.length > 1) out.add(current);
   return out;
 }
 
