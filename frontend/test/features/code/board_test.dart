@@ -11,7 +11,11 @@ import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
 import 'package:every_ai/features/code/domain/transcript.dart';
+import 'package:every_ai/features/code/drivers/driver_events.dart';
 import 'package:every_ai/features/code/harness/events.dart';
+import 'package:every_ai/features/code/workflows/workflow_engine.dart';
+import 'package:every_ai/features/code/workflows/workflow_runs.dart';
+import 'package:every_ai/features/questions/domain/questions.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -166,6 +170,126 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Session a'), findsNothing);
     expect(find.text('Session b'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+    debugDefaultTargetPlatformOverride = null;
+    tester.view.reset();
+    c.dispose();
+    await db.close();
+  });
+
+  testWidgets('a card lists its work; questions are open, and a child waiting on the user shows its controls', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1;
+    final db = AppDatabase(NativeDatabase.memory());
+    final prefs = await Preferences.load(db);
+    prefs['code.projects'] = '[{"id":"p1","name":"Alpha","path":"/tmp/p1"}]';
+    prefs['code.sessions'] = jsonEncode([
+      _s('a').toJson(),
+      _s('q', day: 2).toJson(),
+      _s('w1', parent: 'a').toJson(),
+      _s('f1', parent: 'a').toJson(),
+      _s('f2', parent: 'a').toJson(),
+    ]);
+    Transcript approval() =>
+        (TranscriptBuilder()
+              ..add(
+                actionEvent(
+                  id: 'x1',
+                  toolName: 'bash',
+                  kind: 'TerminalAction',
+                  args: const {'command': 'rm -rf build/'},
+                ),
+              )
+              ..add(stateEvent('x1-w', ExecutionStatus.waitingForConfirmation)))
+            .snapshot;
+    Transcript asking() {
+      final b = TranscriptBuilder();
+      b.addLocalQuestion(
+        ActionCall(id: 'ask-1', raw: const {}, toolName: askUserQuestionTool, toolCallId: 'ask-1', action: const {}),
+        const [
+          Question(
+            header: 'Database',
+            question: 'Which database?',
+            options: [QuestionOption('Postgres', ''), QuestionOption('SQLite', '')],
+          ),
+        ],
+      );
+      return b.snapshot;
+    }
+
+    final states = {
+      'a': const CodeSessionState(connected: true, subagentNeedsInput: true),
+      'q': CodeSessionState(connected: true, transcript: asking()),
+      'w1': const CodeSessionState(connected: true),
+      'f1': CodeSessionState(connected: true, transcript: approval()),
+      'f2': const CodeSessionState(),
+    };
+    final c = ProviderContainer(
+      overrides: [
+        preferencesProvider.overrideWithValue(prefs),
+        codeSessionProvider.overrideWithBuild((ref, n) => states[n.sessionId] ?? const CodeSessionState()),
+        workflowRunsProvider.overrideWithBuild(
+          (ref, n) => n.sessionId == 'a'
+              ? const [
+                  WorkflowRun(
+                    runId: 'r1',
+                    name: 'Ultra',
+                    agents: [
+                      WorkflowAgentView(
+                        key: 'k1',
+                        label: 'research-1',
+                        phase: 'build',
+                        status: WorkflowAgentStatus.done,
+                      ),
+                      WorkflowAgentView(key: 'k2', label: 'research-2', phase: 'build', childId: 'w1'),
+                    ],
+                  ),
+                ]
+              : const [],
+        ),
+      ],
+    );
+    for (final id in states.keys) {
+      c.listen(codeSessionProvider(id), (_, _) {});
+    }
+    c.listen(codeStatusesProvider, (_, _) {});
+    // ignore: invalid_use_of_protected_member
+    c.read(codeStatusesProvider.notifier).state = {'f2': SessionStatus.done};
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: c,
+        child: LayoutHost(
+          language: DesignLanguage.material,
+          child: ShellScope(sidebarVisible: true, compact: false, toggleSidebar: () {}, child: const BoardScreen()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+
+    // The question is open on its card, with no Answer step first.
+    expect(find.text('Which database?'), findsOneWidget);
+    expect(find.byKey(const ValueKey('board.answer.q')), findsNothing);
+
+    // A child needs the user: the work list opens by itself, with its approval under its row.
+    expect(find.textContaining('Ultra 1/2'), findsOneWidget);
+    expect(find.textContaining('1 needs you'), findsOneWidget);
+    expect(find.text('research-1'), findsOneWidget);
+    expect(find.text('Session w1'), findsOneWidget);
+    expect(find.text('Run this command?'), findsOneWidget);
+    expect(find.text('rm -rf build/'), findsOneWidget);
+    expect(find.byKey(const ValueKey('board.work.approve.f1')), findsOneWidget);
+    expect(find.byKey(const ValueKey('board.work.deny.f1')), findsOneWidget);
+
+    // It folds to one line.
+    await tester.tap(find.byKey(const ValueKey('board.work.toggle.a')));
+    await tester.pumpAndSettle();
+    expect(find.text('Session w1'), findsNothing);
+    expect(find.textContaining('1 needs you'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
     debugDefaultTargetPlatformOverride = null;

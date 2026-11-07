@@ -7,6 +7,7 @@ import 'package:every_ai/core/db/app_database.dart';
 import 'package:every_ai/core/net/api_client.dart';
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/core/providers.dart';
+import 'package:every_ai/features/code/board/board_work.dart' show userWait;
 import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
@@ -25,6 +26,7 @@ import 'package:every_ai/features/code/host/host_max_tools.dart';
 import 'package:every_ai/features/code/host/host_providers.dart';
 import 'package:every_ai/features/code/host/host_report.dart';
 import 'package:every_ai/features/models/models_providers.dart';
+import 'package:every_ai/features/questions/domain/questions.dart';
 import 'package:every_ai/features/usage/usage_totals.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -266,6 +268,70 @@ void main() {
     expect(container.read(codeSessionProvider(l.info.id)).subagentNeedsInput, isFalse);
     final again = await hostCall(l.info.id, answerForkTool, {'fork_id': f.info.id, 'answer': 'Postgres'});
     expect(again.text, startsWith('That fork has no open question'));
+  });
+
+  test('a fork stuck repeating a step goes to the lead, not the user; a user answer first tells the lead', () async {
+    final live = CodeSessionController.liveAfter;
+    CodeSessionController.liveAfter = Duration.zero;
+    addTearDown(() => CodeSessionController.liveAfter = live);
+    final l = await lead();
+    final f = await fork(l.info.id);
+    await Future<void>.delayed(Duration.zero);
+    f.session.add(stateEvent('run', ExecutionStatus.running));
+    for (var i = 0; i < 3; i++) {
+      f.session
+        ..add(
+          actionEvent(
+            id: 'r$i',
+            toolName: 'Read',
+            kind: 'FileEditorAction',
+            args: const {'command': 'view', 'path': 'lib/a.dart'},
+          ),
+        )
+        ..add(resultEvent(id: 'r$i-r', actionId: 'r$i', toolName: 'Read', text: 'same'));
+    }
+    await pumpEventQueue();
+    final card = container.read(codeSessionProvider(f.info.id)).transcript.openQuestion!;
+    expect(card.call.id, startsWith('doom-'));
+    // The lead hears it; the user isn't asked.
+    final q = l.session.sent.where((t) => t.contains('<fork-question')).single;
+    expect(q, contains('same step 3 times'));
+    expect(container.read(codeSessionProvider(l.info.id)).subagentNeedsInput, isFalse);
+    // Nor does the Board show it as the user's.
+    final leadController = container.read(codeSessionProvider(l.info.id).notifier);
+    expect(userWait(container.read(codeSessionProvider(f.info.id)).transcript, leadController.askedLead), isNull);
+    final sent = await hostCall(l.info.id, answerForkTool, {
+      'fork_id': f.info.id,
+      'answer': 'The build is slow; wait.',
+    });
+    expect(sent.text, startsWith('Sent.'));
+    await pumpEventQueue();
+    expect(container.read(codeSessionProvider(f.info.id)).transcript.openQuestion, isNull);
+    expect(f.session.sent.last, contains('were paused. The agent that started you says: The build is slow; wait.'));
+
+    // Again, and this time the user answers first (in the fork's view or on the Board): the lead is told.
+    for (var i = 3; i < 6; i++) {
+      f.session
+        ..add(
+          actionEvent(
+            id: 'r$i',
+            toolName: 'Read',
+            kind: 'FileEditorAction',
+            args: const {'command': 'view', 'path': 'lib/b.dart'},
+          ),
+        )
+        ..add(resultEvent(id: 'r$i-r', actionId: 'r$i', toolName: 'Read', text: 'same'));
+    }
+    await pumpEventQueue();
+    final again = container.read(codeSessionProvider(f.info.id)).transcript.openQuestion!;
+    await container.read(codeSessionProvider(f.info.id).notifier).answer(again, const [
+      QuestionAnswer(selected: {0}),
+    ]);
+    await pumpEventQueue();
+    expect(
+      l.session.sent.where((t) => t.contains('The user answered the question fork ${f.info.id}')).single,
+      contains('→ Let it continue'),
+    );
   });
 
   test('stop_fork stops the child, and what it did comes as its report', () async {

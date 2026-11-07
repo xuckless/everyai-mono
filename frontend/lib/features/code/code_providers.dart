@@ -2882,7 +2882,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     unawaited(_session?.pause());
   }
 
-  Future<void> _answerDoomLoop(QuestionItem item, List<QuestionAnswer> answers) async {
+  Future<void> _answerDoomLoop(QuestionItem item, List<QuestionAnswer> answers, {String by = 'The user'}) async {
     final session = _session;
     if (session == null) return;
     final a = answers.firstOrNull ?? const QuestionAnswer();
@@ -2895,10 +2895,12 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       _autoRespond(state.transcript);
       return;
     }
-    final said = a.other.trim().isEmpty ? '' : ' The user says: ${a.other.trim()}';
-    final text =
-        'You called the same tool with the same input $doomLoopRepeats times in a row without making progress. '
-        'Do not repeat it. Take a different approach, or explain what is blocking you.$said';
+    final said = a.other.trim().isEmpty ? '' : ' $by says: ${a.other.trim()}';
+    // The orchestrator may know the step is fine (a slow build): its word decides, not ours.
+    final text = by == 'The user'
+        ? 'You called the same tool with the same input $doomLoopRepeats times in a row without making progress. '
+              'Do not repeat it. Take a different approach, or explain what is blocking you.$said'
+        : 'You called the same tool with the same input $doomLoopRepeats times in a row and were paused.$said';
     final pending = state.transcript.pending;
     if (pending.isNotEmpty) {
       _answered = pending.map((c) => c.id).join(',');
@@ -4932,10 +4934,12 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (outcome != null) return _finishChild(callId, outcome);
     final question = child.transcript.openQuestion;
     final kid = _childOf[callId]!;
-    // Held by the EveryAI harness, or (an outside fork) waiting on its host call.
+    // Held by the EveryAI harness, (an outside fork) waiting on its host call, or the app's own question to the
+    // fork (the loop guard, a bug question): all the orchestrator's to answer, or the user's if they get there first.
     final asked =
         question != null &&
-        (child.transcript.held.any((c) => c.id == question.call.id) ||
+        (isAppAsk(question.call.id) ||
+            child.transcript.held.any((c) => c.id == question.call.id) ||
             (ref.exists(codeSessionProvider(kid)) &&
                 ref.read(codeSessionProvider(kid).notifier).waitsOnHost(question.call.id)));
     if (asked && _forwarded.add(question.call.id)) _forwardQuestion(callId, question);
@@ -5991,6 +5995,14 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// The orchestrator answers this fork's open question.
   Future<bool> answerFromOrchestrator(String answer) async {
     final item = state.transcript.openQuestion;
+    if (item != null && item.call.id.startsWith('doom-')) {
+      await _answerDoomLoop(item, [QuestionAnswer(other: answer)], by: 'The agent that started you');
+      return true;
+    }
+    if (item != null && item.call.id.startsWith('bugask-')) {
+      await _answerBugAsk(item, [QuestionAnswer(other: answer)]);
+      return true;
+    }
     // An outside fork asked through the host: the answer is its call's result.
     if (item != null) {
       if (_hostFor(item.call.id) case final wait?) {
@@ -6169,6 +6181,31 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// carries the path only (the agent can read the file). The app's own cards take no files
   /// ([acceptsFiles]). False when the files couldn't be saved: the card stays open.
   Future<bool> answer(QuestionItem item, List<QuestionAnswer> answers, {List<Attachment> files = const []}) async {
+    final ok = await _answer(item, answers, files: files);
+    if (ok) _tellOrchestrator(item, answers);
+    return ok;
+  }
+
+  /// A fork's question that went to its orchestrator was answered by the user (here or on the Board): the
+  /// orchestrator hears it, so it doesn't answer too.
+  void _tellOrchestrator(QuestionItem item, List<QuestionAnswer> answers) =>
+      _parentController?.forkAnsweredByUser(sessionId, item, answers);
+
+  /// Whether a fork's question [callId] went to this session's agent (its orchestrator) rather than the user.
+  bool askedLead(String callId) => _forwarded.contains(callId);
+
+  /// [_tellOrchestrator] arriving: only for questions this session passed on.
+  void forkAnsweredByUser(String childId, QuestionItem item, List<QuestionAnswer> answers) {
+    if (!_forwarded.contains(item.call.id)) return;
+    final title = ref.read(codeSessionsProvider.notifier).byId(childId)?.title ?? 'fork';
+    _notifyLead(
+      forkAnsweredMessage(childId, title, answersSummary(item.questions, answers)),
+      kind: 'fork-answered',
+      id: childId,
+    );
+  }
+
+  Future<bool> _answer(QuestionItem item, List<QuestionAnswer> answers, {List<Attachment> files = const []}) async {
     final id = item.call.id;
     if (_localAsks.containsKey(id)) {
       _settleLocalAsk(id, answers);

@@ -66,7 +66,7 @@ class _RunningWorkState extends ConsumerState<RunningWork> {
           count: count,
           onTap: () => _toggle(key, active: active),
         ),
-        if (progress != null) Padding(padding: const EdgeInsets.fromLTRB(2, 0, 2, 8), child: _RunBar(progress)),
+        if (progress != null) Padding(padding: const EdgeInsets.fromLTRB(2, 0, 2, 8), child: RunBar(progress)),
         if (open) ...rows,
       ],
     );
@@ -130,7 +130,7 @@ class _RunningWorkState extends ConsumerState<RunningWork> {
         if (!inRuns.contains(c.id)) c,
     ];
     bool over(CodeSessionInfo c) =>
-        const {SessionStatus.done, SessionStatus.failed, SessionStatus.idle}.contains(_statusOf(ref, c.id));
+        const {SessionStatus.done, SessionStatus.failed, SessionStatus.idle}.contains(liveStatusOf(ref, c.id));
     final working = [
       for (final c in forks)
         if (!over(c)) c,
@@ -256,7 +256,7 @@ String _elapsed(DateTime from) {
 }
 
 /// The status of a session that may not be open: live when its controller runs, else the last one the harness told.
-SessionStatus _statusOf(WidgetRef ref, String id) => ref.exists(codeSessionProvider(id))
+SessionStatus liveStatusOf(WidgetRef ref, String id) => ref.exists(codeSessionProvider(id))
     ? ref.watch(codeSessionProvider(id).select((s) => s.status))
     : ref.watch(codeStatusesProvider.select((all) => all[id])) ?? SessionStatus.idle;
 
@@ -315,7 +315,7 @@ class _ChildRow extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final status = _statusOf(ref, child.id);
+    final status = liveStatusOf(ref, child.id);
     final working = status == SessionStatus.running || status == SessionStatus.starting;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
@@ -391,7 +391,7 @@ class ChildChatView extends ConsumerWidget {
               style: theme.type.headline.tint(theme.text),
             ),
           ),
-          if (info != null) StatusPill(status: _statusOf(ref, childId), dense: true),
+          if (info != null) StatusPill(status: liveStatusOf(ref, childId), dense: true),
           if (info != null)
             Consumer(
               builder: (context, ref, _) {
@@ -467,8 +467,8 @@ class ChildChatView extends ConsumerWidget {
 }
 
 /// A run's share of finished agents: a thin bar that eases to its new length.
-class _RunBar extends StatelessWidget {
-  const _RunBar(this.fraction);
+class RunBar extends StatelessWidget {
+  const RunBar(this.fraction, {super.key});
 
   final double fraction;
 
