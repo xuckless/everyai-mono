@@ -238,13 +238,19 @@ final class DeckSlide {
 const slideLayouts = ['title', 'bullets', 'figure_right', 'figure_left', 'figure', 'background', 'grid', 'free'];
 
 /// The deck in a `make_slides` call (or its latest version): a title slide, then the model's slides, each laid
-/// out to elements. Bad values fall back to defaults rather than failing the deck.
+/// out to elements. A first slide with layout `title` is the title slide (it can take a background and
+/// elements); otherwise one is made from the deck's title and subtitle. Bad values fall back to defaults rather
+/// than failing the deck.
 List<DeckSlide> deckOf(Visual visual) {
   final theme = DeckTheme.of(visual.str('theme'));
-  return [
-    _titleSlide(visual.title, visual.str('subtitle'), theme, const {}),
+  final slides = [
     for (final s in (visual.args['slides'] as List<Object?>?) ?? const [])
-      if (s is Map<String, Object?>) slideOf(s, theme),
+      if (s is Map<String, Object?>) s,
+  ];
+  final ownTitle = slides.firstOrNull?['layout'] == 'title';
+  return [
+    if (!ownTitle) _titleSlide(visual.title, visual.str('subtitle'), theme, const {}),
+    for (final s in slides) slideOf(s, theme),
   ];
 }
 
@@ -274,16 +280,19 @@ DeckSlide _titleSlide(String title, String subtitle, DeckTheme theme, Map<String
   title: title,
   background: theme.color(s['background'], theme.background),
   elements: [
-    ShapeElement(box: const Rect.fromLTWH(_margin, 176, 72, 6), kind: ShapeKind.rect, fill: theme.accent),
-    TextElement(
-      box: const Rect.fromLTWH(_margin, 206, slideWidth - 2 * _margin, 136),
-      paragraphs: paragraphsOf(title),
-      size: 56,
-      weight: FontWeight.w800,
-      color: theme.title,
-      lineHeight: 1.1,
-      valign: VAlign.bottom,
-    ),
+    // An empty title leaves the slide to the model's own elements.
+    if (title.isNotEmpty)
+      ShapeElement(box: const Rect.fromLTWH(_margin, 176, 72, 6), kind: ShapeKind.rect, fill: theme.accent),
+    if (title.isNotEmpty)
+      TextElement(
+        box: const Rect.fromLTWH(_margin, 206, slideWidth - 2 * _margin, 136),
+        paragraphs: paragraphsOf(title),
+        size: 56,
+        weight: FontWeight.w800,
+        color: theme.title,
+        lineHeight: 1.1,
+        valign: VAlign.bottom,
+      ),
     if (subtitle.isNotEmpty)
       TextElement(
         box: const Rect.fromLTWH(_margin, 358, slideWidth - 2 * _margin, 80),
@@ -420,6 +429,18 @@ double _num(Object? v, double fallback) => switch (v) {
   _ => fallback,
 };
 
+/// [preferred] when it reads on [behind], else white or near-black, whichever reads better.
+Color _readableOn(Color behind, Color preferred) {
+  double contrast(Color a, Color b) {
+    final la = a.computeLuminance(), lb = b.computeLuminance();
+    return ((la > lb ? la : lb) + 0.05) / ((la > lb ? lb : la) + 0.05);
+  }
+
+  if (contrast(preferred, behind) >= 4.5) return preferred;
+  const white = Color(0xFFFFFFFF), ink = Color(0xFF16181D);
+  return contrast(white, behind) >= contrast(ink, behind) ? white : ink;
+}
+
 /// One element of a slide's `elements`; null when its type is unknown or it has no size.
 SlideElement? _element(Map<String, Object?> e, DeckTheme theme) {
   final box = Rect.fromLTWH(_num(e['x'], 0), _num(e['y'], 0), _num(e['w'], 0), _num(e['h'], 0));
@@ -463,7 +484,8 @@ SlideElement? _element(Map<String, Object?> e, DeckTheme theme) {
         radius: _num(e['radius'], 0),
         padding: _num(e['padding'], e['fill'] == null ? 0 : 16),
         lineHeight: _num(e['line_height'], 1.3).clamp(0.8, 3),
-        bulletColor: theme.color(e['bullet_color'], theme.accent),
+        // Bullets in a box of its own follow its text unless told otherwise.
+        bulletColor: e['bullet_color'] == null ? null : theme.color(e['bullet_color'], theme.accent),
         rotation: rotation,
         opacity: opacity,
         name: name,
@@ -498,7 +520,15 @@ SlideElement? _element(Map<String, Object?> e, DeckTheme theme) {
         header: e['header'] as bool? ?? true,
         fill: e['fill'] == null ? null : theme.color(e['fill'], theme.background),
         headerFill: theme.color(e['header_fill'], theme.accent.withValues(alpha: 0.14)),
-        headerColor: e['header_color'] == null ? null : theme.color(e['header_color'], theme.title),
+        headerColor: e['header_color'] == null
+            ? _readableOn(
+                Color.alphaBlend(
+                  theme.color(e['header_fill'], theme.accent.withValues(alpha: 0.14)),
+                  theme.color(e['fill'], theme.background),
+                ),
+                theme.color(e['color'], theme.text),
+              )
+            : theme.color(e['header_color'], theme.title),
         stroke: theme.color(e['stroke'], theme.text.withValues(alpha: 0.25)),
         rotation: rotation,
         opacity: opacity,

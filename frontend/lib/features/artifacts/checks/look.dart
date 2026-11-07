@@ -137,9 +137,15 @@ class Looker {
     final expanded = expandFigureRefs(markdown, figures);
     final pictures = [...await capturePages(expanded)];
     final pageCount = pictures.length;
+    // A figure shown by reference is named by its own id: that is what edit_artifact revises.
+    final idOf = {for (final f in figures.values) f.source.trim(): f.id};
     for (final (i, svg) in svgFiguresIn(expanded).indexed) {
+      final name = switch (idOf[svg.trim()]) {
+        final String figId => 'Figure ${i + 1} ("$figId", edit it by that id)',
+        null => 'Figure ${i + 1}',
+      };
       for (final f in svgFindings(svg)) {
-        findings.add('Figure ${i + 1}: $f');
+        findings.add('$name: $f');
       }
       if (pictures.length < _maxPictures) {
         if ((await rasterize(svg))?.png case final png?) pictures.add(png);

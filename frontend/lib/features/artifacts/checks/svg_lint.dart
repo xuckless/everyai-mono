@@ -80,9 +80,13 @@ List<String> svgFindings(String svg) {
   final offCanvas = <String>[];
   final overflowing = <String>[];
   final faint = <String>[];
-  final texts = <({String text, _Box box})>[];
-  final strokes = <(double, double, double, double)>[];
+  // Paint order matters: a filled shape drawn after a line hides it under a label.
+  final texts = <({String text, _Box box, int order})>[];
+  final strokes = <({(double, double, double, double) seg, int order})>[];
+  final covers = <({_Box box, int order})>[];
+  var order = 0;
   for (final e in root.descendantElements) {
+    order++;
     if (_transformed(e)) continue;
     final name = e.localName;
     final label = _label(e);
@@ -100,7 +104,7 @@ List<String> svgFindings(String svg) {
         'end' => (x - width, x),
         _ => (x, x + width),
       };
-      texts.add((text: text, box: (x: left, y: y - size * 0.8, width: right - left, height: size)));
+      texts.add((text: text, box: (x: left, y: y - size * 0.8, width: right - left, height: size), order: order));
       if (y < box.y || y - size > box.bottom || right < box.x || left > box.right) {
         offCanvas.add(label);
       } else if (left < box.x - 1 || right > box.right + 1) {
@@ -116,11 +120,13 @@ List<String> svgFindings(String svg) {
       final l = _line(e)!;
       final x1 = _num(e.getAttribute('x1')) ?? 0, y1 = _num(e.getAttribute('y1')) ?? 0;
       final x2 = _num(e.getAttribute('x2')) ?? 0, y2 = _num(e.getAttribute('y2')) ?? 0;
-      strokes.add((x1, y1, x2, y2));
+      strokes.add((seg: (x1, y1, x2, y2), order: order));
       if (!l.overlaps(box)) offCanvas.add(label);
       continue;
     }
-    if (name == 'path' || name == 'polyline') strokes.addAll(_segments(e));
+    if (name == 'path' || name == 'polyline') {
+      strokes.addAll([for (final seg in _segments(e)) (seg: seg, order: order)]);
+    }
     final bounds = switch (name) {
       'rect' || 'image' || 'use' => _rect(e),
       'circle' => _circle(e, 'r', 'r'),
@@ -129,6 +135,10 @@ List<String> svgFindings(String svg) {
       _ => null,
     };
     if (bounds != null && !bounds.overlaps(box)) offCanvas.add(label);
+    final fill = _inherited(e, 'fill');
+    if (bounds != null && name != 'line' && fill != 'none' && fill != 'transparent') {
+      covers.add((box: bounds, order: order));
+    }
   }
   final overlapping = <String>[];
   for (var i = 0; i < texts.length; i++) {
@@ -141,7 +151,7 @@ List<String> svgFindings(String svg) {
   final crossed = <String>{
     for (final t in texts)
       for (final s in strokes)
-        if (_crosses(s, _shrink(t.box))) _short(t.text),
+        if (_crosses(s.seg, _shrink(t.box)) && !_hidden(s.order, t, covers)) _short(t.text),
   };
   if (crossed.isNotEmpty) {
     out.add(
@@ -337,6 +347,20 @@ List<(double, double, double, double)> _segments(XmlElement e) {
     }
   }
   return out;
+}
+
+/// Whether a filled shape drawn after the line (and before the label) covers the label, hiding the line there.
+bool _hidden(int line, ({String text, _Box box, int order}) t, List<({_Box box, int order})> covers) {
+  final b = _shrink(t.box);
+  return covers.any(
+    (c) =>
+        c.order > line &&
+        c.order < t.order &&
+        c.box.x <= b.x &&
+        c.box.y <= b.y &&
+        c.box.right >= b.right &&
+        c.box.bottom >= b.bottom,
+  );
 }
 
 /// Whether segment [s] passes through box [b] (Liang–Barsky clipping).

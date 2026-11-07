@@ -30,6 +30,17 @@ Future<void> _loadFonts() async {
     }
     await loader.load();
   }
+  // Serif text: the app takes Georgia from the system; the rig loads the Mac's copy.
+  const georgia = '/System/Library/Fonts/Supplemental';
+  if (File('$georgia/Georgia.ttf').existsSync()) {
+    final loader = FontLoader('Georgia');
+    for (final f in ['Georgia.ttf', 'Georgia Bold.ttf', 'Georgia Italic.ttf', 'Georgia Bold Italic.ttf']) {
+      if (File('$georgia/$f').existsSync()) {
+        loader.addFont(Future.value(ByteData.sublistView(File('$georgia/$f').readAsBytesSync())));
+      }
+    }
+    await loader.load();
+  }
   final noto = manifest.cast<Map<String, Object?>>().where((f) => f['family'] == 'Geist').firstOrNull;
   if (noto == null) return;
   for (final name in ['sans-serif', 'Arial', 'Helvetica', 'system-ui', 'Inter', 'Roboto']) {

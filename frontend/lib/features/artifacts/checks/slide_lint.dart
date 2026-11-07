@@ -35,7 +35,8 @@ List<String> slideFindings(DeckSlide slide, SlideArtBook art) {
         if (e.plainText.trim().isEmpty) continue;
         final need = _textHeight(e);
         final room = e.box.height - 2 * e.padding;
-        if (need > room + 2) {
+        // The last line's leading is empty space, so large text may sit snug in its box.
+        if (need > room + math.max(2, e.size * (e.lineHeight - 1) * 0.6)) {
           out.add(
             '${e.label} needs about ${need.round()} of height but its box has ${room.round()}: '
             'it spills out. Shorten it, lower its size, or make the box taller.',
@@ -58,6 +59,15 @@ List<String> slideFindings(DeckSlide slide, SlideArtBook art) {
           out.add('${e.label} needs about ${need.round()} of height but its box has ${e.box.height.round()}.');
         }
       case ShapeElement():
+    }
+  }
+  for (final t in slide.elements.whereType<TableElement>()) {
+    final rows = Rect.fromLTWH(t.box.left, t.box.top, t.box.width, math.max(t.box.height, _tableHeight(t)));
+    for (final x in texts) {
+      final overlap = x.box.intersect(rows);
+      if (x.plainText.trim().isNotEmpty && overlap.width > 4 && overlap.height > 4) {
+        out.add('${x.label} overlaps ${t.label}.');
+      }
     }
   }
   for (var i = 0; i < texts.length; i++) {
@@ -121,7 +131,7 @@ double _tableHeight(TableElement e) {
       tallest = math.max(tallest, painter.height);
       painter.dispose();
     }
-    height += tallest + e.size * 0.8 + 1;
+    height += math.max(tallest + e.size * 0.8, e.box.height / e.rows.length) + 1;
   }
   return height;
 }

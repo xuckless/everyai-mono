@@ -322,7 +322,10 @@ class _Table extends StatelessWidget {
                 decoration: i == 0 && e.header ? BoxDecoration(color: e.headerFill) : null,
                 children: [
                   for (var c = 0; c < cols; c++)
-                    Padding(
+                    Container(
+                      // Rows share the box's height; longer cells make their row taller.
+                      constraints: BoxConstraints(minHeight: e.box.height / e.rows.length),
+                      alignment: Alignment.centerLeft,
                       padding: EdgeInsets.symmetric(horizontal: e.size * 0.6, vertical: e.size * 0.4),
                       child: Text(
                         c < row.length ? row[c] : '',
