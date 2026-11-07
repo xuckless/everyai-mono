@@ -6,6 +6,7 @@ import 'dart:isolate';
 
 import '../../../../core/security/official_sites.dart';
 import '../../../../core/security/untrusted.dart';
+import '../../live/app_view.dart';
 import '../../live/frames.dart';
 import '../../live/live_session.dart';
 import 'browser_io.dart';
@@ -63,7 +64,11 @@ Future<ToolOutput> runBrowser(
         note = now.notice;
       }
     }
-    final String did;
+    // Acting on the page: compare its elements before and after, so the result says what the action did.
+    final before = const {'click', 'type', 'press', 'back', 'forward', 'scroll'}.contains(action) && b.running
+        ? await b.elements()
+        : null;
+    String did;
     switch (action) {
       case 'open':
         final url = str('url');
@@ -164,6 +169,16 @@ Future<ToolOutput> runBrowser(
         return const ToolOutput('Closed the browser.');
       default:
         return ToolOutput('Error: unknown browser action "$action".', isError: true);
+    }
+    if (before != null && before.isNotEmpty) {
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      var change = pageElementsChange(before, await b.elements());
+      if (change == null) {
+        // Some pages answer after a frame or a fetch.
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+        change = pageElementsChange(before, await b.elements());
+      }
+      did = '$did\n${change ?? 'Nothing visible changed on the page.'}';
     }
     final listed = list ? '\n${await b.snapshot()}' : '';
     final page = browserResultText(list ? 'snapshot' : action, '$did$listed', b.takeLog());

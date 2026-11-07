@@ -7,7 +7,8 @@ const appToolName = 'app';
 
 const appToolDescription =
     'See into and drive an app this session runs, through its framework: a Flutter app (`flutter run`, any device), '
-    'a React Native app (Metro), or an Electron app (started with --remote-debugging-port=0). Start the app first '
+    'a React Native app (Metro), or an Electron app (started with --remote-debugging-port=<a free port>; '
+    'electron-vite: --remoteDebuggingPort <port>, which drops 0). Start the app first '
     '(bash with run_in_background, or app_run); the tool finds it in that command\'s output. list shows what it '
     'found; source picks one when there are several (flutter, react-native, electron, a shell id, or the address '
     'the app printed, for an app started elsewhere).\n'
@@ -22,7 +23,7 @@ const appToolDescription =
     '- Flutter: reload is hot reload (state kept), restart hot restart; eval runs a Dart expression in the app\'s '
     'main library (its top-level names are in scope; widget state is not). React Native: no screenshot here '
     '(look at the simulator or emulator), reload reloads the bundle, eval runs JavaScript. Electron: the browser '
-    'tool\'s actions on the app\'s window. Device screens, for any app on them (native, Flutter, React Native): an '
+    'tool\'s actions on the app\'s window (its renderer console; the main process logs to its shell). Device screens, for any app on them (native, Flutter, React Native): an '
     'iOS Simulator (source "ios", coordinates in points) or an Android emulator or device (source "android", '
     'pixels): accessibility elements, screenshots, taps, typing and swipes, back, home. devices lists them, boot '
     'starts one headless, install puts a built app on it (.app, .apk), launch starts one fresh (bundle: its bundle '

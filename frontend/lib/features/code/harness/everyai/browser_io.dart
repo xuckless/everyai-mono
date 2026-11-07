@@ -637,12 +637,24 @@ final class HeadlessBrowser {
     return v is List ? (x: (v[0] as num).toDouble(), y: (v[1] as num).toDouble()) : (x: 0.0, y: 0.0);
   }
 
+  /// The page's elements now (see [pageSnapshotJs]), for what an action changed; empty when the page gives none.
+  Future<List<PageElement>> elements() async {
+    try {
+      final v = await evaluate(pageSnapshotJs);
+      if (v is! Map) return const [];
+      return [for (final i in (v['items'] as List?) ?? const []) ?PageElement.fromJson(i)];
+    } on BrowserError {
+      return const [];
+    }
+  }
+
   /// The page's element list (see [pageSnapshotJs]): what the model clicks by ref.
   Future<String> snapshot() async {
     await _followWindow();
     final v = await evaluate(pageSnapshotJs);
     if (v is! Map) return '(the page gave no element list)';
     return pageSnapshotText(
+      modal: v['modal'] as String?,
       title: '${v['title'] ?? ''}',
       url: '${v['url'] ?? ''}',
       width: (v['w'] as num?)?.toInt() ?? width,
@@ -690,6 +702,14 @@ final class HeadlessBrowser {
 const w = submits(deep(${at.x}, ${at.y}));
 return w ? 'that button submits a form with ' + w : null;''', focus: false);
     final before = await _here();
+    // What is under the point before the click (a click may re-lay the page out).
+    final hit = await evaluate(
+      '(() => { const p = document.elementFromPoint(${at.x}, ${at.y}); if (!p) return null; '
+      'const e = p.closest("a,button,input,select,textarea,summary,label,[role],[onclick],[tabindex]") || p; '
+      'const t = (e.getAttribute("aria-label") || e.innerText || e.value || e.alt || e.title || "").replace(/\\s+/g, " ").trim(); '
+      'const role = e.getAttribute("role") || e.tagName.toLowerCase(); '
+      'return role + (e.id ? "#" + e.id : "") + (t ? \' "\' + t.slice(0, 40) + \'"\' : ""); })()',
+    );
     final running = {..._downloads.keys};
     await _send('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': at.x, 'y': at.y});
     for (var n = 1; n <= count; n++) {
@@ -705,11 +725,6 @@ return w ? 'that button submits a form with ' + w : null;''', focus: false);
     }
     await Future<void>.delayed(const Duration(milliseconds: 250));
     await _settleDownloads(running);
-    final hit = await evaluate(
-      '(() => { const e = document.elementFromPoint(${at.x}, ${at.y}); if (!e) return null; '
-      'const t = (e.getAttribute("aria-label") || e.innerText || e.value || e.alt || "").replace(/\\s+/g, " ").trim(); '
-      'return e.tagName.toLowerCase() + (e.id ? "#" + e.id : "") + (t ? \' "\' + t.slice(0, 40) + \'"\' : ""); })()',
-    );
     final after = await _here();
     final moved = after.url != before.url
         ? ' The page went to ${after.url} (${after.title}).'

@@ -92,7 +92,7 @@ $securityRules
   Read its element list and act by ref; take a screenshot to see how it looks (if you can view images). Serve the
   folder (a dev server, or `python3 -m http.server` in the background) and open http://localhost. A Flutter, React
   Native or Electron app: start it in the background (`flutter run -d <device>`, Metro, Electron with
-  --remote-debugging-port=0), then use the app tool: its element list, tap and type by ref, hot reload, its log.
+  --remote-debugging-port=<free port>), then use the app tool: its element list, tap and type by ref, hot reload, its log.
   A mobile app: app devices / boot, run it on that simulator or emulator, then app with source "ios" or "android"
   (taps and swipes as touches).
   Other desktop apps' windows: screenshot. You can also read a png or jpg and see it.

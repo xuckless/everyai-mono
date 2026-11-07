@@ -147,7 +147,12 @@ String? appTreeChange(List<AppNode> before, List<AppNode> after, {double width =
       if (!now.contains(key(n)) && worth(n) && !changedRefs.contains(n.ref)) shown(n),
   ];
   if (added.isEmpty && gone.isEmpty && changed.isEmpty) return null;
-  String list(List<String> l) => l.length <= 8 ? l.join('; ') : '${l.take(8).join('; ')}; … ${l.length - 8} more';
+  // The same line twice (a toast and its live region) says nothing more.
+  String list(List<String> all) {
+    final l = all.toSet().toList();
+    return l.length <= 8 ? l.join('; ') : '${l.take(8).join('; ')}; … ${l.length - 8} more';
+  }
+
   final kept = before.where((n) => now.contains(key(n))).length;
   final mostGone = gone.length > 6 && gone.length > kept;
   return [
@@ -158,6 +163,33 @@ String? appTreeChange(List<AppNode> before, List<AppNode> after, {double width =
           ? 'No longer shown: ${gone.length} items (a new page or a dialog over it, or scrolled away)'
           : 'No longer shown: ${list(gone)}',
   ].join('\n');
+}
+
+/// What changed between two page element lists (the browser tool's), as [appTreeChange] says it: elements off
+/// screen don't count.
+String? pageElementsChange(List<PageElement> before, List<PageElement> after) {
+  AppNode node(PageElement e) => AppNode(
+    ref: e.ref,
+    role: e.role,
+    name: e.name,
+    value: e.value,
+    // Focus moving from one control to the next is not a change on screen.
+    state: [
+      for (final s in e.state)
+        if (s != 'focused') s,
+    ],
+    secret: e.state.contains('password'),
+  );
+  return appTreeChange(
+    [
+      for (final e in before)
+        if (!e.offscreen) node(e),
+    ],
+    [
+      for (final e in after)
+        if (!e.offscreen) node(e),
+    ],
+  );
 }
 
 /// An error from the app (a Dart exception with its stack) cut to its first lines: the stack is noise for the model.

@@ -65,8 +65,23 @@ String pageSnapshotText({
   required int scrollY,
   required int scrollHeight,
   required List<PageElement> elements,
+  String? modal,
   int maxElements = 150,
 }) {
+  // The same control over and over (a rating on every card): the first few, then a count.
+  final copies = <String, int>{};
+  final folded = <String, int>{};
+  final kept = <PageElement>[];
+  for (final e in elements) {
+    final key = e.ref.isEmpty ? '' : '${e.role}|${e.name}|${e.value ?? ''}|${e.state.join(',')}';
+    if (key.isNotEmpty && (copies[key] = (copies[key] ?? 0) + 1) > 3) {
+      final label = e.line.substring(e.ref.length + 3);
+      folded[label] = (folded[label] ?? 0) + 1;
+      continue;
+    }
+    kept.add(e);
+  }
+  elements = kept;
   final shown = elements.take(maxElements).toList();
   final more = elements.length - shown.length;
   final here = [
@@ -86,12 +101,18 @@ String pageSnapshotText({
             : scrollY >= maxScroll
             ? 'the bottom'
             : 'can scroll to y=$maxScroll'})',
+    if (modal != null)
+      'A dialog is open ("${_short(modal, 60)}"): only its elements are listed (its close button or Escape dismisses '
+          'it).',
     if (shown.isEmpty)
       '(no interactive elements, headings or text found: the page may draw on a canvas; use a screenshot)',
     for (final e in here) e.line,
     if (away.isNotEmpty) 'Off screen (a ref scrolls to it):',
     for (final e in away) e.line,
     if (more > 0) '… $more more (scroll, or use a selector)',
+    if (folded.isNotEmpty)
+      'Repeated (listed 3 times above, then folded): ${[for (final e in folded.entries.take(6)) '${e.key} ×${e.value} more'].join('; ')}'
+          '${folded.length > 6 ? '; … ${folded.length - 6} more kinds' : ''}',
   ].join('\n');
 }
 
@@ -178,13 +199,43 @@ const pageSnapshotJs = r'''
       if (role === 'heading') item.level = +(el.tagName[1] || el.getAttribute('aria-level') || 2);
       out.push(item);
     }
+    // Things a page makes clickable with a script handler and a pointer cursor (a photo tile, a card): the outermost
+    // element with the pointer cursor that isn't inside a listed control.
+    for (const el of root.querySelectorAll('div,span,li,td,img,figure,article,section,svg,p')) {
+      if (out.length >= 400) break;
+      if (listedIn(el)) continue;
+      const cs = getComputedStyle(el);
+      if (cs.cursor !== 'pointer') continue;
+      const parent = el.parentElement;
+      if (parent && getComputedStyle(parent).cursor === 'pointer') continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 4 || r.height < 4 || cs.visibility === 'hidden' || cs.display === 'none' || +cs.opacity === 0) continue;
+      const name = (el.getAttribute('aria-label') || el.title || el.getAttribute('alt') || el.innerText ||
+        (el.querySelector('img[alt]') || {}).alt || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+      if (!name) continue;
+      const ref = refOf(el);
+      refs.set(ref, el);
+      out.push({ref, role: 'clickable', name, state: [], off: r.bottom < 0 || r.top > vh || r.right < 0 || r.left > vw,
+        top: r.top});
+    }
     for (const el of root.querySelectorAll('*')) if (el.shadowRoot) visit(el.shadowRoot);
   };
-  visit(document);
+  // Inside an element listed already (as itself or an ancestor)?
+  const listedIn = (el) => { for (let e = el; e; e = e.parentElement) if (refs.has(ids.get(e)) && refs.get(ids.get(e)) === e) return true; return false; };
+  // A modal dialog hides the page behind it: list only the dialog (the topmost when several are open).
+  const shown = (el) => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none'; };
+  const modals = [...document.querySelectorAll('dialog[open],[aria-modal="true"]')].filter((el) => {
+    if (!shown(el)) return false;
+    if (el.tagName === 'DIALOG') { try { return el.matches(':modal'); } catch (e) { return true; } }
+    return true;
+  });
+  const modal = modals.length ? modals[modals.length - 1] : null;
+  visit(modal || document);
   // Text the page shows outside the controls (status lines, counts, prices, errors): what an action changed.
   const listed = new Set(refs.values());
   const inListed = (el) => { for (let e = el; e; e = e.parentElement) if (listed.has(e)) return true; return false; };
-  const walker = document.createTreeWalker(document.body || document, NodeFilter.SHOW_TEXT);
+  const walker = document.createTreeWalker(modal || document.body || document, NodeFilter.SHOW_TEXT);
   const seen = new Set();
   const inSeen = (el) => { for (let e = el; e; e = e.parentElement) if (seen.has(e)) return true; return false; };
   let texts = 0;
@@ -208,6 +259,7 @@ const pageSnapshotJs = r'''
   // Reading order: rows top to bottom (a few pixels count as one row), left to right in a row.
   out.sort((a, b) => Math.round(a.top / 8) - Math.round(b.top / 8) || a.left - b.left);
   return {title: document.title, url: location.href, w: vw, h: vh, y: Math.round(scrollY),
+    modal: modal ? (nameOf(modal).replace(/\s+/g, ' ').trim().slice(0, 80) || 'a dialog') : null,
     sh: Math.round(document.documentElement.scrollHeight), items: out.map(({top, left, ...i}) => i)};
 })()''';
 

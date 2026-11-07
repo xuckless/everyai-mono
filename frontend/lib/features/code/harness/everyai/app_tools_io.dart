@@ -184,11 +184,12 @@ String noAppText(List<SessionApp> apps, String source) {
   if (apps.isNotEmpty) {
     return 'Error: no app matches "$source". Running: ${apps.map((a) => '${a.kind.id} (${a.label})').join('; ')}.';
   }
-  return 'Error: no Flutter, React Native or Electron app is running in this session yet. Start it in the '
-      'background (bash with run_in_background: `flutter run -d <device>`, `npx expo start` / `npx react-native '
-      'start`, or Electron with --remote-debugging-port=0) and call app again once it printed its address. For an '
-      'app started elsewhere, pass the address it printed as source. An iOS Simulator: devices lists them, boot '
-      'starts one. Web pages: use browser.';
+  return 'Error: no app found in this session\'s commands. Started it yourself in a shell this tool can\'t see, or '
+      'elsewhere? Pass the address it printed as source (Electron: the ws://…/devtools/browser/… line; Flutter: the '
+      'VM service http://… URL; React Native: Metro\'s http://localhost:8081). Not started yet: run it in the '
+      'background (`flutter run -d <device>`, `npx expo start`, Electron with --remote-debugging-port=<a free port>) '
+      '(bash with run_in_background) and call app again once it printed its address. Phones and tablets: devices lists simulators and emulators, '
+      'boot starts one. Web pages: use browser.';
 }
 
 /// The app [source] names among [apps] (a kind, a shell id), or the newest when [source] is empty.
