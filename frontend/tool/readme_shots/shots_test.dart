@@ -6,7 +6,8 @@
 //
 //   cd frontend && flutter test tool/readme_shots/shots_test.dart && tool/readme_shots/to_webp.sh
 //
-// Output folder: EVERYAI_SHOTS_OUT (default build/readme_shots).
+// Output folder: EVERYAI_SHOTS_OUT (default build/readme_shots). EVERYAI_SHOTS_OS=windows renders the Windows app
+// (its own title bar buttons, square corners) for the Microsoft Store listing.
 
 import 'dart:async';
 import 'dart:convert';
@@ -66,6 +67,10 @@ import 'package:material_ui/material_ui.dart' as m;
 import '../../test/features/local_models/fakes.dart';
 import '../../test/layout/layout_host.dart';
 import '../../test/support/fake_leads.dart';
+
+/// Renders the Windows app instead of the macOS one (EVERYAI_SHOTS_OS=windows).
+final _windows = Platform.environment['EVERYAI_SHOTS_OS'] == 'windows';
+final _platform = _windows ? TargetPlatform.windows : TargetPlatform.macOS;
 
 final _out = Directory(Platform.environment['EVERYAI_SHOTS_OUT'] ?? 'build/readme_shots');
 const _shotKey = ValueKey('readme.shot');
@@ -177,11 +182,11 @@ class _Window extends StatelessWidget {
       child: RepaintBoundary(
         key: _shotKey,
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(_windows ? 8 : 12),
           child: DecoratedBox(
             position: DecorationPosition.foreground,
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(_windows ? 8 : 12),
               border: Border.all(color: const Color(0x33FFFFFF), width: 0.5),
             ),
             child: ColoredBox(
@@ -189,7 +194,8 @@ class _Window extends StatelessWidget {
               child: Stack(
                 children: [
                   Positioned.fill(child: child),
-                  if (lights)
+                  if (lights && _windows) const Positioned(top: 0, right: 0, child: _WindowsCaptionButtons()),
+                  if (lights && !_windows)
                     Positioned(
                       left: 18,
                       top: 18,
@@ -209,6 +215,46 @@ class _Window extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Windows' minimize, maximize and close, drawn like the app's own (46×36 cells, thin glyphs).
+class _WindowsCaptionButtons extends StatelessWidget {
+  const _WindowsCaptionButtons();
+
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      for (final kind in const [0, 1, 2])
+        SizedBox(width: 46, height: 36, child: CustomPaint(painter: _CaptionGlyph(kind))),
+    ],
+  );
+}
+
+class _CaptionGlyph extends CustomPainter {
+  const _CaptionGlyph(this.kind);
+  final int kind;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final p = Paint()
+      ..color = const Color(0xCCFFFFFF)
+      ..strokeWidth = 1
+      ..style = PaintingStyle.stroke;
+    final c = size.center(Offset.zero);
+    switch (kind) {
+      case 0:
+        canvas.drawLine(c.translate(-5, 0), c.translate(5, 0), p);
+      case 1:
+        canvas.drawRect(Rect.fromCenter(center: c, width: 10, height: 10), p);
+      default:
+        canvas.drawLine(c.translate(-5, -5), c.translate(5, 5), p);
+        canvas.drawLine(c.translate(5, -5), c.translate(-5, 5), p);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_CaptionGlyph old) => old.kind != kind;
 }
 
 /// The app's wide layout: the real sidebar beside [content], as `AppShell` builds it.
@@ -558,7 +604,7 @@ Future<void> _seedChats(ProviderContainer c) async {
 
 void main() {
   setUpAll(_loadFonts);
-  setUp(() => debugDefaultTargetPlatformOverride = TargetPlatform.macOS);
+  setUp(() => debugDefaultTargetPlatformOverride = _platform);
 
   Future<void> run(WidgetTester tester, Future<void> Function(_World w, _Shots s) body) async {
     final w = _World();
