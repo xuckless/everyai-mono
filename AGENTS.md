@@ -902,6 +902,12 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   a double click's length (the next message moves under the pointer; `_queueAction` in the composer), a failed
   session stays failed on the Board while a workflow runs (`boardStatus`), the take-control reminder settles in like
   the other cards above the composer. Test: `queued_send_now_test`, `board_test`.
+- **Chat sources (2026-11-07; branch `fix/chat-sources-selection`).** A selection drag that started on the sideways
+  sources row (a scroller inside the chat's own, under one SelectionArea) hit Flutter's edge auto-scroll assertion
+  over and over and left the whole chat unselectable (debug builds). The row is `SelectionContainer.disabled` (its
+  cards are links). Source cards show the site's favicon through DuckDuckGo's icon service (`faviconUrl`; the sites
+  themselves aren't contacted), with the letter badge while it loads or when there's none. Not reproduced in a test:
+  a plain nested drag doesn't trip the assertion; the markdown code/table scrollers aren't changed.
 - **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
   `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
   `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,

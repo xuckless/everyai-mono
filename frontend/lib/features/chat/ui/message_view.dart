@@ -466,13 +466,17 @@ class _SourcesRow extends StatelessWidget {
             style: theme.type.callout.semibold.tint(theme.textMuted),
           ),
           const SizedBox(height: 8),
-          SizedBox(
-            height: 78,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              itemCount: sources.length,
-              separatorBuilder: (_, _) => const SizedBox(width: 8),
-              itemBuilder: (context, i) => _SourceCard(index: i + 1, source: sources[i]),
+          // Out of the chat's text selection: the cards are links, and a selection drag reaching this sideways list
+          // (nested in the chat's own) tripped Flutter's auto-scroll and left the whole chat unselectable.
+          SelectionContainer.disabled(
+            child: SizedBox(
+              height: 78,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: sources.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 8),
+                itemBuilder: (context, i) => _SourceCard(index: i + 1, source: sources[i]),
+              ),
             ),
           ),
         ],
@@ -529,7 +533,7 @@ class _SourceCardState extends State<_SourceCard> {
                 ),
                 Row(
                   children: [
-                    SiteBadge(site: s.site),
+                    SiteBadge(site: s.site, host: s.url.host),
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
@@ -549,9 +553,46 @@ class _SourceCardState extends State<_SourceCard> {
   }
 }
 
-/// Letter badge standing in for a favicon (no network fetch per source).
+/// The site's favicon, through DuckDuckGo's icon service (the sites themselves aren't contacted, so they don't see
+/// the reader). A letter badge shows while it loads and stays when there is no icon (or no [host]).
 class SiteBadge extends StatelessWidget {
-  const SiteBadge({super.key, required this.site, this.size = 16});
+  const SiteBadge({super.key, required this.site, this.host, this.size = 16});
+
+  final String site;
+
+  /// The source's host name, for its favicon.
+  final String? host;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final letter = _Letter(site: site, size: size);
+    final h = host;
+    if (h == null || h.isEmpty) return letter;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(size / 4),
+      child: Image.network(
+        faviconUrl(h),
+        width: size,
+        height: size,
+        fit: BoxFit.contain,
+        filterQuality: FilterQuality.medium,
+        // Its decoded size, not the service's 32-64 px original, so dozens of cards stay light.
+        cacheWidth: (size * MediaQuery.devicePixelRatioOf(context)).round(),
+        frameBuilder: (context, child, frame, sync) => frame == null && !sync ? letter : child,
+        errorBuilder: (context, _, _) => letter,
+      ),
+    );
+  }
+}
+
+/// Where a host's favicon comes from (see [SiteBadge]).
+@visibleForTesting
+String faviconUrl(String host) => 'https://icons.duckduckgo.com/ip3/${Uri.encodeComponent(host)}.ico';
+
+/// A letter on a colour from the site's name: the badge while the favicon loads, or when it has none.
+class _Letter extends StatelessWidget {
+  const _Letter({required this.site, required this.size});
 
   final String site;
   final double size;
