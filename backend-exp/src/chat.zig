@@ -494,6 +494,8 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
     for (messages.items) |m| if (std.mem.eql(u8, m.role, "assistant")) try docs.seed(arena, m.content);
     var pictures: ImageBook = .{};
     try pictures.seed(arena, body.images, body.messages);
+    // Pictures the app returned with its tool answers (the look tool), shown to the model after each step.
+    var looks: Looks = .{ .see = facts.inputs.image };
     var final_text: std.Io.Writer.Allocating = .init(arena);
     // The web plugin (Search without tools) and the Research model need OpenRouter.
     const route = try app.routeFor(req, model, modes.nativeOk(body.mode, with_tools));
@@ -572,9 +574,11 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
             const output = if (cut_call == i)
                 try truncation.notRun(arena, call.name)
             else
-                try runTool(app, req, who, body, call, sink, &docs, &pictures, &inquiry);
+                try runTool(app, req, who, body, call, sink, &docs, &pictures, &inquiry, &looks);
             try messages.append(arena, .{ .role = "tool", .tool_call_id = call.id, .content = output });
         }
+        // Tool results take text only: the pictures follow them as one user message.
+        if (try looks.take(arena)) |parts| try messages.append(arena, .{ .role = "user", .parts = parts });
         steps += 1;
         // A model that stopped for another reason than tools is done.
         if (!std.mem.eql(u8, result.finish_reason, "tool_calls") and !cut_off and result.text.len > 0) break;
@@ -848,7 +852,7 @@ fn toolCallsJson(arena: std.mem.Allocator, calls: []const openrouter.ToolCall) !
 }
 
 /// Runs or forwards one tool call; returns the text the model sees.
-fn runTool(app: *App, req: *anole.Request, who: auth.Identity, body: ChatRequest, call: openrouter.ToolCall, sink: Sink, docs: *Artifacts, pictures: *ImageBook, inquiry: *research.State) ![]const u8 {
+fn runTool(app: *App, req: *anole.Request, who: auth.Identity, body: ChatRequest, call: openrouter.ToolCall, sink: Sink, docs: *Artifacts, pictures: *ImageBook, inquiry: *research.State, looks: *Looks) ![]const u8 {
     const session = body.session;
     const args_text = if (call.arguments.len == 0) "{}" else call.arguments;
     const args = std.json.parseFromSliceLeaky(std.json.Value, req.arena, args_text, .{}) catch {
@@ -866,7 +870,7 @@ fn runTool(app: *App, req: *anole.Request, who: auth.Identity, body: ChatRequest
             // An edit is checked here first, so the model learns about misses.
             const edited = try docs.track(req.arena, call.name, args);
             if (edited) |e| if (e.applied == 0) return e.message;
-            if (declared(body.client_tools, call.name)) return waitForApp(app, req, who, call, args, sink);
+            if (declared(body.client_tools, call.name)) return waitForApp(app, req, who, call, args, sink, looks);
             if (tools.clientOnly(call.name))
                 return std.fmt.allocPrint(req.arena, "Error: {s} is turned off in the user's app. Carry on without it.", .{call.name});
             try sink.send("tool", .{ .id = call.id, .name = call.name, .arguments = args });
@@ -916,7 +920,7 @@ const app_result_max = 100_000;
 
 /// Hands a call to the app (`tool_wait`) and returns its answer for the model:
 /// the result, an "Error: …" the app reported, or a typed timeout.
-fn waitForApp(app: *App, req: *anole.Request, who: auth.Identity, call: openrouter.ToolCall, args: std.json.Value, sink: Sink) ![]const u8 {
+fn waitForApp(app: *App, req: *anole.Request, who: auth.Identity, call: openrouter.ToolCall, args: std.json.Value, sink: Sink, looks: *Looks) ![]const u8 {
     var w: tool_wait.Waiter = .{ .user_id = who.user_id, .call_id = call.id };
     // Linked before the app hears of it, so a quick answer finds it.
     app.waits.add(req.io, &w);
@@ -933,10 +937,11 @@ fn waitForApp(app: *App, req: *anole.Request, who: auth.Identity, call: openrout
         },
         .answered => |a| {
             try sink.send("tool_status", .{ .id = call.id, .name = call.name, .status = if (a.is_error) "failed" else "done" });
-            const text = if (a.text.len > app_result_max)
+            var text = if (a.text.len > app_result_max)
                 try std.mem.concat(req.arena, u8, &.{ a.text[0..app_result_max], "\n[truncated]" })
             else
                 a.text;
+            if (a.images.len > 0) text = try std.mem.concat(req.arena, u8, &.{ text, try looks.add(req.arena, call.name, a.images) });
             if (!a.is_error) return if (text.len == 0) "Done." else text;
             if (std.mem.startsWith(u8, text, "Error")) return text;
             return std.mem.concat(req.arena, u8, &.{ "Error: ", if (text.len == 0) "the app could not run this tool." else text });
@@ -950,7 +955,66 @@ const ToolResultBody = struct {
     result: std.json.Value = .null,
     /// The app could not run the tool; `result` says why.
     is_error: bool = false,
+    /// Pictures the model should see with the result (the look tool's renders): PNG, JPEG or WebP data URLs.
+    images: []const []const u8 = &.{},
 };
+
+/// The most pictures one tool answer may carry, and their total size.
+const max_result_images = 6;
+const max_result_image_bytes = 24 * 1024 * 1024;
+
+/// Why `images` can't go to the model, or null.
+fn imagesProblem(pics: []const []const u8) ?[]const u8 {
+    if (pics.len > max_result_images) return "images: at most 6 pictures per tool result";
+    var total: usize = 0;
+    for (pics) |img| {
+        total += img.len;
+        const ok = for ([_][]const u8{ "data:image/png;base64,", "data:image/jpeg;base64,", "data:image/webp;base64," }) |prefix| {
+            if (std.mem.startsWith(u8, img, prefix) and img.len > prefix.len) break true;
+        } else false;
+        if (!ok) return "images: each must be a PNG, JPEG or WebP data URL";
+    }
+    if (total > max_result_image_bytes) return "images: 24 MiB at most in one tool result";
+    return null;
+}
+
+/// Pictures that came with the app's tool answers in one model step: they go to the model as one user message
+/// after the step's tool results (tool messages carry text only), or, for a model that can't see images, as a note.
+const Looks = struct {
+    see: bool,
+    parts: std.ArrayList(std.json.Value) = .empty,
+
+    /// Keeps `images` for the next message; the line to add to the tool's text result.
+    fn add(self: *Looks, arena: std.mem.Allocator, tool: []const u8, pics: []const []const u8) ![]const u8 {
+        if (!self.see) return std.fmt.allocPrint(arena, "\n[The app made {d} picture(s) here, but this model can't see images: go by the text.]", .{pics.len});
+        try self.parts.append(arena, try textPart(arena, try std.fmt.allocPrint(arena, "[Pictures from your {s} call, in order:]", .{tool})));
+        for (pics) |img| try self.parts.append(arena, try imagePart(arena, img));
+        return std.fmt.allocPrint(arena, "\n[{d} picture(s) follow in the next message.]", .{pics.len});
+    }
+
+    /// The step's pictures as content parts (and empties the list), or null when there were none.
+    fn take(self: *Looks, arena: std.mem.Allocator) !?[]const std.json.Value {
+        if (self.parts.items.len == 0) return null;
+        const out = try self.parts.toOwnedSlice(arena);
+        return out;
+    }
+};
+
+fn textPart(arena: std.mem.Allocator, text: []const u8) !std.json.Value {
+    var o: std.json.ObjectMap = .empty;
+    try o.put(arena, "type", .{ .string = "text" });
+    try o.put(arena, "text", .{ .string = text });
+    return .{ .object = o };
+}
+
+fn imagePart(arena: std.mem.Allocator, url: []const u8) !std.json.Value {
+    var inner: std.json.ObjectMap = .empty;
+    try inner.put(arena, "url", .{ .string = url });
+    var o: std.json.ObjectMap = .empty;
+    try o.put(arena, "type", .{ .string = "image_url" });
+    try o.put(arena, "image_url", .{ .object = inner });
+    return .{ .object = o };
+}
 
 /// POST /v1/chat/tool_result: the app's answer to a `tool_wait`.
 fn toolResult(app: *App, req: *anole.Request, res: *anole.Response) !void {
@@ -965,7 +1029,8 @@ fn toolResult(app: *App, req: *anole.Request, res: *anole.Response) !void {
         .null => "",
         else => try std.json.Stringify.valueAlloc(req.arena, body.result, .{}),
     };
-    if (!try app.waits.resolve(req.io, app.gpa, who.user_id, body.call_id, text, body.is_error))
+    if (imagesProblem(body.images)) |why| return res.fail(.unprocessable_entity, why);
+    if (!try app.waits.resolveWith(req.io, app.gpa, who.user_id, body.call_id, text, body.is_error, body.images))
         return res.fail(.not_found, "no chat turn is waiting for this call (it finished or timed out)");
     return res.json(.{ .ok = true });
 }

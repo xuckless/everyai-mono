@@ -15,9 +15,12 @@ pub const Waiter = struct {
     /// Set (owned by the shared allocator) when the app answers.
     result: ?[]u8 = null,
     is_error: bool = false,
+    /// Pictures that came with the answer (data URLs), owned by the shared allocator like `result`.
+    images: []const []u8 = &.{},
 };
 
-pub const Answer = struct { text: []const u8, is_error: bool };
+/// The app's answer: its text for the model, and pictures the model should see with it (data URLs).
+pub const Answer = struct { text: []const u8, is_error: bool, images: []const []const u8 = &.{} };
 
 pub const Outcome = union(enum) {
     answered: Answer,
@@ -39,13 +42,30 @@ pub const Waits = struct {
     /// Hands the app's answer to the waiting turn. False when no turn of this
     /// user waits for `call_id` (it timed out, finished or never existed).
     pub fn resolve(self: *Waits, io: std.Io, gpa: std.mem.Allocator, user_id: []const u8, call_id: []const u8, result: []const u8, is_error: bool) !bool {
+        return self.resolveWith(io, gpa, user_id, call_id, result, is_error, &.{});
+    }
+
+    /// `resolve` with pictures for the model to see along with the text.
+    pub fn resolveWith(self: *Waits, io: std.Io, gpa: std.mem.Allocator, user_id: []const u8, call_id: []const u8, result: []const u8, is_error: bool, images: []const []const u8) !bool {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         var it = self.head;
         while (it) |w| : (it = w.next) {
             if (!std.mem.eql(u8, w.call_id, call_id) or !std.mem.eql(u8, w.user_id, user_id)) continue;
+            const copies = try gpa.alloc([]u8, images.len);
+            var made: usize = 0;
+            errdefer {
+                for (copies[0..made]) |c| gpa.free(c);
+                gpa.free(copies);
+            }
+            for (images) |img| {
+                copies[made] = try gpa.dupe(u8, img);
+                made += 1;
+            }
+            const text = try gpa.dupe(u8, result);
             self.unlink(w);
-            w.result = try gpa.dupe(u8, result);
+            w.result = text;
+            w.images = copies;
             w.is_error = is_error;
             // Under the mutex: the waiter can't return (and free `w`) before this.
             w.done.set(io);
@@ -77,8 +97,16 @@ pub const Waits = struct {
         // Unlinked: nobody else touches `w` now.
         const bytes = w.result orelse return .timeout;
         w.result = null;
-        defer gpa.free(bytes);
-        return .{ .answered = .{ .text = try arena.dupe(u8, bytes), .is_error = w.is_error } };
+        const pics = w.images;
+        w.images = &.{};
+        defer {
+            gpa.free(bytes);
+            for (pics) |p| gpa.free(p);
+            gpa.free(pics);
+        }
+        const images = try arena.alloc([]const u8, pics.len);
+        for (pics, 0..) |p, i| images[i] = try arena.dupe(u8, p);
+        return .{ .answered = .{ .text = try arena.dupe(u8, bytes), .is_error = w.is_error, .images = images } };
     }
 
     /// Unlinks `w` without waiting (the app could not be told), dropping any answer.
@@ -86,6 +114,9 @@ pub const Waits = struct {
         self.detach(io, w);
         if (w.result) |bytes| gpa.free(bytes);
         w.result = null;
+        for (w.images) |p| gpa.free(p);
+        if (w.images.len > 0) gpa.free(w.images);
+        w.images = &.{};
     }
 
     fn detach(self: *Waits, io: std.Io, w: *Waiter) void {
@@ -163,4 +194,29 @@ test "waits: no answer times out, beating meanwhile, and unlinks" {
     try std.testing.expect(beat.beats >= 1);
     try std.testing.expectEqual(@as(usize, 0), waits.count(io));
     try std.testing.expect(!try waits.resolve(io, gpa, "u1", "call_1", "late", false));
+}
+
+test "waits: pictures come with the answer and are freed" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    var waits: Waits = .{};
+    var w: Waiter = .{ .user_id = "u1", .call_id = "call_1" };
+    waits.add(io, &w);
+    try std.testing.expect(try waits.resolveWith(io, gpa, "u1", "call_1", "Looked.", false, &.{ "data:image/png;base64,AAA", "data:image/png;base64,BBB" }));
+    var beat: NoBeat = .{};
+    const out = try waits.wait(io, gpa, arena.allocator(), &w, .fromSeconds(5), .fromSeconds(1), &beat);
+    try std.testing.expectEqual(@as(usize, 2), out.answered.images.len);
+    try std.testing.expectEqualStrings("data:image/png;base64,BBB", out.answered.images[1]);
+}
+
+test "waits: a dropped waiter frees its pictures" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var waits: Waits = .{};
+    var w: Waiter = .{ .user_id = "u1", .call_id = "call_1" };
+    waits.add(io, &w);
+    try std.testing.expect(try waits.resolveWith(io, gpa, "u1", "call_1", "x", false, &.{"data:image/png;base64,AAA"}));
+    waits.drop(io, gpa, &w);
 }

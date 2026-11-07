@@ -126,7 +126,9 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
     call comes as `tool_wait {id, name, arguments}` instead of `tool`, and the
     loop waits until the app sends `POST /v1/chat/tool_result {call_id, result
     (string or any JSON), is_error?}` (200 `{ok}`; 404 when no turn of this user
-    waits for it). The model gets the result (`Error: …` when `is_error`). After
+    waits for it). The model gets the result (`Error: …` when `is_error`). `images` (≤6 PNG/JPEG/WebP data URLs,
+    24 MiB) go to the model as one user message after the step's tool results (a note instead for a model that
+    can't see images); the look tool uses them. After
     `CLIENT_TOOL_TIMEOUT_MS` (300 s) it gets `Error (timeout): …` instead. Either
     way a `tool_status {id, name, status: done|failed, detail?:"timed out"}`
     closes the wait. SSE comments keep the stream alive every 15 s meanwhile.
