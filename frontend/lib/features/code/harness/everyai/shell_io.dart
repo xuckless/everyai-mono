@@ -13,7 +13,7 @@ import '../../panes/pty.dart' show ShellPty;
 import '../../live/desktop_helper_io.dart' show windowsParents;
 import '../../live/nested_display_io.dart';
 import '../../shells/containers.dart' show containerHintsOf;
-import '../../shells/pty_spawn_io.dart';
+import '../../shells/pty_spawn_stub.dart' if (dart.library.ffi) '../../shells/pty_spawn_io.dart';
 import '../../shells/shell_log_io.dart';
 import '../../shells/shell_registry.dart';
 import '../../shells/terminal_text.dart';
