@@ -3,8 +3,24 @@
 EveryAI is in alpha. Signed releases start at `0.1.0-alpha.1`; the earlier unsigned dev build was
 `0.1.0-dev-nonsigned`. Earlier changes are listed by date and pull request.
 
-## Unreleased: local models
+## 0.1.0-alpha.5 (2026-11-07): a new look, local models, and tools to test your app
 
+### A new look
+- **One EveryAI design on every OS.** New colours, type (Geist), icons (Lucide) and motion, with dark, light and
+  Pure black themes picked from pictures. The design-language picker is gone.
+- **Shell and sidebar:** an inset content panel, a Chat | Code switch, project groups that fold, and harness logos with
+  a status dot on every session.
+- **Code session:** a five-tab panel (Session, Diff, Preview, Files, Processes), a terminal drawer with tabs, a calmer
+  New session page, and a Terminal button on Code home.
+- **Board:** Needs you, Running and Done columns. Approve, deny and answer questions on the card; cards glide between
+  columns; columns resize; Done cards clear.
+- **Settings** opens as a window over the app, with grouped sections that fold and pages laid out on cards.
+- **Windows and Linux** draw their own title bar, with room to drag the window.
+- The app reopens where you left it. The terminal draws Powerline and Nerd Font prompts.
+- **What's new** shows once after an update; Settings → About opens it again. The intro no longer
+  comes back after updates.
+
+### Local models
 - **Models on your computer.** EveryAI finds Ollama, LM Studio, llama.cpp, Jan, vLLM and MLX servers, and Apple's
   on-device model through `fm serve` (after you agree to Apple's terms once in EveryAI's terminal). Add any other
   server by its URL.
@@ -17,6 +33,18 @@ EveryAI is in alpha. Signed releases start at `0.1.0-alpha.1`; the earlier unsig
   what to set up instead of failing.
 - **Code on local models.** The EveryAI harness calls the local server directly; small models get a lighter set of
   tools and rules. Outside agents keep working with no key and no model.
+
+### Tools to see and test what you build
+- **Every process opens in a terminal.** Click a shell, server or Docker/Podman container in the Processes tab to
+  see its whole log and type into it. Background shells run in a real terminal, and agents can send them input.
+- **A live Preview.** The agent and the Preview share one Chrome per project. Watch the agent work with a ghost
+  cursor, take control and give it back.
+- **The `app` tool** lets every agent see and operate the app it builds: web and Electron pages, Flutter and React
+  Native apps, the iOS Simulator, the Android emulator, and desktop windows (macOS, with Windows and Linux in early
+  shape). It takes screenshots, lists elements, clicks, types, and reads logs.
+- **Guarded input:** real clicks and keys only reach the app's own window, never with secure input on, never into
+  password fields, and wait while you're using the mouse or keyboard. Real input on macOS needs a one-time consent
+  (Settings → Code → Driving apps).
 
 ## 0.1.0-alpha.4 (2026-11-06): a cheaper execution loop, and no AI credit in commits
 
