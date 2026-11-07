@@ -33,9 +33,11 @@ final class Idle extends TurnPhase {
   const Idle();
 }
 
-/// A turn was asked for; the request isn't out yet.
+/// A turn was asked for; the request isn't out yet. [turn] tells one start from the next: Stop then a quick send
+/// makes a new Starting, and the stopped turn's pending setup sees it isn't its own and gives up.
 final class Starting extends TurnPhase {
-  const Starting();
+  const Starting(this.turn);
+  final int turn;
   @override
   bool get busy => true;
 }
