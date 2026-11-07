@@ -2,27 +2,41 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:every_ai/core/platform/platform_kind.dart';
+import 'package:every_ai/core/preferences.dart';
+import 'package:every_ai/features/code/domain/agent_mode.dart';
+import 'package:every_ai/features/code/domain/code_session.dart';
+import 'package:every_ai/features/code/panes/panes_providers.dart';
 import 'package:every_ai/features/code/panes/processes.dart';
 import 'package:every_ai/features/code/shells/containers.dart';
 import 'package:every_ai/features/code/shells/shell_log_io.dart';
 import 'package:every_ai/features/code/shells/shell_registry.dart';
 import 'package:every_ai/features/code/shells/shells_providers.dart';
 import 'package:every_ai/features/code/ui/panes/processes_pane.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-ShellEntry _entry(String key, {int? pid, String session = 'grp', bool background = true, String? logPath}) =>
-    ShellEntry(
-      key: key,
-      id: key.split('/').last,
-      session: session,
-      command: 'npm run dev',
-      cwd: '/w',
-      origin: ShellOrigin.agent,
-      background: background,
-      pid: pid,
-      logPath: logPath,
-    );
+import '../../layout/layout_host.dart';
+
+ShellEntry _entry(
+  String key, {
+  int? pid,
+  String session = 'grp',
+  bool background = true,
+  String? logPath,
+  String command = 'npm run dev',
+}) => ShellEntry(
+  key: key,
+  id: key.split('/').last,
+  session: session,
+  command: command,
+  cwd: '/w',
+  origin: ShellOrigin.agent,
+  background: background,
+  pid: pid,
+  logPath: logPath,
+);
 
 void main() {
   test('processes sit under the shell that started them; the rest are others', () {
@@ -38,6 +52,108 @@ void main() {
     expect([for (final p in groups.first.processes) p.pid], [101, 102]);
     expect(groups.last.processes, isEmpty);
     expect([for (final p in otherProcesses(groups, procs)) p.pid], [300]);
+  });
+
+  testWidgets('finished shells fold under Done, newest first; the fold is remembered; a row opens its log', (
+    tester,
+  ) async {
+    final info = CodeSessionInfo(
+      id: 'pane',
+      projectId: 'p1',
+      title: 'Session',
+      conversationId: 'c-pane',
+      model: 'a/m',
+      mode: AgentMode.ask,
+      workingDir: 'demo://p1',
+      createdAt: DateTime(2026, 11, 7),
+    );
+    final now = DateTime.now();
+    final running = _entry('pane/bg_1', pid: 100, session: 'pane', command: 'npm run dev');
+    final older = _entry('pane/cmd_1', session: 'pane', background: false, command: 'dart test')
+      ..exitCode = 1
+      ..endedAt = now.subtract(const Duration(minutes: 5));
+    final newer = _entry('pane/bg_2', session: 'pane', command: 'flutter build')
+      ..exitCode = 0
+      ..endedAt = now.subtract(const Duration(minutes: 1));
+    final prefs = Preferences.inMemory();
+    Widget pane() => ProviderScope(
+      overrides: [
+        preferencesProvider.overrideWithValue(prefs),
+        sessionShellsProvider('pane').overrideWith((ref) => Stream.value([running, older, newer])),
+        sessionProcessesProvider('pane').overrideWith((ref) => Stream.value(const [])),
+        sessionContainersProvider('pane').overrideWith((ref) => Stream.value(const [])),
+      ],
+      child: LayoutHost(
+        language: DesignLanguage.material,
+        child: ProcessesPane(session: info),
+      ),
+    );
+    await tester.pumpWidget(pane());
+    await tester.pumpAndSettle();
+    expect(find.text('Running'), findsOneWidget);
+    expect(find.text('Done'), findsOneWidget);
+    expect(find.text('2'), findsOneWidget);
+    // Newest first, each with how it ended.
+    final build = tester.getTopLeft(find.text('flutter build')).dy;
+    final dartTest = tester.getTopLeft(find.text('dart test')).dy;
+    expect(build, lessThan(dartTest));
+    expect(tester.getTopLeft(find.text('npm run dev')).dy, lessThan(build));
+    expect(find.textContaining('exited 1 · 5 min ago'), findsOneWidget);
+
+    // Clicking a finished one opens its log tab in the drawer.
+    await tester.tap(find.text('dart test'));
+    await tester.pump();
+    final scope = ProviderScope.containerOf(tester.element(find.byType(ProcessesPane)));
+    expect(scope.read(terminalTabsProvider('pane')).activeId, shellTabId('pane', older.key));
+
+    // Folding hides them and is kept in Preferences, so a fresh pane opens folded.
+    await tester.tap(find.byKey(const ValueKey('processes.done.header')));
+    await tester.pumpAndSettle();
+    expect(find.text('dart test'), findsNothing);
+    expect(find.text('npm run dev'), findsOneWidget);
+    expect(prefs[ProcessesDoneFolded.key], '1');
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpWidget(pane());
+    await tester.pumpAndSettle();
+    expect(find.text('Done'), findsOneWidget);
+    expect(find.text('flutter build'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('processes.done.header')));
+    await tester.pumpAndSettle();
+    expect(find.text('flutter build'), findsOneWidget);
+    expect(prefs[ProcessesDoneFolded.key], '0');
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('no Done section while nothing has finished', (tester) async {
+    final info = CodeSessionInfo(
+      id: 'idle',
+      projectId: 'p1',
+      title: 'Session',
+      conversationId: 'c-idle',
+      model: 'a/m',
+      mode: AgentMode.ask,
+      workingDir: 'demo://p1',
+      createdAt: DateTime(2026, 11, 7),
+    );
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          preferencesProvider.overrideWithValue(Preferences.inMemory()),
+          sessionShellsProvider('idle')
+              .overrideWith((ref) => Stream.value([_entry('idle/bg_1', pid: 1, session: 'idle')])),
+          sessionProcessesProvider('idle').overrideWith((ref) => Stream.value(const [])),
+          sessionContainersProvider('idle').overrideWith((ref) => Stream.value(const [])),
+        ],
+        child: LayoutHost(
+          language: DesignLanguage.material,
+          child: ProcessesPane(session: info),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Running'), findsOneWidget);
+    expect(find.text('Done'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
   });
 
   test('tab ids carry the shell key', () {
