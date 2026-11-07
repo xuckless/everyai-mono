@@ -29,7 +29,8 @@ phones, tablets and browsers drive a paired desktop through the remote relay. Fo
 - `harness/everyai/`: the agent loop in the app, for any model on the user's key (through the backend gateway).
 - Tools per model family (GPT gets `apply_patch`), parallel read-only steps, per-call approvals, retries with
   backoff, compaction that clears old tool output before summarising, output spill to `.everyai/spill/`, forks in
-  their own worktrees, `run_script` (TypeScript in Deno, no permissions), a browser (CDP) and window screenshots.
+  their own worktrees, `run_script` (TypeScript in Deno, no permissions), the shared browser and the `app` tool.
+- Local models are called directly (no backend hop); models with a window of 32K or less get a lighter profile.
 - Effort levels Efficient and Thorough are EveryAI-only; Max, Ultra, Bug fix and Security review are shared workflows
   (below).
 
@@ -67,9 +68,22 @@ phones, tablets and browsers drive a paired desktop through the remote relay. Fo
   from their own files), and resumes the chosen one on its own agent with its full history.
 
 ### The session screen
-- `ui/`: a header with the title menu, the git button (Commit → Create PR → View PR → Merge locally) and icons that
-  switch one right panel: Session info (environment, context, usage and limits, running work, changes), Diff and
-  Files (tree plus light editing, saved after a checkpoint). Terminal, Processes and Preview live in a bottom drawer.
+- `ui/`: a header with the title menu, the git button (Commit → Create PR → View PR → Merge locally) and a
+  five-tab panel: Session (environment, context, usage and limits, running work, changes), Diff, Preview, Files
+  (tree plus light editing, saved after a checkpoint) and Processes. The terminal lives in a bottom drawer with tabs.
+- `board/`: every session in Needs you, Running and Done columns; approvals and questions are answered on the card.
+
+### Live views, the `app` tool and shells
+- `live/`: one Chrome per project (the system Chrome, or Chrome for Testing downloaded on first use) shared by the
+  agent's browser, the host browser tool and the Preview tab, with take over / give back and a ghost cursor.
+  Screenshots carry frame ids and their own coordinate space; element lists carry refs.
+- The `app` tool's sources: web and Electron (CDP), Flutter (VM service), React Native (Metro), TUI screens, the iOS
+  Simulator (AXe, downloaded on first use), the Android emulator (adb + scrcpy) and desktop windows (macOS helper
+  `everyai-ax`, accessibility first, then real input after a one-time consent; Windows and Linux helpers are early).
+  Real input only reaches the app's own window, never password fields, and waits while the user is active.
+- `shells/`: a registry of every command and background shell with logs on disk; background shells run in a pty, the
+  agent can send them input (`bash_input`), and every process, Docker/Podman containers included, opens in a
+  terminal tab from Processes.
 - The composer has a strip for the agent, Workflows, Skills and MCP, and model · effort · workflow · mode as quiet
   text under the box.
 
@@ -103,13 +117,13 @@ Not yet run end to end:
 - workflows on outside agents
 - Windows and Linux on real machines
 - the console layout, clicked through on a real desktop
+- local models on a real Ollama, LM Studio or `fm serve`
+- the `app` tool on Windows and Linux desktops, and React Native and Electron sources on real apps
 
 ## 3. Next steps
 
 In order (details in [ROADMAP.md](ROADMAP.md)):
-1. A live pass over section 2.
-2. Easy setup and migration: desktop apps detected, one-step install and sign-in in our terminal, imports.
-3. Local models and a light harness profile for small models.
-4. Windows parity (shell, WSL, process cleanup).
-5. The standalone package, then Lead Mode, then live terminal views.
-6. The cheaper execution loop (runtime profiles, post-edit hooks, plan batches) and the OS sandbox.
+1. A live pass over section 2, the `app` tool on real projects, and local models on a real Ollama.
+2. Windows and Linux on real machines, including the desktop-window helpers.
+3. The standalone package, then Lead Mode, then live terminal views.
+4. The OS sandbox for shell commands, headless mode and user hooks; local models for outside harnesses.
