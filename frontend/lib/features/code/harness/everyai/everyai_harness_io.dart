@@ -26,6 +26,8 @@ import '../../checks/runtime_profiles.dart' show runtimeProfilesBlock;
 import '../../drivers/briefing/briefing_types.dart' show everyaiServerName;
 import '../../drivers/usage_limit.dart';
 import '../../git/git_service_io.dart' show runGit;
+import '../../live/chrome_download_io.dart' show loadDownloadedChrome;
+import '../../live/live_browsers.dart';
 import 'browser_io.dart';
 import 'git_bash.dart' show findGitBash;
 import 'llm.dart';
@@ -50,7 +52,10 @@ bool gitBashMissing() => Platform.isWindows && findGitBash(Platform.environment,
 /// history are ours: questions block inside the call, tool results can be cut
 /// to size, and a session can be forked from another's history.
 final class EveryAIHarness implements Harness, ForksSessions, AttachesBriefed, AttachesWithMcp, ReadsRecentEvents {
-  EveryAIHarness({required this.dataDir, required this.gatewayKey, this.client});
+  EveryAIHarness({required this.dataDir, required this.gatewayKey, this.client}) {
+    // A Chrome for Testing the Preview downloaded earlier, for the browser tool.
+    unawaited(loadDownloadedChrome());
+  }
 
   /// App Support; sessions are kept under `everyai-sessions/<id>/`.
   final Future<String> Function() dataDir;
@@ -175,7 +180,12 @@ final class EveryAISession
         ReportsMcpTools {
   EveryAISession._(this.id, this._spec, this._dir, http.Client? client)
     : _gateway = GatewayClient(baseUrl: _spec.llmBaseUrl, apiKey: _spec.llmApiKey, client: client),
-      _shell = SessionShell(root: _spec.workingDir, sessionTag: _spec.sessionTag, scratchDir: '${_dir.path}/shell'),
+      _shell = SessionShell(
+        root: _spec.workingDir,
+        sessionTag: _spec.sessionTag,
+        scratchDir: '${_dir.path}/shell',
+        logDir: '${_dir.path}/shells',
+      ),
       _packages = PackageGuard(
         RegistryLookup(client ?? http.Client()),
         loadEnv: () async => (await ShellEnv.load()).env,
@@ -207,7 +217,15 @@ final class EveryAISession
 
   /// The session's own headless browser (browser tool): started on first
   /// use, closed when a run ends or is stopped.
-  late final HeadlessBrowser _browser = HeadlessBrowser(profileDir: '${_dir.path}/browser');
+  /// The session's browser page: the Code session's shared one (the Preview paints it), else one of its own.
+  late final HeadlessBrowser _browser = _spec.liveId != null
+      ? LiveBrowsers.forSession(_spec.liveId!, profileDir: _spec.browserProfile ?? '${_dir.path}/browser')
+      : HeadlessBrowser(profileDir: '${_dir.path}/browser');
+
+  /// Closes the browser page when it is the session's own; the shared one stays for the Preview.
+  void _closeOwnBrowser() {
+    if (_spec.liveId == null) unawaited(_browser.close());
+  }
 
   /// The session's MCP servers (connected once, at start or first run).
   McpTools _mcp = McpTools.empty;
@@ -589,6 +607,8 @@ final class EveryAISession
     'script': ?s.script?.toJson(),
     if (s.runtimeProfiles.isNotEmpty) 'runtime_profiles': s.runtimeProfiles,
     'review_model': ?s.reviewModel,
+    'live_id': ?s.liveId,
+    'browser_profile': ?s.browserProfile,
   };
 
   void _writeForkTools() {
@@ -607,6 +627,8 @@ final class EveryAISession
     vision: j['vision'] == true,
     effort: j['effort'] as String?,
     subagent: j['subagent'] == true,
+    liveId: j['live_id'] as String?,
+    browserProfile: j['browser_profile'] as String?,
     tools: (j['tools'] as List<Object?>?)?.cast<String>(),
     clientTools: (j['client_tools'] as List<Object?>?)?.cast<Map<String, Object?>>(),
     autoCompactAt: (j['auto_compact_at'] as num?)?.toDouble() ?? 0.6,
@@ -870,7 +892,7 @@ final class EveryAISession
 
   @override
   Future<void> interrupt() async {
-    unawaited(_browser.close());
+    _closeOwnBrowser();
     if (_cancel case final c? when !c.isCompleted) c.complete();
     for (final d in _decisions.values) {
       if (!d.isCompleted) d.complete((accept: false, reason: 'The user stopped this.'));
@@ -1172,7 +1194,7 @@ final class EveryAISession
       if (_inbox.isNotEmpty && !_pauseRequested) {
         unawaited(_run());
       } else {
-        unawaited(_browser.close());
+        _closeOwnBrowser();
       }
     }
   }

@@ -7,7 +7,11 @@ import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/every_icons.dart';
 import '../../domain/code_session.dart';
+import '../../code_providers.dart' show composerInsertProvider;
+import '../../harness/everyai/scrub.dart';
 import '../../panes/panes_providers.dart';
+import '../../shells/shell_registry.dart';
+import '../../shells/shells_providers.dart';
 import '../console/bottom_drawer.dart' show isDrawerToggle;
 import 'terminal_font.dart';
 
@@ -53,9 +57,19 @@ class _TerminalTabsViewState extends ConsumerState<TerminalTabsView> {
 
   SessionTerminal _shell(String id) => ref.read(sessionTerminalProvider(id).notifier);
 
-  /// Starts [id]'s shell after the next layout, so it starts at the view's size.
+  /// The xterm buffer tab [id] shows: its own shell's, or the followed shell's (see `shellTabId`).
+  Terminal _terminalOf(String id) =>
+      shellKeyOf(id) != null ? ref.read(shellViewProvider(id).notifier).terminal : _shell(id).terminal;
+
+  /// Starts [id]'s shell after the next layout, so it starts at the view's size (a followed shell: replays its log).
   void _startAfterLayout(String id) => WidgetsBinding.instance.endOfFrame.then((_) {
-    if (mounted) _shell(id).start(widget.workingDir);
+    if (!mounted) return;
+    if (shellKeyOf(id) != null) {
+      ref.read(shellViewProvider(id).notifier).start();
+    } else {
+      _shell(id)
+          .start(widget.workingDir, command: ref.read(terminalTabsProvider(widget.owner).notifier).takeCommand(id));
+    }
   });
 
   @override
@@ -73,7 +87,7 @@ class _TerminalTabsViewState extends ConsumerState<TerminalTabsView> {
   }
 
   Future<void> _copyOrPaste(String id) async {
-    final terminal = _shell(id).terminal;
+    final terminal = _terminalOf(id);
     final controller = _controller(id);
     if (controller.selection case final selection?) {
       await Clipboard.setData(ClipboardData(text: terminal.buffer.getText(selection)));
@@ -83,13 +97,94 @@ class _TerminalTabsViewState extends ConsumerState<TerminalTabsView> {
     }
   }
 
+  /// A tab's name: its number, or the followed shell's title and id.
+  String _labelOf(String tabId, int i) {
+    if (shellKeyOf(tabId) case final key?) {
+      final e = shellByKey(key);
+      return e == null ? 'shell' : '${e.title} · ${e.id}';
+    }
+    return ref.read(terminalTabsProvider(widget.owner)).labels[tabId] ?? '${i + 1}';
+  }
+
+  String _shellCaption(ShellEntry? e) {
+    if (e == null) return '';
+    final who = switch (e.origin) {
+      ShellOrigin.agent => 'Started by the agent',
+      ShellOrigin.appRun => 'The app',
+      ShellOrigin.check => 'A check',
+      ShellOrigin.outside => 'Started by the lead',
+    };
+    final how = e.running ? (e.live?.interactive ?? false ? 'you can type here' : 'read-only') : 'exited ${e.exitCode}';
+    return '$who · $how · ${e.cwd}';
+  }
+
+  /// Stop, Restart, copy and Send to agent for a followed shell.
+  List<Widget> _shellActions(BuildContext context, String id, ShellEntry? e) {
+    final terminal = _terminalOf(id);
+    String selectedOrAll() {
+      final sel = _controller(id).selection;
+      if (sel != null) return terminal.buffer.getText(sel);
+      return terminal.buffer.getText();
+    }
+
+    return [
+      if (e?.running ?? false)
+        AdaptiveIconButton(icon: EveryIcon.stop, tooltip: 'Stop', size: 15, onPressed: () => e!.live?.stop()),
+      if (e?.restart case final restart?)
+        AdaptiveIconButton(
+          icon: EveryIcon.retry,
+          tooltip: 'Restart (same command and folder)',
+          size: 15,
+          onPressed: () async {
+            await restart();
+            // The new run has a row of its own: follow it in this tab's place.
+            final now = ShellRegistry.instance.of(e!.session).where((x) => x.id == e.id).lastOrNull;
+            if (now != null && mounted) {
+              final tabs = ref.read(terminalTabsProvider(widget.owner).notifier);
+              tabs.close(ref.read(terminalTabsProvider(widget.owner)).ids.indexOf(id));
+              ref.invalidate(shellViewProvider(id));
+              tabs.openShell(now.key);
+            }
+          },
+        ),
+      AdaptiveIconButton(
+        icon: EveryIcon.copy,
+        tooltip: 'Copy (the selection, or everything)',
+        size: 15,
+        onPressed: () => Clipboard.setData(ClipboardData(text: selectedOrAll())),
+      ),
+      if (e != null)
+        AdaptiveIconButton(
+          icon: EveryIcon.send,
+          tooltip: 'Send to the agent (the selection, or the last 80 lines)',
+          size: 15,
+          onPressed: () {
+            final sel = _controller(id).selection;
+            var text = sel != null ? terminal.buffer.getText(sel) : terminal.buffer.getText();
+            if (sel == null) {
+              final lines = text.trimRight().split('\n');
+              text = lines.sublist(lines.length > 80 ? lines.length - 80 : 0).join('\n');
+            }
+            // Raw output may hold secrets (an env dump, a token printed by a CLI): masked before the model sees it.
+            final clean = Scrubber.forProject(e.cwd).redact(text.trimRight());
+            ref
+                .read(composerInsertProvider(widget.owner).notifier)
+                .insert('Output of `${e.title}` (${e.id}):\n```\n$clean\n```\n');
+            showAdaptiveToast(context, 'Added to your message');
+          },
+        ),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final tabs = ref.watch(terminalTabsProvider(widget.owner));
     final tabsCtl = ref.read(terminalTabsProvider(widget.owner).notifier);
     final id = tabs.activeId;
-    final status = ref.watch(sessionTerminalProvider(id));
+    final followed = shellKeyOf(id) != null;
+    final status = followed ? const TerminalStatus() : ref.watch(sessionTerminalProvider(id));
+    final view = followed ? ref.watch(shellViewProvider(id)) : null;
     // A tab shown for the first time starts its shell.
     ref.listen(terminalTabsProvider(widget.owner).select((t) => t.activeId), (_, next) => _startAfterLayout(next));
     return Column(
@@ -107,11 +202,15 @@ class _TerminalTabsViewState extends ConsumerState<TerminalTabsView> {
                       for (final (i, tabId) in tabs.ids.indexed)
                         _Tab(
                           key: ValueKey('terminal.tab.$tabId'),
-                          label: '${i + 1}',
+                          label: _labelOf(tabId, i),
+                          shell: shellKeyOf(tabId) != null,
                           active: i == tabs.active,
                           closable: tabs.ids.length > 1,
                           onTap: () => tabsCtl.show(i),
-                          onClose: () => tabsCtl.close(i),
+                          onClose: () {
+                            tabsCtl.close(i);
+                            if (shellKeyOf(tabId) != null) ref.invalidate(shellViewProvider(tabId));
+                          },
                         ),
                       AdaptiveIconButton(
                         key: const ValueKey('terminal.new-tab'),
@@ -122,7 +221,11 @@ class _TerminalTabsViewState extends ConsumerState<TerminalTabsView> {
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        status.exitCode != null ? 'Exited (${status.exitCode})' : widget.workingDir,
+                        followed
+                            ? _shellCaption(view?.entry)
+                            : status.exitCode != null
+                            ? 'Exited (${status.exitCode})'
+                            : widget.workingDir,
                         overflow: TextOverflow.ellipsis,
                         style: theme.type.caption.tint(theme.textSubtle),
                       ),
@@ -130,12 +233,15 @@ class _TerminalTabsViewState extends ConsumerState<TerminalTabsView> {
                   ),
                 ),
               ),
-              AdaptiveIconButton(
-                icon: EveryIcon.retry,
-                tooltip: 'Restart shell',
-                size: 16,
-                onPressed: () => _shell(id).restart(widget.workingDir),
-              ),
+              if (followed)
+                ..._shellActions(context, id, view?.entry)
+              else
+                AdaptiveIconButton(
+                  icon: EveryIcon.retry,
+                  tooltip: 'Restart shell',
+                  size: 16,
+                  onPressed: () => _shell(id).restart(widget.workingDir),
+                ),
             ],
           ),
         ),
@@ -143,7 +249,8 @@ class _TerminalTabsViewState extends ConsumerState<TerminalTabsView> {
           child: ColoredBox(
             color: TerminalThemes.defaultTheme.background,
             child: TerminalView(
-              _shell(id).terminal,
+              _terminalOf(id),
+              readOnly: followed && !(view?.entry?.live?.interactive ?? false),
               key: ValueKey('terminal.view.$id'),
               controller: _controller(id),
               autofocus: true,
@@ -169,6 +276,7 @@ class _Tab extends StatefulWidget {
   const _Tab({
     super.key,
     required this.label,
+    this.shell = false,
     required this.active,
     required this.closable,
     required this.onTap,
@@ -176,6 +284,9 @@ class _Tab extends StatefulWidget {
   });
 
   final String label;
+
+  /// Follows a shell (a different icon, its title as the label).
+  final bool shell;
   final bool active;
   final bool closable;
   final VoidCallback onTap;
@@ -208,9 +319,21 @@ class _TabState extends State<_Tab> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              AdaptiveIcon(EveryIcon.command, size: 12, color: widget.active ? theme.accent : theme.textMuted),
+              AdaptiveIcon(
+                widget.shell ? EveryIcon.activity : EveryIcon.command,
+                size: 12,
+                color: widget.active ? theme.accent : theme.textMuted,
+              ),
               const SizedBox(width: 4),
-              Text(widget.label, style: theme.type.caption.mono.tint(widget.active ? theme.accent : theme.textMuted)),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 220),
+                child: Text(
+                  widget.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.type.caption.mono.tint(widget.active ? theme.accent : theme.textMuted),
+                ),
+              ),
               if (widget.closable) ...[
                 const SizedBox(width: 2),
                 Opacity(

@@ -24,6 +24,7 @@ import '../features/code/automations/schedule_providers.dart' show scheduleRunne
 import '../features/code/code_providers.dart' show driverShutdownProvider;
 import '../features/local_models/local_model_bridge.dart' show localRoutesProvider, localShutdownProvider;
 import '../features/code/drivers/driver_registry.dart' show driverStatusesProvider;
+import '../features/code/ui/real_input_consent.dart' show connectRealInput;
 import '../features/history/ui/sidebar.dart';
 import '../features/onboarding/onboarding_providers.dart';
 import '../features/onboarding/ui/onboarding_screen.dart';
@@ -150,6 +151,8 @@ class _AppShellState extends ConsumerState<AppShell> {
       if (mounted && Host.isDesktop) ref.read(updateProvider);
     });
     if (Host.isDesktop) {
+      // Agents driving app windows ask once before they use the real pointer and keyboard.
+      connectRealInput(ref.read(preferencesProvider), () => context);
       _lifecycle = AppLifecycleListener(
         onResume: () => unawaited(ref.read(driverStatusesProvider.notifier).refreshIfStale()),
       );

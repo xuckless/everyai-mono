@@ -71,6 +71,8 @@ enum AgentMode {
     'BashOutputAction' || 'MonitorAction' || 'KillShellAction' || 'WebFetchAction' || 'WebSearchAction' => true,
     // Its own headless browser (own profile) and screenshots of the session's own windows: no files change.
     'BrowserAction' || 'ScreenshotAction' => true,
+    // The session's own running app: taps and text change only its state; eval runs code in it (asks like bash).
+    'AppAction' => call.str('action') != 'eval',
     // Returns a skill's instructions; the app escapes the inline commands it would run.
     'InvokeSkillAction' => true,
     // run_script: a Deno program with no permissions; its bridge reads project files and the web only.

@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../domain/local_ports.dart' show ListeningPort;
 import '../drivers/driver_process.dart' show DriverProcess;
 import '../harness/everyai/screen_windows.dart';
+import '../live/app_tool_spec.dart';
 import 'host.dart';
 import 'host_screen_stub.dart' if (dart.library.io) 'host_screen_io.dart' as impl;
 
@@ -19,11 +20,20 @@ export '../harness/everyai/screen_windows.dart';
 // user confirmed once.
 
 const screenshotTool = 'screenshot';
+const appTool = appToolName;
 const browserTool = 'browser';
 const appRunTool = 'app_run';
 
 /// The screen tools, for a host that offers them (workflow agents too).
-const screenHostTools = {screenshotTool, browserTool, appRunTool};
+const screenHostTools = {screenshotTool, browserTool, appRunTool, appTool};
+
+/// [appTool]'s spec (MCP shape).
+const appSpec = <String, Object?>{
+  'name': appTool,
+  'description': appToolDescription,
+  'inputSchema': {'type': 'object', 'properties': appToolProperties, 'additionalProperties': false},
+  'annotations': {'readOnlyHint': false, 'destructiveHint': false},
+};
 
 /// [screenshotTool]'s spec (MCP shape).
 const screenshotSpec = <String, Object?>{
@@ -155,6 +165,7 @@ final class ScreenAccess {
     required this.processTree,
     required this.spawn,
     required this.browser,
+    required this.app,
     this.listening = _noPorts,
     this.poll = _aSecond,
     this.cardLimit = const Duration(seconds: 300),
@@ -188,8 +199,18 @@ final class ScreenAccess {
   })
   spawn;
 
-  /// A headless browser keeping its profile in [profileDir].
-  final ScreenBrowser Function(String profileDir) browser;
+  /// Code session [liveId]'s shared browser page (the one its Preview paints), its profile in [profileDir].
+  final ScreenBrowser Function(String liveId, String profileDir) browser;
+
+  /// One `app` tool call for session [session] (its processes [pids], whose output may show an app's address);
+  /// screenshots are saved under [root].
+  final Future<ScreenResult> Function(
+    Map<String, Object?> args, {
+    required String session,
+    required String root,
+    required Set<int> pids,
+  })
+  app;
 
   /// The TCP ports [pids] listen on.
   final Future<List<ListeningPort>> Function(Set<int> pids) listening;

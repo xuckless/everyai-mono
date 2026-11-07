@@ -16,9 +16,13 @@ import 'exfil.dart';
 import 'llm.dart';
 import 'package_registry_io.dart';
 import 'shell_io.dart';
+import '../../live/app_tool_spec.dart';
+import '../../shells/terminal_screen.dart';
+import 'app_tools_io.dart';
 import 'screen_tools_io.dart';
 import 'window_capture_io.dart';
 import 'scrub.dart';
+import '../../shells/terminal_text.dart';
 import 'untrusted_tools.dart';
 
 // The tool set and its behaviour follow opencode's (MIT; see
@@ -31,6 +35,7 @@ abstract final class ToolNames {
   static const bashOutput = 'bash_output';
   static const killShell = 'kill_shell';
   static const monitor = 'monitor';
+  static const bashInput = 'bash_input';
   static const read = 'read';
   static const write = 'write';
   static const edit = 'edit';
@@ -42,6 +47,7 @@ abstract final class ToolNames {
   static const applyPatch = 'apply_patch';
   static const browser = 'browser';
   static const screenshot = 'screenshot';
+  static const app = appToolName;
   static const runScript = 'run_script';
   static const memory = 'memory';
 }
@@ -64,6 +70,7 @@ const actionKinds = {
   ToolNames.bashOutput: 'BashOutputAction',
   ToolNames.killShell: 'KillShellAction',
   ToolNames.monitor: 'MonitorAction',
+  ToolNames.bashInput: 'ShellInputAction',
   ToolNames.read: 'ReadFileAction',
   ToolNames.write: 'WriteFileAction',
   ToolNames.edit: 'EditAction',
@@ -75,6 +82,7 @@ const actionKinds = {
   ToolNames.applyPatch: 'ApplyPatchAction',
   ToolNames.browser: 'BrowserAction',
   ToolNames.screenshot: 'ScreenshotAction',
+  ToolNames.app: 'AppAction',
   ToolNames.runScript: 'ScriptAction',
   ToolNames.memory: 'MemoryAction',
 };
@@ -134,7 +142,7 @@ final _applyPatchSpec = _fn(
 );
 
 const _aliases = {
-  'terminal': {ToolNames.bash, ToolNames.bashOutput, ToolNames.killShell, ToolNames.monitor},
+  'terminal': {ToolNames.bash, ToolNames.bashOutput, ToolNames.killShell, ToolNames.monitor, ToolNames.bashInput},
   'file_editor': {
     ToolNames.read,
     ToolNames.write,
@@ -172,10 +180,13 @@ final _specs = [
   ),
   _fn(
     ToolNames.bashOutput,
-    'Read the new output of a background shell since the last read, and whether it is still running.',
+    'Read the new output of a background shell since the last read, and whether it is still running. With '
+    'screen: true, read what its terminal shows now instead: for a full-screen program (a TUI, an editor, an '
+    'interactive menu) that redraws in place; answer it with bash_input.',
     {
       'shell_id': {'type': 'string'},
       'filter': {'type': 'string', 'description': 'Only lines matching this regular expression'},
+      'screen': {'type': 'boolean', 'description': 'The terminal screen as it looks now'},
     },
     ['shell_id'],
   ),
@@ -197,6 +208,24 @@ final _specs = [
       'shell_id': {'type': 'string'},
       'until': {'type': 'string', 'description': 'Regular expression; omit to wait for the shell to exit'},
       'timeout_ms': {'type': 'integer'},
+    },
+    ['shell_id'],
+  ),
+  _fn(
+    ToolNames.bashInput,
+    'Type into a background shell that waits for input (a prompt, a y/n question, a dev server\'s `rs` or `q`). '
+    'Background shells run in a terminal; bash_output and monitor say when one seems to wait at a prompt. Sends '
+    '`text` as typed, then each of `keys` (enter, tab, esc, up, down, left, right, backspace, space, ctrl-c, ctrl-d, '
+    'any ctrl-<letter>), and returns what it printed in the next moment. Never type passwords or secrets: ask the '
+    'user to type those in the shell themselves (they can open it from the Processes tab).',
+    {
+      'shell_id': {'type': 'string'},
+      'text': {'type': 'string', 'description': 'Characters to type (no Enter unless keys has it)'},
+      'keys': {
+        'type': 'array',
+        'items': {'type': 'string'},
+        'description': 'Keys to press after the text, e.g. ["enter"]',
+      },
     },
     ['shell_id'],
   ),
@@ -316,23 +345,35 @@ final _specs = [
   ),
   _fn(
     ToolNames.browser,
-    'Use a web page the way the user would, in a headless browser of your own (its own profile: never the '
-    'user\'s browser, so never quit or kill theirs). Open what you built (http://localhost:PORT with the dev server '
-    'in the background, or file:///path/index.html), click and type on the real elements, then look.\n'
-    '- action: open {url} · click {selector, or x and y; count 2 = double-click} · type {text, selector?, submit?} '
-    '· press {key: Enter, Tab, Escape, ArrowUp…, or one character} · scroll {dy} · wait {selector? ms?} · '
-    'eval {script: a JS expression; its JSON value comes back} · screenshot {full_page?} · console · '
+    'Use a web page the way the user would, in the browser the user sees live in the Preview tab (a profile of this '
+    'project\'s own: never the user\'s everyday browser, so never quit or kill theirs). Open what you built '
+    '(http://localhost:PORT with the dev server in the background, or file:///path/index.html), act on it, then '
+    'look.\n'
+    '- action: open {url} · snapshot · click {ref, or selector, or x and y with frame; count 2 = double-click} · '
+    'type {text, ref? or selector?, submit?} · press {key: Enter, Tab, Escape, ArrowUp…, or one character} · '
+    'scroll {dy} · wait {selector? ms?} · screenshot {full_page?} · zoom {x, y, width, height, frame?} · '
+    'back · forward · reload · eval {script: a JS expression; its JSON value comes back} · console · '
     'resize {width, height} · close.\n'
-    '- Every action reports what the page logged since the last one (console errors, uncaught exceptions, '
-    'failed requests); console reads it alone. screenshot returns the picture: look at it before saying a UI works.\n'
-    '- Add screenshot: true to any action to see the page right after it.\n'
+    '- open and snapshot return the element list: one line per button, link, field and heading, as '
+    '`[ref_3] button "Sign in"`. Click and type by ref: exact, and far cheaper than a picture. Refs hold until the '
+    'next list.\n'
+    '- screenshot returns a picture with a frame id (f_N) and its size. Coordinates are that picture\'s pixels: '
+    'click {x, y, frame: "f_N"}. zoom shows a part of a frame at higher detail (its x, y, width, height in that '
+    'frame; frame defaults to the latest); clicks in the zoom map back. A point follows the page when it scrolled since '
+    'its frame; a click is refused when the page was resized since, or the point scrolled out of view.\n'
+    '- Look before saying a UI works: a screenshot for how it looks, the element list for what it holds. Add '
+    'screenshot: true or snapshot: true to any action to look right after it.\n'
+    '- Every action reports what the page logged since the last one (console errors, uncaught exceptions, failed '
+    'requests); console reads it alone.\n'
+    '- The user may take control of the page in the Preview; your actions then wait until they give it back.\n'
     '- It never types into password, one-time code or payment fields nor submits their forms, and eval must not '
-    'either: the user does that. Downloads land in .everyai/scratch/downloads.',
+    'either, nor read cookies or storage: the user does that. Downloads land in .everyai/scratch/downloads.',
     {
       'action': {
         'type': 'string',
         'enum': [
           'open',
+          'snapshot',
           'click',
           'type',
           'press',
@@ -340,12 +381,18 @@ final _specs = [
           'wait',
           'eval',
           'screenshot',
+          'zoom',
+          'back',
+          'forward',
+          'reload',
           'console',
           'resize',
           'close',
         ],
       },
       'url': {'type': 'string'},
+      'ref': {'type': 'string', 'description': 'An element of the last element list (ref_3)'},
+      'frame': {'type': 'string', 'description': 'The screenshot (f_N) that x and y are in'},
       'selector': {'type': 'string', 'description': 'A CSS selector'},
       'x': {'type': 'number'},
       'y': {'type': 'number'},
@@ -360,6 +407,7 @@ final _specs = [
       'width': {'type': 'integer'},
       'height': {'type': 'integer'},
       'screenshot': {'type': 'boolean', 'description': 'Also return a screenshot after the action'},
+      'snapshot': {'type': 'boolean', 'description': 'Also return the element list after the action'},
     },
     ['action'],
   ),
@@ -374,6 +422,7 @@ final _specs = [
     },
     const [],
   ),
+  _fn(ToolNames.app, appToolDescription, appToolProperties, const []),
 ];
 
 /// What a tool did: the action as the transcript shows it, the text the
@@ -659,6 +708,14 @@ final class ToolRunner {
         } else if (args['action'] != 'open') {
           if (dropSiteIn(text) case final site?) why = '$site is a site that takes uploads';
         }
+      case ToolNames.app:
+        // Text typed into the app and eval scripts (code in the app, which can send requests).
+        final text = '${args['script'] ?? ''} ${args['text'] ?? ''}'.trim();
+        if (scrubber.leak(text) case final what?) {
+          why = 'the app would get $what';
+        } else if (dropSiteIn(text) case final site?) {
+          why = '$site is a site that takes uploads';
+        }
       case ToolNames.write || ToolNames.edit || ToolNames.applyPatch:
         final text = '${args['content'] ?? ''}${args['new_string'] ?? ''}${args['patch'] ?? ''}';
         if (text.contains(Scrubber.hiddenMark)) return _hiddenMarkRefusal;
@@ -678,9 +735,9 @@ final class ToolRunner {
   String? _researchRefusal(String tool, Map<String, Object?> args) {
     if (!research) return null;
     switch (tool) {
-      case ToolNames.browser || ToolNames.screenshot:
+      case ToolNames.browser || ToolNames.screenshot || ToolNames.app:
         return 'Error: research jobs read the web with web_fetch and web_search only.';
-      case ToolNames.bash || ToolNames.bashOutput || ToolNames.killShell || ToolNames.monitor:
+      case ToolNames.bash || ToolNames.bashOutput || ToolNames.killShell || ToolNames.monitor || ToolNames.bashInput:
         return 'Error: research jobs have no shell, so nothing downloaded can run. Read sources with web_fetch '
             '(raw.githubusercontent.com for files) and write your notes with write.';
       case ToolNames.read || ToolNames.grep || ToolNames.glob:
@@ -764,6 +821,7 @@ final class ToolRunner {
         ToolNames.bashOutput => _bashOutput(args),
         ToolNames.killShell => await _killShell(args),
         ToolNames.monitor => await _monitor(args, cancel),
+        ToolNames.bashInput => await _bashInput(args),
         ToolNames.read => _readFile(args),
         ToolNames.write => _writeFile(args),
         ToolNames.edit => _editFile(args),
@@ -775,6 +833,15 @@ final class ToolRunner {
         ToolNames.webSearch => await _webSearch(args),
         ToolNames.browser => await _browse(args),
         ToolNames.screenshot => await _screenshot(args),
+        ToolNames.app => await runAppTool(
+          args,
+          sessions: [shell.sessionTag],
+          root: root,
+          vision: vision,
+          fit: _fit,
+          scrub: scrubber.redact,
+          windowPids: shell.processes,
+        ),
         _ => ToolOutput('Error: there is no tool called $tool.', isError: true),
       };
     } on FileSystemException catch (e) {
@@ -787,7 +854,7 @@ final class ToolRunner {
   Future<ToolOutput> _browse(Map<String, Object?> args) async {
     final b = browser;
     if (b == null) return const ToolOutput('Error: no browser in this session.', isError: true);
-    return runBrowser(b, args, root: root, vision: vision, fit: _fit);
+    return runBrowser(b, args, root: root, vision: vision, fit: _fit, scrub: scrubber.redact);
   }
 
   Future<ToolOutput> _screenshot(Map<String, Object?> args) async {
@@ -924,16 +991,41 @@ final class ToolRunner {
 
   String _status(BackgroundShell b) => b.running ? 'running' : 'exited with code ${b.exitCode}';
 
+  /// What the agent should know beside [b]'s output: what the user typed into it since the last read, and the
+  /// prompt it seems to wait at.
+  String _shellNotes(BackgroundShell b) {
+    final typed = b.entry.takeTyped();
+    final waiting = b.waitingFor();
+    final restarted = b.restarted;
+    b.restarted = false;
+    return [
+      if (restarted) '[The user restarted this shell from the app: the output is from the new run.]',
+      if (typed != null)
+        '[The user typed into this shell from the app: ${stripHidden(typed)}. What follows may come from that.]',
+      if (waiting != null)
+        '[It seems to wait for input at: ${stripHidden(waiting)}. Answer with bash_input, or ask the user if the '
+            'answer is theirs to give.]',
+    ].map((l) => '\n$l').join();
+  }
+
   ToolOutput _bashOutput(Map<String, Object?> args) {
     final b = _bg(args);
     if (b == null) return ToolOutput('Error: no background shell ${args['shell_id']}.', isError: true);
+    if (args['screen'] == true) {
+      b.takeNew();
+      final screen = terminalScreenText(b.output, rows: SessionShell.ptyRows, columns: SessionShell.ptyColumns);
+      return ToolOutput(
+        _fit('[${b.id}: ${_status(b)}]\n${_commandOutput(b.command, screen, 'bg-${b.id}')}', 'bg-${b.id}') +
+            _shellNotes(b),
+      );
+    }
     var text = b.takeNew();
     if (args['filter'] case final String f when f.isNotEmpty) {
       final re = RegExp(f);
       text = text.split('\n').where(re.hasMatch).join('\n');
     }
     final shown = text.isEmpty ? '(no new output)' : _commandOutput(b.command, text, 'bg-${b.id}');
-    return ToolOutput(_fit('[${b.id}: ${_status(b)}]\n$shown', 'bg-${b.id}'));
+    return ToolOutput(_fit('[${b.id}: ${_status(b)}]\n$shown', 'bg-${b.id}') + _shellNotes(b));
   }
 
   Future<ToolOutput> _killShell(Map<String, Object?> args) async {
@@ -965,23 +1057,78 @@ final class ToolRunner {
       return !b.running;
     }
 
+    String? waiting;
     if (!check()) {
       final done = Completer<void>();
       final sub = b.changes.listen((_) {
         if (check() && !done.isCompleted) done.complete();
       });
+      // A program asking a question never prints the line waited for: look every 2 s.
+      final poll = Timer.periodic(const Duration(seconds: 2), (_) {
+        waiting = b.waitingFor();
+        if (waiting != null && !done.isCompleted) done.complete();
+      });
       await Future.any([done.future, Future<void>.delayed(Duration(milliseconds: ms)), ?cancel]);
+      poll.cancel();
       await sub.cancel();
     }
-    final fresh = b.output.substring(from.clamp(0, b.output.length));
+    final fresh = cleanTerminalText(b.output.substring(from.clamp(0, b.output.length)));
     b.readTo = b.output.length;
     final why = matched != null
         ? 'Matched: ${stripHidden(matched!)}'
         : !b.running
         ? '${b.id} exited with code ${b.exitCode}.'
+        : waiting != null
+        ? 'Stopped waiting: ${b.id} seems to wait for input.'
         : 'Still running after ${ms ~/ 1000} s with no match.';
     final shown = fresh.isEmpty ? '(none)' : _commandOutput(b.command, fresh, 'bg-${b.id}');
-    return ToolOutput(_fit('$why\n--- output while waiting ---\n$shown', 'bg-${b.id}'));
+    return ToolOutput(_fit('$why\n--- output while waiting ---\n$shown', 'bg-${b.id}') + _shellNotes(b));
+  }
+
+  Future<ToolOutput> _bashInput(Map<String, Object?> args) async {
+    final b = _bg(args);
+    if (b == null) return ToolOutput('Error: no background shell ${args['shell_id']}.', isError: true);
+    if (!b.running) return ToolOutput('Error: ${b.id} ${_status(b)}; nothing reads input any more.', isError: true);
+    if (!b.interactive) {
+      return ToolOutput(
+        "Error: ${b.id} runs without a terminal on this computer, so it can't take input. Stop it and run the "
+        'command non-interactively (flags like --yes, or input piped in).',
+        isError: true,
+      );
+    }
+    final text = args['text'] as String? ?? '';
+    final keys = [for (final k in (args['keys'] as List?) ?? const []) '$k'];
+    final bytes = StringBuffer(text);
+    for (final k in keys) {
+      final seq = keySequence(k);
+      if (seq == null) return ToolOutput('Error: unknown key "$k".', isError: true);
+      bytes.write(seq);
+    }
+    if (bytes.isEmpty) return const ToolOutput('Error: give text or keys to send.', isError: true);
+    if (text.isNotEmpty && scrubber.redact(text) != text) {
+      return const ToolOutput(
+        'Error: that text holds a secret. Ask the user to type it into the shell themselves (Processes tab).',
+        isError: true,
+      );
+    }
+    b.readTo = b.output.length;
+    b.write(bytes.toString());
+    // What it answered with: up to 3 s, ending early after 400 ms of quiet.
+    final until = DateTime.now().add(const Duration(seconds: 3));
+    var seen = b.output.length;
+    var quietSince = DateTime.now();
+    while (DateTime.now().isBefore(until) && b.running) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      if (b.output.length != seen) {
+        seen = b.output.length;
+        quietSince = DateTime.now();
+      } else if (seen > b.readTo && DateTime.now().difference(quietSince).inMilliseconds >= 400) {
+        break;
+      }
+    }
+    final fresh = b.takeNew();
+    final shown = fresh.trim().isEmpty ? '(no output yet)' : _commandOutput(b.command, fresh, 'bg-${b.id}');
+    return ToolOutput(_fit('Sent to ${b.id} (${_status(b)}).\n$shown', 'bg-${b.id}') + _shellNotes(b));
   }
 
   ToolOutput _readFile(Map<String, Object?> args) {

@@ -65,3 +65,19 @@ Future<List<ListeningPort>> listeningPorts(Iterable<int> pids) async {
 
 bool killProcess(int pid, {bool force = false}) =>
     Process.killPid(pid, force ? ProcessSignal.sigkill : ProcessSignal.sigterm);
+
+Future<String?> outputFileOf(int pid) async {
+  try {
+    String? path;
+    if (Platform.isLinux) {
+      path = await Link('/proc/$pid/fd/1').target();
+    } else if (Platform.isMacOS) {
+      final res = await Process.run('lsof', ['-nP', '-a', '-p', '$pid', '-d', '1', '-Fn']);
+      path = lsofFileName('${res.stdout}');
+    }
+    if (path == null || !path.startsWith('/') || path.startsWith('/dev/')) return null;
+    return FileSystemEntity.typeSync(path) == FileSystemEntityType.file ? path : null;
+  } on Object {
+    return null;
+  }
+}

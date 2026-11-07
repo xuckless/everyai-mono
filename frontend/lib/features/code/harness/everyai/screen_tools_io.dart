@@ -6,6 +6,9 @@ import 'dart:isolate';
 
 import '../../../../core/security/official_sites.dart';
 import '../../../../core/security/untrusted.dart';
+import '../../live/app_view.dart';
+import '../../live/frames.dart';
+import '../../live/live_session.dart';
 import 'browser_io.dart';
 import 'exfil.dart';
 import 'tools_io.dart' show ToolOutput, imageDataUrl;
@@ -25,15 +28,23 @@ Future<ToolOutput> runBrowser(
   required String root,
   required bool vision,
   required String Function(String text, String name) fit,
+  String Function(String text)? scrub,
 }) async {
   final action = args['action'] as String? ?? '';
   String? str(String k) => (args[k] as String?)?.trim().isEmpty ?? true ? null : (args[k] as String).trim();
   double? at(String k) => (args[k] as num?)?.toDouble();
   var shot = args['screenshot'] == true;
+  var list = args['snapshot'] == true;
   // Before the browser starts: the folder its downloads go to.
   b.downloadDir = '$root/.everyai/scratch/downloads';
   // Our own line about the site (a bare IP, a shortener, ...), kept outside the page's untrusted block.
   String? note;
+  // The user may be driving the shared page (they took control in the Preview): wait for them, up to a limit.
+  if (action != 'close' && !await b.control.agentTurn()) {
+    return ToolOutput(userDrivingText(b.control.hold), isError: true);
+  }
+  final gaveBack = b.control.takeGiveBack();
+  ViewRect? zoom;
   try {
     // A link, a script or a form may have taken the page to another site since the last action: judge it before
     // acting on it.
@@ -53,7 +64,11 @@ Future<ToolOutput> runBrowser(
         note = now.notice;
       }
     }
-    final String did;
+    // Acting on the page: compare its elements before and after, so the result says what the action did.
+    final before = const {'click', 'type', 'press', 'back', 'forward', 'scroll'}.contains(action) && b.running
+        ? await b.elements()
+        : null;
+    String did;
     switch (action) {
       case 'open':
         final url = str('url');
@@ -80,16 +95,49 @@ Future<ToolOutput> runBrowser(
         }
         note = [before.notice, after.notice].nonNulls.join('\n');
         did = 'Opened $opened';
+        b.control.report(LiveActivity('open', caption: 'Opening $target'));
+        // The element list comes with every page opened: refs to click, cheaper than a picture.
+        list = true;
       case 'click':
-        final sel = str('selector');
-        if (sel == null && (at('x') == null || at('y') == null)) {
-          return const ToolOutput('Error: click needs a selector, or x and y.', isError: true);
+        final sel = str('selector'), ref = str('ref');
+        final count = (args['count'] as num?)?.toInt() ?? 1;
+        if (ref != null || sel != null) {
+          did = await b.click(selector: sel, ref: ref, count: count);
+        } else if (at('x') == null || at('y') == null) {
+          return const ToolOutput('Error: click needs a ref, a selector, or x and y.', isError: true);
+        } else {
+          final p = await _point(b, str('frame'), at('x')!, at('y')!);
+          if (p.refusal case final why?) return ToolOutput('Error: $why', isError: true);
+          did = await b.click(x: p.x, y: p.y, count: count);
+          if (p.warning case final w?) note = [?note, w].join('\n');
         }
-        did = await b.click(selector: sel, x: at('x'), y: at('y'), count: (args['count'] as num?)?.toInt() ?? 1);
       case 'type':
         final text = args['text'] as String?;
         if (text == null) return const ToolOutput('Error: type needs text.', isError: true);
-        did = await b.type(text, selector: str('selector'), submit: args['submit'] == true);
+        did = await b.type(text, selector: str('selector'), ref: str('ref'), submit: args['submit'] == true);
+      case 'snapshot':
+        list = true;
+        did = 'Element list:';
+      case 'zoom':
+        final x = at('x'), y = at('y'), w = at('width'), h = at('height');
+        if (x == null || y == null || w == null || h == null || w <= 0 || h <= 0) {
+          return const ToolOutput('Error: zoom needs x, y, width and height (in the frame\'s pixels).', isError: true);
+        }
+        final from = await _point(b, str('frame'), x, y), to = await _point(b, str('frame'), x + w, y + h);
+        if (from.refusal ?? to.refusal case final why?) return ToolOutput('Error: $why', isError: true);
+        zoom = (left: from.x, top: from.y, width: to.x - from.x, height: to.y - from.y);
+        shot = true;
+        did =
+            'Zoomed into (${from.x.round()}, ${from.y.round()}) ${(to.x - from.x).round()}×${(to.y - from.y).round()} '
+            'of the page.';
+      case 'back' || 'forward' || 'reload':
+        await switch (action) {
+          'back' => b.back(),
+          'forward' => b.forward(),
+          _ => b.reload(),
+        };
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+        did = '${action[0].toUpperCase()}${action.substring(1)}: ${await b.describe()}';
       case 'press':
         did = await b.press(str('key') ?? 'Enter');
       case 'scroll':
@@ -101,12 +149,18 @@ Future<ToolOutput> runBrowser(
         if (script == null || script.trim().isEmpty) {
           return const ToolOutput('Error: eval needs a script.', isError: true);
         }
-        did = 'Result: ${fit(const JsonEncoder.withIndent('  ').convert(await b.evaluate(script)), 'browser-eval')}';
+        final here = await b.evaluate('location.href');
+        if (evalRefusal(script, here is String ? here : '') case final why?) return ToolOutput(why, isError: true);
+        final value = const JsonEncoder.withIndent('  ').convert(await b.evaluate(script));
+        did = 'Result: ${fit(scrub == null ? value : scrub(value), 'browser-eval')}';
       case 'screenshot':
         shot = true;
         did = 'Screenshot of ${await b.describe()}';
       case 'console':
-        did = 'Console since the last read:';
+        final old = b.history;
+        did = old.isEmpty
+            ? 'Console:'
+            : 'Console (the last ${old.length} lines, oldest first; new ones below):\n${old.join('\n')}';
       case 'resize':
         did = await b.resize((args['width'] as num?)?.toInt() ?? 1280, (args['height'] as num?)?.toInt() ?? 800);
       case 'close':
@@ -116,21 +170,90 @@ Future<ToolOutput> runBrowser(
       default:
         return ToolOutput('Error: unknown browser action "$action".', isError: true);
     }
-    final page = browserResultText(action, did, b.takeLog());
-    final text = note == null || note.isEmpty ? page : '$note\n$page';
+    if (before != null && before.isNotEmpty) {
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      var change = pageElementsChange(before, await b.elements());
+      if (change == null) {
+        // Some pages answer after a frame or a fetch.
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+        change = pageElementsChange(before, await b.elements());
+      }
+      did = '$did\n${change ?? 'Nothing visible changed on the page.'}';
+    }
+    final listed = list ? '\n${await b.snapshot()}' : '';
+    final page = browserResultText(list ? 'snapshot' : action, '$did$listed', b.takeLog());
+    final notes = [if (gaveBack) gaveBackText, ?note].where((n) => n.isNotEmpty).join('\n');
+    final text = notes.isEmpty ? page : '$notes\n$page';
     if (!shot) return ToolOutput(text);
-    final png = await b.screenshot(fullPage: args['full_page'] == true);
     final dir = Directory('$root/.everyai/scratch/screenshots')..createSync(recursive: true);
     final path = '${dir.path}/browser-${DateTime.now().millisecondsSinceEpoch}.png';
-    File(path).writeAsBytesSync(png);
-    final url = await _pngDataUrl(png);
-    if (!vision || url == null) {
-      return ToolOutput('$text\nSaved the screenshot to $path (this model can\'t view images).');
+    final shown = path.startsWith('$root/') ? path.substring(root.length + 1) : path;
+    if (args['full_page'] == true && zoom == null) {
+      // A whole long page: for reading, not for coordinates.
+      final png = await b.screenshot(fullPage: true);
+      File(path).writeAsBytesSync(png);
+      final url = vision ? await _pngDataUrl(png) : null;
+      if (url == null) return ToolOutput('$text\nSaved the screenshot to $path (this model can\'t view images).');
+      return ToolOutput(
+        '$text\nFull-page screenshot: $path. Its points are not for clicking: take a plain screenshot for that.',
+        images: [(label: path, dataUrl: url)],
+      );
     }
-    return ToolOutput('$text\nScreenshot: $path', images: [(label: path, dataUrl: url)]);
+    b.control.report(const LiveActivity('look', caption: 'Looking'));
+    final (png, frame) = await b.frameShot(region: zoom);
+    File(path).writeAsBytesSync(png);
+    final url = vision ? await _pngDataUrl(png) : null;
+    if (url == null) {
+      return ToolOutput(
+        '$text\nSaved the screenshot to $path (this model can\'t view images: use the element list, snapshot, and '
+        'click by ref).',
+      );
+    }
+    final where = frame.zoomed
+        ? 'a zoom of part of the page at ${frame.imageWidth}×${frame.imageHeight}'
+        : 'the page at ${frame.imageWidth}×${frame.imageHeight}';
+    return ToolOutput(
+      '$text\nFrame ${frame.id}: $where ($shown). To click something in it, pass frame: "${frame.id}" with x and y '
+      'in this picture\'s pixels.',
+      images: [(label: path, dataUrl: url)],
+    );
   } on BrowserError catch (e) {
-    return ToolOutput(browserErrorText(action, e.message, b.takeLog()), isError: true);
+    return ToolOutput(browserErrorText(e.fromPage ? action : '', e.message, b.takeLog()), isError: true);
   }
+}
+
+/// Where the model's [x],[y] in frame [frame] (null: its latest) lands on [b]'s page. Before any screenshot the
+/// point is taken as CSS pixels of the viewport, as the model may know them from the page itself.
+Future<FramePoint> _point(HeadlessBrowser b, String? frame, double x, double y) async {
+  if (b.frames.latest == null && (frame == null || frame.isEmpty)) return FramePoint(x, y);
+  final at = await b.scrollOffset();
+  return b.frames.map(frame, x, y, b.geometry, scrollX: at.x, scrollY: at.y);
+}
+
+/// Why the agent's eval [script] on the page at [pageUrl] is refused: it reads the shared profile's cookies, storage
+/// or saved credentials (the user's sign-ins live there), or sends something to another site. Null when it may run.
+/// A tripwire on the script's text, like the field guards.
+String? evalRefusal(String script, String pageUrl) {
+  const storage =
+      r'document\s*\.\s*cookie|cookieStore|localStorage|sessionStorage|indexedDB|caches\s*\.|navigator\s*\.\s*credentials|'
+      r'PasswordCredential|FederatedCredential';
+  if (RegExp(storage).hasMatch(script)) {
+    return 'Refused: the script reads cookies, storage or saved credentials. The Preview browser keeps the user\'s '
+        'sign-ins, so eval may not touch them. Check what the page shows instead (snapshot, screenshot), or ask the '
+        'user.';
+  }
+  const network =
+      r'\bfetch\s*\(|XMLHttpRequest|sendBeacon|new\s+WebSocket|new\s+EventSource|\.src\s*=|location\s*(\.\s*href\s*)?=|window\s*\.\s*open\s*\(|import\s*\(';
+  if (!RegExp(network).hasMatch(script)) return null;
+  final here = Uri.tryParse(pageUrl)?.host ?? '';
+  for (final m in RegExp(r'''(?:https?:)?//([A-Za-z0-9.-]+)''').allMatches(script)) {
+    final host = m.group(1)!.toLowerCase();
+    if (host != here.toLowerCase() && !_localHost(host)) {
+      return 'Refused: the script sends a request to $host, another site than the page. Open that site with the '
+          'browser\'s open action instead.';
+    }
+  }
+  return null;
 }
 
 /// Why the browser may not open [target]: a file in one of the user's credential stores (the browser would show
@@ -158,6 +281,10 @@ const _clear = (refusal: null, notice: null);
 
 /// The address each browser's page was last judged at, so a later action notices when it moved.
 final _judged = Expando<String>('browser page judged');
+
+/// The user took [b]'s page to [url] themselves (the Preview's address bar): the agent's next action starts from
+/// there instead of judging the user's move as a redirect.
+void noteUserNavigation(HeadlessBrowser b, String url) => _judged[b] = url;
 
 /// What the browser tool makes of [target] (before opening it, and again where a redirect landed): the refusal
 /// for a look-alike of an official site, a one-line note for a host with a reason for doubt (a bare IP address, a
@@ -211,7 +338,7 @@ bool _localHost(String host) {
 }
 
 /// Actions whose result carries text the page controls (its title, an eval result, the console, a hit's class names).
-const _pageTextActions = {'open', 'eval', 'screenshot', 'console', 'click'};
+const _pageTextActions = {'open', 'eval', 'screenshot', 'console', 'click', 'snapshot', 'back', 'forward', 'reload'};
 
 const _page = 'browser page';
 
@@ -221,7 +348,7 @@ const _page = 'browser page';
 String browserResultText(String action, String did, List<String> log) {
   final text = [
     did,
-    if (log.isNotEmpty) 'Page log:\n${log.join('\n')}' else if (action == 'console') '(nothing logged)',
+    if (log.isNotEmpty) 'Page log:\n${log.join('\n')}' else if (action == 'console') '(nothing new)',
   ].join('\n');
   return log.isEmpty && !_pageTextActions.contains(action) ? text : untrusted(text, source: _page);
 }

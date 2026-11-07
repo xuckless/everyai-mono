@@ -12,3 +12,5 @@ Future<List<SessionProcess>> listSessionProcesses({
 Future<List<ListeningPort>> listeningPorts(Iterable<int> pids) async => const [];
 
 bool killProcess(int pid, {bool force = false}) => false;
+
+Future<String?> outputFileOf(int pid) async => null;

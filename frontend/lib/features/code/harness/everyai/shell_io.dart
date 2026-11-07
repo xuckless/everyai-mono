@@ -4,8 +4,19 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'dart:math';
+import 'dart:typed_data';
+
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
+import '../../panes/pty.dart' show ShellPty;
+import '../../live/desktop_helper_io.dart' show windowsParents;
+import '../../live/nested_display_io.dart';
+import '../../shells/containers.dart' show containerHintsOf;
+import '../../shells/pty_spawn_io.dart';
+import '../../shells/shell_log_io.dart';
+import '../../shells/shell_registry.dart';
+import '../../shells/terminal_text.dart';
 import '../session_processes.dart' show sessionEnvVar;
 import 'git_bash.dart';
 
@@ -225,8 +236,12 @@ final class SessionShell {
     required this.root,
     required this.sessionTag,
     required this.scratchDir,
+    this.logDir,
+    this.ptySpawner = spawnPty,
+    ShellRegistry? registry,
     @visibleForTesting this.clock = DateTime.now,
-  }) : cwd = root;
+  }) : cwd = root,
+       _registry = registry ?? ShellRegistry.instance;
 
   final String root;
   final String sessionTag;
@@ -234,6 +249,16 @@ final class SessionShell {
   /// Where wrapper state (the last directory) is kept.
   final String scratchDir;
   String cwd;
+
+  /// Where each command's raw output is kept (`<id>.log`; see [ShellLog]), or null to keep none.
+  final String? logDir;
+
+  /// Starts background shells in a pseudo-terminal (null, or when it returns null: pipes).
+  final PtySpawner? ptySpawner;
+  final ShellRegistry _registry;
+
+  /// Tells this shell's registry entries apart from a fork's, which shares [sessionTag] and may reuse its ids.
+  final String _instance = Random().nextInt(1 << 32).toRadixString(36);
 
   final _background = <String, BackgroundShell>{};
   int _nextBg = 1;
@@ -266,26 +291,80 @@ final class SessionShell {
 
   /// Writes the wrapper for [command] to a file in [scratchDir] (a long
   /// command doesn't fit on a Windows command line, and Git Bash would parse
-  /// its quotes again) and starts the shell on it.
-  Future<(Process, File)> _spawn(String id, String command) async {
+  /// its quotes again) and starts the shell on it: in a pseudo-terminal when
+  /// [terminal] and one can be made (stdin left open for `bash_input`), else
+  /// on pipes with stdin from /dev/null.
+  Future<(_Proc, File)> _spawn(String id, String command, {bool terminal = false}) async {
     final env = await ShellEnv.load();
     if (env.missing) throw const ShellMissing();
     Directory(scratchDir).createSync(recursive: true);
     final windows = Platform.isWindows;
-    final script = File('$scratchDir/.cmd-$id.sh')
-      ..writeAsStringSync(wrapScript(command, cwd: cwd, cwdFile: _cwdFile(id), windows: windows));
+    final dir = Directory(cwd).existsSync() ? cwd : root;
+    ShellPty? pty;
+    File script() => File('$scratchDir/.cmd-$id.sh');
     try {
+      if (terminal && ptySpawner != null) {
+        script().writeAsStringSync(
+          wrapScript(command, cwd: cwd, cwdFile: _cwdFile(id), windows: windows, stdinNull: false),
+        );
+        final path = windows ? script().path.replaceAll('\\', '/') : script().path;
+        pty = await ptySpawner!(
+          env.shell,
+          [path],
+          dir,
+          withNestedDisplay(ptyShellEnv(env.env, sessionTag), await NestedDisplays.envFor(sessionTag)),
+          ptyRows,
+          ptyColumns,
+        );
+        if (pty != null) return (_Proc.pty(pty), script());
+      }
+      script().writeAsStringSync(wrapScript(command, cwd: cwd, cwdFile: _cwdFile(id), windows: windows));
       final process = await Process.start(
         env.shell,
-        [if (windows) script.path.replaceAll('\\', '/') else script.path],
-        environment: {...env.env, sessionEnvVar: sessionTag},
-        workingDirectory: Directory(cwd).existsSync() ? cwd : root,
+        [if (windows) script().path.replaceAll('\\', '/') else script().path],
+        environment: withNestedDisplay({
+          ...env.env,
+          sessionEnvVar: sessionTag,
+        }, await NestedDisplays.envFor(sessionTag)),
+        workingDirectory: dir,
       );
-      return (process, script);
+      return (_Proc.pipes(process), script());
     } on Object {
-      _delete(script);
+      _delete(script());
       rethrow;
     }
+  }
+
+  /// The size background shells' terminals start at (wide, so the model's view wraps rarely).
+  static const ptyRows = 40, ptyColumns = 160;
+
+  /// A registry entry for command [id] and its log file.
+  (ShellEntry, ShellLog?) _register(
+    String id,
+    String command,
+    String description, {
+    required bool background,
+    bool restarted = false,
+  }) {
+    // A restart gets a log and a registry row of its own.
+    final run = restarted ? '-${clock().millisecondsSinceEpoch}' : '';
+    final log = logDir == null ? null : ShellLog('$logDir/$id$run.log');
+    final entry = ShellEntry(
+      key: '$_instance/$id$run',
+      id: id,
+      session: sessionTag,
+      command: command,
+      cwd: cwd,
+      origin: ShellOrigin.agent,
+      background: background,
+      description: description,
+      logPath: log?.path,
+    );
+    // The command line first, dimmed, so a log opened later says what ran.
+    final header = utf8.encode('\x1B[2m\$ ${command.trim().replaceAll('\n', '\r\n  ')}\x1B[0m\r\n');
+    log?.add(header);
+    entry.emit(header);
+    return (entry, log);
   }
 
   void _readCwd(String id) {
@@ -300,18 +379,33 @@ final class SessionShell {
   /// process tree is killed) or [cancel] completes.
   Future<CommandResult> run(String command, {required Duration timeout, Future<void>? cancel}) async {
     if ((await ShellEnv.load()).missing) return const CommandResult(output: gitBashMissingMessage, exitCode: 127);
-    final id = '${clock().microsecondsSinceEpoch}_${_nextRun++}';
-    final (process, script) = await _spawn(id, command);
+    final n = _nextRun++;
+    final id = '${clock().microsecondsSinceEpoch}_$n';
+    final (proc, script) = await _spawn(id, command);
+    final process = proc.process!;
     _running.add(process);
+    final (entry, log) = _register('cmd_$n', command, '', background: false);
+    entry
+      ..pid = process.pid
+      ..live = _WatchedShell(proc);
+    _registry
+      ..add(entry)
+      ..trim(sessionTag);
     final out = _CappedBuffer(4 * 1024 * 1024);
     final done = Completer<void>();
-    var pending = 2;
-    void closed() {
-      if (--pending == 0 && !done.isCompleted) done.complete();
-    }
-
-    process.stdout.transform(const Utf8Decoder(allowMalformed: true)).listen(out.add, onDone: closed);
-    process.stderr.transform(const Utf8Decoder(allowMalformed: true)).listen(out.add, onDone: closed);
+    final decode = const Utf8Decoder(allowMalformed: true).startChunkedConversion(_SinkOf(out.add));
+    proc.raw.listen(
+      (bytes) {
+        final shown = _crlf(bytes);
+        log?.add(shown);
+        entry.emit(shown);
+        decode.add(bytes);
+      },
+      onDone: () {
+        decode.close();
+        if (!done.isCompleted) done.complete();
+      },
+    );
     var timedOut = false, cancelled = false;
     final exit = await Future.any<int?>([
       process.exitCode,
@@ -332,18 +426,45 @@ final class SessionShell {
     await done.future.timeout(const Duration(seconds: 2), onTimeout: () {});
     _delete(script);
     _readCwd(id);
+    log?.close();
+    _registry
+      ..ended(entry, code)
+      ..addHints(sessionTag, containerHintsOf(command, out.text));
     return CommandResult(output: out.text, exitCode: code, timedOut: timedOut, cancelled: cancelled);
   }
 
   /// Starts [command] in the background; its output collects in the
   /// returned shell until it ends or is killed.
   Future<BackgroundShell> start(String command, {String description = ''}) async {
-    final id = 'bg_${_nextBg++}';
-    final (process, script) = await _spawn(id, command);
-    unawaited(process.exitCode.then((_) => _delete(script)));
-    final bg = BackgroundShell._(id, command, description, process);
+    return _startAs('bg_${_nextBg++}', command, description);
+  }
+
+  Future<BackgroundShell> _startAs(String id, String command, String description, {bool restarted = false}) async {
+    final (proc, script) = await _spawn(id, command, terminal: true);
+    unawaited(proc.exitCode.then((_) => _delete(script)));
+    final (entry, log) = _register(id, command, description, background: true, restarted: restarted);
+    entry.restart = () => restart(id);
+    final bg = BackgroundShell._(id, command, description, proc, log, entry, _registry)..restarted = restarted;
     _background[id] = bg;
+    _registry.add(entry);
     return bg;
+  }
+
+  /// Stops background shell [id] if it runs and starts its command again under the same id, in the folder it first
+  /// ran in (the user's Restart in the Processes tab). The agent's next read says so. Null when there is no such
+  /// shell.
+  Future<BackgroundShell?> restart(String id) async {
+    final old = _background[id];
+    if (old == null) return null;
+    await old.kill();
+    await old._proc.exitCode.timeout(const Duration(seconds: 3), onTimeout: () => -9);
+    final here = cwd;
+    cwd = old.entry.cwd;
+    try {
+      return await _startAs(id, old.command, old.description, restarted: true);
+    } finally {
+      cwd = here;
+    }
   }
 
   /// Kills every command still running (foreground and background).
@@ -376,10 +497,16 @@ void _delete(File f) {
 /// ends in to [cwdFile]. On Windows (Git Bash) paths go in with forward
 /// slashes and `pwd -W` writes `C:/…` instead of `/c/…`.
 @visibleForTesting
-String wrapScript(String command, {required String cwd, required String cwdFile, required bool windows}) {
+String wrapScript(
+  String command, {
+  required String cwd,
+  required String cwdFile,
+  required bool windows,
+  bool stdinNull = true,
+}) {
   String quote(String s) => "'${(windows ? s.replaceAll('\\', '/') : s).replaceAll("'", r"'\''")}'";
   return 'cd ${quote(cwd)} 2>/dev/null || cd ~\n'
-      '{\n$command\n} < /dev/null 2>&1\n'
+      '{\n$command\n}${stdinNull ? ' < /dev/null' : ''} 2>&1\n'
       '__everyai_status=\$?\n'
       '${windows ? '{ pwd -W 2>/dev/null || pwd -P; }' : 'pwd -P'} > ${quote(cwdFile)} 2>/dev/null\n'
       'exit \$__everyai_status\n';
@@ -392,14 +519,27 @@ String cwdFromFile(String text, {required bool windows}) {
   return windows ? dir.replaceAll('/', '\\') : dir;
 }
 
-/// A command left running in the background.
+/// A command left running in the background: in a pseudo-terminal when one
+/// could be made (so the user can type into it from the Processes tab, and
+/// the agent with `bash_input`), else on pipes. Its raw output goes to its
+/// log; the agent reads it with colours and redraws taken out.
 final class BackgroundShell {
-  BackgroundShell._(this.id, this.command, this.description, this._process) {
-    _process.stdout.transform(const Utf8Decoder(allowMalformed: true)).listen(_add);
-    _process.stderr.transform(const Utf8Decoder(allowMalformed: true)).listen(_add);
+  BackgroundShell._(this.id, this.command, this.description, this._proc, this._log, this.entry, this._registry) {
+    entry
+      ..pid = _proc.pid
+      ..live = _LiveBackground(this);
+    final decode = const Utf8Decoder(allowMalformed: true).startChunkedConversion(_SinkOf(_add));
+    _proc.raw.listen((bytes) {
+      final shown = _proc.isPty ? bytes : _crlf(bytes);
+      _log?.add(shown);
+      entry.emit(shown);
+      decode.add(bytes);
+    }, onDone: decode.close);
     unawaited(
-      _process.exitCode.then((c) {
+      _proc.exitCode.then((c) {
         exitCode = c;
+        _log?.close();
+        _registry.ended(entry, c);
         _changes.add(null);
       }),
     );
@@ -408,10 +548,21 @@ final class BackgroundShell {
   final String id;
   final String command;
   final String description;
-  final Process _process;
+  final _Proc _proc;
+  final ShellLog? _log;
+  final ShellRegistry _registry;
+
+  /// Its row in the registry (the Processes tab).
+  final ShellEntry entry;
   final _out = _CappedBuffer(2 * 1024 * 1024);
   final _changes = StreamController<void>.broadcast();
   final startedAt = DateTime.now();
+
+  /// When it last printed something.
+  DateTime lastOutputAt = DateTime.now();
+
+  /// The user restarted it (a new run under the same id) and the agent hasn't been told yet.
+  bool restarted = false;
 
   /// Set once it ended.
   int? exitCode;
@@ -419,8 +570,13 @@ final class BackgroundShell {
   /// How much output was read so far (by `bash_output`).
   int readTo = 0;
 
-  int get pid => _process.pid;
+  int get pid => _proc.pid;
   bool get running => exitCode == null;
+
+  /// Whether it runs in a pseudo-terminal, so input reaches it.
+  bool get interactive => _proc.isPty;
+
+  /// Everything it printed (capped), as raw text with terminal codes.
   String get output => _out.text;
 
   /// Fires on new output and on exit.
@@ -428,21 +584,153 @@ final class BackgroundShell {
 
   void _add(String s) {
     _out.add(s);
+    lastOutputAt = DateTime.now();
     _changes.add(null);
   }
 
-  /// Output since the last read, and moves the read mark.
+  /// Output since the last read as plain text (see [cleanTerminalText]), and moves the read mark.
   String takeNew() {
     final all = _out.text;
     final from = readTo.clamp(0, all.length);
     readTo = all.length;
-    return all.substring(from);
+    return cleanTerminalText(all.substring(from));
+  }
+
+  /// The prompt it seems to wait at: the last line it printed when that reads like a question and nothing came
+  /// for [quiet] (null otherwise).
+  String? waitingFor({Duration quiet = const Duration(seconds: 8), DateTime? now}) {
+    if (!running || !interactive) return null;
+    if ((now ?? DateTime.now()).difference(lastOutputAt) < quiet) return null;
+    final text = _out.text;
+    final tail = cleanTerminalText(text.substring(text.length > 4000 ? text.length - 4000 : 0));
+    final line = tail.split('\n').lastWhere((l) => l.trim().isNotEmpty, orElse: () => '');
+    return looksLikePrompt(line) ? line.trim() : null;
+  }
+
+  /// Sends [data] to its terminal ([user]: typed by the user, so the agent's next read hears of it).
+  /// False when it has no terminal or has ended.
+  bool write(String data, {bool user = false}) {
+    if (!running || !interactive) return false;
+    _proc.write(Uint8List.fromList(utf8.encode(data)));
+    if (user) {
+      entry.noteTyped(data);
+      _registry.changed(entry);
+    }
+    return true;
   }
 
   Future<void> kill() async {
     if (!running) return;
-    await killTree(_process.pid);
+    await killTree(_proc.pid);
   }
+}
+
+/// A background shell's live end for the registry.
+final class _LiveBackground implements LiveShell {
+  _LiveBackground(this._b);
+  final BackgroundShell _b;
+
+  @override
+  bool get interactive => _b.interactive;
+  @override
+  void write(Uint8List data) => _b.write(utf8.decode(data, allowMalformed: true), user: true);
+  @override
+  void resize(int rows, int columns) => _b._proc.resize(rows, columns);
+  @override
+  Future<void> stop() => _b.kill();
+}
+
+/// A foreground command's live end: output to follow, no input.
+final class _WatchedShell implements LiveShell {
+  _WatchedShell(this._p);
+  final _Proc _p;
+
+  @override
+  bool get interactive => false;
+  @override
+  void write(Uint8List data) {}
+  @override
+  void resize(int rows, int columns) {}
+  @override
+  Future<void> stop() => killTree(_p.pid);
+}
+
+/// A started command: a [Process] on pipes or a [ShellPty]; [raw] is all of its output (stdout and stderr
+/// interleaved), once, broadcast.
+final class _Proc {
+  _Proc.pipes(Process p) : process = p, _pty = null, raw = _merged(p);
+  _Proc.pty(ShellPty p) : process = null, _pty = p, raw = p.output.asBroadcastStream();
+
+  final Process? process;
+  final ShellPty? _pty;
+  final Stream<Uint8List> raw;
+
+  bool get isPty => _pty != null;
+  int get pid => process?.pid ?? _pty!.pid;
+  Future<int> get exitCode => process?.exitCode ?? _pty!.exitCode;
+  void write(Uint8List data) => _pty?.write(data);
+  void resize(int rows, int columns) => _pty?.resize(rows, columns);
+
+  static Stream<Uint8List> _merged(Process p) {
+    final c = StreamController<Uint8List>.broadcast();
+    var open = 2;
+    void done() {
+      if (--open == 0) c.close();
+    }
+
+    p.stdout.listen((b) => c.add(Uint8List.fromList(b)), onDone: done);
+    p.stderr.listen((b) => c.add(Uint8List.fromList(b)), onDone: done);
+    return c.stream;
+  }
+}
+
+/// Bare LF line ends made CRLF, for output from pipes shown in a terminal.
+Uint8List _crlf(List<int> bytes) {
+  if (!bytes.contains(0x0A)) return bytes is Uint8List ? bytes : Uint8List.fromList(bytes);
+  final out = BytesBuilder(copy: false);
+  var prev = 0;
+  for (final b in bytes) {
+    if (b == 0x0A && prev != 0x0D) out.addByte(0x0D);
+    out.addByte(b);
+    prev = b;
+  }
+  return out.takeBytes();
+}
+
+final class _SinkOf implements Sink<String> {
+  _SinkOf(this._add);
+  final void Function(String) _add;
+  @override
+  void add(String data) => _add(data);
+  @override
+  void close() {}
+}
+
+/// The environment of a background shell's terminal: the login shell's ([base]) made fit for a terminal (colour
+/// on, so the user's view keeps it) but quiet: no pager, no git credential prompts, and the session's tag.
+Map<String, String> ptyShellEnv(Map<String, String> base, String sessionTag) => {
+  for (final e in base.entries)
+    if (e.key != 'NO_COLOR') e.key: e.value,
+  'TERM': 'xterm-256color',
+  'PAGER': 'cat',
+  'GIT_PAGER': 'cat',
+  'GIT_TERMINAL_PROMPT': '0',
+  sessionEnvVar: sessionTag,
+};
+
+/// [env] with the session's own display ([nested], from [NestedDisplays.envFor]) on top; an empty value removes
+/// the variable (WAYLAND_DISPLAY, so toolkits don't open on the user's Wayland desktop).
+Map<String, String> withNestedDisplay(Map<String, String> env, Map<String, String> nested) {
+  if (nested.isEmpty) return env;
+  final out = {...env};
+  for (final e in nested.entries) {
+    if (e.value.isEmpty) {
+      out.remove(e.key);
+    } else {
+      out[e.key] = e.value;
+    }
+  }
+  return out;
 }
 
 /// Runs a program and waits for it; [killTree] uses it for `taskkill`.
@@ -483,8 +771,22 @@ Future<void> killTree(int pid, {bool? windows, KillRunner run = Process.run}) as
 }
 
 Future<List<int>> _descendants(int root) async {
-  // Not used on Windows: killTree has taskkill there, and processes() feeds the macOS-only screenshot tool.
-  if (Platform.isWindows) return const [];
+  // On Windows only processes() asks (killTree has taskkill there): the desktop helper lists parents.
+  if (Platform.isWindows) {
+    final parents = await windowsParents();
+    final out = <int>[];
+    final queue = [root];
+    while (queue.isNotEmpty) {
+      final p = queue.removeLast();
+      for (final e in parents.entries) {
+        if (e.value == p && e.key != p && !out.contains(e.key)) {
+          out.add(e.key);
+          queue.add(e.key);
+        }
+      }
+    }
+    return out;
+  }
   try {
     final res = await Process.run('ps', ['-A', '-o', 'pid=,ppid=']);
     final children = <int, List<int>>{};

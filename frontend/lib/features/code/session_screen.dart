@@ -1,5 +1,19 @@
 part of 'code_providers.dart';
 
+/// app_run's process as the Processes tab drives it: Stop only (its stdin is the app's own).
+final class _AppRunLive implements LiveShell {
+  _AppRunLive(this._run);
+  final _AppRun _run;
+  @override
+  bool get interactive => false;
+  @override
+  void write(Uint8List data) {}
+  @override
+  void resize(int rows, int columns) {}
+  @override
+  Future<void> stop() => _run.process.close();
+}
+
 /// Preferences: the run command the user confirmed for each project folder
 /// (`{dir: command}`). A command in a project's settings file runs without a
 /// card only when it is this one: a cloned repo may carry that file.
@@ -18,13 +32,43 @@ const _appRunShow = 40;
 
 /// The app app_run started for a session, and the end of its output.
 final class _AppRun {
-  _AppRun(this.command, this.process, this.before) {
+  _AppRun(this.command, this.process, this.before, {required String session, required String cwd})
+    : entry = ShellEntry(
+        key: 'app/${DateTime.now().microsecondsSinceEpoch}',
+        id: 'app',
+        session: session,
+        command: command,
+        cwd: cwd,
+        origin: ShellOrigin.appRun,
+        background: true,
+        description: 'The app',
+        pid: process.pid,
+      ) {
+    entry
+      ..live = _AppRunLive(this)
+      ..emit(Uint8List.fromList(utf8.encode('\x1B[2m\$ $command\x1B[0m\r\n')));
+    ShellRegistry.instance.add(entry);
     _sub = process.lines.listen((line) {
       tail.add(line);
       if (tail.length > _appRunKeep) tail.removeAt(0);
+      entry.emit(Uint8List.fromList(utf8.encode('$line\r\n')));
     });
-    unawaited(process.exitCode.then((code) => exit = code, onError: (Object _) => exit = -1));
+    unawaited(
+      process.exitCode.then(
+        (code) {
+          exit = code;
+          ShellRegistry.instance.ended(entry, code);
+        },
+        onError: (Object _) {
+          exit = -1;
+          ShellRegistry.instance.ended(entry, -1);
+        },
+      ),
+    );
   }
+
+  /// Its row in the Processes tab (stdout as it came; stderr is in the session's app-run.log).
+  final ShellEntry entry;
 
   final String command;
   final DriverProcess process;
@@ -97,6 +141,7 @@ mixin _SessionScreen on Notifier<CodeSessionState> {
     return switch (call.name) {
       screenshotTool => _screenshot(call, info, a),
       browserTool => _browse(call, info, a),
+      appTool => _appCall(call, info, a),
       _ => _runApp(call, info, a),
     };
   }
@@ -231,16 +276,26 @@ mixin _SessionScreen on Notifier<CodeSessionState> {
   Future<HostResult> _browse(HostCall call, CodeSessionInfo info, ScreenAccess a) async {
     if (a.os.isEmpty) return (text: 'Error: the browser works on desktop only.', isError: true);
     final gen = _screenGen;
-    final dir = await ref.read(codeSessionsProvider.notifier)._driverDir(sessionId);
+    final profile =
+        await CodeSessions._browserProfile(_projectDirOf(info)) ??
+        '${await ref.read(codeSessionsProvider.notifier)._driverDir(sessionId)}/browser';
     final Future<HostResult> turn = _browserTurn.then((_) async {
       if (gen != _screenGen || !ref.mounted) {
         return (text: 'Error: the session was stopped, and its browser with it.', isError: true);
       }
-      final b = _screenBrowser ??= a.browser('$dir/browser');
+      final b = _screenBrowser ??= a.browser(sessionId, profile);
       return _withImages(call, await b.run(call.args, info.workingDir));
     });
     _browserTurn = turn.then((_) {}, onError: (Object _) {});
     return turn;
+  }
+
+  /// The `app` tool: the session's Flutter, React Native or Electron app (app_run's, or one its own commands
+  /// started, found in their output).
+  Future<HostResult> _appCall(HostCall call, CodeSessionInfo info, ScreenAccess a) async {
+    if (a.os.isEmpty) return (text: 'Error: the app tool works on desktop only.', isError: true);
+    final pids = await a.sessionPids(tag: info.id, workingDir: info.workingDir, ownsDir: _owns(info));
+    return _withImages(call, await a.app(call.args, session: info.id, root: info.workingDir, pids: pids));
   }
 
   /// The project folder [info] belongs to (where its run command is kept),
@@ -384,7 +439,7 @@ mixin _SessionScreen on Notifier<CodeSessionState> {
       await process.close();
       return (run: null, problem: stopped);
     }
-    return (run: _appRun = _AppRun(command, process, before), problem: null);
+    return (run: _appRun = _AppRun(command, process, before, session: info.id, cwd: info.workingDir), problem: null);
   }
 
   /// The command app_run starts: the one the user confirmed for this

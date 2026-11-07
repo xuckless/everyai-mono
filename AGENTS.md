@@ -849,6 +849,128 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   chip in the top bar opening a resizable bottom terminal (owner `home`, starts in `terminalHomeDir`: `$HOME`, or
   `C:\` on Windows; prefs `code.home.terminal`, `code.home.terminal_height`). Session header icons got a 2pt gap so
   two open views' highlights don't merge.
+- **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
+  `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
+  `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,
+  10 MB then rolled to `.1`), live chunks with byte offsets (`entry.output`, synchronous) so a tab replays the log
+  and follows without gaps. Background shells run in a pty (`pty_spawn_io.dart`; pipes when flutter_pty doesn't load,
+  e.g. `flutter test`), env `ptyShellEnv` (colour, PAGER=cat, GIT_TERMINAL_PROMPT=0). Model view: `cleanTerminalText`.
+  Tool `bash_input {shell_id, text, keys}` (kind `ShellInputAction`, asks like a command); bash_output/monitor add
+  "user typed …", "restarted", "seems to wait for input" (`waitingFor`, `looksLikePrompt`). Processes tab groups
+  processes under their shell (`groupByShell`), opens `shellTabId` tabs (Stop/Restart/Copy/Send to agent, scrubbed),
+  lists Docker/Podman containers (`containers.dart`: compose dir, bind mount, or ids the session's docker commands
+  printed) with logs/shell-inside tabs (`TerminalTabs.addCommand`), and tails the stdout file of processes EveryAI
+  didn't start (`outputFileOf`).
+- **Live web Preview (2026-11-06; d2b72c7).** `code/live/`: `ChromeHost.of(profileDir)` runs one headless Chrome per
+  project profile (`browserProfileDir`, App Support `browser-profiles/<sha1>`), `HeadlessBrowser` takes a page target
+  in it; `LiveBrowsers.forSession(codeSessionId)` is the page the EveryAI harness (`SessionSpec.liveId`/
+  `browserProfile`), the host browser tool and `PreviewPane` all use. The page outlives runs; released on session
+  remove, all stopped at quit. Preview paints `Page.startScreencast` (first picture captured at start), forwards input
+  unguarded (`userMouse/userKey/userText`), `LiveControl` = driver lock (user input takes over, agent actions wait 2
+  min, `gaveBackText`), ghost cursor from `control.activity`. Agent API: `FrameBook` frame ids (`f_N`, geometry check,
+  zoom regions), `pageSnapshotJs` element list with `ref_N`, `evalRefusal` (cookies/storage/other-site requests),
+  eval results scrubbed. Chrome for Testing download pinned in `live/chrome_pin.dart` by
+  `tool/pin_chrome_for_testing.sh`. Dev MCP test rig: `tool/live_mcp/live_mcp_serve_test.dart` (env
+  `EVERYAI_LIVE_MCP_OUT`) serves the host browser tool + a demo shop for an outside agent to review.
+- **Framework sources: the `app` tool (2026-11-06).** `live/app_endpoints.dart` finds apps in a shell's output
+  (`flutter run`'s VM service line, Chromium's `DevTools listening on` for Electron, Metro's banner);
+  `AppSources.running(sessions)` scans the sessions' registry shells (and an outside lead's output files via
+  `scanOutputFile`) and holds one driver per app. Drivers: `FlutterApp` (`live/flutter_app_io.dart`, VM service
+  JSON-RPC: `ensureSemantics` + one evaluated expression for the semantics tree with global rects, semantics
+  tap/setText, pointer events, inspector screenshots, `s<N>.reloadSources`/`hotRestart`, Stdout/Logging/Flutter.Error
+  log; expressions must be one line), `ReactNativeApp` (`live/react_native_io.dart`, Metro `/json/list` → CDP;
+  `reactNativeTreeJs` walks fibers through `__REACT_DEVTOOLS_GLOBAL_HOOK__` and calls onPress/onChangeText; reload via
+  `Page.reload` or POST `/reload`), Electron = `HeadlessBrowser.attached(endpoint)` (the browser tool on the app's
+  own window). Tool spec `live/app_tool_spec.dart`, work in `harness/everyai/app_tools_io.dart` (`runAppTool`):
+  EveryAI harness `app` (kind `AppAction`, read-only except eval) and host MCP `app` (`ScreenAccess.app`). Results say
+  what changed on screen (`appTreeChange`); app text goes in an `untrusted` block. `bash_output {screen: true}`
+  renders a TUI's screen (`shells/terminal_screen.dart`, headless xterm). Preview: source chips (Web + each app),
+  Flutter picture view (polled inspector shots, taps/wheel forwarded), RN element list, Electron live page. Verified
+  against a running `flutter run -d flutter-tester` app (`tool/live_apps/flutter_app_probe_test.dart`,
+  `EVERYAI_FLUTTER_VM`); Electron and RN paths tested with Chrome standing in (`app_sources_test.dart`); no real
+  Electron or React Native app was run.
+- **iOS Simulator (2026-11-06).** The `app` tool's source "ios" drives a booted simulator for any app (native,
+  Flutter, React Native) through AXe (`live/ios_simulator_io.dart`): `describe-ui` → `AppNode`s (points; refs `iN`
+  stable by type+label+id; keyboard keys folded into "(the on-screen keyboard is up)"), tap/long_press/type (⌘A, then
+  `type --stdin`, value checked; never into SecureTextField)/scroll/drag as swipes, back (the nav bar's back button,
+  else an edge swipe, which AXe's touches don't always trigger), home, screenshots + zoom with frame ids, and
+  actions `devices` / `boot {device}`. A simulator counts for a session when its shells name it (udid, `on iPhone 16
+  in debug mode`, `-d "iPhone 16"`) or it booted it; `IosSimulators.claim` lets one session drive it at a time. AXe
+  1.8.0 is downloaded on first use into app data `tools/axe-1.8.0/` and checked against `axe_pin.dart`
+  (`verified_download_io.dart`, shared with Chrome for Testing; `EVERYAI_AXE` overrides). Preview: `IosSimulatorView`
+  paints `axe stream-video` MJPEG (~9 fps at half scale, `MjpegFrames` cuts by Content-Length), forwards clicks,
+  drags and the wheel. Dev probe `tool/live_apps/simulator_probe_test.dart` (`EVERYAI_SIM`).
+- **Android (2026-11-06).** The `app` tool's source "android" drives an emulator or device for any app through adb
+  (`live/android_device_io.dart`, `live/adb_io.dart` finds the SDK: ANDROID_HOME/ANDROID_SDK_ROOT, the usual folders,
+  PATH, `EVERYAI_ADB`; nothing downloaded): `uiautomator dump` → `AppNode`s in pixels (refs `aN`; a clickable
+  container named by its children's text, which isn't listed again), `input` tap/swipe/keyevent/text (Ctrl+A first so
+  type replaces; non-ASCII pasted through scrcpy), back (says when it only closed the keyboard), home, `screencap`
+  pictures, `install` (.apk) / `launch` (package, fresh), `logs` = logcat of the app in front (`*:I`, stacks folded,
+  `trimLogcat`). `devices` lists iOS sims, adb devices and AVDs; `boot` starts an AVD headless. iOS and Android share
+  `DeviceScreen` / `DeviceHolds` (`live/device_screen.dart`) and one branch in `app_tools_io.dart` (`_device`). Each
+  action reads the tree once before (`_fresh` reuses it) and once after; a uiautomator dump takes ~2 s.
+  Preview: `AndroidDeviceView` runs the scrcpy 5.0.1 server (`live/scrcpy_io.dart`, our client of its v5 protocol;
+  the server file is downloaded on first use and checked, `scrcpy_pin.dart`, `EVERYAI_SCRCPY_SERVER` overrides; it
+  deletes itself on exit, so it is pushed every start) and decodes its H.264 with VideoToolbox into a Flutter texture
+  (`VideoDecoderBridge` / `H264Texture` in `macos/Runner/MainFlutterWindow.swift`, channel `everyai/h264`,
+  `live/h264_texture.dart`); other OSes get screenshots each second. Touches, drags, the wheel and the keyboard go
+  through scrcpy's control socket. Checked in a real macOS build with `tool/live_apps/device_view_demo.dart` (both
+  device views; a tap sent through the view opened the app). Dev probe `tool/live_apps/android_probe_test.dart`
+  (`EVERYAI_ANDROID`).
+- **Desktop windows (2026-11-06).** The `app` tool's source "desktop" (macOS) drives the windows of apps the session
+  started (its shells' process trees; outside leads: the pids the host passes) or built in the project
+  (`live/desktop_window_io.dart`). Through `everyai-ax`, our own Swift helper (`tool/ax_helper/main.swift`; dev build
+  `tool/build_ax_helper.sh` → `frontend/.tools/`, `EVERYAI_AX_HELPER` overrides; the macOS build compiles it into
+  `Contents/Resources` from `macos/scripts/bundle_ax_helper.sh`, called by `bundle_deno.sh`; release signing covers
+  it). **Accessibility first**: tap = AXPress (an entry inside a table/list row selects the row: `show` + `select`),
+  type = set the value (never into secure fields), scroll = the scroll bar, long_press = AXShowMenu. **Then the real
+  pointer and keyboard** (owner, 2026-11-07) for what AX can't do: taps at a point with nothing pressable (Tk, games,
+  canvases), elements with no press, fields that ignore set-value, `key`, drag, the wheel. The helper's `--front`
+  makes the app frontmost (not again when it already is, which would close Tk's pop-up lists) and posts to the HID
+  tap. Gate `live/real_input.dart` `RealInput`: asked once by a dialog (`ui/real_input_consent.dart`,
+  `connectRealInput` in the shell), remembered in prefs `code.desktop.real_input` ('1'/'0'), switch in Settings >
+  Code (Global, "Driving apps"); no dialog (tests, rigs) = no, `EVERYAI_REAL_INPUT=1|0` overrides. Pictures (`shot`)
+  include the app's pop-ups and dialogs over the window; the Preview stream shows the window alone. Verified on the
+  futoshiki copy: Load through the native panel, AC-3 picked from Tk's pop-up list, solved, Timeout typed (Tk has no
+  Cmd+A: `tap {count: 3}` triple-clicks to select; the real-typing fallback does too). New `key` action on iOS (AXe HID codes) and Android (keyevents/keycombination) via
+  `DeviceScreen.key`.
+  Guards (security pass, 2026-11-07; light on purpose): the helper's real input waits (≤8 s) while the user is using
+  the mouse or keyboard (exit 8), sends a pointer event only where the app's own window or pop-up is on top (not the
+  menu bar, another app, or outside its windows; exit 7), and keys only while the app is frontmost and macOS secure
+  input (a focused password field) is off. `key` won't type text while a password field has the focus
+  (`secretFocusRefusal`; iOS shows no focus, so there a password field on screen is enough). Discovery skips
+  password managers (`sensitiveWindow`). A DevTools address the agent names (`source`/`list` with ws://…) must
+  listen in one of the session's processes or a program built in the project (`_foreignDevTools`, lsof), so a user's
+  own browser with remote debugging isn't attached.
+  Preview `DesktopWindowView`: the live stream; clicks press through AX, else a real click (same consent); Bring to
+  front. Probe
+  `tool/live_apps/desktop_probe_test.dart` (`EVERYAI_DESKTOP_PID`); the MCP rig takes `EVERYAI_LIVE_WINDOW_MATCH`.
+- **Desktop windows on Windows and Linux (2026-11-07).** Same `desktop` source and driver; the helper differs
+  (`live/desktop_helper_io.dart` `desktopHelper()`: same commands and JSON as everyai-ax, sources in
+  `assets/helpers/`, installed under app data `tools/` named by content hash; `EVERYAI_DESKTOP_HELPER` overrides).
+  - **Windows** `everyai_win.cs`: compiled on first use by the .NET Framework 4 `csc.exe` every Windows has (keep it
+    **C# 5**), UI Automation tree in AX role names (paths start with the HWND; ListItem/DataItem/TreeItem = AXRow),
+    actions via Invoke/Toggle/SelectionItem/ExpandCollapse/RangeValue/ScrollPattern/Value, PrintWindow pictures with
+    the app's pop-ups composited, SendInput real input with the same guards (idle via GetLastInputInfo,
+    WindowFromPoint root owner, foreground pid, focused UIA element not a password), `procs` (Toolhelp) feeds
+    `_descendants` on Windows. Compile-checked only (`tool/desktop_helpers/check_windows_compiles.sh`, .NET SDK);
+    **never run on Windows**.
+  - **Linux** `everyai_x11.py`: python3 + ctypes Xlib/XTest/XRes (no packages), no accessibility tree yet (pictures
+    and coordinates), keys by name (spare keycode borrowed for characters the map lacks), PNG frames for the stream.
+    Each session gets its own **Xvfb** (`live/nested_display_io.dart` `NestedDisplays`, `-displayfd`, 1440×900, when
+    Xvfb is installed and `EVERYAI_NESTED_DISPLAY` isn't 0): `SessionShell` adds DISPLAY (+ GDK/QT/SDL/Electron X11
+    hints, WAYLAND_DISPLAY removed; `withNestedDisplay`) so the session's apps open there; every window there is the
+    session's; input there needs no consent or guards (`--nested`). Without Xvfb: the user's display, pid/exe
+    ownership, consent and guards as on macOS. Stopped on session remove and at quit. Verified in an Ubuntu 22.04
+    container (`tool/desktop_helpers/check_linux.sh`: Tk app, clicks, typing "Hello Wörld €", Enter, wheel, guard);
+    the Dart side wasn't run on Linux.
+- **Real-project testing (2026-11-06).** Outside agents drove the owner's projects through the MCP rig (copies or
+  read-only runs; no project files touched): pixl-playroom (Electron, 6/10 → 8/10 after the browser fixes in
+  3387f20), tranzit (Expo; its dev build isn't installed and can't be built here because its gitignored
+  `ios/.xcode.env.local` points NODE_BINARY at a removed Homebrew node; owner to rebuild), futoshiki (Tk, desktop
+  windows: 6/10 with front-posted clicks, before the switch to accessibility only). RN fixes from it: Metro's usual address is tried for "react-native", `list` says whether an app is
+  connected to Metro, `launch` says when the app isn't installed, simulator names on several iOS versions need
+  "(iOS 18.6)".
 - **Local models (2026-11-06; branch `local-models`, plan `~/.claude/plans/local-models.md`).** Owner: Ollama first,
   auto-detect the rest, Chat and Code, Apple FM the macOS chat default, a clear "Chat needs a model", harnesses work
   without keys, one-click packs from a spec scan.
