@@ -405,6 +405,8 @@ class _PairedHostsSectionState extends ConsumerState<_PairedHostsSection> {
   }
 
   Future<void> _pair(String text) async {
+    // The button, Enter and the QR scanner all land here: one pairing at a time.
+    if (_busy) return;
     final payload = PairingPayload.parse(text);
     if (payload == null) {
       showAdaptiveToast(context, 'That isn\'t a pairing code. It looks like ABCD-EFGH.');

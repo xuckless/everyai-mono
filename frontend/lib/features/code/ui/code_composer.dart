@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:file_selector/file_selector.dart' show XFile;
+import 'package:flutter/gestures.dart' show kDoubleTapTimeout;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:material_ui/material_ui.dart' as m show Tooltip;
@@ -168,6 +169,18 @@ class CodeComposer extends ConsumerStatefulWidget {
 }
 
 class _CodeComposerState extends ConsumerState<CodeComposer> {
+  /// When a queued message was last sent now or removed. The chips act by position, so the next message moves under
+  /// the pointer: the second click of a double click would send or drop that one too. Clicks on the queue within a
+  /// double click's length of the last are ignored.
+  DateTime? _queueActedAt;
+
+  void _queueAction(VoidCallback act) {
+    final now = DateTime.now();
+    if (_queueActedAt case final last? when now.difference(last) < kDoubleTapTimeout) return;
+    _queueActedAt = now;
+    act();
+  }
+
   final _controller = TextEditingController();
   late final _focus = FocusNode(onKeyEvent: _onKey);
   final _files = <Attachment>[];
@@ -368,8 +381,10 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
                   _QueuedChip(
                     key: ValueKey('composer.queued.$i'),
                     text: q,
-                    onRemove: widget.onUnqueue == null ? null : () => widget.onUnqueue!(i),
-                    onSendNow: widget.onSendQueuedNow == null ? null : () => widget.onSendQueuedNow!(i),
+                    onRemove: widget.onUnqueue == null ? null : () => _queueAction(() => widget.onUnqueue!(i)),
+                    onSendNow: widget.onSendQueuedNow == null
+                        ? null
+                        : () => _queueAction(() => widget.onSendQueuedNow!(i)),
                   ),
               ],
             ),

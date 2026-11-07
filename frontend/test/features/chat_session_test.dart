@@ -160,7 +160,7 @@ void main() {
     ]);
   });
 
-  test('a turn is Starting from the call on: a second send waits out, Stop cancels before the request', () async {
+  test('a turn is Starting from the call on: a second send waits out, Stop ends it without a request', () async {
     await settle();
     final first = ctl().send('One');
     expect(state().phase, isA<Starting>());
@@ -168,32 +168,42 @@ void main() {
     // A second message while the first is still being set up doesn't start a second turn.
     final second = ctl().send('Two');
     ctl().cancel();
-    expect(state().phase, isA<Idle>());
     await first;
     await second;
     await settle();
     expect(transport.turns, isEmpty);
     expect(state().phase, isA<Idle>());
+    // The message stays, answered by a stop that Retry can ask again.
+    expect(state().messages.map((m) => (m.role, m.plainText, m.status)), [
+      (Role.user, 'One', MessageStatus.complete),
+      (Role.assistant, '', MessageStatus.cancelled),
+    ]);
+    expect(state().title, 'One');
 
     await ctl().send('Three');
     expect(state().phase, isA<Awaiting>());
     expect(transport.turns, hasLength(1));
   });
 
-  test('Stop then an immediate send runs one turn: the stopped start gives up', () async {
+  test('Stop while a regenerate is set up keeps the question and offers Retry', () async {
     await settle();
-    final first = ctl().send('One');
+    await ctl().send('Hello');
+    transport.turns.single
+      ..add(const TextDelta('Hi'))
+      ..add(const TurnDone());
+    unawaited(transport.turns.single.close());
+    await settle();
+
+    final again = ctl().regenerate();
     ctl().cancel();
-    // Sent before the first turn's setup has answered: the phase is Starting again, but not the first's.
-    final second = ctl().send('Two');
-    await first;
-    await second;
+    await again;
     await settle();
     expect(transport.turns, hasLength(1));
-    expect(state().messages.where((m) => m.isUser).map((m) => m.plainText), ['Two']);
-    // Named from the message that was sent, not the stopped one.
-    expect(state().title, 'Two');
-    expect((await container.read(chatRepositoryProvider).conversation(id))?.title, 'Two');
+    expect(state().messages.map((m) => (m.role, m.status)), [
+      (Role.user, MessageStatus.complete),
+      (Role.assistant, MessageStatus.cancelled),
+    ]);
+    expect(state().phase, isA<Idle>());
   });
 
   group('backend titles', () {

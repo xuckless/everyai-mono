@@ -54,6 +54,8 @@ void main() {
     expect(boardStatus(SessionStatus.idle, workRunning: true, childWaits: false), SessionStatus.running);
     expect(boardStatus(SessionStatus.done, workRunning: false, childWaits: false), SessionStatus.done);
     expect(boardStatus(SessionStatus.idle, workRunning: true, childWaits: true), SessionStatus.needsInput);
+    // A failure shows even while a workflow still runs.
+    expect(boardStatus(SessionStatus.failed, workRunning: true, childWaits: false), SessionStatus.failed);
     expect(boardStatus(SessionStatus.running, workRunning: false, childWaits: true), SessionStatus.needsInput);
     expect(boardStatus(SessionStatus.starting, workRunning: true, childWaits: false), SessionStatus.starting);
   });

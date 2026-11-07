@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -147,8 +149,9 @@ class BillingController extends AsyncNotifier<BillingSummary> {
     state = next;
   }
 
-  /// The checkout in flight: a second tap gets its answer instead of buying again.
-  Future<String>? _checkingOut;
+  /// The checkout in flight and what it buys: a second tap on the same one gets its answer instead of buying again;
+  /// a different one waits until it's done (it would otherwise get the first one's answer).
+  ({String what, Future<String> done})? _checkingOut;
 
   /// Starts a Stripe Checkout (opens the browser), or, when the backend has no
   /// Stripe keys, applies the purchase at once. Returns a message for the UI.
@@ -156,8 +159,15 @@ class BillingController extends AsyncNotifier<BillingSummary> {
 
   Future<String> choosePlan(String planId) => _checkout({'kind': 'subscription', 'plan': planId});
 
-  Future<String> _checkout(Map<String, Object?> body) =>
-      _checkingOut ??= _runCheckout(body).whenComplete(() => _checkingOut = null);
+  Future<String> _checkout(Map<String, Object?> body) {
+    final what = jsonEncode(body);
+    if (_checkingOut case (what: final open, :final done)) {
+      return open == what ? done : Future.value('Another checkout is still opening. Try again in a moment.');
+    }
+    final done = _runCheckout(body).whenComplete(() => _checkingOut = null);
+    _checkingOut = (what: what, done: done);
+    return done;
+  }
 
   Future<String> _runCheckout(Map<String, Object?> body) async {
     try {

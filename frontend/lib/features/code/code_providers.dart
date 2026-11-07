@@ -3683,7 +3683,10 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       if (state.notice is SendFailed) state = state.copyWith(clearNotice: true);
       return out;
     } on Object catch (e) {
-      state = state.copyWith(notice: SendFailed("Couldn't save the attachments: $e"));
+      // A spent budget outranks a failed send: it is what stops the session, and only the budget clears it.
+      if (state.notice is! BudgetReached) {
+        state = state.copyWith(notice: SendFailed("Couldn't save the attachments: $e"));
+      }
       return null;
     }
   }

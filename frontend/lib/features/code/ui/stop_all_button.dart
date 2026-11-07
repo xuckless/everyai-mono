@@ -20,7 +20,7 @@ class StopAllButton extends StatelessWidget {
   final bool leadBusy;
   final VoidCallback onStopAll;
 
-  /// The round trigger's size: the composer's Send is 32, a Board card's controls 26.
+  /// The round trigger's size: the composer's Send is 32; a Board card's header uses 22.
   final double size;
 
   @override

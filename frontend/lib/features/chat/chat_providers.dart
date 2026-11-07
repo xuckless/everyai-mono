@@ -136,6 +136,10 @@ final class ChatController extends Notifier<ChatSessionState> {
   /// The conversation's row being made by the first turn (see [_startTurn]).
   Future<Conversation>? _creating;
   Starting _starting() => Starting(++_turns);
+
+  /// The [Starting.turn] Stop was pressed in (see [cancel]).
+  int? _stopAsked;
+  bool _stopped(int? turn) => turn != null && _stopAsked == turn;
   StreamSubscription<ChatEvent>? _turn;
   final _buffer = StringBuffer();
   final _reasoning = StringBuffer();
@@ -153,7 +157,7 @@ final class ChatController extends Notifier<ChatSessionState> {
   @override
   ChatSessionState build() {
     ref.onDispose(() {
-      _cancel?.complete();
+      if (_cancel case final c? when !c.isCompleted) c.complete();
       _turn?.cancel();
     });
     unawaited(_load());
@@ -392,11 +396,13 @@ final class ChatController extends Notifier<ChatSessionState> {
     state = state.copyWith(pendingTools: List.unmodifiable(state.pendingTools.where((t) => t.id != callId)));
   }
 
-  /// Awaiting/Streaming → Idle, keeping whatever text arrived; Starting → Idle before anything is sent.
+  /// Awaiting/Streaming → Idle, keeping whatever text arrived. Starting: the turn finishes its setup (the user's
+  /// message is saved, an edit or regenerate keeps its new text) and ends as a stopped answer without a request, so
+  /// it can be retried like any other stop; dropping it there would lose the message.
   void cancel() {
     if (!state.phase.busy) return;
-    if (state.phase is Starting) {
-      state = state.copyWith(phase: const Idle());
+    if (state.phase case Starting(:final turn)) {
+      _stopAsked = turn;
       return;
     }
     if (_cancel case final c? when !c.isCompleted) c.complete();
@@ -432,6 +438,7 @@ final class ChatController extends Notifier<ChatSessionState> {
   }) async {
     // Synchronous from the caller's entry: nothing else starts a turn from here on.
     if (state.phase is! Starting) state = state.copyWith(phase: _starting());
+    final turn = (state.phase as Starting).turn;
     if (state.title == null) {
       final ok = await _beforeTurn(() async {
         final title = titleFromPrompt(prompt.isNotEmpty ? prompt : attachments.firstOrNull?.name ?? 'Attachment');
@@ -455,7 +462,9 @@ final class ChatController extends Notifier<ChatSessionState> {
 
     // The user's skills: a catalog after the memory block, loaded on demand.
     var skills = const <ChatSkill>[];
-    if (state.toolsEnabled && !await _beforeTurn(() async => skills = await chatSkillsNow(ref))) return;
+    if (state.toolsEnabled && !_stopped(turn) && !await _beforeTurn(() async => skills = await chatSkillsNow(ref))) {
+      return;
+    }
 
     var history = state.messages;
     if (userText == null) {
@@ -491,6 +500,12 @@ final class ChatController extends Notifier<ChatSessionState> {
 
     _buffer.clear();
     _reasoning.clear();
+    if (_stopped(turn)) {
+      // Stopped while it was set up: the message stays, the answer is a stop with nothing in it (Retry asks again).
+      state = state.copyWith(messages: List.unmodifiable(messages));
+      _finish(assistant, const [], MessageStatus.cancelled, phase: const Idle());
+      return;
+    }
     final cancel = _cancel = Completer<void>();
     state = state.copyWith(
       messages: List.unmodifiable(messages),
