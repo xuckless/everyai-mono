@@ -56,7 +56,8 @@ Map<String, Object?> mirrorState(
   'mode': state.mode.name,
   'queued': [for (final q in state.queued) q.text],
   'connected': state.connected,
-  'error': ?state.error,
+  // Only what stops the session: a device would read any error as a failed session.
+  'error': ?state.failure,
   'subagent_needs_input': state.subagentNeedsInput,
   'remember': ?remember,
   'flags': flags,

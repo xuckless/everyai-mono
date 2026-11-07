@@ -140,9 +140,15 @@ class BillingController extends AsyncNotifier<BillingSummary> {
   Future<BillingSummary> build() async =>
       BillingSummary.fromJson(await _api.getJson('v1/billing', authenticated: _authenticated));
 
+  /// Fetches the summary again. A failed reload keeps the summary already shown (the card doesn't vanish).
   Future<void> reload() async {
-    state = await AsyncValue.guard(build);
+    final next = await AsyncValue.guard(build);
+    if (!ref.mounted || (next.hasError && state.hasValue)) return;
+    state = next;
   }
+
+  /// The checkout in flight: a second tap gets its answer instead of buying again.
+  Future<String>? _checkingOut;
 
   /// Starts a Stripe Checkout (opens the browser), or, when the backend has no
   /// Stripe keys, applies the purchase at once. Returns a message for the UI.
@@ -150,7 +156,10 @@ class BillingController extends AsyncNotifier<BillingSummary> {
 
   Future<String> choosePlan(String planId) => _checkout({'kind': 'subscription', 'plan': planId});
 
-  Future<String> _checkout(Map<String, Object?> body) async {
+  Future<String> _checkout(Map<String, Object?> body) =>
+      _checkingOut ??= _runCheckout(body).whenComplete(() => _checkingOut = null);
+
+  Future<String> _runCheckout(Map<String, Object?> body) async {
     try {
       final json = await _api.postJson('v1/billing/checkout', body, authenticated: _authenticated);
       if (json case {'url': final String url}) {

@@ -38,6 +38,7 @@ final class UpdaterBridge: NSObject, SPUUpdaterDelegate {
   private let channel: FlutterMethodChannel
   private var controller: SPUStandardUpdaterController?
   private var installNow: (() -> Void)?
+  private var readyVersion = ""
 
   init(messenger: FlutterBinaryMessenger) {
     channel = FlutterMethodChannel(name: "everyai/updater", binaryMessenger: messenger)
@@ -65,7 +66,11 @@ final class UpdaterBridge: NSObject, SPUUpdaterDelegate {
         controller!.updater.automaticallyChecksForUpdates = true
         controller!.updater.automaticallyDownloadsUpdates = true
       }
-      if installNow != nil { return result(true) }
+      // Already downloaded: say so again, so the app doesn't wait for an answer that never comes.
+      if installNow != nil {
+        channel.invokeMethod("ready", arguments: ["version": readyVersion])
+        return result(true)
+      }
       controller!.updater.checkForUpdatesInBackground()
       result(true)
     case "installNow":
@@ -86,6 +91,7 @@ final class UpdaterBridge: NSObject, SPUUpdaterDelegate {
     immediateInstallationBlock: @escaping () -> Void
   ) -> Bool {
     installNow = immediateInstallationBlock
+    readyVersion = item.displayVersionString
     channel.invokeMethod("ready", arguments: ["version": item.displayVersionString])
     return true
   }

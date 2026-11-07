@@ -249,8 +249,8 @@ final class ChatController extends Notifier<ChatSessionState> {
     if (lastUser == -1) return;
     final dropped = state.messages.sublist(lastUser + 1);
     final previousModel = dropped.map((m) => m.model).nonNulls.map((id) => _catalog[id]).nonNulls.firstOrNull;
-    state = state.copyWith(messages: List.unmodifiable(state.messages.take(lastUser + 1)));
-    await _repo.deleteMessages(dropped.map((m) => m.id));
+    state = state.copyWith(messages: List.unmodifiable(state.messages.take(lastUser + 1)), phase: const Starting());
+    if (!await _beforeTurn(() => _repo.deleteMessages(dropped.map((m) => m.id)))) return;
     final (model: mentioned, :prompt) = parseMention(state.messages[lastUser].plainText, _catalog);
     await _startTurn(prompt: prompt, model: model ?? previousModel ?? mentioned ?? state.model, userText: null);
   }
@@ -263,8 +263,8 @@ final class ChatController extends Notifier<ChatSessionState> {
     final dropped = state.messages.sublist(index);
     // The edited message keeps its attachments.
     final attachments = dropped.first.attachments;
-    state = state.copyWith(messages: List.unmodifiable(state.messages.take(index)), phase: const Idle());
-    await _repo.deleteMessages(dropped.map((m) => m.id));
+    state = state.copyWith(messages: List.unmodifiable(state.messages.take(index)), phase: const Starting());
+    if (!await _beforeTurn(() => _repo.deleteMessages(dropped.map((m) => m.id)))) return;
     final (:model, :prompt) = parseMention(text, _catalog);
     await _startTurn(prompt: prompt, model: model ?? state.model, userText: text.trim(), attachments: attachments);
   }
@@ -385,10 +385,26 @@ final class ChatController extends Notifier<ChatSessionState> {
     state = state.copyWith(pendingTools: List.unmodifiable(state.pendingTools.where((t) => t.id != callId)));
   }
 
-  /// Awaiting/Streaming → Idle, keeping whatever text arrived.
+  /// Awaiting/Streaming → Idle, keeping whatever text arrived; Starting → Idle before anything is sent.
   void cancel() {
     if (!state.phase.busy) return;
-    _cancel?.complete();
+    if (state.phase is Starting) {
+      state = state.copyWith(phase: const Idle());
+      return;
+    }
+    if (_cancel case final c? when !c.isCompleted) c.complete();
+  }
+
+  /// Runs one step of a turn's [Starting] work. False when the turn shouldn't go on: the chat closed, or Stop was
+  /// pressed meanwhile. A failure puts the chat back to Idle (it can't be stuck Starting) and is rethrown.
+  Future<bool> _beforeTurn(Future<void> Function() step) async {
+    try {
+      await step();
+    } on Object {
+      if (ref.mounted && state.phase is Starting) state = state.copyWith(phase: const Idle());
+      rethrow;
+    }
+    return ref.mounted && state.phase is Starting;
   }
 
   /// [userText] null: answer the last user message again (retry, regenerate).
@@ -400,20 +416,25 @@ final class ChatController extends Notifier<ChatSessionState> {
     String? forceTool,
     String context = '',
   }) async {
+    // Synchronous from the caller's entry: nothing else starts a turn from here on.
+    if (state.phase is! Starting) state = state.copyWith(phase: const Starting());
     if (state.title == null) {
-      final c = await _repo.createConversationWithId(
-        id: conversationId,
-        title: titleFromPrompt(prompt.isNotEmpty ? prompt : attachments.firstOrNull?.name ?? 'Attachment'),
-        model: state.model.id,
-      );
-      if (!ref.mounted) return;
-      state = state.copyWith(title: c.title);
-      _untitled = (placeholder: c.title, prompt: prompt, model: model);
+      final ok = await _beforeTurn(() async {
+        final c = await _repo.createConversationWithId(
+          id: conversationId,
+          title: titleFromPrompt(prompt.isNotEmpty ? prompt : attachments.firstOrNull?.name ?? 'Attachment'),
+          model: state.model.id,
+        );
+        if (!ref.mounted) return;
+        state = state.copyWith(title: c.title);
+        _untitled = (placeholder: c.title, prompt: prompt, model: model);
+      });
+      if (!ok) return;
     }
 
     // The user's skills: a catalog after the memory block, loaded on demand.
-    final skills = state.toolsEnabled ? await chatSkillsNow(ref) : const <ChatSkill>[];
-    if (!ref.mounted) return;
+    var skills = const <ChatSkill>[];
+    if (state.toolsEnabled && !await _beforeTurn(() async => skills = await chatSkillsNow(ref))) return;
 
     var history = state.messages;
     if (userText == null) {

@@ -111,12 +111,21 @@ class _ProviderCardState extends ConsumerState<_ProviderCard> {
     }
   }
 
+  /// The newest check; an older one still answering (the key was replaced meanwhile) is dropped.
+  var _gen = 0;
+
   Future<void> _check() async {
     final key = ref.read(byokKeysProvider).value?[provider.id];
     if (key == null) return;
+    final gen = ++_gen;
     setState(() => _checking = true);
-    final result = await ref.read(keyCheckProvider)(provider, key);
-    if (!mounted) return;
+    KeyCheck result;
+    try {
+      result = await ref.read(keyCheckProvider)(provider, key);
+    } on Object catch (e) {
+      result = (valid: null, message: "Couldn't check the key: $e");
+    }
+    if (!mounted || gen != _gen) return;
     setState(() {
       _checking = false;
       _lastCheck = (key: key, valid: result.valid);

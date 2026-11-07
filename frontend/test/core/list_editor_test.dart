@@ -60,6 +60,32 @@ void main() {
     expect(find.text('Subdomains'), findsOneWidget);
   });
 
+  testWidgets('the selection follows its item when the list changes from outside', (tester) async {
+    late StateSetter outside;
+    var items = ['a.com', 'b.com', 'c.com'];
+    final changes = <List<String>>[];
+    await tester.pumpWidget(
+      LayoutHost(
+        language: DesignLanguage.material,
+        child: StatefulBuilder(
+          builder: (context, setState) {
+            outside = setState;
+            return KitListEditor(items: items, onChanged: (next) => setState(() => changes.add(items = next)));
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('b.com'));
+    await tester.pumpAndSettle();
+    // Another place drops the first row: b.com moves up a row and stays the one selected.
+    outside(() => items = ['b.com', 'c.com']);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('list-editor.remove')));
+    await tester.pumpAndSettle();
+    expect(changes.last, ['c.com']);
+  });
+
   testWidgets('− removes the selected row; nothing selected, nothing removed', (tester) async {
     final changes = await pump(tester, ['a.com', 'b.com']);
     await tester.tap(find.byKey(const ValueKey('list-editor.remove')));

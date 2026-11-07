@@ -148,13 +148,12 @@ class _HostSectionState extends ConsumerState<_HostSection> {
     final connected = {for (final c in link.clients) c.deviceId};
     final status = !hosting.enabled
         ? 'Off. Your other devices can\'t reach this computer.'
-        : link.revoked
-        ? 'This host was removed from your account.'
-        : link.replaced
-        ? 'Another copy of EveryAI took over hosting.'
-        : link.connected
-        ? 'Online${link.clients.isEmpty ? '' : ', ${link.clients.length} connected'}'
-        : 'Connecting to the relay…';
+        : switch (link.status) {
+            HostLinkStatus.revoked => 'This host was removed from your account.',
+            HostLinkStatus.replaced => 'Another copy of EveryAI took over hosting.',
+            HostLinkStatus.online => 'Online${link.clients.isEmpty ? '' : ', ${link.clients.length} connected'}',
+            HostLinkStatus.connecting => 'Connecting to the relay…',
+          };
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -164,7 +163,7 @@ class _HostSectionState extends ConsumerState<_HostSection> {
           title: const Text('Host Code sessions'),
           subtitle: Row(
             children: [
-              if (hosting.enabled && !link.revoked && !link.replaced)
+              if (hosting.enabled && !link.status.ended)
                 Padding(
                   padding: const EdgeInsets.only(right: 6),
                   child: StatusDot(link.connected ? DotStatus.running : DotStatus.waiting, size: 7),

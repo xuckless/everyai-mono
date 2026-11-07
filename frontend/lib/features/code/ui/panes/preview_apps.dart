@@ -159,6 +159,7 @@ class _FlutterAppViewState extends State<FlutterAppView> {
 
   void _listen() {
     _activity = _app.control.activity.listen((a) {
+      if (!mounted) return;
       _ghostTimer?.cancel();
       setState(() => _ghost = a);
       _ghostTimer = Timer(const Duration(milliseconds: 1600), () {
@@ -253,6 +254,8 @@ class _FlutterAppViewState extends State<FlutterAppView> {
             ),
           ],
         ),
+        // The app stopped answering: the last picture stays, with why.
+        if (image != null && _problem != null) _StreamNotice(message: _problem!),
         Expanded(
           child: image == null
               ? Center(
@@ -478,6 +481,7 @@ class IosSimulatorView extends StatefulWidget {
 class _IosSimulatorViewState extends State<IosSimulatorView> {
   ui.Image? _image;
   StreamSubscription<Uint8List>? _frames;
+  var _stream = _PictureStream.off;
   StreamSubscription<LiveActivity>? _activity;
   var _decoding = false;
   String? _problem;
@@ -496,6 +500,7 @@ class _IosSimulatorViewState extends State<IosSimulatorView> {
   void initState() {
     super.initState();
     _activity = _sim.control.activity.listen((a) {
+      if (!mounted) return;
       _ghostTimer?.cancel();
       setState(() => _ghost = a);
       _ghostTimer = Timer(const Duration(milliseconds: 1600), () {
@@ -525,6 +530,15 @@ class _IosSimulatorViewState extends State<IosSimulatorView> {
   void _stop() {
     unawaited(_frames?.cancel());
     _frames = null;
+    _stream = _PictureStream.off;
+  }
+
+  void _retry() {
+    setState(() {
+      _stream = _PictureStream.off;
+      _problem = null;
+    });
+    _sync();
   }
 
   void _sync() {
@@ -532,7 +546,9 @@ class _IosSimulatorViewState extends State<IosSimulatorView> {
       _stop();
       return;
     }
-    if (_frames != null) return;
+    // Ended streams wait for Retry instead of respawning on every rebuild.
+    if (_stream != _PictureStream.off) return;
+    _stream = _PictureStream.live;
     // Its size in points, for mapping touches.
     if (_sim.width <= 0) unawaited(_sim.tree().then((_) => mounted ? setState(() {}) : null, onError: (Object _) {}));
     _frames = _sim.stream().listen(
@@ -540,7 +556,13 @@ class _IosSimulatorViewState extends State<IosSimulatorView> {
       onError: (Object e) {
         if (mounted) setState(() => _problem = e is AppError ? e.message : '$e');
       },
-      onDone: () => _frames = null,
+      onDone: () {
+        if (!mounted || _stream != _PictureStream.live) return;
+        setState(() {
+          _frames = null;
+          _stream = _PictureStream.ended;
+        });
+      },
     );
   }
 
@@ -641,6 +663,11 @@ class _IosSimulatorViewState extends State<IosSimulatorView> {
             ),
           ],
         ),
+        if (_stream == _PictureStream.ended || (image != null && _problem != null))
+          _StreamNotice(
+            message: _stream == _PictureStream.ended ? 'The live view stopped.' : _problem!,
+            onRetry: _stream == _PictureStream.ended ? _retry : null,
+          ),
         Expanded(
           child: image == null
               ? Center(
@@ -759,14 +786,46 @@ class AndroidDeviceView extends StatefulWidget {
   State<AndroidDeviceView> createState() => _AndroidDeviceViewState();
 }
 
+/// What the device view runs:
+///
+/// ```text
+///  idle ──visible──► starting ──decoder + scrcpy──► streaming ──stream ended──► polling
+///   ▲                   └──otherwise───────────────────────────────────────────► polling
+///   └──────────── hidden, another device, or disposed (from any state) ───────────┘
+/// ```
+/// [_Starting] carries a generation: a start that finishes after the view moved on gives its pieces back.
+sealed class _DeviceFeed {
+  const _DeviceFeed();
+}
+
+final class _FeedIdle extends _DeviceFeed {
+  const _FeedIdle();
+}
+
+final class _FeedStarting extends _DeviceFeed {
+  const _FeedStarting(this.gen);
+  final int gen;
+}
+
+final class _FeedStreaming extends _DeviceFeed {
+  _FeedStreaming(this.scrcpy, this.texture, this.packets);
+  final ScrcpyConnection scrcpy;
+  final H264Texture texture;
+  final StreamSubscription<VideoPacket> packets;
+}
+
+/// Screenshots each second; touches still go through [scrcpy] when it connected.
+final class _FeedPolling extends _DeviceFeed {
+  _FeedPolling(this.scrcpy, this.timer);
+  final ScrcpyConnection? scrcpy;
+  final Timer timer;
+}
+
 class _AndroidDeviceViewState extends State<AndroidDeviceView> {
-  ScrcpyConnection? _scrcpy;
-  H264Texture? _texture;
-  StreamSubscription<VideoPacket>? _packets;
+  _DeviceFeed _feed = const _FeedIdle();
+  var _gen = 0;
   StreamSubscription<LiveActivity>? _activity;
-  Timer? _poll;
   ui.Image? _still;
-  var _starting = false;
   String? _problem;
   LiveActivity? _ghost;
   Timer? _ghostTimer;
@@ -776,30 +835,51 @@ class _AndroidDeviceViewState extends State<AndroidDeviceView> {
   var _pollBusy = false;
 
   AndroidDevice get _device => widget.device;
+  ScrcpyConnection? get _scrcpy => switch (_feed) {
+    _FeedStreaming(:final scrcpy) => scrcpy,
+    _FeedPolling(:final scrcpy) => scrcpy,
+    _ => null,
+  };
+  H264Texture? get _texture => switch (_feed) {
+    _FeedStreaming(:final texture) => texture,
+    _ => null,
+  };
 
   @override
   void initState() {
     super.initState();
+    _listenActivity();
+    _sync();
+  }
+
+  void _listenActivity() {
+    unawaited(_activity?.cancel());
     _activity = _device.control.activity.listen((a) {
+      if (!mounted) return;
       _ghostTimer?.cancel();
       setState(() => _ghost = a);
       _ghostTimer = Timer(const Duration(milliseconds: 1600), () {
         if (mounted) setState(() => _ghost = null);
       });
     });
-    _sync();
   }
 
   @override
   void didUpdateWidget(AndroidDeviceView old) {
     super.didUpdateWidget(old);
-    if (!identical(old.device, widget.device)) unawaited(_stop());
+    if (!identical(old.device, widget.device)) {
+      _stop();
+      _listenActivity();
+      _still?.dispose();
+      _still = null;
+      _problem = null;
+    }
     _sync();
   }
 
   @override
   void dispose() {
-    unawaited(_stop());
+    _stop();
     unawaited(_activity?.cancel());
     _ghostTimer?.cancel();
     _focus.dispose();
@@ -807,67 +887,91 @@ class _AndroidDeviceViewState extends State<AndroidDeviceView> {
     super.dispose();
   }
 
-  Future<void> _stop() async {
-    _poll?.cancel();
-    _poll = null;
-    await _packets?.cancel();
-    _packets = null;
-    await _texture?.dispose();
-    _texture = null;
-    _scrcpy = null;
+  /// Back to idle at once (so the next [_sync] may start again); the old feed's pieces close in the background.
+  void _stop() {
+    final was = _feed;
+    _gen++;
+    _feed = const _FeedIdle();
+    switch (was) {
+      case _FeedStreaming(:final packets, :final texture):
+        unawaited(packets.cancel().whenComplete(texture.dispose));
+      case _FeedPolling(:final timer):
+        timer.cancel();
+      case _FeedIdle() || _FeedStarting():
+        break;
+    }
   }
 
   void _sync() {
     if (!widget.visible) {
-      unawaited(_stop());
+      if (_feed is! _FeedIdle) _stop();
       return;
     }
-    if (_starting || _texture != null || _poll != null) return;
-    unawaited(_start());
+    if (_feed is _FeedIdle) unawaited(_start());
   }
 
   Future<void> _start() async {
-    _starting = true;
+    final gen = ++_gen;
+    _feed = _FeedStarting(gen);
+    bool current() => mounted && gen == _gen;
+    if (_device.width <= 0) await _device.tree().catchError((Object _) => const <AppNode>[]);
+    final texture = await H264Texture.create();
+    ScrcpyConnection? c;
     try {
-      if (_device.width <= 0) await _device.tree().catchError((Object _) => const <AppNode>[]);
-      final texture = await H264Texture.create();
-      ScrcpyConnection? c;
-      try {
-        c = await _device.scrcpy();
-      } on Object catch (e) {
-        if (mounted) setState(() => _problem = e is AppError ? e.message : '$e');
-      }
-      if (!mounted || !widget.visible) {
-        await texture?.dispose();
-        return;
-      }
-      _scrcpy = c;
-      if (texture != null && c != null) {
-        _texture = texture;
-        texture.size.addListener(() => mounted ? setState(() {}) : null);
-        // A decoder joining a running stream starts from the parameter sets and the last key frame.
-        if (c.config case final p?) unawaited(texture.feed(p.data, config: true));
-        if (c.keyFrame case final p?) unawaited(texture.feed(p.data));
-        _packets = c.packets.listen((p) => unawaited(texture.feed(p.data, config: p.config)));
-        setState(() => _problem = null);
-      } else {
-        await texture?.dispose();
-        _poll = Timer.periodic(const Duration(seconds: 1), (_) => _pollOnce());
-        unawaited(_pollOnce());
-      }
-    } finally {
-      _starting = false;
+      c = await _device.scrcpy();
+    } on Object catch (e) {
+      if (current()) setState(() => _problem = e is AppError ? e.message : '$e');
     }
+    if (!current()) {
+      await texture?.dispose();
+      return;
+    }
+    if (texture != null && c != null && !c.closed) {
+      final scrcpy = c;
+      texture.size.addListener(() => mounted ? setState(() {}) : null);
+      // A decoder joining a running stream starts from the parameter sets and the last key frame.
+      if (scrcpy.config case final p?) unawaited(texture.feed(p.data, config: true));
+      if (scrcpy.keyFrame case final p?) unawaited(texture.feed(p.data));
+      // Cancelled by _stop, which owns the feed.
+      // ignore: cancel_subscriptions
+      final packets = scrcpy.packets.listen(
+        (p) => unawaited(texture.feed(p.data, config: p.config)),
+        // The device rebooted, was unplugged, or its server died: fall back to screenshots and say so.
+        onDone: () {
+          if (!current() || _feed is! _FeedStreaming) return;
+          _gen++;
+          unawaited(texture.dispose());
+          setState(() {
+            _problem = 'The live view stopped; showing a picture each second.';
+            _poll(null);
+          });
+        },
+      );
+      setState(() {
+        _feed = _FeedStreaming(scrcpy, texture, packets);
+        _problem = null;
+      });
+    } else {
+      await texture?.dispose();
+      setState(() => _poll(c));
+    }
+  }
+
+  void _poll(ScrcpyConnection? c) {
+    _feed = _FeedPolling(c, Timer.periodic(const Duration(seconds: 1), (_) => _pollOnce()));
+    unawaited(_pollOnce());
   }
 
   Future<void> _pollOnce() async {
     if (_pollBusy || !mounted) return;
     _pollBusy = true;
+    final gen = _gen;
     try {
       final png = await _device.screenshot();
       final codec = await ui.instantiateImageCodec(png);
       final frame = await codec.getNextFrame();
-      if (!mounted) {
+      // Hidden or another device meanwhile: this picture is stale.
+      if (!mounted || gen != _gen) {
         frame.image.dispose();
         return;
       }
@@ -876,7 +980,7 @@ class _AndroidDeviceViewState extends State<AndroidDeviceView> {
         _still = frame.image;
       });
     } on Object catch (e) {
-      if (mounted) setState(() => _problem = e is AppError ? e.message : '$e');
+      if (mounted && gen == _gen) setState(() => _problem = e is AppError ? e.message : '$e');
     } finally {
       _pollBusy = false;
     }
@@ -1095,6 +1199,7 @@ class DesktopWindowView extends StatefulWidget {
 class _DesktopWindowViewState extends State<DesktopWindowView> {
   ui.Image? _image;
   StreamSubscription<Uint8List>? _frames;
+  var _stream = _PictureStream.off;
   StreamSubscription<LiveActivity>? _activity;
   var _decoding = false;
   String? _problem;
@@ -1108,6 +1213,7 @@ class _DesktopWindowViewState extends State<DesktopWindowView> {
   void initState() {
     super.initState();
     _activity = _window.control.activity.listen((a) {
+      if (!mounted) return;
       _ghostTimer?.cancel();
       setState(() => _ghost = a);
       _ghostTimer = Timer(const Duration(milliseconds: 1600), () {
@@ -1136,6 +1242,15 @@ class _DesktopWindowViewState extends State<DesktopWindowView> {
   void _stop() {
     unawaited(_frames?.cancel());
     _frames = null;
+    _stream = _PictureStream.off;
+  }
+
+  void _retry() {
+    setState(() {
+      _stream = _PictureStream.off;
+      _problem = null;
+    });
+    _sync();
   }
 
   void _sync() {
@@ -1143,13 +1258,21 @@ class _DesktopWindowViewState extends State<DesktopWindowView> {
       _stop();
       return;
     }
-    if (_frames != null) return;
+    // Ended streams wait for Retry instead of respawning on every rebuild.
+    if (_stream != _PictureStream.off) return;
+    _stream = _PictureStream.live;
     _frames = _window.stream().listen(
       _paint,
       onError: (Object e) {
         if (mounted) setState(() => _problem = e is AppError ? e.message : '$e');
       },
-      onDone: () => _frames = null,
+      onDone: () {
+        if (!mounted || _stream != _PictureStream.live) return;
+        setState(() {
+          _frames = null;
+          _stream = _PictureStream.ended;
+        });
+      },
     );
   }
 
@@ -1193,6 +1316,11 @@ class _DesktopWindowViewState extends State<DesktopWindowView> {
             ),
           ],
         ),
+        if (_stream == _PictureStream.ended || (image != null && _problem != null))
+          _StreamNotice(
+            message: _stream == _PictureStream.ended ? 'The live view stopped.' : _problem!,
+            onRetry: _stream == _PictureStream.ended ? _retry : null,
+          ),
         Expanded(
           child: image == null
               ? Center(
@@ -1259,6 +1387,37 @@ class _DesktopWindowViewState extends State<DesktopWindowView> {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// A picture stream (iOS Simulator, desktop window):
+///
+/// ```text
+///  off ──shown──► live ──stream ended──► ended ──Retry──► live
+///   ▲───────── hidden, or disposed (from any state) ────────┘
+/// ```
+enum _PictureStream { off, live, ended }
+
+/// A line above a picture that still shows: the stream ended (with Retry), or the last error.
+class _StreamNotice extends StatelessWidget {
+  const _StreamNotice({required this.message, this.onRetry});
+
+  final String message;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 6, 4, 0),
+      child: Row(
+        children: [
+          Expanded(child: Text(message, style: theme.type.caption.tint(theme.textMuted), maxLines: 2)),
+          if (onRetry case final retry?)
+            AdaptiveButton(label: 'Retry', emphasis: ButtonEmphasis.secondary, onPressed: retry),
+        ],
+      ),
     );
   }
 }

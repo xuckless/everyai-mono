@@ -135,8 +135,14 @@ final class RemoteHosting extends Notifier<RemoteHostingState> {
     if (ref.mounted) state = const RemoteHostingState(loaded: true);
   }
 
+  /// The [enable] under way: a second call (a double click, or Settings and Webhooks at once) joins it instead of
+  /// registering a second host on the account.
+  Future<void>? _enabling;
+
   /// Turns hosting on, registering this desktop with the backend the first time.
-  Future<void> enable() async {
+  Future<void> enable() => _enabling ??= _enable().whenComplete(() => _enabling = null);
+
+  Future<void> _enable() async {
     var host = state.host;
     RemoteIdentity identity;
     if (host == null) {

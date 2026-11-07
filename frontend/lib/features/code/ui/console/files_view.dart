@@ -70,12 +70,19 @@ base class FilesEditor extends Notifier<FilesBuffer> {
 
   String? get _root => ref.read(codeSessionsProvider.notifier).byId(sessionId)?.workingDir;
 
+  /// Bumped by each [open] and [close]: a slow read of an earlier file can't replace the one opened after it.
+  int _opening = 0;
+
+  /// The save under way; a second save waits for it, then compares against what it wrote.
+  Future<String?>? _saving;
+
   /// Opens [path] in the editor (the caller asked about unsaved edits first).
   Future<void> open(String path) async {
     final root = _root;
     if (root == null) return;
+    final ticket = ++_opening;
     final file = await fs.openForEdit(path, root: root);
-    if (!ref.mounted) return;
+    if (!ref.mounted || ticket != _opening) return;
     state = FilesBuffer(
       path: path,
       text: file.text ?? '',
@@ -85,7 +92,10 @@ base class FilesEditor extends Notifier<FilesBuffer> {
     );
   }
 
-  void close() => state = FilesBuffer(expanded: state.expanded);
+  void close() {
+    _opening++;
+    state = FilesBuffer(expanded: state.expanded);
+  }
 
   void edit(String text) => state = state.copyWith(text: text);
 
@@ -117,6 +127,20 @@ base class FilesEditor extends Notifier<FilesBuffer> {
 
   /// Saves through the session ([CodeSessionController.saveFile]); returns why it didn't, or null.
   Future<String?> save({bool overwrite = false}) async {
+    // ⌘S twice: the second save starts after the first, from the text and disk state it left.
+    for (var running = _saving; running != null; running = _saving) {
+      await running.catchError((Object _) => null);
+      if (!ref.mounted) return null;
+    }
+    final run = _saving = _save(overwrite: overwrite);
+    try {
+      return await run;
+    } finally {
+      if (identical(_saving, run)) _saving = null;
+    }
+  }
+
+  Future<String?> _save({required bool overwrite}) async {
     final b = state;
     if (b.path == null || b.opened == null) return null;
     final out = await ref

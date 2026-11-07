@@ -99,6 +99,12 @@ class _PanelSplitState extends ConsumerState<PanelSplit> {
               store(saved() ?? width);
               setState(() => _dragging = false);
             },
+            // A drag the system took away (a pointer cancel) ends like one let go: the width it reached is kept.
+            onHorizontalDragCancel: () {
+              if (!_dragging) return;
+              store(saved() ?? width);
+              setState(() => _dragging = false);
+            },
             onDoubleTap: () => store(null),
             child: SizedBox(
               width: 6,

@@ -87,7 +87,10 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
 
   /// A spending cap for the new session (dollars), or null for none.
   double? _budget;
-  bool _starting = false;
+
+  /// Starting a new session or resuming an earlier one; one at a time (both end by opening the session).
+  _Launch _launch = const _LaunchIdle();
+  bool get _starting => _launch is _LaunchStarting;
 
   /// A prompt from an everyai:// link, put in the box for the user to review.
   ({String text, int seq})? _prefill;
@@ -120,7 +123,10 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
   }
 
   /// The earlier session being picked up (`harness|id`), while its history is read.
-  String? _resuming;
+  String? get _resuming => switch (_launch) {
+    _LaunchResuming(:final key) => key,
+    _ => null,
+  };
 
   /// The mode last used in [projectId]; Auto-edit the first time.
   AgentMode _modeFor(String? projectId) {
@@ -185,14 +191,16 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
       ? (model: ref.read(codeAgentProvider).model, effort: ref.read(codeAgentProvider).effort)
       : ref.read(codeLeadProvider).of(harness);
 
-  Future<void> _start(CodeProject project, String prompt, List<Attachment> files) async {
+  /// False when nothing started (another start or a resume is under way, or it failed): the composer keeps the text.
+  Future<bool> _start(CodeProject project, String prompt, List<Attachment> files) async {
+    if (_launch is! _LaunchIdle) return false;
     final mode = _modeFor(project.id);
     ref.read(preferencesProvider)[lastModeKey(project.id)] = mode.name;
     final harness = _leadFor(project);
     final (:model, :effort) = _modelFor(harness);
     // The scripted demo runs no workflows.
     final workflow = isDemoPath(project.path) ? null : _workflow;
-    setState(() => _starting = true);
+    setState(() => _launch = const _LaunchStarting());
     try {
       final info = await ref
           .read(codeSessionsProvider.notifier)
@@ -211,16 +219,19 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
       if (_budget case final usd?) ref.read(codeSettingsProvider.notifier).setBudget(info.id, usd);
       if (mounted) setState(() => _workflow = null);
       if (mounted) context.go(Routes.codeSession(info.id));
+      return true;
     } on Object catch (e) {
       if (mounted) showAdaptiveToast(context, 'Couldn\'t start the session: $e');
+      return false;
     } finally {
-      if (mounted) setState(() => _starting = false);
+      if (mounted) setState(() => _launch = const _LaunchIdle());
     }
   }
 
   /// Picks up [past] on its own harness: its history is read from the harness's files, then the session opens.
   Future<void> _resume(CodeProject project, PastSession past) async {
-    setState(() => _resuming = '${past.harness}|${past.nativeId}');
+    if (_launch is! _LaunchIdle) return;
+    setState(() => _launch = _LaunchResuming('${past.harness}|${past.nativeId}'));
     try {
       final source = sourceOf(ref.read(pastSessionSourcesProvider), past);
       var history = const <HarnessEvent>[];
@@ -236,7 +247,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
     } on Object catch (e) {
       if (mounted) showAdaptiveToast(context, "Couldn't resume the session: $e");
     } finally {
-      if (mounted) setState(() => _resuming = null);
+      if (mounted) setState(() => _launch = const _LaunchIdle());
     }
   }
 
@@ -306,7 +317,8 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                                     setMode: (name) => _pickMode(AgentMode.values.byName(name), project.id),
                                     morning: ref.read(morningBriefProvider.notifier).refresh,
                                   ),
-                                  busy: _starting,
+                                  // Busy while resuming too: Enter then waits instead of starting a second session.
+                                  busy: _launch is! _LaunchIdle,
                                   mode: mode,
                                   minLines: 3,
                                   placeholder: 'Describe the task',
@@ -1014,4 +1026,30 @@ class _TerminalButtonState extends State<_TerminalButton> {
       ),
     );
   }
+}
+
+/// Code home's launch:
+///
+/// ```text
+///  idle ──send──► starting ──opened / failed──► idle
+///   └──Open an earlier session──► resuming(key) ──opened / failed──► idle
+/// ```
+/// A send or Open while not idle is ignored, so one click can't start two sessions.
+sealed class _Launch {
+  const _Launch();
+}
+
+final class _LaunchIdle extends _Launch {
+  const _LaunchIdle();
+}
+
+final class _LaunchStarting extends _Launch {
+  const _LaunchStarting();
+}
+
+final class _LaunchResuming extends _Launch {
+  const _LaunchResuming(this.key);
+
+  /// `harness|id` of the earlier session.
+  final String key;
 }

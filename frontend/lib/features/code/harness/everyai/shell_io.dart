@@ -294,7 +294,8 @@ final class SessionShell {
   /// its quotes again) and starts the shell on it: in a pseudo-terminal when
   /// [terminal] and one can be made (stdin left open for `bash_input`), else
   /// on pipes with stdin from /dev/null.
-  Future<(_Proc, File)> _spawn(String id, String command, {bool terminal = false}) async {
+  Future<(_Proc, File)> _spawn(String id, String command, {bool terminal = false, String? at}) async {
+    final cwd = at ?? this.cwd;
     final env = await ShellEnv.load();
     if (env.missing) throw const ShellMissing();
     Directory(scratchDir).createSync(recursive: true);
@@ -345,6 +346,7 @@ final class SessionShell {
     String description, {
     required bool background,
     bool restarted = false,
+    String? at,
   }) {
     // A restart gets a log and a registry row of its own.
     final run = restarted ? '-${clock().millisecondsSinceEpoch}' : '';
@@ -354,7 +356,7 @@ final class SessionShell {
       id: id,
       session: sessionTag,
       command: command,
-      cwd: cwd,
+      cwd: at ?? cwd,
       origin: ShellOrigin.agent,
       background: background,
       description: description,
@@ -439,10 +441,16 @@ final class SessionShell {
     return _startAs('bg_${_nextBg++}', command, description);
   }
 
-  Future<BackgroundShell> _startAs(String id, String command, String description, {bool restarted = false}) async {
-    final (proc, script) = await _spawn(id, command, terminal: true);
+  Future<BackgroundShell> _startAs(
+    String id,
+    String command,
+    String description, {
+    bool restarted = false,
+    String? at,
+  }) async {
+    final (proc, script) = await _spawn(id, command, terminal: true, at: at);
     unawaited(proc.exitCode.then((_) => _delete(script)));
-    final (entry, log) = _register(id, command, description, background: true, restarted: restarted);
+    final (entry, log) = _register(id, command, description, background: true, restarted: restarted, at: at);
     entry.restart = () => restart(id);
     final bg = BackgroundShell._(id, command, description, proc, log, entry, _registry)..restarted = restarted;
     _background[id] = bg;
@@ -453,18 +461,22 @@ final class SessionShell {
   /// Stops background shell [id] if it runs and starts its command again under the same id, in the folder it first
   /// ran in (the user's Restart in the Processes tab). The agent's next read says so. Null when there is no such
   /// shell.
-  Future<BackgroundShell?> restart(String id) async {
+  ///
+  /// A restart takes seconds (the kill waits up to 3 s for the exit); asking again meanwhile joins it, so a double
+  /// click starts the command once.
+  Future<BackgroundShell?> restart(String id) => _restarting[id] ??= _restart(id).whenComplete(() {
+    _restarting.remove(id);
+  });
+
+  final _restarting = <String, Future<BackgroundShell?>>{};
+
+  Future<BackgroundShell?> _restart(String id) async {
     final old = _background[id];
     if (old == null) return null;
     await old.kill();
     await old._proc.exitCode.timeout(const Duration(seconds: 3), onTimeout: () => -9);
-    final here = cwd;
-    cwd = old.entry.cwd;
-    try {
-      return await _startAs(id, old.command, old.description, restarted: true);
-    } finally {
-      cwd = here;
-    }
+    // In its own folder, without moving the shell's cwd (another command may start meanwhile).
+    return _startAs(id, old.command, old.description, restarted: true, at: old.entry.cwd);
   }
 
   /// Kills every command still running (foreground and background).
