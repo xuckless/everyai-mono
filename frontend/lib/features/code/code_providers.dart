@@ -2092,6 +2092,11 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// Patterns approved "for this session" on the approval card.
   final _sessionAllowed = <String>{};
 
+  /// Patterns approved "for this session" on the card of one of this session's stricter children (read-only workflow
+  /// agents, reviews): shared by all of those, kept apart from [_sessionAllowed] so the lead's broad approvals still
+  /// don't loosen them. Without it, allowing on one Security review lens left every other lens asking the same.
+  final _strictAllowed = <String>{};
+
   /// Permission rules from the project's `settings.json` files.
   PermissionRules _settingsRules = PermissionRules.none;
 
@@ -2624,7 +2629,10 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
     return PermissionPolicy(
       rules: ref.read(codePermissionsProvider).rulesFor(info?.projectId) + _settingsRules,
-      session: {..._sessionAllowed, ...?(info?.ownApprovals ?? false ? null : _parentController?._sessionAllowed)},
+      session: {
+        ..._sessionAllowed,
+        ...?(info?.ownApprovals ?? false ? _parentController?._strictAllowed : _parentController?._sessionAllowed),
+      },
       workingDir: info == null || isDemoPath(info.workingDir) ? null : info.workingDir,
       // A workflow agent on the EveryAI harness reaches the host too (its proof tools).
       hostTools: info != null && (info.isWorkflowAgent || isOutsideLead(info.harness, info.workingDir)),
@@ -2656,16 +2664,18 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// Remembers [patterns] "for this session": a fork's or subagent's go to
   /// its parent, so they cover every fork of the session. The other live
   /// children (and the parent) then settle what they wait on that now runs.
-  /// A child that keeps its own approvals keeps these too.
+  /// A stricter child's (see [_strictAllowed]) cover its strict siblings only.
   void _allowForSession(List<String> patterns) {
     final own = ref.read(codeSessionsProvider.notifier).byId(sessionId)?.ownApprovals ?? false;
-    final root = (own ? null : _parentController) ?? this;
-    root._sessionAllowed.addAll(patterns);
+    final parent = _parentController;
+    final root = parent ?? this;
+    // A stricter child's go to its siblings that are as strict, not to the lead and its other forks.
+    (own ? (parent?._strictAllowed ?? _sessionAllowed) : root._sessionAllowed).addAll(patterns);
     final sessions = ref.read(codeSessionsProvider);
     for (final id in [
-      root.sessionId,
+      if (!own) root.sessionId,
       for (final s in sessions)
-        if (s.parentId == root.sessionId) s.id,
+        if (s.parentId == root.sessionId && s.ownApprovals == own) s.id,
     ]) {
       if (id == sessionId || !ref.container.exists(codeSessionProvider(id))) continue;
       final c = ref.container.read(codeSessionProvider(id).notifier);

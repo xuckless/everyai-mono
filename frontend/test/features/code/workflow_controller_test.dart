@@ -355,6 +355,43 @@ void main() {
     expect(c.policy.session, isNot(contains('make lint *')));
   });
 
+  test("allowing on one read-only agent's card settles its read-only siblings, not the lead", () async {
+    final c = await open();
+    await c.setMode(AgentMode.fullAuto);
+    await c.runWorkflow('demo', 'source');
+    for (final l in ['lens:a', 'lens:b']) {
+      unawaited(bridge.agent(l, {'harness': 'fake2', 'readOnly': true}).catchError((Object _) => null));
+    }
+    final kids = await whenValue(
+      container,
+      codeSessionsProvider,
+      (List<CodeSessionInfo> all) => all.where((s) => s.parentCallId.startsWith('wf-')).length == 2,
+    ).then((all) => all.where((s) => s.parentCallId.startsWith('wf-')).toList());
+    for (final k in kids) {
+      container.listen(codeSessionProvider(k.id), (_, _) {});
+    }
+    final sessions = drivers['fake2']!.conversations.values.toList();
+    for (final (i, s) in sessions.indexed) {
+      s
+        ..add(actionEvent(id: 'g$i', toolName: 'bash', kind: 'TerminalAction', args: {'command': 'grep -rn x \$(ls)'}))
+        ..add(stateEvent('gw$i', ExecutionStatus.waitingForConfirmation));
+    }
+    for (final k in kids) {
+      await whenValue(
+        container,
+        codeSessionProvider(k.id).select((s) => s.transcript.pending.length),
+        (int n) => n == 1,
+      );
+    }
+    expect(sessions.map((s) => s.answers), everyElement(isEmpty));
+    // The card's "Allow all commands for this session".
+    await container.read(codeSessionProvider(kids.first.id).notifier).approve(ApprovalScope.sessionAll);
+    await pumpEventQueue();
+    expect(sessions.map((s) => s.answers.map((a) => a.accept).toList()), everyElement([true]));
+    // The lead's own approvals didn't grow.
+    expect(c.policy.session, isEmpty);
+  });
+
   test("a user's no tells the agent why the app asked", () async {
     final c = await open();
     await c.setMode(AgentMode.ask);
