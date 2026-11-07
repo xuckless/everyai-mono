@@ -11,14 +11,14 @@ import 'package:material_ui/material_ui.dart' as m;
 
 void main() {
   setUp(() {
-    RealInput.allowed = null;
+    RealInput.consent = RealInputConsent.unasked;
     RealInput.ask = null;
     RealInput.save = null;
   });
 
   test('asked once, the answer kept; calls meanwhile share the question; no dialog means no', () async {
     expect(await RealInput.ensure(), isFalse);
-    expect(RealInput.allowed, isNull, reason: 'nothing asked, nothing remembered');
+    expect(RealInput.consent, RealInputConsent.unasked, reason: 'nothing asked, nothing remembered');
 
     var asked = 0;
     final kept = <bool>[];
@@ -28,7 +28,9 @@ void main() {
       return true;
     };
     RealInput.save = kept.add;
-    expect(await Future.wait([RealInput.ensure(), RealInput.ensure()]), [true, true]);
+    final both = Future.wait([RealInput.ensure(), RealInput.ensure()]);
+    expect(RealInput.consent, RealInputConsent.asking);
+    expect(await both, [true, true]);
     expect(await RealInput.ensure(), isTrue);
     expect(asked, 1);
     expect(kept, [true]);
@@ -63,9 +65,9 @@ void main() {
     expect(prefs[RealInput.prefKey], '1');
 
     // A later run starts from the remembered answer, without a dialog.
-    RealInput.allowed = null;
+    RealInput.consent = RealInputConsent.unasked;
     connectRealInput(prefs, () => ctx);
-    expect(RealInput.allowed, isTrue);
+    expect(RealInput.consent, RealInputConsent.allowed);
     expect(await RealInput.ensure(), isTrue);
     await tester.pumpAndSettle();
     expect(find.text('Let agents use your mouse and keyboard?'), findsNothing);

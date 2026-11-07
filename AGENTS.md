@@ -1027,6 +1027,15 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
     `dart:ffi`), which the web build reaches through `code_providers → live_browsers → browser_io → shell_io`.
     Now a conditional import with `pty_spawn_stub.dart` (no pty on the web; pipes instead).
 
+- **Lead free while work runs (2026-11-07; branch `fix/lead-free-while-work-runs`).** Forks always run in the
+  background (`run_subagent` returns at once, the report arrives as a `<task-notification>`; no `run_in_background`
+  parameter). Claude Code: an interrupt followed at once by a message no longer shows the stopped turn's late
+  `result` as paused (`_staleResults`). Queued messages have Send now (`sendQueuedNow`). `LiveControl` has an explicit
+  `LiveControlPhase` (agentDriving / userDriving / agentWaiting); `LiveControl.asking` lists sources whose agent waits,
+  and `TakeControlReminder` shows "Agent would like to take control of …" above the composer with Allow (= Give
+  back). `RealInput.consent` is a `RealInputConsent` enum (unasked / asking / allowed / refused) instead of a nullable
+  bool plus a pending future. Live probes on Claude Code (queue, steer, a workflow with a waiting agent) found no
+  stuck queue on main.
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),

@@ -45,6 +45,7 @@ import 'console/console_state.dart';
 import 'console/bottom_drawer.dart';
 import 'console/console_layout.dart';
 import '../panes/panes_providers.dart' show codePaneProvider;
+import 'panes/take_control_reminder.dart';
 import 'transcript/approval_card.dart';
 import 'transcript/session_approval.dart';
 import 'transcript/aside_card.dart';
@@ -281,6 +282,7 @@ class CodeSessionScreen extends ConsumerWidget {
                                           mainAxisSize: MainAxisSize.min,
                                           crossAxisAlignment: CrossAxisAlignment.stretch,
                                           children: [
+                                            TakeControlReminder(sessionId: sessionId),
                                             if (t.pending.isNotEmpty)
                                               Padding(
                                                 padding: const EdgeInsets.only(bottom: 8),

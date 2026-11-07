@@ -29,11 +29,22 @@ final class LiveControl extends ChangeNotifier {
   /// How long an agent action waits for the user to give control back before it gives up.
   final Duration hold;
 
-  LiveDriver _driver = LiveDriver.agent;
-  LiveDriver get driver => _driver;
-  bool get userDriving => _driver == LiveDriver.user;
+  /// The live sources whose agent is waiting for the user to give control back, for the chat's reminder.
+  static final ValueNotifier<List<LiveControl>> asking = ValueNotifier(const []);
 
+  /// agentDriving → (take) userDriving → (an agent action) agentWaiting → (giveBack) agentDriving; a wait that
+  /// runs out goes back to userDriving, and giveBack from userDriving goes straight to agentDriving.
+  LiveControlPhase _phase = LiveControlPhase.agentDriving;
+  LiveControlPhase get phase => _phase;
+
+  LiveDriver get driver => _phase == LiveControlPhase.agentDriving ? LiveDriver.agent : LiveDriver.user;
+  bool get userDriving => _phase != LiveControlPhase.agentDriving;
+
+  /// Completes at Give back; set while the user drives.
   Completer<void>? _released;
+
+  /// Agent actions waiting now (parallel calls wait together; the phase leaves agentWaiting when the last gives up).
+  var _waiting = 0;
 
   /// Set at Give back; the agent's next action reads it once ([takeGiveBack]).
   bool _gaveBack = false;
@@ -47,22 +58,31 @@ final class LiveControl extends ChangeNotifier {
     if (!_activity.isClosed) _activity.add(a);
   }
 
-  /// The user starts driving (their first input on the view, or Take control).
-  void take() {
-    if (_driver == LiveDriver.user) return;
-    _driver = LiveDriver.user;
-    _released = Completer<void>();
+  void _moveTo(LiveControlPhase next) {
+    if (_phase == next) return;
+    _phase = next;
+    final others = [
+      for (final c in asking.value)
+        if (!identical(c, this)) c,
+    ];
+    asking.value = next == LiveControlPhase.agentWaiting ? [...others, this] : others;
     notifyListeners();
   }
 
-  /// The user hands control back to the agent.
+  /// The user starts driving (their first input on the view, or Take control).
+  void take() {
+    if (_phase != LiveControlPhase.agentDriving) return;
+    _released = Completer<void>();
+    _moveTo(LiveControlPhase.userDriving);
+  }
+
+  /// The user hands control back to the agent (Give back, or Allow on the chat's reminder).
   void giveBack() {
-    if (_driver == LiveDriver.agent) return;
-    _driver = LiveDriver.agent;
+    if (_phase == LiveControlPhase.agentDriving) return;
     _gaveBack = true;
     _released?.complete();
     _released = null;
-    notifyListeners();
+    _moveTo(LiveControlPhase.agentDriving);
   }
 
   /// Waits until the agent may act: at once while it drives, else until Give back or [hold] passes. False when
@@ -70,8 +90,12 @@ final class LiveControl extends ChangeNotifier {
   Future<bool> agentTurn() async {
     final wait = _released;
     if (wait == null) return true;
+    _waiting++;
+    _moveTo(LiveControlPhase.agentWaiting);
     await wait.future.timeout(hold, onTimeout: () {});
-    return _driver == LiveDriver.agent;
+    _waiting--;
+    if (_phase == LiveControlPhase.agentWaiting && _waiting == 0) _moveTo(LiveControlPhase.userDriving);
+    return _phase == LiveControlPhase.agentDriving;
   }
 
   /// Whether the user gave control back since the last call.
@@ -85,8 +109,24 @@ final class LiveControl extends ChangeNotifier {
   void dispose() {
     _activity.close();
     _released?.complete();
+    asking.value = [
+      for (final c in asking.value)
+        if (!identical(c, this)) c,
+    ];
     super.dispose();
   }
+}
+
+/// Where a live source's driving lock is (see [LiveControl]).
+enum LiveControlPhase {
+  /// The agent drives.
+  agentDriving,
+
+  /// The user took control; the agent isn't asking for it.
+  userDriving,
+
+  /// The user drives and an agent action waits for them to give control back.
+  agentWaiting,
 }
 
 /// What an agent's action gets while the user drives, after waiting [hold].

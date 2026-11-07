@@ -10,11 +10,12 @@ abstract final class RealInput {
   /// Preferences key: '1' allowed, '0' refused, absent not asked yet.
   static const prefKey = 'code.desktop.real_input';
 
-  /// The remembered answer (null: not asked yet).
-  static bool? allowed = switch (Platform.environment['EVERYAI_REAL_INPUT']) {
-    '1' => true,
-    '0' => false,
-    _ => null,
+  /// Where the user's answer is: unasked → (an action needs it) asking → allowed | refused; Settings sets
+  /// allowed or refused at any time. `EVERYAI_REAL_INPUT=1|0` starts it answered.
+  static RealInputConsent consent = switch (Platform.environment['EVERYAI_REAL_INPUT']) {
+    '1' => RealInputConsent.allowed,
+    '0' => RealInputConsent.refused,
+    _ => RealInputConsent.unasked,
   };
 
   /// The app's one-time dialog: true to allow. Unset (tests, dev rigs) means no.
@@ -23,27 +24,42 @@ abstract final class RealInput {
   /// Keeps the answer (the app writes it to its preferences).
   static void Function(bool allowed)? save;
 
-  static Future<bool>? _asking;
+  /// The open dialog's answer while [consent] is asking (every action that needs it waits on the same one).
+  static Future<bool>? _dialog;
 
   /// Whether real input may be used now, asking the user the first time.
   static Future<bool> ensure() async {
-    if (allowed case final a?) return a;
-    final dialog = ask;
-    if (dialog == null) return false;
-    return _asking ??= () async {
-      try {
-        final yes = await dialog();
-        set(yes);
-        return yes;
-      } finally {
-        _asking = null;
-      }
-    }();
+    switch (consent) {
+      case RealInputConsent.allowed:
+        return true;
+      case RealInputConsent.refused:
+        return false;
+      case RealInputConsent.asking:
+        return _dialog ?? Future.value(false);
+      case RealInputConsent.unasked:
+        final dialog = ask;
+        if (dialog == null) return false;
+        consent = RealInputConsent.asking;
+        final answer = _dialog = () async {
+          try {
+            final yes = await dialog();
+            set(yes);
+            return yes;
+          } on Object {
+            // No answer: ask again next time.
+            consent = RealInputConsent.unasked;
+            rethrow;
+          } finally {
+            _dialog = null;
+          }
+        }();
+        return answer;
+    }
   }
 
-  /// Sets the answer and keeps it.
+  /// Sets the answer and keeps it (the dialog, or Settings).
   static void set(bool yes) {
-    allowed = yes;
+    consent = yes ? RealInputConsent.allowed : RealInputConsent.refused;
     save?.call(yes);
   }
 
@@ -52,3 +68,6 @@ abstract final class RealInput {
       'The user turned off real pointer and keyboard input for desktop windows (Settings > Code), so only '
       'accessibility actions work here';
 }
+
+/// The user's answer about real pointer and keyboard input (see [RealInput.consent]).
+enum RealInputConsent { unasked, asking, allowed, refused }
