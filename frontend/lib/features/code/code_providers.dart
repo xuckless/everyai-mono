@@ -2632,6 +2632,12 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       session: {
         ..._sessionAllowed,
         ...?(info?.ownApprovals ?? false ? _parentController?._strictAllowed : _parentController?._sessionAllowed),
+        // A read-only workflow agent of a lead in Full auto (or Bypass) runs commands like "Allow all commands" (the
+        // floor and risky ones still ask) and still asks before edits (owner, 2026-11-07).
+        if ((info?.ownApprovals ?? false) &&
+            (info?.isWorkflowAgent ?? false) &&
+            const {AgentMode.fullAuto, AgentMode.bypass}.contains(_parentController?.checkMode))
+          '*',
       },
       workingDir: info == null || isDemoPath(info.workingDir) ? null : info.workingDir,
       // A workflow agent on the EveryAI harness reaches the host too (its proof tools).
