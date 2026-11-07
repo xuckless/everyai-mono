@@ -400,6 +400,7 @@ class CodeSessionScreen extends ConsumerWidget {
                                               onStop: controller.stop,
                                               queued: [for (final q in state.queued) q.text],
                                               onUnqueue: controller.unqueue,
+                                              onSendQueuedNow: controller.sendQueuedNow,
                                               placeholder: t.openQuestion != null
                                                   ? 'Answer the questions above, or reply in your own words'
                                                   : info.parentId != null

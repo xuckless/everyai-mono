@@ -147,16 +147,12 @@ Map<String, Object?> forkingTaskSpec() => {
             'For a worktree fork that builds one batch of the approved plan: its id. The app runs that batch\'s check '
             'in the fork\'s copy before merging it back; a failed check merges nothing and the report says why.',
       },
-      'run_in_background': {
-        'type': 'boolean',
-        'description':
-            'Return at once and keep working; the report arrives later as a <task-notification> message. Use it for '
-            'long work you do not need before your next step. Default false: wait for the report.',
-      },
     },
   },
   'description':
-      'Hand a piece of work to a subagent and get its final report back as this call\'s result. Two kinds:\n'
+      'Hand a piece of work to a subagent. It runs in the background: this call returns at once, and the report '
+      'arrives later as a <task-notification> message, so you (and the user, who can talk to you meanwhile) are free '
+      'until then. Carry on with other work, or end your turn when you need the report. Two kinds:\n'
       '- Leave out role to fork yourself: the fork starts with this whole conversation (it knows everything you '
       'know, and starting it is cheap) and works only on the prompt you give it. Use forks to split independent work '
       'you would otherwise do in sequence: investigating several areas, trying alternatives, writing separate files. '

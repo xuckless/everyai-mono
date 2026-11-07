@@ -806,6 +806,35 @@ void main() {
       await session.close();
     });
 
+    test('interrupt, then send at once: the stopped turn\'s result neither pauses nor ends the new turn', () async {
+      final channel = ReplayChannel(
+        _script([
+          _init,
+          _say('Go.'),
+          _in({'type': 'system', 'subtype': 'init'}),
+          _out(controlRequest('req_2', {'subtype': 'interrupt'})),
+          _say('Say BANANA.'),
+          _in(controlResponse('req_2', const {})),
+          _done('r1', aborted: true),
+          _done('r2'),
+        ]),
+      );
+      final session = await driver(_Spawner([channel])).start(_spec(message: 'Go.'));
+      final events = _record(session);
+      await pumpEventQueue();
+      await session.interrupt();
+      await session.send('Say BANANA.');
+      await _played(channel);
+      final states = [
+        for (final e in events)
+          if (e is StateChange && e.key != approvedCallsKey) e.executionStatus,
+      ];
+      expect(states, isNot(contains(ExecutionStatus.paused)));
+      expect(states.where((s) => s == ExecutionStatus.finished), hasLength(1));
+      expect(states.last, ExecutionStatus.finished);
+      await session.close();
+    });
+
     test('a new effort restarts the CLI with it, a cleared one without; a model change is live', () async {
       final one = ReplayChannel(_script([_init, _say('Hi.'), _done('r1')]));
       final two = ReplayChannel(_script([_init, _say('Again.'), _done('r2')]));

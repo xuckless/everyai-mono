@@ -3728,8 +3728,28 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (!_withinBudget()) return;
     _releaseSecurityHold();
     final out = await _outgoing(text, files);
+    if (out != null) await _steerOut(out);
+  }
+
+  /// Sends queued message [index] now, interrupting the agent (the queue's "Send now").
+  Future<void> sendQueuedNow(int index) async {
+    if (index < 0 || index >= state.queued.length || !_withinBudget()) return;
+    final out = state.queued[index];
+    state = state.copyWith(queued: [...state.queued]..removeAt(index));
+    _releaseSecurityHold();
+    // Nothing runs any more (the turn ended meanwhile): it just goes.
+    final t = state.transcript;
+    if (!t.running && t.pending.isEmpty) {
+      await _sendOut(out);
+      return;
+    }
+    await _steerOut(out);
+  }
+
+  /// Interrupts the agent and sends [out] (see [steer]).
+  Future<void> _steerOut(Outgoing out) async {
     final session = _session;
-    if (out == null || session == null) return;
+    if (session == null) return;
     // The lead is changing: it goes to the new one, like a message (and waits out a rewind too).
     if (_switching || _rewinding) {
       state = state.copyWith(queued: [...state.queued, out]);
@@ -4901,7 +4921,12 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       _spawning.remove(callId);
       // It asked for its own copy and couldn't have one (no git repository here).
       if (call.str('isolation') == 'worktree' && child.forkCopy == null) _fellBack[callId] = sharedFolderNote;
-      if (call.action['run_in_background'] == true && !onParentModel) {
+      // Every fork runs in the background (owner, 2026-11-07): the lead stays free to talk while it works. A retry on
+      // the session's model ([_retryOnParentModel]) was already started there: it only follows the new child.
+      if (_background[callId] case final b?) {
+        _background[callId] = (childId: child.id, title: b.title);
+        _syncSideWork();
+      } else {
         _background[callId] = (childId: child.id, title: child.title);
         _syncSideWork();
         _reports[callId] = backgroundStarted(child.id, note: _fellBack.remove(callId));

@@ -48,6 +48,7 @@ class CodeComposer extends ConsumerStatefulWidget {
     this.onStop,
     this.queued = const [],
     this.onUnqueue,
+    this.onSendQueuedNow,
     this.placeholder = 'Ask for a change, or reply to the agent',
     this.leading,
     this.trailing,
@@ -81,6 +82,9 @@ class CodeComposer extends ConsumerStatefulWidget {
   final VoidCallback? onStop;
   final List<String> queued;
   final ValueChanged<int>? onUnqueue;
+
+  /// Sends queued message i now, interrupting the agent (as Option-Enter would have).
+  final ValueChanged<int>? onSendQueuedNow;
   final String placeholder;
 
   /// Extra controls in the bottom row (the project picker; a remote
@@ -328,7 +332,12 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
               runSpacing: 6,
               children: [
                 for (final (i, q) in widget.queued.indexed)
-                  _QueuedChip(text: q, onRemove: widget.onUnqueue == null ? null : () => widget.onUnqueue!(i)),
+                  _QueuedChip(
+                    key: ValueKey('composer.queued.$i'),
+                    text: q,
+                    onRemove: widget.onUnqueue == null ? null : () => widget.onUnqueue!(i),
+                    onSendNow: widget.onSendQueuedNow == null ? null : () => widget.onSendQueuedNow!(i),
+                  ),
               ],
             ),
           ),
@@ -784,9 +793,10 @@ class _ModeChip extends StatelessWidget {
 }
 
 class _QueuedChip extends StatelessWidget {
-  const _QueuedChip({required this.text, required this.onRemove});
+  const _QueuedChip({super.key, required this.text, required this.onRemove, this.onSendNow});
   final String text;
   final VoidCallback? onRemove;
+  final VoidCallback? onSendNow;
 
   @override
   Widget build(BuildContext context) {
@@ -806,6 +816,14 @@ class _QueuedChip extends StatelessWidget {
           Flexible(
             child: Text(text, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.type.caption.tint(theme.text)),
           ),
+          if (onSendNow != null)
+            AdaptiveIconButton(
+              key: const ValueKey('composer.queued.send-now'),
+              icon: EveryIcon.send,
+              tooltip: 'Send now (interrupts the agent)',
+              size: 12,
+              onPressed: onSendNow,
+            ),
           if (onRemove != null)
             AdaptiveIconButton(icon: EveryIcon.close, tooltip: 'Remove', size: 12, onPressed: onRemove),
         ],
