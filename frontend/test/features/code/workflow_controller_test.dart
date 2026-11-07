@@ -722,6 +722,30 @@ void main() {
     );
   });
 
+  test('Stop all ends the workflow run and its agent, and nothing wakes the lead afterwards', () async {
+    final c = await open();
+    await c.runWorkflow('demo', 'source');
+    final reply = bridge.agent('Look around', {'harness': 'fake2'});
+    await child();
+    drivers['fake2']!.latest!.add(stateEvent('s-r', ExecutionStatus.running));
+    await pumpEventQueue();
+    expect(c.runningWork.workflows, ['demo']);
+    final before = lead.sent.length;
+    final agentStopped = expectLater(reply, throwsA(anything));
+    await c.stopAll();
+    await agentStopped;
+    await whenValue(
+      container,
+      workflowRunsProvider(c.sessionId),
+      (List<WorkflowRun> r) => r.single.status != WorkflowStatus.running,
+    );
+    for (var i = 0; i < 20; i++) {
+      await pumpEventQueue();
+    }
+    expect(c.runningWork.workflows, isEmpty);
+    expect(lead.sent.skip(before).where((m) => m.contains('<workflow-result')), isEmpty);
+  });
+
   test('a run the app quit in the middle of carries on when the session opens again', () async {
     final c = await open();
     final id = c.sessionId;

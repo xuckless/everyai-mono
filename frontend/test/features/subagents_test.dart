@@ -379,6 +379,25 @@ void main() {
       expect(state.status, isNot(SessionStatus.running));
       expect(childOf(id).isSubagent, isTrue);
     });
+
+    test('Stop all ends the background forks too, and their reports never wake the lead', () async {
+      final (id, parent) = await startDemo(AgentMode.autoEdit);
+      final child = await _until(
+        () => container.read(codeSessionsProvider).where((s) => s.parentId == id).firstOrNull,
+        (c) => c != null,
+      );
+      await _until(() => container.read(codeSessionProvider(child!.id)), (s) => s.transcript.pending.isNotEmpty);
+      expect(parent.runningWork.forks, 1);
+      await parent.stopAll();
+      expect(parent.runningWork.forks, 0);
+      final kid = container.read(codeSessionProvider(child!.id));
+      expect(kid.transcript.pending, isEmpty);
+      expect(kid.transcript.running, isFalse);
+      expect(container.read(codeSessionProvider(id)).sideWork, isFalse);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      final notices = container.read(codeSessionProvider(id)).transcript.items.whereType<NoticeItem>();
+      expect(notices.where((n) => n.message.contains('in the background')), isEmpty);
+    });
   });
 
   test('a background subagent notification reads back and shows as a notice', () {

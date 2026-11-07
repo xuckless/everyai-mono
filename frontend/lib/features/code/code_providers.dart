@@ -116,6 +116,7 @@ import 'uploads/uploads.dart';
 import 'workflows/bug_report.dart';
 import 'workflows/workflow_bridge.dart'
     show WorkflowBridge, appendJournalFile, listJournalFiles, readJournalFile, retireJournalFile;
+import 'domain/session_work.dart';
 import 'workflows/workflow_engine.dart';
 import 'workflows/workflow_journal.dart';
 import 'workflows/workflow_landing.dart';
@@ -3900,6 +3901,30 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     return _background.isNotEmpty;
   }
 
+  /// What Stop all would stop besides the lead's turn, read as the UI builds (it rebuilds on [CodeSessionState]
+  /// and the session's workflow runs).
+  SessionWork get runningWork => (
+    forks: _background.length,
+    workflows: [
+      for (final r in ref.read(workflowRunsProvider(sessionId)))
+        if (r.status == WorkflowStatus.running) r.name,
+    ],
+  );
+
+  /// Workflow runs Stop all ended: their results aren't sent to the lead.
+  final _quietRuns = <String>{};
+
+  /// Stops everything in the session: the lead's turn, its background forks and its workflow runs (their agents
+  /// with them). Their reports and results are dropped, so nothing wakes the lead afterwards.
+  Future<void> stopAll() async {
+    for (final MapEntry(key: runId, value: engine) in _workflows.entries) {
+      _quietRuns.add(runId);
+      engine.stop();
+    }
+    await _stopEveryaiChildren();
+    await stop();
+  }
+
   /// Stops the background forks; their reports don't go to the next lead.
   Future<void> _stopEveryaiChildren() async {
     final children = <String>{};
@@ -5358,6 +5383,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// spent budget skips): the run's journal is retired by now, so this is
   /// the only copy.
   void _toLead(String text, {String? runId}) {
+    // Stopped with Stop all: the user stopped everything, so its end doesn't wake the lead (the card shows it).
+    if (runId != null && _quietRuns.remove(runId)) return;
     _workflowResults.add((id: runId ?? 'workflow', text: text));
     _sendQueued();
   }

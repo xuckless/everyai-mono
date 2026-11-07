@@ -1036,6 +1036,10 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   back). `RealInput.consent` is a `RealInputConsent` enum (unasked / asking / allowed / refused) instead of a nullable
   bool plus a pending future. Live probes on Claude Code (queue, steer, a workflow with a waiting agent) found no
   stuck queue on main.
+  Stop all (`CodeSessionController.stopAll`): the lead's turn, its background forks and its workflow runs, with
+  their reports and results dropped (`_quietRuns`), so nothing wakes the lead; `runningWork` (`SessionWork` in
+  `domain/session_work.dart`) says what runs. UI: `StopAllButton` (a small up-chevron opening one kit menu row) beside
+  Send/Stop while more than the lead's turn runs, and on Board cards while an open session runs anything.
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),
