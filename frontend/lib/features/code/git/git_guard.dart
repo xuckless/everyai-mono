@@ -127,13 +127,23 @@ bool blocksStoring(GitConfigEntry e) =>
 bool storesFiles(String command) =>
     const {'add', 'commit', 'stash', 'update-index', 'hash-object', 'apply', 'merge', 'am'}.contains(command);
 
+/// One config override, kept as a pair: a key can hold '=' (a subsection name is the repository's to pick), which a
+/// `-c key=value` string can't carry, since git splits it at the first '='.
+typedef GitSetting = ({String key, String value});
+
 /// The `-c` overrides that keep the repository's own program keys from
-/// running, and a [refusal] in plain words for the calls that [storesFiles]
-/// when that can't be done safely: a filter that cleans files is blanked like
-/// the rest, but storing files without it would store them raw. Checkouts,
-/// diffs and status still work with it blanked.
-({List<String> args, String? refusal}) repoGuard(List<GitConfigEntry> entries) {
-  final args = <String>[];
+/// running ([args], and the same as pairs in [config]), and a [refusal] in
+/// plain words for the calls that [storesFiles] when that can't be done
+/// safely: a filter that cleans files is blanked like the rest, but storing
+/// files without it would store them raw. Checkouts, diffs and status still
+/// work with it blanked.
+///
+/// [block] is set when an override's key holds '=' (a filter, hook or merge
+/// driver named `a=b`): `-c` can't reach it, so every guarded call refuses
+/// with it. [config] still carries it, for [configEnvOf].
+({List<String> args, List<GitSetting> config, String? refusal, String? block}) repoGuard(List<GitConfigEntry> entries) {
+  final config = <GitSetting>[];
+  void set(String key, String value) => config.add((key: key, value: value));
   final user = [
     for (final e in entries)
       if (!isRepoScope(e)) e,
@@ -142,17 +152,23 @@ bool storesFiles(String command) =>
   // The user's own hooks folder comes back (secret scanners, say). A relative one would be the checkout's.
   final hooks = user.where((e) => e.key == 'core.hookspath' && (e.scope == 'global' || e.scope == 'system'));
   if (hooks.lastOrNull?.value case final h? when h.startsWith('/') || h.startsWith('~/')) {
-    args.addAll(['-c', 'core.hooksPath=$h']);
+    set('core.hooksPath', h);
   }
   final seen = <String>{};
   String? refusal;
+  String? block;
+  void named(String what, String name) => block ??= name.contains('=')
+      ? 'This repository\'s git config names a $what "$name" with "=" in it, which EveryAI can\'t keep from running, '
+            'so EveryAI\'s git calls are off here. Remove it from .git/config to turn them back on.'
+      : null;
   var credentials = false;
   void blankFilter(String name) {
     if (!seen.add('filter.$name')) return;
+    named('filter', name);
     for (final part in const ['clean', 'smudge', 'process']) {
-      args.addAll(['-c', 'filter.$name.$part=']);
+      set('filter.$name.$part', '');
     }
-    args.addAll(['-c', 'filter.$name.required=false']);
+    set('filter.$name.required', 'false');
   }
 
   for (final e in entries.where(isRepoProgram)) {
@@ -165,7 +181,9 @@ bool storesFiles(String command) =>
         blankFilter(m[1]!);
       } else if (seen.add(k)) {
         // A smudge-only filter: checkouts write the stored file as it is.
-        args.addAll(['-c', '$k=', '-c', 'filter.${m[1]}.required=false']);
+        named('filter', m[1]!);
+        set(k, '');
+        set('filter.${m[1]}.required', 'false');
       }
     } else if (_lfsProgram.hasMatch(k)) {
       // git-lfs would run it: no lfs filter at all, so checkouts keep the pointer files and nothing is stored raw.
@@ -176,16 +194,22 @@ bool storesFiles(String command) =>
     } else if (_configHook.firstMatch(k) case final m?) {
       // A hook set in config: off by name. An event the repository adds to a command of the user's own runs theirs.
       final own = m[2] == 'event' && userValue('hook.${m[1]}.command') != null;
-      if (!own && seen.add('hook.${m[1]}')) args.addAll(['-c', 'hook.${m[1]}.enabled=false']);
+      if (!own && seen.add('hook.${m[1]}')) {
+        named('hook', m[1]!);
+        set('hook.${m[1]}.enabled', 'false');
+      }
     } else if (_mergeDriver.firstMatch(k) case final m?) {
-      if (seen.add(k)) args.addAll(['-c', 'merge.${m[1]}.driver=git merge-file %A %O %B']);
+      if (seen.add(k)) {
+        named('merge driver', m[1]!);
+        set('merge.${m[1]}.driver', 'git merge-file %A %O %B');
+      }
     } else if (_credentialHelper.hasMatch(k)) {
       credentials = true;
     } else if (k == 'core.gitproxy') {
       // gitProxy's first match wins and the command line comes last, so it can't be overridden: git:// is off instead.
-      if (seen.add(k)) args.addAll(['-c', 'protocol.git.allow=never']);
+      if (seen.add(k)) set('protocol.git.allow', 'never');
     } else if (_programDefaults[k] case final fallback?) {
-      if (seen.add(k)) args.addAll(['-c', '$k=${userValue(k) ?? fallback}']);
+      if (seen.add(k)) set(k, userValue(k) ?? fallback);
     }
     // fsmonitor, diff.external and diff.<x>.textconv|command: guardFlags and diffFlags. remote.<r>.receivepack and
     // uploadpack: the first value wins, so `-c` can't change them; they run here only for a remote that is a folder
@@ -193,15 +217,22 @@ bool storesFiles(String command) =>
   }
   if (credentials) {
     // An empty helper clears the list; the user's own come back in order.
-    args.addAll(['-c', 'credential.helper=']);
+    set('credential.helper', '');
     for (final e in user) {
-      if (_credentialHelper.hasMatch(e.key) && e.value.isNotEmpty) args.addAll(['-c', '${e.key}=${e.value}']);
+      if (_credentialHelper.hasMatch(e.key) && e.value.isNotEmpty) set(e.key, e.value);
     }
   }
-  return (args: args, refusal: refusal);
+  return (
+    args: [
+      for (final c in config) ...['-c', '${c.key}=${c.value}'],
+    ],
+    config: config,
+    refusal: refusal,
+    block: block,
+  );
 }
 
-/// [args] (pairs of `-c`, `key=value`) as `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` variables
+/// [args] (pairs of `-c`, `key=value`, split at the first '=': only for keys without one, like [guardFlags]) as `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` variables
 /// after the [count] ones already in the environment, for git started by another program (a shell, gh).
 Map<String, String> configEnv(List<String> args, {int count = 0}) {
   final out = <String, String>{};
@@ -211,6 +242,20 @@ Map<String, String> configEnv(List<String> args, {int count = 0}) {
     final eq = args[i + 1].indexOf('=');
     out['GIT_CONFIG_KEY_$n'] = eq < 0 ? args[i + 1] : args[i + 1].substring(0, eq);
     out['GIT_CONFIG_VALUE_$n'] = eq < 0 ? 'true' : args[i + 1].substring(eq + 1);
+    n++;
+  }
+  out['GIT_CONFIG_COUNT'] = '$n';
+  return out;
+}
+
+/// [config] as `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` variables after the [count] ones already in
+/// the environment. Unlike `-c`, a key here may hold '='.
+Map<String, String> configEnvOf(List<GitSetting> config, {int count = 0}) {
+  final out = <String, String>{};
+  var n = count;
+  for (final c in config) {
+    out['GIT_CONFIG_KEY_$n'] = c.key;
+    out['GIT_CONFIG_VALUE_$n'] = c.value;
     n++;
   }
   out['GIT_CONFIG_COUNT'] = '$n';

@@ -158,4 +158,22 @@ void main() {
     expect(isRepoProgram(_local('filter.lfs.smudge', 'git-lfs smudge -- %f')), isFalse);
     expect(isRepoProgram((scope: 'worktree', key: 'gpg.program', value: './g.sh')), isTrue);
   });
+
+  test('a filter, hook or merge driver named with "=" blocks every guarded call; the env form still reaches it', () {
+    for (final entry in [
+      _local('filter.x=y.smudge', 'sh -c evil'),
+      _local('filter.x=y.clean', 'sh -c evil'),
+      _local('hook.a=b.command', 'sh -c evil'),
+      _local('merge.a=b.driver', 'sh -c evil'),
+    ]) {
+      final guard = repoGuard([entry]);
+      expect(guard.block, contains('"="'), reason: entry.key);
+    }
+    expect(repoGuard([_local('filter.x.smudge', 'sh -c evil')]).block, isNull);
+    final env = configEnvOf(repoGuard([_local('filter.x=y.smudge', 'evil')]).config, count: 2);
+    expect(env['GIT_CONFIG_KEY_2'], 'filter.x=y.smudge');
+    expect(env['GIT_CONFIG_VALUE_2'], '');
+    expect(env['GIT_CONFIG_KEY_3'], 'filter.x=y.required');
+    expect(env['GIT_CONFIG_COUNT'], '4');
+  });
 }

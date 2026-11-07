@@ -39,6 +39,11 @@ final class _Hooks {
 
   Future<http.Response> handle(http.Request r) async {
     calls.add('${r.method} ${r.url.path}');
+    // Only the host's own token adds or deletes its hooks (registering the host itself needs none yet).
+    final registering = r.method == 'POST' && r.url.path == '/v1/remote/hosts';
+    if (r.method != 'GET' && !registering && r.headers['X-Remote-Host-Token'] != 'rh_t') {
+      return http.Response('{}', 401);
+    }
     if (r.method == 'POST' && r.url.path == '/v1/hooks') {
       final body = jsonDecode(r.body) as Map<String, Object?>;
       final hook = {

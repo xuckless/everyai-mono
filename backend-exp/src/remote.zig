@@ -7,9 +7,9 @@
 //!
 //!   POST   /v1/remote/hosts               {name, platform?, public_key} -> 201 {id, name, platform, public_key, host_token}
 //!   GET    /v1/remote/hosts               [{id, name, platform, public_key, online, created_at, last_seen_at, devices: [...]}]
-//!   DELETE /v1/remote/hosts/:id           revokes the host, its devices and live sockets
-//!   DELETE /v1/remote/devices/:id         unpairs one device
-//!   POST   /v1/remote/pair                {host_id} -> 201 {id, code, host_id, expires_at}
+//!   DELETE /v1/remote/hosts/:id           (+ X-Remote-Host-Token) revokes the host, its devices and live sockets
+//!   DELETE /v1/remote/devices/:id         (+ X-Remote-Host-Token or X-Remote-Device-Token) unpairs one device
+//!   POST   /v1/remote/pair                (+ X-Remote-Host-Token) {host_id} -> 201 {id, code, host_id, expires_at}
 //!   POST   /v1/remote/pair/redeem         {code, device_name, public_key} -> {id, status, device_id, device_token, decide_by, host}
 //!   GET    /v1/remote/pair/:id            {id, status, host_id, device_id}
 //!   POST   /v1/remote/pair/:id/approve    (+ X-Remote-Host-Token) -> {id, status}
@@ -59,6 +59,12 @@ pub const channel_len = 4;
 /// Close codes the relay sends (the 4000 range is the application's).
 pub const close_replaced: u16 = 4001;
 pub const close_revoked: u16 = 4003;
+
+/// The largest text (control) frame a host may send: its controls are a few
+/// short fields. Bigger ones are skipped unread.
+pub const max_control = 4 << 10;
+/// Control frames a host socket may send per minute before it is closed.
+pub const max_controls_per_minute = 600;
 
 /// Code alphabet: 32 symbols without I, O, 0 and 1, so a byte maps without
 /// bias and nothing reads as something else.
@@ -304,16 +310,26 @@ fn listHosts(app: *App, req: *anole.Request) ![]const HostInfo {
     return out;
 }
 
+/// Only the host itself (its `X-Remote-Host-Token`) removes it: an account
+/// can be shared (the dev user), and the token is the desktop's alone.
 fn deleteHost(app: *App, req: *anole.Request, in: anole.In(.{ .path = struct { id: []const u8 } })) !void {
-    const who = try auth.identity(req);
+    const host = try hostNamed(app, req, in.path.id);
     // Its devices and pairings go with it (ON DELETE CASCADE; Anole's SQLite
     // turns foreign keys on).
-    if (try app.db.exec(req, "DELETE FROM remote_hosts WHERE id = ? AND user_id = ?", .{ in.path.id, who.user_id }) == 0) return error.NotFound;
-    app.relay.revokeHost(req.io, in.path.id);
+    if (try app.db.exec(req, "DELETE FROM remote_hosts WHERE id = ? AND user_id = ?", .{ host.id, host.user_id }) == 0) return error.NotFound;
+    app.relay.revokeHost(req.io, host.id);
 }
 
+/// The device's host (`X-Remote-Host-Token`) or the device itself
+/// (`X-Remote-Device-Token`) unpairs it.
 fn deleteDevice(app: *App, req: *anole.Request, in: anole.In(.{ .path = struct { id: []const u8 } })) !void {
     const who = try auth.identity(req);
+    const device = try app.db.optional(struct { host_id: []const u8, token_hash: []const u8 }, req, "SELECT host_id, token_hash FROM remote_devices WHERE id = ? AND user_id = ?", .{ in.path.id, who.user_id }) orelse return error.NotFound;
+    if (req.headers.get("X-Remote-Device-Token")) |token| {
+        if (!std.mem.eql(u8, try util.sha256Hex(req.arena, token), device.token_hash)) return error.Unauthorized;
+    } else {
+        _ = try hostNamed(app, req, device.host_id);
+    }
     if (try app.db.exec(req, "DELETE FROM remote_devices WHERE id = ? AND user_id = ?", .{ in.path.id, who.user_id }) == 0) return error.NotFound;
     app.relay.revokeDevice(req.io, in.path.id);
 }
@@ -324,14 +340,15 @@ fn pair(app: *App, req: *anole.Request, in: anole.In(.{ .body = struct { host_id
     host_id: []const u8,
     expires_at: i64,
 }) {
-    const who = try auth.identity(req);
-    _ = try app.db.optional([]const u8, req, "SELECT id FROM remote_hosts WHERE id = ? AND user_id = ?", .{ in.body.host_id, who.user_id }) orelse return error.NotFound;
+    // Only the desktop mints codes for itself: on a shared account (the dev
+    // user) anyone could otherwise send it pair requests.
+    const host = try hostNamed(app, req, in.body.host_id);
     const code = try newCode(req.io);
     const id = try util.uuid(req.arena, req.io);
     const now = util.now(req.io);
     const expires_at = now + code_ttl_seconds;
     _ = try app.db.exec(req, "INSERT INTO remote_pairings (id, user_id, host_id, code_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)", .{
-        id, who.user_id, in.body.host_id, try util.sha256Hex(req.arena, &code), expires_at, now,
+        id, host.user_id, host.id, try util.sha256Hex(req.arena, &code), expires_at, now,
     });
     return .{ .value = .{ .id = id, .code = try displayCode(req.arena, code), .host_id = in.body.host_id, .expires_at = expires_at } };
 }
@@ -405,11 +422,18 @@ fn pairStatus(app: *App, req: *anole.Request, in: anole.In(.{ .path = struct { i
 }
 
 /// The host behind `X-Remote-Host-Token`, which must belong to the caller.
-fn callingHost(app: *App, req: *anole.Request) !HostRow {
+pub fn callingHost(app: *App, req: *anole.Request) !HostRow {
     const who = try auth.identity(req);
     const token = req.headers.get("X-Remote-Host-Token") orelse return error.Unauthorized;
     const host = try app.db.optional(HostRow, req, "SELECT id, user_id, name FROM remote_hosts WHERE token_hash = ?", .{try util.sha256Hex(req.arena, token)}) orelse return error.Unauthorized;
     if (!std.mem.eql(u8, host.user_id, who.user_id)) return error.Unauthorized;
+    return host;
+}
+
+/// [callingHost], which must be `host_id`: another host's token finds nothing.
+pub fn hostNamed(app: *App, req: *anole.Request, host_id: []const u8) !HostRow {
+    const host = try callingHost(app, req);
+    if (!std.mem.eql(u8, host.id, host_id)) return error.NotFound;
     return host;
 }
 
@@ -554,7 +578,14 @@ fn serveHost(app: *App, ws: *websocket.Socket, req: *anole.Request, host: HostRo
     // Webhooks that came while it was away, behind the hello.
     try hooks.resendPending(app, req, host.id);
 
+    // Control frames are parsed into a scratch arena reset for each one: the
+    // request's arena lives as long as the socket.
+    var scratch: std.heap.ArenaAllocator = .init(app.gpa);
+    defer scratch.deinit();
+    var window_start = util.now(io);
+    var controls: u32 = 0;
     while (try ws.next()) |msg| {
+        _ = scratch.reset(.{ .retain_with_limit = 64 << 10 });
         switch (msg.type) {
             .binary => {
                 const frame = splitFrame(msg.data) orelse continue;
@@ -566,11 +597,20 @@ fn serveHost(app: *App, ws: *websocket.Socket, req: *anole.Request, host: HostRo
                 if (routed) relay.toClient(frame.channel, .binary, frame.payload);
             },
             .text => {
+                const now = util.now(io);
+                if (now - window_start >= 60) {
+                    window_start = now;
+                    controls = 0;
+                }
+                controls += 1;
+                if (controls > max_controls_per_minute) return ws.close(.policy_violation, "too many control frames");
+                if (msg.data.len > max_control) continue;
                 const Control = struct { type: []const u8, channel: u32 = 0, delivery_id: []const u8 = "" };
-                const c = std.json.parseFromSliceLeaky(Control, req.arena, msg.data, .{ .ignore_unknown_fields = true }) catch continue;
+                const c = std.json.parseFromSliceLeaky(Control, scratch.allocator(), msg.data, .{ .ignore_unknown_fields = true }) catch continue;
                 // A database call: before the mutex.
                 if (std.mem.eql(u8, c.type, "webhook_ack")) {
-                    try hooks.ack(app, req, host.id, c.delivery_id);
+                    var ctx: anole.db.Ctx = .{ .io = io, .arena = scratch.allocator() };
+                    try hooks.ack(app, &ctx, host.id, c.delivery_id);
                     continue;
                 }
                 if (!std.mem.eql(u8, c.type, "close_channel")) continue;
