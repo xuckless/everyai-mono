@@ -64,8 +64,9 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   - Code: a five-tab session panel (Session · Diff · Preview · Files · Processes), a terminal drawer with
     tabs, and the Board (`code/board/`). Live views and the `app` tool are in `code/live/`, the shell registry in
     `code/shells/`, local models in `features/local_models/`.
-  - Tests: `flutter test` (app) and `packages/*` tests. Screenshots go through
-    the seeded demo DB under the macOS container.
+  - Tests: `flutter test` (app) and `packages/*` tests. README screenshots: `flutter test
+    tool/readme_shots/shots_test.dart && tool/readme_shots/to_webp.sh` renders the real screens offscreen with
+    demo data (no model calls) into `docs/readme/*.webp`; rerun it after UI changes.
 - `backend-exp/`: the new backend in **Zig 0.17.0 on Anole** (the `xuckless/anole`
   tag pinned in `build.zig.zon`). See `backend-exp/README.md`.
   - `zig build run` serves `:8080` with docs at `/docs`.

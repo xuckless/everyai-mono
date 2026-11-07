@@ -17,7 +17,7 @@
 <a href="https://github.com/xuckless/everyai-mono/releases"><img alt="alpha 0.1.0-alpha.5, signed" src="https://img.shields.io/badge/alpha-0.1.0--alpha.5%20·%20signed-FF6B9A?style=flat-square"/></a>
 <br/><br/>
 
-<img src="docs/readme/console.webp" alt="A Code session: each turn's work folded into a box, a subagent, and Session info in the right panel" width="92%"/>
+<img src="docs/readme/console.webp" alt="A finished Code session: answered questions, a subagent that wrote the tests, and Session info in the right panel" width="92%"/>
 
 </div>
 
@@ -61,15 +61,15 @@ flowchart LR
 </tr>
 <tr>
 <td valign="top"><img src="docs/readme/workflows.webp" alt="The workflow picker"/><br/>✨ <b>Superpowers for every agent</b><br/><sub>Max, Ultra, Bug fix and Security review workflows, plus test checks, checkpoints and rewind, for Claude Code and Codex too.</sub></td>
-<td valign="top"><img src="docs/readme/running.webp" alt="A subagent under Running work"/><br/>🧭 <b>Watch the work</b><br/><sub>Each turn folds into one box, the answer stays in view, and forks and subagents show up live beside the chat.</sub></td>
+<td valign="top"><img src="docs/readme/board.webp" alt="The Board: sessions from several agents in Needs you, Running and Done"/><br/>🗂️ <b>Every session on one Board</b><br/><sub>Sessions from every agent in Needs you, Running and Done. Approve, deny and answer right on the card.</sub></td>
 </tr>
 <tr>
 <td valign="top"><img src="docs/readme/approval.webp" alt="An approval card"/><br/>🛡️ <b>Safe by default</b><br/><sub>Per-call approvals, a safety floor for risky commands, and a checkpoint every turn.</sub></td>
-<td valign="top"><img src="docs/readme/keys.webp" alt="Adding your own API key"/><br/>🔑 <b>Your keys, your models</b><br/><sub>OpenRouter or Anthropic keys stay in your keychain, or run a model on your own computer.</sub></td>
+<td valign="top"><img src="docs/readme/keys.webp" alt="Local models: Ollama found, starter packs sized to this Mac"/><br/>🔑 <b>Your keys, your models</b><br/><sub>OpenRouter or Anthropic keys stay in your keychain, or run Ollama, LM Studio and more on your own computer.</sub></td>
 </tr>
 </table>
 
-- 🗂️ **The Board:** every session in Needs you, Running and Done columns; approve, deny and answer questions right on the card.
+- 🧭 **Watch the work:** each turn folds into one box, the answer stays in view, and forks and subagents show up live beside the chat.
 - 💻 **Models on your computer:** Ollama, LM Studio, llama.cpp, Jan, vLLM, MLX and Apple's on-device model, found automatically, with one-click packs sized to your machine. Local and own-key chats run on a server inside the app.
 - 👀 **See what you build:** a live Preview that you and the agent share, with a take-over button, and an `app` tool that lets any agent see and operate web pages, Flutter and React Native apps, the iOS Simulator, the Android emulator and desktop windows.
 - 🧵 **Every process in a terminal:** click a shell, dev server or Docker container to see its whole log and type into it.
