@@ -131,6 +131,7 @@ String sessionBriefing(SessionSkillInput input) {
     // Prompt reason: owner, 2026-11-06: the Preview shows the session's browser page live; outside leads keep their
     // own browser tools, but EveryAI's `browser` is the one the user can watch and take over. Later the same day:
     // the `app` tool sees into Flutter, React Native and Electron apps the same way.
+    // Then iOS Simulators through `app` too (source "ios"), so no wording change was needed here.
     ..writeln(
       'For the web pages, apps and windows this session runs, use EveryAI\'s `browser`, `app`, `app_run` and '
       '`screenshot`',

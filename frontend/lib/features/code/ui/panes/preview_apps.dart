@@ -12,7 +12,9 @@ import '../../../../core/ui/adaptive.dart';
 import '../../live/app_endpoints.dart';
 import '../../live/app_sources.dart';
 import '../../live/app_view.dart';
+import '../../live/axe_install.dart';
 import '../../live/flutter_app_io.dart';
+import '../../live/ios_simulator_io.dart';
 import '../../live/live_session.dart';
 import '../../live/react_native_io.dart';
 
@@ -39,7 +41,11 @@ class PreviewSourceBar extends StatelessWidget {
           KitChip(label: 'Web', on: selected == null, onTap: () => onSelect(null)),
           for (final a in apps)
             KitChip(
-              label: a.shell == null ? a.kind.label : '${a.kind.label} · ${a.shell!.id}',
+              label: a.kind == AppKind.ios
+                  ? a.label
+                  : a.shell == null
+                  ? a.kind.label
+                  : '${a.kind.label} · ${a.shell!.id}',
               on: selected == a.endpoint,
               onTap: () => onSelect(a.endpoint),
             ),
@@ -444,6 +450,290 @@ class _ReactNativeAppViewState extends State<ReactNativeAppView> {
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
           child: Text(
             "React Native draws in its simulator or emulator: this is the app's element list, as the agent reads it.",
+            style: theme.type.caption.tint(theme.textMuted),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// An iOS Simulator's live screen (AXe's stream while shown), with taps and the wheel passed on as touches and
+/// swipes, a Home button, and the agent's ghost on top. Offers to download AXe when it isn't there.
+class IosSimulatorView extends StatefulWidget {
+  const IosSimulatorView({super.key, required this.sim, required this.visible});
+
+  final IosSimulator sim;
+  final bool visible;
+
+  @override
+  State<IosSimulatorView> createState() => _IosSimulatorViewState();
+}
+
+class _IosSimulatorViewState extends State<IosSimulatorView> {
+  ui.Image? _image;
+  StreamSubscription<Uint8List>? _frames;
+  StreamSubscription<LiveActivity>? _activity;
+  var _decoding = false;
+  String? _problem;
+  double? _installing;
+  LiveActivity? _ghost;
+  Timer? _ghostTimer;
+  Offset? _downAt;
+  var _scale = 1.0;
+  var _wheel = 0.0;
+  Offset _wheelAt = Offset.zero;
+  Timer? _wheelTimer;
+
+  IosSimulator get _sim => widget.sim;
+
+  @override
+  void initState() {
+    super.initState();
+    _activity = _sim.control.activity.listen((a) {
+      _ghostTimer?.cancel();
+      setState(() => _ghost = a);
+      _ghostTimer = Timer(const Duration(milliseconds: 1600), () {
+        if (mounted) setState(() => _ghost = null);
+      });
+    });
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(IosSimulatorView old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.sim, widget.sim)) _stop();
+    _sync();
+  }
+
+  @override
+  void dispose() {
+    _stop();
+    unawaited(_activity?.cancel());
+    _ghostTimer?.cancel();
+    _wheelTimer?.cancel();
+    _image?.dispose();
+    super.dispose();
+  }
+
+  void _stop() {
+    unawaited(_frames?.cancel());
+    _frames = null;
+  }
+
+  void _sync() {
+    if (!widget.visible || axePath() == null) {
+      _stop();
+      return;
+    }
+    if (_frames != null) return;
+    // Its size in points, for mapping touches.
+    if (_sim.width <= 0) unawaited(_sim.tree().then((_) => mounted ? setState(() {}) : null, onError: (Object _) {}));
+    _frames = _sim.stream().listen(
+      _paint,
+      onError: (Object e) {
+        if (mounted) setState(() => _problem = e is AppError ? e.message : '$e');
+      },
+      onDone: () => _frames = null,
+    );
+  }
+
+  Future<void> _paint(Uint8List jpeg) async {
+    if (_decoding) return;
+    _decoding = true;
+    try {
+      final codec = await ui.instantiateImageCodec(jpeg);
+      final frame = await codec.getNextFrame();
+      if (!mounted) {
+        frame.image.dispose();
+        return;
+      }
+      setState(() {
+        _image?.dispose();
+        _image = frame.image;
+        _problem = null;
+      });
+    } on Object {
+      // A broken frame: the next one.
+    } finally {
+      _decoding = false;
+    }
+  }
+
+  Future<void> _install() async {
+    setState(() => _installing = 0);
+    try {
+      await installAxe(onProgress: (p) => mounted ? setState(() => _installing = p) : null);
+      if (mounted) setState(() => _problem = null);
+    } on Object catch (e) {
+      if (mounted) setState(() => _problem = "Couldn't download AXe: $e");
+    } finally {
+      if (mounted) setState(() => _installing = null);
+      _sync();
+    }
+  }
+
+  void _takeOver() {
+    final c = _sim.control;
+    if (c.userDriving) return;
+    c.take();
+    showAdaptiveToast(context, "You're driving: the agent's simulator actions wait until you give it back.");
+  }
+
+  void _wheelBy(Offset at, double dy) {
+    _takeOver();
+    _wheel += dy;
+    _wheelAt = at;
+    _wheelTimer?.cancel();
+    _wheelTimer = Timer(const Duration(milliseconds: 180), () {
+      final d = _wheel;
+      _wheel = 0;
+      unawaited(_sim.userScroll(_wheelAt.dx, _wheelAt.dy, d).catchError((Object _) {}));
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    if (axePath() == null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Seeing and driving the simulator needs AXe (MIT, 8 MB), downloaded once from its GitHub release and '
+                'checked against a pinned hash. The agent downloads it too on first use.',
+                textAlign: TextAlign.center,
+                style: theme.type.callout.tint(theme.textMuted),
+              ),
+              const SizedBox(height: 12),
+              if (_installing != null)
+                Text('Downloading… ${(_installing! * 100).round()}%', style: theme.type.caption)
+              else
+                AdaptiveButton(label: 'Install simulator support', onPressed: _install),
+              if (_problem != null) ...[
+                const SizedBox(height: 8),
+                Text(_problem!, style: theme.type.caption.tint(theme.danger)),
+              ],
+            ],
+          ),
+        ),
+      );
+    }
+    final image = _image;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        AppDriverBar(
+          control: _sim.control,
+          actions: [
+            AdaptiveButton(
+              label: 'Home',
+              emphasis: ButtonEmphasis.secondary,
+              onPressed: () => _sim.home().catchError((Object _) => ''),
+            ),
+          ],
+        ),
+        Expanded(
+          child: image == null
+              ? Center(
+                  child: Text(
+                    _problem ?? 'Starting the simulator view…',
+                    textAlign: TextAlign.center,
+                    style: theme.type.callout.tint(theme.textMuted),
+                  ),
+                )
+              : LayoutBuilder(
+                  builder: (context, box) {
+                    // Points: the tree's size, else the picture's proportions.
+                    final w = _sim.width > 0 ? _sim.width : image.width.toDouble();
+                    final h = _sim.width > 0 ? _sim.height : image.height.toDouble();
+                    _scale = ((box.maxWidth - 24) / w).clamp(0.05, 4.0);
+                    if (h * _scale > box.maxHeight - 24) _scale = ((box.maxHeight - 24) / h).clamp(0.05, 4.0);
+                    final ghost = _ghost;
+                    return Center(
+                      child: Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF111114),
+                          borderRadius: BorderRadius.circular(34),
+                          border: Border.all(color: theme.borderStrong),
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(28),
+                          child: Listener(
+                            onPointerDown: (e) => _downAt = e.localPosition,
+                            onPointerUp: (e) {
+                              final at = _downAt;
+                              _downAt = null;
+                              if (at == null) return;
+                              _takeOver();
+                              final from = at / _scale, to = e.localPosition / _scale;
+                              final move = (e.localPosition - at).distance;
+                              unawaited(
+                                (move > 12
+                                        ? _sim.drag(from.dx, from.dy, to.dx, to.dy)
+                                        : _sim.userTap(from.dx, from.dy).then((_) => ''))
+                                    .catchError((Object _) => ''),
+                              );
+                            },
+                            onPointerSignal: (s) {
+                              if (s is PointerScrollEvent) {
+                                _wheelBy(s.localPosition / _scale, s.scrollDelta.dy / _scale);
+                              }
+                            },
+                            child: SizedBox(
+                              width: w * _scale,
+                              height: h * _scale,
+                              child: Stack(
+                                children: [
+                                  Positioned.fill(
+                                    child: RawImage(
+                                      image: image,
+                                      fit: BoxFit.fill,
+                                      filterQuality: FilterQuality.medium,
+                                    ),
+                                  ),
+                                  if (ghost != null && ghost.x != null && ghost.y != null)
+                                    Positioned(
+                                      left: ghost.x! * _scale - 14,
+                                      top: ghost.y! * _scale - 14,
+                                      child: IgnorePointer(
+                                        child: Container(
+                                          width: 28,
+                                          height: 28,
+                                          decoration: BoxDecoration(
+                                            shape: BoxShape.circle,
+                                            border: Border.all(color: theme.accent, width: 2),
+                                            color: theme.accent.withValues(alpha: 0.18),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  if (ghost != null && ghost.caption.isNotEmpty)
+                                    Positioned(
+                                      left: 0,
+                                      right: 0,
+                                      bottom: 14,
+                                      child: _Caption('Agent: ${ghost.caption}'),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+          child: Text(
+            'Click to tap, drag to swipe, the wheel scrolls. Type on your keyboard in the Simulator app, or ask the agent.',
             style: theme.type.caption.tint(theme.textMuted),
           ),
         ),

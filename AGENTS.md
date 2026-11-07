@@ -889,6 +889,17 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   against a running `flutter run -d flutter-tester` app (`tool/live_apps/flutter_app_probe_test.dart`,
   `EVERYAI_FLUTTER_VM`); Electron and RN paths tested with Chrome standing in (`app_sources_test.dart`); no real
   Electron or React Native app was run.
+- **iOS Simulator (2026-11-06).** The `app` tool's source "ios" drives a booted simulator for any app (native,
+  Flutter, React Native) through AXe (`live/ios_simulator_io.dart`): `describe-ui` → `AppNode`s (points; refs `iN`
+  stable by type+label+id; keyboard keys folded into "(the on-screen keyboard is up)"), tap/long_press/type (⌘A, then
+  `type --stdin`, value checked; never into SecureTextField)/scroll/drag as swipes, back (the nav bar's back button,
+  else an edge swipe, which AXe's touches don't always trigger), home, screenshots + zoom with frame ids, and
+  actions `devices` / `boot {device}`. A simulator counts for a session when its shells name it (udid, `on iPhone 16
+  in debug mode`, `-d "iPhone 16"`) or it booted it; `IosSimulators.claim` lets one session drive it at a time. AXe
+  1.8.0 is downloaded on first use into app data `tools/axe-1.8.0/` and checked against `axe_pin.dart`
+  (`verified_download_io.dart`, shared with Chrome for Testing; `EVERYAI_AXE` overrides). Preview: `IosSimulatorView`
+  paints `axe stream-video` MJPEG (~9 fps at half scale, `MjpegFrames` cuts by Content-Length), forwards clicks,
+  drags and the wheel. Dev probe `tool/live_apps/simulator_probe_test.dart` (`EVERYAI_SIM`).
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2

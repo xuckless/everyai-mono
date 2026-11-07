@@ -10,6 +10,7 @@ import '../shells/shell_log.dart';
 import '../shells/shell_registry.dart';
 import 'app_endpoints.dart';
 import 'flutter_app_io.dart';
+import 'ios_simulator_io.dart';
 import 'react_native_io.dart';
 
 /// An app running in one of a session's shells (or one the agent pointed at), and the shell it runs in.
@@ -24,6 +25,10 @@ final class SessionApp {
 
   /// `Flutter app (bg_2: flutter run -d macos)`.
   String get label {
+    if (kind == AppKind.ios) {
+      final udid = endpoint.uri.path;
+      return IosSimulators.booted.where((d) => d.udid == udid).firstOrNull?.name ?? 'iOS Simulator';
+    }
     final where = shell == null ? endpoint.uri.toString() : '${shell!.id}: ${shell!.title}';
     return '${kind.label} app ($where)';
   }
@@ -46,22 +51,45 @@ abstract final class AppSources {
   /// Something may have started or stopped (a shell changed): the Preview looks again.
   static Stream<void> get changes => _changes.stream;
 
-  /// The apps running in [sessions]' shells now (newest last), plus those the agent pointed at.
+  /// The apps running in [sessions]' shells now (newest last), plus those the agent pointed at. A simulator counts
+  /// when it is booted and a shell names it (or the session holds it), and no other session holds it.
   static List<SessionApp> running(Iterable<String> sessions) {
     final out = <SessionApp>[];
     final seen = <AppEndpoint>{};
-    for (final session in sessions) {
+    final ids = sessions.toList();
+    void add(AppEndpoint ep, ShellEntry? shell) {
+      final resolved = ep.kind == AppKind.ios ? _bootedSimulator(ep, ids) : ep;
+      if (resolved != null && seen.add(resolved)) out.add(SessionApp(resolved, shell: shell));
+    }
+
+    for (final session in ids) {
       for (final e in ShellRegistry.instance.of(session)) {
-        if (!e.running) continue;
+        // A simulator the app was started on stays the session's after the build command ends.
         for (final found in _scan(e)) {
-          if (seen.add(found)) out.add(SessionApp(found, shell: e));
+          if (e.running || found.kind == AppKind.ios) add(found, e);
         }
       }
       for (final p in _pointed[session] ?? const <AppEndpoint>[]) {
-        if (seen.add(p)) out.add(SessionApp(p));
+        add(p, null);
+      }
+      for (final udid in IosSimulators.heldBy(session)) {
+        add(AppEndpoint(AppKind.ios, Uri.parse('simulator:$udid')), null);
       }
     }
     return out;
+  }
+
+  /// [ep] (a simulator mention) as `simulator:<udid>` of a booted simulator no other of [sessions]' rivals holds.
+  static AppEndpoint? _bootedSimulator(AppEndpoint ep, List<String> sessions) {
+    final booted = IosSimulators.booted;
+    final want = Uri.decodeComponent(ep.uri.path).toLowerCase();
+    final d = ep.uri.scheme == 'simulator'
+        ? booted.where((b) => b.udid.toLowerCase() == want).firstOrNull
+        : booted.where((b) => b.name.toLowerCase() == want).firstOrNull;
+    if (d == null) return null;
+    final holder = IosSimulators.holder(d.udid);
+    if (holder != null && !sessions.contains(holder)) return null;
+    return AppEndpoint(AppKind.ios, Uri.parse('simulator:${d.udid}'));
   }
 
   /// Notes that [session]'s agent pointed at the app at [endpoint] (started outside our shells).
@@ -138,12 +166,14 @@ abstract final class AppSources {
     AppKind.flutter => _flutter[app.endpoint.uri],
     AppKind.reactNative => _rn[app.endpoint.uri],
     AppKind.electron => _electron[app.endpoint.uri],
+    AppKind.ios => IosSimulators.driver(app.endpoint.uri.path),
   };
 
   /// Disconnects from apps whose shells ended and forgets session [session]'s pointed apps (the session was
   /// removed). The apps themselves keep running until their shells stop.
   static Future<void> release(String session) async {
     _pointed.remove(session);
+    IosSimulators.release(session);
     final live = {
       for (final s in ShellRegistry.instance.sessions)
         for (final a in running([s])) a.endpoint.uri,

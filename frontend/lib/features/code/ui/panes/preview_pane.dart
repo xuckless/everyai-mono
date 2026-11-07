@@ -19,6 +19,7 @@ import '../../harness/everyai/screen_tools_io.dart' show noteUserNavigation;
 import '../../live/app_endpoints.dart';
 import '../../live/app_sources.dart';
 import '../../live/chrome_download.dart';
+import '../../live/ios_simulator_io.dart';
 import '../../live/live_browsers.dart';
 import '../../live/live_session.dart';
 import '../../panes/panes_providers.dart';
@@ -108,6 +109,8 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
 
   void _scanApps() {
     if (!mounted) return;
+    // Booted simulators are read in the background; the next scan sees them.
+    unawaited(IosSimulators.refresh().then((_) {}, onError: (Object _) {}));
     final apps = AppSources.running({_id, widget.session.billingTag});
     final same =
         apps.length == _apps.length &&
@@ -407,6 +410,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
             child: switch (src.kind) {
               AppKind.flutter => FlutterAppView(app: AppSources.flutter(src.uri), visible: _visible),
               AppKind.reactNative => ReactNativeAppView(app: AppSources.reactNative(src.uri), visible: _visible),
+              AppKind.ios => IosSimulatorView(sim: IosSimulators.driver(src.uri.path), visible: _visible),
               AppKind.electron =>
                 b == null || (_image == null && _problem != null)
                     ? _Note(_problem ?? 'Connecting to the app…')

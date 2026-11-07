@@ -4,11 +4,10 @@ import 'dart:async';
 import 'dart:ffi' show Abi;
 import 'dart:io';
 
-import 'package:crypto/crypto.dart';
-
 import '../git/git_service.dart';
 import '../harness/everyai/browser_io.dart';
 import 'chrome_pin.dart';
+import 'verified_download_io.dart';
 
 bool get chromeAvailable => HeadlessBrowser.find() != null;
 
@@ -50,30 +49,7 @@ Future<void> downloadChromeForTesting({void Function(double progress)? onProgres
   final home = await _home();
   final dir = Directory(home)..createSync(recursive: true);
   final zip = File('${dir.path}/chrome.zip');
-  final client = HttpClient();
-  try {
-    final res = await (await client.getUrl(Uri.parse(url))).close();
-    if (res.statusCode != 200) throw HttpException('HTTP ${res.statusCode}', uri: Uri.parse(url));
-    final total = res.contentLength;
-    var got = 0;
-    final sink = zip.openWrite();
-    final digest = _DigestSink();
-    final hasher = sha256.startChunkedConversion(digest);
-    await for (final chunk in res) {
-      sink.add(chunk);
-      hasher.add(chunk);
-      got += chunk.length;
-      if (total > 0) onProgress?.call(got / total * 0.95);
-    }
-    hasher.close();
-    await sink.close();
-    if ('${digest.value}' != sha) {
-      zip.deleteSync();
-      throw StateError('the download does not match its pinned SHA-256, so it was deleted');
-    }
-  } finally {
-    client.close(force: true);
-  }
+  await downloadVerified(Uri.parse(url), sha, zip, onProgress: (p) => onProgress?.call(p * 0.95));
   // The system's own unpacker keeps the app bundle's links and permissions.
   final r = Platform.isMacOS
       ? await Process.run('ditto', ['-x', '-k', zip.path, dir.path])
@@ -85,12 +61,4 @@ Future<void> downloadChromeForTesting({void Function(double progress)? onProgres
   onProgress?.call(1);
   await loadDownloadedChrome();
   if (HeadlessBrowser.downloaded == null) throw StateError('the browser was unpacked but its program is missing');
-}
-
-final class _DigestSink implements Sink<Digest> {
-  Digest? value;
-  @override
-  void add(Digest data) => value = data;
-  @override
-  void close() {}
 }

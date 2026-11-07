@@ -6,7 +6,8 @@
 enum AppKind {
   flutter('Flutter'),
   reactNative('React Native'),
-  electron('Electron');
+  electron('Electron'),
+  ios('iOS Simulator');
 
   const AppKind(this.label);
   final String label;
@@ -16,6 +17,7 @@ enum AppKind {
     flutter => 'flutter',
     reactNative => 'react-native',
     electron => 'electron',
+    ios => 'ios',
   };
 }
 
@@ -25,7 +27,9 @@ final class AppEndpoint {
   final AppKind kind;
 
   /// Flutter: the VM service (`http://127.0.0.1:PORT/TOKEN=/`); Electron: the browser's DevTools socket
-  /// (`ws://127.0.0.1:PORT/devtools/browser/ID`); React Native: Metro's server (`http://127.0.0.1:8081`).
+  /// (`ws://127.0.0.1:PORT/devtools/browser/ID`); React Native: Metro's server (`http://127.0.0.1:8081`); iOS
+  /// Simulator: `simulator:<udid>`, or `simulator-name:<name>` for one an output names (resolved against the booted
+  /// ones).
   final Uri uri;
 
   @override
@@ -79,5 +83,25 @@ List<AppEndpoint> detectAppEndpoints(String output) {
     found[AppKind.reactNative] = (at: metro.start, uri: Uri.parse('http://127.0.0.1:${p > 0 && p < 65536 ? p : 8081}'));
   }
   final out = found.entries.toList()..sort((a, b) => a.value.at - b.value.at);
-  return [for (final e in out) AppEndpoint(e.key, e.value.uri)];
+  return [
+    for (final e in out) AppEndpoint(e.key, e.value.uri),
+    for (final s in simulatorMentions(text)) AppEndpoint(AppKind.ios, s),
+  ];
+}
+
+final _udid = RegExp(r'\b[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\b');
+final _runningOn = RegExp(r'\bon (iPhone[^\n]*?|iPad[^\n]*?) in (?:debug|profile|release) mode');
+final _named = RegExp(
+  r'''(?:-d|--device|--simulator|-destination)\s+['"]?(?:platform=iOS Simulator,name=)?((?:iPhone|iPad)[^'"\n,]*)''',
+);
+
+/// The simulators [text] names: udids (`simctl boot <udid>`, `-d <udid>`) as `simulator:<udid>`, device names
+/// (`flutter run` "on iPhone 16 in debug mode", `-d "iPhone 16"`) as `simulator-name:<name>`.
+List<Uri> simulatorMentions(String text) {
+  final out = <String>{
+    for (final m in _udid.allMatches(text)) 'simulator:${m.group(0)}',
+    for (final m in [..._runningOn.allMatches(text), ..._named.allMatches(text)])
+      'simulator-name:${Uri.encodeComponent(m.group(1)!.trim())}',
+  };
+  return [for (final s in out) Uri.parse(s)];
 }

@@ -9,6 +9,7 @@ import '../../live/app_sources.dart';
 import '../../live/app_view.dart';
 import '../../live/flutter_app_io.dart';
 import '../../live/frames.dart';
+import '../../live/ios_simulator_io.dart';
 import '../../live/live_session.dart';
 import '../../live/react_native_io.dart';
 import 'screen_tools_io.dart' show runBrowser;
@@ -30,6 +31,8 @@ Future<ToolOutput> runAppTool(
   String Function(String text)? scrub,
 }) async {
   final action = (args['action'] as String?)?.trim().isNotEmpty ?? false ? args['action']! as String : 'look';
+  if (action == 'devices' || action == 'boot') return _simulators(action, args, sessions.first);
+  await IosSimulators.refresh();
   final apps = AppSources.running(sessions);
   if (action == 'list') return ToolOutput(appListText(apps));
   final source = (args['source'] as String?)?.trim() ?? '';
@@ -57,6 +60,7 @@ Future<ToolOutput> runAppTool(
   final out = switch (app.kind) {
     AppKind.flutter => await _flutter(AppSources.flutter(app.endpoint.uri), action, args, root, vision, fit, scrub),
     AppKind.reactNative => await _reactNative(AppSources.reactNative(app.endpoint.uri), action, args, fit, scrub),
+    AppKind.ios => await _ios(app.endpoint.uri.path, action, args, sessions.first, root, vision),
     AppKind.electron => await runBrowser(
       AppSources.electron(app.endpoint.uri),
       electronArgs(action, args, vision: vision),
@@ -68,6 +72,47 @@ Future<ToolOutput> runAppTool(
   };
   if (also.isEmpty) return out;
   return ToolOutput('$also${out.text}', isError: out.isError, images: out.images);
+}
+
+/// `devices` (the simulators on this Mac) and `boot {device}` (boots one and holds it for [session]).
+Future<ToolOutput> _simulators(String action, Map<String, Object?> args, String session) async {
+  if (!Platform.isMacOS) return const ToolOutput('Error: iOS Simulators need macOS.', isError: true);
+  try {
+    if (action == 'devices') {
+      final all = await IosSimulators.list();
+      if (all.isEmpty) return const ToolOutput('No iOS Simulators here (is Xcode installed?).');
+      // One line per OS version; the booted ones first.
+      final byRuntime = <String, List<String>>{};
+      for (final d in all.where((d) => !d.booted)) {
+        (byRuntime[d.runtime] ??= []).add(d.name);
+      }
+      return ToolOutput(
+        [
+          'iOS Simulators (boot one with action boot and its name):',
+          for (final d in all.where((d) => d.booted)) '- booted: ${d.name} (${d.runtime})${_heldText(d.udid, session)}',
+          for (final e in byRuntime.entries) '- ${e.key}: ${e.value.join(', ')}',
+        ].join('\n'),
+      );
+    }
+    final device = (args['device'] as String?)?.trim() ?? '';
+    if (device.isEmpty) return const ToolOutput('Error: boot needs a device (a name from devices).', isError: true);
+    final d = await IosSimulators.boot(device);
+    if (IosSimulators.claim(d.udid, session) case final other?) {
+      return ToolOutput('Error: ${d.name} is booted, but another session ($other) is using it.', isError: true);
+    }
+    return ToolOutput(
+      'Booted ${d.name} (${d.runtime}, udid ${d.udid}); this session holds it. Build for it (xcodebuild '
+      '-destination "id=${d.udid}", `flutter run -d ${d.udid}`, `npx expo run:ios --device ${d.udid}`), or use '
+      'install {path: the built .app} and launch {bundle}; then act with source: "ios".',
+    );
+  } on AppError catch (e) {
+    return ToolOutput('Error: ${e.message}', isError: true);
+  }
+}
+
+String _heldText(String udid, String session) {
+  final h = IosSimulators.holder(udid);
+  return h == null ? '' : (h == session ? ', held by this session' : ', in use by another session');
 }
 
 /// The `list` action's text.
@@ -84,7 +129,8 @@ String noAppText(List<SessionApp> apps, String source) {
   return 'Error: no Flutter, React Native or Electron app is running in this session yet. Start it in the '
       'background (bash with run_in_background: `flutter run -d <device>`, `npx expo start` / `npx react-native '
       'start`, or Electron with --remote-debugging-port=0) and call app again once it printed its address. For an '
-      'app started elsewhere, pass the address it printed as source. Web pages: use browser.';
+      'app started elsewhere, pass the address it printed as source. An iOS Simulator: devices lists them, boot '
+      'starts one. Web pages: use browser.';
 }
 
 /// The app [source] names among [apps] (a kind, a shell id), or the newest when [source] is empty.
@@ -109,7 +155,21 @@ Map<String, Object?> electronArgs(String action, Map<String, Object?> args, {req
 };
 
 /// Actions whose own line carries no app text.
-const _ours = {'look', 'snapshot', 'screenshot', 'zoom', 'submit', 'scroll', 'back', 'drag', 'reload', 'restart'};
+const _ours = {
+  'home',
+  'install',
+  'launch',
+  'look',
+  'snapshot',
+  'screenshot',
+  'zoom',
+  'submit',
+  'scroll',
+  'back',
+  'drag',
+  'reload',
+  'restart',
+};
 
 /// Actions that change what the app shows: their result says what changed.
 const _acting = {'tap', 'type', 'submit', 'scroll', 'back', 'adjust', 'long_press', 'drag'};
@@ -404,4 +464,178 @@ String _errorText(AppError e, List<String> log, String Function(String text)? sc
     return 'Error: the app action failed.\n${untrusted([e.message, if (shown.isNotEmpty) shown].join('\n'), source: _app)}';
   }
   return 'Error: ${stripHidden(e.message)}${shown.isEmpty ? '' : '\n${untrusted(shown, source: _app)}'}';
+}
+
+/// One `app` call on iOS Simulator [udid], held for [session] while it drives it.
+Future<ToolOutput> _ios(
+  String udid,
+  String action,
+  Map<String, Object?> args,
+  String session,
+  String root,
+  bool vision,
+) async {
+  String? str(String k) => (args[k] as String?)?.trim().isEmpty ?? true ? null : (args[k] as String).trim();
+  double? at(String k) => (args[k] as num?)?.toDouble();
+  if (IosSimulators.claim(udid, session) case final other?) {
+    return ToolOutput('Error: this simulator is in use by another session ($other).', isError: true);
+  }
+  final a = IosSimulators.driver(udid);
+  final name = IosSimulators.booted.where((d) => d.udid == udid).firstOrNull?.name ?? 'iOS Simulator';
+  if (!await a.control.agentTurn()) return ToolOutput(userDrivingText(a.control.hold), isError: true);
+  final gaveBack = a.control.takeGiveBack();
+  var shot = args['screenshot'] == true, list = args['snapshot'] == true || gaveBack;
+  ViewRect? zoom;
+  String? note;
+  FramePoint point(double x, double y) =>
+      a.frames.latest == null && str('frame') == null ? FramePoint(x, y) : a.frames.map(str('frame'), x, y, a.geometry);
+  try {
+    final before =
+        const {'tap', 'type', 'submit', 'scroll', 'back', 'home', 'long_press', 'drag', 'launch'}.contains(action)
+        ? await a.tree()
+        : null;
+    final String did;
+    switch (action) {
+      case 'look':
+        if (vision) {
+          shot = true;
+        } else {
+          list = true;
+        }
+        did = '';
+      case 'snapshot':
+        list = true;
+        did = '';
+      case 'screenshot':
+        shot = true;
+        did = '';
+      case 'zoom':
+        final x = at('x'), y = at('y'), w = at('width'), h = at('height');
+        if (x == null || y == null || w == null || h == null || w <= 0 || h <= 0) {
+          return const ToolOutput("Error: zoom needs x, y, width and height (in the frame's pixels).", isError: true);
+        }
+        if (a.width <= 0) await a.tree();
+        final from = point(x, y), to = point(x + w, y + h);
+        if (from.refusal ?? to.refusal case final why?) return ToolOutput('Error: $why', isError: true);
+        zoom = (left: from.x, top: from.y, width: to.x - from.x, height: to.y - from.y);
+        shot = true;
+        did = 'Zoomed into (${from.x.round()}, ${from.y.round()}) ${zoom.width.round()}×${zoom.height.round()} pt.';
+      case 'tap':
+        if (str('ref') case final ref?) {
+          did = await a.tap(ref);
+        } else if (at('x') != null && at('y') != null) {
+          if (a.width <= 0) await a.tree();
+          final p = point(at('x')!, at('y')!);
+          if (p.refusal case final why?) return ToolOutput('Error: $why', isError: true);
+          note = p.warning;
+          did = await a.tapAt(p.x, p.y);
+        } else {
+          return const ToolOutput('Error: tap needs a ref, or x and y.', isError: true);
+        }
+      case 'long_press':
+        final ref = str('ref');
+        if (ref == null) return const ToolOutput('Error: long_press needs a ref.', isError: true);
+        did = await a.longPress(ref);
+      case 'type':
+        final ref = str('ref'), text = args['text'] as String?;
+        if (ref == null || text == null) return const ToolOutput('Error: type needs a ref and text.', isError: true);
+        did = await a.type(ref, text, submit: args['submit'] == true);
+      case 'submit':
+        did = await a.submit();
+      case 'scroll':
+        did = await a.scroll(at('dy') ?? 300, ref: str('ref'));
+      case 'drag':
+        final x = at('x'), y = at('y'), tx = at('to_x'), ty = at('to_y');
+        if (x == null || y == null || tx == null || ty == null) {
+          return const ToolOutput('Error: drag needs x, y, to_x and to_y.', isError: true);
+        }
+        if (a.width <= 0) await a.tree();
+        final from = point(x, y), to = point(tx, ty);
+        if (from.refusal ?? to.refusal case final why?) return ToolOutput('Error: $why', isError: true);
+        did = await a.drag(from.x, from.y, to.x, to.y);
+      case 'back':
+        did = await a.back();
+      case 'home':
+        did = await a.home();
+      case 'install':
+        final path = str('path');
+        if (path == null) return const ToolOutput('Error: install needs a path (a built .app).', isError: true);
+        final full = path.startsWith('/') ? path : '$root/$path';
+        if (!full.endsWith('.app') || !Directory(full).existsSync()) {
+          return ToolOutput('Error: $path is not a built .app bundle.', isError: true);
+        }
+        did = await a.install(full);
+      case 'launch':
+        final bundle = str('bundle');
+        if (bundle == null) {
+          return const ToolOutput('Error: launch needs a bundle id (com.example.app).', isError: true);
+        }
+        did = await a.launch(bundle);
+      case 'adjust':
+        return const ToolOutput(
+          'Error: on the simulator, move a slider with drag (from its thumb), or tap where it should go.',
+          isError: true,
+        );
+      case 'reload' || 'restart' || 'logs' || 'eval':
+        return ToolOutput(
+          'Error: $action works on the app\'s framework source, not the simulator: use source "flutter" or '
+          '"react-native" (list shows them).',
+          isError: true,
+        );
+      default:
+        return ToolOutput('Error: unknown app action "$action".', isError: true);
+    }
+    String? changed;
+    if (before != null) {
+      await a.settle();
+      await a.tree();
+      changed = a.changedSince(before);
+      if (changed == null) {
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+        await a.tree();
+        changed = a.changedSince(before) ?? 'Nothing visible changed on screen.';
+      }
+    }
+    final listed = list ? await a.snapshot(name: name) : null;
+    final body = _body(
+      did,
+      changed: changed,
+      listed: listed,
+      log: const [],
+      action: action,
+      ours: _ours.contains(action),
+    );
+    final notes = [if (gaveBack) gaveBackText, ?note].join('\n');
+    final text = notes.isEmpty ? body : '$notes\n$body';
+    if (!shot) return ToolOutput(text);
+    a.control.report(const LiveActivity('look', caption: 'Looking'));
+    final (png, frame) = await a.frameShot(region: zoom);
+    final dir = Directory('$root/.everyai/scratch/screenshots')..createSync(recursive: true);
+    final path = '${dir.path}/sim-${DateTime.now().millisecondsSinceEpoch}.png';
+    File(path).writeAsBytesSync(png);
+    final shown = path.startsWith('$root/') ? path.substring(root.length + 1) : path;
+    final url = vision ? await Isolate.run(() => imageDataUrl(png, 'png')) : null;
+    if (url == null) {
+      return ToolOutput(
+        "${text.isEmpty ? '' : '$text\n'}Saved a screenshot to $shown (this model can't view images: use snapshot, "
+        'and tap by ref).',
+      );
+    }
+    final where = frame.zoomed
+        ? 'a zoom of part of $name at ${frame.imageWidth}×${frame.imageHeight}'
+        : '$name at ${frame.imageWidth}×${frame.imageHeight}';
+    return ToolOutput(
+      [
+        if (text.isNotEmpty) text,
+        'Frame ${frame.id}: $where ($shown). To tap something in it, pass frame: "${frame.id}" with x and y in this '
+            "picture's pixels; snapshot lists its elements to tap by ref.",
+      ].join('\n'),
+      images: [(label: path, dataUrl: url)],
+    );
+  } on AppError catch (e) {
+    return ToolOutput('Error: ${stripHidden(e.message)}', isError: true);
+  } on Object catch (e) {
+    // AXe missing and its download failed, or simctl gone.
+    return ToolOutput("Error: the simulator couldn't be driven: $e", isError: true);
+  }
 }
