@@ -72,6 +72,13 @@ final class ReactNativeApp {
     _ws = ws;
     ws.listen(_onMessage, onDone: () => _closed(ws), onError: (Object _) => _closed(ws));
     await _send('Runtime.enable').timeout(const Duration(seconds: 5), onTimeout: () => const {});
+    // A runtime that started while a debugger was attached (our socket across a reload) can wait for one to say go;
+    // Chrome DevTools sends this on every attach. Older runtimes don't know it.
+    try {
+      await _send('Runtime.runIfWaitingForDebugger').timeout(const Duration(seconds: 3), onTimeout: () => const {});
+    } on AppError {
+      // Not supported: nothing waits.
+    }
   }
 
   static bool _isRn(Map<String, Object?> t) =>
@@ -143,7 +150,12 @@ final class ReactNativeApp {
       const Duration(seconds: 20),
       onTimeout: () {
         _calls.remove(id);
-        throw AppError("The app didn't answer $method in 20 s (paused in the debugger?).");
+        // Drop the socket so a stuck connection isn't reused (and doesn't hold the app); the next call reconnects.
+        if (identical(_ws, ws)) unawaited(close());
+        throw AppError(
+          "The app didn't answer $method in 20 s (still loading after a reload, or paused in a debugger). Disconnected; "
+          'the next call connects again.',
+        );
       },
     );
   }
@@ -244,7 +256,9 @@ final class ReactNativeApp {
         client.close(force: true);
       }
     }
-    // The old connection ends with the bundle; the next call connects again.
+    // Detach now: a debugger still attached while the new bundle starts can leave the app waiting for it (#31). The
+    // next call connects again, to the new runtime.
+    await close();
     await Future<void>.delayed(const Duration(milliseconds: 1500));
     return 'Reloaded the app (its state is reset).';
   }

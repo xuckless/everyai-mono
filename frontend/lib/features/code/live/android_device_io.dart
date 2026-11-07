@@ -4,6 +4,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:xml/xml.dart';
 
 import 'adb_io.dart';
@@ -56,6 +57,9 @@ abstract final class AndroidDevices {
 
   /// The devices ready to drive, as last read (see [refresh]).
   static List<AdbDevice> get ready => _ready;
+
+  @visibleForTesting
+  static set ready(List<AdbDevice> devices) => _ready = devices;
 
   static Future<List<AdbDevice>> refresh({Duration every = const Duration(seconds: 3)}) async {
     if (AndroidSdk.adb == null || DateTime.now().difference(_readAt) < every) return _ready;
