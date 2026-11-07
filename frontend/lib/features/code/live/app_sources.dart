@@ -10,6 +10,7 @@ import '../shells/shell_log.dart';
 import '../shells/shell_registry.dart';
 import 'app_endpoints.dart';
 import 'flutter_app_io.dart';
+import 'android_device_io.dart';
 import 'ios_simulator_io.dart';
 import 'react_native_io.dart';
 
@@ -29,6 +30,7 @@ final class SessionApp {
       final udid = endpoint.uri.path;
       return IosSimulators.booted.where((d) => d.udid == udid).firstOrNull?.name ?? 'iOS Simulator';
     }
+    if (kind == AppKind.android) return AndroidDevices.driver(endpoint.uri.path).label;
     final where = shell == null ? endpoint.uri.toString() : '${shell!.id}: ${shell!.title}';
     return '${kind.label} app ($where)';
   }
@@ -58,7 +60,11 @@ abstract final class AppSources {
     final seen = <AppEndpoint>{};
     final ids = sessions.toList();
     void add(AppEndpoint ep, ShellEntry? shell) {
-      final resolved = ep.kind == AppKind.ios ? _bootedSimulator(ep, ids) : ep;
+      final resolved = switch (ep.kind) {
+        AppKind.ios => _bootedSimulator(ep, ids),
+        AppKind.android => _readyAndroid(ep, ids),
+        _ => ep,
+      };
       if (resolved != null && seen.add(resolved)) out.add(SessionApp(resolved, shell: shell));
     }
 
@@ -66,7 +72,7 @@ abstract final class AppSources {
       for (final e in ShellRegistry.instance.of(session)) {
         // A simulator the app was started on stays the session's after the build command ends.
         for (final found in _scan(e)) {
-          if (e.running || found.kind == AppKind.ios) add(found, e);
+          if (e.running || found.kind == AppKind.ios || found.kind == AppKind.android) add(found, e);
         }
       }
       for (final p in _pointed[session] ?? const <AppEndpoint>[]) {
@@ -75,8 +81,25 @@ abstract final class AppSources {
       for (final udid in IosSimulators.heldBy(session)) {
         add(AppEndpoint(AppKind.ios, Uri.parse('simulator:$udid')), null);
       }
+      for (final serial in AndroidDevices.holds.heldBy(session)) {
+        add(AppEndpoint(AppKind.android, Uri.parse('android:$serial')), null);
+      }
     }
     return out;
+  }
+
+  /// [ep] (an Android mention) as `android:<serial>` of a ready device no rival of [sessions] holds.
+  static AppEndpoint? _readyAndroid(AppEndpoint ep, List<String> sessions) {
+    final ready = AndroidDevices.ready;
+    String norm(String s) => s.toLowerCase().replaceAll(RegExp('[_ ]+'), ' ').trim();
+    final want = Uri.decodeComponent(ep.uri.path);
+    final d = ep.uri.scheme == 'android'
+        ? ready.where((d) => d.serial == want).firstOrNull
+        : ready.where((d) => norm(d.model) == norm(want) || norm(d.name) == norm(want)).firstOrNull;
+    if (d == null) return null;
+    final holder = AndroidDevices.holds.holder(d.serial);
+    if (holder != null && !sessions.contains(holder)) return null;
+    return AppEndpoint(AppKind.android, Uri.parse('android:${d.serial}'));
   }
 
   /// [ep] (a simulator mention) as `simulator:<udid>` of a booted simulator no other of [sessions]' rivals holds.
@@ -167,6 +190,7 @@ abstract final class AppSources {
     AppKind.reactNative => _rn[app.endpoint.uri],
     AppKind.electron => _electron[app.endpoint.uri],
     AppKind.ios => IosSimulators.driver(app.endpoint.uri.path),
+    AppKind.android => AndroidDevices.driver(app.endpoint.uri.path),
   };
 
   /// Disconnects from apps whose shells ended and forgets session [session]'s pointed apps (the session was
@@ -174,6 +198,7 @@ abstract final class AppSources {
   static Future<void> release(String session) async {
     _pointed.remove(session);
     IosSimulators.release(session);
+    AndroidDevices.holds.release(session);
     final live = {
       for (final s in ShellRegistry.instance.sessions)
         for (final a in running([s])) a.endpoint.uri,

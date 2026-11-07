@@ -22,11 +22,12 @@ const appToolDescription =
     '- Flutter: reload is hot reload (state kept), restart hot restart; eval runs a Dart expression in the app\'s '
     'main library (its top-level names are in scope; widget state is not). React Native: no screenshot here '
     '(look at the simulator or emulator), reload reloads the bundle, eval runs JavaScript. Electron: the browser '
-    'tool\'s actions on the app\'s window. iOS Simulator (source "ios"): the simulator the app runs on, for any app '
-    '(native, Flutter, React Native): its accessibility elements, screenshots, taps, typing and swipes, home; '
-    'devices lists simulators, boot starts one headless, install puts a built .app on it, launch starts an app by '
-    'bundle id (fresh). eval, reload, restart, logs and adjust don\'t apply there. One session drives a simulator at '
-    'a time.\n'
+    'tool\'s actions on the app\'s window. Device screens, for any app on them (native, Flutter, React Native): an '
+    'iOS Simulator (source "ios", coordinates in points) or an Android emulator or device (source "android", '
+    'pixels): accessibility elements, screenshots, taps, typing and swipes, back, home. devices lists them, boot '
+    'starts one headless, install puts a built app on it (.app, .apk), launch starts one fresh (bundle: its bundle '
+    'id or package). logs is logcat of the app in front on Android; eval, reload, restart and adjust don\'t apply to '
+    'device screens. One session drives a device at a time.\n'
     '- Every action reports what the app logged since the last one (prints, errors); logs reads it alone.\n'
     '- The user may take control in the Preview; your actions then wait until they give it back. It never types '
     'into password fields: the user does that.';
@@ -60,7 +61,8 @@ const appToolProperties = <String, Object?>{
   'action': {'type': 'string', 'enum': appToolActions},
   'source': {
     'type': 'string',
-    'description': 'Which app: flutter, react-native, electron, ios, a shell id (bg_2), or an address it printed',
+    'description':
+        'Which app: flutter, react-native, electron, ios, android, a shell id (bg_2), or an address it printed',
   },
   'ref': {'type': 'string', 'description': 'An element of the last element list (s12, r3, ref_4)'},
   'frame': {'type': 'string', 'description': 'The screenshot (f_N) that x and y are in'},
@@ -75,9 +77,9 @@ const appToolProperties = <String, Object?>{
   'to_y': {'type': 'number'},
   'steps': {'type': 'integer', 'description': "adjust: the slider's steps to move (negative: down)"},
   'script': {'type': 'string'},
-  'device': {'type': 'string', 'description': 'boot: a simulator name from devices (iPhone 16)'},
-  'path': {'type': 'string', 'description': 'install: the built .app bundle'},
-  'bundle': {'type': 'string', 'description': 'launch: the app\'s bundle id (com.example.app)'},
+  'device': {'type': 'string', 'description': 'boot: a name from devices (iPhone 16, Pixel_9_API_36)'},
+  'path': {'type': 'string', 'description': 'install: the built app (.app for iOS, .apk for Android)'},
+  'bundle': {'type': 'string', 'description': 'launch: the bundle id (iOS) or package (Android), com.example.app'},
   'screenshot': {'type': 'boolean', 'description': 'Also return a screenshot after the action'},
   'snapshot': {'type': 'boolean', 'description': 'Also return the element list after the action'},
 };

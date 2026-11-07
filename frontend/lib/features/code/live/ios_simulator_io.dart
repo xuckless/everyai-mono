@@ -3,13 +3,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:isolate';
 import 'dart:typed_data';
-
-import 'package:image/image.dart' as img;
 
 import 'app_view.dart';
 import 'axe_install.dart';
+import 'device_screen.dart';
 import 'frames.dart';
 import 'live_session.dart';
 
@@ -31,7 +29,7 @@ final class SimDevice {
 abstract final class IosSimulators {
   static List<SimDevice> _booted = const [];
   static DateTime _readAt = DateTime.fromMillisecondsSinceEpoch(0);
-  static final _holders = <String, String>{};
+  static final holds = DeviceHolds();
   static final _drivers = <String, IosSimulator>{};
 
   /// The booted simulators as last read (see [refresh]).
@@ -81,24 +79,16 @@ abstract final class IosSimulators {
   }
 
   /// The session holding simulator [udid], if any.
-  static String? holder(String udid) => _holders[udid];
+  static String? holder(String udid) => holds.holder(udid);
 
   /// Lets [session] drive [udid]; the holding session's id when another one holds it.
-  static String? claim(String udid, String session) {
-    final h = _holders[udid];
-    if (h != null && h != session) return h;
-    _holders[udid] = session;
-    return null;
-  }
+  static String? claim(String udid, String session) => holds.claim(udid, session);
 
   /// The simulators [session] holds.
-  static Iterable<String> heldBy(String session) => [
-    for (final e in _holders.entries)
-      if (e.value == session) e.key,
-  ];
+  static Iterable<String> heldBy(String session) => holds.heldBy(session);
 
   /// Gives back what [session] holds (the session was removed or stopped).
-  static void release(String session) => _holders.removeWhere((_, s) => s == session);
+  static void release(String session) => holds.release(session);
 
   /// The driver of simulator [udid] (one per simulator).
   static IosSimulator driver(String udid) => _drivers.putIfAbsent(udid, () => IosSimulator(udid));
@@ -130,25 +120,45 @@ List<SimDevice> parseSimctlDevices(String json) {
 
 /// A booted iOS Simulator, driven through AXe: its accessibility tree (points), taps, typing and gestures as
 /// touches, and pictures of its screen. Nothing needs Simulator.app or the Screen Recording permission.
-final class IosSimulator {
+final class IosSimulator implements DeviceScreen {
   IosSimulator(this.udid);
 
   final String udid;
 
   /// Who drives it, and the agent's actions for the Preview.
+  @override
   final control = LiveControl();
+  @override
   final frames = FrameBook();
 
   /// The screen in points, as of the last tree.
+  @override
   var width = 0.0;
+  @override
   var height = 0.0;
   List<AppNode> _last = const [];
   var _nodes = <String, AppNode>{};
+  var _treeAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// The tree, read again unless it was read just now (the tool reads one before each action).
+  Future<List<AppNode>> _fresh() async =>
+      DateTime.now().difference(_treeAt) < const Duration(milliseconds: 1500) ? _last : tree();
 
   /// Identity (type, label, id, occurrence) to ref: a ref names one element while it is there.
   final _refs = <String, String>{};
   var _next = 0;
 
+  @override
+  String get label => IosSimulators.booted.where((d) => d.udid == udid).firstOrNull?.name ?? 'iOS Simulator';
+  @override
+  String get installs => 'a built .app';
+  @override
+  String get launches => 'bundle id';
+
+  @override
+  Future<List<String>?> logs() async => null;
+
+  @override
   ViewGeometry get geometry => ViewGeometry(width.round(), height.round());
   List<AppNode> get lastTree => _last;
 
@@ -176,6 +186,7 @@ final class IosSimulator {
   }
 
   /// The screen's element list now.
+  @override
   Future<List<AppNode>> tree() async {
     final raw = await _axe(['describe-ui']);
     final Object? json;
@@ -202,12 +213,14 @@ final class IosSimulator {
     }
     _last = nodes;
     _nodes = {for (final n in nodes) n.ref: n};
+    _treeAt = DateTime.now();
     return nodes;
   }
 
-  Future<String> snapshot({String name = 'iOS Simulator'}) async {
+  @override
+  Future<String> snapshot() async {
     final nodes = await tree();
-    return appTreeText('$name (screen ${width.round()}×${height.round()} pt)', nodes, width: width, height: height);
+    return appTreeText('$label (screen ${width.round()}×${height.round()} pt)', nodes, width: width, height: height);
   }
 
   AppNode _node(String ref) {
@@ -219,16 +232,18 @@ final class IosSimulator {
 
   static String _n(double v) => v.toStringAsFixed(1);
 
+  @override
   Future<String> tap(String ref) async {
-    await tree();
+    await _fresh();
     final n = _node(ref);
     _report('click', n, 'Tapping');
     await _axe(['tap', '-x', _n(n.centreX), '-y', _n(n.centreY)]);
     return 'Tapped $ref ${n.role}${n.name.isEmpty ? '' : ' "${n.name}"'}.';
   }
 
+  @override
   Future<String> tapAt(double x, double y) async {
-    final hit = _hit(await tree(), x, y);
+    final hit = hitNode(await _fresh(), x, y);
     control.report(LiveActivity('click', x: x, y: y, caption: 'Tapping'));
     await _axe(['tap', '-x', _n(x), '-y', _n(y)]);
     final on = hit == null
@@ -237,18 +252,9 @@ final class IosSimulator {
     return 'Tapped at (${x.round()}, ${y.round()})$on.';
   }
 
-  static AppNode? _hit(List<AppNode> nodes, double x, double y) {
-    AppNode? best;
-    double area(AppNode n) => (n.right! - n.left!) * (n.bottom! - n.top!);
-    for (final n in nodes) {
-      if (!n.placed || x < n.left! || x > n.right! || y < n.top! || y > n.bottom!) continue;
-      if (best == null || area(n) < area(best)) best = n;
-    }
-    return best;
-  }
-
+  @override
   Future<String> longPress(String ref) async {
-    await tree();
+    await _fresh();
     final n = _node(ref);
     _report('click', n, 'Long-pressing');
     await _axe(['touch', '-x', _n(n.centreX), '-y', _n(n.centreY), '--down', '--up', '--delay', '1.0']);
@@ -256,8 +262,9 @@ final class IosSimulator {
   }
 
   /// Types [text] into field [ref], replacing what it held (select all, then the keys), and checks it.
+  @override
   Future<String> type(String ref, String text, {bool submit = false}) async {
-    await tree();
+    await _fresh();
     final n = _node(ref);
     if (n.secret) {
       throw AppError('$ref is a password field: the agent never types into one. Ask the user to type it.');
@@ -288,14 +295,16 @@ final class IosSimulator {
   }
 
   /// Presses Return (the keyboard's action key).
+  @override
   Future<String> submit() async {
     await _axe(['key', '40']);
     return 'Pressed Return.';
   }
 
   /// Scrolls by [dy] points (positive: down, so the finger moves up) over [ref] or the screen's middle.
+  @override
   Future<String> scroll(double dy, {String? ref}) async {
-    await tree();
+    await _fresh();
     var x = width / 2, y = height / 2;
     if (ref != null) {
       final n = _node(ref);
@@ -321,6 +330,7 @@ final class IosSimulator {
     return 'Scrolled ${dy >= 0 ? 'down' : 'up'} about ${dy.abs().round()} pt.';
   }
 
+  @override
   Future<String> drag(double x, double y, double toX, double toY) async {
     control.report(LiveActivity('click', x: x, y: y, caption: 'Dragging'));
     await _axe([
@@ -341,8 +351,9 @@ final class IosSimulator {
 
   /// iOS has no system back button: the navigation bar's own back button when there is one (top left), else a
   /// swipe in from the left edge (what navigation stacks take as back).
+  @override
   Future<String> back() async {
-    final nodes = await tree();
+    final nodes = await _fresh();
     final bar = nodes
         .where((n) => n.role == 'button' && n.placed && n.top! < 130 && n.left! < 40 && n.right! < width * 0.5)
         .firstOrNull;
@@ -370,6 +381,7 @@ final class IosSimulator {
   }
 
   /// Installs the `.app` bundle at [path] on the simulator.
+  @override
   Future<String> install(String path) async {
     final r = await Process.run('xcrun', ['simctl', 'install', udid, path]);
     if (r.exitCode != 0) throw AppError("Couldn't install $path: ${'${r.stderr}'.trim()}");
@@ -377,7 +389,9 @@ final class IosSimulator {
   }
 
   /// Launches the app with [bundle] id (terminating a running copy first), so it starts fresh.
-  Future<String> launch(String bundle) async {
+  @override
+  Future<String> launch(String app) async {
+    final bundle = app;
     control.report(LiveActivity('look', caption: 'Launching $bundle'));
     final r = await Process.run('xcrun', ['simctl', 'launch', '--terminate-running-process', udid, bundle]);
     if (r.exitCode != 0) throw AppError("Couldn't launch $bundle: ${'${r.stderr}'.trim()}");
@@ -385,6 +399,7 @@ final class IosSimulator {
     return 'Launched $bundle.';
   }
 
+  @override
   Future<String> home() async {
     control.report(const LiveActivity('look', caption: 'Going home'));
     await _axe(['button', 'home']);
@@ -392,31 +407,21 @@ final class IosSimulator {
   }
 
   /// Gives the app time to answer a touch (the simulator reports no frames).
+  @override
   Future<void> settle() => Future<void>.delayed(const Duration(milliseconds: 500));
 
+  @override
   String? changedSince(List<AppNode> before) => appTreeChange(before, _last, width: width, height: height);
 
   /// A picture of [region] (points; null: the whole screen), sized for the model, and its frame.
+  @override
   Future<(List<int>, AgentFrame)> frameShot({ViewRect? region}) async {
     await tree();
     final png = await _screenshot();
     final r = region ?? (left: 0.0, top: 0.0, width: width, height: height);
     final size = agentImageSize(r.width, r.height, scale: region == null ? 1.0 : 2.0);
     final f = frames.record(imageWidth: size.width, imageHeight: size.height, geometry: geometry, region: region);
-    final w = width;
-    final out = await Isolate.run(() {
-      var image = img.decodePng(png);
-      if (image == null) return png;
-      final scale = image.width / w;
-      image = img.copyCrop(
-        image,
-        x: (r.left * scale).round(),
-        y: (r.top * scale).round(),
-        width: (r.width * scale).round(),
-        height: (r.height * scale).round(),
-      );
-      return img.encodePng(img.copyResize(image, width: size.width, height: size.height));
-    });
+    final out = await cropForModel(png, width, r, size);
     return (out, f);
   }
 

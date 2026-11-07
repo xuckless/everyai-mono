@@ -7,7 +7,8 @@ enum AppKind {
   flutter('Flutter'),
   reactNative('React Native'),
   electron('Electron'),
-  ios('iOS Simulator');
+  ios('iOS Simulator'),
+  android('Android');
 
   const AppKind(this.label);
   final String label;
@@ -18,6 +19,7 @@ enum AppKind {
     reactNative => 'react-native',
     electron => 'electron',
     ios => 'ios',
+    android => 'android',
   };
 }
 
@@ -29,7 +31,7 @@ final class AppEndpoint {
   /// Flutter: the VM service (`http://127.0.0.1:PORT/TOKEN=/`); Electron: the browser's DevTools socket
   /// (`ws://127.0.0.1:PORT/devtools/browser/ID`); React Native: Metro's server (`http://127.0.0.1:8081`); iOS
   /// Simulator: `simulator:<udid>`, or `simulator-name:<name>` for one an output names (resolved against the booted
-  /// ones).
+  /// ones); Android: `android:<serial>`, or `android-name:<model>` (resolved against the devices adb sees).
   final Uri uri;
 
   @override
@@ -86,6 +88,7 @@ List<AppEndpoint> detectAppEndpoints(String output) {
   return [
     for (final e in out) AppEndpoint(e.key, e.value.uri),
     for (final s in simulatorMentions(text)) AppEndpoint(AppKind.ios, s),
+    for (final s in androidMentions(text)) AppEndpoint(AppKind.android, s),
   ];
 }
 
@@ -94,6 +97,27 @@ final _runningOn = RegExp(r'\bon (iPhone[^\n]*?|iPad[^\n]*?) in (?:debug|profile
 final _named = RegExp(
   r'''(?:-d|--device|--simulator|-destination)\s+['"]?(?:platform=iOS Simulator,name=)?((?:iPhone|iPad)[^'"\n,]*)''',
 );
+
+final _serial = RegExp(r'\b(emulator-\d{4,5})\b');
+final _adbSerial = RegExp(
+  r'''(?:\badb\s+-s|\bflutter\s+run\b[^\n]*?(?:-d|--device-id))\s+['"]?([A-Za-z0-9._:-]{6,})''',
+);
+final _flutterAndroid = RegExp(
+  r'\bon (sdk gphone[^\n]*?|Pixel[^\n]*?|SM[- ][^\n]*?|Android[^\n]*?) in (?:debug|profile|release) mode',
+);
+
+/// The Android devices [text] names: serials (`emulator-5554`, `adb -s <serial>`, `flutter run -d <serial>`) as
+/// `android:<serial>`, and the model `flutter run` prints ("on sdk gphone64 arm64 in debug mode") as
+/// `android-name:<model>`.
+List<Uri> androidMentions(String text) {
+  final out = <String>{
+    for (final m in _serial.allMatches(text)) 'android:${m.group(1)}',
+    for (final m in _adbSerial.allMatches(text))
+      if (!m.group(1)!.contains(RegExp('[A-F0-9]{8}-'))) 'android:${m.group(1)}',
+    for (final m in _flutterAndroid.allMatches(text)) 'android-name:${Uri.encodeComponent(m.group(1)!.trim())}',
+  };
+  return [for (final s in out) Uri.parse(s)];
+}
 
 /// The simulators [text] names: udids (`simctl boot <udid>`, `-d <udid>`) as `simulator:<udid>`, device names
 /// (`flutter run` "on iPhone 16 in debug mode", `-d "iPhone 16"`) as `simulator-name:<name>`.

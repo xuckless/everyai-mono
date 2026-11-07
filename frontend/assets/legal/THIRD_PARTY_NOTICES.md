@@ -514,3 +514,12 @@ POSSIBILITY OF SUCH DAMAGE.
 - **Where:** not bundled. Downloaded on first use from the GitHub release into the app's data folder
   (`tools/axe-1.8.0/`) and checked against our pinned SHA-256 (`frontend/lib/features/code/live/axe_pin.dart`).
 - **License:** MIT, Copyright (c) 2025 Cameron Cooke; idb: MIT, Copyright (c) Meta Platforms, Inc. and affiliates.
+
+## scrcpy server 5.0.1 (Genymobile/scrcpy @ v5.0.1)
+
+- **What:** `scrcpy-server`, the release's server file, unmodified. EveryAI pushes it to an Android device or
+  emulator and runs it there for the Preview's live picture and for touches, keys and text; the client side
+  (`frontend/lib/features/code/live/scrcpy_io.dart`) is our own code speaking its protocol.
+- **Where:** not bundled. Downloaded on first use from the GitHub release into the app's data folder
+  (`tools/scrcpy-5.0.1/`) and checked against the release's SHA-256 (`frontend/lib/features/code/live/scrcpy_pin.dart`).
+- **License:** Apache License 2.0, Copyright (C) 2018 Genymobile, Copyright (C) 2018-2026 Romain Vimont.

@@ -9,6 +9,9 @@ import '../../live/app_sources.dart';
 import '../../live/app_view.dart';
 import '../../live/flutter_app_io.dart';
 import '../../live/frames.dart';
+import '../../live/adb_io.dart';
+import '../../live/android_device_io.dart';
+import '../../live/device_screen.dart';
 import '../../live/ios_simulator_io.dart';
 import '../../live/live_session.dart';
 import '../../live/react_native_io.dart';
@@ -31,8 +34,8 @@ Future<ToolOutput> runAppTool(
   String Function(String text)? scrub,
 }) async {
   final action = (args['action'] as String?)?.trim().isNotEmpty ?? false ? args['action']! as String : 'look';
-  if (action == 'devices' || action == 'boot') return _simulators(action, args, sessions.first);
-  await IosSimulators.refresh();
+  if (action == 'devices' || action == 'boot') return _devices(action, args, sessions.first);
+  await Future.wait([IosSimulators.refresh(), AndroidDevices.refresh()]);
   final apps = AppSources.running(sessions);
   if (action == 'list') return ToolOutput(appListText(apps));
   final source = (args['source'] as String?)?.trim() ?? '';
@@ -60,7 +63,28 @@ Future<ToolOutput> runAppTool(
   final out = switch (app.kind) {
     AppKind.flutter => await _flutter(AppSources.flutter(app.endpoint.uri), action, args, root, vision, fit, scrub),
     AppKind.reactNative => await _reactNative(AppSources.reactNative(app.endpoint.uri), action, args, fit, scrub),
-    AppKind.ios => await _ios(app.endpoint.uri.path, action, args, sessions.first, root, vision),
+    AppKind.ios => await _device(
+      IosSimulators.driver(app.endpoint.uri.path),
+      IosSimulators.holds,
+      app.endpoint.uri.path,
+      action,
+      args,
+      sessions.first,
+      root,
+      vision,
+      scrub,
+    ),
+    AppKind.android => await _device(
+      AndroidDevices.driver(app.endpoint.uri.path),
+      AndroidDevices.holds,
+      app.endpoint.uri.path,
+      action,
+      args,
+      sessions.first,
+      root,
+      vision,
+      scrub,
+    ),
     AppKind.electron => await runBrowser(
       AppSources.electron(app.endpoint.uri),
       electronArgs(action, args, vision: vision),
@@ -74,44 +98,78 @@ Future<ToolOutput> runAppTool(
   return ToolOutput('$also${out.text}', isError: out.isError, images: out.images);
 }
 
-/// `devices` (the simulators on this Mac) and `boot {device}` (boots one and holds it for [session]).
-Future<ToolOutput> _simulators(String action, Map<String, Object?> args, String session) async {
-  if (!Platform.isMacOS) return const ToolOutput('Error: iOS Simulators need macOS.', isError: true);
+/// `devices` (iOS Simulators, Android devices and virtual devices here) and `boot {device}` (starts one and holds it
+/// for [session]).
+Future<ToolOutput> _devices(String action, Map<String, Object?> args, String session) async {
   try {
     if (action == 'devices') {
-      final all = await IosSimulators.list();
-      if (all.isEmpty) return const ToolOutput('No iOS Simulators here (is Xcode installed?).');
-      // One line per OS version; the booted ones first.
-      final byRuntime = <String, List<String>>{};
-      for (final d in all.where((d) => !d.booted)) {
-        (byRuntime[d.runtime] ??= []).add(d.name);
+      final lines = <String>[];
+      if (Platform.isMacOS) {
+        final all = await IosSimulators.list();
+        // One line per OS version; the booted ones first.
+        final byRuntime = <String, List<String>>{};
+        for (final d in all.where((d) => !d.booted)) {
+          (byRuntime[d.runtime] ??= []).add(d.name);
+        }
+        if (all.isNotEmpty) lines.add('iOS Simulators (source "ios"):');
+        for (final d in all.where((d) => d.booted)) {
+          lines.add('- booted: ${d.name} (${d.runtime})${_heldText(IosSimulators.holds, d.udid, session)}');
+        }
+        for (final e in byRuntime.entries) {
+          lines.add('- ${e.key}: ${e.value.join(', ')}');
+        }
       }
-      return ToolOutput(
-        [
-          'iOS Simulators (boot one with action boot and its name):',
-          for (final d in all.where((d) => d.booted)) '- booted: ${d.name} (${d.runtime})${_heldText(d.udid, session)}',
-          for (final e in byRuntime.entries) '- ${e.key}: ${e.value.join(', ')}',
-        ].join('\n'),
-      );
+      if (AndroidSdk.adb != null) {
+        final running = await AndroidDevices.list();
+        final avds = await AndroidDevices.avds();
+        final up = {for (final d in running) d.avd};
+        lines.add('Android (source "android"):');
+        for (final d in running) {
+          lines.add(
+            '- ${d.ready ? 'running' : d.state}: ${d.name} (${d.serial})${_heldText(AndroidDevices.holds, d.serial, session)}',
+          );
+        }
+        final off = avds.where((a) => !up.contains(a)).toList();
+        if (off.isNotEmpty) lines.add('- virtual devices: ${off.join(', ')}');
+        if (running.isEmpty && off.isEmpty) lines.add('- none (make a virtual device in Android Studio)');
+      }
+      if (lines.isEmpty) return const ToolOutput('No iOS Simulators or Android devices here.');
+      return ToolOutput(['Boot one with action boot and its name.', ...lines].join('\n'));
     }
     final device = (args['device'] as String?)?.trim() ?? '';
     if (device.isEmpty) return const ToolOutput('Error: boot needs a device (a name from devices).', isError: true);
-    final d = await IosSimulators.boot(device);
-    if (IosSimulators.claim(d.udid, session) case final other?) {
-      return ToolOutput('Error: ${d.name} is booted, but another session ($other) is using it.', isError: true);
+    final sims = Platform.isMacOS ? await IosSimulators.list() : const <SimDevice>[];
+    final isSim = sims.any((d) => d.udid == device || d.name.toLowerCase() == device.toLowerCase());
+    if (isSim) {
+      final d = await IosSimulators.boot(device);
+      if (IosSimulators.claim(d.udid, session) case final other?) {
+        return ToolOutput('Error: ${d.name} is booted, but another session ($other) is using it.', isError: true);
+      }
+      return ToolOutput(
+        'Booted ${d.name} (${d.runtime}, udid ${d.udid}); this session holds it. Build for it (xcodebuild '
+        '-destination "id=${d.udid}", `flutter run -d ${d.udid}`, `npx expo run:ios --device ${d.udid}`), or use '
+        'install {path: the built .app} and launch {bundle}; then act with source: "ios".',
+      );
+    }
+    if (AndroidSdk.adb == null) {
+      return ToolOutput('Error: no simulator or device called "$device" (devices lists them).', isError: true);
+    }
+    final d = await AndroidDevices.boot(device);
+    if (AndroidDevices.holds.claim(d.serial, session) case final other?) {
+      return ToolOutput('Error: ${d.name} is running, but another session ($other) is using it.', isError: true);
     }
     return ToolOutput(
-      'Booted ${d.name} (${d.runtime}, udid ${d.udid}); this session holds it. Build for it (xcodebuild '
-      '-destination "id=${d.udid}", `flutter run -d ${d.udid}`, `npx expo run:ios --device ${d.udid}`), or use '
-      'install {path: the built .app} and launch {bundle}; then act with source: "ios".',
+      'Started ${d.name} (${d.serial}); this session holds it. Run the app on it (`flutter run -d ${d.serial}`, '
+      '`npx expo run:android`, `./gradlew installDebug`), or use install {path: an .apk} and launch {bundle: the '
+      'package}; then act with source: "android".',
     );
   } on AppError catch (e) {
     return ToolOutput('Error: ${e.message}', isError: true);
   }
 }
 
-String _heldText(String udid, String session) {
-  final h = IosSimulators.holder(udid);
+String _heldText(DeviceHolds holds, String id, String session) {
+  final h = holds.holder(id);
   return h == null ? '' : (h == session ? ', held by this session' : ', in use by another session');
 }
 
@@ -276,8 +334,11 @@ Future<ToolOutput> _flutter(
     }
     String? changed;
     if (before != null) {
-      await a.settle();
-      await a.tree();
+      // type reads the screen itself to check the field.
+      if (action != 'type') {
+        await a.settle();
+        await a.tree();
+      }
       changed = a.changedSince(before);
       if (changed == null) {
         // Some changes come a moment later (a gesture decided on a timer, an animation's end): look again.
@@ -466,22 +527,26 @@ String _errorText(AppError e, List<String> log, String Function(String text)? sc
   return 'Error: ${stripHidden(e.message)}${shown.isEmpty ? '' : '\n${untrusted(shown, source: _app)}'}';
 }
 
-/// One `app` call on iOS Simulator [udid], held for [session] while it drives it.
-Future<ToolOutput> _ios(
-  String udid,
+/// One `app` call on a phone or tablet screen ([a], an iOS Simulator or an Android device), held for [session]
+/// while it drives it.
+Future<ToolOutput> _device(
+  DeviceScreen a,
+  DeviceHolds holds,
+  String id,
   String action,
   Map<String, Object?> args,
   String session,
   String root,
   bool vision,
+  String Function(String text)? scrub,
 ) async {
   String? str(String k) => (args[k] as String?)?.trim().isEmpty ?? true ? null : (args[k] as String).trim();
   double? at(String k) => (args[k] as num?)?.toDouble();
-  if (IosSimulators.claim(udid, session) case final other?) {
-    return ToolOutput('Error: this simulator is in use by another session ($other).', isError: true);
+  if (holds.claim(id, session) case final other?) {
+    return ToolOutput('Error: this device is in use by another session ($other).', isError: true);
   }
-  final a = IosSimulators.driver(udid);
-  final name = IosSimulators.booted.where((d) => d.udid == udid).firstOrNull?.name ?? 'iOS Simulator';
+  final name = a.label;
+  final android = a is AndroidDevice;
   if (!await a.control.agentTurn()) return ToolOutput(userDrivingText(a.control.hold), isError: true);
   final gaveBack = a.control.takeGiveBack();
   var shot = args['screenshot'] == true, list = args['snapshot'] == true || gaveBack;
@@ -559,26 +624,41 @@ Future<ToolOutput> _ios(
         did = await a.home();
       case 'install':
         final path = str('path');
-        if (path == null) return const ToolOutput('Error: install needs a path (a built .app).', isError: true);
+        if (path == null) return ToolOutput('Error: install needs a path (${a.installs}).', isError: true);
         final full = path.startsWith('/') ? path : '$root/$path';
-        if (!full.endsWith('.app') || !Directory(full).existsSync()) {
-          return ToolOutput('Error: $path is not a built .app bundle.', isError: true);
-        }
+        final fits = android
+            ? full.endsWith('.apk') && File(full).existsSync()
+            : full.endsWith('.app') && Directory(full).existsSync();
+        if (!fits) return ToolOutput('Error: $path is not ${a.installs} here.', isError: true);
         did = await a.install(full);
       case 'launch':
         final bundle = str('bundle');
         if (bundle == null) {
-          return const ToolOutput('Error: launch needs a bundle id (com.example.app).', isError: true);
+          return ToolOutput('Error: launch needs bundle: the app\'s ${a.launches} (com.example.app).', isError: true);
         }
         did = await a.launch(bundle);
       case 'adjust':
         return const ToolOutput(
-          'Error: on the simulator, move a slider with drag (from its thumb), or tap where it should go.',
+          'Error: on a device screen, move a slider with drag (from its thumb), or tap where it should go.',
           isError: true,
         );
-      case 'reload' || 'restart' || 'logs' || 'eval':
+      case 'logs':
+        final lines = await a.logs();
+        if (lines == null) {
+          return const ToolOutput(
+            'Error: the simulator has no app log here: run the app with a framework source (flutter, react-native) or '
+            'read its output with bash_output.',
+            isError: true,
+          );
+        }
+        final text = lines.isEmpty ? '(nothing new)' : lines.join('\n');
         return ToolOutput(
-          'Error: $action works on the app\'s framework source, not the simulator: use source "flutter" or '
+          'Log of ${(a as AndroidDevice).package ?? 'the app in front'} (logcat, since the last call):\n'
+          '${untrusted(scrub == null ? text : scrub(text), source: _app)}',
+        );
+      case 'reload' || 'restart' || 'eval':
+        return ToolOutput(
+          'Error: $action works on the app\'s framework source, not the device screen: use source "flutter" or '
           '"react-native" (list shows them).',
           isError: true,
         );
@@ -587,8 +667,11 @@ Future<ToolOutput> _ios(
     }
     String? changed;
     if (before != null) {
-      await a.settle();
-      await a.tree();
+      // type reads the screen itself to check the field.
+      if (action != 'type') {
+        await a.settle();
+        await a.tree();
+      }
       changed = a.changedSince(before);
       if (changed == null) {
         await Future<void>.delayed(const Duration(milliseconds: 700));
@@ -596,7 +679,7 @@ Future<ToolOutput> _ios(
         changed = a.changedSince(before) ?? 'Nothing visible changed on screen.';
       }
     }
-    final listed = list ? await a.snapshot(name: name) : null;
+    final listed = list ? await a.snapshot() : null;
     final body = _body(
       did,
       changed: changed,
@@ -611,7 +694,7 @@ Future<ToolOutput> _ios(
     a.control.report(const LiveActivity('look', caption: 'Looking'));
     final (png, frame) = await a.frameShot(region: zoom);
     final dir = Directory('$root/.everyai/scratch/screenshots')..createSync(recursive: true);
-    final path = '${dir.path}/sim-${DateTime.now().millisecondsSinceEpoch}.png';
+    final path = '${dir.path}/${android ? 'android' : 'sim'}-${DateTime.now().millisecondsSinceEpoch}.png';
     File(path).writeAsBytesSync(png);
     final shown = path.startsWith('$root/') ? path.substring(root.length + 1) : path;
     final url = vision ? await Isolate.run(() => imageDataUrl(png, 'png')) : null;
@@ -636,6 +719,6 @@ Future<ToolOutput> _ios(
     return ToolOutput('Error: ${stripHidden(e.message)}', isError: true);
   } on Object catch (e) {
     // AXe missing and its download failed, or simctl gone.
-    return ToolOutput("Error: the simulator couldn't be driven: $e", isError: true);
+    return ToolOutput("Error: the device couldn't be driven: $e", isError: true);
   }
 }

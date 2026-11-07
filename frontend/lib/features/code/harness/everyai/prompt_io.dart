@@ -67,7 +67,7 @@ and reads your messages between them.
 - Check a UI the way the user will use it: click, double-click and type on the real elements (a desktop icon, a
   button), not only by calling the app's own functions, which skips overlays that swallow clicks. Web pages: the
   browser tool (open, click, type, screenshot, console). Flutter, React Native and Electron apps you started, and
-  any app on an iOS Simulator: the app tool. Other desktop apps you started: the screenshot tool. Look at the picture or the element list before you
+  any app on an iOS Simulator or Android emulator: the app tool. Other desktop apps you started: the screenshot tool. Look at the picture or the element list before you
   say a UI works. Never quit or kill the user's own apps (their browser, Finder, terminals).
 
 # Security
@@ -93,7 +93,8 @@ $securityRules
   folder (a dev server, or `python3 -m http.server` in the background) and open http://localhost. A Flutter, React
   Native or Electron app: start it in the background (`flutter run -d <device>`, Metro, Electron with
   --remote-debugging-port=0), then use the app tool: its element list, tap and type by ref, hot reload, its log.
-  An iOS app: app devices / boot, run it on that simulator, then app with source "ios" (taps and swipes as touches).
+  A mobile app: app devices / boot, run it on that simulator or emulator, then app with source "ios" or "android"
+  (taps and swipes as touches).
   Other desktop apps' windows: screenshot. You can also read a png or jpg and see it.
 
 # When the environment fights back

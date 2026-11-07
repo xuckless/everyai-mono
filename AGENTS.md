@@ -900,6 +900,23 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   (`verified_download_io.dart`, shared with Chrome for Testing; `EVERYAI_AXE` overrides). Preview: `IosSimulatorView`
   paints `axe stream-video` MJPEG (~9 fps at half scale, `MjpegFrames` cuts by Content-Length), forwards clicks,
   drags and the wheel. Dev probe `tool/live_apps/simulator_probe_test.dart` (`EVERYAI_SIM`).
+- **Android (2026-11-06).** The `app` tool's source "android" drives an emulator or device for any app through adb
+  (`live/android_device_io.dart`, `live/adb_io.dart` finds the SDK: ANDROID_HOME/ANDROID_SDK_ROOT, the usual folders,
+  PATH, `EVERYAI_ADB`; nothing downloaded): `uiautomator dump` → `AppNode`s in pixels (refs `aN`; a clickable
+  container named by its children's text, which isn't listed again), `input` tap/swipe/keyevent/text (Ctrl+A first so
+  type replaces; non-ASCII pasted through scrcpy), back (says when it only closed the keyboard), home, `screencap`
+  pictures, `install` (.apk) / `launch` (package, fresh), `logs` = logcat of the app in front (`*:I`, stacks folded,
+  `trimLogcat`). `devices` lists iOS sims, adb devices and AVDs; `boot` starts an AVD headless. iOS and Android share
+  `DeviceScreen` / `DeviceHolds` (`live/device_screen.dart`) and one branch in `app_tools_io.dart` (`_device`). Each
+  action reads the tree once before (`_fresh` reuses it) and once after; a uiautomator dump takes ~2 s.
+  Preview: `AndroidDeviceView` runs the scrcpy 5.0.1 server (`live/scrcpy_io.dart`, our client of its v5 protocol;
+  the server file is downloaded on first use and checked, `scrcpy_pin.dart`, `EVERYAI_SCRCPY_SERVER` overrides; it
+  deletes itself on exit, so it is pushed every start) and decodes its H.264 with VideoToolbox into a Flutter texture
+  (`VideoDecoderBridge` / `H264Texture` in `macos/Runner/MainFlutterWindow.swift`, channel `everyai/h264`,
+  `live/h264_texture.dart`); other OSes get screenshots each second. Touches, drags, the wheel and the keyboard go
+  through scrcpy's control socket. Checked in a real macOS build with `tool/live_apps/device_view_demo.dart` (both
+  device views; a tap sent through the view opened the app). Dev probe `tool/live_apps/android_probe_test.dart`
+  (`EVERYAI_ANDROID`).
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2

@@ -1,22 +1,26 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
 import 'dart:async';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
+import '../../live/adb_io.dart';
+import '../../live/android_device_io.dart';
 import '../../live/app_endpoints.dart';
 import '../../live/app_sources.dart';
 import '../../live/app_view.dart';
 import '../../live/axe_install.dart';
 import '../../live/flutter_app_io.dart';
+import '../../live/h264_texture.dart';
 import '../../live/ios_simulator_io.dart';
 import '../../live/live_session.dart';
 import '../../live/react_native_io.dart';
+import '../../live/scrcpy_io.dart';
 
 // The Preview's views of the session's running apps (see AppSources): a Flutter app's picture with taps and the
 // wheel passed on, and a React Native app's element list.
@@ -734,6 +738,339 @@ class _IosSimulatorViewState extends State<IosSimulatorView> {
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
           child: Text(
             'Click to tap, drag to swipe, the wheel scrolls. Type on your keyboard in the Simulator app, or ask the agent.',
+            style: theme.type.caption.tint(theme.textMuted),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// An Android device's live screen: scrcpy's H.264 stream decoded into a texture (macOS), else screenshots every
+/// second. Touches, drags, the wheel and the keyboard go to the device through scrcpy's control socket (adb input
+/// when scrcpy isn't there); Back, Home and Recents buttons; the agent's ghost on top.
+class AndroidDeviceView extends StatefulWidget {
+  const AndroidDeviceView({super.key, required this.device, required this.visible});
+
+  final AndroidDevice device;
+  final bool visible;
+
+  @override
+  State<AndroidDeviceView> createState() => _AndroidDeviceViewState();
+}
+
+class _AndroidDeviceViewState extends State<AndroidDeviceView> {
+  ScrcpyConnection? _scrcpy;
+  H264Texture? _texture;
+  StreamSubscription<VideoPacket>? _packets;
+  StreamSubscription<LiveActivity>? _activity;
+  Timer? _poll;
+  ui.Image? _still;
+  var _starting = false;
+  String? _problem;
+  LiveActivity? _ghost;
+  Timer? _ghostTimer;
+  final _focus = FocusNode(debugLabel: 'android-device');
+  Offset? _downAt;
+  var _scale = 1.0;
+  var _pollBusy = false;
+
+  AndroidDevice get _device => widget.device;
+
+  @override
+  void initState() {
+    super.initState();
+    _activity = _device.control.activity.listen((a) {
+      _ghostTimer?.cancel();
+      setState(() => _ghost = a);
+      _ghostTimer = Timer(const Duration(milliseconds: 1600), () {
+        if (mounted) setState(() => _ghost = null);
+      });
+    });
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(AndroidDeviceView old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.device, widget.device)) unawaited(_stop());
+    _sync();
+  }
+
+  @override
+  void dispose() {
+    unawaited(_stop());
+    unawaited(_activity?.cancel());
+    _ghostTimer?.cancel();
+    _focus.dispose();
+    _still?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _stop() async {
+    _poll?.cancel();
+    _poll = null;
+    await _packets?.cancel();
+    _packets = null;
+    await _texture?.dispose();
+    _texture = null;
+    _scrcpy = null;
+  }
+
+  void _sync() {
+    if (!widget.visible) {
+      unawaited(_stop());
+      return;
+    }
+    if (_starting || _texture != null || _poll != null) return;
+    unawaited(_start());
+  }
+
+  Future<void> _start() async {
+    _starting = true;
+    try {
+      if (_device.width <= 0) await _device.tree().catchError((Object _) => const <AppNode>[]);
+      final texture = await H264Texture.create();
+      ScrcpyConnection? c;
+      try {
+        c = await _device.scrcpy();
+      } on Object catch (e) {
+        if (mounted) setState(() => _problem = e is AppError ? e.message : '$e');
+      }
+      if (!mounted || !widget.visible) {
+        await texture?.dispose();
+        return;
+      }
+      _scrcpy = c;
+      if (texture != null && c != null) {
+        _texture = texture;
+        texture.size.addListener(() => mounted ? setState(() {}) : null);
+        // A decoder joining a running stream starts from the parameter sets and the last key frame.
+        if (c.config case final p?) unawaited(texture.feed(p.data, config: true));
+        if (c.keyFrame case final p?) unawaited(texture.feed(p.data));
+        _packets = c.packets.listen((p) => unawaited(texture.feed(p.data, config: p.config)));
+        setState(() => _problem = null);
+      } else {
+        await texture?.dispose();
+        _poll = Timer.periodic(const Duration(seconds: 1), (_) => _pollOnce());
+        unawaited(_pollOnce());
+      }
+    } finally {
+      _starting = false;
+    }
+  }
+
+  Future<void> _pollOnce() async {
+    if (_pollBusy || !mounted) return;
+    _pollBusy = true;
+    try {
+      final png = await _device.screenshot();
+      final codec = await ui.instantiateImageCodec(png);
+      final frame = await codec.getNextFrame();
+      if (!mounted) {
+        frame.image.dispose();
+        return;
+      }
+      setState(() {
+        _still?.dispose();
+        _still = frame.image;
+      });
+    } on Object catch (e) {
+      if (mounted) setState(() => _problem = e is AppError ? e.message : '$e');
+    } finally {
+      _pollBusy = false;
+    }
+  }
+
+  void _takeOver() {
+    final c = _device.control;
+    if (c.userDriving) return;
+    c.take();
+    showAdaptiveToast(context, "You're driving: the agent's device actions wait until you give it back.");
+  }
+
+  /// A point in the view as the scrcpy video's coordinates, and as the device's pixels.
+  Offset _video(Offset local) => local / _scale;
+  Offset _pixels(Offset local) {
+    final c = _scrcpy;
+    final v = _video(local);
+    if (c == null || c.width == 0 || _device.width <= 0) return v;
+    return Offset(v.dx * _device.width / c.width, v.dy * _device.height / c.height);
+  }
+
+  void _key(int code) {
+    _takeOver();
+    final c = _scrcpy;
+    if (c != null && !c.closed) {
+      c.key(code);
+    } else {
+      unawaited(AndroidSdk.shell(_device.serial, ['input', 'keyevent', '$code']).catchError((Object _) => ''));
+    }
+  }
+
+  KeyEventResult _onKey(FocusNode _, KeyEvent e) {
+    if (e is! KeyDownEvent && e is! KeyRepeatEvent) return KeyEventResult.ignored;
+    final c = _scrcpy;
+    if (c == null || c.closed) return KeyEventResult.ignored;
+    final code = switch (e.logicalKey) {
+      LogicalKeyboardKey.enter || LogicalKeyboardKey.numpadEnter => 66,
+      LogicalKeyboardKey.backspace => 67,
+      LogicalKeyboardKey.delete => 112,
+      LogicalKeyboardKey.tab => 61,
+      LogicalKeyboardKey.arrowUp => 19,
+      LogicalKeyboardKey.arrowDown => 20,
+      LogicalKeyboardKey.arrowLeft => 21,
+      LogicalKeyboardKey.arrowRight => 22,
+      LogicalKeyboardKey.escape => 4,
+      _ => null,
+    };
+    _takeOver();
+    if (code != null) {
+      c.key(code);
+      return KeyEventResult.handled;
+    }
+    final ch = e.character;
+    if (ch == null || ch.isEmpty || ch.codeUnitAt(0) < 0x20) return KeyEventResult.ignored;
+    if (RegExp(r'^[\x20-\x7e]$').hasMatch(ch)) {
+      c.text(ch);
+    } else {
+      c.paste(ch);
+    }
+    return KeyEventResult.handled;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final texture = _texture;
+    final still = _still;
+    final videoSize = texture?.size.value;
+    final c = _scrcpy;
+    // The picture's own size: the video's (scrcpy scales the screen), else the screenshot's.
+    final w = videoSize?.width ?? (c != null && c.width > 0 ? c.width.toDouble() : still?.width.toDouble());
+    final h = videoSize?.height ?? (c != null && c.height > 0 ? c.height.toDouble() : still?.height.toDouble());
+    Widget picture;
+    if (w == null || h == null || (texture == null && still == null)) {
+      picture = Center(
+        child: Text(
+          _problem ?? 'Starting the device view…',
+          textAlign: TextAlign.center,
+          style: theme.type.callout.tint(theme.textMuted),
+        ),
+      );
+    } else {
+      picture = LayoutBuilder(
+        builder: (context, box) {
+          _scale = ((box.maxWidth - 24) / w).clamp(0.05, 4.0);
+          if (h * _scale > box.maxHeight - 24) _scale = ((box.maxHeight - 24) / h).clamp(0.05, 4.0);
+          // The ghost's place: device pixels to the view.
+          final ghost = _ghost;
+          final perPixel = _device.width > 0 ? w * _scale / _device.width : _scale;
+          return Center(
+            child: Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: const Color(0xFF111114),
+                borderRadius: BorderRadius.circular(30),
+                border: Border.all(color: theme.borderStrong),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(24),
+                child: Focus(
+                  focusNode: _focus,
+                  onKeyEvent: _onKey,
+                  child: Listener(
+                    onPointerDown: (e) {
+                      _focus.requestFocus();
+                      _takeOver();
+                      _downAt = e.localPosition;
+                      final v = _video(e.localPosition);
+                      if (c != null && !c.closed) c.touch(0, v.dx, v.dy);
+                    },
+                    onPointerMove: (e) {
+                      final v = _video(e.localPosition);
+                      if (c != null && !c.closed) c.touch(2, v.dx, v.dy);
+                    },
+                    onPointerUp: (e) {
+                      final at = _downAt;
+                      _downAt = null;
+                      final v = _video(e.localPosition);
+                      if (c != null && !c.closed) {
+                        c.touch(1, v.dx, v.dy);
+                      } else if (at != null) {
+                        final from = _pixels(at), to = _pixels(e.localPosition);
+                        unawaited(
+                          ((e.localPosition - at).distance > 12
+                                  ? _device.drag(from.dx, from.dy, to.dx, to.dy)
+                                  : _device.userTap(from.dx, from.dy).then((_) => ''))
+                              .catchError((Object _) => ''),
+                        );
+                      }
+                    },
+                    onPointerSignal: (s) {
+                      if (s is PointerScrollEvent && c != null && !c.closed) {
+                        _takeOver();
+                        final v = _video(s.localPosition);
+                        c.scroll(v.dx, v.dy, -s.scrollDelta.dy / 40);
+                      }
+                    },
+                    child: SizedBox(
+                      width: w * _scale,
+                      height: h * _scale,
+                      child: Stack(
+                        children: [
+                          Positioned.fill(
+                            child: texture != null
+                                ? Texture(textureId: texture.id, filterQuality: FilterQuality.medium)
+                                : RawImage(image: still, fit: BoxFit.fill, filterQuality: FilterQuality.medium),
+                          ),
+                          if (ghost != null && ghost.x != null && ghost.y != null)
+                            Positioned(
+                              left: ghost.x! * perPixel - 14,
+                              top: ghost.y! * perPixel - 14,
+                              child: IgnorePointer(
+                                child: Container(
+                                  width: 28,
+                                  height: 28,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    border: Border.all(color: theme.accent, width: 2),
+                                    color: theme.accent.withValues(alpha: 0.18),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          if (ghost != null && ghost.caption.isNotEmpty)
+                            Positioned(left: 0, right: 0, bottom: 14, child: _Caption('Agent: ${ghost.caption}')),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        AppDriverBar(
+          control: _device.control,
+          actions: [
+            AdaptiveButton(label: 'Back', emphasis: ButtonEmphasis.secondary, onPressed: () => _key(4)),
+            AdaptiveButton(label: 'Home', emphasis: ButtonEmphasis.secondary, onPressed: () => _key(3)),
+            AdaptiveButton(label: 'Recents', emphasis: ButtonEmphasis.secondary, onPressed: () => _key(187)),
+          ],
+        ),
+        Expanded(child: picture),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+          child: Text(
+            c == null
+                ? 'Click to tap, drag to swipe (screenshots each second: scrcpy isn\'t running).'
+                : 'Click, drag and scroll as on the device; click it, then type on your keyboard.',
             style: theme.type.caption.tint(theme.textMuted),
           ),
         ),
