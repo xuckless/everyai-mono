@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:every_ai/core/config/version.dart';
@@ -126,5 +127,56 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('onboarding.enter')));
     await tester.pumpAndSettle();
     expect(prefs[OnboardingAccepted.key], appVersion);
+  });
+
+  testWidgets('a key check runs once, keeps its provider, and leaves text typed meanwhile', (tester) async {
+    tester.view.physicalSize = const Size(1000, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final store = _MemoryStore();
+    final answer = Completer<KeyCheck>();
+    var checks = 0;
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          preferencesProvider.overrideWithValue(Preferences.inMemory()),
+          secretStoreProvider.overrideWithValue(store),
+          keyCheckProvider.overrideWithValue((provider, key) {
+            checks++;
+            return answer.future;
+          }),
+        ],
+        child: m.MaterialApp(
+          builder: (context, c) =>
+              EveryThemeScope(theme: EveryTheme.resolve(DesignLanguage.material, Brightness.light), child: c!),
+          home: const m.Material(child: OnboardingScreen(desktop: false)),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    for (var i = 0; i < 2; i++) {
+      await tester.tap(find.byKey(const ValueKey('onboarding.next')));
+      await tester.pumpAndSettle();
+    }
+    final field = find.byKey(const ValueKey('onboarding.key'));
+    await tester.enterText(field, 'sk-or-1');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pump();
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.tap(find.byKey(const ValueKey('onboarding.key.save')));
+    await tester.pump();
+    expect(checks, 1);
+
+    // Another provider can't be picked while the check runs.
+    await tester.tap(find.text('Anthropic'));
+    await tester.pump();
+    await tester.enterText(field, 'typed meanwhile');
+    answer.complete((valid: true, message: 'OpenRouter key works'));
+    await tester.pumpAndSettle();
+    expect(store.values, {'byok.openrouter': 'sk-or-1'});
+    expect(
+      tester.widget<EditableText>(find.descendant(of: field, matching: find.byType(EditableText))).controller.text,
+      'typed meanwhile',
+    );
   });
 }

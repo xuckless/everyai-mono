@@ -178,4 +178,40 @@ void main() {
     expect(find.byKey(const ValueKey('local.server.custom:1')), findsOneWidget);
     expect(find.text('big-model'), findsOneWidget);
   });
+
+  testWidgets("a test's result goes away when the URL changes", (tester) async {
+    await big(tester);
+    final http = FakeLocalHttp({'GET 10.0.0.5:8000/v1/models': json('{"data":[{"id":"big-model"}]}')});
+    await tester.pumpWidget(
+      _app([localHttpProvider.overrideWithValue(http), localSystemProvider.overrideWithValue(FakeLocalSystem())]),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('local.add-server')));
+    await tester.pumpAndSettle();
+    final url = find.descendant(of: find.byKey(const ValueKey('local.add.url')), matching: find.byType(EditableText));
+    await tester.enterText(url, '10.0.0.5:8000');
+    await tester.tap(find.byKey(const ValueKey('local.add.test')));
+    await tester.pumpAndSettle();
+    expect(find.text('It answered with 1 model'), findsOneWidget);
+    await tester.enterText(url, 'not a url');
+    await tester.pump();
+    expect(find.byKey(const ValueKey('local.add.result')), findsNothing);
+  });
+
+  test('two adds at once get their own ids', () async {
+    final container = ProviderContainer(
+      overrides: [
+        preferencesProvider.overrideWithValue(Preferences.inMemory()),
+        secretStoreProvider.overrideWithValue(_MemoryStore()),
+      ],
+    );
+    addTearDown(container.dispose);
+    final servers = container.read(manualServersProvider.notifier);
+    final added = await Future.wait([
+      servers.add(baseUrl: 'http://10.0.0.5:8000', apiKey: 'a'),
+      servers.add(baseUrl: 'http://10.0.0.6:8000', apiKey: 'b'),
+    ]);
+    expect(added.map((s) => s!.id).toSet(), hasLength(2));
+    expect(container.read(manualServersProvider), hasLength(2));
+  });
 }

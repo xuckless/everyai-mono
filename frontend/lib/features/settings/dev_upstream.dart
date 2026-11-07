@@ -43,11 +43,18 @@ final class DevUpstreamController extends AsyncNotifier<DevUpstream> {
   Future<DevUpstream> build() async =>
       DevUpstream.fromJson(await _api.getJson('v1/dev/upstream', authenticated: _authenticated));
 
+  /// The newest switch; an older answer arriving later is dropped.
+  var _gen = 0;
+
+  /// Switches the route. A failure keeps the value already shown (the picker stays where it was).
   Future<void> set(ClaudeUpstream to) async {
-    state = await AsyncValue.guard(
+    final gen = ++_gen;
+    final next = await AsyncValue.guard(
       () async => DevUpstream.fromJson(
         await _api.putJson('v1/dev/upstream', {'anthropic': to.name}, authenticated: _authenticated),
       ),
     );
+    if (!ref.mounted || gen != _gen || (next.hasError && state.hasValue)) return;
+    state = next;
   }
 }

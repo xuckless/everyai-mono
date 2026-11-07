@@ -72,12 +72,25 @@ final class RemoteApi {
     ];
   }
 
-  Future<void> deleteHost(String id) => _api.delete('v1/remote/hosts/$id', authenticated: authenticated);
+  /// Removes this desktop's host: only its own [hostToken] can.
+  Future<void> deleteHost(String id, {required String hostToken}) =>
+      _api.delete('v1/remote/hosts/$id', authenticated: authenticated, headers: {'X-Remote-Host-Token': hostToken});
 
-  Future<void> deleteDevice(String id) => _api.delete('v1/remote/devices/$id', authenticated: authenticated);
+  /// Unpairs a device: from its host ([hostToken]) or from the device itself ([deviceToken]).
+  Future<void> deleteDevice(String id, {String? hostToken, String? deviceToken}) => _api.delete(
+    'v1/remote/devices/$id',
+    authenticated: authenticated,
+    headers: {'X-Remote-Host-Token': ?hostToken, 'X-Remote-Device-Token': ?deviceToken},
+  );
 
-  Future<PairingCode> newCode(String hostId) async {
-    final r = await _api.postJson('v1/remote/pair', {'host_id': hostId}, authenticated: authenticated);
+  /// A pairing code for this desktop's host: only its own [hostToken] mints one.
+  Future<PairingCode> newCode(String hostId, {required String hostToken}) async {
+    final r = await _api.postJson(
+      'v1/remote/pair',
+      {'host_id': hostId},
+      authenticated: authenticated,
+      headers: {'X-Remote-Host-Token': hostToken},
+    );
     return (id: r['id']! as String, code: r['code']! as String, expiresAt: _time(r['expires_at']));
   }
 
@@ -114,8 +127,17 @@ final class RemoteApi {
   );
 
   /// A webhook URL for [hostId]; the answer's secret is shown once.
-  Future<({HookInfo hook, String secret})> createHook({required String name, required String hostId}) async {
-    final r = await _api.postJson('v1/hooks', {'name': name, 'host_id': hostId}, authenticated: authenticated);
+  Future<({HookInfo hook, String secret})> createHook({
+    required String name,
+    required String hostId,
+    required String hostToken,
+  }) async {
+    final r = await _api.postJson(
+      'v1/hooks',
+      {'name': name, 'host_id': hostId},
+      authenticated: authenticated,
+      headers: {'X-Remote-Host-Token': hostToken},
+    );
     return (hook: _hook(r), secret: r['secret']! as String);
   }
 
@@ -124,7 +146,9 @@ final class RemoteApi {
     return [for (final h in list.whereType<Map<String, Object?>>()) _hook(h)];
   }
 
-  Future<void> deleteHook(String id) => _api.delete('v1/hooks/$id', authenticated: authenticated);
+  /// Deletes one of this desktop's hooks ([hostToken] is its host's).
+  Future<void> deleteHook(String id, {required String hostToken}) =>
+      _api.delete('v1/hooks/$id', authenticated: authenticated, headers: {'X-Remote-Host-Token': hostToken});
 
   static HookInfo _hook(Map<String, Object?> h) => (
     id: h['id']! as String,

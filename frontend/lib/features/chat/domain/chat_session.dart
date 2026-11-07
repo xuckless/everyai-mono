@@ -10,12 +10,14 @@ import 'reasoning_effort.dart';
 /// Where a chat session is in its lifecycle. Transitions:
 ///
 /// ```text
-///  Loading ──► Idle ──send──► Awaiting ──first token──► Streaming ──done──► Idle
-///                ▲              │   │                      │
-///                │            cancel error               cancel / error
-///                │              ▼   ▼                      ▼
-///                └──retry/edit── Failed ◄──────────────────┘   (cancel ► Idle)
+///  Loading ──► Idle ──send──► Starting ──request──► Awaiting ──first token──► Streaming ──done──► Idle
+///                ▲              │                       │   │                      │
+///                │            cancel ► Idle           cancel error               cancel / error
+///                │                                      ▼   ▼                      ▼
+///                └──retry/edit/regenerate──────────── Failed ◄─────────────────────┘   (cancel ► Idle)
 /// ```
+/// [Starting] covers the work before the request (creating the conversation, deleting a regenerated answer, loading
+/// skills): it is set the moment a turn is asked for, so a second send, a retry or a model switch can't slip in.
 sealed class TurnPhase {
   const TurnPhase();
 
@@ -29,6 +31,15 @@ final class Loading extends TurnPhase {
 
 final class Idle extends TurnPhase {
   const Idle();
+}
+
+/// A turn was asked for; the request isn't out yet. [turn] tells one start from the next: Stop then a quick send
+/// makes a new Starting, and the stopped turn's pending setup sees it isn't its own and gives up.
+final class Starting extends TurnPhase {
+  const Starting(this.turn);
+  final int turn;
+  @override
+  bool get busy => true;
 }
 
 /// Request sent, nothing received yet.

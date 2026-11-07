@@ -249,7 +249,8 @@ final class PermissionPolicy {
 
   /// The first rule in [patterns] that matches [call]. Allow rules only
   /// match a simple command: a chain (`a && b`, pipes, `;`) or anything the
-  /// parser can't vouch for is never approved by a rule. Deny rules also
+  /// parser can't vouch for is never approved by a rule, except the bare `*`
+  /// ("Allow all commands"). Deny rules also
   /// match keys typed into a running process, and `Read(…)`/`Edit(…)` deny
   /// rules match terminal commands by their path arguments (see
   /// [_commandReads], [_commandWrites]).
@@ -259,6 +260,9 @@ final class PermissionPolicy {
     final edits = _editPaths(call);
     final read = _readPath(call);
     for (final raw in patterns) {
+      // "Allow all commands" means all of them, `$(…)` and heredocs included: the floor and [dangerReason] (which
+      // look inside substitutions and `sh -c`) already sent risky ones to the user before any allow rule is read.
+      if (allowing && command != null && raw.trim() == '*') return raw;
       final rule = _Rule.parse(raw);
       if (rule == null) continue;
       final hit = switch (rule.kind) {
@@ -1108,8 +1112,8 @@ List<String>? rememberPatterns(ActionCall call, {String? workingDir}) {
 }
 
 /// "Allow all similar for this session": the whole kind of [call]. Any command (`*`: the floor and risky commands
-/// still ask, and so does anything the parser can't vouch for), any edit in the project (`Edit(**)`: edits outside it
-/// still ask), any MCP tool (`Mcp(*)`). Null for anything else.
+/// still ask; `$(…)`, subshells and heredocs are covered, since those checks look inside them), any edit in the
+/// project (`Edit(**)`: edits outside it still ask), any MCP tool (`Mcp(*)`). Null for anything else.
 String? broadPattern(ActionCall call) {
   if (_command(call) != null) return '*';
   if (_editPath(call) != null || _editPaths(call).isNotEmpty) return 'Edit(**)';

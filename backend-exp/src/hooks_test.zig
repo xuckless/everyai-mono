@@ -83,9 +83,9 @@ fn hostFor(env: *Env, a: std.mem.Allocator, auth_header: ?[]const u8) !NewHost {
     return .{ .id = try a.dupe(u8, h.id), .host_token = try a.dupe(u8, h.host_token) };
 }
 
-/// A hook for the dev user's `host_id`.
-fn hookFor(env: *Env, a: std.mem.Allocator, host_id: []const u8, name: []const u8) !NewHook {
-    var made = try env.t.post("/v1/hooks", .{ .json = .{ .name = name, .host_id = host_id } });
+/// A hook for the dev user's `host`.
+fn hookFor(env: *Env, a: std.mem.Allocator, host: NewHost, name: []const u8) !NewHook {
+    var made = try env.t.post("/v1/hooks", .{ .headers = &.{.{ "X-Remote-Host-Token", host.host_token }}, .json = .{ .name = name, .host_id = host.id } });
     defer made.deinit();
     try made.expectStatus(.created);
     const h = try made.json(NewHook);
@@ -127,7 +127,7 @@ test "hooks: created for the caller's own host, secret shown once, capped, delet
     const bob = try signUp(&env, a, "bob@example.com");
     const host = try hostFor(&env, a, ada);
 
-    var made = try env.t.post("/v1/hooks", .{ .headers = &.{.{ "Authorization", ada }}, .json = .{ .name = "CI", .host_id = host.id } });
+    var made = try env.t.post("/v1/hooks", .{ .headers = &.{ .{ "Authorization", ada }, .{ "X-Remote-Host-Token", host.host_token } }, .json = .{ .name = "CI", .host_id = host.id } });
     defer made.deinit();
     try made.expectStatus(.created);
     const hook = try made.json(NewHook);
@@ -135,9 +135,13 @@ test "hooks: created for the caller's own host, secret shown once, capped, delet
     try std.testing.expectEqualStrings(try std.fmt.allocPrint(a, "https://api.example.test/v1/hooks/{s}", .{hook.id}), hook.url);
 
     // Someone else's host.
-    var stranger = try env.t.post("/v1/hooks", .{ .headers = &.{.{ "Authorization", bob }}, .json = .{ .name = "Mine", .host_id = host.id } });
+    var stranger = try env.t.post("/v1/hooks", .{ .headers = &.{ .{ "Authorization", bob }, .{ "X-Remote-Host-Token", host.host_token } }, .json = .{ .name = "Mine", .host_id = host.id } });
     defer stranger.deinit();
-    try stranger.expectStatus(.not_found);
+    try stranger.expectStatus(.unauthorized);
+    // The account without the host's own token.
+    var tokenless = try env.t.post("/v1/hooks", .{ .headers = &.{.{ "Authorization", ada }}, .json = .{ .name = "Mine", .host_id = host.id } });
+    defer tokenless.deinit();
+    try tokenless.expectStatus(.unauthorized);
     var anon = try env.t.post("/v1/hooks", .{ .json = .{ .name = "Mine", .host_id = host.id } });
     defer anon.deinit();
     try anon.expectStatus(.unauthorized);
@@ -156,29 +160,33 @@ test "hooks: created for the caller's own host, secret shown once, capped, delet
 
     // Ten per account.
     for (1..10) |_| {
-        var more = try env.t.post("/v1/hooks", .{ .headers = &.{.{ "Authorization", ada }}, .json = .{ .name = "More", .host_id = host.id } });
+        var more = try env.t.post("/v1/hooks", .{ .headers = &.{ .{ "Authorization", ada }, .{ "X-Remote-Host-Token", host.host_token } }, .json = .{ .name = "More", .host_id = host.id } });
         defer more.deinit();
         try more.expectStatus(.created);
     }
-    var eleventh = try env.t.post("/v1/hooks", .{ .headers = &.{.{ "Authorization", ada }}, .json = .{ .name = "One too many", .host_id = host.id } });
+    var eleventh = try env.t.post("/v1/hooks", .{ .headers = &.{ .{ "Authorization", ada }, .{ "X-Remote-Host-Token", host.host_token } }, .json = .{ .name = "One too many", .host_id = host.id } });
     defer eleventh.deinit();
     try eleventh.expectStatus(.conflict);
     try std.testing.expect(std.mem.indexOf(u8, eleventh.body, "too_many_hooks") != null);
 
     const path = try std.fmt.allocPrint(a, "/v1/hooks/{s}", .{hook.id});
-    var not_bobs = try env.t.delete(path, .{ .headers = &.{.{ "Authorization", bob }} });
+    var not_bobs = try env.t.delete(path, .{ .headers = &.{ .{ "Authorization", bob }, .{ "X-Remote-Host-Token", host.host_token } } });
     defer not_bobs.deinit();
-    try not_bobs.expectStatus(.not_found);
-    var del = try env.t.delete(path, .{ .headers = &.{.{ "Authorization", ada }} });
+    try not_bobs.expectStatus(.unauthorized);
+    var tokenless_del = try env.t.delete(path, .{ .headers = &.{.{ "Authorization", ada }} });
+    defer tokenless_del.deinit();
+    try tokenless_del.expectStatus(.unauthorized);
+    const ada_token = .{ .{ "Authorization", ada }, .{ "X-Remote-Host-Token", host.host_token } };
+    var del = try env.t.delete(path, .{ .headers = &ada_token });
     defer del.deinit();
     try std.testing.expect(del.status == .no_content or del.status == .ok);
-    var again = try env.t.delete(path, .{ .headers = &.{.{ "Authorization", ada }} });
+    var again = try env.t.delete(path, .{ .headers = &ada_token });
     defer again.deinit();
     try again.expectStatus(.not_found);
     try std.testing.expectEqual(@as(i64, 9), try env.count(a, "SELECT COUNT(*) FROM hooks"));
 
     // Removing the host removes its hooks.
-    var drop = try env.t.delete(try std.fmt.allocPrint(a, "/v1/remote/hosts/{s}", .{host.id}), .{ .headers = &.{.{ "Authorization", ada }} });
+    var drop = try env.t.delete(try std.fmt.allocPrint(a, "/v1/remote/hosts/{s}", .{host.id}), .{ .headers = &ada_token });
     defer drop.deinit();
     try std.testing.expect(drop.status == .no_content or drop.status == .ok);
     try std.testing.expectEqual(@as(i64, 0), try env.count(a, "SELECT COUNT(*) FROM hooks"));
@@ -192,7 +200,7 @@ test "hooks: deliveries need a valid, fresh signature, and replays are recognise
     defer arena.deinit();
     const a = arena.allocator();
     const host = try hostFor(&env, a, null);
-    const hook = try hookFor(&env, a, host.id, "CI");
+    const hook = try hookFor(&env, a, host, "CI");
     const path = try std.fmt.allocPrint(a, "/v1/hooks/{s}", .{hook.id});
 
     // The EveryAI form.
@@ -304,7 +312,7 @@ test "hooks: a host that doesn't pick up gets 503 after 20, and a hook takes 30 
     defer arena.deinit();
     const a = arena.allocator();
     const host = try hostFor(&env, a, null);
-    const hook = try hookFor(&env, a, host.id, "Busy");
+    const hook = try hookFor(&env, a, host, "Busy");
     const ts = now(&env);
     for (0..20) |i| {
         var ok = try postSigned(&env, a, hook, hook.secret, ts, try std.fmt.allocPrint(a, "{{\"n\":{d}}}", .{i}));
@@ -322,7 +330,7 @@ test "hooks: a host that doesn't pick up gets 503 after 20, and a hook takes 30 
     defer limited.deinit();
     try limited.expectStatus(.too_many_requests);
     // Another hook has its own bucket.
-    const other = try hookFor(&env, a, host.id, "Quiet");
+    const other = try hookFor(&env, a, host, "Quiet");
     var fine = try postSigned(&env, a, other, other.secret, ts, "{}");
     defer fine.deinit();
     try fine.expectStatus(.accepted);
@@ -348,7 +356,7 @@ test "hooks: deliveries wait for an offline host and arrive one per hook, each a
     const a = arena.allocator();
     const host = try hostFor(&env, a, null);
     const other_host = try hostFor(&env, a, null);
-    const hook = try hookFor(&env, a, host.id, "CI");
+    const hook = try hookFor(&env, a, host, "CI");
 
     const Check = struct {
         fn post(io: std.Io, ar: std.mem.Allocator, port: u16, h: NewHook, body: []const u8) ![]const u8 {

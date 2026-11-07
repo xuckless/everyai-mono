@@ -53,6 +53,7 @@ const anole = @import("anole");
 const App = @import("main.zig").App;
 const auth = @import("auth.zig");
 const util = @import("util.zig");
+const remote = @import("remote.zig");
 
 const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
 
@@ -192,9 +193,10 @@ pub fn resendPending(app: *App, req: *anole.Request, host_id: []const u8) !void 
 
 /// The host took `delivery_id`: its body goes, and the next one of its hook
 /// is sent. Only that host's own deliveries; anything else changes nothing.
-pub fn ack(app: *App, req: *anole.Request, host_id: []const u8, delivery_id: []const u8) !void {
-    const hook_id = try app.db.optional([]const u8, req, "UPDATE hook_deliveries SET body = NULL, acked_at = ? WHERE id = ? AND host_id = ? AND acked_at IS NULL RETURNING hook_id", .{ util.now(req.io), delivery_id, host_id }) orelse return;
-    try sendOldest(app, req.io, host_id, hook_id);
+/// `ctx` is the caller's scratch (a host socket's per-frame arena).
+pub fn ack(app: *App, ctx: anytype, host_id: []const u8, delivery_id: []const u8) !void {
+    const hook_id = try app.db.optional([]const u8, ctx, "UPDATE hook_deliveries SET body = NULL, acked_at = ? WHERE id = ? AND host_id = ? AND acked_at IS NULL RETURNING hook_id", .{ util.now(ctx.io), delivery_id, host_id }) orelse return;
+    try sendOldest(app, ctx.io, host_id, hook_id);
 }
 
 /// Drops deliveries too old to matter; run at start (main.pruneExpired).
@@ -283,10 +285,14 @@ fn hookUrl(app: *App, arena: std.mem.Allocator, id: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "{s}/v1/hooks/{s}", .{ std.mem.trimEnd(u8, app.cfg.public_url, "/"), id });
 }
 
+/// Only the host itself (`X-Remote-Host-Token`) adds or removes its hooks:
+/// an account can be shared (the dev user).
 fn createHook(app: *App, req: *anole.Request, res: *anole.Response, in: anole.In(.{ .body = NewHook })) !void {
     const who = try auth.identity(req);
-    _ = try app.db.optional([]const u8, req, "SELECT id FROM remote_hosts WHERE id = ? AND user_id = ?", .{ in.body.host_id, who.user_id }) orelse
-        return res.fail(.not_found, "no such host");
+    _ = remote.hostNamed(app, req, in.body.host_id) catch |err| switch (err) {
+        error.NotFound => return res.fail(.not_found, "no such host"),
+        else => return err,
+    };
     if (try app.db.one(i64, req, "SELECT COUNT(*) FROM hooks WHERE user_id = ?", .{who.user_id}) >= max_hooks_per_user) {
         res.status = .conflict;
         return res.json(.{ .message = "You have 10 webhooks already. Delete one to add another.", .code = "too_many_hooks" });
@@ -325,8 +331,8 @@ fn listHooks(app: *App, req: *anole.Request) ![]HookInfo {
 }
 
 fn deleteHook(app: *App, req: *anole.Request, in: anole.In(.{ .path = struct { id: []const u8 } })) !void {
-    const who = try auth.identity(req);
-    if (try app.db.exec(req, "DELETE FROM hooks WHERE id = ? AND user_id = ?", .{ in.path.id, who.user_id }) == 0) return error.NotFound;
+    const host = try remote.callingHost(app, req);
+    if (try app.db.exec(req, "DELETE FROM hooks WHERE id = ? AND user_id = ? AND host_id = ?", .{ in.path.id, host.user_id, host.id }) == 0) return error.NotFound;
 }
 
 // ------------------------------------------------------------------ routes

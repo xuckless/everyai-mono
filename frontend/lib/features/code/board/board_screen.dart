@@ -14,6 +14,7 @@ import '../../../core/ui/adaptive_page.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../questions/ui/question_card.dart';
 import '../code_providers.dart';
+import '../domain/permissions.dart';
 import '../domain/code_session.dart';
 import '../drivers/driver_registry.dart' show driverRegistryProvider;
 import '../ui/harness_logo.dart';
@@ -22,6 +23,7 @@ import 'board_work.dart';
 import '../workflows/workflow_runs.dart' show workflowRunsProvider;
 import '../domain/session_work.dart';
 import '../ui/stop_all_button.dart';
+import '../workflows/workflow_engine.dart' show WorkflowStatus;
 
 /// Every session at a glance: Needs you, Running, Done, side by side with hairlines between them (drag one to
 /// resize; double-click to even them). Approvals and questions are answered on the card, Done cards can be cleared,
@@ -50,7 +52,8 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final dismissed = ref.watch(boardDismissedProvider);
-    final all = boardSessions(ref.watch(codeSessionsProvider), ref.watch(boardDetachedProvider));
+    final sessions = ref.watch(codeSessionsProvider);
+    final all = boardSessions(sessions, ref.watch(boardDetachedProvider));
     final statuses = ref.watch(codeStatusesProvider);
     SessionStatus statusOf(CodeSessionInfo s) {
       // Waiting sessions are opened, so their card can answer for them.
@@ -63,9 +66,17 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       }
       // Until an opened session has connected, the polled status stands (no flicker to Done and back).
       final live = ref.exists(codeSessionProvider(s.id))
-          ? ref.watch(codeSessionProvider(s.id).select((st) => st.connected ? st.status : null))
+          ? ref.watch(codeSessionProvider(s.id).select((st) => st.connected || st.failure != null ? st.status : null))
           : null;
-      return live ?? statuses[s.id] ?? SessionStatus.idle;
+      final own = live ?? statuses[s.id] ?? SessionStatus.idle;
+      return boardStatus(
+        own,
+        workRunning: ref.watch(workflowRunsProvider(s.id)).any((r) => r.status == WorkflowStatus.running),
+        childWaits: [
+          for (final c in sessions)
+            if (c.parentId == s.id) c,
+        ].any((c) => childWaitsOnUser(ref, s.id, c.id) != null),
+      );
     }
 
     final status = {for (final s in all) s.id: statusOf(s)};
@@ -562,6 +573,8 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                 key: ValueKey('board.question.${info.id}'),
                 padding: const EdgeInsets.only(top: 10),
                 child: QuestionCard(
+                  // A new question is a new card: picks and the sent state belong to one call.
+                  key: ValueKey('board.question.card.${question.call.id}'),
                   questions: question.questions,
                   onSubmit: (answers) async {
                     await ref.read(codeSessionProvider(info.id).notifier).answer(question, answers);
@@ -584,7 +597,10 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                           key: ValueKey('board.approve.${info.id}'),
                           label: 'Approve',
                           onPressed: () async {
-                            await ref.read(codeSessionProvider(info.id).notifier).approve();
+                            // The calls this card showed: a batch that came in since then waits for its own look.
+                            await ref.read(codeSessionProvider(info.id).notifier).approve(ApprovalScope.once, [
+                              for (final c in pending) c.id,
+                            ]);
                             if (mounted) setState(() => _approved++);
                           },
                         ),
@@ -593,7 +609,8 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                         key: ValueKey('board.deny.${info.id}'),
                         label: 'Deny',
                         style: KitButtonStyle.ghost,
-                        onPressed: () => ref.read(codeSessionProvider(info.id).notifier).deny(),
+                        onPressed: () =>
+                            ref.read(codeSessionProvider(info.id).notifier).deny(null, [for (final c in pending) c.id]),
                       ),
                     ],
                     KitButton(

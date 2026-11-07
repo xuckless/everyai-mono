@@ -4,6 +4,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../core/motion/motion.dart';
+import '../../../../core/preferences.dart';
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/every_icons.dart';
@@ -86,15 +88,8 @@ class ProcessesPane extends ConsumerWidget {
       for (final g in groups)
         if (g.shell.running) g,
     ];
-    // Finished background shells, then the last few commands, newest first.
-    final ended = [
-      for (final g in groups.reversed)
-        if (!g.shell.running && g.shell.background) g,
-    ];
-    final recent = [
-      for (final g in groups.reversed)
-        if (!g.shell.running && !g.shell.background) g,
-    ].take(8).toList();
+    final done = finishedShells(groups);
+    final doneOpen = !ref.watch(processesDoneFoldedProvider);
     final others = otherProcesses(groups, list);
     final empty = groups.isEmpty && others.isEmpty && containers.isEmpty;
     Widget header(String text) => KitLabel(text, padding: const EdgeInsets.fromLTRB(4, 14, 4, 4));
@@ -174,8 +169,25 @@ class ProcessesPane extends ConsumerWidget {
                           onPreview: (port) => _preview(ref, port),
                         ),
                     ],
-                    if (ended.isNotEmpty) ...[header('Ended'), for (final g in ended) shellRow(g)],
-                    if (recent.isNotEmpty) ...[header('Recent commands'), for (final g in recent) shellRow(g)],
+                    // Like a project in the Code sidebar: a heading over a hairline that folds what finished.
+                    if (done.isNotEmpty) ...[
+                      _DoneHeader(
+                        count: done.length,
+                        open: doneOpen,
+                        onToggle: () => ref.read(processesDoneFoldedProvider.notifier).toggle(),
+                      ),
+                      AnimatedSize(
+                        duration: Motion.reduced(context) ? Duration.zero : Motion.move,
+                        curve: Motion.easeInOut,
+                        alignment: Alignment.topCenter,
+                        child: doneOpen
+                            ? Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [for (final g in done) shellRow(g)],
+                              )
+                            : const SizedBox(width: double.infinity),
+                      ),
+                    ],
                   ],
                 ),
         ),
@@ -227,6 +239,99 @@ List<ShellGroup> groupByShell(List<ShellEntry> shells, List<SessionProcess> proc
   return [for (final s in shells) ShellGroup(s, under[s.key] ?? const [])];
 }
 
+/// The shells that finished (background jobs and foreground commands alike), the latest to end first.
+List<ShellGroup> finishedShells(List<ShellGroup> groups) {
+  final done = [
+    for (final g in groups)
+      if (!g.shell.running) g,
+  ];
+  return done..sort((a, b) => b.shell.endedAt!.compareTo(a.shell.endedAt!));
+}
+
+/// When a shell ended, short (`just now`, `4 min ago`, `2 h ago`), or null when it didn't.
+String? _endedAgo(DateTime? at) {
+  if (at == null) return null;
+  final d = DateTime.now().difference(at);
+  if (d.inMinutes < 1) return 'just now';
+  if (d.inHours < 1) return '${d.inMinutes} min ago';
+  if (d.inDays < 1) return '${d.inHours} h ago';
+  return '${d.inDays} d ago';
+}
+
+/// Whether the Processes tab's Done section is folded (Preferences `code.processes.done_folded`, every session).
+final processesDoneFoldedProvider = NotifierProvider<ProcessesDoneFolded, bool>(ProcessesDoneFolded.new);
+
+final class ProcessesDoneFolded extends Notifier<bool> {
+  static const key = 'code.processes.done_folded';
+
+  @override
+  bool build() => ref.read(preferencesProvider)[key] == '1';
+
+  void toggle() {
+    state = !state;
+    ref.read(preferencesProvider)[key] = state ? '1' : '0';
+  }
+}
+
+/// The Done heading, styled like a project in the Code sidebar: name and count over a hairline, a chevron that folds
+/// the finished shells below. Its insets match the shell rows', so the text lines up with their dots.
+class _DoneHeader extends StatefulWidget {
+  const _DoneHeader({required this.count, required this.open, required this.onToggle});
+
+  final int count;
+  final bool open;
+  final VoidCallback onToggle;
+
+  @override
+  State<_DoneHeader> createState() => _DoneHeaderState();
+}
+
+class _DoneHeaderState extends State<_DoneHeader> {
+  var _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final muted = _hover ? theme.textMuted : theme.textSubtle;
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        key: const ValueKey('processes.done.header'),
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onToggle,
+        child: Semantics(
+          button: true,
+          expanded: widget.open,
+          label: 'Done',
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(0, 14, 0, 4),
+            padding: const EdgeInsets.fromLTRB(6, 0, 6, 5),
+            decoration: BoxDecoration(
+              border: Border(bottom: BorderSide(color: theme.border)),
+            ),
+            child: Row(
+              children: [
+                Text('Done', style: theme.type.caption.medium.tint(muted)),
+                const SizedBox(width: 6),
+                Text('${widget.count}', style: theme.type.caption.tint(theme.textSubtle)),
+                const SizedBox(width: 4),
+                AnimatedRotation(
+                  turns: widget.open ? 0 : -0.25,
+                  duration: Motion.reduced(context) ? Duration.zero : Motion.swap,
+                  curve: Motion.easeInOut,
+                  child: AdaptiveIcon(EveryIcon.chevronDown, size: 13, color: muted),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// The processes in no shell's group (the user's terminals, what an outside lead started).
 List<SessionProcess> otherProcesses(List<ShellGroup> groups, List<SessionProcess> processes) {
   final taken = {
@@ -276,7 +381,7 @@ class _ShellRowState extends State<_ShellRow> {
     final dot = s.running ? theme.success : (failed ? theme.danger : theme.textSubtle);
     final status = s.running
         ? (s.live?.interactive ?? false ? 'running · interactive' : 'running')
-        : 'exited ${s.exitCode}';
+        : ['exited ${s.exitCode}', ?_endedAgo(s.endedAt)].join(' · ');
     final ports = g.ports;
     return MouseRegion(
       cursor: SystemMouseCursors.click,

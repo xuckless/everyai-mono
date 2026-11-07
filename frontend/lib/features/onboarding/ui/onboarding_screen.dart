@@ -477,11 +477,48 @@ class _Keys extends ConsumerStatefulWidget {
   ConsumerState<_Keys> createState() => _KeysState();
 }
 
+/// The key step's check:
+///
+/// ```text
+///  idle ──Check / Enter──► checking(provider, key) ──answer──► checked(provider, key, result)
+///   ▲                                                              │
+///   └──────────── typing, or another provider ─────────────────────┘
+/// ```
+/// The provider can't change while checking, and the key is saved under the provider it was checked for. A result
+/// whose generation isn't the current one is dropped.
+sealed class _KeyCheckState {
+  const _KeyCheckState();
+}
+
+final class _KeyIdle extends _KeyCheckState {
+  const _KeyIdle();
+}
+
+final class _KeyChecking extends _KeyCheckState {
+  const _KeyChecking(this.provider, this.key, this.gen);
+  final ByokProvider provider;
+  final String key;
+  final int gen;
+}
+
+final class _KeyChecked extends _KeyCheckState {
+  const _KeyChecked(this.provider, this.key, this.result);
+  final ByokProvider provider;
+  final String key;
+  final KeyCheck result;
+}
+
 class _KeysState extends ConsumerState<_Keys> {
   final _field = TextEditingController();
   ByokProvider _provider = byokProviders.first;
-  bool _checking = false;
-  KeyCheck? _result;
+  _KeyCheckState _check = const _KeyIdle();
+  var _gen = 0;
+
+  bool get _checking => _check is _KeyChecking;
+  KeyCheck? get _result => switch (_check) {
+    _KeyChecked(:final result) => result,
+    _ => null,
+  };
 
   @override
   void dispose() {
@@ -491,20 +528,34 @@ class _KeysState extends ConsumerState<_Keys> {
 
   Future<void> _save() async {
     final key = _field.text.trim();
-    if (key.isEmpty) return;
-    setState(() {
-      _checking = true;
-      _result = null;
-    });
-    final result = await ref.read(keyCheckProvider)(_provider, key);
+    if (key.isEmpty || _checking) return;
+    final provider = _provider;
+    final gen = ++_gen;
+    setState(() => _check = _KeyChecking(provider, key, gen));
+    KeyCheck result;
+    try {
+      result = await ref.read(keyCheckProvider)(provider, key);
+    } on Object catch (e) {
+      result = (valid: false, message: "Couldn't check the key ($e).");
+    }
     // A rejected key isn't kept; "couldn't tell" (offline) is, with the reason shown.
-    if (result.valid != false) await ref.read(byokKeysProvider.notifier).save(_provider.id, key);
-    if (!mounted) return;
+    if (result.valid != false) {
+      try {
+        await ref.read(byokKeysProvider.notifier).save(provider.id, key);
+      } on Object catch (e) {
+        result = (valid: false, message: "Couldn't save the key ($e).");
+      }
+    }
+    if (!mounted || gen != _gen) return;
     setState(() {
-      _checking = false;
-      _result = result;
-      if (result.valid != false) _field.clear();
+      _check = _KeyChecked(provider, key, result);
+      // Only the key that was checked goes; anything typed meanwhile stays.
+      if (result.valid != false && _field.text.trim() == key) _field.clear();
     });
+  }
+
+  void _reset() {
+    if (_check is _KeyChecked) setState(() => _check = const _KeyIdle());
   }
 
   /// On a desktop: a model on this computer (first) or an API key.
@@ -584,10 +635,15 @@ class _KeysState extends ConsumerState<_Keys> {
             values: byokProviders,
             selected: _provider,
             label: (p) => p.name,
-            onSelected: (p) => setState(() {
-              _provider = p;
-              _result = null;
-            }),
+            // The key being checked is saved under the provider it was checked for.
+            enabled: (p) => !_checking || p == _provider,
+            onSelected: (p) {
+              if (_checking) return;
+              setState(() {
+                _provider = p;
+                _check = const _KeyIdle();
+              });
+            },
           ),
         ),
         const SizedBox(height: 12),
@@ -610,9 +666,7 @@ class _KeysState extends ConsumerState<_Keys> {
                   borderless: true,
                   placeholder: _provider.keyHint,
                   obscureText: true,
-                  onChanged: (_) {
-                    if (_result != null) setState(() => _result = null);
-                  },
+                  onChanged: (_) => _reset(),
                   onSubmitted: (_) => _save(),
                 ),
               ),

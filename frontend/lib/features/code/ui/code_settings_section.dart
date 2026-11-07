@@ -286,17 +286,19 @@ class _CodeSettingsSectionState extends ConsumerState<CodeSettingsSection> {
       showAdaptiveToast(context, 'Settings files are not available here.');
       return;
     }
+    // Read before the write: "Just me" may flip, or the section close, while it runs.
+    final project = _local && l.scope == SettingsScope.project
+        ? ref.read(codeProjectsProvider).where((p) => p.id == l.projectId).firstOrNull
+        : null;
     try {
       await files.writeLayer(path, edit);
-      ref.read(settingsFilesRevisionProvider.notifier).bump();
-      if (_local && l.scope == SettingsScope.project) {
-        final project = ref.read(codeProjectsProvider).where((p) => p.id == l.projectId).firstOrNull;
-        if (project != null) await files.excludeFromGit(project.path, const ['/${files.localSettingsPath}']);
-      }
+      // A personal file never lands in git, even if the section closed meanwhile.
+      if (project != null) await files.excludeFromGit(project.path, const ['/${files.localSettingsPath}']);
+      if (mounted) ref.read(settingsFilesRevisionProvider.notifier).bump();
     } on Object catch (e) {
       if (mounted) showAdaptiveToast(context, "Couldn't save: $e");
     }
-    ref.invalidate(settingsLayerProvider(path));
+    if (mounted) ref.invalidate(settingsLayerProvider(path));
   }
 
   void _writePrefs(StoredCodeSettings next) => ref.read(codeSettingsProvider.notifier).replace(next);

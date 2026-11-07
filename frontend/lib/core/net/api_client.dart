@@ -141,8 +141,8 @@ final class ApiClient {
   }
 
   /// DELETE, ignoring any body.
-  Future<void> delete(String path, {bool authenticated = false}) async {
-    final res = await _send('DELETE', path, authenticated: authenticated, timeout: jsonTimeout);
+  Future<void> delete(String path, {bool authenticated = false, Map<String, String> headers = const {}}) async {
+    final res = await _send('DELETE', path, authenticated: authenticated, timeout: jsonTimeout, headers: headers);
     await _readBody(res);
   }
 

@@ -266,12 +266,41 @@ void main() {
     expect(r.isError, isFalse);
   });
 
-  test('a read-only agent asks before writes and commands, even when the lead is in Full auto', () async {
+  test('a read-only agent of a Full auto lead runs commands but asks before edits', () async {
     final c = await open();
     await c.setMode(AgentMode.fullAuto);
     await c.runWorkflow('demo', 'source');
     unawaited(bridge.agent('Review', {'harness': 'fake2', 'readOnly': true}).catchError((Object _) => null));
-    expect((await child()).mode, AgentMode.ask);
+    final kid = await child();
+    expect(kid.mode, AgentMode.ask);
+    container.listen(codeSessionProvider(kid.id), (_, _) {});
+    final s = drivers['fake2']!.conversations.values.single;
+    s
+      ..add(actionEvent(id: 'c1', toolName: 'bash', kind: 'TerminalAction', args: {'command': r'grep -n x $(ls)'}))
+      ..add(stateEvent('cw', ExecutionStatus.waitingForConfirmation));
+    for (var i = 0; i < 100 && s.answers.isEmpty; i++) {
+      await pumpEventQueue();
+    }
+    expect(s.answers.single.accept, isTrue);
+    s
+      ..add(
+        actionEvent(
+          id: 'e1',
+          toolName: 'str_replace_editor',
+          kind: 'FileEditorAction',
+          args: {'command': 'create', 'path': '/tmp/x.dart', 'file_text': 'x'},
+        ),
+      )
+      ..add(stateEvent('ew', ExecutionStatus.waitingForConfirmation));
+    await whenValue(
+      container,
+      codeSessionProvider(kid.id).select((s) => s.transcript.pending.length),
+      (int n) => n == 1,
+    );
+    expect(s.answers, hasLength(1));
+    // Out of Full auto it asks before commands again.
+    await c.setMode(AgentMode.ask);
+    expect(container.read(codeSessionProvider(kid.id).notifier).policy.session, isNot(contains('*')));
   });
 
   test('agents start in the lead\'s mode, and allowing a call for all forks settles the waiting siblings', () async {
@@ -353,6 +382,43 @@ void main() {
     await reviewer.approve(ApprovalScope.session);
     expect(reviewer.policy.session, isNotEmpty);
     expect(c.policy.session, isNot(contains('make lint *')));
+  });
+
+  test("allowing on one read-only agent's card settles its read-only siblings, not the lead", () async {
+    final c = await open();
+    await c.setMode(AgentMode.ask);
+    await c.runWorkflow('demo', 'source');
+    for (final l in ['lens:a', 'lens:b']) {
+      unawaited(bridge.agent(l, {'harness': 'fake2', 'readOnly': true}).catchError((Object _) => null));
+    }
+    final kids = await whenValue(
+      container,
+      codeSessionsProvider,
+      (List<CodeSessionInfo> all) => all.where((s) => s.parentCallId.startsWith('wf-')).length == 2,
+    ).then((all) => all.where((s) => s.parentCallId.startsWith('wf-')).toList());
+    for (final k in kids) {
+      container.listen(codeSessionProvider(k.id), (_, _) {});
+    }
+    final sessions = drivers['fake2']!.conversations.values.toList();
+    for (final (i, s) in sessions.indexed) {
+      s
+        ..add(actionEvent(id: 'g$i', toolName: 'bash', kind: 'TerminalAction', args: {'command': 'grep -rn x \$(ls)'}))
+        ..add(stateEvent('gw$i', ExecutionStatus.waitingForConfirmation));
+    }
+    for (final k in kids) {
+      await whenValue(
+        container,
+        codeSessionProvider(k.id).select((s) => s.transcript.pending.length),
+        (int n) => n == 1,
+      );
+    }
+    expect(sessions.map((s) => s.answers), everyElement(isEmpty));
+    // The card's "Allow all commands for this session".
+    await container.read(codeSessionProvider(kids.first.id).notifier).approve(ApprovalScope.sessionAll);
+    await pumpEventQueue();
+    expect(sessions.map((s) => s.answers.map((a) => a.accept).toList()), everyElement([true]));
+    // The lead's own approvals didn't grow.
+    expect(c.policy.session, isEmpty);
   });
 
   test("a user's no tells the agent why the app asked", () async {

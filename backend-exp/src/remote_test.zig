@@ -81,12 +81,21 @@ test "remote: pairing is single use, same account only, and needs the host's app
     const host = try made.json(NewHost);
     try std.testing.expect(std.mem.startsWith(u8, host.host_token, "rh_"));
 
-    // Someone else's host cannot hand out codes.
-    var stranger = try env.t.post("/v1/remote/pair", .{ .headers = &.{.{ "Authorization", bob }}, .json = .{ .host_id = host.id } });
+    // Someone else's host cannot hand out codes, and neither can the account without the host's own token.
+    var stranger = try env.t.post("/v1/remote/pair", .{ .headers = &.{ .{ "Authorization", bob }, .{ "X-Remote-Host-Token", host.host_token } }, .json = .{ .host_id = host.id } });
     defer stranger.deinit();
-    try stranger.expectStatus(.not_found);
+    try stranger.expectStatus(.unauthorized);
+    var tokenless = try env.t.post("/v1/remote/pair", .{ .headers = &.{.{ "Authorization", ada }}, .json = .{ .host_id = host.id } });
+    defer tokenless.deinit();
+    try tokenless.expectStatus(.unauthorized);
+    var other_made = try env.t.post("/v1/remote/hosts", .{ .headers = &.{.{ "Authorization", ada }}, .json = .{ .name = "Laptop", .public_key = "b3RoZXI" } });
+    defer other_made.deinit();
+    const other_host = try other_made.json(NewHost);
+    var cross = try env.t.post("/v1/remote/pair", .{ .headers = &.{ .{ "Authorization", ada }, .{ "X-Remote-Host-Token", other_host.host_token } }, .json = .{ .host_id = host.id } });
+    defer cross.deinit();
+    try cross.expectStatus(.not_found);
 
-    var paired = try env.t.post("/v1/remote/pair", .{ .headers = &.{.{ "Authorization", ada }}, .json = .{ .host_id = host.id } });
+    var paired = try env.t.post("/v1/remote/pair", .{ .headers = &.{ .{ "Authorization", ada }, .{ "X-Remote-Host-Token", host.host_token } }, .json = .{ .host_id = host.id } });
     defer paired.deinit();
     try paired.expectStatus(.created);
     const code = try paired.json(Code);
@@ -142,16 +151,17 @@ test "remote: pairing is single use, same account only, and needs the host's app
     var list = try env.t.get("/v1/remote/hosts", .{ .headers = &.{.{ "Authorization", ada }} });
     defer list.deinit();
     const hosts = try list.json(HostList);
-    try std.testing.expectEqual(@as(usize, 1), hosts.len);
-    try std.testing.expect(!hosts[0].online);
-    try std.testing.expectEqual(@as(usize, 1), hosts[0].devices.len);
-    try std.testing.expectEqualStrings("Ada's phone", hosts[0].devices[0].name);
+    try std.testing.expectEqual(@as(usize, 2), hosts.len);
+    const studio = if (std.mem.eql(u8, hosts[0].id, host.id)) hosts[0] else hosts[1];
+    try std.testing.expect(!studio.online);
+    try std.testing.expectEqual(@as(usize, 1), studio.devices.len);
+    try std.testing.expectEqualStrings("Ada's phone", studio.devices[0].name);
     var bobs = try env.t.get("/v1/remote/hosts", .{ .headers = &.{.{ "Authorization", bob }} });
     defer bobs.deinit();
     try std.testing.expectEqual(@as(usize, 0), (try bobs.json(HostList)).len);
 
     // An expired code is refused; a denied pairing leaves no device.
-    var p2 = try env.t.post("/v1/remote/pair", .{ .headers = &.{.{ "Authorization", ada }}, .json = .{ .host_id = host.id } });
+    var p2 = try env.t.post("/v1/remote/pair", .{ .headers = &.{ .{ "Authorization", ada }, .{ "X-Remote-Host-Token", host.host_token } }, .json = .{ .host_id = host.id } });
     defer p2.deinit();
     const code2 = try p2.json(Code);
     var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = a };
@@ -160,7 +170,7 @@ test "remote: pairing is single use, same account only, and needs the host's app
     defer late.deinit();
     try late.expectStatus(.not_found);
 
-    var p3 = try env.t.post("/v1/remote/pair", .{ .headers = &.{.{ "Authorization", ada }}, .json = .{ .host_id = host.id } });
+    var p3 = try env.t.post("/v1/remote/pair", .{ .headers = &.{ .{ "Authorization", ada }, .{ "X-Remote-Host-Token", host.host_token } }, .json = .{ .host_id = host.id } });
     defer p3.deinit();
     var r3 = try env.t.post("/v1/remote/pair/redeem", .{ .headers = &.{.{ "Authorization", ada }}, .json = .{ .code = (try p3.json(Code)).code, .device_name = "Tablet", .public_key = "eA" } });
     defer r3.deinit();
@@ -175,11 +185,24 @@ test "remote: pairing is single use, same account only, and needs the host's app
     var gone = try env.t.delete(dev_path, .{ .headers = &.{.{ "Authorization", bob }} });
     defer gone.deinit();
     try gone.expectStatus(.not_found);
-    var unpair = try env.t.delete(dev_path, .{ .headers = &.{.{ "Authorization", ada }} });
+    // The account alone can't: the host's or the device's own token has to come with it.
+    var tokenless_unpair = try env.t.delete(dev_path, .{ .headers = &.{.{ "Authorization", ada }} });
+    defer tokenless_unpair.deinit();
+    try tokenless_unpair.expectStatus(.unauthorized);
+    var wrong_device = try env.t.delete(dev_path, .{ .headers = &.{ .{ "Authorization", ada }, .{ "X-Remote-Device-Token", "rd_nope" } } });
+    defer wrong_device.deinit();
+    try wrong_device.expectStatus(.unauthorized);
+    var unpair = try env.t.delete(dev_path, .{ .headers = &.{ .{ "Authorization", ada }, .{ "X-Remote-Device-Token", redeemed.device_token } } });
     defer unpair.deinit();
     try std.testing.expect(unpair.status == .no_content or unpair.status == .ok);
     const host_path = try std.fmt.allocPrint(a, "/v1/remote/hosts/{s}", .{host.id});
-    var drop = try env.t.delete(host_path, .{ .headers = &.{.{ "Authorization", ada }} });
+    var tokenless_drop = try env.t.delete(host_path, .{ .headers = &.{.{ "Authorization", ada }} });
+    defer tokenless_drop.deinit();
+    try tokenless_drop.expectStatus(.unauthorized);
+    var cross_drop = try env.t.delete(host_path, .{ .headers = &.{ .{ "Authorization", ada }, .{ "X-Remote-Host-Token", other_host.host_token } } });
+    defer cross_drop.deinit();
+    try cross_drop.expectStatus(.not_found);
+    var drop = try env.t.delete(host_path, .{ .headers = &.{ .{ "Authorization", ada }, .{ "X-Remote-Host-Token", host.host_token } } });
     defer drop.deinit();
     try std.testing.expect(drop.status == .no_content or drop.status == .ok);
     try std.testing.expectEqual(@as(i64, 0), try env.state.db.one(i64, &c, "SELECT COUNT(*) FROM remote_pairings", .{}));
@@ -207,7 +230,7 @@ test "remote: the relay carries opaque frames between host and client, and unpai
     var made = try env.t.post("/v1/remote/hosts", .{ .json = .{ .name = "Studio Mac", .public_key = "aG9zdA" } });
     defer made.deinit();
     const host = try made.json(NewHost);
-    var p = try env.t.post("/v1/remote/pair", .{ .json = .{ .host_id = host.id } });
+    var p = try env.t.post("/v1/remote/pair", .{ .headers = &.{.{ "X-Remote-Host-Token", host.host_token }}, .json = .{ .host_id = host.id } });
     defer p.deinit();
     var r = try env.t.post("/v1/remote/pair/redeem", .{ .json = .{ .code = (try p.json(Code)).code, .device_name = "Phone", .public_key = "cGhvbmU" } });
     defer r.deinit();
@@ -277,8 +300,16 @@ test "remote: the relay carries opaque frames between host and client, and unpai
             try std.testing.expect(got.type == .binary);
             try std.testing.expectEqualStrings("reply", got.data);
 
+            // A control frame too big to be one is skipped unread; the socket carries on.
+            const big = try ar.alloc(u8, app_main.remote.max_control + 1);
+            @memset(big, 'x');
+            try h.send(.text, big);
+            try c.send(.binary, sealed);
+            const still = try h.receive();
+            try std.testing.expect(still.type == .binary);
+
             // Unpairing: the client is told and cut off, the host sees it go.
-            var del = try anole.client(io).fetch(try std.fmt.allocPrint(ar, "http://127.0.0.1:{d}/v1/remote/devices/{s}", .{ port, dev.device_id }), .{ .method = .delete });
+            var del = try anole.client(io).fetch(try std.fmt.allocPrint(ar, "http://127.0.0.1:{d}/v1/remote/devices/{s}", .{ port, dev.device_id }), .{ .method = .delete, .headers = &.{.{ "X-Remote-Host-Token", host_token }} });
             defer del.deinit();
             try std.testing.expect(del.status() == .no_content or del.status() == .ok);
             _ = try expectNotice(&c, ar, "revoked");

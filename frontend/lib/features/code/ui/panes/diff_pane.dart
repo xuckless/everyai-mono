@@ -55,7 +55,10 @@ class _DiffPaneState extends ConsumerState<DiffPane> {
   CodeGit get _git => ref.read(codeGitProvider(widget.session.id).notifier);
 
   /// Runs [action], showing what failed instead of throwing.
+  /// One git action at a time on the worktree: every entry (buttons, the More menu, hunk reverts) goes through here
+  /// or [_merge], and a second one while [_busy] is dropped.
   Future<void> _run(Future<String?> Function() action) async {
+    if (_busy) return;
     setState(() => _busy = true);
     try {
       final done = await action();
@@ -81,6 +84,7 @@ class _DiffPaneState extends ConsumerState<DiffPane> {
   }
 
   Future<void> _merge() async {
+    if (_busy) return;
     setState(() => _busy = true);
     try {
       await mergeLocally(context, ref, widget.session);

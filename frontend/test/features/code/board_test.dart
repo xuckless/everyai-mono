@@ -50,6 +50,14 @@ void main() {
     expect(BoardColumn.of(SessionStatus.idle), BoardColumn.done);
   });
 
+  test("a session's running workflow and waiting children count on the Board", () {
+    expect(boardStatus(SessionStatus.idle, workRunning: true, childWaits: false), SessionStatus.running);
+    expect(boardStatus(SessionStatus.done, workRunning: false, childWaits: false), SessionStatus.done);
+    expect(boardStatus(SessionStatus.idle, workRunning: true, childWaits: true), SessionStatus.needsInput);
+    expect(boardStatus(SessionStatus.running, workRunning: false, childWaits: true), SessionStatus.needsInput);
+    expect(boardStatus(SessionStatus.starting, workRunning: true, childWaits: false), SessionStatus.starting);
+  });
+
   test('top-level sessions plus detached forks, newest first', () {
     final all = [_s('a', day: 1), _s('b', day: 3), _s('f', parent: 'a', day: 2), _s('g', parent: 'a', day: 4)];
     expect([for (final s in boardSessions(all, const {})) s.id], ['b', 'a']);
@@ -144,6 +152,17 @@ void main() {
     expect(jsonDecode(prefs[BoardDetached.key]!), ['f']);
     // A waiting session without a live controller can still be opened from its card.
     expect(find.byKey(const ValueKey('board.open.b')), findsOneWidget);
+
+    // A workflow keeps its session under Running while the lead sits idle; the card moves back once it ends.
+    const run = WorkflowRun(runId: 'r1', name: 'Security review');
+    c.read(workflowRunsProvider('c').notifier).put(run);
+    await tester.pumpAndSettle();
+    expect(inColumn('running', 'Session c'), findsOneWidget);
+    c
+        .read(workflowRunsProvider('c').notifier)
+        .put(const WorkflowRun(runId: 'r1', name: 'x', status: WorkflowStatus.done));
+    await tester.pumpAndSettle();
+    expect(inColumn('done', 'Session c'), findsOneWidget);
 
     // Done cards clear; one that runs again comes back.
     await tester.tap(find.byKey(const ValueKey('board.clear-done')));

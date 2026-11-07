@@ -92,7 +92,7 @@ mixin _SessionBuiltins on Notifier<CodeSessionState> {
       _settle(running);
       _reviewOf[child.id] = aside.id;
       final sub = ref.listen(codeSessionProvider(child.id), (_, next) {
-        final outcome = subagentOutcome(next.transcript, error: next.error);
+        final outcome = subagentOutcome(next.transcript, error: next.failure);
         if (outcome != null) _reviewDone(child.id, outcome);
       }, fireImmediately: true);
       if (_reviewOf.containsKey(child.id)) {

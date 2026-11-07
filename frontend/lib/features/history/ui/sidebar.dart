@@ -50,17 +50,51 @@ class Sidebar extends ConsumerStatefulWidget {
   ConsumerState<Sidebar> createState() => _SidebarState();
 }
 
+/// The sidebar's search:
+///
+/// ```text
+///  closed ──Search──► chat(query, ids?) ──Search / other space──► closed
+///    │                (Chat space: ids arrive after a short pause; null = no query)
+///    └──Search──► code(query)  (Code space: filters the session list as you type)
+/// ```
+/// Chat searches carry a generation: an answer for an older query, or one that lands after the search closed, is
+/// dropped.
+sealed class _SidebarSearch {
+  const _SidebarSearch();
+}
+
+final class _SearchClosed extends _SidebarSearch {
+  const _SearchClosed();
+}
+
+final class _SearchChat extends _SidebarSearch {
+  const _SearchChat({this.ids});
+
+  /// Null while the query is empty; otherwise the matching conversation ids.
+  final Set<String>? ids;
+}
+
+final class _SearchCode extends _SidebarSearch {
+  const _SearchCode(this.query);
+  final String query;
+}
+
 class _SidebarState extends ConsumerState<Sidebar> {
   final _search = TextEditingController();
   final _searchFocus = FocusNode();
   Timer? _debounce;
-  bool _searching = false;
+  _SidebarSearch _state = const _SearchClosed();
+  var _gen = 0;
 
-  /// The Code sessions query (chats search through [_matches] instead).
-  String _codeQuery = '';
-
-  /// Null when the query is empty; otherwise the matching conversation ids.
-  Set<String>? _matches;
+  bool get _searching => _state is! _SearchClosed;
+  String get _codeQuery => switch (_state) {
+    _SearchCode(:final query) => query,
+    _ => '',
+  };
+  Set<String>? get _matches => switch (_state) {
+    _SearchChat(:final ids) => ids,
+    _ => null,
+  };
 
   @override
   void dispose() {
@@ -71,7 +105,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
   }
 
   void _openSearch() {
-    setState(() => _searching = true);
+    setState(() => _state = widget.location.startsWith(Routes.code) ? const _SearchCode('') : const _SearchChat());
     WidgetsBinding.instance.addPostFrameCallback((_) => _searchFocus.requestFocus());
   }
 
@@ -84,35 +118,40 @@ class _SidebarState extends ConsumerState<Sidebar> {
 
   void _closeSearch() {
     _debounce?.cancel();
+    _gen++;
     _search.clear();
-    setState(() {
-      _searching = false;
-      _matches = null;
-      _codeQuery = '';
-    });
+    setState(() => _state = const _SearchClosed());
   }
 
   void _onQuery(String query) {
-    if (widget.location.startsWith(Routes.code)) {
-      setState(() => _codeQuery = query);
-      return;
+    switch (_state) {
+      case _SearchClosed():
+        return;
+      case _SearchCode():
+        setState(() => _state = _SearchCode(query));
+        return;
+      case _SearchChat():
+        break;
     }
     _debounce?.cancel();
+    final gen = ++_gen;
+    if (query.trim().isEmpty) {
+      setState(() => _state = const _SearchChat());
+      return;
+    }
     _debounce = Timer(const Duration(milliseconds: 200), () async {
-      if (query.trim().isEmpty) {
-        if (mounted) setState(() => _matches = null);
-        return;
-      }
       final ids = await ref.read(chatRepositoryProvider).search(query);
+      if (!mounted || gen != _gen || _state is! _SearchChat) return;
       final lower = query.toLowerCase();
       final all = ref.read(conversationsProvider).value ?? const [];
-      if (!mounted) return;
       setState(
-        () => _matches = {
-          ...ids,
-          for (final c in all)
-            if (c.title.toLowerCase().contains(lower)) c.id,
-        },
+        () => _state = _SearchChat(
+          ids: {
+            ...ids,
+            for (final c in all)
+              if (c.title.toLowerCase().contains(lower)) c.id,
+          },
+        ),
       );
     });
   }

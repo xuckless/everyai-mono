@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -26,21 +28,32 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
   final _query = TextEditingController();
   Set<String>? _matches;
 
+  /// Each keystroke's search; an answer for an older one (or after the field was cleared) is dropped.
+  var _gen = 0;
+  Timer? _debounce;
+
   @override
   void dispose() {
+    _debounce?.cancel();
     _query.dispose();
     super.dispose();
   }
 
-  Future<void> _search(String query) async {
+  void _search(String query) {
+    _debounce?.cancel();
+    final gen = ++_gen;
     if (query.trim().isEmpty) {
       setState(() => _matches = null);
       return;
     }
+    _debounce = Timer(const Duration(milliseconds: 150), () => _run(query, gen));
+  }
+
+  Future<void> _run(String query, int gen) async {
     final ids = await ref.read(chatRepositoryProvider).search(query);
+    if (!mounted || gen != _gen) return;
     final lower = query.toLowerCase();
     final all = ref.read(conversationsProvider).value ?? const <Conversation>[];
-    if (!mounted) return;
     setState(
       () => _matches = {
         ...ids,

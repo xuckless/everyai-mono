@@ -126,7 +126,7 @@ final class RemoteHosting extends Notifier<RemoteHostingState> {
     await _stopLink();
     if (host != null) {
       try {
-        await _api.deleteHost(host.id);
+        await _api.deleteHost(host.id, hostToken: host.token);
       } on Object {
         // Offline: the backend's entry stays, but nothing here can use it.
       }
@@ -135,8 +135,14 @@ final class RemoteHosting extends Notifier<RemoteHostingState> {
     if (ref.mounted) state = const RemoteHostingState(loaded: true);
   }
 
+  /// The [enable] under way: a second call (a double click, or Settings and Webhooks at once) joins it instead of
+  /// registering a second host on the account.
+  Future<void>? _enabling;
+
   /// Turns hosting on, registering this desktop with the backend the first time.
-  Future<void> enable() async {
+  Future<void> enable() => _enabling ??= _enable().whenComplete(() => _enabling = null);
+
+  Future<void> _enable() async {
     var host = state.host;
     RemoteIdentity identity;
     if (host == null) {
@@ -167,7 +173,7 @@ final class RemoteHosting extends Notifier<RemoteHostingState> {
     await _stopLink();
     if (host != null) {
       try {
-        await _api.deleteHost(host.id);
+        await _api.deleteHost(host.id, hostToken: host.token);
       } on Object {
         // Gone already, or offline: forget it here either way.
       }
@@ -220,7 +226,7 @@ final class RemoteHosting extends Notifier<RemoteHostingState> {
   Future<({PairingCode code, String qr})> newCode() async {
     final host = state.host;
     if (host == null) throw StateError('Turn hosting on first.');
-    final code = await _api.newCode(host.id);
+    final code = await _api.newCode(host.id, hostToken: host.token);
     final qr = PairingPayload(
       code: code.code,
       hostId: host.id,
@@ -253,9 +259,9 @@ final class RemoteHosting extends Notifier<RemoteHostingState> {
   }
 
   Future<void> revokeDevice(String deviceId) async {
-    await _api.deleteDevice(deviceId);
     final host = state.host;
     if (host == null) return;
+    await _api.deleteDevice(deviceId, hostToken: host.token);
     final updated = host.copyWith(devices: {...host.devices}..remove(deviceId));
     await _store.saveHost(updated);
     state = state.copyWith(host: updated);
@@ -295,12 +301,12 @@ final class PairedHosts extends AsyncNotifier<List<PairedHost>> {
     try {
       actual = keyFingerprint(decodePublicKey(r.hostPublicKey));
     } on RemoteCryptoError {
-      unawaited(api.deleteDevice(r.deviceId).catchError((Object _) {}));
+      unawaited(api.deleteDevice(r.deviceId, deviceToken: r.deviceToken).catchError((Object _) {}));
       throw const RemoteCryptoError('The host sent an invalid key.');
     }
     if ((expected != null && !sameFingerprint(expected, actual)) ||
         (payload.hostId != null && payload.hostId != r.hostId)) {
-      unawaited(api.deleteDevice(r.deviceId).catchError((Object _) {}));
+      unawaited(api.deleteDevice(r.deviceId, deviceToken: r.deviceToken).catchError((Object _) {}));
       throw const RemoteCryptoError("The host's key doesn't match the QR code. Pairing stopped.");
     }
     final host = PairedHost(
@@ -341,7 +347,7 @@ final class PairedHosts extends AsyncNotifier<List<PairedHost>> {
     await ref.read(remoteLinksProvider).closeAll();
     for (final h in hosts) {
       try {
-        await ref.read(remoteApiProvider).deleteDevice(h.deviceId);
+        await ref.read(remoteApiProvider).deleteDevice(h.deviceId, deviceToken: h.deviceToken);
       } on Object {
         // Offline or gone already.
       }
@@ -355,7 +361,7 @@ final class PairedHosts extends AsyncNotifier<List<PairedHost>> {
     final host = _hosts.where((h) => h.hostId == hostId).firstOrNull;
     if (host == null) return;
     try {
-      await ref.read(remoteApiProvider).deleteDevice(host.deviceId);
+      await ref.read(remoteApiProvider).deleteDevice(host.deviceId, deviceToken: host.deviceToken);
     } on Object {
       // Already gone on the backend.
     }

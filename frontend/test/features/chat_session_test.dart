@@ -160,6 +160,42 @@ void main() {
     ]);
   });
 
+  test('a turn is Starting from the call on: a second send waits out, Stop cancels before the request', () async {
+    await settle();
+    final first = ctl().send('One');
+    expect(state().phase, isA<Starting>());
+    expect(state().phase.busy, isTrue);
+    // A second message while the first is still being set up doesn't start a second turn.
+    final second = ctl().send('Two');
+    ctl().cancel();
+    expect(state().phase, isA<Idle>());
+    await first;
+    await second;
+    await settle();
+    expect(transport.turns, isEmpty);
+    expect(state().phase, isA<Idle>());
+
+    await ctl().send('Three');
+    expect(state().phase, isA<Awaiting>());
+    expect(transport.turns, hasLength(1));
+  });
+
+  test('Stop then an immediate send runs one turn: the stopped start gives up', () async {
+    await settle();
+    final first = ctl().send('One');
+    ctl().cancel();
+    // Sent before the first turn's setup has answered: the phase is Starting again, but not the first's.
+    final second = ctl().send('Two');
+    await first;
+    await second;
+    await settle();
+    expect(transport.turns, hasLength(1));
+    expect(state().messages.where((m) => m.isUser).map((m) => m.plainText), ['Two']);
+    // Named from the message that was sent, not the stopped one.
+    expect(state().title, 'Two');
+    expect((await container.read(chatRepositoryProvider).conversation(id))?.title, 'Two');
+  });
+
   group('backend titles', () {
     Future<void> firstTurn(String prompt, String reply) async {
       await settle();
