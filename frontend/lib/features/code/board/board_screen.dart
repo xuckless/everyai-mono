@@ -18,6 +18,7 @@ import '../domain/code_session.dart';
 import '../drivers/driver_registry.dart' show driverRegistryProvider;
 import '../ui/harness_logo.dart';
 import 'board_providers.dart';
+import 'board_work.dart';
 
 /// Every session at a glance: Needs you, Running, Done, side by side with hairlines between them (drag one to
 /// resize; double-click to even them). Approvals and questions are answered on the card, Done cards can be cleared,
@@ -411,9 +412,6 @@ class _BoardCardState extends ConsumerState<BoardCard> {
   /// Bumped when an approval from this card goes through: the button pulses.
   int _approved = 0;
 
-  /// The question form is open on the card.
-  bool _answering = false;
-
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
@@ -434,11 +432,13 @@ class _BoardCardState extends ConsumerState<BoardCard> {
       if (info.parentId != null) 'fork',
     ].join(' · ');
     final waiting = widget.status == SessionStatus.needsInput;
+    // A question is answered right on the card, open from the start.
+    final asking = waiting && question != null;
     void openSession() => context.go(Routes.codeSession(info.id));
 
     return Pressable(
       onTap: openSession,
-      scale: !_answering,
+      scale: !asking,
       semanticLabel: '${info.title}, ${widget.status.label}',
       builder: (context, s, child) => AnimatedContainer(
         duration: const Duration(milliseconds: 180),
@@ -482,10 +482,7 @@ class _BoardCardState extends ConsumerState<BoardCard> {
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                m.Tooltip(
-                  message: widget.harnessLabel,
-                  child: HarnessLogo(info.harness, size: 24),
-                ),
+                m.Tooltip(message: widget.harnessLabel, child: HarnessLogo(info.harness, size: 24)),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
@@ -523,7 +520,7 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                 ),
               ],
             ),
-            if ((activity.isNotEmpty || widget.status == SessionStatus.failed) && !_answering)
+            if ((activity.isNotEmpty || widget.status == SessionStatus.failed) && !asking)
               Padding(
                 padding: const EdgeInsets.only(left: 36, top: 8),
                 child: StateSwap(
@@ -542,19 +539,20 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                   ),
                 ),
               ),
-            if (waiting && question != null && _answering)
+            if (asking)
               Padding(
                 key: ValueKey('board.question.${info.id}'),
                 padding: const EdgeInsets.only(top: 10),
                 child: QuestionCard(
                   questions: question.questions,
                   onSubmit: (answers) async {
-                    final ok = await ref.read(codeSessionProvider(info.id).notifier).answer(question, answers);
-                    if (mounted && ok) setState(() => _answering = false);
+                    await ref.read(codeSessionProvider(info.id).notifier).answer(question, answers);
                   },
                 ).settle(),
               ),
-            if (waiting && !_answering)
+            BoardWork(sessionId: info.id),
+            // Its own approvals; Open for a waiting session not open here yet (one whose child waits shows that above).
+            if (waiting && !asking && (pending.isNotEmpty || live == null))
               Padding(
                 padding: const EdgeInsets.only(left: 36, top: 10),
                 child: Wrap(
@@ -579,12 +577,7 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                         style: KitButtonStyle.ghost,
                         onPressed: () => ref.read(codeSessionProvider(info.id).notifier).deny(),
                       ),
-                    ] else if (question != null)
-                      KitButton(
-                        key: ValueKey('board.answer.${info.id}'),
-                        label: 'Answer',
-                        onPressed: () => setState(() => _answering = true),
-                      ),
+                    ],
                     KitButton(
                       key: ValueKey('board.open.${info.id}'),
                       label: 'Open',
@@ -592,15 +585,6 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                       onPressed: openSession,
                     ),
                   ],
-                ),
-              ),
-            if (_answering)
-              Align(
-                alignment: Alignment.centerRight,
-                child: KitButton(
-                  label: 'Cancel',
-                  style: KitButtonStyle.ghost,
-                  onPressed: () => setState(() => _answering = false),
                 ),
               ),
           ],

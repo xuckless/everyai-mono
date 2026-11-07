@@ -3,6 +3,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../../../core/security/untrusted.dart';
+import '../../questions/domain/questions.dart' show Question, QuestionAnswer;
 import '../harness/events.dart';
 import '../settings/agent_settings.dart' show AgentType;
 import 'agent_mode.dart';
@@ -492,6 +493,22 @@ SubagentReport forkAsks(String childId, String title, String questions) => Subag
   'Started in the background as task $childId, and it has paused to ask you:\n'
   '${_forkQuestionBlock(childId, title, questions)}',
 );
+
+/// The app's own questions to a session (the loop guard, a bug question): a fork passes them to its orchestrator
+/// like its own. Consents (a host tool asking to see a window) stay the user's.
+bool isAppAsk(String callId) => callId.startsWith('doom-') || callId.startsWith('bugask-');
+
+/// The user answered a fork's question themselves (in its view or on the Board) after it went to the orchestrator.
+String forkAnsweredMessage(String childId, String title, String answers) =>
+    'The user answered the question fork $childId ("${title.replaceAll('"', "'")}") asked you, so it carries on; '
+    "don't send answer_fork for it. Their answer:\n$answers";
+
+/// [answers] as short lines for the orchestrator: each question, then what was picked or written.
+String answersSummary(List<Question> questions, List<QuestionAnswer> answers) => [
+  for (final (i, q) in questions.indexed)
+    if (i < answers.length && !answers[i].isEmpty)
+      '- ${q.question} → ${[...answers[i].labels(q), if (answers[i].other.trim().isNotEmpty) answers[i].other.trim()].join(', ')}',
+].join('\n');
 
 /// The same, as a message, for a fork already in the background.
 String forkQuestionMessage(String childId, String title, String questions) =>

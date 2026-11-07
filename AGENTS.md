@@ -861,6 +861,15 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   until a release adds its entry) → `whatsNewProvider` shows this build's notes once at launch (`whats_new.seen`; a
   fresh install marks them seen on accepting the onboarding) in `ui/whats_new_dialog.dart` (KitDialog 520pt, scrolls,
   wraps long lines); Settings → About has "What's new" when the build has notes.
+- **Board: work inside a session, fork waits (2026-11-07; branch `board-depth`).** A card's question is open on the
+  card (no Answer step). `board/board_work.dart` `BoardWork`: one folded line ("Ultra 3/5 · 2 running · 1 command ·
+  1 needs you") opening to the session's workflow runs (bar + agents), forks/subagents and background commands; it
+  opens by itself when a child waits on the user, with Approve/Deny or the question under that child's row
+  (`userWait`). Owner: the lead resolves what it can, the user sees only consent and decisions. So a fork's
+  loop-guard and bug questions (`isAppAsk`: `doom-`, `bugask-`) go to its orchestrator like its own questions
+  (`answerFromOrchestrator` answers them; the orchestrator's word decides, worded neutrally); approvals, host consents
+  and workflow agents' questions stay the user's. A user who answers a forwarded question first tells the orchestrator
+  (`forkAnsweredByUser`, `askedLead`). Test: `code_max_tools_test` (fork stuck repeating a step), `board_test`.
 - **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
   `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
   `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,
