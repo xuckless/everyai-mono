@@ -98,7 +98,12 @@ class _SetupTerminalDialogState extends ConsumerState<SetupTerminalDialog> {
     }
   }
 
+  /// Esc and Close can both fire: the dialog closes once, so the page under it isn't popped too.
+  var _closed = false;
+
   Future<void> _close() async {
+    if (_closed) return;
+    _closed = true;
     final navigator = Navigator.of(context);
     final statuses = ref.read(driverStatusesProvider.notifier);
     _shell.dispose();

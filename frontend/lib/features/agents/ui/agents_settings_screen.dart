@@ -202,7 +202,11 @@ class _AgentsSettingsBodyState extends ConsumerState<AgentsSettingsBody> {
     }
   }
 
+  /// Built-ins being copied: a double click makes one copy.
+  final _customizing = <String>{};
+
   Future<void> _customize(AgentDefinition a) async {
+    if (!_customizing.add(a.name)) return;
     try {
       final copy = await ref.read(agentLibraryProvider.notifier).customize(a);
       if (!mounted) return;
@@ -213,6 +217,8 @@ class _AgentsSettingsBodyState extends ConsumerState<AgentsSettingsBody> {
       }
     } on StateError catch (e) {
       if (mounted) await _tell(context, 'Could not customize', e.message);
+    } finally {
+      _customizing.remove(a.name);
     }
   }
 

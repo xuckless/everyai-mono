@@ -91,7 +91,12 @@ class _LocalSetupTerminalDialogState extends ConsumerState<LocalSetupTerminalDia
     }
   }
 
+  /// Esc and Close can both fire: the dialog closes once, so the page under it isn't popped too.
+  var _closed = false;
+
   Future<void> _close() async {
+    if (_closed) return;
+    _closed = true;
     final navigator = Navigator.of(context);
     _shell.dispose();
     navigator.pop();
