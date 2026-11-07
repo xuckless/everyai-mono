@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping with EveryAI. It is a pre-alpha prototype, so expect rough edges and fast changes.
+Thanks for helping with EveryAI. It is in alpha, so expect rough edges and fast changes.
 [`AGENTS.md`](AGENTS.md) has the working notes (rules, the `/v1` contract, decisions, progress); read it before a
 larger change, and if you use a coding agent, point it there.
 

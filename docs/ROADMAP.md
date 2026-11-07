@@ -1,6 +1,6 @@
 # EveryAI roadmap
 
-Status as of 2026-11-07: alpha `0.1.0-alpha.5` (signed: notarized macOS DMG, Microsoft Store, GPG-signed Linux packages; the apps now update themselves). macOS is the daily driver; Windows and Linux
+Status as of 2026-11-07: alpha `0.1.0-alpha.5` (signed: notarized macOS DMG, Microsoft Store, GPG-signed Linux packages; the apps update themselves; a web app at https://app.everyai.dev). macOS is the daily driver; Windows and Linux
 build in CI but haven't been tested on real machines. The Code workspace's internals are in
 [CODE_ROADMAP.md](CODE_ROADMAP.md).
 
@@ -37,14 +37,21 @@ and adds what they don't have:
   review) as `workflow.js` run in Deno and served as MCP prompts; Max as an approach skill with fork tools.
 - **Continuity:** handoff on a usage limit (native import into the next agent's session format, or facts plus the
   transcript file), a default handoff target, and resuming any agent's earlier session from New session.
-- **The console layout:** one right panel (session info with context, usage and running work; diff; files with
-  light editing), a git button that follows the repo, a bottom drawer for the terminal, and a composer strip for the
-  agent, workflows, skills and MCP.
-- **The EveryAI harness:** any model on the user's key, per-family tools, approvals, compaction, forks in worktrees,
-  a browser and screenshots for checking its own work.
+- **One EveryAI design** on every OS (dark, light, Pure black). The Code session has a five-tab panel (Session, Diff,
+  Preview, Files, Processes), a terminal drawer with tabs and a git button that follows the repo; the Board shows
+  every session in Needs you, Running and Done columns, with approvals and questions answered on the card.
+- **Seeing and testing what's built:** a live Preview shared by the user and the agent (take over, give back), and
+  the `app` tool for web and Electron pages, Flutter and React Native apps, the iOS Simulator, the Android emulator
+  and desktop windows. Every process, Docker containers included, opens in a terminal.
+- **Local models:** servers found on the computer, one-click packs sized to its hardware, Apple's model as the macOS
+  chat default, and chats on local models and own keys run by a backend bundled in the app.
+- **A cheaper execution loop:** runtime profiles, checks after each turn on the changed files, plan batches with a
+  check each, and no AI credit in commits for any harness.
+- **The EveryAI harness:** any model on the user's key or a local model, per-family tools, approvals, compaction,
+  forks in worktrees, and the shared browser and `app` tool for checking its own work.
 - **Chat:** modes (Chat, Search, Research, Learn, Summarise), artifacts with versions and downloads, slides, charts,
   diagrams, quizzes, memory and history on the device.
-- **Remote control:** phones, tablets and the web pair with the desktop over an end-to-end encrypted relay.
+- **Remote control:** phones, tablets and the web app pair with the desktop over an end-to-end encrypted relay.
 - **Infrastructure:** the dev backend on Anole 0.5.1 with its own TLS and rate limiting; Windows and Linux builds from
   CI; a first-launch tour.
 
@@ -52,24 +59,19 @@ and adds what they don't have:
 
 In order:
 
-1. **Easy setup and migration:** desktop apps detected (Claude, Cursor, Antigravity, Codex), the agent's official
-   installer and its own sign-in run in EveryAI's terminal, and the user's MCP servers, rules and sessions brought over
-   with a yes.
-2. **Local models (built 2026-11-06, not live-tested):** servers found on this computer, Apple's model as the macOS
-   chat default, sized starter packs downloaded in one click, Chat through the bundled backend, the EveryAI harness
-   straight to the server. Next: outside harnesses on local models, and local models inside WSL-like environments.
-3. **Windows parity:** a Windows shell for the EveryAI harness, WSL as a per-project environment, process cleanup, and
-   a test pass on real machines.
-4. **The standalone package:** the same MCP server, skills and workflows as a plugin for Claude Code, Codex and
+1. **Live testing:** a real turn through every outside driver, handoff and resume, workflows on outside agents, local
+   models on a real server, the `app` tool on real projects, and Windows and Linux on real machines.
+2. **Distribution:** the backend on its own domain with real sign-in, a `curl` installer and apt/dnf repos served
+   from Cloudflare R2, then Android (Google Play and a signed APK) and iOS (TestFlight, then the App Store). No Mac
+   App Store: its sandbox would break the agents, terminals and project access.
+3. **The standalone package:** the same MCP server, skills and workflows as a plugin for Claude Code, Codex and
    OpenCode in the user's own terminal.
-5. **Lead Mode:** the EveryAI harness leads and delegates batches of work to other agents, each in its own worktree,
+4. **Lead Mode:** the EveryAI harness leads and delegates batches of work to other agents, each in its own worktree,
    with a check gating every merge.
-6. **Live terminal views:** each agent's real terminal UI beside the transcript where it can attach.
-7. **Releases:** the Microsoft Store (signed by the Store; winget installs from it), Flathub, and a notarized macOS
-   DMG with a Homebrew tap, from the first alpha on.
+5. **Live terminal views:** each agent's real terminal UI beside the transcript where it can attach.
 
-Also planned: an OS sandbox for shell commands (Seatbelt, bubblewrap), headless mode and user hooks, LSP diagnostics,
-and a cheaper execution loop (runtime profiles, targeted tests, batched edits).
+Also planned: an OS sandbox for shell commands (Seatbelt, bubblewrap), headless mode (`everyai serve`) and user
+hooks, LSP diagnostics, local models for outside harnesses, and the live views on the phone and web.
 
 ## 4. Risks
 
@@ -82,5 +84,5 @@ and a cheaper execution loop (runtime profiles, targeted tests, batched edits).
   every real agent.
 - **The agent runs as the user.** Approvals and the safety floor are defence in depth over shell strings, not a
   sandbox, until the OS sandbox lands.
-- **Six platforms, one small team.** Native UI per platform multiplies UI work and test surface; Windows and Linux
-  haven't been tested on real machines.
+- **Six platforms, one small team.** One design now covers every platform, but the test surface is still six
+  platforms; Windows and Linux haven't been tested on real machines.

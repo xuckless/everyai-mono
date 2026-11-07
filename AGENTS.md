@@ -50,17 +50,20 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
 
 ## Monorepo map
 - `frontend/`: the Flutter app ("EveryAI"), Flutter 3.47.9, Riverpod 3, Drift.
-  - Native UI per platform: `material_ui` (m), `cupertino_ui` (c),
-    `fluent_ui` (f), `macos_ui` (mac), with adaptive wrappers in
-    `lib/core/ui/adaptive*.dart`.
+  - One EveryAI design on every OS since the UI overhaul (2026-11-06): tokens in `EveryTheme`
+    (`core/theme/`), kit widgets in `core/ui/kit.dart`, motion in `core/motion/motion.dart`, Geist fonts and
+    Lucide icons. The `Adaptive*` wrappers in `lib/core/ui/adaptive*.dart` render the kit; one Material root
+    supplies plumbing only. The old per-platform design languages (Cupertino, Material, Fluent, macos_ui) are gone
+    from the screens.
   - Features live in `lib/features/<feature>/{data,domain,ui}` plus a
     `*_providers.dart`.
   - Chat: `features/chat/` (controller `chat_providers.dart`, transport
     `data/chat_transport.dart`, markdown `ui/chat_markdown.dart`).
   - Models: `features/models/` (catalog, library, shop).
   - Sidebar and shell: `features/history/ui/sidebar.dart`, `app/shell.dart`.
-  - macOS vibrancy comes from `macos_window_utils` `TransparentMacOSSidebar`;
-    the rail is 92px on macOS so the traffic lights fit inside it.
+  - Code: a five-tab session panel (Session · Diff · Preview · Files · Processes), a terminal drawer with
+    tabs, and the Board (`code/board/`). Live views and the `app` tool are in `code/live/`, the shell registry in
+    `code/shells/`, local models in `features/local_models/`.
   - Tests: `flutter test` (app) and `packages/*` tests. Screenshots go through
     the seeded demo DB under the macOS container.
 - `backend-exp/`: the new backend in **Zig 0.17.0 on Anole** (the `xuckless/anole`
@@ -997,26 +1000,32 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
     model (Code). Light harness profile for local models with a window of 32K or less. The EveryAI lead greys out with
     no model; new sessions then start on a ready outside agent.
   - Not live-tested: no Ollama here, the fm licence isn't agreed, Windows/Linux packages not built.
+- **0.1.0-alpha.5 and the web app (2026-11-07; PR #28, tag `v0.1.0-alpha.5`).** Release of PRs #23–#27 (UI
+  overhaul, local models, the tool buildout, the UI audit). `releaseNotes` in `features/updates/domain/whats_new.dart`
+  got its first entry (8 items); add one with every version bump. alpha.4 was never published (its draft release
+  stays a draft and the cask stayed on alpha.3), so the alpha.5 release notes carry alpha.4's changes too.
+  - **Web app live at `https://app.everyai.dev`** (Chat + remote control; the computer still runs Code sessions):
+    `flutter build web --release --wasm` with the launch defines (dev server, `DEV_SKIP_AUTH`), served as Cloudflare
+    Workers static assets (worker `everyai-web`, zone `everyai.dev` on the owner's Cloudflare account, SPA fallback,
+    `_headers` with nosniff, frame DENY, COOP). Redeploy steps in `TODO-deployment.md` §2. Every visitor is the
+    dev backend's `dev-user` until real sign-in lands.
+  - **Web build fix (PR #29):** #26 made `shell_io.dart` import `shells/pty_spawn_io.dart` (flutter_pty →
+    `dart:ffi`), which the web build reaches through `code_providers → live_browsers → browser_io → shell_io`.
+    Now a conditional import with `pty_spawn_stub.dart` (no pty on the web; pipes instead).
+
 ## Next steps
-0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
-0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2
-   are built (PR #1) and await live testing; Stage 3 (handoff) is run 3. Claude Code and Gemini sit behind a consent setting until the owner's ToS check.
-   **Re-planned 2026-11-04** (read the Direction section of `TODO-multi-harness.md` before touching `PhaseFlow` or the
-   drivers): outside harnesses keep their native feel (native slash commands and modes, our floor as advice) plus our
-   increments; EveryAI spends nothing in their sessions; Ultra, Bug fix and Security review become `workflow.js` files
-   run in Deno, Max an approach skill + MCP tools; Lead Mode with the EveryAI harness as the only lead; local LLMs and
-   BYOK are the EveryAI harness's focus; billing is parked.
-   EveryAI harness upgrades are in `TODO-harness.md` (split from TODO.md 2026-11-04).
-1. **Current plan (`~/.claude/plans/few-tasks-in-your-parsed-piglet.md`)**: §1–3 bug fixes done; next §4 tiered agent models (`/v1/agents`, effort), §5 git worktrees (App Support, squash merge), §6 agent evals, §7 `docs/CODE_ROADMAP.md`.
-1. **Phase B, the Code workspace** (desktop; see the plan file for the full spec):
-   1. ~~Harness + FakeHarness~~ and 2. ~~transcript, session view, question cards~~: done (c531059).
-   3. Projects (open/clone/new) and the git service (worktree per session, diff/hunks, checkpoints).
-   4. Panes: Diff, Terminal (xterm + flutter_pty), Processes, Preview (reuse `flutter_inappwebview`).
-   5. ~~The sidecar~~: done (dev mode; bundling into the app is in TODO.md).
-0. **User's next requests (TODO.md "Requested, not started")**: token/cost meter and context ring in Chat and Code, usage tracker in Settings, file uploads in Chat and Code (grey out unsupported), remote-host coding sessions.
-2. **Phase C leftovers:** see "Still missing" in the progress log above.
-3. **Backend:** native provider adapters later; Stripe keys (TODO.md).
-4. Write `docs/ROADMAP.md` (moat) and keep TODO.md updated.
+Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
+1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),
+   a handoff, a resume and a workflow; local models on a real Ollama; the `app` tool on real projects; a real pass
+   on Windows and Linux machines (desktop windows there are 3–4/10). `TODO-multi-harness.md` "Still open",
+   `TODO-toolbuild.md`.
+2. **Tool buildout follow-ups** (`TODO-toolbuild.md`; PR #26 lists them by value): outside-agent re-runs, speed of
+   desktop/Android actions, iOS refs, Preview pop-out, Annotate, device frames.
+3. **Distribution** (`TODO-deployment.md`): the backend on its own domain and off the shared ttt VM, real sign-in,
+   the curl installer and apt/dnf repos on Cloudflare R2, web deploys from CI, then Android (Play closed test + APK)
+   and iOS (Sign in with Apple, TestFlight).
+4. **Then** (`TODO-multi-harness.md`, `TODO-harness.md`): the standalone package, Lead Mode, live terminal views, the
+   OS sandbox and headless mode, local models for outside harnesses.
 
 ## Gotchas
 - Format Dart with `dart format -l 120 <files>` (the project's width). Plain
@@ -1033,3 +1042,9 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   always cites (~$0.007/search). The usage chunk comes last, before
   `[DONE]`; `: OPENROUTER PROCESSING` comments occur.
 - The old FastAPI backend (`backend/`) was removed on 2026-11-05; backend-exp is the only server.
+- **The web build:** anything reaching `dart:ffi` (flutter_pty, ffi packages) must sit behind a conditional import
+  (`… if (dart.library.ffi) '…_io.dart'`); `dart:io` compiles on the web but `dart:ffi` doesn't. Run
+  `flutter build web --wasm` after touching imports in `features/code/` (#26 broke it unnoticed).
+- **Every release:** bump pubspec (+N), `appVersion`, TERMS-DEV.md, the README badge, docs/ROADMAP.md, dev-builds.yml,
+  add a CHANGELOG section and a `releaseNotes` entry; tag `v<version>` on main; then publish the draft release and
+  bump the Homebrew cask (they don't happen by themselves).

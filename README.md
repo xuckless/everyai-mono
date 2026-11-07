@@ -12,6 +12,7 @@
 <a href="https://github.com/xuckless/everyai-mono/releases/latest"><img alt="macOS" src="https://img.shields.io/badge/macOS-download-000000?style=for-the-badge&logo=apple&logoColor=white"/></a>
 <a href="https://apps.microsoft.com/detail/9PHCKCV3J9S9"><img alt="Windows" src="https://img.shields.io/badge/Microsoft%20Store-get%20it-0078D4?style=for-the-badge&logo=windows11&logoColor=white"/></a>
 <a href="https://github.com/xuckless/everyai-mono/releases/latest"><img alt="Linux" src="https://img.shields.io/badge/Linux-download-FCC624?style=for-the-badge&logo=linux&logoColor=black"/></a>
+<a href="https://app.everyai.dev"><img alt="Web" src="https://img.shields.io/badge/Web-open-7C5CFF?style=for-the-badge&logo=googlechrome&logoColor=white"/></a>
 <br/>
 <a href="https://github.com/xuckless/everyai-mono/releases"><img alt="alpha 0.1.0-alpha.5, signed" src="https://img.shields.io/badge/alpha-0.1.0--alpha.5%20·%20signed-FF6B9A?style=flat-square"/></a>
 <br/><br/>
@@ -37,12 +38,13 @@ flowchart LR
         CX["Codex"]
         OC["OpenCode"]
         ACP["Antigravity · Cursor · Copilot<br/>any ACP agent"]
-        EH["EveryAI harness<br/>any model · your key · local soon"]
+        EH["EveryAI harness<br/>any model · your key · local models"]
     end
     subgraph WS["EveryAI workspace"]
         UI["One native UI<br/>their commands, modes and words"]
         WF["Workflows<br/>Ultra · Max · Bug fix · Security review"]
         TL["Checks · rewind · MCP tools<br/>skills · memory"]
+        LV["Live Preview · app tool<br/>web · iOS · Android · desktop"]
         OR["Handoff · resume<br/>Lead Mode (soon)"]
     end
     You(["You<br/>desktop · phone · web"])
@@ -67,9 +69,13 @@ flowchart LR
 </tr>
 </table>
 
+- 🗂️ **The Board:** every session in Needs you, Running and Done columns; approve, deny and answer questions right on the card.
+- 💻 **Models on your computer:** Ollama, LM Studio, llama.cpp, Jan, vLLM, MLX and Apple's on-device model, found automatically, with one-click packs sized to your machine. Local and own-key chats run on a server inside the app.
+- 👀 **See what you build:** a live Preview that you and the agent share, with a take-over button, and an `app` tool that lets any agent see and operate web pages, Flutter and React Native apps, the iOS Simulator, the Android emulator and desktop windows.
+- 🧵 **Every process in a terminal:** click a shell, dev server or Docker container to see its whole log and type into it.
 - ⏪ **Pick up where you left off:** open a folder and resume any earlier session from any agent, with its full history.
 - 🔁 **Never stop on a limit:** when a plan runs out, another agent carries on and finishes the cut-off turn.
-- 📱 **Code from anywhere:** pair a phone, tablet or browser with your computer and drive its sessions live.
+- 📱 **Code from anywhere:** pair a phone, tablet or [the web app](https://app.everyai.dev) with your computer and drive its sessions live.
 - 🤝 **One team** <sup>soon</sup>: Lead Mode, where EveryAI hands work to the other agents, each in its own worktree.
 
 ## ✦ Also in the box: Chat
@@ -92,6 +98,7 @@ flowchart LR
 | **macOS** | [Download the DMG](https://github.com/xuckless/everyai-mono/releases/latest) or `brew trust xuckless/tap && brew install --cask xuckless/tap/everyai` | signed and notarized |
 | **Windows** | [Microsoft Store](https://apps.microsoft.com/detail/9PHCKCV3J9S9) or `winget install --source msstore 9PHCKCV3J9S9` | signed by the Store |
 | **Linux** | [AppImage or .deb](https://github.com/xuckless/everyai-mono/releases/latest) | GPG-signed ([key](packaging/linux/everyai-release-key.asc)) |
+| **Web** | [app.everyai.dev](https://app.everyai.dev) | Chat, and remote control of your computer's sessions |
 
 Check a Linux download with `gpg --import everyai-release-key.asc && gpg --verify SHA256SUMS.asc SHA256SUMS && sha256sum -c --ignore-missing SHA256SUMS`.
 The first launch walks you through a short tour: adding a key, the agents found on your computer, and the
