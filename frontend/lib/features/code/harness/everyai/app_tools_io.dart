@@ -17,6 +17,7 @@ import '../../live/ios_simulator_io.dart';
 import '../../live/live_session.dart';
 import '../../live/react_native_io.dart';
 import 'screen_tools_io.dart' show runBrowser;
+import 'screen_windows.dart' show sensitiveWindow;
 import 'tools_io.dart' show ToolOutput, imageDataUrl;
 import 'window_capture_io.dart' show executableOf;
 
@@ -49,7 +50,10 @@ Future<ToolOutput> runAppTool(
   // Desktop apps the session started (or built in its folder) that have a window now.
   if (windowPids != null) await _findWindows(sessions.first, windowPids, root);
   if (action == 'list' && source.contains('://')) {
-    if (endpointFromUrl(source) case final ep?) AppSources.point(sessions.first, ep);
+    if (endpointFromUrl(source) case final ep?) {
+      if (await _foreignDevTools(ep, windowPids, root) case final why?) return ToolOutput('Error: $why', isError: true);
+      AppSources.point(sessions.first, ep);
+    }
   }
   final apps = AppSources.running(sessions);
   if (action == 'list') {
@@ -67,6 +71,7 @@ Future<ToolOutput> runAppTool(
         isError: true,
       );
     }
+    if (await _foreignDevTools(ep, windowPids, root) case final why?) return ToolOutput('Error: $why', isError: true);
     AppSources.point(sessions.first, ep);
     app = SessionApp(ep);
   } else {
@@ -139,10 +144,13 @@ Future<void> _findWindows(String session, Future<Set<int>> Function() windowPids
     final pids = await windowPids();
     final mine = <int>{};
     for (final w in await helperWindows(const [])) {
-      if (pids.contains(w.pid) || (await executableOf(w.pid)).startsWith('$root/')) {
-        mine.add(w.pid);
-        DesktopWindows.driver(w.pid).known(w);
-      }
+      final exe = await executableOf(w.pid);
+      if (!pids.contains(w.pid) && !exe.startsWith('$root/')) continue;
+      // Never a password manager, even one the session started.
+      final asScreen = (id: w.id, pid: w.pid, owner: w.app, title: w.title, width: w.w.round(), height: w.h.round());
+      if (sensitiveWindow(asScreen, own: true, exe: exe) != null) continue;
+      mine.add(w.pid);
+      DesktopWindows.driver(w.pid).known(w);
     }
     for (final pid in mine) {
       AppSources.point(session, AppEndpoint(AppKind.desktop, Uri.parse('window:$pid')));
@@ -150,6 +158,30 @@ Future<void> _findWindows(String session, Future<Set<int>> Function() windowPids
   } on Object {
     // No windows to add (the helper failed): the other sources still work.
   }
+}
+
+/// Why a DevTools address the agent named ([ep], an Electron app's) can't be driven: the process listening there isn't
+/// one of this session's (or a program built in [root]). A browser the user runs with remote debugging holds their
+/// signed-in pages. Null when it is the session's, or when the session's processes aren't known.
+Future<String?> _foreignDevTools(AppEndpoint ep, Future<Set<int>> Function()? sessionPids, String root) async {
+  if (ep.kind != AppKind.electron || sessionPids == null || Platform.isWindows) return null;
+  final port = ep.uri.hasPort ? ep.uri.port : null;
+  if (port == null) return null;
+  final Set<int> listeners;
+  try {
+    final r = await Process.run('lsof', ['-nP', '-iTCP:$port', '-sTCP:LISTEN', '-t']);
+    listeners = {for (final l in '${r.stdout}'.split('\n')) ?int.tryParse(l.trim())};
+  } on Object {
+    return null;
+  }
+  if (listeners.isEmpty) return null;
+  final mine = await sessionPids();
+  for (final pid in listeners) {
+    if (mine.contains(pid) || (await executableOf(pid)).startsWith('$root/')) return null;
+  }
+  return 'port $port belongs to a program this session didn\'t start (perhaps the user\'s own browser, with their '
+      'signed-in pages), so EveryAI won\'t attach to it. Start the app from this session (bash run_in_background), '
+      'then use its address.';
 }
 
 /// Whether Metro answers at [metro].
@@ -734,6 +766,11 @@ Future<ToolOutput> _device(
       case 'key':
         final k = str('key') ?? str('text');
         if (k == null) return const ToolOutput('Error: key needs key ("Enter", "Escape", "cmd+s").', isError: true);
+        if (keyTypesText(k)) {
+          // Desktop trees mark focus; the simulator's and some apps' don't.
+          final why = secretFocusRefusal(await a.tree(), focusKnown: a is DesktopWindow);
+          if (why != null) return ToolOutput('Error: $why', isError: true);
+        }
         did = await a.key(k);
       case 'install':
         final path = str('path');

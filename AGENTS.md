@@ -934,6 +934,14 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   futoshiki copy: Load through the native panel, AC-3 picked from Tk's pop-up list, solved, Timeout typed (Tk has no
   Cmd+A: `tap {count: 3}` triple-clicks to select; the real-typing fallback does too). New `key` action on iOS (AXe HID codes) and Android (keyevents/keycombination) via
   `DeviceScreen.key`.
+  Guards (security pass, 2026-11-07; light on purpose): the helper's real input waits (≤8 s) while the user is using
+  the mouse or keyboard (exit 8), sends a pointer event only where the app's own window or pop-up is on top (not the
+  menu bar, another app, or outside its windows; exit 7), and keys only while the app is frontmost and macOS secure
+  input (a focused password field) is off. `key` won't type text while a password field has the focus
+  (`secretFocusRefusal`; iOS shows no focus, so there a password field on screen is enough). Discovery skips
+  password managers (`sensitiveWindow`). A DevTools address the agent names (`source`/`list` with ws://…) must
+  listen in one of the session's processes or a program built in the project (`_foreignDevTools`, lsof), so a user's
+  own browser with remote debugging isn't attached.
   Preview `DesktopWindowView`: the live stream; clicks press through AX, else a real click (same consent); Bring to
   front. Probe
   `tool/live_apps/desktop_probe_test.dart` (`EVERYAI_DESKTOP_PID`); the MCP rig takes `EVERYAI_LIVE_WINDOW_MATCH`.

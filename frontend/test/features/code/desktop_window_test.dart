@@ -1,5 +1,6 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import 'package:every_ai/features/code/live/app_view.dart';
 import 'package:every_ai/features/code/live/desktop_window_io.dart';
 import 'package:every_ai/features/code/live/device_screen.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -75,6 +76,24 @@ void main() {
     expect(rowOf('0.3.1.0.0', rows), '0.3.1');
     expect(rowOf('0.3.1', rows), '0.3.1');
     expect(rowOf('0.2', rows), isNull);
+  });
+
+  test('key types text unless a password field may have the focus', () {
+    expect(keyTypesText('hello'), isTrue);
+    expect(keyTypesText('a'), isTrue);
+    expect(keyTypesText('Enter'), isFalse);
+    expect(keyTypesText('cmd+s'), isFalse);
+    const user = AppNode(ref: 'w1', role: 'textbox', name: 'User', state: ['focused']);
+    const pass = AppNode(ref: 'w2', role: 'textbox', name: 'Password', secret: true);
+    const passFocused = AppNode(ref: 'w2', role: 'textbox', name: 'Password', secret: true, state: ['focused']);
+    expect(secretFocusRefusal([user, pass], focusKnown: true), isNull);
+    expect(secretFocusRefusal([user, passFocused], focusKnown: true), contains('has the focus'));
+    expect(
+      secretFocusRefusal([const AppNode(ref: 'w1', role: 'textbox', name: 'User'), pass], focusKnown: false),
+      contains("can't be seen"),
+    );
+    expect(secretFocusRefusal([user, pass], focusKnown: false), isNull, reason: 'the tree shows another field focused');
+    expect(secretFocusRefusal([const AppNode(ref: 'w1', role: 'textbox', name: 'User')], focusKnown: false), isNull);
   });
 
   test('key combos', () {

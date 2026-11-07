@@ -20,8 +20,12 @@
 //
 // Input goes to the app's process (CGEvent postToPid) so the user's own cursor and keyboard focus stay put; --front
 // raises the window and posts to the system instead, for apps that ignore events sent to them in the background.
+// Real (--front) input is guarded: it waits while the user is using the mouse or keyboard, a pointer event goes only
+// to a point where the app's own window is on top, and keys go only while the app is in front and no password field
+// has secure input on (exit codes 7 and 8 say why not).
 
 import AppKit
+import Carbon
 import ApplicationServices
 import CoreImage
 import Foundation
@@ -209,8 +213,62 @@ func raise(pid: pid_t, window w: String?) {
   usleep(60_000)
 }
 
+/// Waits (up to 8 s) until the user has left the mouse and keyboard alone for a moment, so real input doesn't fight
+/// them. Our own posted events count as input too, so the pause is short.
+func waitForUser() {
+  let any = CGEventType(rawValue: ~0)!
+  for _ in 0..<80 {
+    if CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: any) >= 0.6 { return }
+    usleep(100_000)
+  }
+  fail("the user is using the mouse or keyboard: try again in a moment", code: 8)
+}
+
+/// Where screen point [p] is when the app [pid]'s own window (or pop-up) isn't on top there ("under Safari's
+/// window", "on the menu bar", "outside the app's windows"); nil when it is.
+func coveredBy(_ p: CGPoint, pid: pid_t) -> String? {
+  let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
+  for w in list {
+    let layer = (w[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
+    let alpha = (w[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
+    let owner = w[kCGWindowOwnerName as String] as? String ?? ""
+    if layer < 0 || layer >= 1000 || alpha < 0.05 { continue }
+    guard let b = w[kCGWindowBounds as String] as? [String: Any],
+      let r = CGRect(dictionaryRepresentation: b as CFDictionary), r.contains(p)
+    else { continue }
+    let owning = (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? 0
+    if owning == pid { return nil }
+    if owner == "Window Server" { return "on the menu bar" }
+    return "under \(owner.isEmpty ? "another app" : owner)'s window"
+  }
+  return "outside the app's windows"
+}
+
+/// Real pointer input at [points] is only sent where the app's own window is on top.
+func guardPointer(pid: pid_t, _ points: [CGPoint]) {
+  waitForUser()
+  raise(pid: pid, window: value("window"))
+  for p in points {
+    if let other = coveredBy(p, pid: pid) {
+      fail("nothing was sent: that point is \(other) right now, so a click there would miss the app", code: 7)
+    }
+  }
+}
+
+/// Real keys only go to the app in front, and never while a password field has secure input on.
+func guardKeys(pid: pid_t) {
+  waitForUser()
+  raise(pid: pid, window: value("window"))
+  if NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
+    fail("the app didn't come to the front, so the keys would go to another app: nothing was sent", code: 7)
+  }
+  if IsSecureEventInputEnabled() {
+    fail("a password field has secure input on: EveryAI never types into password fields", code: 7)
+  }
+}
+
 func click(pid: pid_t, at p: CGPoint, count: Int, right: Bool, front: Bool) {
-  if front { raise(pid: pid, window: value("window")) }
+  if front { guardPointer(pid: pid, [p]) }
   let source = CGEventSource(stateID: .hidSystemState)
   let (down, up, button): (CGEventType, CGEventType, CGMouseButton) =
     right ? (.rightMouseDown, .rightMouseUp, .right) : (.leftMouseDown, .leftMouseUp, .left)
@@ -225,7 +283,7 @@ func click(pid: pid_t, at p: CGPoint, count: Int, right: Bool, front: Bool) {
 }
 
 func drag(pid: pid_t, from a: CGPoint, to b: CGPoint, front: Bool) {
-  if front { raise(pid: pid, window: value("window")) }
+  if front { guardPointer(pid: pid, [a, b]) }
   let source = CGEventSource(stateID: .hidSystemState)
   post(CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: a, mouseButton: .left), pid: pid, front: front)
   let steps = 16
@@ -239,7 +297,7 @@ func drag(pid: pid_t, from a: CGPoint, to b: CGPoint, front: Bool) {
 }
 
 func scroll(pid: pid_t, at p: CGPoint, dy: Double, front: Bool) {
-  if front { raise(pid: pid, window: value("window")) }
+  if front { guardPointer(pid: pid, [p]) }
   // Scroll events go where the pointer is: move it there first when posting to the system.
   if front { CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left)?.post(tap: .cghidEventTap) }
   let e = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: Int32(-dy), wheel2: 0, wheel3: 0)
@@ -262,7 +320,7 @@ func modifiers(_ s: String?) -> CGEventFlags {
 }
 
 func key(pid: pid_t, text: String?, keycode: Int?, mods: String?, front: Bool) {
-  if front { raise(pid: pid, window: value("window")) }
+  if front { guardKeys(pid: pid) }
   let source = CGEventSource(stateID: .hidSystemState)
   if let keycode {
     for down in [true, false] {

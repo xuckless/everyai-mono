@@ -82,6 +82,29 @@ final class DeviceHolds {
   return (mods: parts.sublist(0, parts.length - 1), key: parts.last);
 }
 
+const _keyNames = {
+  'enter', 'return', 'escape', 'esc', 'tab', 'space', 'backspace', 'delete', 'up', 'down', 'left', 'right', //
+  'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'home', 'end', 'pageup', 'pagedown', 'menu', 'search',
+  'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11', 'f12',
+};
+
+/// Whether a `key` call types text (characters) rather than pressing a named key or a shortcut.
+bool keyTypesText(String combo) => !combo.contains('+') && !_keyNames.contains(combo.trim().toLowerCase());
+
+/// Why `key` shouldn't type text on this screen ([nodes]): a password field has the focus, or, where the tree says
+/// nothing about focus ([focusKnown] false), one is on screen. Null when typing is fine.
+String? secretFocusRefusal(List<AppNode> nodes, {required bool focusKnown}) {
+  final secrets = nodes.where((n) => n.secret);
+  if (secrets.isEmpty) return null;
+  final focused = secrets.any((n) => n.state.contains('focused'));
+  if (!focused && (focusKnown || nodes.any((n) => n.state.contains('focused')))) return null;
+  return focused
+      ? 'a password field has the focus, and the agent never types into one. Ask the user to type it, or type '
+            'other fields by ref with type.'
+      : 'a password field is on screen and the focus can\'t be seen, so key won\'t type text here (the agent never '
+            'types into password fields). Type other fields by ref with type.';
+}
+
 /// The smallest placed node under (x, y).
 AppNode? hitNode(List<AppNode> nodes, double x, double y) {
   AppNode? best;
