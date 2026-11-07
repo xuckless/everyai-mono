@@ -16,11 +16,15 @@ import '../../domain/local_ports.dart';
 import '../../git/git_service.dart';
 import '../../harness/everyai/browser_io.dart';
 import '../../harness/everyai/screen_tools_io.dart' show noteUserNavigation;
+import '../../live/app_endpoints.dart';
+import '../../live/app_sources.dart';
 import '../../live/chrome_download.dart';
 import '../../live/live_browsers.dart';
 import '../../live/live_session.dart';
 import '../../panes/panes_providers.dart';
 import '../../panes/processes.dart';
+import '../../shells/shell_registry.dart';
+import 'preview_apps.dart';
 
 /// The page sizes the Preview offers (CSS pixels); phones and tablets get a device frame.
 enum PreviewSize {
@@ -73,6 +77,14 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   LiveActivity? _ghost;
   Timer? _ghostTimer;
 
+  /// The apps the session runs (Flutter, React Native, Electron), and the one shown (null: the web page).
+  List<SessionApp> _apps = const [];
+  AppEndpoint? _source;
+  var _autoPicked = false;
+  StreamSubscription<Object?>? _shellChanges;
+  StreamSubscription<void>? _appChanges;
+  Timer? _scanTimer;
+
   String get _id => widget.session.id;
 
   @override
@@ -83,13 +95,67 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     unawaited(loadDownloadedChrome().then((_) => mounted ? setState(() {}) : null));
     _attach(LiveBrowsers.of(_id));
     // The agent may make the page later (its first browser call).
-    _made = LiveBrowsers.changes.where((s) => s == _id).listen((_) => _attach(LiveBrowsers.of(_id)));
+    _made = LiveBrowsers.changes.where((s) => s == _id).listen((_) {
+      if (_source?.kind != AppKind.electron) _attach(LiveBrowsers.of(_id));
+    });
+    final sessions = {_id, widget.session.billingTag};
+    _shellChanges = ShellRegistry.instance.changes.where(sessions.contains).listen((_) => _scanApps());
+    _appChanges = AppSources.changes.listen((_) => _scanApps());
+    // An app prints its address a while after its shell starts.
+    _scanTimer = Timer.periodic(const Duration(seconds: 2), (_) => _scanApps());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scanApps());
+  }
+
+  void _scanApps() {
+    if (!mounted) return;
+    final apps = AppSources.running({_id, widget.session.billingTag});
+    final same =
+        apps.length == _apps.length &&
+        [for (var i = 0; i < apps.length; i++) apps[i].endpoint == _apps[i].endpoint].every((x) => x);
+    if (same) return;
+    setState(() => _apps = apps);
+    if (_source != null && !apps.any((a) => a.endpoint == _source)) {
+      _select(null);
+    } else if (_source == null && !_autoPicked && apps.isNotEmpty) {
+      // The first app shows by itself when the web page has nothing.
+      final page = _browser?.page.value.url ?? '';
+      if (page.isEmpty || page == 'about:blank') {
+        _autoPicked = true;
+        _select(apps.last.endpoint);
+      }
+    }
+  }
+
+  void _select(AppEndpoint? source) {
+    final was = _source;
+    if (was == source) return;
+    setState(() => _source = source);
+    if (source?.kind == AppKind.electron) {
+      _switchBrowser(AppSources.electron(source!.uri));
+    } else if (was?.kind == AppKind.electron) {
+      _switchBrowser(LiveBrowsers.of(_id));
+    }
+  }
+
+  void _switchBrowser(HeadlessBrowser? b) {
+    _detach();
+    _image?.dispose();
+    _image = null;
+    _problem = null;
+    if (b != null) {
+      _attach(b);
+    } else if (mounted) {
+      setState(() {});
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _made?.cancel();
+    _shellChanges?.cancel();
+    _appChanges?.cancel();
+    _scanTimer?.cancel();
     _detach();
     _ghostTimer?.cancel();
     _image?.dispose();
@@ -168,7 +234,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   void _syncCasting() {
     final b = _browser;
     if (b == null) return;
-    final want = _visible && (b.page.value.url.isNotEmpty || b.running);
+    final want = _visible && (b.attachTo != null || b.page.value.url.isNotEmpty || b.running);
     if (want == _casting) return;
     _casting = want;
     unawaited(
@@ -326,9 +392,41 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
       });
     }
     final control = b?.control;
+    final sourceBar = _apps.isEmpty ? null : PreviewSourceBar(apps: _apps, selected: _source, onSelect: _select);
+    if (_source case final src?) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          ?sourceBar,
+          if (src.kind == AppKind.electron && control != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: _DriverBar(userDriving: control.userDriving, onTake: control.take, onGiveBack: control.giveBack),
+            ),
+          Expanded(
+            child: switch (src.kind) {
+              AppKind.flutter => FlutterAppView(app: AppSources.flutter(src.uri), visible: _visible),
+              AppKind.reactNative => ReactNativeAppView(app: AppSources.reactNative(src.uri), visible: _visible),
+              AppKind.electron =>
+                b == null || (_image == null && _problem != null)
+                    ? _Note(_problem ?? 'Connecting to the app…')
+                    : _PageView(
+                        image: _image,
+                        browser: b,
+                        focus: _viewFocus,
+                        device: null,
+                        ghost: _ghost,
+                        onInput: _takeOver,
+                      ),
+            },
+          ),
+        ],
+      );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        ?sourceBar,
         Padding(
           padding: const EdgeInsets.fromLTRB(6, 4, 6, 4),
           child: Row(

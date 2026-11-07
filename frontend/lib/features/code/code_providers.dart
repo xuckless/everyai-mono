@@ -340,6 +340,12 @@ const _screenToolInfos = <HostToolInfo>[
         'you need the app you changed running to look at it: it starts it the way the user confirmed once and '
         'returns its window ids (or its local URL).',
   ),
+  (
+    name: appTool,
+    when:
+        'the app is a Flutter, React Native or Electron app running here: read its elements, tap and type by ref, '
+        'hot reload, and read its log, through its framework.',
+  ),
 ];
 
 /// [_hostToolInfos] for a fork: no Max tools, and no plan (its task is a
@@ -371,10 +377,9 @@ Future<List<WorkflowEntry>> _workflowsOfIn(Ref ref, String projectDir) async {
 /// disposal doesn't run then). The shell listens to it from app start, so
 /// every CLI is covered, however it was spawned.
 final driverShutdownProvider = Provider<void>((ref) {
-  Future<void> closeAll() => Future.wait([
-    closeAllDriverProcesses(),
-    LiveBrowsers.stopAll(),
-  ]).timeout(const Duration(seconds: 3), onTimeout: () => const []);
+  Future<void> closeAll() =>
+      Future.wait([closeAllDriverProcesses(), LiveBrowsers.stopAll()])
+          .timeout(const Duration(seconds: 3), onTimeout: () => const []);
   final lifecycle = AppLifecycleListener(
     onExitRequested: () async {
       await closeAll();

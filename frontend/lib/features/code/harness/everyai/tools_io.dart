@@ -16,6 +16,9 @@ import 'exfil.dart';
 import 'llm.dart';
 import 'package_registry_io.dart';
 import 'shell_io.dart';
+import '../../live/app_tool_spec.dart';
+import '../../shells/terminal_screen.dart';
+import 'app_tools_io.dart';
 import 'screen_tools_io.dart';
 import 'window_capture_io.dart';
 import 'scrub.dart';
@@ -44,6 +47,7 @@ abstract final class ToolNames {
   static const applyPatch = 'apply_patch';
   static const browser = 'browser';
   static const screenshot = 'screenshot';
+  static const app = appToolName;
   static const runScript = 'run_script';
   static const memory = 'memory';
 }
@@ -67,6 +71,7 @@ const actionKinds = {
   ToolNames.applyPatch: 'ApplyPatchAction',
   ToolNames.browser: 'BrowserAction',
   ToolNames.screenshot: 'ScreenshotAction',
+  ToolNames.app: 'AppAction',
   ToolNames.runScript: 'ScriptAction',
   ToolNames.memory: 'MemoryAction',
 };
@@ -164,10 +169,13 @@ final _specs = [
   ),
   _fn(
     ToolNames.bashOutput,
-    'Read the new output of a background shell since the last read, and whether it is still running.',
+    'Read the new output of a background shell since the last read, and whether it is still running. With '
+    'screen: true, read what its terminal shows now instead: for a full-screen program (a TUI, an editor, an '
+    'interactive menu) that redraws in place; answer it with bash_input.',
     {
       'shell_id': {'type': 'string'},
       'filter': {'type': 'string', 'description': 'Only lines matching this regular expression'},
+      'screen': {'type': 'boolean', 'description': 'The terminal screen as it looks now'},
     },
     ['shell_id'],
   ),
@@ -403,6 +411,7 @@ final _specs = [
     },
     const [],
   ),
+  _fn(ToolNames.app, appToolDescription, appToolProperties, const []),
 ];
 
 /// What a tool did: the action as the transcript shows it, the text the
@@ -688,6 +697,14 @@ final class ToolRunner {
         } else if (args['action'] != 'open') {
           if (dropSiteIn(text) case final site?) why = '$site is a site that takes uploads';
         }
+      case ToolNames.app:
+        // Text typed into the app and eval scripts (code in the app, which can send requests).
+        final text = '${args['script'] ?? ''} ${args['text'] ?? ''}'.trim();
+        if (scrubber.leak(text) case final what?) {
+          why = 'the app would get $what';
+        } else if (dropSiteIn(text) case final site?) {
+          why = '$site is a site that takes uploads';
+        }
       case ToolNames.write || ToolNames.edit || ToolNames.applyPatch:
         final text = '${args['content'] ?? ''}${args['new_string'] ?? ''}${args['patch'] ?? ''}';
         if (text.contains(Scrubber.hiddenMark)) return _hiddenMarkRefusal;
@@ -707,7 +724,7 @@ final class ToolRunner {
   String? _researchRefusal(String tool, Map<String, Object?> args) {
     if (!research) return null;
     switch (tool) {
-      case ToolNames.browser || ToolNames.screenshot:
+      case ToolNames.browser || ToolNames.screenshot || ToolNames.app:
         return 'Error: research jobs read the web with web_fetch and web_search only.';
       case ToolNames.bash || ToolNames.bashOutput || ToolNames.killShell || ToolNames.monitor || ToolNames.bashInput:
         return 'Error: research jobs have no shell, so nothing downloaded can run. Read sources with web_fetch '
@@ -805,6 +822,14 @@ final class ToolRunner {
         ToolNames.webSearch => await _webSearch(args),
         ToolNames.browser => await _browse(args),
         ToolNames.screenshot => await _screenshot(args),
+        ToolNames.app => await runAppTool(
+          args,
+          sessions: [shell.sessionTag],
+          root: root,
+          vision: vision,
+          fit: _fit,
+          scrub: scrubber.redact,
+        ),
         _ => ToolOutput('Error: there is no tool called $tool.', isError: true),
       };
     } on FileSystemException catch (e) {
@@ -974,6 +999,14 @@ final class ToolRunner {
   ToolOutput _bashOutput(Map<String, Object?> args) {
     final b = _bg(args);
     if (b == null) return ToolOutput('Error: no background shell ${args['shell_id']}.', isError: true);
+    if (args['screen'] == true) {
+      b.takeNew();
+      final screen = terminalScreenText(b.output, rows: SessionShell.ptyRows, columns: SessionShell.ptyColumns);
+      return ToolOutput(
+        _fit('[${b.id}: ${_status(b)}]\n${_commandOutput(b.command, screen, 'bg-${b.id}')}', 'bg-${b.id}') +
+            _shellNotes(b),
+      );
+    }
     var text = b.takeNew();
     if (args['filter'] case final String f when f.isNotEmpty) {
       final re = RegExp(f);

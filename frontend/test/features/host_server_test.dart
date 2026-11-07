@@ -167,6 +167,7 @@ void main() {
         'browser',
         'screenshot',
         'app_run',
+        'app',
       ],
     );
     expect(c.tools.first['description'], contains('come back as the result of this call'));
@@ -310,8 +311,15 @@ void main() {
     test('run_workflow is listed before report_issue and the screen tools, and its call goes to the session', () async {
       final list = resultOf(await post(rpc('tools/list'), token: p.token))['tools'] as List;
       final names = [for (final t in list) (t as Map)['name']];
-      expect(names.sublist(names.length - 5), ['run_workflow', 'report_issue', 'browser', 'screenshot', 'app_run']);
-      final run = list[list.length - 5] as Map;
+      expect(names.sublist(names.length - 6), [
+        'run_workflow',
+        'report_issue',
+        'browser',
+        'screenshot',
+        'app_run',
+        'app',
+      ]);
+      final run = list[list.length - 6] as Map;
       expect(run['name'], 'run_workflow');
       expect(run['annotations'], containsPair('readOnlyHint', false));
       expect((run['inputSchema'] as Map)['required'], ['id']);

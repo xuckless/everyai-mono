@@ -1189,8 +1189,14 @@ final class _FakeScreen {
   var cardLimit = const Duration(seconds: 300);
   final browsers = <_FakeBrowser>[];
 
+  final appCalls = <Map<String, Object?>>[];
+
   late final access = ScreenAccess(
     os: os,
+    app: (args, {required session, required root, required pids}) async {
+      appCalls.add(args);
+      return (text: 'App: ${args['action']}', isError: false, images: const <HostImage>[]);
+    },
     listWindows: () async => windows,
     executableOf: (pid) async => executables[pid] ?? '/Applications/App.app/Contents/MacOS/App',
     capture: (w, root, others) async {

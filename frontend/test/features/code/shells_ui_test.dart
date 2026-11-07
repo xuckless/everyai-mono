@@ -75,7 +75,7 @@ void main() {
   });
 
   test('containers count by compose folder, bind mount, or an id the session saw', () {
-    const json = """
+    const json = '''
 [
  {"Id":"aaa111aaa111ffff","Name":"/web-1","Config":{"Image":"node:22","Labels":{"com.docker.compose.project.working_dir":"/w/app"}},
   "State":{"Status":"running"},"Mounts":[],"NetworkSettings":{"Ports":{"3000/tcp":[{"HostIp":"0.0.0.0","HostPort":"3000"},{"HostIp":"::","HostPort":"3000"}]}}},
@@ -84,7 +84,7 @@ void main() {
  {"Id":"ccc333ccc333","Name":"/redis","Config":{"Image":"redis","Labels":{}},"State":{"Status":"running"},"Mounts":[]},
  {"Id":"ddd444ddd444","Name":"/other","Config":{"Image":"x","Labels":{"com.docker.compose.project.working_dir":"/w/application"}},
   "State":{"Status":"running"},"Mounts":[{"Type":"volume","Source":"/w/app"}]}
-]""";
+]''';
     final found = sessionContainersIn(json, worktree: '/w/app/', hints: {'redis'});
     expect([for (final c in found) c.name], ['web-1', 'db', 'redis']);
     expect(found.first.ports.map((p) => p.port).toSet(), {3000});

@@ -872,6 +872,23 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   eval results scrubbed. Chrome for Testing download pinned in `live/chrome_pin.dart` by
   `tool/pin_chrome_for_testing.sh`. Dev MCP test rig: `tool/live_mcp/live_mcp_serve_test.dart` (env
   `EVERYAI_LIVE_MCP_OUT`) serves the host browser tool + a demo shop for an outside agent to review.
+- **Framework sources: the `app` tool (2026-11-06).** `live/app_endpoints.dart` finds apps in a shell's output
+  (`flutter run`'s VM service line, Chromium's `DevTools listening on` for Electron, Metro's banner);
+  `AppSources.running(sessions)` scans the sessions' registry shells (and an outside lead's output files via
+  `scanOutputFile`) and holds one driver per app. Drivers: `FlutterApp` (`live/flutter_app_io.dart`, VM service
+  JSON-RPC: `ensureSemantics` + one evaluated expression for the semantics tree with global rects, semantics
+  tap/setText, pointer events, inspector screenshots, `s<N>.reloadSources`/`hotRestart`, Stdout/Logging/Flutter.Error
+  log; expressions must be one line), `ReactNativeApp` (`live/react_native_io.dart`, Metro `/json/list` → CDP;
+  `reactNativeTreeJs` walks fibers through `__REACT_DEVTOOLS_GLOBAL_HOOK__` and calls onPress/onChangeText; reload via
+  `Page.reload` or POST `/reload`), Electron = `HeadlessBrowser.attached(endpoint)` (the browser tool on the app's
+  own window). Tool spec `live/app_tool_spec.dart`, work in `harness/everyai/app_tools_io.dart` (`runAppTool`):
+  EveryAI harness `app` (kind `AppAction`, read-only except eval) and host MCP `app` (`ScreenAccess.app`). Results say
+  what changed on screen (`appTreeChange`); app text goes in an `untrusted` block. `bash_output {screen: true}`
+  renders a TUI's screen (`shells/terminal_screen.dart`, headless xterm). Preview: source chips (Web + each app),
+  Flutter picture view (polled inspector shots, taps/wheel forwarded), RN element list, Electron live page. Verified
+  against a running `flutter run -d flutter-tester` app (`tool/live_apps/flutter_app_probe_test.dart`,
+  `EVERYAI_FLUTTER_VM`); Electron and RN paths tested with Chrome standing in (`app_sources_test.dart`); no real
+  Electron or React Native app was run.
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2

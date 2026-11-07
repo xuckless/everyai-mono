@@ -898,6 +898,7 @@ String stepTitle(ActionCall call) {
       'Added to ${call.str('file_path').isEmpty ? path : call.str('file_path')}',
     'WriteFileAction' => 'Wrote ${call.str('file_path').isEmpty ? path : call.str('file_path')}',
     'BrowserAction' => browserStepTitle(call),
+    'AppAction' => appStepTitle(call),
     'ScreenshotAction' => call.str('app').isEmpty ? 'Took a screenshot' : 'Took a screenshot of ${call.str('app')}',
     'EditAction' when call.str('patch_op') == 'delete' => 'Deleted $path',
     'EditAction' when call.str('patch_op') == 'move' => 'Moved ${call.str('from')} to $path',
@@ -931,6 +932,29 @@ String browserStepTitle(ActionCall call) {
     'resize' => 'Resized the page to ${call.action['width']}×${call.action['height']}',
     'close' => 'Closed the browser',
     _ => 'Used the browser',
+  };
+}
+
+String appStepTitle(ActionCall call) {
+  final ref = call.str('ref');
+  return switch (call.str('action')) {
+    'list' => 'Listed the running apps',
+    'snapshot' => "Read the app's elements",
+    'screenshot' || 'look' || '' => 'Looked at the app',
+    'zoom' => 'Zoomed into the app',
+    'tap' => ref.isEmpty ? 'Tapped the app at (${call.action['x']}, ${call.action['y']})' : 'Tapped $ref in the app',
+    'type' => 'Typed into ${ref.isEmpty ? 'the app' : ref}',
+    'submit' => 'Submitted a field in the app',
+    'long_press' => 'Long-pressed $ref in the app',
+    'adjust' => 'Adjusted $ref in the app',
+    'drag' => 'Dragged in the app',
+    'scroll' => 'Scrolled the app',
+    'back' => 'Went back in the app',
+    'reload' => 'Hot reloaded the app',
+    'restart' => 'Restarted the app',
+    'logs' => "Read the app's log",
+    'eval' => 'Ran code in the app',
+    _ => 'Used the app',
   };
 }
 

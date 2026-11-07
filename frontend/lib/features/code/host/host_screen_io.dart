@@ -10,7 +10,9 @@ import '../harness/everyai/scrub.dart';
 import '../harness/everyai/tools_io.dart' show ToolOutput;
 import '../harness/everyai/window_capture_io.dart' as capture;
 import '../harness/session_processes.dart';
-import '../panes/processes.dart' show listeningPorts;
+import '../live/app_sources.dart';
+import '../harness/everyai/app_tools_io.dart';
+import '../panes/processes.dart' show listeningPorts, outputFileOf;
 import 'host_screen.dart';
 
 ScreenAccess screenAccess() => ScreenAccess(
@@ -35,6 +37,22 @@ ScreenAccess screenAccess() => ScreenAccess(
     logPath: logPath,
   ),
   browser: (liveId, profileDir) => _Browser(LiveBrowsers.forSession(liveId, profileDir: profileDir)),
+  app: (args, {required session, required root, required pids}) async {
+    // An outside lead's own background commands write their output to files: an app's address may be there.
+    for (final pid in pids) {
+      if (await outputFileOf(pid) case final path?) AppSources.scanOutputFile(session, path);
+    }
+    return _result(
+      await runAppTool(
+        args,
+        sessions: [session],
+        root: root,
+        vision: true,
+        fit: (text, _) => _cut(text),
+        scrub: Scrubber.forProject(root).redact,
+      ),
+    );
+  },
   listening: listeningPorts,
 );
 

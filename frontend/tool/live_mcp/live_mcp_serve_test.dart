@@ -1,5 +1,6 @@
-// Dev only: serves EveryAI's host MCP tools (now: browser) on loopback with a token, plus a small demo web app, so
-// an outside agent can be pointed at them and review them. Not part of `flutter test` (it lives outside test/).
+// Dev only: serves EveryAI's host MCP tools (browser, and app when EVERYAI_LIVE_FLUTTER_LOG names a `flutter run`
+// output file) on loopback with a token, plus a small demo web app, so an outside agent can be pointed at them and
+// review them. Not part of `flutter test` (it lives outside test/).
 //
 //   EVERYAI_LIVE_MCP_OUT=/path/live.json flutter test tool/live_mcp/live_mcp_serve_test.dart
 //
@@ -7,8 +8,13 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:every_ai/features/code/harness/everyai/app_tools_io.dart';
 import 'package:every_ai/features/code/harness/everyai/browser_io.dart';
+import 'package:every_ai/features/code/harness/everyai/tools_io.dart' show ToolOutput;
+import 'package:every_ai/features/code/live/app_sources.dart';
+import 'package:every_ai/features/code/shells/shell_registry.dart';
 import 'package:every_ai/features/code/harness/everyai/screen_tools_io.dart';
 import 'package:every_ai/features/code/harness/everyai/scrub.dart';
 import 'package:every_ai/features/code/host/host.dart';
@@ -23,15 +29,29 @@ final class _Tools implements HostTools {
   @override
   Future<HostResult> call(HostCall call) {
     final done = _turn.then((_) async {
-      if (call.name != 'browser') return (text: 'Error: only browser is served here.', isError: true);
-      final r = await runBrowser(
-        browser,
-        call.args,
-        root: root,
-        vision: true,
-        fit: (t, _) => t.length > 30000 ? '${t.substring(0, 30000)}\n[… cut]' : t,
-        scrub: Scrubber.forProject(root).redact,
-      );
+      String fit(String t, String _) => t.length > 30000 ? '${t.substring(0, 30000)}\n[… cut]' : t;
+      final ToolOutput r;
+      if (call.name == 'app') {
+        r = await runAppTool(
+          call.args,
+          sessions: ['live-mcp'],
+          root: root,
+          vision: true,
+          fit: fit,
+          scrub: Scrubber.forProject(root).redact,
+        );
+      } else if (call.name == 'browser') {
+        r = await runBrowser(
+          browser,
+          call.args,
+          root: root,
+          vision: true,
+          fit: fit,
+          scrub: Scrubber.forProject(root).redact,
+        );
+      } else {
+        return (text: 'Error: only browser and app are served here.', isError: true);
+      }
       for (final i in r.images) {
         final m = RegExp(r'^data:([^;]+);base64,(.*)$').firstMatch(i.dataUrl);
         if (m != null) call.images.add((mime: m[1]!, data: m[2]!));
@@ -90,7 +110,22 @@ void main() {
       heldLimit: const Duration(minutes: 5),
       keepAlive: const Duration(seconds: 15),
     );
-    final token = await server.mint('live-mcp', _Tools(browser, tmp.path), only: {'browser'});
+    // A Flutter app the rig's caller started (`flutter run`), as if the session's background shell ran it.
+    final flutterLog = Platform.environment['EVERYAI_LIVE_FLUTTER_LOG'];
+    if (flutterLog != null) {
+      final e = ShellEntry(
+        key: 'live-mcp/bg_1',
+        id: 'bg_1',
+        session: 'live-mcp',
+        command: 'flutter run',
+        cwd: tmp.path,
+        origin: ShellOrigin.agent,
+        background: true,
+      );
+      ShellRegistry.instance.add(e);
+      e.emit(Uint8List.fromList(File(flutterLog).readAsBytesSync()));
+    }
+    final token = await server.mint('live-mcp', _Tools(browser, tmp.path), only: {'browser', 'app'});
     File(out).writeAsStringSync(
       jsonEncode({'url': '${token.url}', 'token': token.token, 'demo': 'http://127.0.0.1:${app.port}/'}),
     );
@@ -99,6 +134,7 @@ void main() {
       await Future<void>.delayed(const Duration(seconds: 1));
     }
     await server.stop();
+    await AppSources.stopAll();
     await browser.close();
     await browser.host.stop();
     await app.close(force: true);

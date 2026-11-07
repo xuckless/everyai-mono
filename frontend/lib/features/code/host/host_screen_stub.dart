@@ -16,6 +16,8 @@ ScreenAccess screenAccess() => ScreenAccess(
   spawn: ({required command, required cwd, required sessionTag, required logPath}) =>
       throw UnsupportedError('app_run works on desktop only'),
   browser: (_, _) => throw UnsupportedError('the browser works on desktop only'),
+  app: (_, {required session, required root, required pids}) async =>
+      (text: 'Error: the app tool works on desktop only.', isError: true, images: const <HostImage>[]),
 );
 
 Future<List<String>> detectRunCommandsIn(String dir, String os) async => const [];

@@ -166,7 +166,15 @@ typedef PageState = ({String url, String title, bool canBack, bool canForward, b
 /// fields nor submits their forms ([_guardJs]), and its downloads land in
 /// [downloadDir].
 final class HeadlessBrowser {
-  HeadlessBrowser({required this.profileDir, this.executable});
+  HeadlessBrowser({required this.profileDir, this.executable}) : attachTo = null;
+
+  /// Drives a page of a Chromium-based app that is already running (an Electron app started with
+  /// `--remote-debugging-port`), at its browser-level DevTools [endpoint]: the app's own window, at its own size.
+  /// Closing detaches; the app keeps running.
+  HeadlessBrowser.attached(Uri endpoint) : attachTo = endpoint, profileDir = '', executable = null;
+
+  /// The running app's DevTools endpoint this browser attaches to, or null for our own Chrome.
+  final Uri? attachTo;
 
   /// Where the browser keeps its profile (cookies, storage): the project's, shared by its sessions (see
   /// [ChromeHost]).
@@ -282,6 +290,7 @@ final class HeadlessBrowser {
 
   Future<void> _start() async {
     if (_socket != null) return;
+    if (attachTo != null) return _attach(attachTo!);
     final endpoint = await host.endpoint(width: width, height: height);
     // A page of our own, with its own socket: commands go to it without per-target sessions.
     final browser = await WebSocket.connect(endpoint.toString());
@@ -322,6 +331,41 @@ final class HeadlessBrowser {
       }),
     ]);
     await _viewport();
+    if (_casting) await _castStart();
+  }
+
+  /// Attaches to the first window of the app at [endpoint] (see [HeadlessBrowser.attached]).
+  Future<void> _attach(Uri endpoint) async {
+    final browser = await WebSocket.connect(endpoint.toString());
+    _browserSocket = browser;
+    browser.listen(
+      _onFrame,
+      onError: (Object _) {},
+      onDone: () {
+        if (identical(_browserSocket, browser)) _closed();
+      },
+    );
+    try {
+      final targets = await _sendOn(browser, 'Target.getTargets', const {});
+      final pages = [
+        for (final t in (targets['targetInfos'] as List?) ?? const [])
+          if (t is Map && t['type'] == 'page' && !'${t['url']}'.startsWith('devtools://')) t,
+      ];
+      if (pages.isEmpty) throw const BrowserError("The app has no window to drive yet: try again once it's open.");
+      _targetId = pages.first['targetId'] as String?;
+      _socket = await WebSocket.connect('ws://${endpoint.host}:${endpoint.port}/devtools/page/$_targetId');
+    } on Object {
+      await browser.close();
+      _browserSocket = null;
+      rethrow;
+    }
+    _socket!.listen(_onFrame, onDone: _closed, onError: (Object _) => _closed());
+    await Future.wait([_send('Page.enable'), _send('Runtime.enable'), _send('Log.enable'), _send('Network.enable')]);
+    final size = await evaluate('[innerWidth, innerHeight]');
+    if (size is List && size.length == 2) {
+      width = (size[0] as num).round();
+      height = (size[1] as num).round();
+    }
     if (_casting) await _castStart();
   }
 
@@ -433,7 +477,7 @@ final class HeadlessBrowser {
   }
 
   void _closed() {
-    if (_socket != null || _browserSocket != null) host._closedPage();
+    if ((_socket != null || _browserSocket != null) && attachTo == null) host._closedPage();
     _socket = null;
     _targetId = null;
     unawaited(_browserSocket?.close());
@@ -553,6 +597,7 @@ final class HeadlessBrowser {
   /// zoomed region at up to twice its CSS size, so small things are legible), and the frame it is recorded as.
   Future<(List<int>, AgentFrame)> frameShot({ViewRect? region}) async {
     await _start();
+    await _followWindow();
     final g = geometry;
     final r = region ?? (left: 0.0, top: 0.0, width: g.width.toDouble(), height: g.height.toDouble());
     final zoom = region == null ? 1.0 : 2.0;
@@ -576,6 +621,16 @@ final class HeadlessBrowser {
     return (base64Decode(shot['data']! as String), f);
   }
 
+  /// An attached app's window may have been resized by the user: read its size again.
+  Future<void> _followWindow() async {
+    if (attachTo == null) return;
+    final size = await evaluate('[innerWidth, innerHeight]');
+    if (size is List && size.length == 2) {
+      width = (size[0] as num).round();
+      height = (size[1] as num).round();
+    }
+  }
+
   /// The page's scroll offset now.
   Future<({double x, double y})> scrollOffset() async {
     final v = await evaluate('[scrollX, scrollY]');
@@ -584,6 +639,7 @@ final class HeadlessBrowser {
 
   /// The page's element list (see [pageSnapshotJs]): what the model clicks by ref.
   Future<String> snapshot() async {
+    await _followWindow();
     final v = await evaluate(pageSnapshotJs);
     if (v is! Map) return '(the page gave no element list)';
     return pageSnapshotText(
@@ -784,6 +840,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
   }
 
   Future<String> resize(int w, int h) async {
+    if (attachTo != null) return "The app's window keeps its own size ($width×$height).";
     width = w.clamp(200, 3840);
     height = h.clamp(200, 2400);
     await _start();
@@ -870,7 +927,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
   /// Closes this session's page (Chrome itself stops once no session has one).
   Future<void> close() async {
     final target = _targetId;
-    if (target != null && _browserSocket != null) {
+    if (target != null && _browserSocket != null && attachTo == null) {
       try {
         await _sendOn(_browserSocket, 'Target.closeTarget', {'targetId': target}).timeout(const Duration(seconds: 3));
       } on Object {
@@ -885,7 +942,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     final browserSocket = _browserSocket;
     _browserSocket = null;
     await browserSocket?.close();
-    if (had) host._closedPage();
+    if (had && attachTo == null) host._closedPage();
   }
 
   /// The page's size now, in CSS pixels.

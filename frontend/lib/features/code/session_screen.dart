@@ -141,6 +141,7 @@ mixin _SessionScreen on Notifier<CodeSessionState> {
     return switch (call.name) {
       screenshotTool => _screenshot(call, info, a),
       browserTool => _browse(call, info, a),
+      appTool => _appCall(call, info, a),
       _ => _runApp(call, info, a),
     };
   }
@@ -287,6 +288,14 @@ mixin _SessionScreen on Notifier<CodeSessionState> {
     });
     _browserTurn = turn.then((_) {}, onError: (Object _) {});
     return turn;
+  }
+
+  /// The `app` tool: the session's Flutter, React Native or Electron app (app_run's, or one its own commands
+  /// started, found in their output).
+  Future<HostResult> _appCall(HostCall call, CodeSessionInfo info, ScreenAccess a) async {
+    if (a.os.isEmpty) return (text: 'Error: the app tool works on desktop only.', isError: true);
+    final pids = await a.sessionPids(tag: info.id, workingDir: info.workingDir, ownsDir: _owns(info));
+    return _withImages(call, await a.app(call.args, session: info.id, root: info.workingDir, pids: pids));
   }
 
   /// The project folder [info] belongs to (where its run command is kept),

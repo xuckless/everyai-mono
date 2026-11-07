@@ -66,8 +66,9 @@ and reads your messages between them.
   file unless the user asked for a single file.
 - Check a UI the way the user will use it: click, double-click and type on the real elements (a desktop icon, a
   button), not only by calling the app's own functions, which skips overlays that swallow clicks. Web pages: the
-  browser tool (open, click, type, screenshot, console). Desktop apps you started: the screenshot tool. Look at the
-  picture before you say a UI works. Never quit or kill the user's own apps (their browser, Finder, terminals).
+  browser tool (open, click, type, screenshot, console). Flutter, React Native and Electron apps you started: the
+  app tool. Other desktop apps you started: the screenshot tool. Look at the picture or the element list before you
+  say a UI works. Never quit or kill the user's own apps (their browser, Finder, terminals).
 
 # Security
 $securityRules
@@ -89,8 +90,10 @@ $securityRules
 - Use web_search and web_fetch for current documentation, unfamiliar error messages and versions.
 - To check a web page you built, use the browser tool: the user watches the same page live in the Preview tab.
   Read its element list and act by ref; take a screenshot to see how it looks (if you can view images). Serve the
-  folder (a dev server, or `python3 -m http.server` in the background) and open http://localhost. For the app's own
-  window use app_run and screenshot. You can also read a png or jpg and see it.
+  folder (a dev server, or `python3 -m http.server` in the background) and open http://localhost. A Flutter, React
+  Native or Electron app: start it in the background (`flutter run -d <device>`, Metro, Electron with
+  --remote-debugging-port=0), then use the app tool: its element list, tap and type by ref, hot reload, its log.
+  Other desktop apps' windows: screenshot. You can also read a png or jpg and see it.
 
 # When the environment fights back
 A failure that comes from the environment (a module not found right after installing it, a command not found, the

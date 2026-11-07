@@ -60,6 +60,7 @@ final List<Map<String, Object?>> hostToolSpecs = List.unmodifiable([
   },
   screenshotSpec,
   appRunSpec,
+  appSpec,
 ]);
 
 /// An OpenAI-style spec (flat or `{function: …}`) in MCP's shape.
