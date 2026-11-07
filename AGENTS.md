@@ -945,6 +945,25 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   Preview `DesktopWindowView`: the live stream; clicks press through AX, else a real click (same consent); Bring to
   front. Probe
   `tool/live_apps/desktop_probe_test.dart` (`EVERYAI_DESKTOP_PID`); the MCP rig takes `EVERYAI_LIVE_WINDOW_MATCH`.
+- **Desktop windows on Windows and Linux (2026-11-07).** Same `desktop` source and driver; the helper differs
+  (`live/desktop_helper_io.dart` `desktopHelper()`: same commands and JSON as everyai-ax, sources in
+  `assets/helpers/`, installed under app data `tools/` named by content hash; `EVERYAI_DESKTOP_HELPER` overrides).
+  - **Windows** `everyai_win.cs`: compiled on first use by the .NET Framework 4 `csc.exe` every Windows has (keep it
+    **C# 5**), UI Automation tree in AX role names (paths start with the HWND; ListItem/DataItem/TreeItem = AXRow),
+    actions via Invoke/Toggle/SelectionItem/ExpandCollapse/RangeValue/ScrollPattern/Value, PrintWindow pictures with
+    the app's pop-ups composited, SendInput real input with the same guards (idle via GetLastInputInfo,
+    WindowFromPoint root owner, foreground pid, focused UIA element not a password), `procs` (Toolhelp) feeds
+    `_descendants` on Windows. Compile-checked only (`tool/desktop_helpers/check_windows_compiles.sh`, .NET SDK);
+    **never run on Windows**.
+  - **Linux** `everyai_x11.py`: python3 + ctypes Xlib/XTest/XRes (no packages), no accessibility tree yet (pictures
+    and coordinates), keys by name (spare keycode borrowed for characters the map lacks), PNG frames for the stream.
+    Each session gets its own **Xvfb** (`live/nested_display_io.dart` `NestedDisplays`, `-displayfd`, 1440×900, when
+    Xvfb is installed and `EVERYAI_NESTED_DISPLAY` isn't 0): `SessionShell` adds DISPLAY (+ GDK/QT/SDL/Electron X11
+    hints, WAYLAND_DISPLAY removed; `withNestedDisplay`) so the session's apps open there; every window there is the
+    session's; input there needs no consent or guards (`--nested`). Without Xvfb: the user's display, pid/exe
+    ownership, consent and guards as on macOS. Stopped on session remove and at quit. Verified in an Ubuntu 22.04
+    container (`tool/desktop_helpers/check_linux.sh`: Tk app, clicks, typing "Hello Wörld €", Enter, wheel, guard);
+    the Dart side wasn't run on Linux.
 - **Real-project testing (2026-11-06).** Outside agents drove the owner's projects through the MCP rig (copies or
   read-only runs; no project files touched): pixl-playroom (Electron, 6/10 → 8/10 after the browser fixes in
   3387f20), tranzit (Expo; its dev build isn't installed and can't be built here because its gitignored

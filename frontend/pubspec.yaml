@@ -94,6 +94,7 @@ flutter:
     - assets/brand/textures/
     - assets/web/
     - assets/legal/
+    - assets/helpers/
     - assets/agents/
     - assets/workflows/
     - assets/skills/draw-diagram/

@@ -15,6 +15,7 @@ import '../../live/desktop_window_io.dart';
 import '../../live/device_screen.dart';
 import '../../live/ios_simulator_io.dart';
 import '../../live/live_session.dart';
+import '../../live/nested_display_io.dart';
 import '../../live/react_native_io.dart';
 import 'screen_tools_io.dart' show runBrowser;
 import 'screen_windows.dart' show sensitiveWindow;
@@ -48,7 +49,11 @@ Future<ToolOutput> runAppTool(
     }
   }
   // Desktop apps the session started (or built in its folder) that have a window now.
-  if (windowPids != null) await _findWindows(sessions.first, windowPids, root);
+  if (windowPids != null) {
+    await _findWindows(sessions, windowPids, root);
+  } else if (NestedDisplays.displayOf(sessions) != null) {
+    await _findWindows(sessions, () async => const {}, root);
+  }
   if (action == 'list' && source.contains('://')) {
     if (endpointFromUrl(source) case final ep?) {
       if (await _foreignDevTools(ep, windowPids, root) case final why?) return ToolOutput('Error: $why', isError: true);
@@ -137,26 +142,30 @@ Future<ToolOutput> runAppTool(
 final _defaultMetro = Uri.parse('http://127.0.0.1:8081');
 
 /// Points [session] at the desktop windows of processes it started ([windowPids]) or whose program is inside
-/// [root] (an app built in the project), on macOS with the window helper.
-Future<void> _findWindows(String session, Future<Set<int>> Function() windowPids, String root) async {
-  if (!Platform.isMacOS || axHelperPath() == null) return;
+/// [root] (an app built in the project); on Linux every window on the session's own headless display is its own.
+Future<void> _findWindows(List<String> sessions, Future<Set<int>> Function() windowPids, String root) async {
+  if (!(Platform.isMacOS || Platform.isLinux || Platform.isWindows)) return;
   try {
-    final pids = await windowPids();
+    final nested = NestedDisplays.displayOf(sessions);
+    final pids = nested == null ? await windowPids() : const <int>{};
     final mine = <int>{};
-    for (final w in await helperWindows(const [])) {
-      final exe = await executableOf(w.pid);
-      if (!pids.contains(w.pid) && !exe.startsWith('$root/')) continue;
+    for (final w in await helperWindows(const [], display: nested)) {
+      final exe = w.exe.isNotEmpty ? w.exe : await executableOf(w.pid);
+      final norm = Platform.isWindows ? exe.replaceAll('\\', '/').toLowerCase() : exe;
+      final under = Platform.isWindows ? '${root.replaceAll('\\', '/').toLowerCase()}/' : '$root/';
+      if (nested == null && !pids.contains(w.pid) && !norm.startsWith(under)) continue;
       // Never a password manager, even one the session started.
       final asScreen = (id: w.id, pid: w.pid, owner: w.app, title: w.title, width: w.w.round(), height: w.h.round());
       if (sensitiveWindow(asScreen, own: true, exe: exe) != null) continue;
+      if (w.pid <= 0) continue;
       mine.add(w.pid);
-      DesktopWindows.driver(w.pid).known(w);
+      DesktopWindows.driver(w.pid, display: nested, nested: nested != null).known(w);
     }
     for (final pid in mine) {
-      AppSources.point(session, AppEndpoint(AppKind.desktop, Uri.parse('window:$pid')));
+      AppSources.point(sessions.first, AppEndpoint(AppKind.desktop, Uri.parse('window:$pid')));
     }
   } on Object {
-    // No windows to add (the helper failed): the other sources still work.
+    // No windows to add (no helper here): the other sources still work.
   }
 }
 

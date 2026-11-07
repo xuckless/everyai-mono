@@ -9,6 +9,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/api/decide_client.dart' show decideClientProvider;
 import 'live/live_browsers.dart';
+import 'live/nested_display_io.dart';
 import 'shells/shell_registry.dart';
 import '../../core/preferences.dart';
 import '../../core/providers.dart';
@@ -378,7 +379,7 @@ Future<List<WorkflowEntry>> _workflowsOfIn(Ref ref, String projectDir) async {
 /// every CLI is covered, however it was spawned.
 final driverShutdownProvider = Provider<void>((ref) {
   Future<void> closeAll() =>
-      Future.wait([closeAllDriverProcesses(), LiveBrowsers.stopAll()])
+      Future.wait([closeAllDriverProcesses(), LiveBrowsers.stopAll(), Future(NestedDisplays.stopAll)])
           .timeout(const Duration(seconds: 3), onTimeout: () => const []);
   final lifecycle = AppLifecycleListener(
     onExitRequested: () async {
@@ -1750,6 +1751,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     // Their browser pages and shell rows go with them.
     for (final g in gone) {
       unawaited(LiveBrowsers.release(g));
+      NestedDisplays.stop(g);
       ShellRegistry.instance.forget(g);
     }
     // Any outside lead the session had left a briefing (and maybe a token).

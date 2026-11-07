@@ -66,7 +66,7 @@ abstract final class AppSources {
         AppKind.ios => _bootedSimulator(ep, ids),
         AppKind.android => _readyAndroid(ep, ids),
         // A desktop app's process that has ended has no windows to drive.
-        AppKind.desktop => Process.killPid(int.tryParse(ep.uri.path) ?? -1, ProcessSignal.sigcont) ? ep : null,
+        AppKind.desktop => _alive(int.tryParse(ep.uri.path) ?? -1) ? ep : null,
         _ => ep,
       };
       if (resolved != null && seen.add(resolved)) out.add(SessionApp(resolved, shell: shell));
@@ -93,6 +93,17 @@ abstract final class AppSources {
   }
 
   /// [ep] (an Android mention) as `android:<serial>` of a ready device no rival of [sessions] holds.
+  /// Whether process [pid] still runs (Windows has no signal to ask with: the window list answers there).
+  static bool _alive(int pid) {
+    if (pid <= 0) return false;
+    if (Platform.isWindows) return true;
+    try {
+      return Process.killPid(pid, ProcessSignal.sigcont);
+    } on Object {
+      return false;
+    }
+  }
+
   static AppEndpoint? _readyAndroid(AppEndpoint ep, List<String> sessions) {
     final ready = AndroidDevices.ready;
     String norm(String s) => s.toLowerCase().replaceAll(RegExp('[_ ]+'), ' ').trim();

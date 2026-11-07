@@ -10,6 +10,8 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import '../../panes/pty.dart' show ShellPty;
+import '../../live/desktop_helper_io.dart' show windowsParents;
+import '../../live/nested_display_io.dart';
 import '../../shells/containers.dart' show containerHintsOf;
 import '../../shells/pty_spawn_io.dart';
 import '../../shells/shell_log_io.dart';
@@ -306,14 +308,24 @@ final class SessionShell {
           wrapScript(command, cwd: cwd, cwdFile: _cwdFile(id), windows: windows, stdinNull: false),
         );
         final path = windows ? script().path.replaceAll('\\', '/') : script().path;
-        pty = await ptySpawner!(env.shell, [path], dir, ptyShellEnv(env.env, sessionTag), ptyRows, ptyColumns);
+        pty = await ptySpawner!(
+          env.shell,
+          [path],
+          dir,
+          withNestedDisplay(ptyShellEnv(env.env, sessionTag), await NestedDisplays.envFor(sessionTag)),
+          ptyRows,
+          ptyColumns,
+        );
         if (pty != null) return (_Proc.pty(pty), script());
       }
       script().writeAsStringSync(wrapScript(command, cwd: cwd, cwdFile: _cwdFile(id), windows: windows));
       final process = await Process.start(
         env.shell,
         [if (windows) script().path.replaceAll('\\', '/') else script().path],
-        environment: {...env.env, sessionEnvVar: sessionTag},
+        environment: withNestedDisplay({
+          ...env.env,
+          sessionEnvVar: sessionTag,
+        }, await NestedDisplays.envFor(sessionTag)),
         workingDirectory: dir,
       );
       return (_Proc.pipes(process), script());
@@ -706,6 +718,21 @@ Map<String, String> ptyShellEnv(Map<String, String> base, String sessionTag) => 
   sessionEnvVar: sessionTag,
 };
 
+/// [env] with the session's own display ([nested], from [NestedDisplays.envFor]) on top; an empty value removes
+/// the variable (WAYLAND_DISPLAY, so toolkits don't open on the user's Wayland desktop).
+Map<String, String> withNestedDisplay(Map<String, String> env, Map<String, String> nested) {
+  if (nested.isEmpty) return env;
+  final out = {...env};
+  for (final e in nested.entries) {
+    if (e.value.isEmpty) {
+      out.remove(e.key);
+    } else {
+      out[e.key] = e.value;
+    }
+  }
+  return out;
+}
+
 /// Runs a program and waits for it; [killTree] uses it for `taskkill`.
 typedef KillRunner = Future<ProcessResult> Function(String executable, List<String> arguments);
 
@@ -744,8 +771,22 @@ Future<void> killTree(int pid, {bool? windows, KillRunner run = Process.run}) as
 }
 
 Future<List<int>> _descendants(int root) async {
-  // Not used on Windows: killTree has taskkill there, and processes() feeds the macOS-only screenshot tool.
-  if (Platform.isWindows) return const [];
+  // On Windows only processes() asks (killTree has taskkill there): the desktop helper lists parents.
+  if (Platform.isWindows) {
+    final parents = await windowsParents();
+    final out = <int>[];
+    final queue = [root];
+    while (queue.isNotEmpty) {
+      final p = queue.removeLast();
+      for (final e in parents.entries) {
+        if (e.value == p && e.key != p && !out.contains(e.key)) {
+          out.add(e.key);
+          queue.add(e.key);
+        }
+      }
+    }
+    return out;
+  }
   try {
     final res = await Process.run('ps', ['-A', '-o', 'pid=,ppid=']);
     final children = <int, List<int>>{};

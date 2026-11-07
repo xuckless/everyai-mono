@@ -42,6 +42,15 @@ JSON.stringify(list.filter(w => w.kCGWindowLayer == 0 && w.kCGWindowSharingState
 
 /// The executable of [pid] (its full path on macOS), or ''.
 Future<String> executableOf(int pid) async {
+  // `ps -o comm=` is the full path on macOS but only the name (15 characters) on Linux.
+  if (Platform.isLinux) {
+    try {
+      return Link('/proc/$pid/exe').resolveSymbolicLinksSync();
+    } on Object {
+      return '';
+    }
+  }
+  if (Platform.isWindows) return '';
   try {
     final res = await Process.run('ps', ['-o', 'comm=', '-p', '$pid']);
     return (res.stdout as String).trim();

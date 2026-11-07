@@ -6,13 +6,14 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'app_view.dart';
+import 'desktop_helper_io.dart';
 import 'device_screen.dart';
 import 'real_input.dart';
 import 'frames.dart';
 import 'live_session.dart';
 
-/// `everyai-ax`, our macOS helper for desktop windows (`tool/ax_helper/main.swift`): EVERYAI_AX_HELPER, the app
-/// bundle's Resources, or a dev build in `frontend/.tools/` (`tool/build_ax_helper.sh`).
+/// `everyai-ax` on macOS (EVERYAI_AX_HELPER, the app bundle's Resources, or a dev build in `frontend/.tools/`).
+/// Other systems have their own helper with the same commands ([desktopHelper]); this is null there.
 String? axHelperPath() {
   if (!Platform.isMacOS) return null;
   final set = Platform.environment['EVERYAI_AX_HELPER'];
@@ -28,13 +29,24 @@ String? axHelperPath() {
   return null;
 }
 
-/// Runs the helper; its JSON output, or an [AppError] with what it said.
-Future<Object?> axHelper(List<String> args, {Duration timeout = const Duration(seconds: 30)}) async {
-  final exe = axHelperPath();
-  if (exe == null) {
-    throw const AppError('The desktop window helper (everyai-ax) is missing from this build of EveryAI.');
+/// The helper's command line for [args], or an [AppError] when this computer has none.
+Future<List<String>> _helperCommand(List<String> args) async {
+  final cmd = await desktopHelper();
+  if (cmd == null) {
+    throw AppError(desktopHelperProblem ?? 'The desktop window helper is missing from this build of EveryAI.');
   }
-  final r = await Process.run(exe, args).timeout(timeout);
+  return [...cmd, ...args];
+}
+
+/// Runs the desktop window helper (on X display [display] on Linux); its JSON output, or an [AppError] with what it
+/// said.
+Future<Object?> axHelper(List<String> args, {String? display, Duration timeout = const Duration(seconds: 30)}) async {
+  final cmd = await _helperCommand(args);
+  final r = await Process.run(
+    cmd.first,
+    cmd.sublist(1),
+    environment: display == null ? null : {'DISPLAY': display},
+  ).timeout(timeout);
   if (r.exitCode != 0) {
     final why = '${r.stderr}'.trim().replaceFirst(RegExp(r'^error:\s*'), '');
     throw AppError(why.isEmpty ? 'the window helper failed (exit ${r.exitCode})' : why);
@@ -44,13 +56,23 @@ Future<Object?> axHelper(List<String> args, {Duration timeout = const Duration(s
 }
 
 /// One on-screen window of a process, as the helper lists it (points, screen coordinates).
-typedef HelperWindow = ({int id, int pid, String app, String title, double x, double y, double w, double h});
+typedef HelperWindow = ({
+  int id,
+  int pid,
+  String app,
+  String title,
+  double x,
+  double y,
+  double w,
+  double h,
+  String exe,
+});
 
-Future<List<HelperWindow>> helperWindows(Iterable<int> pids) async {
+Future<List<HelperWindow>> helperWindows(Iterable<int> pids, {String? display}) async {
   final out = await axHelper([
     'windows',
     for (final p in pids) ...['--pid', '$p'],
-  ]);
+  ], display: display);
   return [
     for (final w in (out as List?) ?? const [])
       if (w is Map)
@@ -63,6 +85,7 @@ Future<List<HelperWindow>> helperWindows(Iterable<int> pids) async {
           y: (w['y'] as num).toDouble(),
           w: (w['w'] as num).toDouble(),
           h: (w['h'] as num).toDouble(),
+          exe: '${w['exe'] ?? ''}',
         ),
   ];
 }
@@ -72,7 +95,16 @@ abstract final class DesktopWindows {
   static final holds = DeviceHolds();
   static final _drivers = <int, DesktopWindow>{};
 
-  static DesktopWindow driver(int pid) => _drivers.putIfAbsent(pid, () => DesktopWindow(pid));
+  /// The driver for process [pid]'s windows; [display] (Linux) is the X display they are on, [nested] when that is
+  /// a session's own headless display.
+  static DesktopWindow driver(int pid, {String? display, bool nested = false}) {
+    final d = _drivers.putIfAbsent(pid, () => DesktopWindow(pid));
+    if (display != null) {
+      d.display = display;
+      d.nested = nested;
+    }
+    return d;
+  }
 }
 
 /// The front window of a desktop app (process [pid]) on macOS, through `everyai-ax`: its accessibility tree (points
@@ -111,6 +143,13 @@ final class DesktopWindow implements DeviceScreen {
   /// The window to act on: a title (or part of one) the agent picked, else the app's main window.
   String? window;
 
+  /// Linux: the X display the app is on (":7"), and whether it's the session's own headless one: input there doesn't
+  /// touch the user's pointer, so it needs no consent and no guards.
+  String? display;
+  bool nested = false;
+
+  Future<Object?> _helper(List<String> args) => axHelper(args, display: display);
+
   /// Clicks per tap for the current call: 2 a double click, 3 a triple click (selects a line of text). More than
   /// one is always real pointer input.
   int clicks = 1;
@@ -138,7 +177,7 @@ final class DesktopWindow implements DeviceScreen {
 
   /// The window's id and frame now.
   Future<HelperWindow> place() async {
-    final all = await helperWindows([pid]);
+    final all = await helperWindows([pid], display: display);
     if (all.isEmpty) throw AppError('Process $pid has no window on screen now.');
     final w = window;
     final pick =
@@ -162,7 +201,7 @@ final class DesktopWindow implements DeviceScreen {
   @override
   Future<List<AppNode>> tree() async {
     final w = await place();
-    final out = await axHelper(['tree', '--pid', '$pid', '--window', w.title.isEmpty ? '0' : w.title]);
+    final out = await _helper(['tree', '--pid', '$pid', '--window', w.title.isEmpty ? '${w.id}' : w.title]);
     if (out is! Map) throw const AppError("The window's accessibility tree couldn't be read.");
     final flat = flattenAxHelperTree(out, left: _left, top: _top);
     final seen = <String, int>{};
@@ -211,7 +250,7 @@ final class DesktopWindow implements DeviceScreen {
 
   Future<void> _act(String ref, String action, {String? text}) => _actAt(_paths[ref]!, action, text: text);
 
-  Future<void> _actAt(String path, String action, {String? text}) => axHelper([
+  Future<void> _actAt(String path, String action, {String? text}) => _helper([
     'act',
     '--pid',
     '$pid',
@@ -226,12 +265,24 @@ final class DesktopWindow implements DeviceScreen {
   /// accessibility can't do it and the user allows it ([RealInput], asked once). Real input brings the window to
   /// the front and moves the cursor.
   Future<void> _needReal(String what) async {
+    // The session's own headless display has no user pointer or keyboard to take over.
+    if (nested) return;
     if (!await RealInput.ensure()) throw AppError('${RealInput.refused}: $what.');
   }
 
   /// Runs a helper input command as real input to the window, its app brought to the front as it is (its key
   /// window, an open pop-up list or dialog, keeps the keyboard).
-  Future<void> _real(String command, List<String> args) => axHelper([command, '--pid', '$pid', ...args, '--front']);
+  Future<void> _real(String command, List<String> args) =>
+      _helper([command, '--pid', '$pid', ...args, '--front', if (nested) '--nested']);
+
+  /// A named key ("enter", "a") with modifiers, as the helper takes it: macOS key codes, names elsewhere.
+  List<String> _keyArgs(String name, [List<String> mods = const []]) {
+    final m = Platform.isMacOS ? mods : [for (final x in mods) x == 'cmd' || x == 'command' ? 'ctrl' : x];
+    return [
+      if (Platform.isMacOS) ...['--keycode', '${_keycodes[name]}'] else ...['--keyname', name],
+      if (m.isNotEmpty) ...['--mods', m.join(',')],
+    ];
+  }
 
   // Window points to screen points.
   String _sx(double x) => (x + _left).toStringAsFixed(1);
@@ -360,7 +411,7 @@ final class DesktopWindow implements DeviceScreen {
       await _needReal("$ref didn't take the text through accessibility, so it needs real typing");
       // A triple click selects the field's text where Cmd+A isn't bound (Tk); Cmd+A then covers multi-line fields.
       await _click(n.centreX, n.centreY, count: 3);
-      await _real('key', ['--keycode', '0', '--mods', 'cmd']);
+      await _real('key', _keyArgs('a', ['cmd']));
       await _real('key', ['--text', text]);
     }
     if (submit) {
@@ -368,7 +419,7 @@ final class DesktopWindow implements DeviceScreen {
         await _act(ref, 'AXConfirm');
       } else {
         await _needReal('submitting $ref needs a real Return key');
-        await _real('key', ['--keycode', '36']);
+        await _real('key', _keyArgs('enter'));
       }
     }
     await settle();
@@ -481,11 +532,7 @@ final class DesktopWindow implements DeviceScreen {
       await _real('key', ['--text', combo]);
       return 'Typed "$combo" (the window came to the front).';
     }
-    await _real('key', [
-      '--keycode',
-      '$code',
-      if (mods.isNotEmpty) ...['--mods', mods.join(',')],
-    ]);
+    await _real('key', _keyArgs(name, mods));
     return 'Pressed $combo (the window came to the front).';
   }
 
@@ -547,7 +594,7 @@ final class DesktopWindow implements DeviceScreen {
     final dir = Directory.systemTemp.createTempSync('everyai-window');
     try {
       final file = '${dir.path}/w.png';
-      await axHelper(['shot', '--window', '${w.id}', '--out', file]);
+      await _helper(['shot', '--window', '${w.id}', '--out', file, if (nested) '--nested']);
       final png = File(file).readAsBytesSync();
       final r = region ?? (left: 0.0, top: 0.0, width: width, height: height);
       final size = agentImageSize(r.width, r.height, scale: region == null ? 1.0 : 2.0);
@@ -566,9 +613,21 @@ final class DesktopWindow implements DeviceScreen {
       onListen: () async {
         try {
           final w = await place();
-          final exe = axHelperPath();
-          if (exe == null) throw const AppError('The desktop window helper (everyai-ax) is missing.');
-          p = await Process.start(exe, ['stream', '--window', '${w.id}', '--fps', '$fps', '--scale', '$scale']);
+          final cmd = await _helperCommand([
+            'stream',
+            '--window',
+            '${w.id}',
+            '--fps',
+            '$fps',
+            '--scale',
+            '$scale',
+            if (nested) '--nested',
+          ]);
+          p = await Process.start(
+            cmd.first,
+            cmd.sublist(1),
+            environment: display == null ? null : {'DISPLAY': display!},
+          );
           unawaited(p!.stderr.drain<void>());
           await p!.stdout.transform(MjpegParts()).pipe(out);
         } on Object catch (e) {
@@ -597,7 +656,7 @@ final class DesktopWindow implements DeviceScreen {
   }
 
   /// Brings the window to the front (the Preview's button).
-  Future<void> raise() => axHelper([
+  Future<void> raise() => _helper([
     'raise',
     '--pid',
     '$pid',
