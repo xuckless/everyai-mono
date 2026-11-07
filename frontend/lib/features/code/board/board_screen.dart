@@ -19,6 +19,8 @@ import '../drivers/driver_registry.dart' show driverRegistryProvider;
 import '../ui/harness_logo.dart';
 import 'board_providers.dart';
 import 'board_work.dart';
+import '../workflows/workflow_engine.dart' show WorkflowStatus;
+import '../workflows/workflow_runs.dart' show workflowRunsProvider;
 
 /// Every session at a glance: Needs you, Running, Done, side by side with hairlines between them (drag one to
 /// resize; double-click to even them). Approvals and questions are answered on the card, Done cards can be cleared,
@@ -47,7 +49,8 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final dismissed = ref.watch(boardDismissedProvider);
-    final all = boardSessions(ref.watch(codeSessionsProvider), ref.watch(boardDetachedProvider));
+    final sessions = ref.watch(codeSessionsProvider);
+    final all = boardSessions(sessions, ref.watch(boardDetachedProvider));
     final statuses = ref.watch(codeStatusesProvider);
     SessionStatus statusOf(CodeSessionInfo s) {
       // Waiting sessions are opened, so their card can answer for them.
@@ -62,7 +65,15 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       final live = ref.exists(codeSessionProvider(s.id))
           ? ref.watch(codeSessionProvider(s.id).select((st) => st.connected ? st.status : null))
           : null;
-      return live ?? statuses[s.id] ?? SessionStatus.idle;
+      final own = live ?? statuses[s.id] ?? SessionStatus.idle;
+      return boardStatus(
+        own,
+        workRunning: ref.watch(workflowRunsProvider(s.id)).any((r) => r.status == WorkflowStatus.running),
+        childWaits: [
+          for (final c in sessions)
+            if (c.parentId == s.id) c,
+        ].any((c) => childWaitsOnUser(ref, s.id, c.id) != null),
+      );
     }
 
     final status = {for (final s in all) s.id: statusOf(s)};

@@ -27,6 +27,15 @@ enum BoardColumn {
   };
 }
 
+/// A session's status on the Board, counting the work it runs: a workflow (Security review, Ultra, …) runs while its
+/// lead says nothing and sits idle, so the card is Running until the run ends; a workflow agent or fork waiting on the
+/// user puts it under Needs you.
+SessionStatus boardStatus(SessionStatus own, {required bool workRunning, required bool childWaits}) {
+  if (own == SessionStatus.needsInput || childWaits) return SessionStatus.needsInput;
+  if (workRunning && BoardColumn.of(own) == BoardColumn.done) return SessionStatus.running;
+  return own;
+}
+
 /// A harness's two-letter mark and colour: the fallback for harnesses without a logo ([HarnessLogo]).
 ({String letters, Color color}) harnessMark(String harness) => switch (harness) {
   everyaiHarnessName => (letters: 'EA', color: const Color(0xFF7756E4)),
