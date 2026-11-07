@@ -70,7 +70,9 @@ class _WebhooksPartState extends ConsumerState<WebhooksPart> {
       _error = null;
     });
     try {
-      final made = await ref.read(remoteApiProvider).createHook(name: draft.name, hostId: host.id);
+      final made = await ref
+          .read(remoteApiProvider)
+          .createHook(name: draft.name, hostId: host.id, hostToken: host.token);
       ref
           .read(webhookAutomationsProvider.notifier)
           .put(
@@ -110,7 +112,9 @@ class _WebhooksPartState extends ConsumerState<WebhooksPart> {
     );
     if (!ok || !mounted) return;
     try {
-      await ref.read(remoteApiProvider).deleteHook(hookId);
+      // Without a host here its hooks went with it on the server; only its own token deletes one.
+      final host = ref.read(remoteHostingProvider).host;
+      if (host != null) await ref.read(remoteApiProvider).deleteHook(hookId, hostToken: host.token);
     } on Object catch (e) {
       // Already gone on the server is fine; otherwise the local entry stays so it can be tried again.
       if (e is! HttpStatusError || e.statusCode != 404) {

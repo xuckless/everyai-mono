@@ -92,8 +92,11 @@ Future<({String exe, List<String> args, Map<String, String>? env})> _command(
   return (exe: w.executable, args: w.args, env: w.environment);
 }
 
-/// The repository's guard for [dir]: [guardFlags] plus [repoGuard]'s overrides, and its refusal.
-Future<({List<String> args, String? refusal})> _guard(String dir, {Map<String, String>? env}) async {
+/// The repository's guard for [dir]: [guardFlags] plus [repoGuard]'s overrides, its refusal and its block.
+Future<({List<String> fixed, List<String> args, List<GitSetting> config, String? refusal, String? block})> _guard(
+  String dir, {
+  Map<String, String>? env,
+}) async {
   final fixed = guardFlags(await _devNull(dir));
   final res = await _proc(['-C', dir, ...fixed, 'config', '--list', '--show-scope', '-z'], env: env);
   if (res.exitCode != 0) {
@@ -103,7 +106,13 @@ Future<({List<String> args, String? refusal})> _guard(String dir, {Map<String, S
     throw GitError('git config: $err');
   }
   final guard = repoGuard(parseConfigList('${res.stdout}'));
-  return (args: [...fixed, ...guard.args], refusal: guard.refusal);
+  return (
+    fixed: fixed,
+    args: [...fixed, ...guard.args],
+    config: guard.config,
+    refusal: guard.refusal,
+    block: guard.block,
+  );
 }
 
 /// The full argument list for an EveryAI git call in [dir]: [guardFlags], the overrides for programs the
@@ -116,6 +125,7 @@ Future<List<String>> guardedArgs(String dir, List<String> args, {Map<String, Str
   ];
   if (_plain.contains(cmd)) return ['-C', dir, ...guardFlags(await _devNull(dir)), ...call];
   final guard = await _guard(dir, env: env);
+  if (guard.block case final why?) throw GitError(why);
   if (guard.refusal case final why? when storesFiles(cmd)) throw GitError(why);
   return ['-C', dir, ...guard.args, ...call];
 }
@@ -129,13 +139,15 @@ Future<ProcessResult> runGit(String dir, List<String> args, {Map<String, String>
 /// config only [guardFlags] are in it.
 Future<Map<String, String>> guardedEnv(String dir, {Map<String, String>? base}) async {
   final env = base ?? Platform.environment;
-  List<String> args;
+  final count = int.tryParse(env['GIT_CONFIG_COUNT'] ?? '') ?? 0;
   try {
-    args = (await _guard(dir, env: env)).args;
+    final guard = await _guard(dir, env: env);
+    // The flags as before; the repository's overrides as pairs, so a key with '=' in it still reaches git.
+    final fixed = configEnv(guard.fixed, count: count);
+    return {...env, ...fixed, ...configEnvOf(guard.config, count: int.parse(fixed['GIT_CONFIG_COUNT']!))};
   } on Object {
-    args = guardFlags(Platform.isWindows ? 'NUL' : '/dev/null');
+    return {...env, ...configEnv(guardFlags(Platform.isWindows ? 'NUL' : '/dev/null'), count: count)};
   }
-  return {...env, ...configEnv(args, count: int.tryParse(env['GIT_CONFIG_COUNT'] ?? '') ?? 0)};
 }
 
 Future<ProcessResult> _git(String dir, List<String> args, {Map<String, String>? env, bool check = true}) async {

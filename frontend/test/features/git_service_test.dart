@@ -760,6 +760,32 @@ void main() {
       expect(await _git(repo, ['rev-parse', 'HEAD']), head);
     });
 
+    test(
+      'a filter named with "=" (which `-c` can\'t reach) turns EveryAI\'s git work off; a shell still blanks it',
+      () async {
+        File('$repo/.gitattributes').writeAsStringSync('* filter=x=y\n');
+        await _git(repo, ['add', '-A']);
+        await _git(repo, ['commit', '-q', '-m', 'Attributes']);
+        final run = await arm();
+        await _git(repo, ['config', 'filter.x=y.smudge', '$run smudge-eq']);
+        await _git(repo, ['config', 'filter.x=y.required', 'true']);
+        await expectLater(start(), throwsA(predicate<GitError>((e) => e.message.contains('"x=y"'))));
+        final shell = await Process.run(
+          'sh',
+          ['-c', 'rm README.md && git checkout -- README.md'],
+          workingDirectory: repo,
+          environment: await guardedEnv(repo),
+        );
+        expect(shell.exitCode, 0, reason: '${shell.stderr}');
+        expect(File('$repo/README.md').existsSync(), isTrue);
+        expect(File(marks).existsSync() ? File(marks).readAsStringSync() : '', isEmpty);
+        // The trap works: plain git runs it.
+        File('$repo/README.md').deleteSync();
+        await Process.run('git', ['-C', repo, 'checkout', '--', 'README.md']);
+        expect(File(marks).readAsStringSync(), contains('smudge-eq'));
+      },
+    );
+
     test('EveryAI\'s other git callers run none of them either', () async {
       await arm();
       await _git(repo, ['config', 'log.showSignature', 'true']);
