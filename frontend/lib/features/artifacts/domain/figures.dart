@@ -4,7 +4,7 @@ import 'artifact.dart';
 
 /// UI tools whose call becomes a figure when it carries an `id`: a versioned artifact (edit_artifact and a later
 /// call with the same id revise it) that documents and slides can show by id (`figure:<id>`).
-const figureTools = {'render_svg', 'render_chart', 'render_diagram'};
+const figureTools = {'render_svg', 'svg_script', 'render_chart', 'render_diagram'};
 
 /// Tools whose call, with an `id`, is a versioned artifact: the figure tools and slide decks.
 const versionedTools = {...figureTools, 'make_slides'};
@@ -12,7 +12,7 @@ const versionedTools = {...figureTools, 'make_slides'};
 /// A versioned call's arguments as an artifact version: `content` holds its source (SVG, chart JSON or Mermaid) and
 /// `kind` says which, so edit_artifact can revise it like any artifact.
 Map<String, Object?> figureArgs(String tool, Map<String, Object?> args) => switch (tool) {
-  'render_svg' => {...args, 'kind': 'svg', 'content': args['svg'] as String? ?? ''},
+  'render_svg' || 'svg_script' => {...args, 'kind': 'svg', 'content': args['svg'] as String? ?? ''},
   'render_diagram' => {...args, 'kind': 'mermaid', 'content': args['mermaid'] as String? ?? ''},
   'make_slides' => {...args, 'kind': 'slides', 'content': jsonEncode(_chartSpec(args))},
   _ => {...args, 'kind': 'chart', 'content': jsonEncode(_chartSpec(args))},

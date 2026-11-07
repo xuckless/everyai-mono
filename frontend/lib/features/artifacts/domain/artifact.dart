@@ -44,7 +44,7 @@ final class Visual {
 
   /// Decodes a tool call; null for tools that aren't visuals (or bad JSON).
   static Visual? fromPart(ToolCallPart part) {
-    final Map<String, Object?> args;
+    Map<String, Object?> args;
     try {
       args = switch (jsonDecode(part.argumentsJson)) {
         final Map<String, Object?> m => m,
@@ -64,7 +64,7 @@ final class Visual {
       },
       // The real kind comes from the artifact it edits (see [artifactsIn]).
       'edit_artifact' => VisualKind.document,
-      'render_svg' => VisualKind.svg,
+      'render_svg' || 'svg_script' => VisualKind.svg,
       'render_diagram' => VisualKind.diagram,
       'render_chart' => VisualKind.chart,
       'make_quiz' => VisualKind.quiz,
@@ -74,6 +74,8 @@ final class Visual {
       _ => null,
     };
     if (kind == null) return null;
+    // A program's figure is what it printed, which the app keeps as the call's result.
+    if (part.toolName == 'svg_script') args = {...args, 'svg': _scriptSvg(part.resultJson)};
     return Visual(
       callId: part.callId ?? '${part.toolName}:${part.argumentsJson.hashCode}',
       kind: kind,
@@ -91,6 +93,19 @@ final class Visual {
 
   /// Saved by the user in the panel (`edited_by: user`), not made by the model.
   bool get editedByUser => args['edited_by'] == 'user';
+}
+
+/// The SVG an `svg_script` run printed (its recorded result), or '' while it runs or when it failed.
+String _scriptSvg(String? resultJson) {
+  if (resultJson == null) return '';
+  try {
+    return switch (jsonDecode(resultJson)) {
+      {'svg': final String svg} => svg,
+      _ => '',
+    };
+  } on FormatException {
+    return '';
+  }
 }
 
 /// A document the model created and may revise (`create_artifact`, then

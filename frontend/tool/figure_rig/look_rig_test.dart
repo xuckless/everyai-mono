@@ -4,7 +4,8 @@
 //   EVERYAI_LOOK_CALLS=calls.json EVERYAI_LOOK_ID=fig-x EVERYAI_LOOK_OUT=out/ \
 //     flutter test tool/figure_rig/look_rig_test.dart
 //
-// EVERYAI_LOOK_SLIDE=N looks at one slide of a deck.
+// EVERYAI_LOOK_SLIDE=N looks at one slide of a deck. svg_script calls run in Deno; out/script_N.txt says how
+// call N went.
 // calls.json: the chat's UI tool calls in order, [{"tool": "render_svg", "args": {...}}, ...]. The rig writes
 // out/look.txt (what the model would read) and out/picture_N.png (what it would see). Mermaid needs the app's
 // webview, so diagrams aren't drawn here.
@@ -13,6 +14,7 @@ import 'dart:io';
 
 import 'package:every_ai/features/artifacts/checks/look.dart';
 import 'package:every_ai/features/artifacts/export/svg_raster.dart';
+import 'package:every_ai/features/artifacts/script/svg_script.dart';
 import 'package:every_ai/features/chat/domain/message.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -69,6 +71,16 @@ void main() {
     await tester.runAsync(() async {
       await _loadFonts();
       final list = (jsonDecode(File(calls).readAsStringSync()) as List).cast<Map<String, Object?>>();
+      final dir = Directory(out)..createSync(recursive: true);
+      // svg_script calls run for real (Deno, no permissions); their SVG becomes the call's result, as in the app.
+      final results = <int, String>{};
+      for (final (i, c) in list.indexed) {
+        if (c['tool'] != svgScriptTool) continue;
+        final run = await runSvgScript((c['args'] as Map?)?['code'] as String? ?? '');
+        results[i] = jsonEncode({'svg': run.svg, 'error': run.error});
+        File('${dir.path}/script_${i + 1}.txt')
+            .writeAsStringSync('${run.error == null ? 'OK' : 'ERROR ${run.error}'}\n${run.output}\n');
+      }
       final message = Message(
         id: 'rig',
         conversationId: 'rig',
@@ -76,14 +88,18 @@ void main() {
         createdAt: DateTime(2026),
         parts: [
           for (final (i, c) in list.indexed)
-            ToolCallPart(toolName: c['tool']! as String, argumentsJson: jsonEncode(c['args']), callId: 'call_$i'),
+            ToolCallPart(
+              toolName: c['tool']! as String,
+              argumentsJson: jsonEncode(c['args']),
+              callId: 'call_$i',
+              resultJson: results[i],
+            ),
         ],
       );
       final answer = await Looker(rasterize: _rigRaster, prepareSvg: _rigFonts).look(
         jsonEncode({'id': id, 'slide': ?int.tryParse(Platform.environment['EVERYAI_LOOK_SLIDE'] ?? '')}),
         [message],
       );
-      final dir = Directory(out)..createSync(recursive: true);
       for (final f in dir.listSync().whereType<File>().where((f) => f.path.contains('picture_'))) {
         f.deleteSync();
       }

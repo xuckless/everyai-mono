@@ -95,6 +95,9 @@ class Looker {
     }
   }
 
+  /// An SVG [svg] just made (by `svg_script`), as `look` would show the figure [id].
+  Future<LookAnswer> figure(String id, String svg, String what) => _figure(id, svg, what);
+
   Future<LookAnswer> _figure(String id, String svg, String what) async {
     final findings = svgFindings(svg);
     final png = (await rasterize(svg))?.png;
