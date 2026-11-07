@@ -3,6 +3,40 @@
 EveryAI is in alpha. Signed releases start at `0.1.0-alpha.1`; the earlier unsigned dev build was
 `0.1.0-dev-nonsigned`. Earlier changes are listed by date and pull request.
 
+## Unreleased: local models
+
+- **Models on your computer.** EveryAI finds Ollama, LM Studio, llama.cpp, Jan, vLLM and MLX servers, and Apple's
+  on-device model through `fm serve` (after you agree to Apple's terms once in EveryAI's terminal). Add any other
+  server by its URL.
+- **One-click packs.** Settings → Local models reads your RAM, GPU memory and free disk and offers Light, Balanced and
+  Best packs (a chat and a coding model), greyed out when they won't fit. Ollama downloads them in the background;
+  without Ollama, its official installer is typed into EveryAI's terminal for you.
+- **Chat runs where the model is.** A copy of the EveryAI server ships in the app and runs chats on local models and
+  on your own keys on your computer, so your keys no longer pass through our server. Web search works without a key.
+- **Apple's model is the default chat model on macOS** when it's there. With no key and no local model, Chat says
+  what to set up instead of failing.
+- **Code on local models.** The EveryAI harness calls the local server directly; small models get a lighter set of
+  tools and rules. Outside agents keep working with no key and no model.
+
+## 0.1.0-alpha.4 (2026-11-06): a cheaper execution loop, and no AI credit in commits
+
+- **Runtime profiles.** Commands that take 3 s or more are timed on every harness (approval waits left out) and kept
+  per project. Every lead, EveryAI's own included, sees the slow ones in its briefing, marked as recorded data.
+  Commands with secrets are never kept, and a profiles file a repository ships is ignored.
+- **Checks after each turn.** Format, lint and type checks run on the files the agent changed in that turn (Dart,
+  JS/TS, Python, Go, Rust), in every mode but Plan, with no approval card. The safety floor and your deny rules still
+  apply. They download nothing, slow project-wide checks never hold up your next message, and new errors in other
+  files are counted. The report goes with the next message.
+- **Plan batches.** A plan can split work into batches, each with a check. In Ultra each batch is one agent, and its
+  check decides whether the work merges back. A batch with no test merges as "unverified". The `check` tool takes a
+  scope (changed, files, a test name or the full suite).
+- **No AI credit in commits or PRs**, for every harness: Claude Code and Codex are told so through their own
+  per-session settings, the others through the briefing, and commits EveryAI makes itself are scrubbed.
+- **Workflow results keep the workers' commits.** "Commit here" and "New branch" bring each worker's commits over,
+  with their messages and authors, then one commit for the rest. GPG signing is honoured and your own staged changes
+  stay as they were.
+- **Thorough** checks each part once, not every edit.
+
 ## 0.1.0-alpha.3 (2026-11-05): security in the tools, Bypass, environments, Windows
 
 - **Security lives in the tools.** Every tool guards itself and never adds an approval card, in every mode and for

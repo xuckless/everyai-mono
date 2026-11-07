@@ -504,3 +504,50 @@ String? memoryCallNote(ToolCallPart call) {
     _ => null,
   };
 }
+
+/// Whether [request] runs on the bundled server: local models (`local/…`)
+/// and turns on the user's own keys, which then never reach our server.
+bool runsLocally(ChatRequest request) => request.model.id.value.startsWith('local/') || request.providerKeys.isNotEmpty;
+
+/// Sends local-model and own-key turns to the bundled server ([local]) and
+/// the rest to the deployed one ([remote]). Without a bundled server, own-key
+/// turns go to [remote] as before and local models fail with [localProblem].
+final class SplitTransport implements ChatTransport {
+  const SplitTransport({required this.remote, required this.local, required this.localProblem});
+
+  final ChatTransport remote;
+  final Future<ChatTransport?> Function() local;
+  final String? Function() localProblem;
+
+  @override
+  Stream<ChatEvent> send(ChatRequest request, {Future<void>? cancel}) async* {
+    if (!runsLocally(request)) {
+      yield* remote.send(request, cancel: cancel);
+      return;
+    }
+    final transport = await local();
+    if (transport != null) {
+      yield* transport.send(request, cancel: cancel);
+    } else if (request.model.id.value.startsWith('local/')) {
+      throw ProtocolError(localProblem() ?? "Local models need the app's built-in server, which isn't running.");
+    } else {
+      yield* remote.send(request, cancel: cancel);
+    }
+  }
+}
+
+/// Answers a client tool on whichever server holds the turn: the bundled one
+/// first (when it runs), then the deployed one.
+final class SplitToolResults implements ToolResults {
+  const SplitToolResults({required this.remote, required this.local});
+
+  final ToolResults remote;
+  final Future<ToolResults?> Function() local;
+
+  @override
+  Future<bool> resolve(String callId, Object? result, {bool isError = false}) async {
+    final l = await local();
+    if (l != null && await l.resolve(callId, result, isError: isError)) return true;
+    return remote.resolve(callId, result, isError: isError);
+  }
+}

@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/preferences.dart';
 import '../../core/providers.dart';
+import '../local_models/local_model_bridge.dart' show localCodeModelProvider;
+import '../settings/byok_keys.dart' show byokKeysProvider;
 
 /// A tier of agent models (backend `agents.zig`).
 @immutable
@@ -170,7 +172,13 @@ final class CodeAgent extends Notifier<AgentChoice> {
   @override
   AgentChoice build() {
     final catalog = ref.watch(agentCatalogProvider);
-    return catalog.fromKey(ref.read(preferencesProvider)[_choiceKey]) ?? catalog.fallback;
+    if (catalog.fromKey(ref.read(preferencesProvider)[_choiceKey]) case final saved?) return saved;
+    // No key of the user's: a downloaded coding model, when there is one.
+    final keys = ref.watch(byokKeysProvider).value ?? const {};
+    if (keys.isEmpty) {
+      if (ref.watch(localCodeModelProvider) case final local?) return catalog.choiceFor(local.id.value, '');
+    }
+    return catalog.fallback;
   }
 
   /// Any [model] at any [effort], curated or not.

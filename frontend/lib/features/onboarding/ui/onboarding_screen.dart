@@ -17,6 +17,8 @@ import '../../code/drivers/driver_registry.dart';
 import '../../code/code_settings_providers.dart';
 import '../../code/migration/ui/bring_over_sheet.dart' show showBringOver;
 import '../../code/ui/harness_setup_row.dart';
+import '../../local_models/local_model_bridge.dart' show localDetectionProvider;
+import '../../local_models/ui/local_models_section.dart' show LocalSetupCard;
 import '../../settings/byok_keys.dart';
 import '../../settings/domain/byok_providers.dart';
 import '../../settings/domain/key_check.dart';
@@ -69,7 +71,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
     final theme = EveryTheme.of(context);
     final last = _index == _steps.length - 1;
     // The agents list needs more room than the other steps.
-    final width = _step == _Step.code && _desktop ? 580.0 : 480.0;
+    final width = (_step == _Step.code || _step == _Step.keys) && _desktop ? 580.0 : 480.0;
     return ColoredBox(
       color: theme.background,
       child: SafeArea(
@@ -196,7 +198,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   String _headline(_Step step) => switch (step) {
     _Step.welcome => "Hi. You're early.",
     _Step.bugs => 'Things will break.',
-    _Step.keys => 'Chat runs on your key.',
+    _Step.keys => _desktop ? 'Pick a model to chat with.' : 'Chat runs on your key.',
     _Step.code => _desktop ? 'Code works with the agents you already use.' : 'Code runs on your computer.',
     _Step.agree => 'One last thing.',
   };
@@ -505,8 +507,51 @@ class _KeysState extends ConsumerState<_Keys> {
     });
   }
 
+  /// On a desktop: a model on this computer (first) or an API key.
+  bool _onDevice = true;
+
   @override
   Widget build(BuildContext context) {
+    // Off on phones and in tests: then this step is the key alone.
+    final local = ref.watch(localDetectionProvider);
+    if (!local) return _keyStep(context);
+    final theme = EveryTheme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        LayoutBuilder(
+          builder: (context, box) => KitSegmented<bool>(
+            key: const ValueKey('onboarding.model-kind'),
+            width: box.maxWidth,
+            values: const [true, false],
+            selected: _onDevice,
+            label: (v) => v ? 'On this computer' : 'API key',
+            onSelected: (v) => setState(() => _onDevice = v),
+          ),
+        ),
+        const SizedBox(height: 18),
+        StateSwap(
+          alignment: Alignment.topCenter,
+          child: _onDevice
+              ? Column(
+                  key: const ValueKey('onboarding.local'),
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      'Free and private: the model runs here, and your chats never leave this computer.',
+                      style: theme.type.body.tint(theme.textMuted),
+                    ),
+                    const SizedBox(height: 16),
+                    const LocalSetupCard(),
+                  ],
+                )
+              : KeyedSubtree(key: const ValueKey('onboarding.keys'), child: _keyStep(context)),
+        ),
+      ],
+    );
+  }
+
+  Widget _keyStep(BuildContext context) {
     final theme = EveryTheme.of(context);
     final saved = ref.watch(byokKeysProvider).value ?? const {};
     final result = _result;
@@ -606,12 +651,6 @@ class _KeysState extends ConsumerState<_Keys> {
               style: KitButtonStyle.ghost,
               icon: EveryIcon.external,
               onPressed: () => launchUrl(Uri.parse(_provider.keysUrl), mode: LaunchMode.externalApplication),
-            ),
-            const KitButton(
-              key: ValueKey('onboarding.local'),
-              label: 'Local models: coming soon',
-              style: KitButtonStyle.ghost,
-              onPressed: null,
             ),
           ],
         ),

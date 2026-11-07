@@ -5,8 +5,8 @@
 #
 #   packaging/linux/package.sh <bundle-dir> <version> [out-dir]
 #
-# Deno (the run_script sandbox) goes next to the `everyai` binary, where findDeno looks.
-# Needs: dpkg-deb, curl, unzip, gpg (for signing). Linux x86_64 only for now.
+# Deno (the run_script sandbox) and the bundled server go next to the `everyai` binary.
+# Needs: zig 0.17, dpkg-deb, curl, unzip, gpg (for signing). Linux x86_64 only for now.
 # Signing env: GPG_KEY_ID (fingerprint), GPG_PASSPHRASE_FILE. The public key is packaging/linux/everyai-release-key.asc.
 set -euo pipefail
 
@@ -25,6 +25,10 @@ say() { printf '\033[1m==> %s\033[0m\n' "$*"; }
 say "Deno"
 DENO="$("$ROOT/frontend/tool/fetch_deno.sh" | tail -1)"
 cp -f "$DENO" "$BUNDLE/deno"; chmod 755 "$BUNDLE/deno"
+say "Bundled server"
+# Next to the binary, where findLocalBackend looks (local-model and own-key chats).
+cp -f "$("$ROOT/frontend/tool/build_local_backend.sh" x86_64-linux-gnu.2.35 | tail -1)" "$BUNDLE/everyai-backend"
+chmod 755 "$BUNDLE/everyai-backend"
 cp -f "$ROOT/THIRD_PARTY_NOTICES.md" "$BUNDLE/THIRD_PARTY_NOTICES.md"
 cp -f "$ROOT/LICENCE.md" "$ROOT/NOTICE" "$BUNDLE/"
 

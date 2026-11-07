@@ -19,6 +19,7 @@
 //! error {message, retryable}.
 const std = @import("std");
 const byok = @import("byok.zig");
+const local = @import("local.zig");
 const anole = @import("anole");
 const App = @import("main.zig").App;
 const auth = @import("auth.zig");
@@ -394,12 +395,21 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
         picked = p;
     };
     var model = body.model orelse app.cfg.default_model;
-    var facts = app.catalog.facts(req.io, model);
+    // A local model (local.zig): what the app says it can do, on the server it named.
+    const on_local = app.isLocal(req, model);
+    if (app.cfg.local_mode and local.isLocalId(model) and !on_local)
+        return req.invalid("model", "chat.local_server", "a local model needs X-Local-Base-Url");
+    var facts = if (on_local) local.facts(local.capsOf(req)) else app.catalog.facts(req.io, model);
     // Research is led by the user's model with tools; one without them hands
-    // the question to the deep-research model instead.
+    // the question to the deep-research model instead. A local model without
+    // tools stays put and answers as in Chat (the research model is on OpenRouter).
     if (body.mode == .research and !(facts.tools and body.tools_enabled)) {
-        model = app.cfg.research_model;
-        facts = app.catalog.facts(req.io, model);
+        if (on_local) {
+            body.mode = .chat;
+        } else {
+            model = app.cfg.research_model;
+            facts = app.catalog.facts(req.io, model);
+        }
     }
     // Only the newest user message's attachments are being sent now; earlier
     // ones (resent with the history) become notes when the model can't read them.
@@ -413,7 +423,7 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
     }
     body.messages = msgs;
     const native_ok = modes.nativeOk(body.mode, body.tools_enabled and facts.tools);
-    const on_key = byok.Keys.of(req).covers(model, native_ok);
+    const on_key = on_local or byok.Keys.of(req).covers(model, native_ok);
     // A self-run server without its own key: the user's key or nothing.
     if (app.keyless(on_key, model, native_ok)) {
         res.status = .bad_request;
@@ -441,10 +451,23 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
         error.ServerDraining => sink.send("error", .{ .message = "The server is restarting. Try again in a moment.", .retryable = true }) catch {},
         else => {
             req.log().err("chat turn failed", .{ .err = @errorName(err) });
-            sink.send("error", .{ .message = "Something went wrong while answering.", .retryable = true }) catch {};
+            // A local model's server that isn't there (stopped, moved ports): say so, not a generic failure.
+            const message = if (on_local and isConnectError(err))
+                "Couldn't reach the local model's server. Start it (Settings → Local models), or pick another model."
+            else
+                "Something went wrong while answering.";
+            sink.send("error", .{ .message = message, .retryable = true }) catch {};
         },
     };
     try ev.end();
+}
+
+/// Errors that mean nothing listens where the request went.
+fn isConnectError(err: anyerror) bool {
+    return switch (err) {
+        error.ConnectionRefused, error.ConnectionResetByPeer, error.NetworkUnreachable, error.HostUnreachable, error.ConnectionTimedOut, error.UnknownHostName => true,
+        else => false,
+    };
 }
 
 fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, body: ChatRequest, facts: @import("models.zig").Catalog.Facts, sink: Sink) !void {
@@ -475,6 +498,12 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
     // The web plugin (Search without tools) and the Research model need OpenRouter.
     const route = try app.routeFor(req, model, modes.nativeOk(body.mode, with_tools));
     const effort: ?[]const u8 = if (body.effort) |e| (if (facts.reasoning) e.wire(route.provider) else null) else null;
+    // Search without tools where OpenRouter's web plugin isn't there (a local
+    // model, no OpenRouter key): search the question first and hand the
+    // results over with it.
+    if (modes.usesPlugin(body.mode, with_tools)) if (route.search) |engine| {
+        try preSearch(app, req, who, body, engine, &messages, sink);
+    };
     const turn: Turn = .{ .app = app, .req = req, .who = who, .model = model, .body = body, .route = route, .with_tools = with_tools, .effort = effort };
 
     var steps: u8 = 0;
@@ -1025,7 +1054,7 @@ pub fn webSearch(app: *App, req: anytype, who: auth.Identity, session: ?[]const 
     const limit: usize = @intCast(std.math.clamp(intArg(args, "max_results") orelse web.default_results, 1, web.max_results));
     // The web plugin bills per search even on a free model, so a search
     // needs credit even when the chat model is free.
-    billing.preflight(app, req, who.user_id, aux.byok) catch |err| switch (err) {
+    billing.preflight(app, req, who.user_id, aux.byok or aux.search != null) catch |err| switch (err) {
         error.PaymentRequired => return "Error: the user is out of credits, so web_search is unavailable. Answer without it and say so if it matters.",
         else => return err,
     };
@@ -1034,6 +1063,13 @@ pub fn webSearch(app: *App, req: anytype, who: auth.Identity, session: ?[]const 
     const now = util.now(req.io);
     const cached = if (key) |k| try app.searches.get(req.io, arena, k, now) else null;
     const sources = cached orelse blk: {
+        // No OpenRouter here: the keyless engine or the user's own search service.
+        if (aux.search) |engine| {
+            const found = local.search(req.io, arena, app.web, app.search_fake, engine, query, limit) catch |err|
+                return std.fmt.allocPrint(arena, "Error: the search failed ({t}). Try again or carry on without it.", .{err});
+            if (key) |k| if (found.len > 0) try app.searches.put(req.io, app.gpa, k, found, now);
+            break :blk found;
+        }
         const body = try web.searchBody(arena, app.cfg.utility_model, app.cfg.search_engine, query, limit);
         const s = try aux.up.post(openrouter.ctxOf(req), "/chat/completions", body, &.{});
         defer s.close();
@@ -1053,6 +1089,30 @@ pub fn webSearch(app: *App, req: anytype, who: auth.Identity, session: ?[]const 
     const numbered = try arena.alloc(web.Numbered, sources.len);
     for (sources, numbered) |src, *out| out.* = .{ .n = try sink.number(src), .source = src };
     return web.formatResults(arena, query, numbered, cached != null);
+}
+
+/// Search mode without tools and without OpenRouter's web plugin: the
+/// user's question searched once on `engine`, the numbered results (sent to
+/// the app as `sources`) put just before it. A failed search leaves a note
+/// instead, so the model says it couldn't look.
+fn preSearch(app: *App, req: *anole.Request, who: auth.Identity, body: ChatRequest, engine: local.Engine, messages: *std.ArrayList(Msg), sink: Sink) !void {
+    const arena = req.arena;
+    const last = body.messages[body.messages.len - 1];
+    const asked = std.mem.trim(u8, textOf(last.content), " \t\r\n");
+    if (asked.len == 0 or messages.items.len == 0) return;
+    const query = asked[0..@min(asked.len, 300)];
+    const key = try web.SearchCache.key(arena, who.user_id, body.session, query, web.default_results);
+    const now = util.now(req.io);
+    const cached = if (key) |k| try app.searches.get(req.io, arena, k, now) else null;
+    const found = cached orelse local.search(req.io, arena, app.web, app.search_fake, engine, query, web.default_results) catch null;
+    const note = if (found) |sources| blk: {
+        if (cached == null) if (key) |k| if (sources.len > 0) try app.searches.put(req.io, app.gpa, k, sources, now);
+        try sink.onDelta(.{ .sources = sources });
+        const numbered = try arena.alloc(web.Numbered, sources.len);
+        for (sources, numbered) |src, *out| out.* = .{ .n = try sink.number(src), .source = src };
+        break :blk try std.fmt.allocPrint(arena, "Web results for the question that follows (cite them as [n]):\n{s}", .{try web.formatResults(arena, query, numbered, cached != null)});
+    } else "The web search for the question that follows failed. Answer from what you know and say the results couldn't be checked.";
+    try messages.insert(arena, messages.items.len - 1, .{ .role = "user", .content = note });
 }
 
 /// Content types `readableText` makes sense of; an absent one is tried.
@@ -1260,6 +1320,8 @@ fn followUps(app: *App, req: *anole.Request, who: auth.Identity, body: ChatReque
     , .{ question[0..@min(question.len, 2000)], answer[0..@min(answer.len, 3000)], try routing.followUpLanguage(req.arena, body.reply_language, question) });
     const model = routing.modelFor(app.cfg, .followups);
     const aux = try app.aux(req);
+    // Local mode with no side-job model: no follow-ups.
+    if (aux.unavailable) return;
     // Follow-ups are extra; a free-model turn with no credit left skips them.
     billing.preflight(app, req, who.user_id, app.catalog.facts(req.io, model).free or aux.byok) catch |err| switch (err) {
         error.PaymentRequired => return,

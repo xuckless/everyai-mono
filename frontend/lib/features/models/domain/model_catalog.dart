@@ -42,6 +42,8 @@ final class ModelProvider {
   static final _known = <String, ModelProvider>{
     for (final p in const [openai, anthropic, google, xai, meta, everyai]) p.slug: p,
     'meta': meta,
+    // Models on this computer (`local/<name>`; features/local_models).
+    'local': const ModelProvider._('local', 'Local', 'On this computer'),
     'deepseek': const ModelProvider._('deepseek', 'DeepSeek', 'DeepSeek'),
     'qwen': const ModelProvider._('qwen', 'Qwen', 'Alibaba'),
     'mistralai': const ModelProvider._('mistralai', 'Mistral', 'Mistral AI'),

@@ -148,6 +148,25 @@ final Map<String, Map<SetupOs, SetupCommands>> _table = {
       source: 'https://github.com/google-gemini/gemini-cli',
     ),
   ),
+  // Not a coding CLI: the local model server behind Settings → Local models (no sign-in).
+  // https://ollama.com/download/mac, /download/linux, /download/windows (read 2026-11-06).
+  'ollama': {
+    ..._row(
+      _unixOs,
+      const SetupCommands(
+        install: 'curl -fsSL https://ollama.com/install.sh | sh',
+        login: [],
+        source: 'https://ollama.com/download',
+        verified: true,
+      ),
+    ),
+    SetupOs.windows: const SetupCommands(
+      install: 'powershell -NoProfile -Command "irm https://ollama.com/install.ps1 | iex"',
+      login: [],
+      source: 'https://ollama.com/download/windows',
+      verified: true,
+    ),
+  },
   // https://github.com/github/copilot-cli
   'github-copilot-cli': _row(
     _anyOs,

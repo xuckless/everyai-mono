@@ -16,6 +16,11 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/misc.dart' show Override;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:every_ai/features/local_models/local_model_bridge.dart';
+import 'package:every_ai/features/local_models/local_models_providers.dart';
+
+import 'local_models/fakes.dart';
+
 import 'package:material_ui/material_ui.dart' as m;
 
 import '../support/fake_leads.dart';
@@ -73,6 +78,35 @@ Future<void> _toHarnessStep(WidgetTester tester) async {
 }
 
 void main() {
+  testWidgets('the model step on a desktop leads with a model on this computer, then the key', (tester) async {
+    await _mac(tester, () async {
+      await tester.pumpWidget(
+        _app(
+          const OnboardingScreen(desktop: true),
+          extra: [
+            localDetectionProvider.overrideWithValue(true),
+            localHttpProvider.overrideWithValue(FakeLocalHttp()),
+            localSystemProvider.overrideWithValue(FakeLocalSystem()),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+      tester.view.physicalSize = const Size(1000, 1400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      for (var i = 0; i < 2; i++) {
+        await tester.tap(find.byKey(const ValueKey('onboarding.next')));
+        await tester.pumpAndSettle();
+      }
+      expect(find.text('Pick a model to chat with.'), findsOneWidget);
+      expect(find.byKey(const ValueKey('local.setup-card')), findsOneWidget);
+      expect(find.byKey(const ValueKey('onboarding.key')), findsNothing);
+      await tester.tap(find.text('API key'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('onboarding.key')), findsOneWidget);
+    });
+  });
+
   testWidgets('the setup step: ready shows a mark, signed out Sign in, absent is hidden, consent stays', (
     tester,
   ) async {

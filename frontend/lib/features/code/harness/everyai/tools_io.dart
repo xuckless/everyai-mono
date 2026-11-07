@@ -52,6 +52,17 @@ abstract final class ToolNames {
   static const memory = 'memory';
 }
 
+/// The tools a small local model gets (the EveryAI harness's light profile).
+const lightTools = [
+  ToolNames.bash,
+  ToolNames.read,
+  ToolNames.write,
+  ToolNames.edit,
+  ToolNames.grep,
+  ToolNames.glob,
+  ToolNames.todo,
+];
+
 /// The action `kind` each tool shows as in the transcript and is judged as by
 /// the permission policy (the agent-server's names, which the UI knows).
 const actionKinds = {

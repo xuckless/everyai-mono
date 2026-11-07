@@ -971,6 +971,23 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   windows: 6/10 with front-posted clicks, before the switch to accessibility only). RN fixes from it: Metro's usual address is tried for "react-native", `list` says whether an app is
   connected to Metro, `launch` says when the app isn't installed, simulator names on several iOS versions need
   "(iOS 18.6)".
+- **Local models (2026-11-06; branch `local-models`, plan `~/.claude/plans/local-models.md`).** Owner: Ollama first,
+  auto-detect the rest, Chat and Code, Apple FM the macOS chat default, a clear "Chat needs a model", harnesses work
+  without keys, one-click packs from a spec scan.
+  - Bundled server (`core/local_backend/`): backend-exp in `LOCAL_MODE` (loopback, `X-EveryAI-Local` token, nothing
+    charged), built by `frontend/tool/build_local_backend.sh` (macOS arm64+x86_64, Windows/Linux cross), bundled by the
+    macOS build phase, the Linux packages and the Windows MSIX job. `SplitTransport` sends local-model and own-key chat
+    turns to it, credit turns to the deployed server. Headers `X-Local-*` / `X-Local-Aux-*` / `X-Search-*`: see
+    backend-exp/README.md "Local mode"; keyless search is DuckDuckGo HTML.
+  - `features/local_models/`: servers (Ollama, `fm serve`, LM Studio, llama.cpp, Jan, vLLM, MLX, manual), hardware
+    scan per OS, packs (`assets/local_models.json`, refreshed from GitHub main), Ollama pulls, Settings → Local models,
+    `showLocalModelSetup`. `local_model_bridge.dart` turns them into `local/<name>` catalog specs and
+    `LocalRoutes.current` (read per call by the Code harness's `GatewayClient`, which calls local servers directly);
+    detection is off in tests (`localDetectionProvider`).
+  - Defaults: Apple's model for new chats when present; with no key, the smallest local model (Chat) and a coding
+    model (Code). Light harness profile for local models with a window of 32K or less. The EveryAI lead greys out with
+    no model; new sessions then start on a ready outside agent.
+  - Not live-tested: no Ollama here, the fm licence isn't agreed, Windows/Linux packages not built.
 ## Next steps
 0. **User testing of the 2026-10-30 build pass** (live and click-through), then re-enable the eval gate. Open/skipped items are in TODO.md (backend MCP client, OAuth, connectors, resvg, skill review, App Store variant, Win/Linux).
 0. **Every harness in one workspace** (`TODO-multi-harness.md`, plan `~/.claude/plans/multi-harness.md`): Stages 1–2

@@ -5,6 +5,9 @@ import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../models/domain/local_routes.dart';
+
 import 'package:uuid/uuid.dart';
 
 import '../../core/api/decide_client.dart' show decideClientProvider;
@@ -926,7 +929,8 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       model: model,
       mode: mode,
       llmBaseUrl: demo || outside ? '' : gatewayBaseUrl(ref),
-      llmApiKey: demo || outside ? '' : await gatewayKey(ref),
+      // A local model is called on its own server: no gateway key, so it starts with no account or network.
+      llmApiKey: demo || outside || LocalRoute.isLocal(model) ? '' : await gatewayKey(ref),
       sessionTag: sessionTag ?? sessionId,
       initialMessage: initialMessage,
       initialImages: initialImages,

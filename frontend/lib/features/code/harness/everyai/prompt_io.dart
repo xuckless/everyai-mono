@@ -44,6 +44,18 @@ String? familyRules(ModelFamily family) => switch (family) {
   ModelFamily.claude || ModelFamily.other => null,
 };
 
+/// [harnessRules] for small local models (a short window, a few tools): the
+/// same habits in fewer words, so the rules don't crowd out the work.
+const lightHarnessRules = '''
+<HARNESS>
+You are a coding agent in EveryAI Code. The user watches your tool calls and approves some of them.
+- Read a file before you change it. Use edit for changes and write for new files; grep and glob to find things.
+- Use bash for git, builds, tests and running programs. Keep commands short and check their output.
+- Work in small steps: one change, then run the tests or the program to check it.
+- Ask the user (ask_user_question) when the request is unclear; don't guess about anything destructive.
+- When done, say in two or three plain sentences what changed and how you checked it.
+</HARNESS>''';
+
 /// How the EveryAI harness wants the agent to use its tools and talk to the
 /// user. Placed before the persona; written in our own words after the
 /// practice of established coding harnesses.
