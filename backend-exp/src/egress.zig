@@ -141,8 +141,12 @@ pub const Gate = struct {
     /// Live sockets per subject key.
     live: std.StringHashMapUnmanaged(u32) = .empty,
     live_total: u32 = 0,
-    /// Waiting tickets, oldest first.
-    queue: std.ArrayList(u64) = .empty,
+    /// Waiting tickets, oldest first, with their subject key (a slice of
+    /// the ticket's own `key_buf`, which lives until `leave`).
+    queue: std.ArrayList(Waiting) = .empty,
+    /// Unflushed bytes of a day or month that ended before they were
+    /// written (subject and period owned): `drain` hands them over.
+    carry: std.ArrayList(Row) = .empty,
     next_ticket: u64 = 1,
     server: Usage = .{},
     warned_month: i64 = -1,
@@ -163,7 +167,14 @@ pub const Gate = struct {
         while (lit.next()) |k| self.gpa.free(k.*);
         self.live.deinit(self.gpa);
         self.queue.deinit(self.gpa);
+        for (self.carry.items) |r| {
+            self.gpa.free(r.subject);
+            self.gpa.free(r.period);
+        }
+        self.carry.deinit(self.gpa);
     }
+
+    const Waiting = struct { id: u64, key: []const u8 };
 
     // -------------------------------------------------------------- admission
 
@@ -189,17 +200,20 @@ pub const Gate = struct {
             self.next_ticket += 1;
         }
         const key = ticket.key_buf[0..ticket.key_len];
-        if (self.overQuotaLocked(subject, key, now_s)) {
+        if (try self.overQuotaLocked(subject, key, now_s)) {
             self.dropFromQueueLocked(ticket.id);
-            ticket.state = .over_quota;
+            // It holds no slot: `leave` has nothing to give back.
+            ticket.state = .closed;
             return .over_quota;
         }
-        const held = self.live.get(key) orelse 0;
+        const pos = self.queuePosLocked(ticket.id);
+        // Its share counts the sockets it has waiting too: otherwise one
+        // subject could fill the line ahead of everyone else.
+        const held = (self.live.get(key) orelse 0) + if (pos == null) self.waitingLocked(key) else 0;
         if (held >= self.cfg.per_subject_live) {
             self.dropFromQueueLocked(ticket.id);
             return .subject_full;
         }
-        const pos = std.mem.indexOfScalar(u64, self.queue.items, ticket.id);
         const first = if (pos) |p| p == 0 else self.queue.items.len == 0;
         if (self.live_total < self.cfg.max_live and first) {
             if (pos != null) _ = self.queue.orderedRemove(0);
@@ -208,7 +222,7 @@ pub const Gate = struct {
             return .admitted;
         }
         if (pos) |p| return .{ .queued = @intCast(p + 1) };
-        try self.queue.append(self.gpa, ticket.id);
+        try self.queue.append(self.gpa, .{ .id = ticket.id, .key = key });
         ticket.state = .queued;
         return .{ .queued = @intCast(self.queue.items.len) };
     }
@@ -248,8 +262,21 @@ pub const Gate = struct {
         self.live_total += 1;
     }
 
+    fn queuePosLocked(self: *Gate, id: u64) ?usize {
+        for (self.queue.items, 0..) |w, i| if (w.id == id) return i;
+        return null;
+    }
+
+    fn waitingLocked(self: *Gate, key: []const u8) u32 {
+        var n: u32 = 0;
+        for (self.queue.items) |w| if (std.mem.eql(u8, w.key, key)) {
+            n += 1;
+        };
+        return n;
+    }
+
     fn dropFromQueueLocked(self: *Gate, id: u64) void {
-        if (std.mem.indexOfScalar(u64, self.queue.items, id)) |p| _ = self.queue.orderedRemove(p);
+        if (self.queuePosLocked(id)) |p| _ = self.queue.orderedRemove(p);
     }
 
     // -------------------------------------------------------------- spending
@@ -270,7 +297,7 @@ pub const Gate = struct {
         const now_s: i64 = @intCast(@divFloor(now_ns, std.time.ns_per_s));
         var buf: [160]u8 = undefined;
         const key = subject.key(&buf);
-        if (self.overQuotaLocked(subject, key, now_s)) return .over_quota;
+        if (try self.overQuotaLocked(subject, key, now_s)) return .over_quota;
         const u = try self.usageLocked(key, now_s);
         u.day_bytes += n;
         u.month_bytes += n;
@@ -306,17 +333,33 @@ pub const Gate = struct {
             };
             e.value_ptr.* = .{};
         }
-        e.value_ptr.roll(Periods.of(now_s));
+        try self.rollLocked(e.key_ptr.*, e.value_ptr, Periods.of(now_s));
         return e.value_ptr;
     }
 
-    fn overQuotaLocked(self: *Gate, subject: Subject, key: []const u8, now_s: i64) bool {
+    /// Moves `u` to `p`, keeping the bytes of the day or month that ended
+    /// and weren't flushed yet for the next `drain`.
+    fn rollLocked(self: *Gate, key: []const u8, u: *Usage, p: Periods) !void {
+        if (u.day != p.day and u.unflushed_day > 0) try self.carryLocked(key, 'd', u.day, u.unflushed_day);
+        if (u.month != p.month and u.unflushed_month > 0) try self.carryLocked(key, 'm', u.month, u.unflushed_month);
+        u.roll(p);
+    }
+
+    fn carryLocked(self: *Gate, key: []const u8, kind: u8, period: i64, bytes: u64) !void {
+        const subject = try self.gpa.dupe(u8, key);
+        errdefer self.gpa.free(subject);
+        const name = try std.fmt.allocPrint(self.gpa, "{c}{d}", .{ kind, period });
+        errdefer self.gpa.free(name);
+        try self.carry.append(self.gpa, .{ .subject = subject, .period = name, .bytes = @intCast(bytes) });
+    }
+
+    fn overQuotaLocked(self: *Gate, subject: Subject, key: []const u8, now_s: i64) !bool {
         const p = Periods.of(now_s);
         self.server.roll(p);
         if (self.cfg.monthly_bytes > 0 and self.server.month_bytes >= self.cfg.monthly_bytes) return true;
         const lim = self.quotas.limits(subject);
         const u = self.usage.getPtr(key) orelse return false;
-        u.roll(p);
+        try self.rollLocked(key, u, p);
         return (lim.daily_bytes > 0 and u.day_bytes >= lim.daily_bytes) or
             (lim.monthly_bytes > 0 and u.month_bytes >= lim.monthly_bytes);
     }
@@ -353,12 +396,20 @@ pub const Gate = struct {
     pub const Row = struct { subject: []const u8, period: []const u8, bytes: i64 };
 
     /// Rows to add to `egress_usage` (`period`: "d<day>" / "m<month>"),
-    /// and marks them flushed. "server" carries the server's own totals.
+    /// and marks them flushed. The server's month is the sum of its
+    /// subjects' month rows (`load`), so it needs no row of its own.
     pub fn drain(self: *Gate, io: std.Io, arena: std.mem.Allocator, now_s: i64) ![]const Row {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         self.last_flush_s = now_s;
         var out: std.ArrayList(Row) = .empty;
+        try out.ensureUnusedCapacity(arena, self.carry.items.len);
+        for (self.carry.items) |r| out.appendAssumeCapacity(.{ .subject = try arena.dupe(u8, r.subject), .period = try arena.dupe(u8, r.period), .bytes = r.bytes });
+        for (self.carry.items) |r| {
+            self.gpa.free(r.subject);
+            self.gpa.free(r.period);
+        }
+        self.carry.clearRetainingCapacity();
         var it = self.usage.iterator();
         while (it.next()) |e| {
             const u = e.value_ptr;
@@ -515,4 +566,83 @@ test "a quota source can be swapped (a plan table later)" {
     try std.testing.expectEqual(Gate.Spend.over_quota, try g.spend(io, .{ .kind = .account, .id = "free" }, 1, t0));
     _ = try g.spend(io, .{ .kind = .account, .id = "pro" }, 10_000, t0);
     try std.testing.expectEqual(Gate.Spend.ok, try g.spend(io, .{ .kind = .account, .id = "pro" }, 1, t0));
+}
+
+test "a ticket refused over its quota gives back no slot it never held" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var q: StaticQuotas = .{ .host = .{ .daily_bytes = 10, .monthly_bytes = 0 }, .account = big };
+    var g = testGate(.{ .rate_bytes_per_s = 0, .monthly_bytes = 0, .max_live = 10, .per_subject_live = 10 }, &q);
+    defer g.deinit();
+    const h: Subject = .{ .kind = .host, .id = "h" };
+    const t0: i96 = 1_000 * std.time.ns_per_s;
+    var live: Gate.Ticket = .{ .id = 0 };
+    try std.testing.expectEqual(Gate.Ask.admitted, try g.admit(io, h, &live, 1_000));
+    _ = try g.spend(io, h, 10, t0);
+    for (0..3) |_| {
+        var refused: Gate.Ticket = .{ .id = 0 };
+        try std.testing.expectEqual(Gate.Ask.over_quota, try g.admit(io, h, &refused, 1_000));
+        g.leave(io, &refused);
+    }
+    // The one live socket is still counted.
+    try std.testing.expectEqual(@as(u32, 1), g.live_total);
+    try std.testing.expectEqual(@as(u32, 1), g.live.get("host:h").?);
+    g.leave(io, &live);
+    try std.testing.expectEqual(@as(u32, 0), g.live_total);
+}
+
+test "a subject's waiting sockets count against its share" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var q: StaticQuotas = .{ .host = big, .account = big };
+    var g = testGate(.{ .rate_bytes_per_s = 0, .monthly_bytes = 0, .max_live = 1, .per_subject_live = 2 }, &q);
+    defer g.deinit();
+    const a: Subject = .{ .kind = .host, .id = "a" };
+    const b: Subject = .{ .kind = .host, .id = "b" };
+    var full: Gate.Ticket = .{ .id = 0 };
+    try std.testing.expectEqual(Gate.Ask.admitted, try g.admit(io, b, &full, 0));
+    var t: [4]Gate.Ticket = @splat(.{ .id = 0 });
+    try std.testing.expectEqual(Gate.Ask{ .queued = 1 }, try g.admit(io, a, &t[0], 0));
+    try std.testing.expectEqual(Gate.Ask{ .queued = 2 }, try g.admit(io, a, &t[1], 0));
+    // a has two waiting: a third can't join the line ahead of others.
+    try std.testing.expectEqual(Gate.Ask.subject_full, try g.admit(io, a, &t[2], 0));
+    try std.testing.expectEqual(Gate.Ask{ .queued = 3 }, try g.admit(io, b, &t[3], 0));
+    // The waiting ones keep their places.
+    try std.testing.expectEqual(Gate.Ask{ .queued = 1 }, try g.admit(io, a, &t[0], 0));
+    g.leave(io, &full);
+    try std.testing.expectEqual(Gate.Ask.admitted, try g.admit(io, a, &t[0], 0));
+    for (&t) |*x| g.leave(io, x);
+    try std.testing.expectEqual(@as(u32, 0), g.live_total);
+    try std.testing.expectEqual(@as(usize, 0), g.queue.items.len);
+}
+
+test "the ledger keeps a day's and a month's unflushed bytes past midnight" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var q: StaticQuotas = .{ .host = big, .account = big };
+    var g = testGate(.{ .rate_bytes_per_s = 0, .monthly_bytes = 0, .max_live = 10, .per_subject_live = 10 }, &q);
+    defer g.deinit();
+    const h: Subject = .{ .kind = .host, .id = "h" };
+    const oct31: i64 = 1_761_955_200 - 60; // 2025-10-31 23:59 UTC
+    _ = try g.spend(io, h, 70, @as(i96, oct31) * std.time.ns_per_s);
+    // Past midnight (and the month), before any flush.
+    _ = try g.spend(io, h, 5, @as(i96, oct31 + 120) * std.time.ns_per_s);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const rows = try g.drain(io, arena.allocator(), oct31 + 120);
+    var day_before: i64 = 0;
+    var month_before: i64 = 0;
+    var total: i64 = 0;
+    for (rows) |r| {
+        if (std.mem.eql(u8, r.period, "d20392")) day_before += r.bytes;
+        if (std.mem.eql(u8, r.period, "m24309")) month_before += r.bytes;
+        total += r.bytes;
+    }
+    try std.testing.expectEqual(@as(i64, 70), day_before);
+    try std.testing.expectEqual(@as(i64, 70), month_before);
+    try std.testing.expectEqual(@as(i64, 150), total);
+    try std.testing.expectEqual(@as(usize, 0), (try g.drain(io, arena.allocator(), oct31 + 120)).len);
 }

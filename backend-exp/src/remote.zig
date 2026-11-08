@@ -423,8 +423,10 @@ fn redeem(app: *App, req: *anole.Request, in: anole.In(.{ .body = Redeem })) !st
     const now = util.now(req.io);
     const digest = try util.sha256Hex(req.arena, code);
     const target = try app.db.optional([]const u8, req, "SELECT host_id FROM remote_pairings WHERE code_hash = ? AND status = 'open' AND expires_at > ?", .{ digest, now }) orelse return error.NotFound;
-    // A host holds at most DEVICES_PER_HOST devices (paired or waiting).
-    if (try app.db.one(i64, req, "SELECT COUNT(*) FROM remote_devices WHERE host_id = ?", .{target}) >= app.cfg.devices_per_host) return error.Conflict;
+    // A host holds at most DEVICES_PER_HOST devices (paired or waiting). One
+    // whose approval window passed can never be approved: it doesn't count
+    // (prune removes it later).
+    if (try app.db.one(i64, req, "SELECT COUNT(*) FROM remote_devices WHERE host_id = ? AND (approved = 1 OR created_at > ?)", .{ target, now - decide_ttl_seconds }) >= app.cfg.devices_per_host) return error.Conflict;
     const claimed = try app.db.optional(struct { id: []const u8, host_id: []const u8 }, req,
         \\UPDATE remote_pairings SET status = 'pending'
         \\WHERE code_hash = ? AND status = 'open' AND expires_at > ?
@@ -549,11 +551,24 @@ fn denyPairing(app: *App, req: *anole.Request, in: anole.In(.{ .path = struct { 
 }
 
 /// Anonymous hosts nobody connected for ANON_HOST_IDLE_DAYS go (their
-/// devices and pairings with them); claimed ones stay. Egress rows older
-/// than two months go too. Runs at start and whenever a host is made.
+/// devices and pairings with them); claimed ones stay, and so does one that
+/// is online now (its `last_seen_at` is from when it connected) or whose
+/// devices connected meanwhile. Devices never approved go a day after their
+/// approval window closed. Egress rows older than two months go too. Runs
+/// at start and whenever a host is made.
 pub fn prune(app: *App, ctx: anytype) !void {
     const now = util.now(ctx.io);
-    _ = try app.db.exec(ctx, "DELETE FROM remote_hosts WHERE user_id = ? AND COALESCE(last_seen_at, created_at) < ?", .{ anonymous_user, now - app.cfg.anon_host_idle_days * 86_400 });
+    const cutoff = now - app.cfg.anon_host_idle_days * 86_400;
+    const idle = try app.db.all([]const u8, ctx,
+        \\SELECT h.id FROM remote_hosts h
+        \\WHERE h.user_id = ? AND COALESCE(h.last_seen_at, h.created_at) < ?
+        \\AND NOT EXISTS (SELECT 1 FROM remote_devices d WHERE d.host_id = h.id AND d.last_seen_at >= ?)
+    , .{ anonymous_user, cutoff, cutoff });
+    for (idle) |id| {
+        if (app.relay.online(ctx.io, id)) continue;
+        _ = try app.db.exec(ctx, "DELETE FROM remote_hosts WHERE id = ? AND user_id = ?", .{ id, anonymous_user });
+    }
+    _ = try app.db.exec(ctx, "DELETE FROM remote_devices WHERE approved = 0 AND created_at < ?", .{now - decide_ttl_seconds - 86_400});
     const p = egress.Periods.of(now);
     _ = try app.db.exec(ctx, "DELETE FROM egress_usage WHERE (period LIKE 'd%' AND CAST(substr(period, 2) AS INTEGER) < ?) OR (period LIKE 'm%' AND CAST(substr(period, 2) AS INTEGER) < ?)", .{ p.day - 62, p.month - 2 });
 }
@@ -596,6 +611,8 @@ pub fn flushEgress(app: *App, ctx: anytype) !void {
 
 /// How long a socket may wait in the queue before it is told to retry.
 const max_queue_wait_s = 15 * 60;
+/// How often a waiting socket hears its place again.
+const queue_retell_s = 10;
 
 /// Waits for the gate to admit this socket, telling it its place in line.
 /// False when it was refused (and closed): over quota or its share used.
@@ -603,12 +620,17 @@ fn admitSocket(app: *App, ws: *websocket.Socket, req: *anole.Request, subject: e
     const io = req.io;
     const started = util.now(io);
     var told: u32 = 0;
+    var told_at: i64 = 0;
     while (true) {
         switch (try app.egress.admit(io, subject, ticket, util.now(io))) {
             .admitted => return true,
             .queued => |position| {
-                if (position != told) {
+                // Told again now and then even when the line doesn't move: a
+                // peer that left fails the send, and its place (which counts
+                // against its host's share) is given up at once.
+                if (position != told or util.now(io) - told_at >= queue_retell_s) {
                     told = position;
+                    told_at = util.now(io);
                     try ws.send(.text, try std.fmt.allocPrint(req.arena, "{{\"type\":\"queued\",\"position\":{d}}}", .{position}));
                 }
                 if (util.now(io) - started >= max_queue_wait_s) {

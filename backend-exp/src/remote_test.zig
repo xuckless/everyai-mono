@@ -401,6 +401,45 @@ test "remote: no account needed; a host is claimed by signing in, limited per ne
     try std.testing.expectEqual(@as(i64, 1), try env.state.db.one(i64, &c, "SELECT COUNT(*) FROM remote_devices", .{}));
 }
 
+test "remote: pairings left undecided don't use up a host's devices, and prune spares live hosts" {
+    var env: Env = undefined;
+    try start(&env, false);
+    defer env.deinit();
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = a };
+    env.state.cfg.devices_per_host = 1;
+
+    var made = try env.t.post("/v1/remote/hosts", .{ .json = .{ .name = "Mac", .public_key = "aG9zdA" } });
+    defer made.deinit();
+    const host = try made.json(NewHost);
+    for (0..2) |_| {
+        var p = try env.t.post("/v1/remote/pair", .{ .headers = &.{.{ "X-Remote-Host-Token", host.host_token }}, .json = .{ .host_id = host.id } });
+        defer p.deinit();
+        var r = try env.t.post("/v1/remote/pair/redeem", .{ .json = .{ .code = (try p.json(Code)).code, .device_name = "Phone", .public_key = "cGhvbmU" } });
+        defer r.deinit();
+        try r.expectStatus(.ok);
+        // Nobody approves it; its window passes.
+        _ = try env.state.db.exec(&c, "UPDATE remote_devices SET created_at = created_at - 3600", .{});
+        _ = try env.state.db.exec(&c, "UPDATE remote_pairings SET decide_by = decide_by - 3600", .{});
+    }
+
+    // An idle anonymous host stays while it is online, or while its devices connect.
+    _ = try env.state.db.exec(&c, "UPDATE remote_hosts SET created_at = 0, last_seen_at = 1", .{});
+    try env.state.relay.hosts.put(std.heap.smp_allocator, try std.heap.smp_allocator.dupe(u8, host.id), 1);
+    try app_main.remote.prune(&env.state, &c);
+    try std.testing.expectEqual(@as(i64, 1), try env.state.db.one(i64, &c, "SELECT COUNT(*) FROM remote_hosts", .{}));
+    env.state.relay.revokeHost(env.server.io(), host.id);
+    _ = try env.state.db.exec(&c, "UPDATE remote_devices SET last_seen_at = ?", .{std.Io.Clock.real.now(env.server.io()).toSeconds()});
+    try app_main.remote.prune(&env.state, &c);
+    try std.testing.expectEqual(@as(i64, 1), try env.state.db.one(i64, &c, "SELECT COUNT(*) FROM remote_hosts", .{}));
+    // Unapproved devices go a day after their window.
+    _ = try env.state.db.exec(&c, "UPDATE remote_devices SET created_at = 0, last_seen_at = NULL", .{});
+    try app_main.remote.prune(&env.state, &c);
+    try std.testing.expectEqual(@as(i64, 0), try env.state.db.one(i64, &c, "SELECT COUNT(*) FROM remote_hosts", .{}));
+}
+
 test "remote: egress gate queues sockets past the limit and closes one over its quota" {
     var env: Env = undefined;
     try start(&env, false);
