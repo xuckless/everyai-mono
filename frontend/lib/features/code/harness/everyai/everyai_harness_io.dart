@@ -1150,7 +1150,11 @@ final class EveryAISession
   /// changed a message deep in the history on every screenshot, and each
   /// change made the provider re-read the whole conversation uncached (a
   /// felice-website run paid that 15 times, $13.81 on Opus).
-  List<Map<String, Object?>> _outgoing() => withOlderImagesNoted(_messages, keptImages);
+  List<Map<String, Object?>> _outgoing() {
+    // The pictures that will never go out again leave memory too (a session of screenshots kept every one).
+    if (dropOlderImages(_messages, keptImages) > 0) _rewriteMessages();
+    return withOlderImagesNoted(_messages, keptImages);
+  }
 
   /// Tool pictures sent whole at least (see [_outgoing]).
   static const keptImages = 8;
@@ -2151,6 +2155,24 @@ Future<void> excludeScratch(String dir) async {
   } on Object {
     // Not git, or git missing: the files just show up as untracked.
   }
+}
+
+/// Replaces, in [messages] itself, the pictures [withOlderImagesNoted] no longer sends with its note; returns how
+/// many. The same request goes out afterwards: what is dropped is always a whole number of batches of [kept], the
+/// oldest first.
+int dropOlderImages(List<Map<String, Object?>> messages, int kept) {
+  final noted = withOlderImagesNoted(messages, kept);
+  var dropped = 0;
+  for (var i = 0; i < messages.length; i++) {
+    final before = messages[i]['content'];
+    final after = noted[i]['content'];
+    if (identical(before, after) || before is! List<Object?> || after is! List<Object?>) continue;
+    dropped +=
+        before.where((p) => p is Map && p['type'] == 'image_url').length -
+        after.where((p) => p is Map && p['type'] == 'image_url').length;
+    messages[i] = {...messages[i], 'content': after};
+  }
+  return dropped;
 }
 
 /// [messages] without `_eid`, the oldest pictures as a note: none while at

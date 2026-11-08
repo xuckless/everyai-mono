@@ -11,6 +11,7 @@ import 'adb_io.dart';
 import 'app_view.dart';
 import 'scrcpy_pin.dart';
 import 'verified_download_io.dart';
+import '../../../core/process/child_processes.dart';
 
 /// One encoded video packet from the device (Annex-B H.264); [config] holds the parameter sets.
 typedef VideoPacket = ({Uint8List data, bool config, bool key});
@@ -88,6 +89,7 @@ final class ScrcpyConnection {
       'log_level=warn',
     ];
     final p = await Process.start(AndroidSdk.adb!, ['-s', serial, 'shell', args.join(' ')]);
+    ChildProcesses.track(p.pid, label: 'scrcpy server ($serial)', executable: AndroidSdk.adb!, exited: p.exitCode);
     final log = StringBuffer();
     p.stdout.transform(utf8.decoder).listen(log.write);
     p.stderr.transform(utf8.decoder).listen(log.write);

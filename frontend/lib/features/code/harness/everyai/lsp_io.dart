@@ -9,6 +9,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:path/path.dart' as p;
 
+import '../../../../core/process/child_processes.dart';
 import 'lsp.dart';
 import 'research_sites.dart' show secretPath;
 
@@ -64,6 +65,7 @@ final class LspClient {
     } on ProcessException {
       return null;
     }
+    ChildProcesses.track(p.pid, label: 'Language server ${command.exe}', executable: command.exe, exited: p.exitCode);
     final c = LspClient._(p, root);
     try {
       final init = await c
