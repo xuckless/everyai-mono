@@ -24,7 +24,7 @@ void main() {
     final container = ProviderContainer();
     addTearDown(container.dispose);
     final runs = container.read(workflowRunsProvider('s').notifier);
-    runs.put(const WorkflowRun(runId: 'done', name: 'Ultra', status: WorkflowStatus.done));
+    runs.put(const WorkflowRun(runId: 'done', name: 'Ultra', state: RunEnded(WorkflowOutcome.done)));
     runs.put(const WorkflowRun(runId: 'live', name: 'Bug fix'));
     await tester.pumpWidget(
       UncontrolledProviderScope(
@@ -55,7 +55,7 @@ void main() {
     const done = WorkflowRun(
       runId: 'r1',
       name: 'Bug fix',
-      status: WorkflowStatus.done,
+      state: RunEnded(WorkflowOutcome.done),
       started: 2,
       result: {'verified': true, 'cause': 'off by one', 'fix_summary': 'uses <='},
     );
@@ -82,7 +82,7 @@ void main() {
     tester,
   ) async {
     final calls = <String>[];
-    const done = WorkflowRun(runId: 'r1', name: 'Ultra', status: WorkflowStatus.done);
+    const done = WorkflowRun(runId: 'r1', name: 'Ultra', state: RunEnded(WorkflowOutcome.done));
     Widget row({String? error}) => _card(
       WorkflowCard(
         run: done,

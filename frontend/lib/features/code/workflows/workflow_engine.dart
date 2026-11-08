@@ -9,13 +9,18 @@ import '../domain/plan_batches.dart';
 import 'json_schema_lite.dart';
 import 'workflow_bridge.dart';
 import 'workflow_journal.dart';
+import 'workflow_state.dart';
 import 'workflow_summary.dart';
+
+export 'workflow_state.dart';
 
 // The workflow engine answers a running script's agent() calls: each one is
 // a child session on some harness (the [AgentLauncher] starts and watches
 // it), checked against its schema, journalled for resume, and held to the
 // run's caps. The script is the plan: parallel and pipeline are JavaScript
-// in the prelude, so there is no planner here.
+// in the prelude, so there is no planner here. The run's lifecycle is a
+// [RunState] (workflow_state.dart), and every end goes through the same
+// [ShutdownStep]s.
 
 /// One agent() call. [key] names it across runs (see [WorkflowEngine]).
 final class WorkflowAgentCall {
@@ -103,6 +108,11 @@ abstract interface class AgentLauncher {
   Future<Map<String, Object?>> batchCheckOf(String childId, PlanBatch batch);
 
   void stop(String childId);
+
+  /// The run is over: what [childId] left running ends (its turn, shells, monitors, browsers, app runs, language
+  /// and MCP servers, devices). Its transcript and worktree stay for the user. Called once per child, in the
+  /// shutdown's children step.
+  Future<void> release(String childId);
 }
 
 /// What a run may use.
@@ -127,7 +137,13 @@ final class WorkflowCaps {
   final int costMicros;
 }
 
+/// A run's outcome as the card and the lead's message name it: [running] until the run has [RunEnded].
 enum WorkflowStatus { running, done, failed, capped, stopped }
+
+WorkflowStatus statusOf(RunState state) => switch (state) {
+  RunEnded(:final outcome) => WorkflowStatus.values.byName(outcome.name),
+  _ => WorkflowStatus.running,
+};
 
 enum WorkflowAgentStatus { queued, running, done, failed }
 
@@ -176,7 +192,7 @@ final class WorkflowRun {
   const WorkflowRun({
     required this.runId,
     required this.name,
-    this.status = WorkflowStatus.running,
+    this.state = const RunRunning(),
     this.phases = const [],
     this.agents = const [],
     this.logs = const [],
@@ -190,7 +206,10 @@ final class WorkflowRun {
 
   final String runId;
   final String name;
-  final WorkflowStatus status;
+
+  /// Where the run is in its lifecycle (see workflow_state.dart).
+  final RunState state;
+  WorkflowStatus get status => statusOf(state);
   final List<String> phases;
   final List<WorkflowAgentView> agents;
   final List<({String phase, String text})> logs;
@@ -238,6 +257,8 @@ final class WorkflowEngine {
     required this.journal,
     this.caps = const WorkflowCaps(),
     this.onProgress,
+    this.onShutdown,
+    this.stepTimeout = const Duration(seconds: 30),
     Timer Function(Duration, void Function()) timer = Timer.new,
     DateTime Function() now = DateTime.now,
   }) : _timerOf = timer,
@@ -247,15 +268,25 @@ final class WorkflowEngine {
     for (final MapEntry(:key, :value) in journal.agents.entries) {
       if (value.spentMicros case final s?) _spent[key] = s;
     }
+    // Children an earlier launch started: released at the end like this launch's.
+    _children.addAll(journal.spawns.values);
   }
 
   final String runId;
   final String name;
-  final WorkflowBridge bridge;
+
+  /// The script; null when it couldn't start (the run goes straight to its shutdown, see [end]).
+  final WorkflowBridge? bridge;
   final AgentLauncher launcher;
   final WorkflowJournal journal;
   final WorkflowCaps caps;
   final void Function(WorkflowRun run)? onProgress;
+
+  /// The host's part of the shutdown: [ShutdownStep.lead] and [ShutdownStep.workflow], with the run as it ended.
+  final Future<void> Function(ShutdownStep step, WorkflowRun run)? onShutdown;
+
+  /// The longest one shutdown step may take before the next one runs anyway.
+  final Duration stepTimeout;
   final Timer Function(Duration, void Function()) _timerOf;
   final DateTime Function() _clock;
 
@@ -268,23 +299,40 @@ final class WorkflowEngine {
   final _seen = <String, int>{};
   final _spent = <String, int>{};
   final _live = <String>{};
+
+  /// Every child session this run started (this launch or one before): each is released at the end.
+  final _children = <String>{};
+
+  /// agent() calls not answered yet: the shutdown stops and waits for them.
+  final _inFlight = <Future<void>>{};
   late final _slots = _Slots(caps.maxAtOnce);
   var _phase = '';
   var _started = 0;
-  var _status = WorkflowStatus.running;
-  WorkflowStatus? _halted;
-  var _detached = false;
-  bool _done = false;
+  RunState _state = const RunStarting();
+
+  /// How the script said it ended: done() or failed(); null when it exited without saying.
+  WorkflowOutcome? _said;
   Object? _result;
   String? _error;
   DateTime? _ended;
+
+  /// Moves that weren't edges of the diagram (a bug), kept for the tests and the log.
+  final refused = <String>[];
+
+  RunState get state => _state;
+
+  /// [emit]: false when nothing may hear it (the session is being disposed).
+  void _to(RunState next, {bool emit = true}) {
+    _state = runTransition(_state, next, onRefused: refused.add);
+    if (emit) _emit();
+  }
 
   int get _spentMicros => _spent.values.fold(0, (a, b) => a + b);
 
   WorkflowRun get snapshot => WorkflowRun(
     runId: runId,
     name: name,
-    status: _status,
+    state: _state,
     phases: List.unmodifiable(_phases),
     agents: List.unmodifiable(_agents.values),
     logs: List.unmodifiable(_logs),
@@ -303,80 +351,173 @@ final class WorkflowEngine {
 
   void _emit() => onProgress?.call(snapshot);
 
-  /// Stops the run: no new agents, live children stopped, the script killed.
-  void stop() => _halt(WorkflowStatus.stopped, 'Stopped.');
+  /// Stops the run: no new agents, live children stopped, the script killed; then the shutdown runs.
+  void stop([String why = 'Stopped.']) => _halt(WorkflowOutcome.stopped, why);
 
   /// The session is closing: the script is killed but its children keep
-  /// working and no end is journalled, so the run resumes next time.
+  /// working and no end is journalled, so the run resumes next time. A run
+  /// already shutting down finishes its shutdown instead.
   void detach() {
-    _detached = true;
-    bridge.kill();
+    if (_state is RunShuttingDown || !_state.live) return;
+    // Called while the session is disposed: the card goes with it, so it isn't told.
+    _to(const RunDetached(), emit: false);
+    bridge?.kill();
   }
 
-  void _halt(WorkflowStatus status, String why) {
-    if (_halted != null || _status != WorkflowStatus.running) return;
-    _halted = status;
+  void _halt(WorkflowOutcome outcome, String why) {
+    if (_state is! RunStarting && _state is! RunRunning) return;
     _error = why;
+    _to(RunStopping(outcome, why));
+    // A resume after a quit mid-shutdown shuts down instead of running the script again.
+    unawaited(journal.write({'t': 'stop', 'outcome': outcome.name, 'why': why}));
+    _stopAgents(why);
+    bridge?.kill();
+  }
+
+  /// Children already told to stop: each is told once.
+  final _stopped = <String>{};
+
+  /// Stops every live child and marks the agents not finished.
+  void _stopAgents(String why) {
     for (final id in [..._live]) {
-      launcher.stop(id);
+      if (_stopped.add(id)) launcher.stop(id);
     }
     for (final MapEntry(:key, :value) in _agents.entries.toList()) {
       if (value.status == WorkflowAgentStatus.queued || value.status == WorkflowAgentStatus.running) {
         _agents[key] = value.copyWith(status: WorkflowAgentStatus.failed, error: why);
       }
     }
-    bridge.kill();
     _emit();
   }
 
+  /// Runs the script to its end, then the shutdown. Returns the run as it ended (or as it was when [detach]ed).
   Future<WorkflowRun> run() async {
+    final bridge = this.bridge;
+    if (bridge == null) return end(WorkflowOutcome.failed, _error ?? "The workflow script didn't start.");
+    // A run the app quit while it stopped or shut down: only its shutdown is left.
+    if (journal.stop case {'outcome': final String o, 'why': final String why}) {
+      bridge.kill();
+      return end(WorkflowOutcome.values.asNameMap()[o] ?? WorkflowOutcome.stopped, why);
+    }
     // Wall time counts from the run's start, so a resume gets only what is left.
     final at = journal.start?['at'];
     final elapsed = at is int ? _clock().difference(DateTime.fromMillisecondsSinceEpoch(at)) : Duration.zero;
     final left = caps.wallTime - elapsed;
     final timer = _timerOf(
       left.isNegative ? Duration.zero : left,
-      () => _halt(WorkflowStatus.capped, 'The workflow ran out of time (${caps.wallTime.inMinutes} minutes).'),
+      () => _halt(WorkflowOutcome.capped, 'The workflow ran out of time (${caps.wallTime.inMinutes} minutes).'),
     );
     final output = bridge.output.listen(_log);
-    _emit();
+    // Stopped before the script got going: the loop below sees no calls.
+    if (_state is RunStarting) _to(const RunRunning());
     await for (final req in bridge.requests) {
       final args = (req['args'] as Map?)?.cast<String, Object?>() ?? const {};
       switch (req['fn']) {
         case 'agent':
-          unawaited(_agent(req['id'], args));
+          final call = _agent(req['id'], args);
+          _inFlight.add(call);
+          unawaited(call.whenComplete(() => _inFlight.remove(call)));
         case 'phase':
           _phase = '${args['title'] ?? ''}';
           if (!_phases.contains(_phase)) _phases.add(_phase);
           if (!journal.phases.contains(_phase)) unawaited(journal.write({'t': 'phase', 'title': _phase}));
-          _emit();
+          if (_state is RunRunning) {
+            _to(RunRunning(_phase));
+          } else {
+            _emit();
+          }
         case 'log':
           _log('${args['msg'] ?? ''}');
         case 'done':
-          _done = true;
+          _said ??= WorkflowOutcome.done;
           _result = args['result'];
         case 'failed':
+          _said = WorkflowOutcome.failed;
           _error ??= '${args['error'] ?? 'The workflow failed.'}';
         default:
-          if (req['id'] case final id?) bridge.reply(id, error: 'unknown function ${req['fn']}');
+          if (req['id'] case final id?) _reply(id, error: 'unknown function ${req['fn']}');
       }
     }
     final code = await bridge.exit;
     timer.cancel();
     await output.cancel();
-    if (_detached) return snapshot;
-    _ended = _clock();
-    _status = _halted ?? (_done ? WorkflowStatus.done : WorkflowStatus.failed);
-    if (_status == WorkflowStatus.failed) _error ??= 'The workflow script exited with code $code.';
-    await journal.write({
-      't': 'end',
-      'status': _status.name,
-      if (_result != null) 'result': _result,
-      if (_error != null) 'error': _error,
-    });
-    await journal.flushed;
-    _emit();
+    if (_state is RunDetached) return snapshot;
+    final outcome = switch (_state) {
+      RunStopping(:final outcome) => outcome,
+      _ => _said ?? WorkflowOutcome.failed,
+    };
+    if (outcome == WorkflowOutcome.failed) _error ??= 'The workflow script exited with code $code.';
+    return _shutdown(outcome);
+  }
+
+  /// Ends a run that has no script to run (it couldn't start, or a resume found it already stopping): straight to
+  /// the shutdown with [outcome].
+  Future<WorkflowRun> end(WorkflowOutcome outcome, String why) {
+    _error ??= why;
+    if (_state is RunStarting || _state is RunRunning) _to(RunStopping(outcome, why));
+    return _shutdown(outcome);
+  }
+
+  /// The one shutdown sequence (see [ShutdownStep]): every step runs, in order, each within [stepTimeout].
+  Future<WorkflowRun> _shutdown(WorkflowOutcome outcome) async {
+    for (final step in ShutdownStep.values) {
+      _to(RunShuttingDown(step, outcome));
+      try {
+        await _step(step, outcome).timeout(stepTimeout);
+      } on Object catch (e) {
+        _log('Shutting down (${step.name}): ${e is TimeoutException ? 'took too long, moved on' : e}');
+      }
+    }
+    _to(RunEnded(outcome));
     return snapshot;
+  }
+
+  Future<void> _step(ShutdownStep step, WorkflowOutcome outcome) async {
+    switch (step) {
+      case ShutdownStep.script:
+        bridge?.kill();
+      case ShutdownStep.agents:
+        // done() came while agents still ran, or the run was stopped: what is still going stops now.
+        _stopAgents(outcome == WorkflowOutcome.done ? 'Stopped: the workflow ended.' : (_error ?? 'Stopped.'));
+        await Future.wait([..._inFlight]);
+      case ShutdownStep.children:
+        // Each child on its own clock: one that won't let go doesn't keep the others.
+        await Future.wait([
+          for (final id in _children)
+            launcher
+                .release(id)
+                .timeout(stepTimeout)
+                .catchError(
+                  (Object e) => _log('Releasing $id: ${e is TimeoutException ? 'took too long, moved on' : e}'),
+                ),
+        ]);
+      case ShutdownStep.journal:
+        _ended = _clock();
+        await journal.write({
+          't': 'end',
+          'status': outcome.name,
+          if (_result != null) 'result': _result,
+          if (_error != null) 'error': _error,
+        });
+        await journal.flushed;
+      case ShutdownStep.lead || ShutdownStep.workflow:
+        // The run as it ended: its outcome, as the lead and the card will see it.
+        final ended = WorkflowRun(
+          runId: runId,
+          name: name,
+          state: RunEnded(outcome),
+          phases: List.unmodifiable(_phases),
+          agents: List.unmodifiable(_agents.values),
+          logs: List.unmodifiable(_logs),
+          started: _started,
+          spentMicros: _spentMicros,
+          caps: caps,
+          result: _result,
+          error: _error,
+          took: _took,
+        );
+        await onShutdown?.call(step, ended);
+    }
   }
 
   /// [phase]: the heading the line goes under; an agent's notes go under its own phase, not the script's current one.
@@ -447,13 +588,22 @@ final class WorkflowEngine {
   }
 
   String? _capProblem() {
-    if (_halted != null) return 'cap: the workflow is ${_halted == WorkflowStatus.stopped ? 'stopped' : 'out of time'}';
+    if (!_state.acceptsAgents) {
+      return switch (_state) {
+        RunStopping(outcome: WorkflowOutcome.capped) => 'cap: the workflow is out of time',
+        RunStopping() => 'cap: the workflow is stopped',
+        _ => 'cap: the workflow is ending',
+      };
+    }
     if (_started >= caps.maxAgents) return 'cap: the workflow already started ${caps.maxAgents} agents, its limit';
     if (_spentMicros >= caps.costMicros) {
       return 'cap: the workflow spent its \$${(caps.costMicros / 1e6).toStringAsFixed(2)} limit';
     }
     return null;
   }
+
+  /// Answers the script's call [id] (the bridge drops it once the script is gone).
+  void _reply(Object? id, {Object? result, String? error}) => bridge?.reply(id, result: result, error: error);
 
   void _view(String key, WorkflowAgentView Function(WorkflowAgentView v) change) {
     if (_agents[key] case final v?) _agents[key] = change(v);
@@ -466,7 +616,7 @@ final class WorkflowEngine {
       call = _callOf(args);
     } on FormatException catch (e) {
       // Nothing started: the script fixes its call.
-      return bridge.reply(id, error: e.message);
+      return _reply(id, error: e.message);
     }
     // A phase named only in an agent's options (Ultra's Review and Refix) still gets its place on the card.
     if (call.phase.isNotEmpty && !_phases.contains(call.phase)) _phases.add(call.phase);
@@ -478,13 +628,13 @@ final class WorkflowEngine {
         error: j.error,
       );
       _emit();
-      return j.ok ? bridge.reply(id, result: j.value) : bridge.reply(id, error: j.error ?? 'failed');
+      return j.ok ? _reply(id, result: j.value) : _reply(id, error: j.error ?? 'failed');
     }
     // A spawn the journal has was counted when the run began, and goes on past the caps.
     final spawned = journal.spawns.containsKey(call.key);
-    if (_capProblem() case final why? when !spawned || _halted != null) {
+    if (_capProblem() case final why? when !spawned || !_state.acceptsAgents) {
       _log('${call.label}: $why', phase: call.phase);
-      return bridge.reply(id, error: why);
+      return _reply(id, error: why);
     }
     if (!spawned) _started++;
     _agents[call.key] = base;
@@ -492,16 +642,27 @@ final class WorkflowEngine {
     await _slots.acquire();
     String? childId;
     try {
-      if (_capProblem() case final why? when _halted != null) throw WorkflowCapped(why);
+      if (_capProblem() case final why? when !_state.acceptsAgents) throw WorkflowCapped(why);
       childId = journal.spawns[call.key];
       final reattached = childId != null;
       if (childId == null) {
         final child = await launcher.start(call);
         childId = child.childId;
+        _children.add(childId);
         await journal.write({'t': 'spawn', 'key': call.key, 'child': childId});
         _view(call.key, (v) => v.copyWith(childId: childId, harness: child.harness, model: child.model));
         if (child.note case final note?) _log('${call.label}: $note', phase: call.phase);
+        // Stopped while it started: it isn't left working on its own (the shutdown releases it).
+        if (_capProblem() case final why? when !_state.acceptsAgents) {
+          if (_stopped.add(childId)) launcher.stop(childId);
+          // Started after the shutdown released the run's children (a slow start): released here instead.
+          if (_state case RunShuttingDown(:final step) when step.index > ShutdownStep.children.index) {
+            unawaited(launcher.release(childId).catchError((Object _) {}));
+          }
+          throw WorkflowCapped(why);
+        }
       } else {
+        _children.add(childId);
         _view(call.key, (v) => v.copyWith(childId: childId));
       }
       _live.add(childId);
@@ -529,7 +690,7 @@ final class WorkflowEngine {
           value = parsed;
           break;
         }
-        if (sends >= caps.sendsPerAgent || _halted != null) {
+        if (sends >= caps.sendsPerAgent || !_state.acceptsAgents) {
           problem = 'Its reply didn\'t match the schema: ${problems.join('; ')}';
           break;
         }
@@ -538,11 +699,11 @@ final class WorkflowEngine {
       }
       // The batch's check gates the merge. The child stays live meanwhile, so a stop cancels the check too.
       Map<String, Object?>? gate;
-      if (call.batch?.check != null && call.worktree && problem == null && _halted == null) {
+      if (call.batch?.check != null && call.worktree && problem == null && _state.acceptsAgents) {
         gate = await launcher.batchCheckOf(childId, call.batch!);
       }
       _live.remove(childId);
-      if (gate != null && _halted != null) {
+      if (gate != null && !_state.acceptsAgents) {
         // Stopped during the check: its verdict isn't the agent's answer.
         gate = null;
         problem = _error ?? 'Stopped.';
@@ -582,16 +743,17 @@ final class WorkflowEngine {
       if (problem != null) throw Exception(problem);
       await journal.write({'t': 'agent', 'key': call.key, 'ok': true, 'value': value, 'spent': ?_spent[call.key]});
       _view(call.key, (v) => v.copyWith(status: WorkflowAgentStatus.done));
-      bridge.reply(id, result: value);
+      _reply(id, result: value);
     } on Object catch (e) {
       if (childId != null) _live.remove(childId);
       final message = '$e'.replaceFirst('Exception: ', '');
-      // A stop or cap isn't the agent's answer: a resumed run tries it again.
-      if (e is! WorkflowCapped && _halted == null && !_detached) {
+      // A stop, a cap or the run's end isn't the agent's answer: a resumed run tries it again.
+      final running = _state.acceptsAgents;
+      if (e is! WorkflowCapped && running) {
         await journal.write({'t': 'agent', 'key': call.key, 'ok': false, 'error': message, 'spent': ?_spent[call.key]});
       }
-      if (_halted == null) _view(call.key, (v) => v.copyWith(status: WorkflowAgentStatus.failed, error: message));
-      bridge.reply(id, error: message);
+      if (running) _view(call.key, (v) => v.copyWith(status: WorkflowAgentStatus.failed, error: message));
+      _reply(id, error: message);
     } finally {
       _slots.release();
     }

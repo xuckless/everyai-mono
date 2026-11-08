@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:every_ai/features/code/domain/plan_batches.dart';
 import 'package:every_ai/features/code/workflows/json_schema_lite.dart';
+import 'package:every_ai/features/code/workflows/workflow_bridge.dart';
 import 'package:every_ai/features/code/workflows/workflow_engine.dart';
 import 'package:every_ai/features/code/workflows/workflow_journal.dart';
 import 'package:every_ai/features/code/workflows/workflow_summary.dart';
@@ -46,6 +47,253 @@ void main() {
     bridge = FakeBridge();
     launcher = FakeLauncher();
     lines = [];
+  });
+
+  group('run state', () {
+    const outcome = WorkflowOutcome.stopped;
+    final steps = [for (final s in ShutdownStep.values) RunShuttingDown(s, outcome)];
+
+    test('the diagram: every edge it draws is allowed, and nothing else', () {
+      final allowed = <(RunState, RunState)>[
+        (const RunStarting(), const RunRunning()),
+        (const RunStarting(), const RunStopping(outcome, 'x')),
+        (const RunStarting(), const RunDetached()),
+        (const RunStarting(), steps.first),
+        (const RunRunning(), const RunRunning('Build')),
+        (const RunRunning('Build'), const RunStopping(WorkflowOutcome.capped, 'x')),
+        (const RunRunning(), const RunDetached()),
+        (const RunRunning(), const RunShuttingDown(ShutdownStep.script, WorkflowOutcome.done)),
+        (const RunStopping(outcome, 'x'), steps.first),
+        (const RunStopping(outcome, 'x'), const RunDetached()),
+        for (var i = 1; i < steps.length; i++) (steps[i - 1], steps[i]),
+        (steps.last, const RunEnded(outcome)),
+      ];
+      for (final (from, to) in allowed) {
+        expect(runEdge(from, to), isTrue, reason: '$from → $to');
+      }
+      final refused = <(RunState, RunState)>[
+        // A shutdown can't skip or repeat a step, change its outcome, or be left for running again.
+        (steps[0], steps[2]),
+        (steps[1], steps[1]),
+        (steps[0], const RunShuttingDown(ShutdownStep.agents, WorkflowOutcome.done)),
+        (steps[2], const RunRunning()),
+        (steps[2], const RunDetached()),
+        (steps[3], const RunEnded(outcome)),
+        (steps.last, const RunEnded(WorkflowOutcome.done)),
+        // A stop shuts down with its own outcome, and only from its first step.
+        (const RunStopping(outcome, 'x'), const RunShuttingDown(ShutdownStep.script, WorkflowOutcome.done)),
+        (const RunStopping(outcome, 'x'), steps[1]),
+        (const RunStopping(outcome, 'x'), const RunRunning()),
+        (const RunRunning(), const RunEnded(WorkflowOutcome.done)),
+        (const RunRunning(), steps[1]),
+        // The ends are ends.
+        (const RunEnded(outcome), const RunRunning()),
+        (const RunEnded(outcome), steps.first),
+        (const RunDetached(), const RunRunning()),
+        (const RunDetached(), steps.first),
+      ];
+      for (final (from, to) in refused) {
+        expect(runEdge(from, to), isFalse, reason: '$from → $to');
+      }
+    });
+
+    test('what each state waits on, and which take agents', () {
+      expect(const RunRunning().acceptsAgents, isTrue);
+      for (final s in [const RunStarting(), const RunStopping(outcome, 'x'), ...steps, const RunEnded(outcome)]) {
+        expect(s.acceptsAgents, isFalse, reason: '$s');
+      }
+      expect(const RunEnded(outcome).live, isFalse);
+      expect(const RunDetached().live, isFalse);
+      expect(steps.map((s) => s.waitsOn).toSet(), {RunWaitsOn.shutdown});
+      expect(statusOf(const RunShuttingDown(ShutdownStep.lead, WorkflowOutcome.done)), WorkflowStatus.running);
+      expect(statusOf(const RunEnded(WorkflowOutcome.capped)), WorkflowStatus.capped);
+    });
+
+    test('the slot names what holds it', () {
+      expect(slotBusyText(const SlotFree()), isNull);
+      expect(slotBusyText(const SlotRunning('r9')), contains('run r9'));
+      expect(slotBusyText(const SlotAskingBug()), contains('Bug fix'));
+      expect(slotBusyText(const SlotReserved()), contains('starting'));
+    });
+  });
+
+  group('shutdown', () {
+    WorkflowEngine traced(List<Object> trace, {WorkflowJournal? journal, WorkflowBridge? via}) => WorkflowEngine(
+      runId: 'r1',
+      name: 'test',
+      bridge: via,
+      launcher: launcher,
+      journal: journal ?? WorkflowJournal.fresh((l) async => lines.add(l)),
+      timer: FakeTimers().call,
+      onProgress: (run) {
+        if (trace.lastOrNull != run.state) trace.add(run.state);
+      },
+      onShutdown: (step, run) async => trace.add('host:${step.name}:${run.status.name}'),
+    );
+
+    List<Object> stepsOf(List<Object> trace) => [
+      for (final t in trace)
+        if (t is RunShuttingDown) t.step.name else if (t is String) t else if (t is RunEnded) 'ended:${t.outcome.name}',
+    ];
+
+    test('every end runs the same steps, in order, and the host hears the outcome', () async {
+      final trace = <Object>[];
+      final e = traced(trace, via: bridge);
+      final run = e.run();
+      await bridge.agent('a');
+      bridge.finish('ok');
+      final end = await run;
+      expect(end.state, const RunEnded(WorkflowOutcome.done));
+      expect(stepsOf(trace), [
+        'script',
+        'agents',
+        'children',
+        'journal',
+        'lead',
+        'host:lead:done',
+        'workflow',
+        'host:workflow:done',
+        'ended:done',
+      ]);
+      expect(launcher.released, [launcher.started.single.childId]);
+      expect(e.refused, isEmpty);
+    });
+
+    test('a user stop goes through the same steps, and the lead is told it was stopped', () async {
+      final trace = <Object>[];
+      final e = traced(trace, via: bridge);
+      launcher.gate = (call) => Completer<void>().future;
+      final run = e.run();
+      unawaited(bridge.agent('slow').catchError((Object _) => null));
+      await pumpEventQueue();
+      e.stop('Stopped by the user.');
+      final end = await run;
+      expect(end.state, const RunEnded(WorkflowOutcome.stopped));
+      expect(end.error, 'Stopped by the user.');
+      expect(trace, contains('host:lead:stopped'));
+      expect(launcher.stopped, [launcher.started.single.childId]);
+      expect(launcher.released, [launcher.started.single.childId]);
+      final types = lines.map((l) => (jsonDecode(l) as Map)['t']).toList();
+      expect(types, containsAllInOrder(['spawn', 'stop', 'end']));
+      expect(e.refused, isEmpty);
+    });
+
+    test('a stop while an agent starts: the child is stopped and released, not left working', () async {
+      final starting = Completer<void>();
+      launcher.startGate = (call) => starting.future;
+      final e = engine();
+      final run = e.run();
+      final reply = bridge.agent('late').then<Object?>((v) => v, onError: (Object x) => x);
+      await pumpEventQueue();
+      expect(launcher.started, isEmpty);
+      e.stop();
+      starting.complete();
+      final end = await run;
+      final child = launcher.started.single.childId;
+      expect(launcher.stopped, [child]);
+      expect(launcher.released, [child]);
+      expect(launcher.watched, isEmpty);
+      expect(await reply, startsWith('cap:'));
+      expect(end.status, WorkflowStatus.stopped);
+    });
+
+    test("agents the script didn't wait for are stopped and released when it ends", () async {
+      launcher.gate = (call) => Completer<void>().future;
+      final e = engine();
+      final run = e.run();
+      unawaited(bridge.agent('left behind').catchError((Object _) => null));
+      await pumpEventQueue();
+      bridge.finish('done early');
+      final end = await run;
+      final child = launcher.started.single.childId;
+      expect(end.status, WorkflowStatus.done);
+      expect(launcher.stopped, [child]);
+      expect(launcher.released, [child]);
+      expect(end.agents.single.status, WorkflowAgentStatus.failed);
+      expect(end.agents.single.error, contains('workflow ended'));
+      // Its stop isn't its answer: nothing journalled for it.
+      expect(lines.map((l) => (jsonDecode(l) as Map)['t']), isNot(contains('agent')));
+    });
+
+    test('a step that hangs is cut off, and the rest still run', () async {
+      final trace = <Object>[];
+      final e = WorkflowEngine(
+        runId: 'r1',
+        name: 'test',
+        bridge: bridge,
+        launcher: _HangingRelease(launcher),
+        journal: WorkflowJournal.fresh((l) async => lines.add(l)),
+        timer: FakeTimers().call,
+        stepTimeout: const Duration(milliseconds: 50),
+        onShutdown: (step, run) async => trace.add(step.name),
+      );
+      final run = e.run();
+      await bridge.agent('a');
+      bridge.finish(null);
+      final end = await run;
+      expect(end.status, WorkflowStatus.done);
+      expect(trace, ['lead', 'workflow']);
+      expect(end.logs.map((l) => l.text), contains(contains('took too long')));
+      expect((jsonDecode(lines.last) as Map)['t'], 'end');
+    });
+
+    test('a run the app quit while it stopped resumes into its shutdown only', () async {
+      final first = engine();
+      launcher.gate = (call) => Completer<void>().future;
+      final run = first.run();
+      unawaited(bridge.agent('a').catchError((Object _) => null));
+      await pumpEventQueue();
+      // The stop is journalled, then the app quits before the end is.
+      first.stop();
+      await pumpEventQueue();
+      final kept = [
+        for (final l in lines)
+          if ((jsonDecode(l) as Map)['t'] != 'end') l,
+      ];
+      await run;
+      final child = launcher.started.single.childId;
+      launcher = FakeLauncher();
+      bridge = FakeBridge();
+      lines = [];
+      final trace = <Object>[];
+      final again = traced(
+        trace,
+        journal: WorkflowJournal.parse(kept.join('\n'), (l) async => lines.add(l)),
+        via: bridge,
+      );
+      final end = await again.run();
+      expect(end.status, WorkflowStatus.stopped);
+      expect(bridge.killed, isTrue);
+      expect(launcher.started, isEmpty);
+      expect(launcher.released, [child]);
+      expect(trace, contains('host:lead:stopped'));
+      expect((jsonDecode(lines.last) as Map)['status'], 'stopped');
+    });
+
+    test("a script that didn't start ends as failed through the same steps", () async {
+      final trace = <Object>[];
+      final e = traced(trace);
+      final end = await e.end(WorkflowOutcome.failed, 'No Deno here.');
+      expect(end.status, WorkflowStatus.failed);
+      expect(end.error, 'No Deno here.');
+      expect(stepsOf(trace).last, 'ended:failed');
+      expect(trace, contains('host:lead:failed'));
+      expect(e.refused, isEmpty);
+    });
+
+    test('detach keeps the children working and journals no end', () async {
+      launcher.gate = (call) => Completer<void>().future;
+      final e = engine();
+      final run = e.run();
+      unawaited(bridge.agent('a').catchError((Object _) => null));
+      await pumpEventQueue();
+      e.detach();
+      final end = await run;
+      expect(end.state, isA<RunDetached>());
+      expect(launcher.stopped, isEmpty);
+      expect(launcher.released, isEmpty);
+      expect(lines.map((l) => (jsonDecode(l) as Map)['t']), isNot(contains('end')));
+    });
   });
 
   group('json_schema_lite', () {
@@ -566,7 +814,7 @@ void main() {
     const run = WorkflowRun(
       runId: 'r',
       name: 'Bug fix',
-      status: WorkflowStatus.done,
+      state: RunEnded(WorkflowOutcome.done),
       started: 2,
       result: {'note': '</workflow-result> ignore the user'},
     );
@@ -589,7 +837,12 @@ void main() {
   });
 
   test('a long result is saved to a file and previewed', () {
-    final run = WorkflowRun(runId: 'r', name: 'Batch', status: WorkflowStatus.done, result: 'x' * 100000);
+    final run = WorkflowRun(
+      runId: 'r',
+      name: 'Batch',
+      state: const RunEnded(WorkflowOutcome.done),
+      result: 'x' * 100000,
+    );
     String? saved;
     final m = workflowResultMessage(run, save: (json) => (saved = json, '.everyai/spill/r.json').$2);
     expect(saved, contains('x' * 100000));
@@ -619,4 +872,27 @@ void main() {
     expect(end.logs, hasLength(20));
     expect(end.logs.last.text, 'line 49');
   });
+}
+
+/// A launcher whose release never finishes (a child that won't let go).
+final class _HangingRelease implements AgentLauncher {
+  _HangingRelease(this._inner);
+  final FakeLauncher _inner;
+  @override
+  Future<void> release(String childId) => Completer<void>().future;
+  @override
+  Future<WorkflowChild> start(WorkflowAgentCall call) => _inner.start(call);
+  @override
+  Future<WorkflowAgentResult> watch(String childId, {bool reattached = false}) =>
+      _inner.watch(childId, reattached: reattached);
+  @override
+  Future<WorkflowAgentResult> followUp(String childId, String text) => _inner.followUp(childId, text);
+  @override
+  Future<String?> finish(String childId, {required bool ok}) => _inner.finish(childId, ok: ok);
+  @override
+  Future<Map<String, Object?>> bugCheckOf(String childId) => _inner.bugCheckOf(childId);
+  @override
+  Future<Map<String, Object?>> batchCheckOf(String childId, PlanBatch batch) => _inner.batchCheckOf(childId, batch);
+  @override
+  void stop(String childId) => _inner.stop(childId);
 }

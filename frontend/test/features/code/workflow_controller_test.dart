@@ -566,7 +566,7 @@ void main() {
   });
 
   group('landing', () {
-    const run = WorkflowRun(runId: 'abcdef123', name: 'Bug fix', status: WorkflowStatus.done);
+    const run = WorkflowRun(runId: 'abcdef123', name: 'Bug fix', state: RunEnded(WorkflowOutcome.done));
 
     /// A session in a git repository with a file the workflow left uncommitted.
     Future<(CodeSessionController, String)> dirty() async {
@@ -810,6 +810,40 @@ void main() {
     }
     expect(c.runningWork.workflows, isEmpty);
     expect(lead.sent.skip(before).where((m) => m.contains('<workflow-result')), isEmpty);
+  });
+
+  test("the user's Stop shuts the run down: its agent is released, the lead hears, and a new run may start", () async {
+    final c = await open();
+    final runId = await c.runWorkflow('demo', 'source');
+    final reply = bridge.agent('Look around', {'harness': 'fake2'});
+    final info = await child();
+    drivers['fake2']!.latest!.add(stateEvent('s-r', ExecutionStatus.running));
+    await pumpEventQueue();
+    final before = lead.sent.length;
+    final agentStopped = expectLater(reply, throwsA(anything));
+    c.stopWorkflow(runId);
+    await agentStopped;
+    final runs = await whenValue(
+      container,
+      workflowRunsProvider(c.sessionId),
+      (List<WorkflowRun> r) => r.single.state is RunEnded,
+    );
+    expect(runs.single.status, WorkflowStatus.stopped);
+    // The child was stopped through its controller (its own processes with it), and stays open to read.
+    expect(drivers['fake2']!.latest!.interrupts, greaterThan(0));
+    expect(container.read(codeSessionsProvider).firstWhere((s) => s.id == info.id).ownTag, isTrue);
+    for (var i = 0; i < 100 && !lead.sent.skip(before).any((m) => m.contains('<workflow-result')); i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    final told = lead.sent.skip(before).firstWhere((m) => m.contains('<workflow-result'));
+    expect(told, contains('status="stopped"'));
+    expect(told, contains('Stopped by the user.'));
+    // The journal is retired, and the slot is free: the next run starts.
+    expect(File('${tmp.path}/data/workflows/${c.sessionId}/$runId.jsonl').existsSync(), isFalse);
+    bridge = FakeBridge();
+    final next = await c.runWorkflow('demo', 'source');
+    expect(next, isNot(runId));
+    expect(info.id, isNotEmpty);
   });
 
   test('a run the app quit in the middle of carries on when the session opens again', () async {

@@ -100,8 +100,12 @@ final class FakeLauncher implements AgentLauncher {
   /// What [finish] returns (the merge note).
   String? Function(String childId, bool ok) finishNote = (id, ok) => null;
 
+  /// Holds a child's start until the future completes (a slow harness or worktree).
+  Future<void> Function(WorkflowAgentCall call)? startGate;
+
   @override
   Future<WorkflowChild> start(WorkflowAgentCall call) async {
+    await startGate?.call(call);
     final id = 'child-${++_n}-${call.prompt}';
     _calls[id] = call;
     calls.add(call);
@@ -114,15 +118,25 @@ final class FakeLauncher implements AgentLauncher {
     final turn = _turns[childId] = (_turns[childId] ?? 0) + 1;
     _active++;
     if (_active > maxActive) maxActive = _active;
+    // A stop ends the turn being watched, as the app's launcher does.
+    final stop = _stops[childId] = Completer<void>();
     try {
-      await gate?.call(call);
+      final held = gate?.call(call);
+      if (held != null) {
+        var stoppedFirst = false;
+        await Future.any([held, stop.future.then((_) => stoppedFirst = true)]);
+        if (stoppedFirst) return (text: '', error: 'Stopped.', spentMicros: spent(call));
+      }
       return (text: reply(call, turn), error: null, spentMicros: spent(call));
     } on Object catch (e) {
       return (text: '', error: '$e', spentMicros: spent(call));
     } finally {
       _active--;
+      if (_stops[childId] == stop) _stops.remove(childId);
     }
   }
+
+  final _stops = <String, Completer<void>>{};
 
   /// Children watched as reattached (started before a restart).
   final reattached = <String>[];
@@ -159,7 +173,17 @@ final class FakeLauncher implements AgentLauncher {
   }
 
   @override
-  void stop(String childId) => stopped.add(childId);
+  void stop(String childId) {
+    stopped.add(childId);
+    final c = _stops.remove(childId);
+    if (c != null && !c.isCompleted) c.complete();
+  }
+
+  /// Children released at the run's end, in order.
+  final released = <String>[];
+
+  @override
+  Future<void> release(String childId) async => released.add(childId);
 }
 
 /// Timers that fire only when the test says so.

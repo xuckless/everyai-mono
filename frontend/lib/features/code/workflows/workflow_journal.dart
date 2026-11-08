@@ -13,6 +13,7 @@ typedef JournalledAgent = ({bool ok, Object? value, String? error, int? spentMic
 /// - `{t:"spawn", key, child}`: the agent's child session started
 /// - `{t:"agent", key, ok, value|error, spent?}`: it finished
 /// - `{t:"phase", title}`
+/// - `{t:"stop", outcome, why}`: stopped by the user or a cap; a resume runs only the shutdown
 /// - `{t:"end", status, result?, error?}`
 ///
 /// A torn last line (the app quit mid-write) is skipped.
@@ -43,6 +44,7 @@ final class WorkflowJournal {
   final spawns = <String, String>{};
   final agents = <String, JournalledAgent>{};
   final phases = <String>[];
+  Map<String, Object?>? stop;
   Map<String, Object?>? end;
 
   bool get ended => end != null;
@@ -62,6 +64,8 @@ final class WorkflowJournal {
         );
       case 'phase':
         phases.add('${m['title']}');
+      case 'stop':
+        stop ??= m;
       case 'end':
         end = m;
     }
