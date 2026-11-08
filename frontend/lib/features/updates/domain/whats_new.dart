@@ -25,6 +25,48 @@ final class WhatsNewItem {
 /// nothing after the update.
 const releaseNotes = <ReleaseNote>[
   ReleaseNote(
+    version: '0.1.0-alpha.7',
+    title: 'No account needed, and a browser you can sign in to',
+    date: 'Nov 8',
+    items: [
+      WhatsNewItem(
+        'No account needed',
+        'Chat, Code, local models and your own keys work signed out. Sign in by email link only when you want to.',
+      ),
+      WhatsNewItem(
+        'Pair your phone without an account',
+        'Scan the QR code to drive your sessions from a phone, tablet or the web. The relay only passes encrypted '
+            'frames.',
+      ),
+      WhatsNewItem(
+        'Your keys stay on this computer',
+        'Own keys go only to the server inside the app, never to EveryAI\'s hosted server.',
+      ),
+      WhatsNewItem(
+        'Sign-ins that stick',
+        'Each Code session keeps its own browser sign-ins, and when the agent hits a login page it waits for you to '
+            'take control, use a saved login or skip.',
+      ),
+      WhatsNewItem(
+        'A browser for you too',
+        'Tabs, pop-ups, page dialogs, file pickers, downloads, Find and a right-click "Ask the agent about this".',
+      ),
+      WhatsNewItem(
+        'Auto mode and Pause all',
+        'Let Claude Code, Codex or EveryAI run on their own behind EveryAI\'s checks, and pause a lead with all its '
+            'forks and workflows in one go.',
+      ),
+      WhatsNewItem(
+        'Local servers you control',
+        'Start and stop Ollama, LM Studio and Apple\'s model from Settings. At quit EveryAI unloads what it loaded.',
+      ),
+      WhatsNewItem(
+        'Figures you can reuse',
+        'Charts, SVGs and diagrams in Chat are versioned, editable by hand, and drop into documents and slides.',
+      ),
+    ],
+  ),
+  ReleaseNote(
     version: '0.1.0-alpha.6',
     title: 'The lead stays free, and a steadier app',
     date: 'Nov 7',
