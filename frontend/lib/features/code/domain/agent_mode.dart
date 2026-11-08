@@ -87,6 +87,8 @@ enum AgentMode {
     'ScriptAction' => true,
     // The project memory: a harness-owned notes file under .everyai/.
     'MemoryAction' => true,
+    // Language servers' findings on files in the project; nothing changes.
+    'DiagnosticsAction' => true,
     // is_input sends keys to a running process.
     'TerminalAction' => call.action['is_input'] != true && isReadOnlyShell(call.str('command')),
     _ => false,

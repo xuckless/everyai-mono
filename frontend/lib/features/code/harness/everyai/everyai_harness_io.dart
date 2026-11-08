@@ -32,6 +32,7 @@ import 'browser_io.dart';
 import 'git_bash.dart' show findGitBash;
 import 'llm.dart';
 import 'package_registry_io.dart';
+import 'lsp_io.dart';
 import 'mcp_io.dart';
 import 'model_family.dart';
 import 'prompt_io.dart';
@@ -178,7 +179,7 @@ final class EveryAISession
         PerCallApprovals,
         HasContextParts,
         ReportsMcpTools,
-        StopsMcpServers,
+        StopsHelpers,
         TakesMessagesMidRun {
   EveryAISession._(this.id, this._spec, this._dir, http.Client? client)
     : _gateway = GatewayClient(baseUrl: _spec.llmBaseUrl, apiKey: _spec.llmApiKey, client: client),
@@ -204,6 +205,7 @@ final class EveryAISession
       ownFolders: skillFolders(_spec.skills),
       loadLoginEnv: true,
       packages: _packages,
+      lsp: _lsp,
     )..bypass = _spec.mode == AgentMode.bypass;
   }
 
@@ -233,13 +235,22 @@ final class EveryAISession
   McpTools _mcp = McpTools.empty;
   Future<void>? _mcpReady;
 
-  /// How long the session's MCP servers outlive its last run.
-  static Duration mcpIdle = const Duration(minutes: 10);
-  Timer? _mcpIdleTimer;
+  /// How long the session's MCP and language servers outlive its last run.
+  static Duration helpersIdle = const Duration(minutes: 10);
+  Timer? _idleTimer;
+
+  /// The session's language servers (the diagnostics tool, and the hint after edits), started on first use.
+  late final _lsp = LspHub(
+    root: _spec.workingDir,
+    toolsDir: '${_dir.parent.parent.path}/tools',
+    environment: () async => (await ShellEnv.load()).env,
+  );
 
   @override
-  Future<void> stopMcpServers() async {
-    _mcpIdleTimer?.cancel();
+  Future<void> stopHelpers() async {
+    _idleTimer?.cancel();
+    if (_looping) return;
+    await _lsp.close();
     final ready = _mcpReady;
     if (ready == null || _looping) return;
     _mcpReady = null;
@@ -875,10 +886,10 @@ final class EveryAISession
   void _setStatus(ExecutionStatus s) {
     if (status == s) return;
     status = s;
-    // MCP servers stop after [mcpIdle] without a run and start again with the next one.
-    _mcpIdleTimer?.cancel();
+    // MCP and language servers stop after [helpersIdle] without a run and start again with the next one.
+    _idleTimer?.cancel();
     if (s != ExecutionStatus.running && s != ExecutionStatus.waitingForConfirmation) {
-      _mcpIdleTimer = Timer(mcpIdle, () => unawaited(stopMcpServers()));
+      _idleTimer = Timer(helpersIdle, () => unawaited(stopHelpers()));
     }
     _emit({'kind': 'ConversationStateUpdateEvent', 'id': _newId(), 'key': 'execution_status', 'value': s.wire});
   }
@@ -1007,6 +1018,7 @@ final class EveryAISession
       pushTargets: old.pushTargets,
       loadLoginEnv: true,
       packages: _packages,
+      lsp: _lsp,
     )..bypass = _spec.mode == AgentMode.bypass;
     // Another vendor's model gets its own family's tools and rules (GPT's apply_patch, say). That rebuilds the
     // system prompt, which a vendor switch breaks the cache of anyway; within a family nothing changes, so the cached

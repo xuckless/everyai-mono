@@ -908,6 +908,34 @@ for line in sys.stdin:
     await session.close();
   });
 
+  test('an edit that adds errors says so in one line; diagnostics lists them (clangd)', () async {
+    File('$work/main.c').writeAsStringSync('int main(void) { return 0; }\n');
+    gateway
+      ..reply(
+        calls: [
+          ('read', {'file_path': 'main.c'}),
+        ],
+      )
+      ..reply(
+        calls: [
+          ('edit', {'file_path': 'main.c', 'old_string': 'return 0;', 'new_string': 'return missing;'}),
+        ],
+      )
+      ..reply(
+        calls: [
+          ('diagnostics', {'path': 'main.c'}),
+        ],
+      )
+      ..reply(text: 'Found it.');
+    final session = await harness.start(spec('break main.c'));
+    final events = await drive(session, timeout: const Duration(seconds: 60));
+    final results = {for (final r in events.whereType<ToolResult>()) r.toolName: r.text};
+    expect(results['edit'], contains('This edit added 1 error in main.c; call diagnostics to see it.'));
+    expect(results['diagnostics'], startsWith('1 error, 0 warnings in 1 file:'));
+    expect(results['diagnostics'], contains('main.c:1:'));
+    await (session as StopsHelpers).stopHelpers();
+  }, skip: File('/usr/bin/clangd').existsSync() ? false : 'clangd is not installed');
+
   test('MCP servers stop after the session sits idle and start again with its next run', () async {
     final pids = File('$work/pids.txt');
     final server = File('$work/echo_mcp.py')
@@ -924,8 +952,8 @@ for line in sys.stdin:
     else: r = {}
     print(json.dumps({"jsonrpc": "2.0", "id": m["id"], "result": r}), flush=True)
 ''');
-    EveryAISession.mcpIdle = const Duration(milliseconds: 300);
-    addTearDown(() => EveryAISession.mcpIdle = const Duration(minutes: 10));
+    EveryAISession.helpersIdle = const Duration(milliseconds: 300);
+    addTearDown(() => EveryAISession.helpersIdle = const Duration(minutes: 10));
     gateway
       ..reply(calls: [('echo', <String, Object?>{})])
       ..reply(text: 'one')
@@ -974,7 +1002,7 @@ for line in sys.stdin:
     ];
     expect(echoed, hasLength(2));
     expect(echoed.last, contains('echoed'));
-    await (session as StopsMcpServers).stopMcpServers();
+    await (session as StopsHelpers).stopHelpers();
     await session.close();
   });
 

@@ -289,10 +289,10 @@ abstract interface class AsksAside {
 /// run carries on; only refusing every call at once (no [callIds]) parks it.
 abstract interface class PerCallApprovals {}
 
-/// A session that runs MCP servers itself (the EveryAI harness) and can stop them: when the session is deleted, and
-/// after it has sat idle. Its next run starts them again.
-abstract interface class StopsMcpServers {
-  Future<void> stopMcpServers();
+/// A session that runs helper processes itself (the EveryAI harness: MCP servers, language servers) and can stop
+/// them: when the session is deleted, and after it has sat idle. Its next run starts them again.
+abstract interface class StopsHelpers {
+  Future<void> stopHelpers();
 }
 
 /// A session that retries failed model calls itself (the EveryAI harness):

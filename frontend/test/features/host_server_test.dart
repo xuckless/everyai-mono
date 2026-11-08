@@ -161,6 +161,7 @@ void main() {
         'bug_check',
         'check',
         'diff_stats',
+        'diagnostics',
         'goal_check',
         if (hostScriptsAvailable) 'run_script',
         'run_workflow',
@@ -188,7 +189,7 @@ void main() {
     addTearDown(c.close);
     expect(
       [for (final t in c.tools) t['name']],
-      ['security_alert', 'bug_check', 'check', 'diff_stats', 'report_issue'],
+      ['security_alert', 'bug_check', 'check', 'diff_stats', 'diagnostics', 'report_issue'],
     );
     for (final name in ['fork', 'run_workflow', 'ask_user_question', 'present_plan', 'memory']) {
       final r = await post(rpc('tools/call', {'name': name, 'arguments': <String, Object?>{}}), token: w.token);

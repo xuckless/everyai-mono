@@ -1,5 +1,7 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import 'lsp_io.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -50,6 +52,7 @@ abstract final class ToolNames {
   static const app = appToolName;
   static const runScript = 'run_script';
   static const memory = 'memory';
+  static const diagnostics = 'diagnostics';
 }
 
 /// The tools a small local model gets (the EveryAI harness's light profile).
@@ -85,6 +88,7 @@ const actionKinds = {
   ToolNames.app: 'AppAction',
   ToolNames.runScript: 'ScriptAction',
   ToolNames.memory: 'MemoryAction',
+  ToolNames.diagnostics: 'DiagnosticsAction',
 };
 
 Map<String, Object?> _fn(String name, String description, Map<String, Object?> properties, List<String> required) => {
@@ -290,6 +294,19 @@ final _specs = [
       'context': {'type': 'integer', 'description': 'Lines of context around each match (content mode)'},
     },
     ['pattern'],
+  ),
+  // Prompt reason: language servers find type and syntax errors in seconds, where a build or test run takes far
+  // longer; an edit's result only says when it added errors, so the model needs a way to read them.
+  _fn(
+    ToolNames.diagnostics,
+    "Errors and warnings from the project's language servers (TypeScript/JavaScript, Python, Dart, Go, Rust, "
+    'C/C++) for one file, or for every file you read or changed in this session when path is left out. Faster '
+    'than a build for type and syntax errors; an edit that adds errors says so. A server starts on first use, '
+    'which can take a few seconds.',
+    {
+      'path': {'type': 'string', 'description': 'The file to check; leave out for every file checked so far'},
+    },
+    [],
   ),
   _fn(
     ToolNames.glob,
@@ -595,9 +612,13 @@ final class ToolRunner {
     this.pushTargets,
     this.loadLoginEnv = false,
     this.packages,
+    this.lsp,
   }) : scrubber = scrubber ?? Scrubber.forProject(root, extra: [gateway.apiKey]);
 
   final String root;
+
+  /// The session's language servers (diagnostics, and the hint after edits); null: none.
+  final LspHub? lsp;
 
   /// Folders outside [root] whose files are the user's own (the session's
   /// skills, see [skillFolders]): read doesn't mark them as outside text.
@@ -822,10 +843,11 @@ final class ToolRunner {
         ToolNames.killShell => await _killShell(args),
         ToolNames.monitor => await _monitor(args, cancel),
         ToolNames.bashInput => await _bashInput(args),
-        ToolNames.read => _readFile(args),
-        ToolNames.write => _writeFile(args),
-        ToolNames.edit => _editFile(args),
-        ToolNames.applyPatch => _applyPatch(args),
+        ToolNames.read => _warmed(args, _readFile(args)),
+        ToolNames.write => await _withHint(tool, args, _writeFile),
+        ToolNames.edit => await _withHint(tool, args, _editFile),
+        ToolNames.applyPatch => await _withHint(tool, args, _applyPatch),
+        ToolNames.diagnostics => await _diagnostics(args),
         ToolNames.grep => await _grep(args),
         ToolNames.glob => await _glob(args),
         ToolNames.todo => const ToolOutput('Todos updated. Keep working through them.'),
@@ -849,6 +871,60 @@ final class ToolRunner {
     } on Object catch (e) {
       return ToolOutput('Error: $e', isError: true);
     }
+  }
+
+  /// A file read is opened in its language server in the background, so a later edit has findings to compare with.
+  ToolOutput _warmed(Map<String, Object?> args, ToolOutput out) {
+    if (args['file_path'] case final String p when !out.isError) lsp?.warm(resolvePath(root, p));
+    return out;
+  }
+
+  /// Runs an edit tool, then adds one line when it left a file with more errors than before (see
+  /// [editDiagnosticsHint]). Files no server knew before the edit are compared with their old text, when the result
+  /// has it; a server that doesn't answer in a few seconds (one still starting) adds nothing.
+  Future<ToolOutput> _withHint(
+    String tool,
+    Map<String, Object?> args,
+    ToolOutput Function(Map<String, Object?>) edit,
+  ) async {
+    final hub = lsp;
+    final paths = hub == null
+        ? const <String>[]
+        : [
+            for (final p
+                in tool == ToolNames.applyPatch
+                    ? patchTargets(args['patch'] as String? ?? '')
+                    : [args['file_path'] as String? ?? ''])
+              if (p.isNotEmpty && hub.handles(p)) resolvePath(root, p),
+          ].take(3).toList();
+    final before = {for (final p in paths) p: await hub!.knownErrors(p)};
+    final out = edit(args);
+    if (out.isError || paths.isEmpty) return out;
+    const wait = Duration(seconds: 3);
+    final hints = <String>[];
+    for (final p in paths) {
+      var was = before[p];
+      if (was == null && out.observation['path'] == p) {
+        final old = out.observation['old_content'];
+        was = old is String && old.isNotEmpty
+            ? lspErrors(await hub!.check(p, text: old, timeout: wait) ?? const [])
+            : 0;
+      }
+      final now = await hub!.check(p, timeout: wait);
+      if (now == null) continue;
+      if (editDiagnosticsHint(_relative(p), was ?? 0, lspErrors(now)) case final h?) hints.add(h);
+    }
+    return hints.isEmpty
+        ? out
+        : ToolOutput('${out.text}\n${hints.join('\n')}', observation: out.observation, images: out.images);
+  }
+
+  Future<ToolOutput> _diagnostics(Map<String, Object?> args) async {
+    final hub = lsp;
+    if (hub == null) return const ToolOutput('Error: no language servers in this session.', isError: true);
+    final path = args['path'] as String? ?? '';
+    final a = await diagnosticsAnswer(hub, root, path.trim().isEmpty ? '' : resolvePath(root, path));
+    return ToolOutput(a.text, isError: a.isError);
   }
 
   Future<ToolOutput> _browse(Map<String, Object?> args) async {
