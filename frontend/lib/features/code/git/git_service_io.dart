@@ -542,10 +542,10 @@ Future<({int ahead, int behind})> aheadBehind(SessionWorktree w) async {
   return (ahead: ahead, behind: behind);
 }
 
-/// Fast-forwards the base branch in the main checkout to the session branch, which must be one commit on top of
-/// it ([GitService.mergeReady]). Returns the merged commit. Nothing merges when the base moved (not a fast
-/// forward): [BaseMoved].
-Future<String> fastForwardMerge(SessionWorktree w) async {
+/// Fast-forwards the base branch in the main checkout to [sha], the commit the user confirmed, which must be one
+/// commit on top of it. Returns the merged commit. Nothing merges when the base moved (not a fast forward):
+/// [BaseMoved]; any other failure is a [GitError] with git's own words.
+Future<String> fastForwardMerge(SessionWorktree w, String sha) async {
   final dirty = await _out(w.repoRoot, ['status', '--porcelain', '--untracked-files=no']);
   if (dirty.isNotEmpty) {
     throw const GitError('Your main checkout has uncommitted changes. Commit or stash them, then merge again.');
@@ -554,13 +554,25 @@ Future<String> fastForwardMerge(SessionWorktree w) async {
   if (current != w.baseBranch) {
     throw GitError('Your main checkout is on $current. Switch it to ${w.baseBranch} to merge this session.');
   }
-  final res = await _git(w.repoRoot, ['merge', '--ff-only', '-q', w.branch], check: false);
-  if (res.exitCode != 0) throw const BaseMoved();
+  final onTop = await _git(w.repoRoot, ['merge-base', '--is-ancestor', w.baseBranch, sha], check: false);
+  if (onTop.exitCode != 0) throw const BaseMoved();
+  if (await _out(w.repoRoot, ['rev-list', '--count', '${w.baseBranch}..$sha']) != '1') {
+    throw GitError('The commit to merge is no longer one commit on top of ${w.baseBranch}. Press Merge again.');
+  }
+  final res = await _git(w.repoRoot, ['merge', '--ff-only', '-q', sha], check: false);
+  if (res.exitCode != 0) {
+    final why = '${res.stderr}'.trim();
+    throw GitError(why.isEmpty ? "git couldn't fast-forward ${w.baseBranch}." : why);
+  }
   return _out(w.repoRoot, ['rev-parse', 'HEAD']);
 }
 
-/// The subject of the session branch's newest commit.
-Future<String> headSubject(SessionWorktree w) => _out(w.path, ['log', '-1', '--format=%s']);
+/// The session worktree's newest commit and its subject: what Merge would put on the base.
+Future<({String sha, String subject})> mergeCandidate(SessionWorktree w) async {
+  final out = await _out(w.path, ['log', '-1', '--format=%H%n%s']);
+  final [sha, ...subject] = out.split('\n');
+  return (sha: sha, subject: subject.join('\n'));
+}
 
 /// Pushes the session branch. Not to a folder on this computer: git runs that repository's own hooks (and a
 /// `receivepack` the repository sets) here, with none of EveryAI's flags.

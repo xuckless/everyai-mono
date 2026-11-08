@@ -143,12 +143,12 @@ abstract final class GitService {
 
   static Future<({int ahead, int behind})> aheadBehind(SessionWorktree w) => impl.aheadBehind(w);
 
-  /// Fast-forwards the base branch in the main checkout to the session branch's one commit; [BaseMoved] when the
-  /// base has moved on since.
-  static Future<String> fastForwardMerge(SessionWorktree w) => impl.fastForwardMerge(w);
+  /// Fast-forwards the base branch in the main checkout to [sha] (the session's one prepared commit, as the user
+  /// confirmed it); [BaseMoved] when the base has moved on since.
+  static Future<String> fastForwardMerge(SessionWorktree w, String sha) => impl.fastForwardMerge(w, sha);
 
-  /// The subject of the session branch's newest commit.
-  static Future<String> headSubject(SessionWorktree w) => impl.headSubject(w);
+  /// The session worktree's newest commit and its subject.
+  static Future<({String sha, String subject})> mergeCandidate(SessionWorktree w) => impl.mergeCandidate(w);
 
   /// What a fork changed in its own worktree since its base.
   static Future<List<FileDiff>> forkDiff(ForkCopy copy) => impl.forkDiff(copy);

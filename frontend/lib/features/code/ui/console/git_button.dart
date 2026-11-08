@@ -132,17 +132,30 @@ Future<void> mergeLocally(BuildContext context, WidgetRef ref, CodeSessionInfo i
     return;
   }
   if (dirty || snapshot.ahead != 1 || snapshot.behind != 0) return ask(prepareMergeRequest(w.baseBranch));
-  final subject = await GitService.headSubject(w);
+  // While the agent works its branch can still change under the dialog.
+  bool running() => ref.read(codeSessionProvider(info.id)).transcript.running;
+  if (running()) {
+    if (context.mounted) showAdaptiveToast(context, 'The agent is still working. Merge once it has finished.');
+    return;
+  }
+  final candidate = await GitService.mergeCandidate(w);
   if (!context.mounted) return;
   final go = await showAdaptiveConfirm(
     context,
     title: 'Merge into ${w.baseBranch}?',
-    message: '${w.baseBranch} in ${w.repoRoot} moves forward to the agent\'s commit "$subject".',
+    message:
+        '${w.baseBranch} in ${w.repoRoot} moves forward to the agent\'s commit "${candidate.subject}" '
+        '(${candidate.sha.substring(0, 7)}).',
     confirmLabel: 'Merge',
   );
   if (!go || !context.mounted) return;
+  if (running()) {
+    showAdaptiveToast(context, 'The agent started working again, so nothing was merged.');
+    return;
+  }
   try {
-    final sha = await git.fastForwardMerge();
+    // Exactly the commit the user confirmed, whatever the branch points at by now.
+    final sha = await git.fastForwardMerge(candidate.sha);
     if (context.mounted) showAdaptiveToast(context, 'Merged into ${w.baseBranch} as ${sha.substring(0, 7)}');
   } on BaseMoved {
     return ask(baseMovedRequest(w.baseBranch));

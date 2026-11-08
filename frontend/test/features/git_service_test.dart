@@ -314,15 +314,29 @@ void main() {
     File('${w.path}/README.md').writeAsStringSync('# App\n\nDocs.\n');
     expect(await GitService.commitAll(w, 'feat: add new'), isTrue);
     expect((await GitService.aheadBehind(w)).ahead, 1);
-    expect(await GitService.headSubject(w), 'feat: add new');
+    final candidate = await GitService.mergeCandidate(w);
+    expect(candidate.subject, 'feat: add new');
 
     // A dirty main checkout is refused.
     File('$repo/README.md').writeAsStringSync('dirty\n');
-    await expectLater(GitService.fastForwardMerge(w), throwsA(isA<GitError>()));
+    await expectLater(GitService.fastForwardMerge(w, candidate.sha), throwsA(isA<GitError>()));
     await _git(repo, ['checkout', '--', 'README.md']);
 
-    final sha = await GitService.fastForwardMerge(w);
-    expect(sha, await GitService.headCommit(w));
+    // A commit the agent made after the user confirmed doesn't come along.
+    File('${w.path}/later.txt').writeAsStringSync('later\n');
+    expect(await GitService.commitAll(w, 'later'), isTrue);
+
+    // An untracked file the merge would overwrite is git's error, not "base moved".
+    File('$repo/lib/new.txt').writeAsStringSync('mine\n');
+    await expectLater(
+      GitService.fastForwardMerge(w, candidate.sha),
+      throwsA(isA<GitError>().having((e) => e is BaseMoved, 'base moved', isFalse)),
+    );
+    File('$repo/lib/new.txt').deleteSync();
+
+    final sha = await GitService.fastForwardMerge(w, candidate.sha);
+    expect(sha, candidate.sha);
+    expect(File('$repo/later.txt').existsSync(), isFalse);
     expect(await _git(repo, ['log', '-1', '--format=%H %s']), '$sha feat: add new');
     expect(await _git(repo, ['rev-list', '--count', 'HEAD']), '2');
     expect(File('$repo/lib/new.txt').readAsStringSync(), 'feature\n');
@@ -765,7 +779,10 @@ void main() {
       // The main checkout moved on: nothing merges there (the agent rebases in its worktree instead).
       File('$repo/lib/a.txt').writeAsStringSync('ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n');
       await safe(repo, ['commit', '-q', '-am', 'Shout one']);
-      await expectLater(GitService.fastForwardMerge(w), throwsA(isA<BaseMoved>()));
+      await expectLater(
+        GitService.fastForwardMerge(w, (await GitService.mergeCandidate(w)).sha),
+        throwsA(isA<BaseMoved>()),
+      );
       expect(await safe(repo, ['status', '--porcelain', '--untracked-files=no']), isEmpty);
       expect(File('$repo/lib/a.txt').readAsStringSync(), startsWith('ONE\n'));
 

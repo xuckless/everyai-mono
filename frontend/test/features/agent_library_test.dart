@@ -222,6 +222,10 @@ void main() {
       expect(childSetup(loose, parentMode: AgentMode.ask, parentModel: 'm').mode, AgentMode.ask);
       expect(childSetup(loose, parentMode: AgentMode.plan, parentModel: 'm').mode, AgentMode.plan);
       expect(stricterMode(AgentMode.autoEdit, AgentMode.ask), AgentMode.ask);
+      // Auto would hand a Full auto fork's calls to Codex's own reviewer, past EveryAI's floor.
+      expect(stricterMode(AgentMode.auto, AgentMode.fullAuto), AgentMode.fullAuto);
+      expect(stricterMode(AgentMode.bypass, AgentMode.auto), AgentMode.bypass);
+      expect(stricterMode(AgentMode.auto, AgentMode.ask), AgentMode.ask);
     });
 
     test('an unknown model falls back to the parent\'s', () {

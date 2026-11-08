@@ -2806,6 +2806,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         _decided.remove(id);
         _escalated.add(id);
       }
+      // The approval card reads what is decided: the passed-back call is open there again.
+      state = state.copyWith(decided: Map.unmodifiable(_decided));
     }
     if (settled != null) _escalated.remove(settled);
     if (ended) _escalated.clear();
@@ -7009,8 +7011,8 @@ base class CodeGit extends AsyncNotifier<GitSnapshot> {
   }
 
   /// Fast-forwards the base branch in the main checkout to the session's one prepared commit.
-  Future<String> fastForwardMerge() async {
-    final sha = await GitService.fastForwardMerge(_w);
+  Future<String> fastForwardMerge(String commit) async {
+    final sha = await GitService.fastForwardMerge(_w, commit);
     if (_info case final i? when i.prNumber != null) {
       ref.read(codeSessionsProvider.notifier).update(i.copyWith(clearPr: true));
     }

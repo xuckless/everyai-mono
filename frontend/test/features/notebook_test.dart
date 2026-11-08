@@ -25,13 +25,13 @@ String notebook() =>
         {
           'cell_type': 'markdown',
           'id': 'intro',
-          'metadata': {},
+          'metadata': <String, Object?>{},
           'source': ['# Sales\n', 'By month.'],
         },
         {
           'cell_type': 'code',
           'id': 'load',
-          'metadata': {},
+          'metadata': <String, Object?>{},
           'execution_count': 3,
           'source': ['import pandas as pd\n', 'df = pd.read_csv("s.csv")'],
           'outputs': [
@@ -46,7 +46,7 @@ String notebook() =>
                 'image/png': '$_png\n',
                 'text/plain': ['<Figure>'],
               },
-              'metadata': {},
+              'metadata': <String, Object?>{},
             },
             {
               'output_type': 'error',

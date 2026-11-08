@@ -244,8 +244,13 @@ AgentMode? parseAgentMode(String raw) => switch (raw.toLowerCase().replaceAll(Re
   _ => null,
 };
 
-/// The more careful of two modes: Plan, then Ask, Auto-edit, Auto, Full auto.
+/// The more careful of two modes: Plan, then Ask, Auto-edit, Auto, Full auto. Auto never replaces Full auto or
+/// Bypass: it hands the calls to the lead's own reviewer, which on Codex skips EveryAI's floor and deny rules, so
+/// it would be less careful there, not more.
 AgentMode stricterMode(AgentMode a, AgentMode b) {
+  bool free(AgentMode m) => m == AgentMode.fullAuto || m == AgentMode.bypass;
+  if (a == AgentMode.auto && free(b)) return b;
+  if (b == AgentMode.auto && free(a)) return a;
   int rank(AgentMode m) => switch (m) {
     AgentMode.plan => 0,
     AgentMode.ask => 1,
