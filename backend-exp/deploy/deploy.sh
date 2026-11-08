@@ -3,17 +3,16 @@
 # sends only the binary, the Dockerfile and the compose file, and builds the
 # image on the VM (no local Docker needed; no .env or key leaves this machine).
 # Usage: backend-exp/deploy/deploy.sh
-#   EVERYAI_INGRESS=tunnel EVERYAI_HOSTNAME=api.everyai.dev backend-exp/deploy/deploy.sh
-#     serves through the Cloudflare Tunnel (docker-compose.tunnel.yml; TUNNEL_TOKEN in tunnel.env)
-#     instead of Anole's own TLS on :8443.
+#   Serves api.everyai.dev through the Cloudflare Tunnel by default (docker-compose.tunnel.yml; TUNNEL_TOKEN in tunnel.env)
+#   instead of Anole's own TLS on :8443 (EVERYAI_INGRESS=tls, with EVERYAI_HOSTNAME set).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 vm="${EVERYAI_VM:-ttt-server}"
 zone="${EVERYAI_ZONE:-us-east1-b}"
 project="${EVERYAI_PROJECT:-ttt-ultimate-b7097a}"
-host="${EVERYAI_HOSTNAME:-everyai.136-108-68-64.sslip.io}"
+host="${EVERYAI_HOSTNAME:-api.everyai.dev}"
 tag="everyai-backend:0.1.0-dev-nonsigned"
-ingress="${EVERYAI_INGRESS:-tls}"
+ingress="${EVERYAI_INGRESS:-tunnel}"
 case "$ingress" in tls|tunnel) ;; *) echo "EVERYAI_INGRESS is tls or tunnel" >&2; exit 64 ;; esac
 
 out="$(mktemp -d)"

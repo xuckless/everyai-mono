@@ -20,14 +20,14 @@ on:
     inputs:
       api:
         description: Backend the builds talk to
-        default: https://everyai.136-108-68-64.sslip.io:8443
+        default: https://api.everyai.dev
 
 permissions:
   contents: write
 
 env:
   FLUTTER_VERSION: 3.47.9
-  EVERYAI_API: ${{ inputs.api || 'https://everyai.136-108-68-64.sslip.io:8443' }}
+  EVERYAI_API: ${{ inputs.api || 'https://api.everyai.dev' }}
 
 jobs:
   macos:

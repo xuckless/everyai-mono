@@ -1276,6 +1276,13 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   no real mail sent, no provider checked live, nothing deployed. Known flakes under full-suite load:
   `code_lead_switch_test`, `workflow_controller_test` (pass alone).
 
+- **API on its own domain (2026-11-08).** The dev backend serves `https://api.everyai.dev` through a Cloudflare Tunnel
+  (named tunnel `everyai-api`, route `api.everyai.dev` → `http://backend:8080`, cloudflared in the compose project with
+  only its token in `/opt/everyai/tunnel.env`); `deploy.sh` defaults to it. `launch.sh` and the dev-build and release
+  workflows point there; the old `:8443` sslip address no longer answers. Checked live: ping, 401 signed out, 400
+  `keys_not_accepted`, `relay_check.dart` 4/4. Left on the VM from the direct setup: ttt's Caddy block for the sslip
+  name, the `everyai-cert-reload` timer and the `everyai-api` firewall rule (owner's call to remove).
+
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),

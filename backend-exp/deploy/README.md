@@ -1,7 +1,10 @@
 # Dev deployment (0.1.0-dev-nonsigned)
 
 The dev backend runs on the `ttt-server` VM (GCP project `ttt-ultimate-b7097a`, us-east1-b) as a container,
-at `https://everyai.136-108-68-64.sslip.io:8443`.
+at **`https://api.everyai.dev`**, served through a Cloudflare Tunnel (named tunnel `everyai-api`; no open port or
+certificate on the VM). `deploy.sh` deploys that way by default. The older direct setup below (Anole's own TLS on
+`:8443` at `everyai.136-108-68-64.sslip.io`, the certificate from ttt's Caddy) is the fallback
+(`EVERYAI_INGRESS=tls EVERYAI_HOSTNAME=…`); it is not running now.
 
 - **Optional accounts, no server keys.** Production config (`ANOLE_ENV=production`, `DEV_AUTH=false`,
   `BILLING_ENABLED=false`): a request without a token is anonymous; signing in is by magic link (Resend). No
