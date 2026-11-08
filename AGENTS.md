@@ -1265,6 +1265,17 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   clear no pauses), and an outside lead gets a `<workflow-checkpoint>` and answers with off_track. Off track pauses
   the run (`PauseReason.offTrack`; Adjust / Go on). Not live-tested.
 
+- **Accounts optional, magic link, BYOK local-only, relay egress, vault dev (2026-11-08; branch `accounts`, plan
+  `~/.claude/plans/accounts.md`).** Billing parked behind `BILLING_ENABLED`/`BillingFlag`; signed out is a normal
+  state (no forced sign-in, `DEV_SKIP_AUTH` gone); sign-in is magic link only (`magic.zig`, `mail.zig` Resend,
+  `features/auth/` `MagicFlow`); remote control works without an account (tokens are the identity, `anonymous`
+  owner, claim on sign-in: `HostClaim`) and the relay is metered and queued (`egress.zig`); BYOK from
+  `providers.json` with keys reaching only the bundled server (`byok.Refuse`, `LocalGateway`); hosting runbook,
+  swapfile, Cloudflare Tunnel option and `tool/relay_check.dart` (none run against the VM); vault V0–V2 dev only
+  (`docs/vault/`, `features/vault/`, `vault.zig`). Contracts above. Not live-tested beyond a local relay check:
+  no real mail sent, no provider checked live, nothing deployed. Known flakes under full-suite load:
+  `code_lead_switch_test`, `workflow_controller_test` (pass alone).
+
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),
