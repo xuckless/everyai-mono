@@ -13,6 +13,7 @@ import '../harness/session_processes.dart' show registerDriverRoot, sessionEnvVa
 import 'driver.dart';
 import 'detection/cli_scan.dart' show findCli;
 import 'driver_process.dart';
+import 'json_rpc.dart' show EndsInput;
 
 Future<DriverProcess> spawnDriver({
   required String executable,
@@ -284,7 +285,7 @@ final class _TtyProcess implements DriverProcess {
   }
 }
 
-final class _Process implements DriverProcess {
+final class _Process implements DriverProcess, EndsInput {
   _Process(this._process, this._tag, this._log) {
     _process.stderr.transform(const Utf8Decoder(allowMalformed: true)).listen((s) {
       _log.write(s);
@@ -333,6 +334,11 @@ final class _Process implements DriverProcess {
   @override
   void send(String line) {
     if (!_closed && !_exited) _process.stdin.writeln(line);
+  }
+
+  @override
+  void endInput() {
+    if (!_closed && !_exited) unawaited(_process.stdin.close().catchError((Object _) {}));
   }
 
   @override

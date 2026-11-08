@@ -18,7 +18,7 @@ import '../driver_events.dart';
 import '../driver_policy.dart';
 import '../driver_process.dart';
 import '../event_journal.dart';
-import '../json_rpc.dart' show LineChannel;
+import '../json_rpc.dart' show EndsInput, LineChannel;
 import 'claude_files.dart';
 import 'claude_wire.dart';
 
@@ -843,6 +843,8 @@ final class ClaudeSession
       sessionTag: _meta.sessionTag,
       logPath: '$_dir/$id-usage.log',
     );
+    // `claude -p` waits 3 s for stdin before it starts; there is nothing to send.
+    if (c case final EndsInput input) input.endInput();
     try {
       final reply = await c.lines
           .map(_json)

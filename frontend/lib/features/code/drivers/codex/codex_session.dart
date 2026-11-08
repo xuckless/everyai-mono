@@ -55,7 +55,8 @@ final class _Pending {
   final answer = Completer<_Decision>();
 }
 
-final class CodexSession implements HarnessSession, PerCallApprovals, SteersRuns, HasNativeCommands, NativeModes {
+final class CodexSession
+    implements HarnessSession, PerCallApprovals, SteersRuns, HasNativeCommands, NativeModes, RefreshesPlanLimits {
   CodexSession(
     LineChannel channel, {
     required this.cwd,
@@ -299,6 +300,50 @@ final class CodexSession implements HarnessSession, PerCallApprovals, SteersRuns
       onCancel: () => _listeners.remove(c),
     );
     return c.stream;
+  }
+
+  /// Merges one limit's snapshot (sparse: a field left out keeps what came before) and sends [PlanLimits] when the
+  /// numbers changed. A [full] snapshot (a read, not a notification) replaces the old one, and doesn't decide which
+  /// limit a later usage-limit error belongs to.
+  void _takeRateLimits(Map<String, Object?> update, {String? limitId, bool full = false}) {
+    final id = limitId ?? update['limitId'] as String? ?? 'codex';
+    _rateLimits[id] = {
+      if (!full) ...?_rateLimits[id],
+      for (final e in update.entries)
+        if (e.value != null) e.key: e.value,
+    };
+    if (!full) _lastLimit = id;
+    if (codexPlanLimits(_rateLimits, id: _newId()) case final limits?) {
+      final said = [
+        limits.warning,
+        for (final w in limits.windows)
+          '${w.name} ${w.used} ${w.minutes} ${w.resetsAt == null ? '' : w.resetsAt!.millisecondsSinceEpoch ~/ 60000}',
+      ].join('|');
+      if (said != _limitsSaid) {
+        _limitsSaid = said;
+        _emit(limits);
+      }
+    }
+  }
+
+  /// `/usage`: asks Codex for the plan's windows now (`account/rateLimits/read`, no model call); they arrive as a
+  /// [PlanLimits] event when they changed.
+  @override
+  Future<void> refreshPlanLimits() async {
+    final Object? res;
+    try {
+      res = await _peer.request('account/rateLimits/read', const <String, Object?>{}, codexSetupTimeout);
+    } on Object {
+      // An older Codex without the method, or no answer: no fresh windows; the card keeps the last ones it saw.
+      return;
+    }
+    if (res case {'rateLimitsByLimitId': final Map<String, Object?> byId} when byId.isNotEmpty) {
+      for (final e in byId.entries) {
+        if (e.value case final Map<String, Object?> snapshot) _takeRateLimits(snapshot, limitId: e.key, full: true);
+      }
+    } else if (res case {'rateLimits': final Map<String, Object?> snapshot}) {
+      _takeRateLimits(snapshot, full: true);
+    }
   }
 
   void _emit(HarnessEvent e) {
@@ -648,26 +693,7 @@ final class CodexSession implements HarnessSession, PerCallApprovals, SteersRuns
         // 1637-1645 @ rust-v0.166.0).
         // Each snapshot is one limit's (`limitId`, "codex" in every
         // recording), so limits are kept apart.
-        if (params['rateLimits'] case final Map<String, Object?> update) {
-          final id = update['limitId'] as String? ?? 'codex';
-          _rateLimits[id] = {
-            ...?_rateLimits[id],
-            for (final e in update.entries)
-              if (e.value != null) e.key: e.value,
-          };
-          _lastLimit = id;
-          if (codexPlanLimits(_rateLimits, id: _newId()) case final limits?) {
-            final said = [
-              limits.warning,
-              for (final w in limits.windows)
-                '${w.name} ${w.used} ${w.minutes} ${w.resetsAt == null ? '' : w.resetsAt!.millisecondsSinceEpoch ~/ 60000}',
-            ].join('|');
-            if (said != _limitsSaid) {
-              _limitsSaid = said;
-              _emit(limits);
-            }
-          }
-        }
+        if (params['rateLimits'] case final Map<String, Object?> update) _takeRateLimits(update);
       case 'error':
         // Retries (willRetry: true, "Reconnecting... n/5") aren't shown.
         if (params['willRetry'] == true) return;

@@ -15,6 +15,12 @@ abstract interface class LineChannel {
   Future<void> close();
 }
 
+/// A [LineChannel] whose input can be ended while its output keeps coming: a one-shot CLI that reads stdin until
+/// it closes (`claude -p` waits for it) answers at once.
+abstract interface class EndsInput {
+  void endInput();
+}
+
 /// An error reply, or what a handler throws to send one.
 final class JsonRpcError implements Exception {
   const JsonRpcError(this.code, this.message, {this.data});

@@ -4850,19 +4850,25 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   }
 
   /// Shows the session's tokens and spend as an aside card (`/usage`). A lead that reports the plan's usage itself
-  /// ([ReportsPlanUsage], Claude Code's own `/usage`) adds its report to the card (the answer; an error when it can't).
+  /// ([ReportsPlanUsage], Claude Code's own `/usage`) adds its report to the card (the answer; an error when it can't);
+  /// one that can be asked for its limits ([RefreshesPlanLimits], Codex) is asked, so the card's bars are current.
   Future<void> showCost() async {
     if (state.asides.any((a) => a.kind == AsideKind.cost)) return;
     if (ref.exists(codeUsageProvider(sessionId))) {
       ref.read(codeUsageProvider(sessionId).notifier).refreshSoon(delay: Duration.zero, force: true);
     }
     final session = _session;
-    final reports = session is ReportsPlanUsage;
-    final aside = Aside(id: ++_asideIds, kind: AsideKind.cost, busy: reports);
+    final asks = session is ReportsPlanUsage || session is RefreshesPlanLimits;
+    final aside = Aside(id: ++_asideIds, kind: AsideKind.cost, busy: asks);
     _putAside(aside);
-    if (!reports) return;
+    if (!asks) return;
     try {
-      final text = await (session as ReportsPlanUsage).planUsage();
+      // Codex: fresh windows come as a PlanLimits event, which the card draws as bars; no text of its own.
+      final text = switch (session) {
+        final ReportsPlanUsage s => await s.planUsage(),
+        final RefreshesPlanLimits s => await s.refreshPlanLimits().then((_) => ''),
+        _ => '',
+      };
       if (ref.mounted && state.asides.any((a) => a.id == aside.id)) _putAside(aside.done(text));
     } on Object catch (e) {
       final why = e is HarnessError ? e.message : '$e';

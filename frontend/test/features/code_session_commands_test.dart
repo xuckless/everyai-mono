@@ -361,4 +361,79 @@ void main() {
     expect(find.text('Model calls'), findsOneWidget);
     expect(find.text('3'), findsOneWidget);
   });
+
+  testWidgets('the usage card draws every harness\'s limits as bars and keeps Dismiss in reach when short', (
+    tester,
+  ) async {
+    var dismissed = 0;
+    await tester.pumpWidget(
+      m.MaterialApp(
+        home: m.Material(
+          child: EveryThemeScope(
+            theme: EveryTheme.resolve(DesignLanguage.material, Brightness.light),
+            child: Align(
+              alignment: Alignment.bottomCenter,
+              child: AsideCard(
+                aside: const Aside(id: 3, kind: AsideKind.cost),
+                usage: const UsageTotals(calls: 3, promptTokens: 12000, completionTokens: 800, chargedMicros: 4200),
+                limitLines: const ['Spending cap (\$5.00): 40% used', 'This week (Opus): 76% used · resets Tue 20:00'],
+                maxBodyHeight: 72,
+                onDismiss: () => dismissed++,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Spending cap  ·  \$5.00', findRichText: true), findsOneWidget);
+    expect(find.text('40% used'), findsOneWidget);
+    expect(find.text('76% used'), findsOneWidget);
+    expect(find.text('Resets Tue 20:00'), findsOneWidget);
+    // The body scrolls inside 72pt; the header (title and Dismiss) stays on the card.
+    expect(tester.getSize(find.byType(AsideCard)).height, lessThan(160));
+    await tester.tap(find.byTooltip('Dismiss'));
+    expect(dismissed, 1);
+  });
+
+  testWidgets('Esc closes a card above the composer before it stops the agent', (tester) async {
+    final calls = <String>[];
+    var cards = 1;
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [slashCommandsProvider.overrideWithValue(builtInSlashCommands)],
+        child: m.MaterialApp(
+          home: m.Material(
+            child: EveryThemeScope(
+              theme: EveryTheme.resolve(DesignLanguage.material, Brightness.light),
+              child: Align(
+                alignment: Alignment.bottomCenter,
+                child: CodeComposer(
+                  busy: true,
+                  mode: AgentMode.autoEdit,
+                  onModeChanged: (_) {},
+                  onSend: (_, _) {},
+                  onStop: () => calls.add('stop'),
+                  onEscape: () {
+                    if (cards == 0) return false;
+                    cards--;
+                    calls.add('closed');
+                    return true;
+                  },
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byType(EditableText));
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(calls, ['closed']);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(calls, ['closed', 'stop']);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 }
