@@ -13,7 +13,8 @@ import 'package:every_ai/features/code/harness/everyai/llm.dart';
 import 'package:every_ai/features/code/harness/everyai/prompt_io.dart';
 import 'package:every_ai/features/code/harness/everyai/shell_io.dart';
 import 'package:every_ai/features/code/domain/bug_check.dart' show bugReviewSystem;
-import 'package:every_ai/features/code/domain/transcript.dart' show isOutOfCredits, planApprovedReason;
+import 'package:every_ai/features/code/domain/transcript.dart'
+    show isOutOfCredits, planApprovedMessage, planApprovedReason;
 import 'package:every_ai/features/code/drivers/usage_limit.dart';
 import 'package:every_ai/features/code/harness/everyai/scrub.dart';
 import 'package:every_ai/features/code/harness/everyai/tools_io.dart';
@@ -534,6 +535,68 @@ void main() {
     expect(events.whereType<ActionCall>().last.actionKind, 'ApplyPatchAction');
   });
 
+  test('a model switch keeps the family within a vendor and takes the new one across vendors', () async {
+    gateway
+      ..reply(text: 'one')
+      ..reply(text: 'two')
+      ..reply(text: 'three');
+    final session = await harness.start(spec('hello'));
+    await drive(session);
+    List<Object?> names(Map<String, Object?> r) => [
+      for (final t in r['tools']! as List) ((t as Map)['function'] as Map)['name'],
+    ];
+    String system(Map<String, Object?> r) => ((r['messages']! as List).first as Map)['content']! as String;
+    final first = gateway.requests.last;
+
+    SessionSpec on(String model) => SessionSpec(
+      workingDir: work,
+      model: model,
+      mode: AgentMode.fullAuto,
+      llmBaseUrl: gateway.baseUrl,
+      llmApiKey: 'sk-test',
+      sessionTag: 'tag-1',
+    );
+    // drive() replays the history, so wait for each new request instead.
+    Future<void> turn(String text, int requests) async {
+      await session.send(text);
+      for (var i = 0; i < 500 && gateway.requests.length < requests; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    }
+
+    await session.switchLlm(on('anthropic/claude-opus-5.5'));
+    await turn('again', 2);
+    expect(system(gateway.requests.last), system(first), reason: 'same family: the cached prefix holds');
+    expect(names(gateway.requests.last), names(first));
+
+    await session.switchLlm(on('openai/gpt-6.1'));
+    await turn('and again', 3);
+    expect(gateway.requests.last['model'], 'openai/gpt-6.1');
+    expect(names(gateway.requests.last), allOf(contains('apply_patch'), isNot(contains('edit'))));
+    expect(system(gateway.requests.last), isNot(system(first)));
+  });
+
+  test('a plan approved by a chat message is kept for compaction, like one approved on its card', () async {
+    gateway
+      ..reply(
+        calls: [
+          ('present_plan', {'title': 'Add a greeting', 'summary': 'Print hello.'}),
+        ],
+      )
+      ..reply(text: 'Waiting for your go.')
+      ..reply(text: 'Building it.');
+    final session = await harness.start(spec('add a greeting'));
+    // The card is answered with something other than an approval, so the run ends with no plan approved.
+    await drive(session, answer: (c) => c.toolName == 'present_plan' ? 'Let me think about it.' : null);
+    final dir = '${tmp.path}/data/everyai-sessions/${session.id}';
+    Map<String, Object?> state() => jsonDecode(File('$dir/state.json').readAsStringSync()) as Map<String, Object?>;
+    expect(state()['approved_plan'] ?? '', isEmpty);
+    final run = drive(session);
+    await session.send(planApprovedMessage);
+    await run;
+    expect(state()['approved_plan'], startsWith('# Add a greeting'));
+  });
+
   test('a message sent right after a stop (Option-Enter) runs instead of being dropped', () async {
     gateway
       ..delay = const Duration(milliseconds: 600)
@@ -842,6 +905,164 @@ for line in sys.stdin:
     final second = gateway.requests[1]['messages']! as List<Object?>;
     final last = second.last! as Map;
     expect(jsonEncode(last['content']), contains('data:image/png;base64,'));
+    await session.close();
+  });
+
+  test('an edit that adds errors says so in one line; diagnostics lists them (clangd)', () async {
+    File('$work/main.c').writeAsStringSync('int main(void) { return 0; }\n');
+    gateway
+      ..reply(
+        calls: [
+          ('read', {'file_path': 'main.c'}),
+        ],
+      )
+      // An edit doesn't wait for a server still starting: this call waits for it.
+      ..reply(
+        calls: [
+          ('diagnostics', {'path': 'main.c'}),
+        ],
+      )
+      ..reply(
+        calls: [
+          ('edit', {'file_path': 'main.c', 'old_string': 'return 0;', 'new_string': 'return missing;'}),
+        ],
+      )
+      ..reply(
+        calls: [
+          ('diagnostics', {'path': 'main.c'}),
+        ],
+      )
+      ..reply(text: 'Found it.');
+    final session = await harness.start(spec('break main.c'));
+    final events = await drive(session, timeout: const Duration(seconds: 60));
+    final results = {for (final r in events.whereType<ToolResult>()) r.toolName: r.text};
+    expect(
+      events.whereType<ToolResult>().where((r) => r.toolName == 'diagnostics').first.text,
+      'No errors or warnings in 1 file.',
+    );
+    expect(results['edit'], contains('This edit added 1 error in main.c; call diagnostics to see it.'));
+    expect(results['diagnostics'], startsWith('1 error, 0 warnings in 1 file:'));
+    expect(results['diagnostics'], contains('main.c:1:'));
+    await (session as StopsHelpers).stopHelpers();
+  }, skip: File('/usr/bin/clangd').existsSync() ? false : 'clangd is not installed');
+
+  test('a notebook reads as cells, and notebook_edit changes one cell by id', () async {
+    File('$work/nb.ipynb').writeAsStringSync(
+      jsonEncode({
+        'nbformat': 4,
+        'nbformat_minor': 5,
+        'metadata': <String, Object?>{},
+        'cells': [
+          {
+            'cell_type': 'code',
+            'id': 'c1',
+            'metadata': <String, Object?>{},
+            'execution_count': 1,
+            'source': ['print(1)'],
+            'outputs': [
+              {
+                'output_type': 'stream',
+                'name': 'stdout',
+                'text': ['1\n'],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    gateway
+      ..reply(
+        calls: [
+          ('read', {'file_path': 'nb.ipynb'}),
+        ],
+      )
+      ..reply(
+        calls: [
+          (
+            'notebook_edit',
+            {'file_path': 'nb.ipynb', 'edit_mode': 'replace', 'cell_id': 'c1', 'new_source': 'print(2)'},
+          ),
+        ],
+      )
+      ..reply(text: 'Done.');
+    final session = await harness.start(spec('change the cell'));
+    final events = await drive(session);
+    final results = [for (final r in events.whereType<ToolResult>()) r.text];
+    expect(results[0], contains('<cell id="c1" type="code" run="1">\nprint(1)'));
+    expect(results[1], 'Replaced cell c1 in $work/nb.ipynb.');
+    final cell = ((jsonDecode(File('$work/nb.ipynb').readAsStringSync()) as Map)['cells'] as List).single as Map;
+    expect(cell['source'], ['print(2)']);
+    expect(cell['outputs'], isEmpty);
+    expect(events.whereType<ActionCall>().last.actionKind, 'EditAction');
+  });
+
+  test('MCP servers stop after the session sits idle and start again with its next run', () async {
+    final pids = File('$work/pids.txt');
+    final server = File('$work/echo_mcp.py')
+      ..writeAsStringSync('''
+import json, os, sys
+open(${jsonEncode(pids.path)}, "a").write(str(os.getpid()) + "\\n")
+for line in sys.stdin:
+    m = json.loads(line)
+    if "id" not in m: continue
+    meth = m["method"]
+    if meth == "initialize": r = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}}
+    elif meth == "tools/list": r = {"tools": [{"name": "echo", "description": "Echoes", "inputSchema": {"type": "object"}}]}
+    elif meth == "tools/call": r = {"content": [{"type": "text", "text": "echoed"}]}
+    else: r = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": m["id"], "result": r}), flush=True)
+''');
+    EveryAISession.helpersIdle = const Duration(milliseconds: 300);
+    addTearDown(() => EveryAISession.helpersIdle = const Duration(minutes: 10));
+    gateway
+      ..reply(calls: [('echo', <String, Object?>{})])
+      ..reply(text: 'one')
+      ..reply(calls: [('echo', <String, Object?>{})])
+      ..reply(text: 'two');
+    final session = await harness.start(
+      SessionSpec(
+        workingDir: work,
+        model: 'anthropic/claude-sonnet-5.5',
+        mode: AgentMode.fullAuto,
+        llmBaseUrl: gateway.baseUrl,
+        llmApiKey: 'sk-test',
+        sessionTag: 'tag-1',
+        initialMessage: 'echo',
+        mcpConfig: {
+          'echo': {
+            'command': 'python3',
+            'args': [server.path],
+          },
+        },
+      ),
+    );
+    await drive(session);
+    bool alive(String pid) => Process.runSync('kill', ['-0', pid]).exitCode == 0;
+    final first = pids.readAsLinesSync().single;
+    expect(alive(first), isTrue);
+    await Future<void>.delayed(const Duration(seconds: 2));
+    expect(alive(first), isFalse, reason: 'stopped once the session sat idle');
+
+    // Full auto approves the MCP call, as drive() did for the first run.
+    final approve = session.events.listen((e) {
+      if (e is StateChange && e.executionStatus == ExecutionStatus.waitingForConfirmation) {
+        unawaited(session.respond(accept: true));
+      }
+    });
+    addTearDown(approve.cancel);
+    await session.send('again');
+    for (var i = 0; i < 500 && gateway.requests.length < 4; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(gateway.requests.length, 4);
+    expect(pids.readAsLinesSync(), hasLength(2), reason: 'the next run starts it again');
+    final echoed = [
+      for (final m in gateway.requests.last['messages']! as List)
+        if ((m as Map)['role'] == 'tool') m['content'],
+    ];
+    expect(echoed, hasLength(2));
+    expect(echoed.last, contains('echoed'));
+    await (session as StopsHelpers).stopHelpers();
     await session.close();
   });
 

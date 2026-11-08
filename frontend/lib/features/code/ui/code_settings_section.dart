@@ -20,6 +20,7 @@ import '../../settings/settings_registry.dart';
 import '../../settings/ui/settings_modal.dart';
 import '../../settings/ui/settings_sections.dart' show settingsPicker;
 import '../code_providers.dart';
+import '../forks/orphan_forks.dart';
 import '../code_settings_providers.dart';
 import '../domain/agent_mode.dart';
 import '../domain/code_session.dart';
@@ -259,6 +260,7 @@ class _CodeSettingsSectionState extends ConsumerState<CodeSettingsSection> {
             ),
           ),
         ],
+        if (scope == SettingsScope.global && Host.isDesktop) const _OrphanForks(),
         const SizedBox(height: 16),
         SettingsAnchor(section: SettingsSection.code, id: 'json', child: _jsonView(theme, layer, session, project?.id)),
         if (project != null) _FullPrompt(projectDir: project.path, projectId: project.id),
@@ -1234,6 +1236,46 @@ class PermissionsSection extends ConsumerWidget {
         ),
         block('Global', globalPath, SettingsScope.global, null, null),
         for (final p in projects) block(p.name, files.projectLayerPath(p.path), SettingsScope.project, p.id, p.path),
+      ],
+    );
+  }
+}
+
+/// Fork worktrees with work of their own that no session holds any more (see [orphanForksProvider]); nothing shows
+/// when there are none.
+class _OrphanForks extends ConsumerWidget {
+  const _OrphanForks();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final orphans = ref.watch(orphanForksProvider).value ?? const [];
+    if (orphans.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const AdaptiveSectionHeader('Left-over forks'),
+        for (final o in orphans)
+          AdaptiveListTile(
+            title: Text(o.path.split('/').last),
+            subtitle: Text(
+              o.repoRoot.isEmpty
+                  ? 'Its repository is gone. ${o.path}'
+                  : "Unsaved work from a fork of ${o.repoRoot.split('/').last} whose session is gone. ${o.path}",
+            ),
+            trailing: AdaptiveButton(
+              label: 'Remove',
+              emphasis: ButtonEmphasis.destructive,
+              onPressed: () async {
+                final ok = await showAdaptiveConfirm(
+                  context,
+                  title: 'Remove this fork?',
+                  message: 'Its worktree at ${o.path} and the changes in it are deleted.',
+                  confirmLabel: 'Remove',
+                );
+                if (ok) await ref.read(orphanForksProvider.notifier).remove(o);
+              },
+            ),
+          ),
       ],
     );
   }

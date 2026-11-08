@@ -263,15 +263,15 @@ class BlockBuilder {
   }
 
   Widget _displayMath(String tex, TextStyle base) {
+    final shown = Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: DefaultTextStyle.merge(style: base, child: config.mathBuilder(context, tex, display: true)),
+    );
     return Align(
       alignment: Alignment.center,
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          child: DefaultTextStyle.merge(style: base, child: config.mathBuilder(context, tex, display: true)),
-        ),
-      ),
+      child: StillLayout.of(context)
+          ? FittedBox(fit: BoxFit.scaleDown, child: shown)
+          : SingleChildScrollView(scrollDirection: Axis.horizontal, child: shown),
     );
   }
 

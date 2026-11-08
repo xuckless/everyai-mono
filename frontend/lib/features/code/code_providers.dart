@@ -10,7 +10,10 @@ import '../models/domain/local_routes.dart';
 
 import 'package:uuid/uuid.dart';
 
+import '../../core/process/child_processes.dart';
 import '../../core/api/decide_client.dart' show decideClientProvider;
+import 'live/android_device_io.dart' show AndroidDevices;
+import 'live/app_sources.dart' show AppSources;
 import 'live/live_browsers.dart';
 import 'live/nested_display_io.dart';
 import 'shells/shell_registry.dart';
@@ -382,13 +385,23 @@ Future<List<WorkflowEntry>> _workflowsOfIn(Ref ref, String projectDir) async {
 /// disposal doesn't run then). The shell listens to it from app start, so
 /// every CLI is covered, however it was spawned.
 final driverShutdownProvider = Provider<void>((ref) {
-  Future<void> closeAll() =>
-      Future.wait([closeAllDriverProcesses(), LiveBrowsers.stopAll(), Future(NestedDisplays.stopAll)])
-          .timeout(const Duration(seconds: 3), onTimeout: () => const []);
+  // The registry's stop runs beside the owners' own (not after them, where one slow stop used up the budget); it only
+  // ends children still running, so a child an owner already ended isn't touched again.
+  Future<void> closeAll() => Future.wait<void>([
+    closeAllDriverProcesses(),
+    LiveBrowsers.stopAll(),
+    Future(NestedDisplays.stopAll),
+    AndroidDevices.stopAll(),
+    AppSources.stopAll(),
+    // The EveryAI harness's language servers (they outlived the app before).
+    closeAllLanguageServers(),
+    ChildProcesses.stopAll(),
+  ]).timeout(const Duration(seconds: 4), onTimeout: () => const []);
   final lifecycle = AppLifecycleListener(
     onExitRequested: () async {
       await closeAll();
-      await ref.read(hostServerProvider).stop();
+      // Never holds the quit up: the next listeners (the bundled server, local model servers) still have to run.
+      await ref.read(hostServerProvider).stop().timeout(const Duration(seconds: 1), onTimeout: () {});
       return AppExitResponse.exit;
     },
     onDetach: () => unawaited(closeAll()),
@@ -1771,7 +1784,10 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         if (gone.contains(s.id) && s.leads.isNotEmpty) s.id,
     ];
     for (final g in gone) {
-      unawaited(ref.read(_liveProvider).remove(g)?.close());
+      final live = ref.read(_liveProvider).remove(g);
+      // Its MCP and language servers go with it (the session itself may live on in a controller nobody shows).
+      if (live is StopsHelpers) unawaited((live as StopsHelpers).stopHelpers());
+      unawaited(live?.close());
       // Its app (app_run) and headless browser end with it; the controller itself lives on unused.
       if (ref.exists(codeSessionProvider(g))) unawaited(ref.read(codeSessionProvider(g).notifier)._closeScreen());
       ref.read(preferencesProvider)['$codeUsageReportsPrefix$g'] = null;
@@ -2687,7 +2703,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         // floor and risky ones still ask) and still asks before edits (owner, 2026-11-07).
         if ((info?.ownApprovals ?? false) &&
             (info?.isWorkflowAgent ?? false) &&
-            const {AgentMode.fullAuto, AgentMode.bypass}.contains(_parentController?.checkMode))
+            const {AgentMode.fullAuto, AgentMode.auto, AgentMode.bypass}.contains(_parentController?.checkMode))
           '*',
       },
       workingDir: info == null || isDemoPath(info.workingDir) ? null : info.workingDir,
@@ -2796,6 +2812,18 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     // runs, and that one must not be asked about again.
     final ended = !transcript.running && transcript.pending.isEmpty && transcript.held.isEmpty;
     final settled = event is ToolResult ? event.actionId : null;
+    // The lead's own reviewer passed calls back: the app's answer (the mode let them through) no longer settles
+    // them, and the user decides.
+    if (event case StateChange(key: escalatedCallsKey, :final raw)) {
+      for (final id in (raw['value'] as List<Object?>? ?? const []).whereType<String>()) {
+        _decided.remove(id);
+        _escalated.add(id);
+      }
+      // The approval card reads what is decided: the passed-back call is open there again.
+      state = state.copyWith(decided: Map.unmodifiable(_decided));
+    }
+    if (settled != null) _escalated.remove(settled);
+    if (ended) _escalated.clear();
     if (_decided.isNotEmpty && (ended || _decided.containsKey(settled))) {
       if (ended) {
         _decided.clear();
@@ -3125,17 +3153,23 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// [verdict], except that an outside driver's own tools (kinds the rules
   /// can't judge) are never approved without the user, even in Full auto.
   /// Full auto approves them too (it never asks), and so does a rule the user saved for that tool (`Tool(…)`).
-  ({bool accept, String? reason})? _gated(List<ActionCall> calls, ({bool accept, String? reason})? verdict) {
+  ({bool accept, String? reason})? _gated(
+    List<ActionCall> calls,
+    ({bool accept, String? reason})? verdict, {
+    AgentMode? mode,
+  }) {
     if (verdict == null || !verdict.accept || _driver.info.id == everyaiHarnessName) return verdict;
-    if (checkMode == AgentMode.fullAuto) return verdict;
+    final m = mode ?? checkMode;
+    if (m.runsFreely) return verdict;
     final p = policy;
-    return calls.every((c) => autoDecidable(c) || p.decide(c, checkMode).source == DecisionSource.allowRule)
-        ? verdict
-        : null;
+    return calls.every((c) => autoDecidable(c) || p.decide(c, m).source == DecisionSource.allowRule) ? verdict : null;
   }
 
   /// Answers given to the calls waiting now (see [CodeSessionState.decided]).
   final _decided = <String, bool>{};
+
+  /// Calls the lead's own reviewer passed back to the user (Auto on Claude Code): they ask as in Ask mode.
+  final _escalated = <String>{};
 
   /// Floor reasons an outside harness was already advised about: when the
   /// model hits one again, the user decides (see [outsideVerdict]).
@@ -3169,14 +3203,16 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       if (_decided.containsKey(call.id)) continue;
       // A fork's question waits for the agent that started it (answerFromOrchestrator).
       if (_isSubagent && isHeldTool(call)) continue;
+      final mode = _escalated.contains(call.id) ? AgentMode.ask : checkMode;
       final verdict = switch (_mustWait([call], t)) {
         final reason? => (accept: false, reason: reason),
         null when checksBypassed && _driver.info.id != everyaiHarnessName => _bypassVerdict([call]),
         null => _gated(
           [call],
           _driver.info.id == everyaiHarnessName
-              ? policy.decideAll([call], checkMode)
-              : outsideVerdict(policy, call, checkMode, advised: _floorAdvised),
+              ? policy.decideAll([call], mode)
+              : outsideVerdict(policy, call, mode, advised: _floorAdvised),
+          mode: mode,
         ),
       };
       if (verdict == null) continue;
@@ -3642,8 +3678,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       checks,
       _context?.takeNote() ?? '',
       _workflowNote(),
-      rewound,
       _tierNote,
+      rewound,
     ].where((n) => n.isNotEmpty).join('\n\n');
     _tierNote = '';
     final body = context.isEmpty ? text : (text.isEmpty ? context : '$context\n\n$text');
@@ -3703,10 +3739,11 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     return _sendOut(out);
   }
 
-  /// Sends or queues [out] (see [send]).
-  Future<bool> _sendOut(Outgoing out) async {
+  /// Sends or queues [out] (see [send]). Only the user's own message settles the waiting cards ([release]); the
+  /// orchestrator's queues behind them.
+  Future<bool> _sendOut(Outgoing out, {bool release = true}) async {
     // An outside agent waiting on a card is mid-turn: free it, so the turn can end and the message go out.
-    _releaseHostCards();
+    if (release) _releaseHostCards();
     final t = state.transcript;
     // During a lead switch it waits for the new lead, during a rewind for the files.
     // While the last turn's checks run it waits in the queue too (they go with it, see [_startChecks]).
@@ -3804,6 +3841,38 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     _releaseSecurityHold();
     final out = await _outgoing(text, files);
     if (out != null) await _steerOut(out);
+  }
+
+  /// Gives [text] to the running turn after its current step, without stopping it (the orchestrator's message_fork,
+  /// a fork row's Message). A lead that can't take a message mid-run, or a turn that isn't running, gets it as the
+  /// next message (queued while busy). False when nothing went out or was queued.
+  ///
+  /// Only the user's own message ([fromUser]) may start a turn that isn't running, or settle the session's waiting
+  /// cards (local consents, questions, plans): the orchestrator's never restarts a fork the user stopped or paused,
+  /// and never answers for the user.
+  Future<bool> tellWhileRunning(String text, {bool fromUser = false}) async {
+    if (!_withinBudget()) return false;
+    final t = state.transcript;
+    // Stopped or paused by the user and still unwinding: the turn ends, and nothing joins it.
+    final stopping = _userStopped && t.running;
+    if (!fromUser && (stopping || !t.running)) return false;
+    final out = await _outgoing(text, const []);
+    if (out == null) return false;
+    final session = _session;
+    if (t.running && t.pending.isEmpty && !_switching && !_rewinding && !stopping) {
+      final mid = switch (session) {
+        final TakesMessagesMidRun s => s.tellMidRun,
+        final SteersRuns s when _driver.caps.contains(DriverCap.steer) => s.steer,
+        _ => null,
+      };
+      if (mid != null) {
+        if (fromUser) _releaseHostCards();
+        _touchHost();
+        await mid(_noted(out.text), images: out.images);
+        return true;
+      }
+    }
+    return _sendOut(out, release: fromUser);
   }
 
   /// Sends queued message [index] now, interrupting the agent (the queue's "Send now").
@@ -4794,19 +4863,25 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   }
 
   /// Shows the session's tokens and spend as an aside card (`/usage`). A lead that reports the plan's usage itself
-  /// ([ReportsPlanUsage], Claude Code's own `/usage`) adds its report to the card (the answer; an error when it can't).
+  /// ([ReportsPlanUsage], Claude Code's own `/usage`) adds its report to the card (the answer; an error when it can't);
+  /// one that can be asked for its limits ([RefreshesPlanLimits], Codex) is asked, so the card's bars are current.
   Future<void> showCost() async {
     if (state.asides.any((a) => a.kind == AsideKind.cost)) return;
     if (ref.exists(codeUsageProvider(sessionId))) {
       ref.read(codeUsageProvider(sessionId).notifier).refreshSoon(delay: Duration.zero, force: true);
     }
     final session = _session;
-    final reports = session is ReportsPlanUsage;
-    final aside = Aside(id: ++_asideIds, kind: AsideKind.cost, busy: reports);
+    final asks = session is ReportsPlanUsage || session is RefreshesPlanLimits;
+    final aside = Aside(id: ++_asideIds, kind: AsideKind.cost, busy: asks);
     _putAside(aside);
-    if (!reports) return;
+    if (!asks) return;
     try {
-      final text = await (session as ReportsPlanUsage).planUsage();
+      // Codex: fresh windows come as a PlanLimits event, which the card draws as bars; no text of its own.
+      final text = switch (session) {
+        final ReportsPlanUsage s => await s.planUsage(),
+        final RefreshesPlanLimits s => await s.refreshPlanLimits().then((_) => ''),
+        _ => '',
+      };
       if (ref.mounted && state.asides.any((a) => a.id == aside.id)) _putAside(aside.done(text));
     } on Object catch (e) {
       final why = e is HarnessError ? e.message : '$e';
@@ -6068,6 +6143,15 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         return ok
             ? 'Sent. The fork carries on; its report arrives as a <task-notification>.'
             : 'That fork has no open question now (it may have been answered in its own view).';
+      case messageForkTool:
+        if (!_activeForks.containsKey(forkId)) return _noSuchFork(forkId);
+        if (str('message').trim().isEmpty) return 'Error: the message is empty.';
+        final sent = await ref
+            .read(codeSessionProvider(forkId).notifier)
+            .tellWhileRunning(forkMessageFromLead(str('message').trim()));
+        return sent
+            ? 'Sent. The fork reads it after its current step and carries on.'
+            : 'Not sent: that fork has stopped or its budget is spent. check_forks shows where it stands.';
       case stopForkTool:
         if (!_activeForks.containsKey(forkId)) return _noSuchFork(forkId);
         final title = sessions.byId(forkId)?.title ?? forkId;
@@ -6882,6 +6966,13 @@ final class GitSnapshot {
 
 final codeGitProvider = AsyncNotifierProvider.family<CodeGit, GitSnapshot, String>(CodeGit.new);
 
+/// A fork's own changes in its worktree (nothing until its work merges back and the worktree goes); the Diff's
+/// fork picker shows them. Read again on Refresh or when picked.
+final forkDiffProvider = FutureProvider.autoDispose.family<List<FileDiff>, String>((ref, childId) async {
+  final copy = ref.watch(codeSessionsProvider.select((all) => all.where((s) => s.id == childId).firstOrNull?.forkCopy));
+  return copy == null ? const [] : GitService.forkDiff(copy);
+});
+
 /// The session's worktree: its diff, and what the user can do with it.
 base class CodeGit extends AsyncNotifier<GitSnapshot> {
   CodeGit(this.sessionId);
@@ -6946,9 +7037,9 @@ base class CodeGit extends AsyncNotifier<GitSnapshot> {
     return done;
   }
 
-  /// Squashes the session onto its base branch in the main checkout.
-  Future<String> squashMerge(String message) async {
-    final sha = await GitService.squashMerge(_w, message);
+  /// Fast-forwards the base branch in the main checkout to the session's one prepared commit.
+  Future<String> fastForwardMerge(String commit) async {
+    final sha = await GitService.fastForwardMerge(_w, commit);
     if (_info case final i? when i.prNumber != null) {
       ref.read(codeSessionsProvider.notifier).update(i.copyWith(clearPr: true));
     }

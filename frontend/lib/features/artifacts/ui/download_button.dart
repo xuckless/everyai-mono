@@ -12,9 +12,12 @@ import '../export/downloads.dart';
 /// Saves a visual: straight away when it has one format, otherwise a menu
 /// (Markdown, PDF, Word… for documents).
 class DownloadButton extends StatelessWidget {
-  const DownloadButton({super.key, required this.visual});
+  const DownloadButton({super.key, required this.visual, this.artifacts = const []});
 
   final Visual visual;
+
+  /// The chat's artifacts: the figures and images documents and slides show by id.
+  final List<Artifact> artifacts;
 
   static Future<void> save(BuildContext context, Visual visual, DownloadOption option) async {
     final location = await getSaveLocation(suggestedName: '${exportOf(visual).name}.${option.extension}');
@@ -29,7 +32,7 @@ class DownloadButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final options = downloadsOf(visual);
+    final options = downloadsOf(visual, artifacts: artifacts);
     if (options.length == 1) {
       return AdaptiveIconButton(
         icon: EveryIcon.download,

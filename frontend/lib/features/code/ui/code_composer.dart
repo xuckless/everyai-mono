@@ -49,6 +49,7 @@ class CodeComposer extends ConsumerStatefulWidget {
     required this.onSend,
     this.onSteer,
     this.onStop,
+    this.onEscape,
     this.queued = const [],
     this.onUnqueue,
     this.onSendQueuedNow,
@@ -88,6 +89,10 @@ class CodeComposer extends ConsumerStatefulWidget {
   final dynamic Function(String text, List<Attachment> files) onSend;
   final void Function(String text, List<Attachment> files)? onSteer;
   final VoidCallback? onStop;
+
+  /// Esc, before it stops the agent: closes what sits above the composer (a usage card, a side answer). True when it
+  /// closed something; Esc then does nothing more.
+  final bool Function()? onEscape;
   final List<String> queued;
   final ValueChanged<int>? onUnqueue;
 
@@ -350,9 +355,12 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
       _submit(steer: keyboard.isAltPressed);
       return KeyEventResult.handled;
     }
-    if (key == LogicalKeyboardKey.escape && widget.busy && widget.onStop != null) {
-      widget.onStop!();
-      return KeyEventResult.handled;
+    if (key == LogicalKeyboardKey.escape) {
+      if (widget.onEscape?.call() ?? false) return KeyEventResult.handled;
+      if (widget.busy && widget.onStop != null) {
+        widget.onStop!();
+        return KeyEventResult.handled;
+      }
     }
     return KeyEventResult.ignored;
   }
@@ -693,7 +701,7 @@ class SessionActionsButton extends StatelessWidget {
   }
 }
 
-/// Ask · Auto-edit · Plan · Full auto.
+/// Ask · Auto-edit · Plan · Auto · Full auto · Bypass.
 class ModeMenu extends StatelessWidget {
   const ModeMenu({super.key, required this.mode, required this.onChanged});
 
@@ -830,7 +838,7 @@ class _ModeChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final tint = switch (policy) {
-      AgentMode.fullAuto || AgentMode.bypass => theme.danger,
+      AgentMode.fullAuto || AgentMode.auto || AgentMode.bypass => theme.danger,
       _ => null,
     };
     return Semantics(

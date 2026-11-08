@@ -16,7 +16,7 @@ import '../../domain/mcp_tool_check.dart' show McpToolsReport;
 import '../../domain/bug_check.dart';
 import '../../domain/permissions.dart' show cancelledLead;
 import '../../domain/shell_readonly.dart';
-import '../../domain/transcript.dart' show PlanProposal, planApprovedReason;
+import '../../domain/transcript.dart' show PlanProposal, planApprovedMessage, planApprovedReason;
 import '../../domain/subagents.dart' show forkingTaskSpec, subagentRules, taskTool;
 import '../../settings/agent_prompt.dart' show forHeldClientTools;
 import '../events.dart';
@@ -32,6 +32,7 @@ import 'browser_io.dart';
 import 'git_bash.dart' show findGitBash;
 import 'llm.dart';
 import 'package_registry_io.dart';
+import 'lsp_io.dart';
 import 'mcp_io.dart';
 import 'model_family.dart';
 import 'prompt_io.dart';
@@ -177,7 +178,9 @@ final class EveryAISession
         RetriesModelCalls,
         PerCallApprovals,
         HasContextParts,
-        ReportsMcpTools {
+        ReportsMcpTools,
+        StopsHelpers,
+        TakesMessagesMidRun {
   EveryAISession._(this.id, this._spec, this._dir, http.Client? client)
     : _gateway = GatewayClient(baseUrl: _spec.llmBaseUrl, apiKey: _spec.llmApiKey, client: client),
       _shell = SessionShell(
@@ -202,6 +205,7 @@ final class EveryAISession
       ownFolders: skillFolders(_spec.skills),
       loadLoginEnv: true,
       packages: _packages,
+      lsp: _lsp,
     )..bypass = _spec.mode == AgentMode.bypass;
   }
 
@@ -230,6 +234,32 @@ final class EveryAISession
   /// The session's MCP servers (connected once, at start or first run).
   McpTools _mcp = McpTools.empty;
   Future<void>? _mcpReady;
+
+  /// How long the session's MCP and language servers outlive its last run.
+  static Duration helpersIdle = const Duration(minutes: 10);
+  Timer? _idleTimer;
+
+  /// The session's language servers (the diagnostics tool, and the hint after edits), started on first use.
+  late final _lsp = LspHub(
+    root: _spec.workingDir,
+    toolsDir: '${_dir.parent.parent.path}/tools',
+    environment: () async => (await ShellEnv.load()).env,
+  );
+
+  @override
+  Future<void> stopHelpers() async {
+    _idleTimer?.cancel();
+    if (_looping) return;
+    await _lsp.close();
+    final ready = _mcpReady;
+    if (ready == null || _looping) return;
+    _mcpReady = null;
+    await ready;
+    final running = _mcp;
+    _mcp = McpTools.empty;
+    await running.close();
+  }
+
   final _mcpReported = Completer<Map<String, McpToolsReport>>();
 
   /// Completes once the session connected to its MCP servers (at its first
@@ -375,7 +405,7 @@ final class EveryAISession
       case ToolNames.todo:
         _todos = [...(args['todos'] as List<Object?>? ?? const []).whereType<Map<String, Object?>>()];
         changed = true;
-      case ToolNames.read || ToolNames.write || ToolNames.edit:
+      case ToolNames.read || ToolNames.write || ToolNames.edit || ToolNames.notebookEdit:
         final path = resolvePath(_spec.workingDir, args['file_path'] as String? ?? '');
         _touch(path);
         if (call.name == ToolNames.read && path.endsWith('/SKILL.md') && !_loadedSkills.contains(path)) {
@@ -401,9 +431,12 @@ final class EveryAISession
   void _planApproved(LlmToolCall call) {
     final args = call.args;
     if (args == null) return;
-    _approvedPlan = PlanProposal(
+    final plan = PlanProposal(
       ActionCall(id: '', raw: const {}, toolName: presentPlanTool, toolCallId: call.id, action: args),
     ).markdown;
+    // Approved on the card and then by message too: saved once.
+    if (plan == _approvedPlan) return;
+    _approvedPlan = plan;
     _saveState();
     // Kept with the project (git-excluded), so later sessions can pick the work up.
     try {
@@ -411,6 +444,19 @@ final class EveryAISession
     } on FileSystemException {
       // The plan still lives in the session's state.
     }
+  }
+
+  /// The newest `present_plan` call in the conversation, or null.
+  LlmToolCall? _lastPresentedPlan() {
+    for (final m in _messages.reversed) {
+      if (m['role'] != 'assistant') continue;
+      for (final c in (m['tool_calls'] as List<Object?>? ?? const []).reversed) {
+        if (c case {'id': final String id, 'function': {'name': presentPlanTool, 'arguments': final String args}}) {
+          return LlmToolCall(id: id, name: presentPlanTool, arguments: args);
+        }
+      }
+    }
+    return null;
   }
 
   /// The re-injected parts of a continuation message.
@@ -570,8 +616,8 @@ final class EveryAISession
   /// the token, so it keeps its tools' shape when reopened without one.
   late bool _hosted = _spec.briefing != null;
 
-  /// The model family the session was started for: its tools and rules
-  /// (fixed for the session, so the cached prefix holds after a model switch).
+  /// The model family the session runs as: its tools and rules. A model switch changes it only when the new model
+  /// is another family's ([switchLlm]), so switching within a vendor keeps the cached prefix.
   late ModelFamily family = familyOf(_spec.model);
 
   /// The model's window: the session's, or what its local server reports.
@@ -756,8 +802,19 @@ final class EveryAISession
     File('${_dir.path}/messages.jsonl').writeAsStringSync('${jsonEncode(message)}\n', mode: FileMode.append);
   }
 
-  void _rewriteMessages() =>
-      File('${_dir.path}/messages.jsonl').writeAsStringSync(_messages.map((m) => '${jsonEncode(m)}\n').join());
+  void _rewriteMessages() {
+    // Pictures dropped from memory stay in the file.
+    final kept = _contentsOnDisk();
+    File('${_dir.path}/messages.jsonl').writeAsStringSync(
+      _messages.map((m) {
+        final whole = switch (m['_eid']) {
+          final String id when kept.containsKey(id) => {...m, 'content': kept[id]},
+          _ => m,
+        };
+        return '${jsonEncode(whole)}\n';
+      }).join(),
+    );
+  }
 
   void _rewriteEvents() =>
       File('${_dir.path}/events.jsonl').writeAsStringSync(_history.map((e) => '${jsonEncode(e.raw)}\n').join());
@@ -840,15 +897,29 @@ final class EveryAISession
   void _setStatus(ExecutionStatus s) {
     if (status == s) return;
     status = s;
+    // MCP and language servers stop after [helpersIdle] without a run and start again with the next one.
+    _idleTimer?.cancel();
+    if (s != ExecutionStatus.running && s != ExecutionStatus.waitingForConfirmation) {
+      _idleTimer = Timer(helpersIdle, () => unawaited(stopHelpers()));
+    }
     _emit({'kind': 'ConversationStateUpdateEvent', 'id': _newId(), 'key': 'execution_status', 'value': s.wire});
   }
 
   // ------------------------------------------------------------------- API
 
+  /// A message into the running turn: read before the next model call, after the current tool call (see [send]).
+  @override
+  Future<void> tellMidRun(String text, {List<String> images = const []}) => send(text, images: images);
+
   @override
   Future<void> send(String text, {bool run = true, List<String> images = const []}) async {
     // The user spoke: a repeated call may be what they asked for.
     _lastCall = null;
+    // A plan approved by message (the card wasn't held: after a restart, or a plan the run didn't wait on) is
+    // remembered like one approved on the card, so compaction carries it.
+    if (splitModeNote(text).$2.contains(planApprovedMessage)) {
+      if (_lastPresentedPlan() case final call?) _planApproved(call);
+    }
     final eid = _newId();
     final content = <Map<String, Object?>>[
       {'type': 'text', 'text': text},
@@ -958,7 +1029,19 @@ final class EveryAISession
       pushTargets: old.pushTargets,
       loadLoginEnv: true,
       packages: _packages,
+      lsp: _lsp,
     )..bypass = _spec.mode == AgentMode.bypass;
+    // Another vendor's model gets its own family's tools and rules (GPT's apply_patch, say). That rebuilds the
+    // system prompt, which a vendor switch breaks the cache of anyway; within a family nothing changes, so the cached
+    // prefix holds. A fork keeps its parent's prefix whatever it runs on.
+    final next = familyOf(_spec.model);
+    if (next != family && !isFork) {
+      family = next;
+      if (_messages.firstOrNull case {'role': 'system'}) {
+        _messages[0] = {'role': 'system', 'content': await _systemPrompt()};
+        _rewriteMessages();
+      }
+    }
     _writeSpec();
   }
 
@@ -1014,6 +1097,12 @@ final class EveryAISession
     }
     _history.retainWhere((e) => e.id.isEmpty || keep.contains(e.id));
     _messages.retainWhere((m) => m['role'] == 'system' || keep.contains(m['_eid']));
+    // With fewer pictures left, the dropped ones may go out again: back from the file.
+    final whole = _contentsOnDisk();
+    for (final (i, m) in _messages.indexed) {
+      if (m['_eid'] case final String id when whole.containsKey(id)) _messages[i] = {...m, 'content': whole[id]};
+    }
+    _picturesOnDisk.removeWhere((id) => !keep.contains(id) || whole.containsKey(id));
     _trimDangling(_messages);
     _rewriteEvents();
     _rewriteMessages();
@@ -1078,7 +1167,39 @@ final class EveryAISession
   /// changed a message deep in the history on every screenshot, and each
   /// change made the provider re-read the whole conversation uncached (a
   /// felice-website run paid that 15 times, $13.81 on Opus).
-  List<Map<String, Object?>> _outgoing() => withOlderImagesNoted(_messages, keptImages);
+  List<Map<String, Object?>> _outgoing() {
+    // The pictures that will never go out again leave memory too (a session of screenshots kept every one). Only
+    // memory: messages.jsonl keeps them, so a rewind (or any rewrite of the file) takes them back from there.
+    final before = [for (final m in _messages) m['content']];
+    if (dropOlderImages(_messages, keptImages) > 0) {
+      for (final (i, m) in _messages.indexed) {
+        if (m['_eid'] case final String id when !identical(before[i], m['content'])) _picturesOnDisk.add(id);
+      }
+    }
+    return withOlderImagesNoted(_messages, keptImages);
+  }
+
+  /// Messages (by `_eid`) whose pictures were dropped from memory but are still in messages.jsonl.
+  final _picturesOnDisk = <String>{};
+
+  /// The contents in messages.jsonl of the messages in [_picturesOnDisk] (with their pictures).
+  Map<String, Object?> _contentsOnDisk() {
+    final file = File('${_dir.path}/messages.jsonl');
+    if (_picturesOnDisk.isEmpty || !file.existsSync()) return const {};
+    final out = <String, Object?>{};
+    for (final line in file.readAsLinesSync()) {
+      if (line.isEmpty) continue;
+      try {
+        if (jsonDecode(line) case {'_eid': final String id, 'content': final content}
+            when _picturesOnDisk.contains(id)) {
+          out[id] = content;
+        }
+      } on FormatException {
+        // A torn last line: the rest still counts.
+      }
+    }
+    return out;
+  }
 
   /// Tool pictures sent whole at least (see [_outgoing]).
   static const keptImages = 8;
@@ -2081,6 +2202,24 @@ Future<void> excludeScratch(String dir) async {
   }
 }
 
+/// Replaces, in [messages] itself, the pictures [withOlderImagesNoted] no longer sends with its note; returns how
+/// many. The same request goes out afterwards: what is dropped is always a whole number of batches of [kept], the
+/// oldest first.
+int dropOlderImages(List<Map<String, Object?>> messages, int kept) {
+  final noted = withOlderImagesNoted(messages, kept);
+  var dropped = 0;
+  for (var i = 0; i < messages.length; i++) {
+    final before = messages[i]['content'];
+    final after = noted[i]['content'];
+    if (identical(before, after) || before is! List<Object?> || after is! List<Object?>) continue;
+    dropped +=
+        before.where((p) => p is Map && p['type'] == 'image_url').length -
+        after.where((p) => p is Map && p['type'] == 'image_url').length;
+    messages[i] = {...messages[i], 'content': after};
+  }
+  return dropped;
+}
+
 /// [messages] without `_eid`, the oldest pictures as a note: none while at
 /// most [kept] × 2 − 1 are there, then whole batches of [kept] (the oldest
 /// first), so the history before the newest pictures changes rarely and the
@@ -2114,3 +2253,6 @@ List<Map<String, Object?>> withOlderImagesNoted(List<Map<String, Object?>> messa
       }(),
   ];
 }
+
+/// Ends every session's language servers (the app quits).
+Future<void> closeAllLanguageServers() => LspHub.closeAll();

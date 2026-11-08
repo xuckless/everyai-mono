@@ -1281,6 +1281,44 @@ ${_upTo('usage_limit', '"method":"turn/started"')}
     });
   });
 
+  test('/usage asks Codex for its limits now and sends them as PlanLimits', () async {
+    final at = DateTime.utc(2026, 11, 10, 20).millisecondsSinceEpoch ~/ 1000;
+    final script = [
+      _upTo('approve_command', '"method":"thread/started"'),
+      '{"dir":"out","msg":{"id":"{{any}}","method":"account/rateLimits/read","params":{}}}',
+      '{"dir":"in","msg":{"id":"{{any}}","result":{"ordinaryUsageAllowed":true,"rateLimits":null,'
+          '"rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":{"usedPercent":40,"windowDurationMins":300},'
+          '"secondary":{"usedPercent":76,"windowDurationMins":10080,"resetsAt":$at},"planType":"plus"}}}}}',
+    ].join('\n');
+    final channel = ReplayChannel(script);
+    final s = await _driver(data, [channel]).start(_spec(work));
+    final events = _listen(s);
+    await (s as RefreshesPlanLimits).refreshPlanLimits();
+    await pumpEventQueue();
+    channel.expectFinished();
+    final limits = events.whereType<PlanLimits>().single;
+    expect([for (final w in limits.windows) (w.used, w.minutes)], [(0.4, 300), (0.76, 10080)]);
+    expect(limits.windows.last.resetsAt, DateTime.fromMillisecondsSinceEpoch(at * 1000, isUtc: true));
+    expect(limits.warning, isTrue);
+    await s.close();
+  });
+
+  test("/usage on a Codex without the limits read doesn't fail; there are just no fresh windows", () async {
+    final script = [
+      _upTo('approve_command', '"method":"thread/started"'),
+      '{"dir":"out","msg":{"id":"{{any}}","method":"account/rateLimits/read","params":{}}}',
+      '{"dir":"in","msg":{"id":"{{any}}","error":{"code":-32601,"message":"Method not found"}}}',
+    ].join('\n');
+    final channel = ReplayChannel(script);
+    final s = await _driver(data, [channel]).start(_spec(work));
+    final events = _listen(s);
+    await (s as RefreshesPlanLimits).refreshPlanLimits();
+    await pumpEventQueue();
+    channel.expectFinished();
+    expect(events.whereType<PlanLimits>(), isEmpty);
+    await s.close();
+  });
+
   test('caps and markers match what the session implements', () async {
     final channel = _fixture('approve_command');
     final d = _driver(data, [channel]);
@@ -1294,20 +1332,32 @@ ${_upTo('usage_limit', '"method":"turn/started"')}
   });
 
   group('native modes', () {
-    test("Codex's presets: Read Only asks, Default edits, neither sandboxed; Full Access greyed", () {
-      expect([for (final m in codexModes) m.id], ['read-only', 'default', 'full-access']);
-      expect([for (final m in codexModes) m.policy], [AgentMode.ask, AgentMode.autoEdit, AgentMode.fullAuto]);
+    test("Codex's presets: Read Only asks, Default edits, neither sandboxed; Auto review is Codex's own; Full Access "
+        'greyed', () {
+      expect([for (final m in codexModes) m.id], ['read-only', 'default', 'auto-review', 'full-access']);
+      expect(
+        [for (final m in codexModes) m.policy],
+        [AgentMode.ask, AgentMode.autoEdit, AgentMode.auto, AgentMode.fullAuto],
+      );
       expect(nativeModeOf(codexModes, 'full-access')!.blocked, contains('Not offered'));
       // What the picker shows is what runs: the preset only picks the mode (no read-only sandbox claimed for Ask).
-      for (final m in codexModes) {
+      for (final m in codexModes.where((m) => m.policy != AgentMode.auto)) {
         final p = codexPolicy(m.policy);
         expect((p.approvalPolicy, p.approvalsReviewer, p.sandbox), ('untrusted', 'user', 'read-only'), reason: m.id);
         expect(p.sandboxPolicy, {'type': 'dangerFullAccess'}, reason: m.id);
         if (m.blocked == null) expect(m.description, contains('outside'), reason: m.id);
       }
+      // Auto review: Codex's reviewer answers in its workspace sandbox, and the description says EveryAI doesn't see it.
+      final auto = codexPolicy(AgentMode.auto);
+      expect((auto.approvalPolicy, auto.approvalsReviewer, auto.sandbox), ('on-request', 'auto_review', 'read-only'));
+      expect(auto.sandboxPolicy['type'], 'workspaceWrite');
+      expect(nativeModeOf(codexModes, 'auto-review')!.description, contains("don't see"));
+      expect(codexModeFor(AgentMode.auto), 'auto-review');
       // No Plan preset: the app's Plan stays read-only as before.
       expect(nativeModeFor(codexModes, AgentMode.plan), isNull);
+      // Full auto keeps EveryAI deciding: never Codex's reviewer.
       expect(nativeModeFor(codexModes, AgentMode.fullAuto)!.id, 'default');
+      expect(nativeModeFor(codexModes, AgentMode.auto)!.id, 'auto-review');
     });
 
     test('a preset picked by name goes with the next turn/start, and a reopen keeps it', () async {

@@ -142,10 +142,20 @@ void main() {
       bool worktree = true,
       bool dirty = false,
       int ahead = 0,
+      int behind = 0,
       bool remote = false,
       BranchPr? pr,
       String head = 'h1',
-    }) => gitActionFor(worktree: worktree, dirty: dirty, ahead: ahead, hasRemote: remote, pr: pr, head: head);
+    }) => gitActionFor(
+      worktree: worktree,
+      dirty: dirty,
+      ahead: ahead,
+      behind: behind,
+      base: 'dev',
+      hasRemote: remote,
+      pr: pr,
+      head: head,
+    );
     const pr = (number: 12, url: 'https://github.com/o/r/pull/12', open: true, head: 'h0');
     const merged = (number: 12, url: 'https://github.com/o/r/pull/12', open: false, head: 'h1');
 
@@ -161,7 +171,10 @@ void main() {
     // Squash-merged on GitHub: the commits still count as ahead, but another PR for them would be a duplicate.
     expect(at(ahead: 2, remote: true, pr: merged)!.label, 'View PR #12');
     expect(at(ahead: 3, remote: true, pr: merged, head: 'h2')!.kind, GitActionKind.createPr);
-    expect(at(ahead: 2)!.kind, GitActionKind.mergeLocally);
+    // Merging locally: the agent prepares one commit on top of the base first, then the button merges it.
+    expect(at(ahead: 2)!.kind, GitActionKind.prepareMerge);
+    expect(at(ahead: 1, behind: 3)!.kind, GitActionKind.prepareMerge);
+    expect(at(ahead: 1)!, (kind: GitActionKind.merge, label: 'Merge into dev', enabled: true, url: null));
     expect(at()!, (kind: GitActionKind.commit, label: 'Commit', enabled: false, url: null));
   });
 

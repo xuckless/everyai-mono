@@ -10,8 +10,11 @@ import '../../chat/domain/message.dart';
 import '../../chat/ui/chat_markdown.dart';
 import '../artifact_providers.dart';
 import '../domain/artifact.dart';
+import '../domain/figures.dart';
+import '../domain/slide_spec.dart';
 import '../domain/drawing.dart';
 import 'download_button.dart';
+import 'figure_actions.dart';
 import 'image_view.dart';
 import '../domain/chart_spec.dart';
 import 'renderers/chart_view.dart';
@@ -48,7 +51,9 @@ class VisualBody extends ConsumerWidget {
     final dark = EveryTheme.of(context).brightness == Brightness.dark;
     final content = visual.str('content');
     return switch (visual.kind) {
-      VisualKind.document => ChatMarkdown(content),
+      VisualKind.document => ChatMarkdown(
+        expandFigureRefs(content, figuresOf(ref.watch(conversationArtifactsProvider(conversationId)))),
+      ),
       VisualKind.code => ChatMarkdown('```${visual.str('language')}\n$content\n```'),
       VisualKind.html => WebContentView(
         html: content,
@@ -77,7 +82,7 @@ class VisualBody extends ConsumerWidget {
       VisualKind.chart => ChartView(spec: ChartSpec.fromJson(visual.args), height: expanded ? 380 : 260),
       VisualKind.quiz => QuizView(visual: visual, conversationId: conversationId),
       VisualKind.flashcards => FlashcardsView(visual: visual, height: expanded ? 300 : 210),
-      VisualKind.slides => SlidesView(visual: visual, showNotes: expanded),
+      VisualKind.slides => SlidesView(visual: visual, conversationId: conversationId, showNotes: expanded),
       VisualKind.image => RasterImageView(bytes: visual.args['bytes'] as Uint8List?, maxHeight: expanded ? 900 : 512),
       VisualKind.drawing => WebContentView(
         html: drawingPage(scene: content, mermaid: visual.args['mermaid'] as String?, dark: dark),
@@ -123,7 +128,7 @@ class InlineVisual extends ConsumerWidget {
       return Text('Used ${part.toolName}', style: theme.type.callout.tint(theme.textMuted));
     }
     final panel = ref.read(artifactPanelProvider(conversationId).notifier);
-    final isArtifact = artifactTools.contains(part.toolName);
+    final isArtifact = isArtifactCall(part);
     // An artifact call shows the version it made (an edit only carries its
     // find-and-replace pairs).
     final made = !isArtifact
@@ -169,7 +174,7 @@ class InlineVisual extends ConsumerWidget {
       switch (visual.kind) {
         VisualKind.quiz => '${(visual.args['questions'] as List?)?.length ?? 0} questions',
         VisualKind.flashcards => '${(visual.args['cards'] as List?)?.length ?? 0} cards',
-        VisualKind.slides => '${slidesOf(visual).length} slides',
+        VisualKind.slides => '${deckOf(visual).length} slides',
         VisualKind.drawing => switch (drawingElementCount(visual.str('content'))) {
           0 => null,
           1 => '1 element',
@@ -180,6 +185,14 @@ class InlineVisual extends ConsumerWidget {
       },
     ].nonNulls.join(' · ');
 
+    // A figure (an SVG, chart or diagram with an id) gets the figure menu, and an SVG one can be pointed at.
+    final figureId =
+        isArtifact &&
+            const {VisualKind.svg, VisualKind.chart, VisualKind.diagram}.contains(visual.kind) &&
+            visual.str('id').isNotEmpty
+        ? visual.str('id')
+        : null;
+    final picking = figureId != null && ref.watch(figureCardModeProvider(visual.callId)) == FigureCardMode.picking;
     final header = Row(
       children: [
         Container(
@@ -207,7 +220,9 @@ class InlineVisual extends ConsumerWidget {
             ],
           ),
         ),
-        if (!kIsWeb) DownloadButton(visual: visual),
+        if (figureId != null) FigureMenu(visual: visual, figureId: figureId, conversationId: conversationId),
+        if (!kIsWeb)
+          DownloadButton(visual: visual, artifacts: ref.watch(conversationArtifactsProvider(conversationId))),
         AdaptiveIconButton(icon: EveryIcon.openPanel, tooltip: 'Open in side panel', onPressed: open),
       ],
     );
@@ -229,7 +244,14 @@ class InlineVisual extends ConsumerWidget {
             const SizedBox(height: 12),
             Padding(
               padding: const EdgeInsets.only(right: 6),
-              child: VisualBody(visual: visual, conversationId: conversationId),
+              child: picking
+                  ? FigurePicker(
+                      svg: visual.args['svg'] as String? ?? visual.str('content'),
+                      figureId: figureId,
+                      callId: visual.callId,
+                      conversationId: conversationId,
+                    )
+                  : VisualBody(visual: visual, conversationId: conversationId),
             ),
           ] else if (visual.kind == VisualKind.slides) ...[
             const SizedBox(height: 12),
@@ -239,11 +261,7 @@ class InlineVisual extends ConsumerWidget {
                 constraints: const BoxConstraints(maxWidth: 360),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(theme.radius),
-                  child: SlideCanvas(
-                    slide: slidesOf(visual).first,
-                    theme: DeckTheme.of(visual.str('theme')),
-                    isTitle: true,
-                  ),
+                  child: SlidePreview(visual: visual, conversationId: conversationId),
                 ),
               ),
             ),

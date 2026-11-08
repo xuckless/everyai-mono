@@ -10,10 +10,49 @@ import '../../live/frames.dart';
 import '../../live/key_map.dart';
 import '../../live/live_session.dart';
 import '../../live/page_snapshot.dart';
-import 'shell_io.dart' show killTree;
+import '../../../../core/process/child_processes.dart';
+
+/// Where a profile's Chrome is.
+///
+/// ```
+///   closed ──use──▶ launching ──up──▶ up ──stop / idle──▶ stopping ──gone──▶ closed
+///     │  ▲             │ fail / stop ▲                                  ▲
+///     │  └─────────────┘ (a launch that lands after a stop is ended)     │
+///     └──signIn──▶ signingIn ──window closed────────────────────────────┘
+/// ```
+sealed class ChromeHostState {
+  const ChromeHostState();
+}
+
+final class ChromeClosed extends ChromeHostState {
+  const ChromeClosed();
+}
+
+final class ChromeLaunching extends ChromeHostState {
+  const ChromeLaunching(this.generation, this.ready);
+  final int generation;
+  final Future<Uri> ready;
+}
+
+final class ChromeUp extends ChromeHostState {
+  const ChromeUp(this.generation, this.process, this.endpoint);
+  final int generation;
+  final Process process;
+  final Uri endpoint;
+}
+
+final class ChromeStopping extends ChromeHostState {
+  const ChromeStopping(this.done);
+  final Future<void> done;
+}
+
+final class ChromeSigningIn extends ChromeHostState {
+  const ChromeSigningIn(this.done);
+  final Future<void> done;
+}
 
 /// One Chrome per profile folder (Chrome locks a profile, so sessions of one project share the process and get a
-/// page each). Started on first use, stopped a little after its last page closes.
+/// page each). Started on first use, stopped a little after its last page closes, and at quit ([stopAll]).
 final class ChromeHost {
   ChromeHost._(this.profileDir, this.executable);
 
@@ -23,47 +62,78 @@ final class ChromeHost {
   static ChromeHost of(String profileDir, {String? executable}) =>
       _hosts.putIfAbsent(profileDir, () => ChromeHost._(profileDir, executable));
 
+  /// Stops every profile's Chrome (the app quits).
+  static Future<void> stopAll() => Future.wait([for (final h in _hosts.values.toList()) h.stop()]);
+
   final String profileDir;
   final String? executable;
-  Process? _process;
-  Uri? _endpoint;
-  Future<Uri>? _starting;
+  ChromeHostState _state = const ChromeClosed();
+
+  /// Bumped by every launch and stop: a launch that finishes under another generation was stopped meanwhile.
+  var _generation = 0;
   var _pages = 0;
   Timer? _idle;
 
-  /// Set while the profile is open in a plain window for the user to sign in (see [signIn]).
-  Future<void>? _signingIn;
+  ChromeHostState get state => _state;
 
-  bool get running => _endpoint != null;
+  bool get running => _state is ChromeUp;
 
   /// The browser-level DevTools address, starting Chrome when needed.
   Future<Uri> endpoint({required int width, required int height}) async {
-    if (_signingIn case final s?) await s;
-    if (_endpoint case final e?) return e;
-    return _starting ??= _launch(width, height).whenComplete(() => _starting = null);
+    while (true) {
+      switch (_state) {
+        case ChromeUp(:final endpoint):
+          return endpoint;
+        case ChromeLaunching(:final ready):
+          return ready;
+        case ChromeStopping(:final done) || ChromeSigningIn(:final done):
+          await done;
+        case ChromeClosed():
+          final generation = ++_generation;
+          final ready = Completer<Uri>();
+          // The state first: a launch that fails at once settles it back to closed.
+          _state = ChromeLaunching(generation, ready.future);
+          unawaited(_launch(generation, width, height).then(ready.complete, onError: ready.completeError));
+          return ready.future;
+      }
+    }
   }
 
-  Future<Uri> _launch(int width, int height) async {
+  /// Chrome's flags: headless, our own profile, nothing that phones home or touches the user's Keychain.
+  static List<String> launchArgs(String profileDir, int width, int height) => [
+    '--headless=new',
+    '--remote-debugging-port=0',
+    '--user-data-dir=$profileDir',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-extensions',
+    '--disable-background-networking',
+    '--disable-breakpad',
+    '--disable-crash-reporter',
+    // Never the user's Keychain or keyring.
+    '--use-mock-keychain',
+    '--password-store=basic',
+    '--hide-scrollbars',
+    '--mute-audio',
+    '--window-size=$width,$height',
+    'about:blank',
+  ];
+
+  Future<Uri> _launch(int generation, int width, int height) async {
     final exe = executable ?? HeadlessBrowser.find();
-    if (exe == null) throw const BrowserError(noBrowserMessage);
+    if (exe == null) {
+      _settle(generation, const ChromeClosed());
+      throw const BrowserError(noBrowserMessage);
+    }
     Directory(profileDir).createSync(recursive: true);
-    final process = await Process.start(exe, [
-      '--headless=new',
-      '--remote-debugging-port=0',
-      '--user-data-dir=$profileDir',
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-extensions',
-      '--disable-background-networking',
-      // Never the user's Keychain or keyring.
-      '--use-mock-keychain',
-      '--password-store=basic',
-      '--hide-scrollbars',
-      '--mute-audio',
-      '--window-size=$width,$height',
-      'about:blank',
-    ]);
-    _process = process;
+    final Process process;
+    try {
+      process = await Process.start(exe, launchArgs(profileDir, width, height));
+    } on Object catch (e) {
+      _settle(generation, const ChromeClosed());
+      throw BrowserError('The browser did not start: $e');
+    }
+    ChildProcesses.track(process.pid, label: 'Chrome ($profileDir)', executable: exe, exited: process.exitCode);
     unawaited(process.stdout.drain<void>());
     // Chrome says where its DevTools endpoint is on stderr.
     final endpoint = Completer<Uri>();
@@ -73,19 +143,33 @@ final class ChromeHost {
     }, onError: (Object _) {});
     unawaited(
       process.exitCode.then((_) {
-        // Not killed later: its pid may be another program's by then.
-        if (identical(_process, process)) {
-          _process = null;
-          _endpoint = null;
-        }
+        if (_state case ChromeUp(process: final p) when identical(p, process)) _state = const ChromeClosed();
         if (!endpoint.isCompleted) endpoint.completeError(const BrowserError('The browser exited at start.'));
       }),
     );
-    final e = await endpoint.future.timeout(
-      const Duration(seconds: 20),
-      onTimeout: () => throw const BrowserError('The browser did not start within 20 s.'),
-    );
-    return _endpoint = e;
+    final Uri e;
+    try {
+      e = await endpoint.future.timeout(
+        const Duration(seconds: 20),
+        onTimeout: () => throw const BrowserError('The browser did not start within 20 s.'),
+      );
+    } on Object {
+      await ChildProcesses.stop(process.pid);
+      _settle(generation, const ChromeClosed());
+      rethrow;
+    }
+    // Stopped while it started: this Chrome isn't wanted any more.
+    if (generation != _generation) {
+      await ChildProcesses.stop(process.pid);
+      throw const BrowserError('The browser was stopped while it started.');
+    }
+    _state = ChromeUp(generation, process, e);
+    return e;
+  }
+
+  /// Moves to [next] when [generation] is still the current one.
+  void _settle(int generation, ChromeHostState next) {
+    if (generation == _generation) _state = next;
   }
 
   void _opened() {
@@ -100,12 +184,31 @@ final class ChromeHost {
     _idle = Timer(const Duration(seconds: 30), () => unawaited(stop()));
   }
 
-  Future<void> stop() async {
+  /// Ends Chrome (a launch under way is ended when it lands); a stop under way is joined.
+  Future<void> stop() {
     _idle?.cancel();
-    final p = _process;
-    _process = null;
-    _endpoint = null;
-    if (p != null) await killTree(p.pid);
+    switch (_state) {
+      case ChromeStopping(:final done) || ChromeSigningIn(:final done):
+        return done;
+      case ChromeClosed():
+        return Future.value();
+      case ChromeLaunching(:final ready):
+        // The launch that lands is ended by its generation check; until then the old Chrome holds the profile, so
+        // a new start waits for it.
+        _generation++;
+        final done = ready.then<void>((_) {}, onError: (Object _) {}).whenComplete(() {
+          if (_state is ChromeStopping) _state = const ChromeClosed();
+        });
+        _state = ChromeStopping(done);
+        return done;
+      case ChromeUp(:final process):
+        _generation++;
+        final done = ChildProcesses.stop(process.pid).whenComplete(() {
+          if (_state is ChromeStopping) _state = const ChromeClosed();
+        });
+        _state = ChromeStopping(done);
+        return done;
+    }
   }
 
   /// Opens the profile in a plain Chrome window at [url], without the automation flags (sites such as Google
@@ -117,7 +220,7 @@ final class ChromeHost {
     await stop();
     Directory(profileDir).createSync(recursive: true);
     final done = Completer<void>();
-    _signingIn = done.future;
+    _state = ChromeSigningIn(done.future);
     try {
       final p = await Process.start(exe, [
         '--user-data-dir=$profileDir',
@@ -128,17 +231,18 @@ final class ChromeHost {
         '--new-window',
         url,
       ]);
+      ChildProcesses.track(p.pid, label: 'Chrome sign-in ($profileDir)', executable: exe, exited: p.exitCode);
       unawaited(p.stdout.drain<void>());
       unawaited(p.stderr.drain<void>());
       await p.exitCode;
     } finally {
-      _signingIn = null;
+      _state = const ChromeClosed();
       done.complete();
     }
   }
 
   /// Whether the profile is open for sign-in now.
-  bool get signingIn => _signingIn != null;
+  bool get signingIn => _state is ChromeSigningIn;
 
   /// Deletes the profile (sign-ins, cookies, storage): "Clear" in the project menu.
   Future<void> clear() async {

@@ -1,0 +1,8 @@
+{
+  "name": "everyai-lsp-typescript",
+  "private": true,
+  "dependencies": {
+    "typescript-language-server": "6.0.3",
+    "typescript": "5.9.3"
+  }
+}

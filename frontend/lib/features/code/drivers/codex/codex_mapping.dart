@@ -63,16 +63,37 @@ typedef CodexPolicy = ({
 /// The presets ([codexModes]) pick only the mode: Read Only runs as Ask,
 /// with no sandbox outside Plan, for the reason above (the app's approval is
 /// the gate, as in Codex's own Read Only, where edits need approval).
-CodexPolicy codexPolicy(AgentMode mode) => (
-  approvalPolicy: 'untrusted',
-  approvalsReviewer: 'user',
-  sandbox: 'read-only',
-  sandboxPolicy: mode == AgentMode.plan
-      ? const {'type': 'readOnly', 'networkAccess': true}
-      : const {'type': 'dangerFullAccess'},
-);
+///
+/// Auto ([codexAutoReview], the owner's call, 2026-11-07) is the exception: Codex's own reviewer answers the
+/// requests (`approvalsReviewer: auto_review`) and Codex works in its workspace-write sandbox, asking only to step
+/// out of it. Those calls never reach the app, so EveryAI's floor and the user's rules don't judge them; the mode's
+/// description says so.
+CodexPolicy codexPolicy(AgentMode mode) => mode == AgentMode.auto
+    ? (
+        approvalPolicy: 'on-request',
+        approvalsReviewer: 'auto_review',
+        sandbox: 'read-only',
+        sandboxPolicy: const {
+          'type': 'workspaceWrite',
+          'writableRoots': <String>[],
+          'networkAccess': false,
+          'excludeTmpdirEnvVar': false,
+          'excludeSlashTmp': false,
+        },
+      )
+    : (
+        approvalPolicy: 'untrusted',
+        approvalsReviewer: 'user',
+        sandbox: 'read-only',
+        sandboxPolicy: mode == AgentMode.plan
+            ? const {'type': 'readOnly', 'networkAccess': true}
+            : const {'type': 'dangerFullAccess'},
+      );
 
 const codexReadOnly = 'read-only';
+
+/// Codex's auto review as a mode of its own ([codexPolicy]).
+const codexAutoReview = 'auto-review';
 
 /// Codex's own presets under its names, each under the app's policy for it.
 /// `full-access` is listed greyed, never offered (Codex's `never` would skip
@@ -97,6 +118,14 @@ const codexModes = [
     policy: AgentMode.autoEdit,
   ),
   NativeMode(
+    id: codexAutoReview,
+    label: 'Auto review',
+    description:
+        "Codex's own reviewer approves its requests in its sandbox. EveryAI's safety checks and your rules don't see "
+        'these calls',
+    policy: AgentMode.auto,
+  ),
+  NativeMode(
     id: 'full-access',
     label: 'Full Access',
     policy: AgentMode.fullAuto,
@@ -105,8 +134,11 @@ const codexModes = [
 ];
 
 /// The preset a session in [mode] shows when none was picked by name.
-String codexModeFor(AgentMode mode) =>
-    mode == AgentMode.autoEdit || mode == AgentMode.fullAuto || mode == AgentMode.bypass ? 'default' : codexReadOnly;
+String codexModeFor(AgentMode mode) => mode == AgentMode.auto
+    ? codexAutoReview
+    : mode == AgentMode.autoEdit || mode == AgentMode.fullAuto || mode == AgentMode.bypass
+    ? 'default'
+    : codexReadOnly;
 
 /// Whether usage under an `account/updated` `authMode` is on a plan rather
 /// than billed per token: the modes Codex serves from its own backend

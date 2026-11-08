@@ -282,6 +282,35 @@ void main() {
       expect(q.text, contains('<output n="1" tool="bash">'));
     });
 
+    test('the current user turn is kept when the output before it is enough to clear', () {
+      // The last turn: 6 steps of 20K characters (5K tokens each), longer than three steps but under the trigger.
+      final turn = [
+        for (final m in history(6, size: 20000).skip(2))
+          {...m, if (m['tool_call_id'] case final String id) 'tool_call_id': 't$id'},
+      ];
+      for (final m in turn) {
+        if (m['tool_calls'] case [final Map<String, Object?> c]) {
+          m['tool_calls'] = [
+            {...c, 'id': 't${c['id']}'},
+          ];
+        }
+      }
+      final messages = [
+        ...history(7),
+        {'role': 'user', 'content': 'now the tests'},
+        ...turn,
+      ];
+      // Before: the first turn's 7 results. The last turn's older steps stay, though three steps would allow them.
+      expect(oldToolOutputs(messages).map((o) => o.callId), ['c0', 'c1', 'c2', 'c3', 'c4', 'c5', 'c6']);
+      // A turn whose own output is over the trigger can clear its older steps (but never the newest three).
+      final long = [
+        ...history(2, size: 10),
+        {'role': 'user', 'content': 'go on'},
+        ...history(10).skip(2),
+      ];
+      expect(oldToolOutputs(long).map((o) => o.callId), ['c0', 'c1', 'c0', 'c1', 'c2', 'c3', 'c4', 'c5', 'c6']);
+    });
+
     test('leaves the history alone under the trigger', () {
       final messages = history(8);
       final before = jsonEncode(messages);

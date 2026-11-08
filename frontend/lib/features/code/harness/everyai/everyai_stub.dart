@@ -29,3 +29,5 @@ final class EveryAIHarness implements Harness, ForksSessions {
   @override
   Future<Map<String, ExecutionStatus>> statuses(List<String> conversationIds) async => const {};
 }
+
+Future<void> closeAllLanguageServers() async {}

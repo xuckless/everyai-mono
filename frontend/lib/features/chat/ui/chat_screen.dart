@@ -14,6 +14,7 @@ import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/adaptive_page.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../../core/ui/selection.dart';
+import '../../artifacts/ui/figure_actions.dart' show composerInsertProvider;
 import '../../artifacts/artifact_providers.dart';
 import '../../artifacts/domain/artifact.dart';
 import '../../artifacts/ui/artifact_panel.dart';
@@ -80,6 +81,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           panel.openArtifact(visual.str('id').isEmpty ? visual.callId : visual.str('id'));
         }
       }
+    });
+
+    // Point and ask: a figure part the user clicked goes into the box (never sent).
+    ref.listen(composerInsertProvider(widget.conversationId), (_, text) {
+      if (text == null) return;
+      final taken = ref.read(composerInsertProvider(widget.conversationId).notifier).take();
+      if (taken != null) _composer.currentState?.prefill(taken, keep: true);
     });
 
     // A prompt from an everyai:// link fills the new-chat box; it is never sent.

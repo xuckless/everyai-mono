@@ -42,6 +42,8 @@ abstract final class LiveBrowsers {
     final all = [..._bySession.values];
     _bySession.clear();
     await Future.wait([for (final b in all) b.close().then((_) => b.host.stop())]);
+    // Profiles opened outside a session's page (sign-in, an agent's own browser) too.
+    await ChromeHost.stopAll();
   }
 }
 

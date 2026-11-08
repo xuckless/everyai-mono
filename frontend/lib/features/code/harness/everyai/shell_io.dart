@@ -782,6 +782,10 @@ Future<void> killTree(int pid, {bool? windows, KillRunner run = Process.run}) as
   }
 }
 
+/// [root]'s descendants now (children first found, then theirs), for a caller that must end them after [root]
+/// itself exits (then they belong to init and no walk from [root] finds them).
+Future<List<int>> descendantsOf(int root) => _descendants(root);
+
 Future<List<int>> _descendants(int root) async {
   // On Windows only processes() asks (killTree has taskkill there): the desktop helper lists parents.
   if (Platform.isWindows) {

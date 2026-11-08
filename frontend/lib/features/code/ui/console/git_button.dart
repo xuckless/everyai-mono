@@ -7,10 +7,12 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../code_providers.dart';
 import '../../domain/code_session.dart';
+import '../../domain/git_requests.dart';
 import '../../git/git_service.dart';
 
-/// What the console's git button does next.
-enum GitActionKind { commit, viewPr, createPr, mergeLocally }
+/// What the console's git button does next. Commit, Create PR and Merge locally ask the session's agent
+/// ([git_requests.dart]); Merge into the base fast-forwards it to the one commit the agent prepared; View PR opens it.
+enum GitActionKind { commit, viewPr, createPr, prepareMerge, merge }
 
 /// The git button's action: its kind, label, whether it can run now and, for View PR, the address.
 typedef GitAction = ({GitActionKind kind, String label, bool enabled, String? url});
@@ -18,14 +20,18 @@ typedef GitAction = ({GitActionKind kind, String label, bool enabled, String? ur
 /// The one next step for a session's work, in the order a source control panel offers it: commit what isn't
 /// committed, then look at the open pull request, else open one when the branch has a remote, else merge it locally.
 /// A merged or closed pull request still shows while the branch has nothing newer ([head] is where it was): its
-/// commits stay "ahead" after a squash merge, and another PR for them would be a duplicate. Nothing left to do is a
-/// Commit that can't run. Null (no button) without a worktree: an in-place session commits in the user's own
-/// checkout, which EveryAI leaves to them.
+/// commits stay "ahead" after a squash merge, and another PR for them would be a duplicate. Merging locally takes
+/// two presses: the first asks the agent to rebase and squash ([GitActionKind.prepareMerge]); once the branch is
+/// one commit on top of [base] ([behind] 0) the button merges it. Nothing left to do is a Commit that can't run.
+/// Null (no button) without a worktree: an in-place session commits in the user's own checkout, which EveryAI
+/// leaves to them.
 GitAction? gitActionFor({
   required bool worktree,
   required bool dirty,
   required int ahead,
   required bool hasRemote,
+  int behind = 0,
+  String base = 'main',
   BranchPr? pr,
   String head = '',
 }) {
@@ -35,7 +41,10 @@ GitAction? gitActionFor({
     return (kind: GitActionKind.viewPr, label: 'View PR #${pr.number}', enabled: true, url: pr.url);
   }
   if (ahead > 0 && hasRemote) return (kind: GitActionKind.createPr, label: 'Create PR', enabled: true, url: null);
-  if (ahead > 0) return (kind: GitActionKind.mergeLocally, label: 'Merge locally', enabled: true, url: null);
+  if (ahead == 1 && behind == 0) {
+    return (kind: GitActionKind.merge, label: 'Merge into $base', enabled: true, url: null);
+  }
+  if (ahead > 0) return (kind: GitActionKind.prepareMerge, label: 'Merge locally', enabled: true, url: null);
   return (kind: GitActionKind.commit, label: 'Commit', enabled: false, url: null);
 }
 
@@ -53,14 +62,17 @@ final gitButtonProvider = FutureProvider.autoDispose.family<GitAction?, String>(
     worktree: true,
     dirty: false,
     ahead: snapshot.ahead,
+    behind: snapshot.behind,
+    base: w.baseBranch,
     hasRemote: remote.isNotEmpty,
     pr: pr,
     head: head,
   );
 });
 
-/// The primary git button (the console header and Session info → Changes). Commit and Create PR open the same
-/// drafts as `/commit` and `/pr`, so the user edits the message before anything runs.
+/// The primary git button (the console header and Session info → Changes). Commit, Create PR and Merge locally are
+/// requests to the agent (sent as a turn, queued while it works); `/commit` and `/pr` still open drafts the user
+/// writes.
 class GitButton extends ConsumerWidget {
   const GitButton({super.key, required this.sessionId});
 
@@ -80,10 +92,10 @@ class GitButton extends ConsumerWidget {
         onPressed: !action.enabled
             ? null
             : switch (action.kind) {
-                GitActionKind.commit => () => unawaited(controller.draftCommit('')),
-                GitActionKind.createPr => () => unawaited(controller.draftPr('')),
+                GitActionKind.commit => () => unawaited(controller.send(commitRequest)),
+                GitActionKind.createPr => () => unawaited(controller.send(prRequest(_base(ref)))),
                 GitActionKind.viewPr => () => unawaited(launchUrl(Uri.parse(action.url!))),
-                GitActionKind.mergeLocally => () {
+                GitActionKind.prepareMerge || GitActionKind.merge => () {
                   final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
                   if (info != null) unawaited(mergeLocally(context, ref, info));
                 },
@@ -91,24 +103,68 @@ class GitButton extends ConsumerWidget {
       ),
     );
   }
+
+  String _base(WidgetRef ref) =>
+      ref.read(codeSessionsProvider.notifier).byId(sessionId)?.worktree?.baseBranch ?? 'the base branch';
 }
 
-/// Squash-merges the session's branch into its base branch in the main checkout, with a message the user confirms,
-/// then offers to remove the worktree. Failures are shown, not thrown.
+/// Merges the session's work into its base branch in the main checkout. While the branch isn't one commit on top
+/// of the base, the agent is asked to rebase and squash it (conflicts are resolved in its own worktree, so the
+/// user's checkout never holds a half-done merge). Once it is, the user confirms the agent's commit and the base
+/// fast-forwards to it; then the worktree can go. Failures are shown, not thrown.
 Future<void> mergeLocally(BuildContext context, WidgetRef ref, CodeSessionInfo info) async {
   final w = info.worktree;
   if (w == null) return;
+  final controller = ref.read(codeSessionProvider(info.id).notifier);
+  Future<void> ask(String request) async {
+    if (await controller.send(request) && context.mounted) {
+      showAdaptiveToast(context, 'Asked the agent to get the branch ready to merge');
+    }
+  }
+
   final git = ref.read(codeGitProvider(info.id).notifier);
-  final message = await showAdaptivePrompt(
-    context,
-    title: 'Squash merge into ${w.baseBranch}',
-    confirmLabel: 'Merge',
-    initialValue: info.title,
-  );
-  if (message == null || message.trim().isEmpty || !context.mounted) return;
+  final GitSnapshot snapshot;
+  final bool dirty;
   try {
-    final sha = await git.squashMerge(message.trim());
+    (snapshot, dirty) = await (ref.read(codeGitProvider(info.id).future), GitService.isDirty(w)).wait;
+  } on Object catch (e) {
+    if (context.mounted) showAdaptiveToast(context, '$e');
+    return;
+  }
+  if (dirty || snapshot.ahead != 1 || snapshot.behind != 0) return ask(prepareMergeRequest(w.baseBranch));
+  // While the agent works its branch can still change under the dialog.
+  bool running() => ref.read(codeSessionProvider(info.id)).transcript.running;
+  if (running()) {
+    if (context.mounted) showAdaptiveToast(context, 'The agent is still working. Merge once it has finished.');
+    return;
+  }
+  final ({String sha, String subject}) candidate;
+  try {
+    candidate = await GitService.mergeCandidate(w);
+  } on Object catch (e) {
+    if (context.mounted) showAdaptiveToast(context, '$e');
+    return;
+  }
+  if (!context.mounted) return;
+  final go = await showAdaptiveConfirm(
+    context,
+    title: 'Merge into ${w.baseBranch}?',
+    message:
+        '${w.baseBranch} in ${w.repoRoot} moves forward to the agent\'s commit "${candidate.subject}" '
+        '(${candidate.sha.substring(0, 7)}).',
+    confirmLabel: 'Merge',
+  );
+  if (!go || !context.mounted) return;
+  if (running()) {
+    showAdaptiveToast(context, 'The agent started working again, so nothing was merged.');
+    return;
+  }
+  try {
+    // Exactly the commit the user confirmed, whatever the branch points at by now.
+    final sha = await git.fastForwardMerge(candidate.sha);
     if (context.mounted) showAdaptiveToast(context, 'Merged into ${w.baseBranch} as ${sha.substring(0, 7)}');
+  } on BaseMoved {
+    return ask(baseMovedRequest(w.baseBranch));
   } on Object catch (e) {
     if (context.mounted) showAdaptiveToast(context, '$e');
     return;
