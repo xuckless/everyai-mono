@@ -95,12 +95,18 @@ flowchart LR
 
 | | Install | |
 |---|---|---|
-| **macOS** | [Download the DMG](https://github.com/xuckless/everyai-mono/releases/latest) or `brew trust xuckless/tap && brew install --cask xuckless/tap/everyai` | signed and notarized |
-| **Windows** | [Microsoft Store](https://apps.microsoft.com/detail/9PHCKCV3J9S9) or `winget install --source msstore 9PHCKCV3J9S9` | signed by the Store |
-| **Linux** | [AppImage or .deb](https://github.com/xuckless/everyai-mono/releases/latest) | GPG-signed ([key](packaging/linux/everyai-release-key.asc)) |
+| **macOS** | `curl -fsSL https://get.everyai.dev/install.sh \| sh`, [the DMG](https://github.com/xuckless/everyai-mono/releases/latest), or `brew trust xuckless/tap && brew install --cask xuckless/tap/everyai` | signed and notarized |
+| **Windows** | `irm https://get.everyai.dev/install.ps1 \| iex`, [Microsoft Store](https://apps.microsoft.com/detail/9PHCKCV3J9S9), or `winget install --source msstore 9PHCKCV3J9S9` | signed by the Store |
+| **Linux** | `curl -fsSL https://get.everyai.dev/install.sh \| sh`, or [the AppImage or .deb](https://github.com/xuckless/everyai-mono/releases/latest) | GPG-signed ([key](packaging/linux/everyai-release-key.asc)) |
 | **Web** | [app.everyai.dev](https://app.everyai.dev) | Chat, and remote control of your computer's sessions |
 
-Check a Linux download with `gpg --import everyai-release-key.asc && gpg --verify SHA256SUMS.asc SHA256SUMS && sha256sum -c --ignore-missing SHA256SUMS`.
+The install script checks what it downloads before installing: on macOS the SHA-256, EveryAI's Developer ID signature
+and Gatekeeper; on Linux the GPG-signed SHA256SUMS. On Linux it uses apt for the .deb where it can, otherwise it puts
+the AppImage in `~/.local/share/everyai` with a menu entry, icons and an `everyai` command. Both versions update
+themselves. Remove it with `curl -fsSL https://get.everyai.dev/install.sh | sh -s -- --uninstall` (your chats and
+settings stay). Script sources: [`packaging/install/`](packaging/install/).
+
+Check a Linux download by hand with `gpg --import everyai-release-key.asc && gpg --verify SHA256SUMS.asc SHA256SUMS && sha256sum -c --ignore-missing SHA256SUMS`.
 The first launch walks you through a short tour: adding a key, the agents found on your computer, and the
 [Dev Build Terms](TERMS-DEV.md).
 

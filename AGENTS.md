@@ -1077,6 +1077,12 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   their reports and results dropped (`_quietRuns`), so nothing wakes the lead; `runningWork` (`SessionWork` in
   `domain/session_work.dart`) says what runs. UI: `StopAllButton` (a small up-chevron opening one kit menu row) beside
   Send/Stop while more than the lead's turn runs, and on Board cards while an open session runs anything.
+- **Install scripts (2026-11-07; `packaging/install/`).** `get.everyai.dev` (Cloudflare worker `everyai-get`, deployed
+  with `packaging/install/deploy.sh`) serves `install.sh` (macOS: DMG checked by SHA-256, team signature and
+  Gatekeeper, into /Applications or ~/Applications; Linux x86_64: the .deb through apt, else the AppImage in
+  `~/.local/share/everyai` with menu entry, icons, `everyai://` handler and `~/.local/bin/everyai`; SHA256SUMS GPG-checked
+  when gpg is there; `--uninstall`), `install.ps1` (winget from the Store, else the Store page) and `/latest/version`.
+  Packages come from GitHub Releases, so releases need no step here.
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),
