@@ -8,17 +8,27 @@ import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/every_icons.dart';
 import '../domain/session_work.dart';
 
-/// A small up-chevron beside Send/Stop (the composer) or a card's controls (the Board) that opens one row: Stop
-/// all, which stops the lead's turn, its background forks and its workflows. Built only while [work] has something
+/// A small up-chevron beside Send/Stop (the composer) or a card's controls (the Board) that opens Pause all and Stop
+/// all, which hold or stop the lead's turn, its background forks and its workflows. Built only while [work] has something
 /// besides the lead's turn ([hasSideWork]).
 ///
 /// No state of its own: [work] and [leadBusy] are read by its parent as it builds, and the menu is the kit's.
 class StopAllButton extends StatelessWidget {
-  const StopAllButton({super.key, required this.work, required this.leadBusy, required this.onStopAll, this.size = 32});
+  const StopAllButton({
+    super.key,
+    required this.work,
+    required this.leadBusy,
+    required this.onStopAll,
+    this.onPauseAll,
+    this.size = 32,
+  });
 
   final SessionWork work;
   final bool leadBusy;
   final VoidCallback onStopAll;
+
+  /// Pause all (each ends its step, then holds); null hides the row (already paused, or nothing to hold).
+  final VoidCallback? onPauseAll;
 
   /// The round trigger's size: the composer's Send is 32; a Board card's header uses 22.
   final double size;
@@ -32,6 +42,8 @@ class StopAllButton extends StatelessWidget {
         tooltip: 'Stop all',
         width: 300,
         actions: [
+          if (onPauseAll case final pause?)
+            MenuAction(label: 'Pause all after their step', icon: EveryIcon.pause, onSelected: pause),
           MenuAction(
             label: 'Stop all · ${stopAllScope(work, leadBusy: leadBusy)}',
             icon: EveryIcon.stop,

@@ -39,6 +39,9 @@ enum SessionStatus {
   starting('Starting'),
   running('Working'),
   needsInput('Needs input'),
+
+  /// Held after its step (Pause): it starts nothing new until Resume.
+  paused('Paused'),
   idle('Idle'),
   done('Done'),
   failed('Failed');
@@ -97,6 +100,7 @@ final class CodeSessionInfo {
     this.parentId,
     this.parentCallId = '',
     this.ownTag = false,
+    this.ownProcesses = false,
     this.ownApprovals = false,
     this.pinned = false,
     this.prNumber,
@@ -218,6 +222,10 @@ final class CodeSessionInfo {
   /// step or orchestrator), so its cost can be read alone.
   final bool ownTag;
 
+  /// A child whose processes carry its own id though it bills to its parent (a fork): its Stop, and its lead's
+  /// stop_fork, end only what it started.
+  final bool ownProcesses;
+
   /// A child stricter than its parent (a read-only workflow agent, a
   /// `/review`): it neither uses nor adds to the "for this session"
   /// approvals its parent's other children share.
@@ -241,9 +249,11 @@ final class CodeSessionInfo {
   /// An agent a workflow started (its call id is `wf-<run>-<key>`).
   bool get isWorkflowAgent => parentId != null && parentCallId.startsWith('wf-');
 
-  /// The id its model calls are billed under (`X-EveryAI-Session`), and
-  /// the tag its processes carry: its own, or its parent's for a subagent.
+  /// The id its model calls are billed under (`X-EveryAI-Session`): its own, or its parent's for a subagent.
   String get billingTag => ownTag ? id : parentId ?? id;
+
+  /// The tag its processes carry (`EVERYAI_SESSION`): its own, or its parent's for a subagent sharing them.
+  String get processTag => ownTag || ownProcesses ? id : parentId ?? id;
 
   CodeSessionInfo copyWith({
     String? title,
@@ -290,6 +300,7 @@ final class CodeSessionInfo {
     parentId: parentId,
     parentCallId: parentCallId,
     ownTag: ownTag,
+    ownProcesses: ownProcesses,
     ownApprovals: ownApprovals,
     pinned: pinned ?? this.pinned,
     prNumber: clearPr ? null : prNumber ?? this.prNumber,
@@ -339,6 +350,7 @@ final class CodeSessionInfo {
     pinned: json['pinned'] == true,
     prNumber: json['pr'] as int?,
     ownTag: json['own_tag'] == true || (json['parent_call_id'] as String? ?? '').startsWith('ultra-'),
+    ownProcesses: json['own_processes'] == true,
     ownApprovals: json['own_approvals'] == true,
     forkCopy: ForkCopy.fromJson(json['fork_copy']),
     // Max and Ultra were tiers, and Bug fix a mode: Max is a workflow now, kept on the session; Ultra and Bug
@@ -381,6 +393,7 @@ final class CodeSessionInfo {
     'parent_id': ?parentId,
     if (parentCallId.isNotEmpty) 'parent_call_id': parentCallId,
     if (ownTag) 'own_tag': true,
+    if (ownProcesses) 'own_processes': true,
     if (ownApprovals) 'own_approvals': true,
     if (pinned) 'pinned': true,
     'pr': ?prNumber,

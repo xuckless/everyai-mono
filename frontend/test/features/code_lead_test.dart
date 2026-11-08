@@ -12,6 +12,7 @@ import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/code_settings_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
+import 'package:every_ai/features/code/domain/fork_state.dart' show StepHold;
 import 'package:every_ai/features/code/domain/git_commands.dart' show plainPrBody;
 import 'package:every_ai/features/code/domain/goal.dart' show GoalStatus;
 import 'package:every_ai/features/code/domain/local_ports.dart' show ListeningPort;
@@ -1141,6 +1142,30 @@ void main() {
         expect((r.isError, r.text), (true, "Error: app_run isn't supported on Windows yet."));
       });
     });
+  });
+
+  test('Resume runs an EveryAI turn again only when the Pause parked it, not one that ended on its own', () async {
+    final info = await start();
+    final c = await open(info.id);
+    final sessions = container.read(codeSessionsProvider.notifier);
+    sessions.update(sessions.byId(info.id)!.copyWith(harness: everyaiHarnessName));
+    // Its turn ends with its final answer while it pauses: nothing is left to run.
+    session.add(stateEvent('r1', ExecutionStatus.running));
+    await pumpEventQueue();
+    final paused = c.pauseAfterStep();
+    session.add(stateEvent('f1', ExecutionStatus.finished));
+    await paused;
+    expect(stateOf(info.id).hold, StepHold.paused);
+    await c.resumeAfterPause();
+    expect(session.resumes, 0, reason: 'a finished turn is not run again');
+    // Parked between its steps: Resume lets it go on.
+    session.add(stateEvent('r2', ExecutionStatus.running));
+    await pumpEventQueue();
+    final parked = c.pauseAfterStep();
+    session.add(stateEvent('p2', ExecutionStatus.paused));
+    await parked;
+    await c.resumeAfterPause();
+    expect(session.resumes, 1);
   });
 
   test('an EveryAI session still asks for the gateway key and gets no host token', () async {

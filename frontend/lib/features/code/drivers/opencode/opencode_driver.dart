@@ -170,7 +170,7 @@ final class OpenCodeDriver
     final server = await _launch(
       executable: exe,
       cwd: spec.workingDir,
-      sessionTag: spec.sessionTag,
+      sessionTag: spec.procTag,
       logPath: '$dir/driver-sessions/opencode/${spec.sessionTag}.log',
       env: openCodeBriefingEnv(spec.briefing),
     );
@@ -195,7 +195,7 @@ final class OpenCodeDriver
         dir,
         id,
         workingDir: spec.workingDir,
-        sessionTag: spec.sessionTag,
+        sessionTag: spec.procTag,
         model: spec.model,
         effort: spec.effort,
       );

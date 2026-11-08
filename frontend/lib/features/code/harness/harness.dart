@@ -38,6 +38,7 @@ final class SessionSpec {
     required this.llmBaseUrl,
     required this.llmApiKey,
     required this.sessionTag,
+    this.processTag,
     this.initialMessage,
     this.runInitial = true,
     this.maxInputTokens,
@@ -111,6 +112,11 @@ final class SessionSpec {
 
   /// Sent as `X-EveryAI-Session` so usage is attributed to the session.
   final String sessionTag;
+
+  /// Set as `EVERYAI_SESSION` on the processes it starts (its shells, its CLI), so Stop ends them; null:
+  /// [sessionTag]. A fork's own id while it bills to its lead, so stopping it ends only its processes.
+  final String? processTag;
+  String get procTag => processTag ?? sessionTag;
   final String? initialMessage;
 
   /// Whether [initialMessage] starts the agent; off, it waits for the next

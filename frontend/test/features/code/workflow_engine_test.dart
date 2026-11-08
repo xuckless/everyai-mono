@@ -97,6 +97,38 @@ void main() {
       }
     });
 
+    test('pause: from running to pausing, then paused, and back; a stop or a quit ends either', () {
+      final allowed = <(RunState, RunState)>[
+        (const RunRunning('Build'), const RunPausing('Build')),
+        (const RunPausing('Build'), const RunPaused('Build')),
+        (const RunPausing('Build'), const RunPausing('Test')),
+        (const RunPaused('Build'), const RunPaused('Test')),
+        (const RunPausing(), const RunRunning()),
+        (const RunPaused(), const RunRunning()),
+        (const RunPausing(), const RunStopping(outcome, 'x')),
+        (const RunPaused(), const RunStopping(WorkflowOutcome.capped, 'x')),
+        (const RunPausing(), const RunDetached()),
+        (const RunPaused(), const RunDetached()),
+        (const RunPaused(), steps.first),
+      ];
+      for (final (from, to) in allowed) {
+        expect(runEdge(from, to), isTrue, reason: '$from → $to');
+      }
+      final refused = <(RunState, RunState)>[
+        (const RunStarting(), const RunPausing()),
+        (const RunRunning(), const RunPaused()),
+        (const RunPaused(), const RunPausing()),
+        (const RunPaused(), const RunEnded(outcome)),
+        (const RunPaused(), steps[1]),
+        (const RunStopping(outcome, 'x'), const RunPausing()),
+        (steps.first, const RunPaused()),
+        (const RunEnded(outcome), const RunPausing()),
+      ];
+      for (final (from, to) in refused) {
+        expect(runEdge(from, to), isFalse, reason: '$from → $to');
+      }
+    });
+
     test('what each state waits on, and which take agents', () {
       expect(const RunRunning().acceptsAgents, isTrue);
       for (final s in [const RunStarting(), const RunStopping(outcome, 'x'), ...steps, const RunEnded(outcome)]) {
@@ -156,6 +188,65 @@ void main() {
         'ended:done',
       ]);
       expect(launcher.released, [launcher.started.single.childId]);
+      expect(e.refused, isEmpty);
+    });
+
+    test('pause holds every live agent and new agent() calls until resume', () async {
+      final trace = <Object>[];
+      final e = traced(trace, via: bridge);
+      final turns = Completer<void>();
+      launcher.gate = (call) => turns.future;
+      final run = e.run();
+      unawaited(bridge.agent('a').catchError((Object _) => null));
+      await pumpEventQueue();
+      final a = launcher.started.single.childId;
+      await e.pause();
+      expect(trace.whereType<RunState>().map((s) => s.name), containsAllInOrder(['running', 'pausing', 'paused']));
+      expect(launcher.paused, [a]);
+      // A call made while paused waits to start.
+      final b = bridge.agent('b');
+      await pumpEventQueue();
+      expect(launcher.started, hasLength(1));
+      await e.resume();
+      await pumpEventQueue();
+      expect(launcher.resumed, [a]);
+      expect(launcher.started, hasLength(2));
+      turns.complete();
+      expect(await b, isNotNull);
+      bridge.finish('ok');
+      expect((await run).state, const RunEnded(WorkflowOutcome.done));
+      expect(e.refused, isEmpty);
+    });
+
+    test('an agent that finishes starting during a pause holds too', () async {
+      final e = traced(<Object>[], via: bridge);
+      final starting = Completer<void>();
+      launcher.startGate = (call) => starting.future;
+      final run = e.run();
+      unawaited(bridge.agent('a').catchError((Object _) => null));
+      await pumpEventQueue();
+      await e.pause();
+      starting.complete();
+      await pumpEventQueue();
+      expect(launcher.paused, [launcher.started.single.childId]);
+      e.stop('Stopped by the user.');
+      await run;
+      expect(e.refused, isEmpty);
+    });
+
+    test('a stop while paused refuses the waiting calls and shuts down', () async {
+      final trace = <Object>[];
+      final e = traced(trace, via: bridge);
+      final run = e.run();
+      await pumpEventQueue();
+      await e.pause();
+      final b = bridge.agent('b');
+      await pumpEventQueue();
+      e.stop('Stopped by the user.');
+      await expectLater(b, throwsA(anything));
+      final end = await run;
+      expect(end.state, const RunEnded(WorkflowOutcome.stopped));
+      expect(launcher.started, isEmpty);
       expect(e.refused, isEmpty);
     });
 
@@ -972,4 +1063,8 @@ final class _HangingRelease implements AgentLauncher {
   Future<Map<String, Object?>> batchCheckOf(String childId, PlanBatch batch) => _inner.batchCheckOf(childId, batch);
   @override
   void stop(String childId) => _inner.stop(childId);
+  @override
+  Future<void> pause(String childId) => _inner.pause(childId);
+  @override
+  Future<void> resume(String childId) => _inner.resume(childId);
 }

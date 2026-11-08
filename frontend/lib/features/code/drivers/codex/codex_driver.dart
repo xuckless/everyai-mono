@@ -152,7 +152,7 @@ final class CodexDriver
     if (!found.installed || found.path == null) throw _notInstalled;
     final launch = await _launch(spec.briefing);
     final session = CodexSession(
-      await _spawn(found.path!, args: launch.args, cwd: spec.workingDir, env: launch.env, tag: spec.sessionTag),
+      await _spawn(found.path!, args: launch.args, cwd: spec.workingDir, env: launch.env, tag: spec.procTag),
       cwd: spec.workingDir,
       mode: spec.mode,
       model: spec.model,
@@ -166,14 +166,13 @@ final class CodexDriver
       throw e is HarnessError ? e : HarnessError("Codex didn't start: $e");
     }
     final data = await _data();
-    await _saveMeta(data, session, spec.sessionTag);
+    await _saveMeta(data, session, spec.procTag);
     session.useJournal(openEventJournal('$data/journal', session.id));
     _track(
       session,
       data: data,
-      tag: spec.sessionTag,
-      respawn: () =>
-          _spawn(found.path!, args: launch.args, cwd: spec.workingDir, env: launch.env, tag: spec.sessionTag),
+      tag: spec.procTag,
+      respawn: () => _spawn(found.path!, args: launch.args, cwd: spec.workingDir, env: launch.env, tag: spec.procTag),
     );
     if (spec.initialMessage case final text? when text.isNotEmpty) {
       await session.send(text, run: spec.runInitial, images: spec.initialImages);

@@ -109,6 +109,12 @@ abstract interface class AgentLauncher {
 
   void stop(String childId);
 
+  /// Pause: [childId] ends the step it is on, then holds. Completes once it holds (or gives up waiting).
+  Future<void> pause(String childId);
+
+  /// Resume after [pause].
+  Future<void> resume(String childId);
+
   /// The run is over: what [childId] left running ends (its turn, shells, monitors, browsers, app runs, language
   /// and MCP servers, devices). Its transcript and worktree stay for the user. Called once per child, in the
   /// shutdown's children step.
@@ -365,10 +371,48 @@ final class WorkflowEngine {
     bridge?.kill();
   }
 
+  /// Pause: every live agent ends its step and holds, and agent() calls wait to start, until [resume].
+  Future<void> pause() async {
+    if (_state case RunRunning(:final phase)) {
+      _to(RunPausing(phase));
+      await Future.wait([
+        for (final id in [..._live]) launcher.pause(id).catchError((Object _) {}),
+      ]);
+      if (_state case RunPausing(:final phase)) _to(RunPaused(phase));
+    }
+  }
+
+  /// Resume after [pause]: the agents go on, and the calls that waited start.
+  Future<void> resume() async {
+    final phase = switch (_state) {
+      RunPausing(:final phase) || RunPaused(:final phase) => phase,
+      _ => null,
+    };
+    if (phase == null) return;
+    _to(RunRunning(phase));
+    _unpaused?.complete();
+    _unpaused = null;
+    await Future.wait([
+      for (final id in [..._live]) launcher.resume(id).catchError((Object _) {}),
+    ]);
+  }
+
+  /// Completes on [resume] (or a stop): agent() calls made while paused wait for it.
+  Completer<void>? _unpaused;
+
+  Future<void> _whilePaused() async {
+    while (_state is RunPausing || _state is RunPaused) {
+      await (_unpaused ??= Completer<void>()).future;
+    }
+  }
+
   void _halt(WorkflowOutcome outcome, String why, {bool quiet = false}) {
-    if (_state is! RunStarting && _state is! RunRunning) return;
+    if (_state is! RunStarting && _state is! RunRunning && _state is! RunPausing && _state is! RunPaused) return;
     _error = why;
     _to(RunStopping(outcome, why));
+    // Calls waiting out a pause go on to their refusal.
+    _unpaused?.complete();
+    _unpaused = null;
     // A resume after a quit mid-shutdown shuts down instead of running the script again.
     unawaited(journal.write({'t': 'stop', 'outcome': outcome.name, 'why': why, if (quiet) 'quiet': true}));
     _stopAgents(why);
@@ -427,10 +471,15 @@ final class WorkflowEngine {
           _phase = '${args['title'] ?? ''}';
           if (!_phases.contains(_phase)) _phases.add(_phase);
           if (!journal.phases.contains(_phase)) unawaited(journal.write({'t': 'phase', 'title': _phase}));
-          if (_state is RunRunning) {
-            _to(RunRunning(_phase));
-          } else {
-            _emit();
+          switch (_state) {
+            case RunRunning():
+              _to(RunRunning(_phase));
+            case RunPausing():
+              _to(RunPausing(_phase));
+            case RunPaused():
+              _to(RunPaused(_phase));
+            default:
+              _emit();
           }
         case 'log':
           _log('${args['msg'] ?? ''}');
@@ -448,6 +497,8 @@ final class WorkflowEngine {
     timer.cancel();
     await output.cancel();
     if (_state is RunDetached) return snapshot;
+    _unpaused?.complete();
+    _unpaused = null;
     final outcome = switch (_state) {
       RunStopping(:final outcome) => outcome,
       _ => _said ?? WorkflowOutcome.failed,
@@ -659,6 +710,8 @@ final class WorkflowEngine {
     if (!spawned) _started++;
     _agents[call.key] = base;
     _emit();
+    // Paused: it waits to start until Resume (or a stop, which refuses it below).
+    await _whilePaused();
     await _slots.acquire();
     String? childId;
     try {
@@ -691,6 +744,8 @@ final class WorkflowEngine {
       // Stopped while it was being set up (a reattached child): no watch starts.
       if (_capProblem() case final why? when !_state.acceptsAgents) throw WorkflowCapped(why);
       _live.add(childId);
+      // Paused while it started: it holds too.
+      if (_state is RunPausing || _state is RunPaused) unawaited(launcher.pause(childId).catchError((Object _) {}));
       _view(call.key, (v) => v.copyWith(status: WorkflowAgentStatus.running));
       var r = await launcher.watch(childId, reattached: reattached);
       var sends = 1;

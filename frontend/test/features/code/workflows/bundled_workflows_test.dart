@@ -83,6 +83,12 @@ final class _Agents implements AgentLauncher {
 
   @override
   Future<void> release(String childId) async {}
+
+  @override
+  Future<void> pause(String childId) async {}
+
+  @override
+  Future<void> resume(String childId) async {}
 }
 
 String _source(String id) => File('assets/workflows/$id.js').readAsStringSync();

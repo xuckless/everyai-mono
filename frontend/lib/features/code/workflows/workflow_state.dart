@@ -5,11 +5,14 @@ import 'package:flutter/foundation.dart';
 // A workflow run's lifecycle, the one source of truth for the engine, the host, the journal and the card:
 //
 //   starting ──script up──▶ running(phase) ──phase()──▶ running(next phase)
+//      │                       │  ▲
+//      │                       │  └──Resume── pausing / paused ◀──Pause── running (each agent ends its step, then
+//      │                       │              pausing ──every agent holds──▶ paused        holds; new agents wait)
 //      │                       │
-//      │                       ├──Stop / out of time──▶ stopping(outcome) ──script gone──▶ shuttingDown(step 1…N)
-//      │                       └──the script ended (done() or not)────────────────────────▶ shuttingDown(step 1…N)
-//      ├──Stop─────────────────────────────────────────▶ stopping(outcome)                         │
-//      └──the script couldn't start────────────────────────────────────────────────────────▶ shuttingDown
+//      │                       ├──Stop / out of time (also while paused)──▶ stopping(outcome) ──script gone──▶ ┐
+//      │                       └──the script ended (done() or not)───────────────────────────────────────────▶ ├─▶ shuttingDown(step 1…N)
+//      ├──Stop─────────────────────────────────────────▶ stopping(outcome)                                      │
+//      └──the script couldn't start─────────────────────────────────────────────────────────────────────────────┘
 //                                                                                                   ▼
 //                                                                                   ended(done | failed | capped | stopped)
 //
@@ -92,6 +95,30 @@ final class RunRunning extends RunState {
   int get hashCode => phase.hashCode;
 }
 
+/// Pause: each live agent ends its step and holds; agent() calls wait to start. Time still counts toward the cap.
+final class RunPausing extends RunState {
+  const RunPausing([this.phase = '']);
+  final String phase;
+  @override
+  RunWaitsOn get waitsOn => RunWaitsOn.agents;
+  @override
+  bool get acceptsAgents => true;
+  @override
+  String get name => 'pausing';
+}
+
+/// Every live agent holds; Resume goes on where it was.
+final class RunPaused extends RunState {
+  const RunPaused([this.phase = '']);
+  final String phase;
+  @override
+  RunWaitsOn get waitsOn => RunWaitsOn.nothing;
+  @override
+  bool get acceptsAgents => true;
+  @override
+  String get name => 'paused';
+}
+
 /// Stopped by the user or a cap: no new agents, and the script is being killed.
 final class RunStopping extends RunState {
   const RunStopping(this.outcome, this.why);
@@ -153,6 +180,13 @@ bool runEdge(RunState from, RunState to) => switch ((from, to)) {
   (RunStarting(), RunShuttingDown(step: ShutdownStep.script)) => true,
   (RunRunning(), RunRunning() || RunStopping() || RunDetached()) => true,
   (RunRunning(), RunShuttingDown(step: ShutdownStep.script)) => true,
+  (RunRunning(), RunPausing()) => true,
+  // phase() while paused: the phase moves on, the hold stays.
+  (RunPausing(), RunPausing()) || (RunPaused(), RunPaused()) => true,
+  (RunPausing(), RunPaused() || RunRunning() || RunStopping() || RunDetached()) => true,
+  (RunPaused(), RunRunning() || RunStopping() || RunDetached()) => true,
+  // The script may end while paused (it waited on nothing): the shutdown runs.
+  (RunPausing() || RunPaused(), RunShuttingDown(step: ShutdownStep.script)) => true,
   (RunStopping(), RunDetached()) => true,
   (RunStopping(:final outcome), RunShuttingDown(step: ShutdownStep.script, outcome: final o)) => o == outcome,
   // One step after another, with the outcome kept.

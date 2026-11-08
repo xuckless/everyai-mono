@@ -222,7 +222,7 @@ final class ClaudeDriver
     final dir = await _dir();
     final meta = _Meta(
       cwd: spec.workingDir,
-      sessionTag: spec.sessionTag,
+      sessionTag: spec.procTag,
       model: spec.model,
       effort: spec.effort,
       mode: spec.mode,

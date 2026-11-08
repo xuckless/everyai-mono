@@ -402,6 +402,11 @@ String taskNotification(String childId, String title, SubagentReport report) =>
     '<status>${report.status.wire}</status>\n<result>\n${defuseNoticeTags(report.text)}\n</result>\n'
     '</task-notification>';
 
+/// A fork's report after it worked again following an earlier one (a message to it, a background task of its
+/// own): a task notification whose description says so.
+String forkFollowUpNotification(String childId, String title, SubagentReport report) =>
+    taskNotification(childId, '$title (follow-up: it worked again after its report)', report);
+
 final _notification = RegExp(
   r'^<task-notification>\n<task-id>([^<]*)</task-id>\n<description>([^<]*)</description>\n<status>([^<]*)</status>\n'
   r'<result>\n([\s\S]*)\n</result>\n</task-notification>$',
