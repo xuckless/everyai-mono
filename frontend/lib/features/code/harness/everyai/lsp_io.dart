@@ -10,7 +10,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:path/path.dart' as p;
 
 import 'lsp.dart';
-import 'shell_io.dart' show killTree;
+import 'shell_io.dart' show descendantsOf, killTree;
 import 'research_sites.dart' show secretPath;
 
 export 'lsp.dart';
@@ -274,20 +274,35 @@ final class LspClient {
     unawaited(_published.close());
   }
 
+  /// Whether a check is under way (an eviction waits for it).
+  bool get busy => !_closed && (_inflight.isNotEmpty || _pending.isNotEmpty);
+
   /// Asks the server to shut down and waits for it to exit, then ends whatever is left of its tree. Killing it
-  /// right after `exit` (as before) left the TypeScript server's tsserver children running, ~0.5–1 GB each.
-  Future<void> close() async {
-    if (!_closed) {
+  /// right after `exit` (as before) left the TypeScript server's tsserver children running, ~0.5–1 GB each. The tree
+  /// is listed first: once the server exits its children belong to init, and its own pid may already be another
+  /// process's, so only a server still running is killed by pid. [quick] (the app quits) skips the polite part.
+  Future<void> close({bool quick = false}) async {
+    final pid = _process.pid;
+    var exited = false;
+    unawaited(_process.exitCode.then((_) => exited = true, onError: (Object _) => exited = true));
+    final tree = await lspDescendants(pid);
+    if (!_closed && !quick) {
       try {
-        await _request('shutdown', const {}).timeout(const Duration(seconds: 2));
+        await _request('shutdown', const {}).timeout(const Duration(milliseconds: 1500));
         _notify('exit', const {});
-        await _process.exitCode.timeout(const Duration(seconds: 2));
+        await _process.exitCode.timeout(const Duration(milliseconds: 1500));
       } on Object {
         // Ended below.
       }
     }
     _gone();
-    await lspKillTree(_process.pid);
+    if (!exited) {
+      await lspKillTree(pid);
+    }
+    // Children left running after the server went (they were listed while it ran).
+    for (final p in tree) {
+      lspKillPid(p);
+    }
   }
 
   /// The server's process id (tests).
@@ -347,6 +362,8 @@ final class LspHub {
           return null;
         case LspPhase.notStarted || LspPhase.stopped:
           _move(slot, LspEvent.use);
+          // Known to closeAll from now on, also while its server starts.
+          _hubs.add(this);
           final generation = ++slot.generation;
           final started = _startIn(slot, generation);
           slot.starting = started;
@@ -356,7 +373,7 @@ final class LspHub {
   }
 
   Future<LspClient?> _startIn(_LspSlot slot, int generation) async {
-    await _makeRoom();
+    final seat = await _makeRoom();
     final LspClient? c;
     try {
       c = await _start(slot.language);
@@ -364,6 +381,8 @@ final class LspHub {
       missing[slot.language] = "The ${slot.language.label} language server didn't start: $e";
       if (generation == slot.generation) _move(slot, LspEvent.fail);
       return null;
+    } finally {
+      _seats.remove(seat);
     }
     // Closed while it started: this server isn't wanted any more.
     if (generation != slot.generation) {
@@ -377,7 +396,6 @@ final class LspHub {
     }
     slot.client = c;
     _move(slot, LspEvent.up);
-    _hubs.add(this);
     _pool.add((this, slot.language));
     _touch(slot);
     return c;
@@ -387,28 +405,39 @@ final class LspHub {
   void _touch(_LspSlot slot) {
     slot.lastUsed = DateTime.now();
     slot.idle?.cancel();
-    slot.idle = Timer(serverIdle, () => unawaited(_stop(slot)));
+    slot.idle = Timer(serverIdle, () {
+      // A check still running keeps it up: it counts as use.
+      if (slot.client?.busy ?? false) return _touch(slot);
+      unawaited(_stop(slot));
+    });
   }
 
   /// Ends [slot]'s server (idle, evicted, or the hub closes); a stop under way is joined.
-  Future<void> _stop(_LspSlot slot, {LspEvent why = LspEvent.idle}) async {
+  Future<void> _stop(_LspSlot slot, {LspEvent why = LspEvent.idle, bool quick = false}) async {
     slot.idle?.cancel();
     switch (slot.phase) {
       case LspPhase.stopping:
         return slot.stopping;
       case LspPhase.starting:
-        // The start that lands is closed by its generation check.
+        // The start that lands is closed by its generation check; waiting for it means its process is gone too.
         slot.generation++;
+        final late = slot.starting;
         slot.starting = null;
         _move(slot, why);
         _move(slot, LspEvent.gone);
+        if (late != null) await late;
         return;
       case LspPhase.ready:
         _move(slot, why);
         _pool.remove((this, slot.language));
         final c = slot.client;
         slot.client = null;
-        final done = (c?.close() ?? Future<void>.value()).whenComplete(() => _move(slot, LspEvent.gone));
+        // Still counts against the cap until its process is gone.
+        _stoppingNow++;
+        final done = (c?.close(quick: quick) ?? Future<void>.value()).whenComplete(() {
+          _stoppingNow--;
+          _move(slot, LspEvent.gone);
+        });
         slot.stopping = done;
         return done;
       case LspPhase.notStarted || LspPhase.stopped || LspPhase.failed:
@@ -417,14 +446,40 @@ final class LspHub {
   }
 
   /// Stops the least recently used servers of every session until there is room for one more.
-  static Future<void> _makeRoom() async {
-    while (_pool.length >= maxRunningServers) {
-      final (hub, language) = _pool.reduce(
+  /// Returns a seat held until the new server is up (or failed), so a burst of starts can't all see room.
+  /// A server in the middle of a check isn't evicted: the start waits for it (at most [evictWait]), then takes the
+  /// least recently used one anyway.
+  static Future<Object> _makeRoom() async {
+    final since = DateTime.now();
+    while (_pool.length + _seats.length + _stoppingNow >= maxRunningServers) {
+      final patient = DateTime.now().difference(since) < evictWait;
+      final candidates = [
+        for (final e in _pool)
+          if (!patient || !(e.$1._slots[e.$2]!.client?.busy ?? false)) e,
+      ];
+      if (candidates.isEmpty) {
+        // Every running server is busy, or only starts are under way: wait a moment.
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        continue;
+      }
+      final (hub, language) = candidates.reduce(
         (a, b) => a.$1._slots[a.$2]!.lastUsed.isBefore(b.$1._slots[b.$2]!.lastUsed) ? a : b,
       );
       await hub._stop(hub._slots[language]!, why: LspEvent.evicted);
     }
+    final seat = Object();
+    _seats.add(seat);
+    return seat;
   }
+
+  /// Starts under way, each holding a place under [maxRunningServers].
+  static final _seats = <Object>{};
+
+  /// Servers asked to stop whose process hasn't ended yet.
+  static var _stoppingNow = 0;
+
+  /// How long a start waits for a busy server before evicting it anyway.
+  static Duration evictWait = const Duration(seconds: 20);
 
   /// How long a server stays up without a check.
   static Duration serverIdle = const Duration(minutes: 10);
@@ -440,7 +495,7 @@ final class LspHub {
   static final _hubs = <LspHub>{};
 
   /// Ends every session's servers (the app quits).
-  static Future<void> closeAll() => Future.wait([for (final h in _hubs.toList()) h.close()]);
+  static Future<void> closeAll() => Future.wait([for (final h in _hubs.toList()) h.close(quick: true)]);
 
   /// How many servers run now, across sessions (tests, diagnostics).
   static int get runningServers => _pool.length;
@@ -600,8 +655,8 @@ final class LspHub {
   }
 
   /// Ends every server; the next use starts them again (a language that failed is tried again too).
-  Future<void> close() async {
-    await Future.wait([for (final slot in _slots.values) _stop(slot, why: LspEvent.close)]);
+  Future<void> close({bool quick = false}) async {
+    await Future.wait([for (final slot in _slots.values) _stop(slot, why: LspEvent.close, quick: quick)]);
     for (final slot in _slots.values) {
       if (slot.phase == LspPhase.failed) slot.phase = LspPhase.notStarted;
     }
@@ -805,3 +860,13 @@ final class _LspSlot {
 
 /// Ends a server's process tree; tests replace it.
 Future<void> Function(int pid) lspKillTree = killTree;
+
+/// Lists a server's descendants before it is shut down; tests replace it.
+Future<List<int>> Function(int pid) lspDescendants = descendantsOf;
+
+/// Ends one leftover child; tests replace it.
+void Function(int pid) lspKillPid = _killPid;
+
+void _killPid(int pid) {
+  Process.killPid(pid, ProcessSignal.sigkill);
+}
