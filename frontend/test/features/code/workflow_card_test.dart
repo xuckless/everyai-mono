@@ -20,6 +20,7 @@ Widget _card(WorkflowCard card) => m.MaterialApp(
 );
 
 void main() {
+  _rowsAndDecision();
   testWidgets('a finished workflow card can be dismissed; a running one has no dismiss', (tester) async {
     final container = ProviderContainer();
     addTearDown(container.dispose);
@@ -109,5 +110,43 @@ void main() {
 
     await tester.pumpWidget(_card(const WorkflowCard(run: done)));
     expect(find.text('Commit here'), findsNothing);
+  });
+}
+
+void _rowsAndDecision() {
+  testWidgets('report rows sit under their phase; past the estimate the card asks Continue or Adjust', (tester) async {
+    var continued = 0, adjusted = 0, resumed = 0;
+    await tester.pumpWidget(
+      _card(
+        WorkflowCard(
+          run: const WorkflowRun(
+            runId: 'r',
+            name: 'Ultra',
+            state: RunPaused('Build', PauseReason.overEstimate),
+            phases: ['Research', 'Build'],
+            rows: [
+              (kind: RowKind.phase, phase: 'Research', text: 'Research done · 3 agents · \$0.42 · 6m 0s'),
+              (kind: RowKind.mark, phase: 'Build', text: '50% of the estimate used'),
+              (
+                kind: RowKind.over,
+                phase: 'Build',
+                text: 'Past the estimate: \$3.20 of \$3.10. Paused until you decide.',
+              ),
+            ],
+          ),
+          onStop: () {},
+          onResume: () => resumed++,
+          onContinue: () => continued++,
+          onAdjust: () => adjusted++,
+        ),
+      ),
+    );
+    expect(find.text('Past its estimate'), findsOneWidget);
+    expect(find.text('Research done · 3 agents · \$0.42 · 6m 0s'), findsOneWidget);
+    expect(find.text('50% of the estimate used'), findsOneWidget);
+    expect(find.byKey(const ValueKey('workflow.resume.r')), findsNothing, reason: 'Continue is the way on');
+    await tester.tap(find.byKey(const ValueKey('workflow.continue.r')));
+    await tester.tap(find.byKey(const ValueKey('workflow.adjust.r')));
+    expect((continued, adjusted, resumed), (1, 1, 0));
   });
 }

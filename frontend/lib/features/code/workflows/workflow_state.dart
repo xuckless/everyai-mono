@@ -6,10 +6,10 @@ import 'package:flutter/foundation.dart';
 //
 //   starting ──script up──▶ running(phase) ──phase()──▶ running(next phase)
 //      │                       │  ▲
-//      │                       │  └──Resume── pausing / paused ◀──Pause── running (each agent ends its step, then
-//      │                       │              pausing ──every agent holds──▶ paused        holds; new agents wait)
-//      │                       │
-//      │                       ├──Stop / out of time (also while paused)──▶ stopping(outcome) ──script gone──▶ ┐
+//      │                       │  └──Resume── pausing / paused ◀──Pause / past the estimate── running (each agent
+//      │                       │              pausing ──every agent holds──▶ paused     ends its step, then holds;
+//      │                       │                                                         new agents wait)
+//      │                       ├──Stop / a cap (also while paused)──▶ stopping(outcome) ──script gone──▶ ┐
 //      │                       └──the script ended (done() or not)───────────────────────────────────────────▶ ├─▶ shuttingDown(step 1…N)
 //      ├──Stop─────────────────────────────────────────▶ stopping(outcome)                                      │
 //      └──the script couldn't start─────────────────────────────────────────────────────────────────────────────┘
@@ -95,10 +95,20 @@ final class RunRunning extends RunState {
   int get hashCode => phase.hashCode;
 }
 
-/// Pause: each live agent ends its step and holds; agent() calls wait to start. Time still counts toward the cap.
+/// Why a run holds.
+enum PauseReason {
+  /// The user's Pause.
+  user,
+
+  /// It spent past the estimate the user approved: they decide (Continue, Stop, Adjust).
+  overEstimate,
+}
+
+/// Pause: each live agent ends its step and holds; agent() calls wait to start.
 final class RunPausing extends RunState {
-  const RunPausing([this.phase = '']);
+  const RunPausing([this.phase = '', this.reason = PauseReason.user]);
   final String phase;
+  final PauseReason reason;
   @override
   RunWaitsOn get waitsOn => RunWaitsOn.agents;
   @override
@@ -109,8 +119,9 @@ final class RunPausing extends RunState {
 
 /// Every live agent holds; Resume goes on where it was.
 final class RunPaused extends RunState {
-  const RunPaused([this.phase = '']);
+  const RunPaused([this.phase = '', this.reason = PauseReason.user]);
   final String phase;
+  final PauseReason reason;
   @override
   RunWaitsOn get waitsOn => RunWaitsOn.nothing;
   @override

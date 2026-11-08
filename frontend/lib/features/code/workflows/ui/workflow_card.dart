@@ -44,6 +44,8 @@ class WorkflowRunsView extends ConsumerWidget {
               onStop: () => ref.read(codeSessionProvider(sessionId).notifier).stopWorkflow(run.runId),
               onPause: () => ref.read(codeSessionProvider(sessionId).notifier).pauseWorkflow(run.runId),
               onResume: () => ref.read(codeSessionProvider(sessionId).notifier).resumeWorkflow(run.runId),
+              onContinue: () => ref.read(codeSessionProvider(sessionId).notifier).continueWorkflow(run.runId),
+              onAdjust: () => ref.read(codeSessionProvider(sessionId).notifier).adjustWorkflow(run.runId),
               onDismiss: () => _dismiss(context, ref, sessionId, store, run),
               landing: _landingOf(context, ref, sessionId, run),
             ),
@@ -122,6 +124,8 @@ class WorkflowCard extends StatelessWidget {
     this.onStop,
     this.onPause,
     this.onResume,
+    this.onContinue,
+    this.onAdjust,
     this.onDismiss,
     this.landing,
   });
@@ -131,6 +135,15 @@ class WorkflowCard extends StatelessWidget {
   /// Pause (each agent ends its step, then holds) while it runs; Resume while it holds.
   final VoidCallback? onPause;
   final VoidCallback? onResume;
+
+  /// A run paused past its estimate: go on (the ceiling rises by half), or tell the lead what to change.
+  final VoidCallback? onContinue;
+  final VoidCallback? onAdjust;
+
+  bool get _overEstimate => switch (run.state) {
+    RunPausing(reason: PauseReason.overEstimate) || RunPaused(reason: PauseReason.overEstimate) => true,
+    _ => false,
+  };
 
   /// Closes a finished run's card (done, failed, capped or stopped); a running one has Stop instead.
   final VoidCallback? onDismiss;
@@ -169,6 +182,7 @@ class WorkflowCard extends StatelessWidget {
                 ),
               ),
               Text(switch (run.state) {
+                RunPausing() || RunPaused() when _overEstimate => 'Past its estimate',
                 RunPausing() => 'Pausing',
                 RunPaused() => 'Paused',
                 _ => workflowStatusText(run.status),
@@ -182,7 +196,7 @@ class WorkflowCard extends StatelessWidget {
                   onPressed: onPause,
                 ),
               ],
-              if ((run.state is RunPausing || run.state is RunPaused) && onResume != null) ...[
+              if ((run.state is RunPausing || run.state is RunPaused) && !_overEstimate && onResume != null) ...[
                 const SizedBox(width: 8),
                 AdaptiveButton(
                   key: ValueKey('workflow.resume.${run.runId}'),
@@ -224,7 +238,48 @@ class WorkflowCard extends StatelessWidget {
                   style: theme.type.caption.tint(theme.textMuted),
                 ),
               ),
+            for (final r in run.rows.where((r) => r.phase == p))
+              Padding(
+                padding: const EdgeInsets.only(left: 16, top: 2),
+                child: Text(
+                  r.text,
+                  style: theme.type.caption.tint(switch (r.kind) {
+                    RowKind.phase => theme.textMuted,
+                    RowKind.mark => theme.text,
+                    RowKind.over => theme.warning,
+                  }),
+                ),
+              ),
           ],
+          // Rows of a phase the card doesn't list (before the first phase()).
+          for (final r in run.rows.where((r) => !phases.contains(r.phase)))
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(r.text, style: theme.type.caption.tint(theme.textMuted)),
+            ),
+          if (_overEstimate && (onContinue != null || onAdjust != null))
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  if (onAdjust != null)
+                    AdaptiveButton(
+                      key: ValueKey('workflow.adjust.${run.runId}'),
+                      label: 'Adjust',
+                      emphasis: ButtonEmphasis.plain,
+                      onPressed: onAdjust,
+                    ),
+                  const SizedBox(width: 6),
+                  if (onContinue != null)
+                    AdaptiveButton(
+                      key: ValueKey('workflow.continue.${run.runId}'),
+                      label: 'Continue (+50%)',
+                      onPressed: onContinue,
+                    ),
+                ],
+              ),
+            ),
           if (run.error case final error? when !running)
             Padding(
               padding: const EdgeInsets.only(top: 6),

@@ -6,8 +6,11 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 
 import '../domain/plan_batches.dart';
+import '../harness/events.dart' show PlanWindow;
 import 'json_schema_lite.dart';
 import 'workflow_bridge.dart';
+import 'workflow_estimate.dart';
+import 'workflow_guard.dart';
 import 'workflow_journal.dart';
 import 'workflow_state.dart';
 import 'workflow_summary.dart';
@@ -123,18 +126,14 @@ abstract interface class AgentLauncher {
 
 /// What a run may use.
 final class WorkflowCaps {
-  const WorkflowCaps({
-    this.maxAgents = 150,
-    this.maxAtOnce = 6,
-    this.wallTime = const Duration(hours: 2),
-    this.sendsPerAgent = 2,
-    this.costMicros = 25000000,
-  });
+  const WorkflowCaps({this.maxAgents = 150, this.maxAtOnce = 6, this.sendsPerAgent = 2, this.costMicros = 25000000});
 
   /// Agents started in the whole run.
   final int maxAgents;
   final int maxAtOnce;
-  final Duration wallTime;
+
+  // No wall-time cap (owner, 2026-11-08): time says nothing about a task (a fuzzing run takes hours). Runs are
+  // bounded by agents, EveryAI spend, the estimate's checkpoints and the user's Pause and Stop.
 
   /// Messages to one child: its brief plus schema repairs.
   final int sendsPerAgent;
@@ -208,6 +207,7 @@ final class WorkflowRun {
     this.result,
     this.error,
     this.took,
+    this.rows = const [],
   });
 
   final String runId;
@@ -229,6 +229,23 @@ final class WorkflowRun {
 
   /// From the run's start (before a restart too) to its end, or to now while it runs; null without a start time.
   final Duration? took;
+
+  /// The card's report rows: each phase as it ended, and the guard's marks (see workflow_guard.dart).
+  final List<RunRow> rows;
+}
+
+/// One report row on a run's card.
+typedef RunRow = ({RowKind kind, String phase, String text});
+
+enum RowKind {
+  /// A phase ended: its agents, spend and time (information).
+  phase,
+
+  /// A guard mark: 50% or 80% of the estimate, a plan window's share.
+  mark,
+
+  /// Past the estimate: the run paused for the user's decision.
+  over,
 }
 
 /// Appended to a schema'd agent's prompt.
@@ -264,6 +281,8 @@ final class WorkflowEngine {
     this.caps = const WorkflowCaps(),
     this.onProgress,
     this.onShutdown,
+    this.onDecision,
+    this.windowLabel,
     this.stepTimeout = const Duration(seconds: 30),
     Timer Function(Duration, void Function()) timer = Timer.new,
     DateTime Function() now = DateTime.now,
@@ -276,6 +295,21 @@ final class WorkflowEngine {
     }
     // Children an earlier launch started: released at the end like this launch's.
     _children.addAll(journal.spawns.values);
+    // The guard: the approved estimate's ceiling (raised each time the user went on past it), the plan windows as
+    // they were at the start, and the marks already passed.
+    final estimate = journal.start?['estimate'];
+    final e = estimate is Map ? WorkflowEstimate.fromJson(estimate.cast<String, Object?>()) : null;
+    _marks = GuardMarks(
+      ceilingMicros: e?.ceilingMicros,
+      windowsAtStart: {for (final w in e?.planWindows ?? const <PlanWindow>[]) w.name: w.used},
+      passed: journal.marks,
+    );
+    for (var i = 0; i < journal.raises; i++) {
+      _marks.raise();
+    }
+    for (final r in journal.rows) {
+      _rows.add((kind: RowKind.values.asNameMap()[r.kind] ?? RowKind.mark, phase: r.phase, text: r.text));
+    }
   }
 
   final String runId;
@@ -291,8 +325,21 @@ final class WorkflowEngine {
   /// The host's part of the shutdown: [ShutdownStep.lead] and [ShutdownStep.workflow], with the run as it ended.
   final Future<void> Function(ShutdownStep step, WorkflowRun run)? onShutdown;
 
+  /// The run paused for the user's decision ([text] says why): the host tells the lead.
+  final void Function(WorkflowRun run, String text)? onDecision;
+
+  /// A plan window's name for people, for the guard's rows.
+  final String Function(PlanWindow w)? windowLabel;
+
+  late final GuardMarks _marks;
+  final _rows = <RunRow>[];
+
+  /// When the current phase began, for its report row (time is information, never a limit).
+  DateTime? _phaseAt;
+
   /// The longest one shutdown step may take before the next one runs anyway.
   final Duration stepTimeout;
+  // ignore: unused_field, the stall check's timer (next step).
   final Timer Function(Duration, void Function()) _timerOf;
   final DateTime Function() _clock;
 
@@ -348,7 +395,73 @@ final class WorkflowEngine {
     result: _result,
     error: _error,
     took: _took,
+    rows: List.unmodifiable(_rows),
   );
+
+  void _row(RowKind kind, String text, {String? mark}) {
+    _rows.add((kind: kind, phase: _phase, text: text));
+    unawaited(journal.write({'t': 'row', 'kind': kind.name, 'phase': _phase, 'text': text, 'mark': ?mark}));
+  }
+
+  /// Checks the spend against the estimate: rows at its marks, and past it a pause for the user's decision.
+  void _checkSpend() {
+    for (final e in _marks.spend(_spentMicros)) {
+      switch (e) {
+        case GuardMark(:final id, :final text):
+          _row(RowKind.mark, text, mark: id);
+          _emit();
+        case GuardOver(:final text):
+          // Once per crossing: while it holds (or the user's own Pause holds it) nothing more is asked.
+          if (_state is! RunRunning) continue;
+          _row(RowKind.over, text);
+          unawaited(pause(reason: PauseReason.overEstimate));
+          onDecision?.call(snapshot, text);
+      }
+    }
+  }
+
+  /// The plan windows an agent of this run reported (an outside lead): rows at their marks; never a pause.
+  void planWindows(List<PlanWindow> windows) {
+    if (!_state.live) return;
+    for (final e in _marks.windows(windows, windowLabel ?? (PlanWindow w) => w.name)) {
+      _row(RowKind.mark, e.text, mark: e.id);
+    }
+    _emit();
+  }
+
+  /// Continue past the estimate: the ceiling goes up by half and the run resumes.
+  Future<void> continuePastEstimate() async {
+    if (_state case RunPausing(reason: PauseReason.overEstimate) || RunPaused(reason: PauseReason.overEstimate)) {
+      _marks.raise(spentMicros: _spentMicros);
+      unawaited(journal.write({'t': 'raise'}));
+      await resume();
+    }
+  }
+
+  /// The row for the phase that just ended: its agents, what they spent, and how long it took.
+  void _phaseReport(String phase) {
+    if (phase.isEmpty) return;
+    final mine = [
+      for (final v in _agents.values)
+        if (v.phase == phase) v,
+    ];
+    if (mine.isEmpty) return;
+    final spent = mine.fold(0, (a, v) => a + (_spent[v.key] ?? 0));
+    final took = _phaseAt == null ? null : _clock().difference(_phaseAt!);
+    _rows.add((
+      kind: RowKind.phase,
+      phase: phase,
+      text: [
+        '$phase done',
+        '${mine.length} ${mine.length == 1 ? 'agent' : 'agents'}',
+        if (mine.any((v) => v.status == WorkflowAgentStatus.failed))
+          '${mine.where((v) => v.status == WorkflowAgentStatus.failed).length} failed',
+        if (spent > 0) '\$${(spent / 1e6).toStringAsFixed(2)}',
+        if (took != null) workflowDuration(took),
+      ].join(' · '),
+    ));
+    unawaited(journal.write({'t': 'row', 'kind': 'phase', 'phase': phase, 'text': _rows.last.text}));
+  }
 
   Duration? get _took {
     final at = journal.start?['at'];
@@ -371,14 +484,15 @@ final class WorkflowEngine {
     bridge?.kill();
   }
 
-  /// Pause: every live agent ends its step and holds, and agent() calls wait to start, until [resume].
-  Future<void> pause() async {
+  /// Pause: every live agent ends its step and holds, and agent() calls wait to start, until [resume]. [reason]:
+  /// the user's own, or past the estimate (the card asks then).
+  Future<void> pause({PauseReason reason = PauseReason.user}) async {
     if (_state case RunRunning(:final phase)) {
-      _to(RunPausing(phase));
+      _to(RunPausing(phase, reason));
       await Future.wait([
         for (final id in [..._live]) launcher.pause(id).catchError((Object _) {}),
       ]);
-      if (_state case RunPausing(:final phase)) _to(RunPaused(phase));
+      if (_state case RunPausing(:final phase, :final reason)) _to(RunPaused(phase, reason));
     }
   }
 
@@ -449,17 +563,12 @@ final class WorkflowEngine {
       return end(outcome, why);
     }
     if (bridge == null) return end(WorkflowOutcome.failed, _error ?? "The workflow script didn't start.");
-    // Wall time counts from the run's start, so a resume gets only what is left.
-    final at = journal.start?['at'];
-    final elapsed = at is int ? _clock().difference(DateTime.fromMillisecondsSinceEpoch(at)) : Duration.zero;
-    final left = caps.wallTime - elapsed;
-    final timer = _timerOf(
-      left.isNegative ? Duration.zero : left,
-      () => _halt(WorkflowOutcome.capped, 'The workflow ran out of time (${caps.wallTime.inMinutes} minutes).'),
-    );
     final output = bridge.output.listen(_log);
     // Stopped before the script got going: the loop below sees no calls.
     if (_state is RunStarting) _to(const RunRunning());
+    _phaseAt = _clock();
+    // A resumed run still past its estimate holds again until the user decides.
+    _checkSpend();
     await for (final req in bridge.requests) {
       final args = (req['args'] as Map?)?.cast<String, Object?>() ?? const {};
       switch (req['fn']) {
@@ -468,16 +577,21 @@ final class WorkflowEngine {
           _inFlight.add(call);
           unawaited(call.whenComplete(() => _inFlight.remove(call)));
         case 'phase':
-          _phase = '${args['title'] ?? ''}';
+          final next = '${args['title'] ?? ''}';
+          if (next != _phase) {
+            _phaseReport(_phase);
+            _phaseAt = _clock();
+          }
+          _phase = next;
           if (!_phases.contains(_phase)) _phases.add(_phase);
           if (!journal.phases.contains(_phase)) unawaited(journal.write({'t': 'phase', 'title': _phase}));
           switch (_state) {
             case RunRunning():
               _to(RunRunning(_phase));
-            case RunPausing():
-              _to(RunPausing(_phase));
-            case RunPaused():
-              _to(RunPaused(_phase));
+            case RunPausing(:final reason):
+              _to(RunPausing(_phase, reason));
+            case RunPaused(:final reason):
+              _to(RunPaused(_phase, reason));
             default:
               _emit();
           }
@@ -494,8 +608,8 @@ final class WorkflowEngine {
       }
     }
     final code = await bridge.exit;
-    timer.cancel();
     await output.cancel();
+    if (_state.live && _state is! RunShuttingDown) _phaseReport(_phase);
     if (_state is RunDetached) return snapshot;
     _unpaused?.complete();
     _unpaused = null;
@@ -661,7 +775,7 @@ final class WorkflowEngine {
   String? _capProblem() {
     if (!_state.acceptsAgents) {
       return switch (_state) {
-        RunStopping(outcome: WorkflowOutcome.capped) => 'cap: the workflow is out of time',
+        RunStopping(outcome: WorkflowOutcome.capped) => 'cap: the workflow hit its limit',
         RunStopping() => 'cap: the workflow is stopped',
         _ => 'cap: the workflow is ending',
       };
@@ -752,7 +866,10 @@ final class WorkflowEngine {
       Object? value;
       String? problem;
       while (true) {
-        if (r.spentMicros case final s?) _spent[call.key] = s;
+        if (r.spentMicros case final s?) {
+          _spent[call.key] = s;
+          _checkSpend();
+        }
         if (r.error != null) {
           problem = r.error;
           break;

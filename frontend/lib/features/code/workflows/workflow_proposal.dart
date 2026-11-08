@@ -98,6 +98,19 @@ String proposalCancelledNote(String title) =>
     '<workflow-result>\nThe user cancelled the $title run before it started: nothing ran. Ask what they want '
     'instead in one line, unless they already said.\n</workflow-result>';
 
+/// The lead's note when a run paused past its estimate ([why] is the card's row).
+String workflowDecisionNote(String name, String why) =>
+    '<workflow-checkpoint name="${name.replaceAll('"', "'")}">The $name run is paused: $why The user decides on its '
+    'card (Continue, Stop or Adjust). Tell them in one line; don\'t work on its task yourself meanwhile.'
+    '</workflow-checkpoint>';
+
+/// The note on the user's next message after Adjust on a run paused past its estimate.
+String workflowAdjustNote(String name) =>
+    '<everyai-workflow state="adjust" title="${name.replaceAll('"', "'")}">The $name run is paused past its estimate, '
+    'and the user wants something changed (their message below). A running run keeps its args: answer them, and if '
+    'the change needs other args, tell them to stop it so you can propose a new run. It goes on when they press '
+    'Continue on its card.</everyai-workflow>';
+
 /// The note on the user's next message after Adjust.
 String proposalAdjustNote(String title) =>
     '<everyai-workflow state="adjust" title="${title.replaceAll('"', "'")}">The user wants changes to the proposed '

@@ -48,6 +48,13 @@ final class WorkflowJournal {
   final spawns = <String, String>{};
   final agents = <String, JournalledAgent>{};
   final phases = <String>[];
+
+  /// Rows on the run's card (phase reports, marks), and the guard marks passed (see workflow_guard.dart).
+  final rows = <({String kind, String phase, String text})>[];
+  final marks = <String>{};
+
+  /// Times the user let it go on past its estimate.
+  var raises = 0;
   Map<String, Object?>? stop;
   Map<String, Object?>? ending;
   Map<String, Object?>? end;
@@ -69,6 +76,11 @@ final class WorkflowJournal {
         );
       case 'phase':
         phases.add('${m['title']}');
+      case 'row':
+        rows.add((kind: '${m['kind']}', phase: '${m['phase'] ?? ''}', text: '${m['text']}'));
+        if (m['mark'] case final String id) marks.add(id);
+      case 'raise':
+        raises++;
       case 'stop':
         stop ??= m;
       case 'ending':

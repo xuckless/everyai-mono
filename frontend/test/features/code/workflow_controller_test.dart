@@ -1302,6 +1302,38 @@ void main() {
       expect(card(c)!.estimate.basis, 'from 1 past run here');
     });
 
+    test("an outside lead's plan windows: the card shows them, and the agents' reports mark the run", () async {
+      final c = await open();
+      lead.add(
+        PlanLimits.of(
+          id: 'pl1',
+          windows: const [PlanWindow(name: 'five_hour', used: 0.4, minutes: 300)],
+        ),
+      );
+      await pumpEventQueue();
+      await c.call(ultra(['a']));
+      expect(card(c)!.estimate.planWindows.single.used, 0.4);
+      await start(c);
+      final reply = bridge.agent('Build a', {'harness': 'fake2'});
+      final kid = await child();
+      await whenValue(container, codeSessionProvider(kid.id).select((s) => s.connected), (bool b) => b);
+      final agent = drivers['fake2']!.latest!;
+      // 0.4 + 0.6 × 0.5: half of what was left at the start.
+      agent.add(
+        PlanLimits.of(
+          id: 'pl2',
+          windows: const [PlanWindow(name: 'five_hour', used: 0.7, minutes: 300)],
+        ),
+      );
+      await pumpEventQueue();
+      final rows = container.read(workflowRunsProvider(c.sessionId)).single.rows;
+      expect(rows.single.text, startsWith('5-hour window: 50% of what was left at the start used'));
+      answer(agent, 'Built');
+      await reply;
+      bridge.finish(null);
+      await pumpEventQueue();
+    });
+
     test('a picked workflow goes to the lead to clarify and propose; nothing starts by itself', () async {
       final entry = (await loadBundledWorkflows()).firstWhere((w) => w.id == 'bugfix');
       final info = await container

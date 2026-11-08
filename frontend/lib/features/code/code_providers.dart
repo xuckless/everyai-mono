@@ -121,6 +121,7 @@ import 'workflows/workflow_bridge.dart'
     show WorkflowBridge, appendJournalFile, listJournalFiles, readJournalFile, retireJournalFile;
 import 'domain/session_work.dart';
 import 'workflows/workflow_engine.dart';
+import 'ui/console/session_info_view.dart' show planWindowName;
 import 'workflows/workflow_estimate.dart';
 import 'workflows/workflow_proposal.dart';
 import 'workflows/workflow_journal.dart';
@@ -2855,7 +2856,10 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     // A state change refreshes the meter; the cost lives in our ledger, or an outside driver reports it.
     if (event is StateChange) ref.read(codeUsageProvider(sessionId).notifier).refreshSoon();
     if (event is UsageReport) ref.read(codeUsageProvider(sessionId).notifier).report(event);
-    if (event is PlanLimits) ref.read(codePlanLimitsProvider(sessionId).notifier).set(event);
+    if (event is PlanLimits) {
+      ref.read(codePlanLimitsProvider(sessionId).notifier).set(event);
+      _windowsToRun(event.windows);
+    }
     final wasRunning = state.transcript.running;
     _trackContext(event);
     _builder.add(event);
@@ -5606,6 +5610,33 @@ final class CodeSessionController extends Notifier<CodeSessionState>
 
   Future<void> resumeWorkflow(String runId) async => _workflows[runId]?.resume();
 
+  /// Continue on a run paused past its estimate: it goes on with the ceiling raised by half.
+  Future<void> continueWorkflow(String runId) async => _workflows[runId]?.continuePastEstimate();
+
+  /// Adjust on a run paused past its estimate: it stays paused, and the composer gets a start for the user's change,
+  /// which goes to the lead with a note.
+  void adjustWorkflow(String runId) {
+    final run = _workflows[runId];
+    if (run == null) return;
+    final name = run.snapshot.name;
+    _adjustNote = workflowAdjustNote(name);
+    state = state.copyWith(
+      composerPrefill: (text: 'For the paused $name run: ', seq: (state.composerPrefill?.seq ?? 0) + 1),
+    );
+  }
+
+  /// A workflow agent's plan windows (its CLI reported them) go to its run's guard (see workflow_guard.dart).
+  void _windowsToRun(List<PlanWindow> windows) {
+    final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
+    final parentId = info?.parentId;
+    if (info == null || parentId == null || !info.isWorkflowAgent) return;
+    if (!ref.container.exists(codeSessionProvider(parentId))) return;
+    final parent = ref.container.read(codeSessionProvider(parentId).notifier);
+    for (final MapEntry(key: runId, value: engine) in parent._workflows.entries) {
+      if (info.parentCallId.startsWith('wf-$runId-')) engine.planWindows(windows);
+    }
+  }
+
   /// The user's Stop on a run's card: it shuts down, and the lead hears it was stopped.
   void stopWorkflow(String runId) => _workflows[runId]?.stop('Stopped by the user.');
 
@@ -5995,9 +6026,20 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       launcher: _WorkflowLauncher(ref, sessionId, 'wf-$runId', () => checkMode, _workflowChildWaiting),
       journal: journal,
       onProgress: (run) {
-        if (ref.mounted) runs.put(run);
+        if (!ref.mounted) return;
+        runs.put(run);
+        // Paused past its estimate: the user decides, so the session needs them (cleared with the run's waits).
+        _workflowChildWaiting('wf-$runId-decision', switch (run.state) {
+          RunPausing(reason: PauseReason.overEstimate) || RunPaused(reason: PauseReason.overEstimate) => true,
+          _ => false,
+        });
       },
       onShutdown: (step, run) => _shutdownStep(step, run, journalPath),
+      // Past the estimate: the user decides on the card, and the lead hears it waits.
+      onDecision: (run, text) {
+        if (ref.mounted) _notifyLead(workflowDecisionNote(run.name, text), kind: 'workflow-checkpoint', id: run.runId);
+      },
+      windowLabel: planWindowName,
     );
     if (startError != null) {
       await engine.end(WorkflowOutcome.failed, startError);

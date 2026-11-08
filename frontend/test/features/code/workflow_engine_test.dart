@@ -234,6 +234,80 @@ void main() {
       expect(e.refused, isEmpty);
     });
 
+    test('the estimate: rows at 50% and 80%, then past it a pause for the user; Continue raises it', () async {
+      final trace = <Object>[];
+      final decisions = <String>[];
+      final journal = WorkflowJournal.fresh((l) async => lines.add(l));
+      await journal.write({
+        't': 'start',
+        'estimate': {
+          'agents': [2, 3],
+          'dollars': [0.5, 1.0],
+        },
+      });
+      final e = WorkflowEngine(
+        runId: 'r1',
+        name: 'test',
+        bridge: bridge,
+        launcher: launcher,
+        journal: journal,
+        timer: FakeTimers().call,
+        onProgress: (run) {
+          if (trace.lastOrNull != run.state) trace.add(run.state);
+        },
+        onDecision: (run, text) => decisions.add(text),
+      );
+      launcher.spent = (call) => 600000;
+      final run = e.run();
+      bridge.note('phase', {'title': 'Build'});
+      expect(await bridge.agent('a'), isNotNull);
+      expect(e.snapshot.rows.map((r) => r.text), ['50% of the estimate used (\$0.60 of \$1.00)']);
+      expect(e.snapshot.rows.single.phase, 'Build');
+      expect(await bridge.agent('b'), isNotNull);
+      await pumpEventQueue();
+      expect(e.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.overEstimate));
+      expect(decisions.single, contains('Past the estimate: \$1.20 of \$1.00'));
+      expect(e.snapshot.rows.map((r) => r.kind), [RowKind.mark, RowKind.mark, RowKind.over]);
+      // The user's Resume button isn't it: Continue raises the ceiling and goes on.
+      await e.continuePastEstimate();
+      expect(e.state, isA<RunRunning>());
+      expect(lines.map((l) => (jsonDecode(l) as Map)['t']), contains('raise'));
+      bridge.note('phase', {'title': 'Check'});
+      await pumpEventQueue();
+      expect(
+        e.snapshot.rows.where((r) => r.kind == RowKind.phase).single.text,
+        startsWith('Build done · 2 agents · \$1.20'),
+      );
+      bridge.finish(null);
+      await run;
+      expect(e.refused, isEmpty);
+    });
+
+    test('a resumed run keeps its marks and pauses again when it is still past its estimate', () async {
+      final journal = WorkflowJournal.parse(
+        [
+          jsonEncode({
+            't': 'start',
+            'estimate': {
+              'dollars': [0.5, 1.0],
+              'agents': [1, 2],
+            },
+          }),
+          jsonEncode({'t': 'agent', 'key': 'k', 'ok': true, 'value': 'x', 'spent': 1500000}),
+          jsonEncode({'t': 'row', 'kind': 'mark', 'phase': '', 'text': '50%', 'mark': 'spend50@1000000'}),
+        ].join('\n'),
+        (l) async => lines.add(l),
+      );
+      final e = engine(journal: journal);
+      final run = e.run();
+      await pumpEventQueue();
+      expect(e.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.overEstimate));
+      // Its row stayed; only 80% and the pause are new.
+      expect(e.snapshot.rows.map((r) => r.text), ['50%', startsWith('80%'), startsWith('Past the estimate')]);
+      e.stop();
+      await run;
+    });
+
     test('a stop while paused refuses the waiting calls and shuts down', () async {
       final trace = <Object>[];
       final e = traced(trace, via: bridge);
@@ -845,21 +919,13 @@ void main() {
       await run;
     });
 
-    test('wall time stops the children and kills the script', () async {
+    test('no wall-time cap: no timer is set, however long it runs', () async {
       final timers = FakeTimers();
-      launcher.gate = (call) => Completer<void>().future;
       final run = engine(timers: timers).run();
-      unawaited(bridge.agent('slow').catchError((Object _) => null));
       await pumpEventQueue();
-      expect(timers.durations.single, const Duration(hours: 2));
-      timers.fire();
-      final end = await run;
-      expect(end.status, WorkflowStatus.capped);
-      expect(end.error, contains('ran out of time'));
-      expect(bridge.killed, isTrue);
-      expect(launcher.stopped, [launcher.started.single.childId]);
-      expect(end.agents.single.status, WorkflowAgentStatus.failed);
-      expect((jsonDecode(lines.last) as Map)['status'], 'capped');
+      expect(timers.durations, isEmpty);
+      bridge.finish(null);
+      await run;
     });
 
     test('only EveryAI-harness spend counts toward the cost cap', () async {
@@ -930,7 +996,7 @@ void main() {
       await run;
     });
 
-    test('a resumed run keeps what it used of its caps: agents, spend and wall time', () async {
+    test('a resumed run keeps what it used of its caps: agents and spend', () async {
       launcher.spent = (call) => 60;
       final journal = [
         jsonEncode({'t': 'start', 'name': 'test', 'source': '', 'args': <String, Object?>{}, 'at': 0}),
@@ -950,7 +1016,7 @@ void main() {
         timer: timers.call,
         now: () => DateTime.fromMillisecondsSinceEpoch(0).add(const Duration(minutes: 90)),
       ).run();
-      expect(timers.durations.single, const Duration(minutes: 30));
+      expect(timers.durations, isEmpty, reason: 'no wall-time cap');
       expect(await bridge.agent('a'), 'ok:a');
       // 2 started and 120 spent before the restart: one more agent fits, then the agent cap.
       expect(await bridge.agent('c'), 'ok:c');
