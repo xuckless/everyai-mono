@@ -10,6 +10,9 @@ import '../../../core/ui/adaptive_page.dart';
 import '../../../core/ui/brand.dart';
 import '../../../core/ui/every_icons.dart';
 import '../artifact_providers.dart';
+import '../domain/artifact.dart';
+import 'renderers/svg_view.dart';
+import '../../../core/ui/segmented.dart';
 import '../data/artifact_library.dart';
 import 'visual_view.dart';
 
@@ -22,9 +25,13 @@ class ArtifactsScreen extends ConsumerStatefulWidget {
   ConsumerState<ArtifactsScreen> createState() => _ArtifactsScreenState();
 }
 
+/// What the page lists: every artifact, or only figures (with where each is used).
+enum ArtifactsView { all, figures }
+
 class _ArtifactsScreenState extends ConsumerState<ArtifactsScreen> {
   final _query = TextEditingController();
   String _filter = '';
+  ArtifactsView _view = ArtifactsView.all;
 
   @override
   void dispose() {
@@ -42,7 +49,10 @@ class _ArtifactsScreenState extends ConsumerState<ArtifactsScreen> {
     final theme = EveryTheme.of(context);
     final library = ref.watch(artifactLibraryProvider);
     final all = library.value ?? const <LibraryArtifact>[];
-    final visible = all.where((a) => a.matches(_filter)).toList();
+    final figures = {for (final f in figuresInLibrary(all)) f.item: f.usedIn};
+    final visible = all
+        .where((a) => a.matches(_filter) && (_view == ArtifactsView.all || figures.containsKey(a)))
+        .toList();
 
     return AdaptivePage(
       title: 'Artifacts',
@@ -63,9 +73,29 @@ class _ArtifactsScreenState extends ConsumerState<ArtifactsScreen> {
                 ),
               ),
               Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: AdaptiveSegmented<ArtifactsView>(
+                      values: ArtifactsView.values,
+                      selected: _view,
+                      label: (v) => switch (v) {
+                        ArtifactsView.all => 'All',
+                        ArtifactsView.figures => 'Figures',
+                      },
+                      onSelected: (v) => setState(() => _view = v),
+                    ),
+                  ),
+                ),
+              ),
+              Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
                 child: Text(
-                  '${visible.length} artifact${visible.length == 1 ? '' : 's'}',
+                  _view == ArtifactsView.figures
+                      ? '${visible.length} figure${visible.length == 1 ? '' : 's'}'
+                      : '${visible.length} artifact${visible.length == 1 ? '' : 's'}',
                   style: theme.type.callout.tint(theme.textMuted),
                 ),
               ),
@@ -100,12 +130,28 @@ class _ArtifactsScreenState extends ConsumerState<ArtifactsScreen> {
                     children: [
                       for (final item in visible)
                         AdaptiveListTile(
-                          leading: AdaptiveIcon(iconOf(item.artifact.latest.kind), size: 18, color: theme.accent),
+                          leading: _view == ArtifactsView.figures && item.artifact.latest.kind == VisualKind.svg
+                              ? SizedBox(
+                                  width: 48,
+                                  height: 36,
+                                  child: SvgView(
+                                    svg:
+                                        item.artifact.latest.args['svg'] as String? ??
+                                        item.artifact.latest.str('content'),
+                                    maxHeight: 36,
+                                  ),
+                                )
+                              : AdaptiveIcon(iconOf(item.artifact.latest.kind), size: 18, color: theme.accent),
                           title: Text(item.artifact.title, maxLines: 1, overflow: TextOverflow.ellipsis),
                           subtitle: Text(
                             [
-                              item.artifact.latest.kind.label,
+                              if (_view == ArtifactsView.figures) item.artifact.id else item.artifact.latest.kind.label,
                               item.chatTitle,
+                              if (_view == ArtifactsView.figures)
+                                switch (figures[item] ?? const []) {
+                                  [] => 'not used yet',
+                                  final used => 'in ${used.join(', ')}',
+                                },
                               if (item.artifact.versions.length > 1) '${item.artifact.versions.length} versions',
                             ].join(' · '),
                             maxLines: 1,

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
 import '../../chat/domain/message.dart';
+import 'figures.dart';
 
 /// What a UI tool call shows. Each kind has one renderer, used both inline in
 /// the chat and full-size in the side panel.
@@ -43,7 +44,7 @@ final class Visual {
 
   /// Decodes a tool call; null for tools that aren't visuals (or bad JSON).
   static Visual? fromPart(ToolCallPart part) {
-    final Map<String, Object?> args;
+    Map<String, Object?> args;
     try {
       args = switch (jsonDecode(part.argumentsJson)) {
         final Map<String, Object?> m => m,
@@ -63,7 +64,7 @@ final class Visual {
       },
       // The real kind comes from the artifact it edits (see [artifactsIn]).
       'edit_artifact' => VisualKind.document,
-      'render_svg' => VisualKind.svg,
+      'render_svg' || 'svg_script' => VisualKind.svg,
       'render_diagram' => VisualKind.diagram,
       'render_chart' => VisualKind.chart,
       'make_quiz' => VisualKind.quiz,
@@ -73,6 +74,8 @@ final class Visual {
       _ => null,
     };
     if (kind == null) return null;
+    // A program's figure is what it printed, which the app keeps as the call's result.
+    if (part.toolName == 'svg_script') args = {...args, 'svg': _scriptSvg(part.resultJson)};
     return Visual(
       callId: part.callId ?? '${part.toolName}:${part.argumentsJson.hashCode}',
       kind: kind,
@@ -92,6 +95,19 @@ final class Visual {
   bool get editedByUser => args['edited_by'] == 'user';
 }
 
+/// The SVG an `svg_script` run printed (its recorded result), or '' while it runs or when it failed.
+String _scriptSvg(String? resultJson) {
+  if (resultJson == null) return '';
+  try {
+    return switch (jsonDecode(resultJson)) {
+      {'svg': final String svg} => svg,
+      _ => '',
+    };
+  } on FormatException {
+    return '';
+  }
+}
+
 /// A document the model created and may revise (`create_artifact`, then
 /// `update_artifact` or `edit_artifact` with the same id). Versions are
 /// oldest first.
@@ -108,6 +124,22 @@ final class Artifact {
 
 /// The tools that create or revise an artifact.
 const artifactTools = {'create_artifact', 'update_artifact', 'edit_artifact'};
+
+/// Whether [part] makes an artifact version: an artifact tool, or a figure or deck call ([versionedTools]) with an id.
+bool isArtifactCall(ToolCallPart part) =>
+    artifactTools.contains(part.toolName) ||
+    (versionedTools.contains(part.toolName) && part.argumentsJson.contains('"id"') && _figureId(part).isNotEmpty);
+
+String _figureId(ToolCallPart part) {
+  try {
+    return switch (jsonDecode(part.argumentsJson)) {
+      {'id': final String id} => id.trim(),
+      _ => '',
+    };
+  } on FormatException {
+    return '';
+  }
+}
 
 /// The artifacts in a conversation, in creation order. Generated images are
 /// artifacts too, keyed by the first image's id: an image that revises another
@@ -127,9 +159,17 @@ List<Artifact> artifactsIn(Iterable<Message> messages) {
         continue;
       }
       if (part is! ToolCallPart) continue;
-      if (!artifactTools.contains(part.toolName)) continue;
+      if (!isArtifactCall(part)) continue;
       var visual = Visual.fromPart(part);
       if (visual == null) continue;
+      if (versionedTools.contains(part.toolName)) {
+        visual = Visual(
+          callId: visual.callId,
+          kind: visual.kind,
+          title: visual.title,
+          args: figureArgs(part.toolName, visual.args),
+        );
+      }
       final id = visual.str('id').isEmpty ? visual.callId : visual.str('id');
       final previous = byId[id]?.last;
       if (part.toolName == 'edit_artifact') {
@@ -141,8 +181,7 @@ List<Artifact> artifactsIn(Iterable<Message> messages) {
             kind: previous.kind,
             title: previous.title,
             args: {
-              ...previous.args,
-              'content': edited.content,
+              ...withFigureContent(previous.args, edited.content),
               'edit_missed': edited.missed,
               'edits': null,
               'edited_by': visual.args['edited_by'],
@@ -157,7 +196,11 @@ List<Artifact> artifactsIn(Iterable<Message> messages) {
           kind: previous.kind,
           title: visual.str('title').isEmpty ? previous.title : visual.title,
           // Who made this version is never inherited.
-          args: {...previous.args, 'edited_by': null, ...visual.args},
+          args: switch ({...previous.args, 'edited_by': null, ...visual.args}) {
+            // A figure's renderer reads its own key (svg, mermaid): it follows the new content.
+            final merged when visual.args['content'] is String => withFigureContent(merged, visual.str('content')),
+            final merged => merged,
+          },
         );
       }
       (byId[id] ??= []).add(visual);

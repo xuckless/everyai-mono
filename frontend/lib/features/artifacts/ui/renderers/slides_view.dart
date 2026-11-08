@@ -1,145 +1,71 @@
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/every_icons.dart';
+import '../../artifact_providers.dart';
+import '../../checks/webview_diagram_renderer.dart';
 import '../../domain/artifact.dart';
+import '../../domain/slide_pictures.dart';
+import '../../domain/slide_spec.dart';
+import 'slide_canvas.dart';
 
-/// Colors of a deck theme (`make_slides.theme`).
-@immutable
-final class DeckTheme {
-  const DeckTheme(this.background, this.title, this.text, this.accent);
+/// The pictures a deck shows, drawn once per set of references and redrawn when the chat's figures change (an
+/// edit to a figure shows on every slide that uses it). Keyed by conversation and the pictures, one per line as
+/// `ref<tab>argb` (the colour behind it).
+final slideArtProvider = FutureProvider.autoDispose.family<SlideArtBook, (String, String)>((ref, key) async {
+  final (conversationId, refs) = key;
+  final sources = slideSourcesOf(ref.watch(conversationArtifactsProvider(conversationId)));
+  final uses = [
+    for (final line in refs.split('\n'))
+      if (line.split('\t') case [final r, final on] when r.isNotEmpty) (ref: r, on: Color(int.parse(on))),
+  ];
+  final book = await drawSlideArt(uses, sources, diagrams: appDiagramRenderer);
+  ref.onDispose(book.dispose);
+  return book;
+});
 
-  static DeckTheme of(String name) => switch (name) {
-    'dark' => const DeckTheme(Color(0xFF16181D), Color(0xFFFFFFFF), Color(0xFFD5D8DE), Color(0xFF8B7CF6)),
-    'navy' => const DeckTheme(Color(0xFF0F2547), Color(0xFFFFFFFF), Color(0xFFD6E2F5), Color(0xFF5FB3F9)),
-    'minimal' => const DeckTheme(Color(0xFFFAFAF7), Color(0xFF111111), Color(0xFF333333), Color(0xFF111111)),
-    _ => const DeckTheme(Color(0xFFFFFFFF), Color(0xFF1C1B22), Color(0xFF3A3A44), Color(0xFF6E56CF)),
+/// The art for [deck]: drawn pictures, or [SlideArtBook.pending] while they draw (or if drawing failed).
+SlideArtBook watchSlideArt(WidgetRef ref, String conversationId, List<DeckSlide> deck) {
+  final uses = pictureUsesOf(deck);
+  if (uses.isEmpty) return SlideArtBook(const {});
+  final key = [for (final u in uses) '${u.ref}\t${u.on.toARGB32()}'].join('\n');
+  return switch (ref.watch(slideArtProvider((conversationId, key)))) {
+    AsyncData(:final value) => value,
+    AsyncError() || AsyncLoading() => SlideArtBook.pending(),
   };
-
-  final Color background;
-  final Color title;
-  final Color text;
-  final Color accent;
 }
 
-@immutable
-final class Slide {
-  const Slide({required this.title, this.bullets = const [], this.body = '', this.notes = ''});
-  final String title;
-  final List<String> bullets;
-  final String body;
-  final String notes;
-}
+/// A deck's first slide, small (the chat card).
+class SlidePreview extends ConsumerWidget {
+  const SlidePreview({super.key, required this.visual, required this.conversationId});
 
-/// The deck in [visual]: a title slide, then the model's slides.
-List<Slide> slidesOf(Visual visual) => [
-  Slide(title: visual.title, body: visual.str('subtitle')),
-  for (final s in (visual.args['slides'] as List<Object?>?) ?? const [])
-    if (s case {'title': final String title})
-      Slide(
-        title: title,
-        bullets: ((s['bullets'] as List<Object?>?) ?? const []).whereType<String>().toList(),
-        body: s['body'] as String? ?? '',
-        notes: s['notes'] as String? ?? '',
-      ),
-];
-
-/// One 16:9 slide, laid out at 960×540 and scaled to fit.
-class SlideCanvas extends StatelessWidget {
-  const SlideCanvas({super.key, required this.slide, required this.theme, this.isTitle = false});
-
-  final Slide slide;
-  final DeckTheme theme;
-  final bool isTitle;
+  final Visual visual;
+  final String conversationId;
 
   @override
-  Widget build(BuildContext context) {
-    return AspectRatio(
-      aspectRatio: 16 / 9,
-      child: FittedBox(
-        child: Container(
-          width: 960,
-          height: 540,
-          color: theme.background,
-          padding: const EdgeInsets.fromLTRB(64, 56, 64, 48),
-          child: isTitle
-              ? Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(width: 72, height: 6, color: theme.accent),
-                    const SizedBox(height: 24),
-                    Text(
-                      slide.title,
-                      style: TextStyle(color: theme.title, fontSize: 56, fontWeight: FontWeight.w800, height: 1.1),
-                    ),
-                    if (slide.body.isNotEmpty) ...[
-                      const SizedBox(height: 16),
-                      Text(slide.body, style: TextStyle(color: theme.text, fontSize: 26)),
-                    ],
-                  ],
-                )
-              : Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      slide.title,
-                      style: TextStyle(color: theme.title, fontSize: 40, fontWeight: FontWeight.w700, height: 1.15),
-                    ),
-                    const SizedBox(height: 10),
-                    Container(width: 56, height: 4, color: theme.accent),
-                    const SizedBox(height: 28),
-                    for (final b in slide.bullets)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 14),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Padding(
-                              padding: const EdgeInsets.only(top: 12, right: 16),
-                              child: Container(
-                                width: 9,
-                                height: 9,
-                                decoration: BoxDecoration(color: theme.accent, shape: BoxShape.circle),
-                              ),
-                            ),
-                            Expanded(
-                              child: Text(b, style: TextStyle(color: theme.text, fontSize: 26, height: 1.35)),
-                            ),
-                          ],
-                        ),
-                      ),
-                    if (slide.body.isNotEmpty)
-                      Expanded(
-                        child: Text(
-                          // Slides show plain text; markdown markers would read as noise.
-                          slide.body.replaceAll(RegExp(r'(\*\*|__|`|^#+\s*)', multiLine: true), ''),
-                          style: TextStyle(color: theme.text, fontSize: 24, height: 1.4),
-                          overflow: TextOverflow.fade,
-                        ),
-                      ),
-                  ],
-                ),
-        ),
-      ),
-    );
+  Widget build(BuildContext context, WidgetRef ref) {
+    final deck = deckOf(visual).take(1).toList();
+    return SlideCanvas(slide: deck.first, art: watchSlideArt(ref, conversationId, deck));
   }
 }
 
 /// Slide deck viewer: arrows or buttons to move, speaker notes below.
-class SlidesView extends StatefulWidget {
-  const SlidesView({super.key, required this.visual, this.showNotes = true});
+class SlidesView extends ConsumerStatefulWidget {
+  const SlidesView({super.key, required this.visual, required this.conversationId, this.showNotes = true});
 
   final Visual visual;
+  final String conversationId;
   final bool showNotes;
 
   @override
-  State<SlidesView> createState() => _SlidesViewState();
+  ConsumerState<SlidesView> createState() => _SlidesViewState();
 }
 
-class _SlidesViewState extends State<SlidesView> {
+class _SlidesViewState extends ConsumerState<SlidesView> {
+  /// The slide shown (a position, not a lifecycle).
   int _index = 0;
   final _focus = FocusNode();
 
@@ -152,11 +78,11 @@ class _SlidesViewState extends State<SlidesView> {
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    final slides = slidesOf(widget.visual);
-    final deck = DeckTheme.of(widget.visual.str('theme'));
-    final i = _index.clamp(0, slides.length - 1);
-    final slide = slides[i];
-    void go(int d) => setState(() => _index = (i + d).clamp(0, slides.length - 1));
+    final deck = deckOf(widget.visual);
+    final art = watchSlideArt(ref, widget.conversationId, deck);
+    final i = _index.clamp(0, deck.length - 1);
+    final slide = deck[i];
+    void go(int d) => setState(() => _index = (i + d).clamp(0, deck.length - 1));
 
     return Focus(
       focusNode: _focus,
@@ -184,7 +110,7 @@ class _SlidesViewState extends State<SlidesView> {
               borderRadius: BorderRadius.circular(theme.radius),
               child: DecoratedBox(
                 decoration: BoxDecoration(border: Border.all(color: theme.border)),
-                child: SlideCanvas(slide: slide, theme: deck, isTitle: i == 0),
+                child: SlideCanvas(slide: slide, art: art),
               ),
             ),
           ),
@@ -193,7 +119,7 @@ class _SlidesViewState extends State<SlidesView> {
             children: [
               AdaptiveIconButton(icon: EveryIcon.chevronLeft, tooltip: 'Previous slide', onPressed: () => go(-1)),
               Text(
-                '${i + 1} / ${slides.length}',
+                '${i + 1} / ${deck.length}',
                 style: TextStyle(color: theme.textMuted, fontFeatures: const [FontFeature.tabularFigures()]),
               ),
               AdaptiveIconButton(icon: EveryIcon.chevronRight, tooltip: 'Next slide', onPressed: () => go(1)),
