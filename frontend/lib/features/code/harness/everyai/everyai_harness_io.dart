@@ -964,6 +964,8 @@ final class EveryAISession
   @override
   Future<void> interrupt() async {
     _closeOwnBrowser();
+    // A browser call waiting at a sign-in page ends with the run.
+    if (_spec.liveId case final id?) LiveBrowsers.of(id)?.loginWall.stop();
     if (_cancel case final c? when !c.isCompleted) c.complete();
     for (final d in _decisions.values) {
       if (!d.isCompleted) d.complete((accept: false, reason: 'The user stopped this.'));

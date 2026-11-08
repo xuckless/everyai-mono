@@ -5,6 +5,8 @@ import 'package:every_ai/features/code/harness/everyai/llm.dart';
 import 'package:every_ai/features/code/harness/everyai/screen_tools_io.dart';
 import 'package:every_ai/features/code/harness/everyai/shell_io.dart';
 import 'package:every_ai/features/code/harness/everyai/tools_io.dart';
+import 'package:every_ai/features/code/live/browser_jar.dart';
+import 'package:cryptography/cryptography.dart';
 import 'package:every_ai/features/code/ui/panes/browser_overlays.dart';
 import 'package:flutter/foundation.dart' show VoidCallback;
 import 'package:flutter_test/flutter_test.dart';
@@ -117,26 +119,37 @@ void main() {
     timeout: const Timeout(Duration(minutes: 1)),
   );
 
-  test(
-    'a click on a file input opens a picker the files go to; downloads are listed',
-    () async {
-      final file = File('${tmp.path}/cv.pdf')..writeAsStringSync('pdf');
-      browser.downloadDir = '${tmp.path}/downloads';
-      await browser.open(home());
-      await browser.click(selector: '#up');
-      await until(() => browser.fileChooser.value != null);
-      expect(browser.fileChooser.value, isNotNull);
-      await browser.setFiles([file.path]);
-      expect(await browser.evaluate('document.getElementById("up").files[0].name'), 'cv.pdf');
-      await browser.click(selector: '#dl');
-      await until(() => browser.downloads.value.any((d) => d.state == 'completed'));
-      final d = browser.downloads.value.single;
-      expect((d.name, d.state), ('file.txt', 'completed'));
-      expect(File(d.path!).readAsStringSync(), 'hello');
-    },
-    skip: skip,
-    timeout: const Timeout(Duration(minutes: 1)),
-  );
+  for (final jar in [false, true]) {
+    test(
+      'a click on a file input opens a picker the files go to; downloads are listed${jar ? ' (own cookie jar)' : ''}',
+      () async {
+        if (jar) {
+          await browser.close();
+          await browser.host.stop();
+          final store = SealedStore('${tmp.path}/sealed', () async => SecretKey(List.filled(32, 3)));
+          browser = HeadlessBrowser(
+            profileDir: '${tmp.path}/profile',
+            jarHome: (store: () async => store, name: 'jar-d'),
+          );
+        }
+        final file = File('${tmp.path}/cv.pdf')..writeAsStringSync('pdf');
+        browser.downloadDir = '${tmp.path}/downloads';
+        await browser.open(home());
+        await browser.click(selector: '#up');
+        await until(() => browser.fileChooser.value != null);
+        expect(browser.fileChooser.value, isNotNull);
+        await browser.setFiles([file.path]);
+        expect(await browser.evaluate('document.getElementById("up").files[0].name'), 'cv.pdf');
+        await browser.click(selector: '#dl');
+        await until(() => browser.downloads.value.any((d) => d.state == 'completed'));
+        final d = browser.downloads.value.single;
+        expect((d.name, d.state), ('file.txt', 'completed'));
+        expect(File(d.path!).readAsStringSync(), 'hello');
+      },
+      skip: skip,
+      timeout: const Timeout(Duration(minutes: 1)),
+    );
+  }
 
   test(
     'the right-click menu knows links, fields and the selection; find counts and selects',

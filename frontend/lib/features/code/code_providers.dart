@@ -12,6 +12,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/process/child_processes.dart';
 import '../../core/api/decide_client.dart' show decideClientProvider;
+import 'live/browser_jar.dart' show SealedStore;
 import 'live/android_device_io.dart' show AndroidDevices;
 import 'live/app_sources.dart' show AppSources;
 import 'live/live_browsers.dart';
@@ -385,17 +386,21 @@ Future<List<WorkflowEntry>> _workflowsOfIn(Ref ref, String projectDir) async {
 /// disposal doesn't run then). The shell listens to it from app start, so
 /// every CLI is covered, however it was spawned.
 final driverShutdownProvider = Provider<void>((ref) {
+  // Sessions' browser jars and saved logins are sealed under the app's data folder (with a keychain key).
+  LiveBrowsers.jars ??= () async => SealedStore.app(await GitService.dataDir());
   // The registry's stop runs beside the owners' own (not after them, where one slow stop used up the budget); it only
-  // ends children still running, so a child an owner already ended isn't touched again.
+  // ends children still running, so a child an owner already ended isn't touched again. It waits for the browsers
+  // (at most 2.5 s): their jars are read from the running Chrome before it stops.
   Future<void> closeAll() => Future.wait<void>([
     closeAllDriverProcesses(),
-    LiveBrowsers.stopAll(),
+    LiveBrowsers.stopAll()
+        .timeout(const Duration(milliseconds: 2500), onTimeout: () {})
+        .whenComplete(ChildProcesses.stopAll),
     Future(NestedDisplays.stopAll),
     AndroidDevices.stopAll(),
     AppSources.stopAll(),
     // The EveryAI harness's language servers (they outlived the app before).
     closeAllLanguageServers(),
-    ChildProcesses.stopAll(),
   ]).timeout(const Duration(seconds: 4), onTimeout: () => const []);
   final lifecycle = AppLifecycleListener(
     onExitRequested: () async {
@@ -667,6 +672,8 @@ final class CodeProjects extends Notifier<List<CodeProject>> {
         if (p.id != id) p,
     ];
     _save();
+    // The project's own saved logins go with it.
+    unawaited(LiveBrowsers.forgetProjectLogins(id));
   }
 
   /// Where [id]'s sessions run from now on ([envId] from `ExecEnv.id`). Sessions already started keep theirs.

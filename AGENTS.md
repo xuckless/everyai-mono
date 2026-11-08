@@ -1150,6 +1150,17 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   dialog, upload (`screen_tools_io.dart`). UI pieces in `ui/panes/browser_overlays.dart`. Tests on a real headless
   Chrome: `browser_keys_test`, `browser_cast_test`, `browser_features_test`, `preview_clipboard_test`,
   `preview_browser_ui_test`. Open: copy/paste failing in the running app wasn't reproduced (tests pass).
+- **Preview browser, phase 2: sign-ins (2026-11-07; branch `feat/browser-logins`, stacked on phase 1).** Each Code
+  session's browser runs in a Chrome browser context of its own in the project's Chrome (no extra processes): its
+  cookies and local storage are its jar (`live/browser_jar.dart`), sealed AES-GCM in app data `browser/` with a key
+  in the keychain (`SealedStore`), read at start, kept every 30 s and on loads, saved at close and quit, deleted with
+  the session. Storage is restored per origin when its first page loads (never a script holding other origins'
+  tokens). Saved logins (`SavedLogins`, project or every project) from the Preview's key menu
+  (`ui/panes/browser_sign_ins.dart`); a session started from one writes the refreshed sign-in back; Expired when the
+  site asks again. Sign in in a window carries the changed sites into the session. Login wall
+  (`live/login_wall.dart`, idle/waiting): a password field, a sign-in service or a /login-like path on a site holds
+  the agent's call (10 min; 3 for outside leads) while `LoginWallCard` (composer and Board) offers Take control, Use
+  saved login, Sign in in a window, Skip; Stop ends it. Not covered: IndexedDB (Firebase tokens), sessionStorage.
 - **Harness gaps (2026-11-07; branch `feat/harness-gaps`; owner answers in `~/.claude/plans/harness-gaps.md`).**
   Git buttons are prompts (`domain/git_requests.dart`): Commit, Create PR and Merge locally send a user turn to the
   session's agent (queued while busy; `/commit` and `/pr` keep their drafts). Merge locally: the agent rebases and

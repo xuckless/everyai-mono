@@ -183,6 +183,8 @@ mixin _SessionScreen on Notifier<CodeSessionState> {
   /// Ends the session's browser and app (Stop, the session closing).
   Future<void> _closeScreen() async {
     _screenGen++;
+    // An outside lead's browser call waiting at a sign-in page ends too.
+    LiveBrowsers.of(sessionId)?.loginWall.stop();
     _refuseLocalAsks();
     final browser = _screenBrowser, run = _appRun;
     _screenBrowser = null;
