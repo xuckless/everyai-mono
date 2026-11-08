@@ -393,6 +393,8 @@ final driverShutdownProvider = Provider<void>((ref) {
     Future(NestedDisplays.stopAll),
     AndroidDevices.stopAll(),
     AppSources.stopAll(),
+    // The EveryAI harness's language servers (they outlived the app before).
+    closeAllLanguageServers(),
     ChildProcesses.stopAll(),
   ]).timeout(const Duration(seconds: 4), onTimeout: () => const []);
   final lifecycle = AppLifecycleListener(
