@@ -177,7 +177,8 @@ final class EveryAISession
         RetriesModelCalls,
         PerCallApprovals,
         HasContextParts,
-        ReportsMcpTools {
+        ReportsMcpTools,
+        StopsMcpServers {
   EveryAISession._(this.id, this._spec, this._dir, http.Client? client)
     : _gateway = GatewayClient(baseUrl: _spec.llmBaseUrl, apiKey: _spec.llmApiKey, client: client),
       _shell = SessionShell(
@@ -230,6 +231,23 @@ final class EveryAISession
   /// The session's MCP servers (connected once, at start or first run).
   McpTools _mcp = McpTools.empty;
   Future<void>? _mcpReady;
+
+  /// How long the session's MCP servers outlive its last run.
+  static Duration mcpIdle = const Duration(minutes: 10);
+  Timer? _mcpIdleTimer;
+
+  @override
+  Future<void> stopMcpServers() async {
+    _mcpIdleTimer?.cancel();
+    final ready = _mcpReady;
+    if (ready == null || _looping) return;
+    _mcpReady = null;
+    await ready;
+    final running = _mcp;
+    _mcp = McpTools.empty;
+    await running.close();
+  }
+
   final _mcpReported = Completer<Map<String, McpToolsReport>>();
 
   /// Completes once the session connected to its MCP servers (at its first
@@ -856,6 +874,11 @@ final class EveryAISession
   void _setStatus(ExecutionStatus s) {
     if (status == s) return;
     status = s;
+    // MCP servers stop after [mcpIdle] without a run and start again with the next one.
+    _mcpIdleTimer?.cancel();
+    if (s != ExecutionStatus.running && s != ExecutionStatus.waitingForConfirmation) {
+      _mcpIdleTimer = Timer(mcpIdle, () => unawaited(stopMcpServers()));
+    }
     _emit({'kind': 'ConversationStateUpdateEvent', 'id': _newId(), 'key': 'execution_status', 'value': s.wire});
   }
 

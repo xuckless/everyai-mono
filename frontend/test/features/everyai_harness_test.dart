@@ -908,6 +908,76 @@ for line in sys.stdin:
     await session.close();
   });
 
+  test('MCP servers stop after the session sits idle and start again with its next run', () async {
+    final pids = File('$work/pids.txt');
+    final server = File('$work/echo_mcp.py')
+      ..writeAsStringSync('''
+import json, os, sys
+open(${jsonEncode(pids.path)}, "a").write(str(os.getpid()) + "\\n")
+for line in sys.stdin:
+    m = json.loads(line)
+    if "id" not in m: continue
+    meth = m["method"]
+    if meth == "initialize": r = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}}
+    elif meth == "tools/list": r = {"tools": [{"name": "echo", "description": "Echoes", "inputSchema": {"type": "object"}}]}
+    elif meth == "tools/call": r = {"content": [{"type": "text", "text": "echoed"}]}
+    else: r = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": m["id"], "result": r}), flush=True)
+''');
+    EveryAISession.mcpIdle = const Duration(milliseconds: 300);
+    addTearDown(() => EveryAISession.mcpIdle = const Duration(minutes: 10));
+    gateway
+      ..reply(calls: [('echo', <String, Object?>{})])
+      ..reply(text: 'one')
+      ..reply(calls: [('echo', <String, Object?>{})])
+      ..reply(text: 'two');
+    final session = await harness.start(
+      SessionSpec(
+        workingDir: work,
+        model: 'anthropic/claude-sonnet-5.5',
+        mode: AgentMode.fullAuto,
+        llmBaseUrl: gateway.baseUrl,
+        llmApiKey: 'sk-test',
+        sessionTag: 'tag-1',
+        initialMessage: 'echo',
+        mcpConfig: {
+          'echo': {
+            'command': 'python3',
+            'args': [server.path],
+          },
+        },
+      ),
+    );
+    await drive(session);
+    bool alive(String pid) => Process.runSync('kill', ['-0', pid]).exitCode == 0;
+    final first = pids.readAsLinesSync().single;
+    expect(alive(first), isTrue);
+    await Future<void>.delayed(const Duration(seconds: 2));
+    expect(alive(first), isFalse, reason: 'stopped once the session sat idle');
+
+    // Full auto approves the MCP call, as drive() did for the first run.
+    final approve = session.events.listen((e) {
+      if (e is StateChange && e.executionStatus == ExecutionStatus.waitingForConfirmation) {
+        unawaited(session.respond(accept: true));
+      }
+    });
+    addTearDown(approve.cancel);
+    await session.send('again');
+    for (var i = 0; i < 500 && gateway.requests.length < 4; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(gateway.requests.length, 4);
+    expect(pids.readAsLinesSync(), hasLength(2), reason: 'the next run starts it again');
+    final echoed = [
+      for (final m in gateway.requests.last['messages']! as List)
+        if ((m as Map)['role'] == 'tool') m['content'],
+    ];
+    expect(echoed, hasLength(2));
+    expect(echoed.last, contains('echoed'));
+    await (session as StopsMcpServers).stopMcpServers();
+    await session.close();
+  });
+
   group('MCP tools are vetted', () {
     final lookup = {
       'name': 'lookup',

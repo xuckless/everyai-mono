@@ -1771,7 +1771,10 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         if (gone.contains(s.id) && s.leads.isNotEmpty) s.id,
     ];
     for (final g in gone) {
-      unawaited(ref.read(_liveProvider).remove(g)?.close());
+      final live = ref.read(_liveProvider).remove(g);
+      // Its MCP servers go with it (the session itself may live on in a controller nobody shows).
+      if (live is StopsMcpServers) unawaited((live as StopsMcpServers).stopMcpServers());
+      unawaited(live?.close());
       // Its app (app_run) and headless browser end with it; the controller itself lives on unused.
       if (ref.exists(codeSessionProvider(g))) unawaited(ref.read(codeSessionProvider(g).notifier)._closeScreen());
       ref.read(preferencesProvider)['$codeUsageReportsPrefix$g'] = null;
