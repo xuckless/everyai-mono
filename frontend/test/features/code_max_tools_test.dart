@@ -11,6 +11,7 @@ import 'package:every_ai/features/code/board/board_work.dart' show userWait;
 import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
+import 'package:every_ai/features/code/domain/fork_state.dart';
 import 'package:every_ai/features/code/domain/notice.dart';
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/domain/subagents.dart';
@@ -395,6 +396,65 @@ void main() {
     final ended = await hostCall(l.info.id, endWorkflowTool, {'outcome': 'done'});
     expect(ended.text, startsWith('Max is off'));
     expect(sessions.byId(l.info.id)!.workflow, isNull);
+  });
+
+  test("a fork's processes carry its own tag while it bills to the lead", () async {
+    final l = await lead();
+    final f = await fork(l.info.id);
+    expect(f.info.processTag, f.info.id);
+    expect(f.info.billingTag, l.info.id);
+    expect(killsOwnProcesses(f.info), isTrue);
+    final spec = driver.specs.last;
+    expect(spec.procTag, f.info.id);
+    expect(spec.sessionTag, l.info.id);
+  });
+
+  test('a fork that works again after its report sends a follow-up report', () async {
+    final l = await lead();
+    final f = await fork(l.info.id);
+    finish(f.session, 'Added the page.');
+    await pumpEventQueue();
+    expect(notices(l.session), hasLength(1));
+    final forks = container.read(codeSessionProvider(l.info.id).notifier).forks;
+    expect(forks.byChild(f.info.id)!.state, isA<ForkReported>());
+    // Something wakes it (a message to it, a task of its own) and it reports again.
+    f.session
+      ..add(stateEvent('r2', ExecutionStatus.running))
+      ..add(agentMessageEvent('m2', 'Also fixed the toggle.'))
+      ..add(stateEvent('f2', ExecutionStatus.finished));
+    await pumpEventQueue();
+    final all = notices(l.session);
+    expect(all, hasLength(2));
+    final again = parseTaskNotification(all.last)!;
+    expect(again.childId, f.info.id);
+    expect(again.title, contains('follow-up'));
+    expect(again.result, contains('Also fixed the toggle.'));
+    expect(forks.byChild(f.info.id)!.reports, 2);
+    expect(forks.refused, isEmpty);
+  });
+
+  test('Pause all holds the queue until Resume; an idle lead holds at once', () async {
+    final l = await lead();
+    final c = container.read(codeSessionProvider(l.info.id).notifier);
+    l.session.add(stateEvent('r1', ExecutionStatus.running));
+    await pumpEventQueue();
+    final paused = c.pauseAll();
+    await pumpEventQueue();
+    expect(container.read(codeSessionProvider(l.info.id)).hold, StepHold.pausing);
+    // Its turn ends: it holds, and shows as paused.
+    l.session.add(stateEvent('f1', ExecutionStatus.finished));
+    await paused;
+    expect(container.read(codeSessionProvider(l.info.id)).hold, StepHold.paused);
+    expect(container.read(codeSessionProvider(l.info.id)).status, SessionStatus.paused);
+    final before = l.session.sent.length;
+    await c.send('Next: the footer');
+    await pumpEventQueue();
+    expect(l.session.sent, hasLength(before), reason: 'held while paused');
+    expect(container.read(codeSessionProvider(l.info.id)).queued.single.text, contains('the footer'));
+    await c.resumeAll();
+    await pumpEventQueue();
+    expect(container.read(codeSessionProvider(l.info.id)).hold, StepHold.none);
+    expect(l.session.sent.last, contains('Next: the footer'));
   });
 
   test('a busy lead gets fork reports only once its turn ends', () async {

@@ -42,6 +42,8 @@ class WorkflowRunsView extends ConsumerWidget {
             child: WorkflowCard(
               run: run,
               onStop: () => ref.read(codeSessionProvider(sessionId).notifier).stopWorkflow(run.runId),
+              onPause: () => ref.read(codeSessionProvider(sessionId).notifier).pauseWorkflow(run.runId),
+              onResume: () => ref.read(codeSessionProvider(sessionId).notifier).resumeWorkflow(run.runId),
               onDismiss: () => _dismiss(context, ref, sessionId, store, run),
               landing: _landingOf(context, ref, sessionId, run),
             ),
@@ -114,9 +116,21 @@ class WorkflowLanding {
 /// One run: its phases, each with its agents (tap one to open its session)
 /// and log lines, then what it used of its caps.
 class WorkflowCard extends StatelessWidget {
-  const WorkflowCard({super.key, required this.run, this.onStop, this.onDismiss, this.landing});
+  const WorkflowCard({
+    super.key,
+    required this.run,
+    this.onStop,
+    this.onPause,
+    this.onResume,
+    this.onDismiss,
+    this.landing,
+  });
   final WorkflowRun run;
   final VoidCallback? onStop;
+
+  /// Pause (each agent ends its step, then holds) while it runs; Resume while it holds.
+  final VoidCallback? onPause;
+  final VoidCallback? onResume;
 
   /// Closes a finished run's card (done, failed, capped or stopped); a running one has Stop instead.
   final VoidCallback? onDismiss;
@@ -154,7 +168,29 @@ class WorkflowCard extends StatelessWidget {
                   style: theme.type.callout.semibold.tint(theme.text),
                 ),
               ),
-              Text(workflowStatusText(run.status), style: theme.type.caption.tint(_statusColor(theme, run.status))),
+              Text(switch (run.state) {
+                RunPausing() => 'Pausing',
+                RunPaused() => 'Paused',
+                _ => workflowStatusText(run.status),
+              }, style: theme.type.caption.tint(_statusColor(theme, run.status))),
+              if (run.state is RunRunning && onPause != null) ...[
+                const SizedBox(width: 8),
+                AdaptiveButton(
+                  key: ValueKey('workflow.pause.${run.runId}'),
+                  label: 'Pause',
+                  emphasis: ButtonEmphasis.plain,
+                  onPressed: onPause,
+                ),
+              ],
+              if ((run.state is RunPausing || run.state is RunPaused) && onResume != null) ...[
+                const SizedBox(width: 8),
+                AdaptiveButton(
+                  key: ValueKey('workflow.resume.${run.runId}'),
+                  label: 'Resume',
+                  emphasis: ButtonEmphasis.plain,
+                  onPressed: onResume,
+                ),
+              ],
               if (running && onStop != null) ...[
                 const SizedBox(width: 8),
                 AdaptiveButton(label: 'Stop', emphasis: ButtonEmphasis.plain, onPressed: onStop),

@@ -629,6 +629,7 @@ class SessionStatusIcon extends StatelessWidget {
       SessionStatus.running || SessionStatus.starting => ('status-running', DotStatus.running),
       SessionStatus.needsInput => ('status-needs-input', DotStatus.waiting),
       SessionStatus.failed => ('status-failed', DotStatus.failed),
+      SessionStatus.paused => ('status-paused', DotStatus.idle),
       SessionStatus.idle || SessionStatus.done => (null, null),
     };
     return SizedBox.square(

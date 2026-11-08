@@ -114,6 +114,7 @@ class SubagentCard extends ConsumerWidget {
       SessionStatus.done || SessionStatus.idle => 'Reporting',
       SessionStatus.failed => 'Failed',
       SessionStatus.running => 'Working',
+      SessionStatus.paused => 'Paused',
     },
   };
 }

@@ -66,9 +66,9 @@ final class TerminalDriver implements HarnessDriver {
     final status = await detect();
     final path = status.path;
     if (!status.installed || path == null) throw HarnessError("$label isn't installed.");
-    final pty = await startPty(executable: path, args: args, workingDir: spec.workingDir, sessionTag: spec.sessionTag);
+    final pty = await startPty(executable: path, args: args, workingDir: spec.workingDir, sessionTag: spec.procTag);
     if (pty == null) throw HarnessError('A terminal session needs a desktop computer.');
-    registerDriverRoot(spec.sessionTag, pty.pid);
+    registerDriverRoot(spec.procTag, pty.pid);
     final skillDir = spec.briefing?.skillDir;
     final session = TerminalSession(
       id: spec.sessionTag,

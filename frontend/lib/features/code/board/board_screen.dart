@@ -15,6 +15,7 @@ import '../../../core/ui/every_icons.dart';
 import '../../questions/ui/question_card.dart';
 import '../code_providers.dart';
 import '../domain/permissions.dart';
+import '../domain/fork_state.dart';
 import '../domain/code_session.dart';
 import '../drivers/driver_registry.dart' show driverRegistryProvider;
 import '../ui/harness_logo.dart';
@@ -459,6 +460,9 @@ class _BoardCardState extends ConsumerState<BoardCard> {
             work: work,
             leadBusy: leadBusy,
             onStopAll: controller.stopAll,
+            onPauseAll: ref.watch(codeSessionProvider(info.id).select((s) => s.hold)) == StepHold.none
+                ? controller.pauseAll
+                : null,
             size: 22,
           )
         : null;

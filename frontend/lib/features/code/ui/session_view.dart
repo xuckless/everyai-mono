@@ -35,7 +35,9 @@ import '../drivers/driver_registry.dart';
 import '../harness/events.dart' show ExecutionStatus;
 import 'agent_menu.dart';
 import 'code_composer.dart';
+import '../domain/fork_state.dart';
 import 'limit_banner.dart';
+import 'paused_bar.dart';
 import 'code_slash_host.dart';
 import 'transcript/files_card.dart';
 import 'transcript/security_alert_card.dart';
@@ -297,7 +299,8 @@ class CodeSessionScreen extends ConsumerWidget {
                                           children: [
                                             TakeControlReminder(sessionId: sessionId),
                                             LoginWallCard(sessionId: sessionId, projectId: info.projectId),
-                                            if (t.pending.isNotEmpty)
+                                            // Paused: held calls wait for Resume, which decides them as the mode says.
+                                            if (t.pending.isNotEmpty && state.hold == StepHold.none)
                                               Padding(
                                                 padding: const EdgeInsets.only(bottom: 8),
                                                 child: ApprovalCard(
@@ -443,6 +446,9 @@ class CodeSessionScreen extends ConsumerWidget {
                                                       work: work,
                                                       leadBusy: busy,
                                                       onStopAll: controller.stopAll,
+                                                      onPauseAll: state.hold == StepHold.none
+                                                          ? controller.pauseAll
+                                                          : null,
                                                     )
                                                   : null,
                                               placeholder: t.openQuestion != null
@@ -452,7 +458,11 @@ class CodeSessionScreen extends ConsumerWidget {
                                                   : 'Ask for a change, or reply to the agent',
                                               agent: agentMenu(),
                                               // The lead-offer card says it louder once the limit has hit.
-                                              banner: pick == null ? LimitBanner(sessionId: sessionId) : null,
+                                              banner: state.hold != StepHold.none
+                                                  ? PausedBar(hold: state.hold, onResume: controller.resumeAll)
+                                                  : pick == null
+                                                  ? LimitBanner(sessionId: sessionId)
+                                                  : null,
                                               model: ref.watch(modelCatalogProvider)[ModelId(info.model)],
                                               meter: SessionMeter(sessionId: sessionId, model: info.model),
                                               // An outside lead's own commands (empty until listed, never ours); null: EveryAI's.
@@ -824,7 +834,7 @@ class StatusPill extends StatelessWidget {
     SessionStatus.needsInput => theme.warning,
     SessionStatus.failed => theme.danger,
     SessionStatus.done => theme.success,
-    SessionStatus.idle => theme.textMuted,
+    SessionStatus.idle || SessionStatus.paused => theme.textMuted,
   };
 
   @override
@@ -835,7 +845,7 @@ class StatusPill extends StatelessWidget {
       SessionStatus.needsInput => DotStatus.waiting,
       SessionStatus.failed => DotStatus.failed,
       SessionStatus.done => DotStatus.done,
-      SessionStatus.idle => DotStatus.idle,
+      SessionStatus.idle || SessionStatus.paused => DotStatus.idle,
     });
     if (dense) return Semantics(label: status.label, child: dot);
     return Padding(

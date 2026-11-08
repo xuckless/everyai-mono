@@ -179,6 +179,15 @@ final class FakeLauncher implements AgentLauncher {
     if (c != null && !c.isCompleted) c.complete();
   }
 
+  final paused = <String>[];
+  final resumed = <String>[];
+
+  @override
+  Future<void> pause(String childId) async => paused.add(childId);
+
+  @override
+  Future<void> resume(String childId) async => resumed.add(childId);
+
   /// Children released at the run's end, in order.
   final released = <String>[];
 

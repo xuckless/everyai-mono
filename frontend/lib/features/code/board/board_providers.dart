@@ -22,7 +22,7 @@ enum BoardColumn {
 
   static BoardColumn of(SessionStatus s) => switch (s) {
     SessionStatus.needsInput => needsYou,
-    SessionStatus.running || SessionStatus.starting => running,
+    SessionStatus.running || SessionStatus.starting || SessionStatus.paused => running,
     SessionStatus.idle || SessionStatus.done || SessionStatus.failed => done,
   };
 }

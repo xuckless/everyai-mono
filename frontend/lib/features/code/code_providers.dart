@@ -42,6 +42,7 @@ import 'checks/runtime_profiles.dart';
 import 'domain/agent_mode.dart';
 import 'domain/approval_reason.dart';
 import 'domain/code_session.dart';
+import 'domain/fork_state.dart';
 import 'environments/env_paths.dart';
 import 'environments/env_processes.dart';
 import 'environments/environment_providers.dart';
@@ -912,6 +913,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     bool runInitial = true,
     bool subagent = false,
     String? sessionTag,
+    String? processTag,
     List<String>? tools,
     String? rolePrompt,
     List<Map<String, Object?>>? clientTools,
@@ -971,6 +973,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       // A local model is called on its own server: no gateway key, so it starts with no account or network.
       llmApiKey: demo || outside || LocalRoute.isLocal(model) ? '' : await gatewayKey(ref),
       sessionTag: sessionTag ?? sessionId,
+      processTag: processTag,
       initialMessage: initialMessage,
       initialImages: initialImages,
       runInitial: runInitial,
@@ -1270,6 +1273,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
           effort: effort,
           holdClientTools: info.holdClientTools,
           sessionTag: info.billingTag,
+          processTag: info.processTag,
           initialMessage: initialMessage,
           isolated: info.worktree != null,
           tier: tier,
@@ -1545,6 +1549,8 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       tools: fork ? null : setup.tools,
       rolePrompt: fork ? null : setup.rolePrompt,
       researchSites: sites,
+      // Its processes are its own: stop_fork ends what it started, never the lead's.
+      ownProcesses: true,
     );
   }
 
@@ -1581,6 +1587,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     bool briefed = false,
     Set<String>? hostOnly,
     Map<String, Object?>? bugCheckSeed,
+    bool ownProcesses = false,
   }) async {
     model ??= parent.model;
     effort ??= parent.effort;
@@ -1633,6 +1640,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         isolated: workingDir != parent.workingDir || parent.worktree != null,
         sessionId: id,
         sessionTag: ownTag ? id : parent.id,
+        processTag: ownTag || ownProcesses ? id : parent.id,
         projectDir: projectDir,
         workingDir: workingDir,
         model: model,
@@ -1671,6 +1679,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       parentId: parent.id,
       parentCallId: callId,
       ownTag: ownTag,
+      ownProcesses: ownProcesses,
       ownApprovals: ownApprovals,
       forkCopy: forkCopy,
       tier: parent.tier,
@@ -1896,6 +1905,7 @@ final class CodeSessionState {
     this.nativeMode,
     this.armed,
     this.sideWork = false,
+    this.hold = StepHold.none,
   }) : link = link ?? (error != null ? SessionLink.broken : (connected ? SessionLink.live : SessionLink.connecting)),
        _brokenBy = brokenBy ?? error;
 
@@ -1903,6 +1913,9 @@ final class CodeSessionState {
 
   /// Work outside the transcript that may change the files: background agents still running, or a rewind under way.
   final bool sideWork;
+
+  /// Pause: held after its current step (see [StepHold]).
+  final StepHold hold;
 
   /// The agent (or the app for it) may be writing in the session's folder: the Files view's editor is read-only and
   /// [CodeSessionController.saveFile] refuses. A card or plan waiting for the user doesn't count.
@@ -1983,6 +1996,8 @@ final class CodeSessionState {
 
   SessionStatus get status => switch (transcript) {
     _ when failure != null => SessionStatus.failed,
+    // Held after its step: a call it made waits for Resume, not for the user.
+    _ when hold == StepHold.paused => SessionStatus.paused,
     Transcript(pending: [_, ...]) => SessionStatus.needsInput,
     final t when t.openQuestion != null || t.openPlan != null => SessionStatus.needsInput,
     // The agent stopped on a security alert: the user decides how to go on.
@@ -2022,8 +2037,10 @@ final class CodeSessionState {
     WorkflowEntry? armed,
     bool clearArmed = false,
     bool? sideWork,
+    StepHold? hold,
   }) => CodeSessionState(
     sideWork: sideWork ?? this.sideWork,
+    hold: hold ?? this.hold,
     nativeModes: nativeModes ?? this.nativeModes,
     nativeMode: clearNativeMode ? null : nativeMode ?? this.nativeMode,
     armed: clearArmed ? null : armed ?? this.armed,
@@ -2157,7 +2174,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   }
 
   @override
-  bool get _backgroundBusy => _background.isNotEmpty;
+  bool get _backgroundBusy => _forks.background.isNotEmpty;
 
   /// The open harness session, for the built-ins mixed in.
   @override
@@ -2253,33 +2270,36 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   ]);
   bool _compacting = false;
 
-  /// Subagents this session waits on, by `run_subagent` call id: the child session,
-  /// and the subscription that watches it finish.
-  final _childOf = <String, String>{};
+  /// This session's forks (`run_subagent` children and host forks), by call id: each one's state, child session
+  /// and question routing (see fork_state.dart).
+  final _forks = ForkBook();
+
+  /// The fork lifecycle, for tests.
+  @visibleForTesting
+  ForkBook get forks => _forks;
+
+  /// The subscription that follows each fork's child session, by call id.
   final _childSubs = <String, ProviderSubscription<CodeSessionState>>{};
-  final _spawning = <String>{};
 
   /// The `run_subagent` calls whose subagent is starting now.
   @visibleForTesting
-  Set<String> get startingSubagents => Set.unmodifiable(_spawning);
-
-  /// Calls stopped while their subagent was still starting.
-  final _abandoned = <String>{};
+  Set<String> get startingSubagents => {for (final r in _forks.spawning) r.callId};
 
   /// Reports not yet handed to the agent, by call id.
   final _reports = <String, SubagentReport>{};
-  final _childWaiting = <String>{};
 
-  /// Background subagents by call id: their call was answered at the start,
-  /// and their report goes to this session as a task notification.
-  final _background = <String, ({String childId, String title})>{};
+  /// Workflow agents (by call id) that wait for the user; the workflow launcher says so.
+  final _workflowAgentsWaiting = <String>{};
 
-  /// Forks that reported, oldest first (check_forks sums them up; the reports themselves went to the lead).
-  final _forksReported = <({String childId, String title, SubagentStatus status})>[];
+  /// Puts whether a fork or workflow agent waits on the user into the state.
+  void _syncNeedsInput() {
+    final now = _forks.anyWaitingOnUser || _workflowAgentsWaiting.isNotEmpty;
+    if (ref.mounted && state.subagentNeedsInput != now) state = state.copyWith(subagentNeedsInput: now);
+  }
 
   /// Puts whether background agents run or a rewind is under way into the state ([CodeSessionState.sideWork]).
   void _syncSideWork() {
-    final now = _background.isNotEmpty || _rewinding;
+    final now = _forks.background.isNotEmpty || _rewinding;
     if (ref.mounted && state.sideWork != now) state = state.copyWith(sideWork: now);
   }
 
@@ -2887,6 +2907,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     _deliver();
     _sendForkNotices();
     _goalTick(turnEnded: wasRunning && !transcript.running);
+    _settleHold();
     _sendQueued();
     if (_live && event is ConversationFailure) {
       _autoLimit = event.id;
@@ -2927,6 +2948,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   void _sendQueued() {
     final t = state.transcript;
     if (_securityHold ||
+        state.hold != StepHold.none ||
         _switching ||
         _rewinding ||
         _checking ||
@@ -3066,9 +3088,65 @@ final class CodeSessionController extends Notifier<CodeSessionState>
 
   bool get _isSubagent => ref.read(codeSessionsProvider.notifier).byId(sessionId)?.isSubagent ?? false;
 
+  // ------------------------------------------------------------------ pause
+
+  /// Pause: the session ends the step it is on, then holds (see [StepHold]). The EveryAI harness stops between its
+  /// steps itself; on other leads the session's next tool call is held unanswered (every call of Claude Code goes
+  /// through the app; a lead whose reads aren't asked about holds at its next asked call or its turn's end).
+  /// Completes once it holds, or after [within] at the latest. Shells and servers it started keep running.
+  Future<void> pauseAfterStep({Duration within = const Duration(minutes: 2)}) async {
+    if (state.hold == StepHold.none) {
+      state = state.copyWith(hold: StepHold.pausing);
+      if (_session case final s? when _driver.info.id == everyaiHarnessName && _busy) await s.pause();
+      _settleHold();
+    }
+    if (state.hold == StepHold.paused) return;
+    _held ??= Completer<void>();
+    await _held!.future.timeout(within, onTimeout: () {});
+  }
+
+  /// Resume after a Pause: the held call is decided as the mode says, and queued messages go.
+  Future<void> resumeAfterPause() async {
+    if (state.hold == StepHold.none) return;
+    state = state.copyWith(hold: StepHold.none);
+    _held?.complete();
+    _held = null;
+    // Only a run the harness itself paused between its steps goes on; an idle one waits for its next message.
+    if (_session case final s?
+        when _driver.info.id == everyaiHarnessName && state.transcript.status == ExecutionStatus.paused) {
+      await s.resume();
+    }
+    _answered = '';
+    _autoRespond(state.transcript);
+    _sendQueued();
+  }
+
+  /// Completes when a Pause holds.
+  Completer<void>? _held;
+
+  /// Pausing becomes paused once the step it was on ended: no turn runs, or its next call waits.
+  void _settleHold() {
+    if (state.hold != StepHold.pausing) return;
+    final t = state.transcript;
+    if (t.running && t.pending.isEmpty && t.held.isEmpty) return;
+    state = state.copyWith(hold: StepHold.paused);
+    final done = _held;
+    _held = null;
+    done?.complete();
+  }
+
+  /// Whether calls waiting now are held for a Pause (and the pause settles on them).
+  bool _holdCalls(Transcript t) {
+    if (state.hold == StepHold.none) return false;
+    _settleHold();
+    return true;
+  }
+
   /// Approves or refuses pending actions the mode decides on its own.
   void _autoRespond(Transcript t) {
     if (_securityAlerts(t)) return;
+    // Paused: its next call waits for Resume.
+    if (_holdCalls(t)) return;
     if (_doomOpen) return;
     // A held card or plan waits for the user (one answer covers every
     // pending action, so the rest wait with it); sessions that don't hold
@@ -3224,7 +3302,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// the rules settle is answered at once, so the card only shows the rest.
   void _autoRespondEach(List<ActionCall> waiting, Transcript t) {
     final session = _session;
-    if (session == null) return;
+    if (session == null || _holdCalls(t)) return;
     for (final call in waiting) {
       if (_decided.containsKey(call.id)) continue;
       // A fork's question waits for the agent that started it (answerFromOrchestrator).
@@ -3272,7 +3350,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   Map<String, Set<String>> _subagentFiles() {
     final sessions = ref.read(codeSessionsProvider.notifier);
     final out = <String, Set<String>>{};
-    for (final MapEntry(key: callId, value: childId) in _childOf.entries) {
+    for (final MapEntry(key: callId, value: childId) in _forks.children.entries) {
       final child = sessions.byId(childId);
       if (child == null) continue;
       final call = _calls[callId];
@@ -3777,8 +3855,15 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (release) _releaseHostCards();
     final t = state.transcript;
     // During a lead switch it waits for the new lead, during a rewind for the files.
-    // While the last turn's checks run it waits in the queue too (they go with it, see [_startChecks]).
-    if (_switching || _rewinding || _checking || t.running || t.pending.isNotEmpty || t.openSubagents.isNotEmpty) {
+    // While the last turn's checks run it waits in the queue too (they go with it, see [_startChecks]), and while
+    // the session is paused until Resume.
+    if (_switching ||
+        _rewinding ||
+        _checking ||
+        state.hold != StepHold.none ||
+        t.running ||
+        t.pending.isNotEmpty ||
+        t.openSubagents.isNotEmpty) {
       state = state.copyWith(queued: [...state.queued, out]);
       return true;
     }
@@ -4018,6 +4103,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         holdClientTools: info.holdClientTools,
         // A compacted subagent still bills where it did.
         sessionTag: info.billingTag,
+        processTag: info.processTag,
         initialMessage: modeNote(state.mode, message),
         runInitial: resume,
         isolated: info.worktree != null,
@@ -4072,13 +4158,13 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (info == null || isOutsideLead(info.harness, info.workingDir) || !isOutsideLead(to, info.workingDir)) {
       return false;
     }
-    return _background.isNotEmpty;
+    return _forks.background.isNotEmpty;
   }
 
   /// What Stop all would stop besides the lead's turn, read as the UI builds (it rebuilds on [CodeSessionState]
   /// and the session's workflow runs).
   SessionWork get runningWork => (
-    forks: _background.length,
+    forks: _forks.background.length,
     workflows: [
       for (final r in ref.read(workflowRunsProvider(sessionId)))
         if (r.status == WorkflowStatus.running) r.name,
@@ -4099,18 +4185,40 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     await stop();
   }
 
+  /// Pause all: the lead, its background forks and its workflow runs each end the step they are on, then hold. The
+  /// lead's hold ([CodeSessionState.hold]) stands for all of it; [resumeAll] lets everything go on.
+  Future<void> pauseAll() async {
+    await Future.wait([
+      pauseAfterStep(),
+      for (final e in _workflows.values) e.pause(),
+      for (final r in _forks.background)
+        if (r.childId case final c? when r.state.working && ref.exists(codeSessionProvider(c)))
+          ref.read(codeSessionProvider(c).notifier).pauseAfterStep(),
+    ]);
+  }
+
+  Future<void> resumeAll() async {
+    await Future.wait([
+      for (final e in _workflows.values) e.resume(),
+      for (final r in _forks.background)
+        if (r.childId case final c? when ref.exists(codeSessionProvider(c)))
+          ref.read(codeSessionProvider(c).notifier).resumeAfterPause(),
+    ]);
+    await resumeAfterPause();
+  }
+
   /// Stops the background forks; their reports don't go to the next lead.
   Future<void> _stopEveryaiChildren() async {
+    final background = [..._forks.background];
     final children = <String>{};
-    for (final MapEntry(key: callId, value: bg) in _background.entries) {
-      children.add(bg.childId);
-      _calls.remove(callId);
-      _childOf.remove(callId);
-      _childSubs.remove(callId)?.close();
-      _childWaiting.remove(callId);
+    for (final r in background) {
+      if (r.childId case final c?) children.add(c);
+      _calls.remove(r.callId);
+      _childSubs.remove(r.callId)?.close();
+      _forks.to(r.callId, const ForkDropped('Stopped with everything else.'));
     }
-    _background.clear();
-    state = state.copyWith(subagentNeedsInput: _childWaiting.isNotEmpty, sideWork: _rewinding);
+    _syncNeedsInput();
+    _syncSideWork();
     await Future.wait([
       for (final c in children)
         if (ref.exists(codeSessionProvider(c))) ref.read(codeSessionProvider(c).notifier).stop(),
@@ -4452,6 +4560,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
                   effort: pick.effort,
                   holdClientTools: info.holdClientTools,
                   sessionTag: info.billingTag,
+                  processTag: info.processTag,
                 ),
               );
             }
@@ -4643,7 +4752,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// was read at open) unless [overwrite]. No checkpoint of its own: the next message's checkpoint takes the edit in,
   /// so rewinding to before that message keeps it and rewinding further drops it.
   Future<SaveOutcome> saveFile(String path, String text, {required String? expected, bool overwrite = false}) async {
-    if (state.filesLocked || _switching || _rewinding || _background.isNotEmpty) {
+    if (state.filesLocked || _switching || _rewinding || _forks.background.isNotEmpty) {
       return const SaveOutcome.refused(agentWorking);
     }
     final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
@@ -4982,6 +5091,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         holdClientTools: info.holdClientTools,
         // A subagent bills to the session that started it; an Ultra child to itself.
         sessionTag: info.billingTag,
+        processTag: info.processTag,
       );
       await session.switchLlm(spec);
       await session.resume();
@@ -5010,6 +5120,12 @@ final class CodeSessionController extends Notifier<CodeSessionState>
 
   Future<void> stop() async {
     _doomOpen = false;
+    // A Pause ends with the stop.
+    if (state.hold != StepHold.none) {
+      state = state.copyWith(hold: StepHold.none);
+      _held?.complete();
+      _held = null;
+    }
     _timer.clear();
     // The checks running stop too, and the turn being stopped starts none (its files are checked after the next).
     if (_busy) _userStopped = true;
@@ -5079,10 +5195,10 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       // Forks left in the background before a restart: watch them again, so
       // their notification (and merge) still comes; one already done reports now.
       for (final MapEntry(key: callId, value: childId) in unreportedBackground(_events).entries) {
-        if (_childOf.containsKey(callId) || _background.containsKey(callId)) continue;
+        if (_forks.of(callId)?.state.live ?? false) continue;
         final child = sessions.byId(childId);
         if (child == null) continue;
-        _background[callId] = (childId: childId, title: child.title);
+        _forks.started(callId, childId, title: child.title, delivery: ForkDelivery.notification);
         _syncSideWork();
         _watch(callId, childId);
       }
@@ -5092,12 +5208,13 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     final t = state.transcript;
     for (final item in t.openSubagents) {
       final id = item.step.call.id;
-      if (_childOf.containsKey(id) || _reports.containsKey(id) || _spawning.contains(id)) continue;
+      if ((_forks.of(id)?.state.live ?? false) || _reports.containsKey(id)) continue;
       // A held call runs its subagent while the server waits for the result.
       if (_holds && !t.held.any((c) => c.id == id)) continue;
       if (sessions.subagentFor(sessionId, id) case final child?) {
+        _forks.started(id, child.id, title: child.title);
         _watch(id, child.id);
-      } else if (_childOf.length + _spawning.length >= maxConcurrentSubagents) {
+      } else if (_forks.live.length >= maxConcurrentSubagents) {
         _ready(
           id,
           const SubagentReport(
@@ -5113,44 +5230,45 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   }
 
   Future<void> _spawn(String callId, ActionCall call, CodeSessionInfo parent, {bool onParentModel = false}) async {
-    _spawning.add(callId);
+    // A retry on the session's model ([_retryOnParentModel]) keeps its record: its call was answered already.
+    final retry = _forks.of(callId)?.childId != null;
+    final fork = _forks.spawn(callId, title: SubagentTask.of(call).description);
     _calls[callId] = call;
     try {
       final child = await ref
           .read(codeSessionsProvider.notifier)
           .startSubagent(parent: parent, call: call, mode: subagentMode(checkMode), onParentModel: onParentModel);
-      if (!ref.mounted || _abandoned.remove(callId)) {
+      // Stopped while it started: it was dropped, and the child doesn't work on alone.
+      if (!ref.mounted || fork.state is! ForkSpawning) {
         unawaited(ref.read(_liveProvider)[child.id]?.interrupt());
         return;
       }
-      _spawning.remove(callId);
       // It asked for its own copy and couldn't have one (no git repository here).
       if (call.str('isolation') == 'worktree' && child.forkCopy == null) _fellBack[callId] = sharedFolderNote;
-      // Every fork runs in the background (owner, 2026-11-07): the lead stays free to talk while it works. A retry on
-      // the session's model ([_retryOnParentModel]) was already started there: it only follows the new child.
-      if (_background[callId] case final b?) {
-        _background[callId] = (childId: child.id, title: b.title);
-        _syncSideWork();
-      } else {
-        _background[callId] = (childId: child.id, title: child.title);
-        _syncSideWork();
+      // Every fork runs in the background (owner, 2026-11-07): the lead stays free to talk while it works.
+      _forks.started(callId, child.id, title: child.title, delivery: ForkDelivery.notification);
+      _syncSideWork();
+      if (!retry) {
         _reports[callId] = backgroundStarted(child.id, note: _fellBack.remove(callId));
         _deliver();
       }
       _watch(callId, child.id);
     } on Object catch (e) {
-      _spawning.remove(callId);
-      if (ref.mounted && !_abandoned.remove(callId)) {
+      if (ref.mounted && fork.state is ForkSpawning) {
+        // Not started: the call gets that as its report, and the fork is dropped.
+        fork.delivery = ForkDelivery.call;
         _ready(callId, SubagentReport(SubagentStatus.notStarted, "The subagent couldn't start: $e"));
       }
     }
   }
 
   void _watch(String callId, String childId) {
-    _childOf[callId] = childId;
+    _childSubs.remove(callId)?.close();
     final sub = ref.listen(codeSessionProvider(childId), (_, next) => _onSubagent(callId, next), fireImmediately: true);
-    // It may have finished already (fireImmediately).
-    if (_childOf.containsKey(callId)) {
+    // It may have ended already (fireImmediately): a reported background fork is still followed, in case it works
+    // again; anything else is done with.
+    final r = _forks.of(callId);
+    if (r != null && (r.state.live || (r.state is ForkReported && r.delivery == ForkDelivery.notification))) {
       _childSubs[callId] = sub;
     } else {
       sub.close();
@@ -5158,12 +5276,23 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   }
 
   void _onSubagent(String callId, CodeSessionState child) {
-    if (!_childOf.containsKey(callId)) return;
+    final fork = _forks.of(callId);
+    final kid = fork?.childId;
+    if (fork == null || kid == null) return;
     final outcome = subagentOutcome(child.transcript, error: child.failure);
+    if (fork.state is ForkReported) {
+      // It works again after its report (a message to it, a background task of its own): followed as running, and
+      // its next report goes to the lead as a follow-up.
+      if (outcome == null && child.transcript.running) {
+        _forks.to(callId, const ForkRunning(followUp: true));
+        _syncSideWork();
+      }
+      return;
+    }
+    if (!fork.state.working) return;
     if (outcome?.status == SubagentStatus.failed && _retryOnParentModel(callId, outcome!)) return;
     if (outcome != null) return _finishChild(callId, outcome);
     final question = child.transcript.openQuestion;
-    final kid = _childOf[callId]!;
     // Held by the EveryAI harness, (an outside fork) waiting on its host call, or the app's own question to the
     // fork (the loop guard, a bug question): all the orchestrator's to answer, or the user's if they get there first.
     final asked =
@@ -5172,12 +5301,25 @@ final class CodeSessionController extends Notifier<CodeSessionState>
             child.transcript.held.any((c) => c.id == question.call.id) ||
             (ref.exists(codeSessionProvider(kid)) &&
                 ref.read(codeSessionProvider(kid).notifier).waitsOnHost(question.call.id)));
-    if (asked && _forwarded.add(question.call.id)) _forwardQuestion(callId, question);
-    // A question is the orchestrator's to answer; only approvals need the user.
-    final waiting = child.status == SessionStatus.needsInput && !asked;
-    if (waiting ? _childWaiting.add(callId) : _childWaiting.remove(callId)) {
-      state = state.copyWith(subagentNeedsInput: _childWaiting.isNotEmpty);
-    }
+    if (asked && _forks.askLead(callId, question.call.id)) _forwardQuestion(callId, question);
+    // A question is the orchestrator's to answer; only approvals need the user. A paused child holds.
+    final next = switch (child.hold) {
+      StepHold.pausing => const ForkPausing(),
+      StepHold.paused => const ForkPaused(),
+      StepHold.none when asked => ForkWaitingOnLead(
+        fork.asks.whereType<AskToLead>().lastOrNull ?? AskToLead(question.call.id),
+      ),
+      StepHold.none when child.status == SessionStatus.needsInput => const ForkWaitingOnUser(),
+      StepHold.none => ForkRunning(
+        followUp: switch (fork.state) {
+          ForkRunning(:final followUp) => followUp,
+          _ => fork.reports > 0,
+        },
+      ),
+    };
+    // A question that closed: answer_fork records the lead's answer, forkAnsweredByUser the user's.
+    _forks.to(callId, next);
+    _syncNeedsInput();
   }
 
   /// Each subagent call, for starting it again.
@@ -5191,7 +5333,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   bool _retryOnParentModel(String callId, SubagentReport failed) {
     final sessions = ref.read(codeSessionsProvider.notifier);
     final parent = sessions.byId(sessionId);
-    final child = _childOf[callId] == null ? null : sessions.byId(_childOf[callId]!);
+    final kid = _forks.of(callId)?.childId;
+    final child = kid == null ? null : sessions.byId(kid);
     final call = _calls[callId];
     if (parent == null || child == null || call == null || child.model == parent.model) return false;
     if (_fellBack.containsKey(callId)) return false;
@@ -5202,13 +5345,9 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     final reason = failed.text.length > 200 ? '${failed.text.substring(0, 200)}…' : failed.text;
     _fellBack[callId] = '[$name failed ($reason), so it was started again on this session\'s model.]';
     _childSubs.remove(callId)?.close();
-    _childOf.remove(callId);
     unawaited(_spawn(callId, call, parent, onParentModel: true));
     return true;
   }
-
-  /// Calls whose fork is being merged back, so its report waits.
-  final _merging = <String>{};
 
   /// The plan batch each fork works on (by call id), whose check gates its merge back (see [_finishChild]).
   final _forkBatches = <String, PlanBatch>{};
@@ -5239,7 +5378,10 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// into this session's folder first (when it completed) and the report says
   /// what came over; a stopped or failed one is kept under a ref unmerged.
   void _finishChild(String callId, SubagentReport fork) {
-    final childId = _childOf[callId];
+    final record = _forks.of(callId);
+    // Merging (or reported) already: one end per turn.
+    if (record != null && !(record.state.working || record.state is ForkStopping)) return;
+    final childId = record?.childId;
     final report = forkReport(childId ?? callId, fork);
     final sessions = ref.read(codeSessionsProvider.notifier);
     final info = childId == null ? null : sessions.byId(childId);
@@ -5264,7 +5406,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
               ),
       );
     }
-    if (!_merging.add(callId)) return;
+    _forks.to(callId, const ForkMerging());
     unawaited(() async {
       var out = report;
       var merge = report.status == SubagentStatus.completed;
@@ -5309,8 +5451,6 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         if (ref.mounted) sessions.update(info.copyWith(merged: true));
       } on Object catch (e) {
         out = SubagentReport(report.status, "${report.text}\n\n[Its changes couldn't be merged back: $e]");
-      } finally {
-        _merging.remove(callId);
       }
       if (ref.mounted) _ready(callId, out);
     }());
@@ -5327,24 +5467,28 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   void _ready(String callId, SubagentReport report) {
     _calls.remove(callId);
     if (_fellBack.remove(callId) case final note?) report = SubagentReport(report.status, '$note\n\n${report.text}');
-    if (_background.remove(callId) case final bg?) {
-      _childOf.remove(callId);
-      _childSubs.remove(callId)?.close();
-      _childWaiting.remove(callId);
-      state = state.copyWith(
-        subagentNeedsInput: _childWaiting.isNotEmpty,
-        sideWork: _background.isNotEmpty || _rewinding,
-      );
-      _forksReported.add((childId: bg.childId, title: bg.title, status: report.status));
+    final fork = _forks.of(callId);
+    if (fork != null && fork.childId != null && fork.delivery == ForkDelivery.notification) {
+      final followUp = fork.reports > 0;
+      final kid = fork.childId!;
+      _forks.to(callId, ForkReported(report.status));
+      // Still followed, in case it works again (see [_onSubagent]).
+      _syncNeedsInput();
+      _syncSideWork();
       // While the agent works this joins its next step; when idle it wakes it.
-      _notifyLead(taskNotification(bg.childId, bg.title, report), id: bg.childId);
+      _notifyLead(
+        followUp ? forkFollowUpNotification(kid, fork.title, report) : taskNotification(kid, fork.title, report),
+        id: kid,
+      );
       return;
     }
+    // A call's own report (it never started, or it waits on its call): the call gets it.
+    if (fork != null) {
+      _forks.to(callId, fork.childId == null ? ForkDropped(report.text) : ForkReported(report.status));
+    }
     _reports[callId] = report;
-    _childOf.remove(callId);
     _childSubs.remove(callId)?.close();
-    _childWaiting.remove(callId);
-    state = state.copyWith(subagentNeedsInput: _childWaiting.isNotEmpty);
+    _syncNeedsInput();
     _deliver();
   }
 
@@ -5449,6 +5593,11 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     unawaited(_runWorkflow(runId, name, source, args, journal));
     return runId;
   }
+
+  /// The user's Pause on a run's card: each agent ends its step and holds; new agents wait.
+  Future<void> pauseWorkflow(String runId) async => _workflows[runId]?.pause();
+
+  Future<void> resumeWorkflow(String runId) async => _workflows[runId]?.resume();
 
   /// The user's Stop on a run's card: it shuts down, and the lead hears it was stopped.
   void stopWorkflow(String runId) => _workflows[runId]?.stop('Stopped by the user.');
@@ -5600,9 +5749,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// A workflow agent (by call id) waits for the user: this session shows it needs input.
   void _workflowChildWaiting(String callId, bool waiting) {
     if (!ref.mounted) return;
-    if (waiting ? _childWaiting.add(callId) : _childWaiting.remove(callId)) {
-      state = state.copyWith(subagentNeedsInput: _childWaiting.isNotEmpty);
-    }
+    if (waiting ? _workflowAgentsWaiting.add(callId) : _workflowAgentsWaiting.remove(callId)) _syncNeedsInput();
   }
 
   Future<String> _workflowDir() async => '${await ref.read(driverDataDirProvider)()}/workflows/$sessionId';
@@ -5962,7 +6109,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         if (_leadTold.remove(runId)) await retireJournalFile(journalPath);
         if (!ref.mounted) return;
         // Its agents no longer wait on anyone.
-        for (final callId in [..._childWaiting]) {
+        for (final callId in [..._workflowAgentsWaiting]) {
           if (callId.startsWith('wf-$runId-')) _workflowChildWaiting(callId, false);
         }
         _freeSlot(runId);
@@ -5972,9 +6119,6 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   }
 
   // ------------------------------------------------------ orchestrating forks
-
-  /// Fork questions already passed to this agent, by call id.
-  final _forwarded = <String>{};
 
   /// Orchestrator tool calls already answered.
   final _forkToolsDone = <String>{};
@@ -5986,8 +6130,9 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// task notifications.
   void _forwardQuestion(String callId, QuestionItem item) {
     final sessions = ref.read(codeSessionsProvider.notifier);
-    final childId = _childOf[callId];
-    if (childId == null) return;
+    final fork = _forks.of(callId);
+    final childId = fork?.childId;
+    if (fork == null || childId == null) return;
     final title = sessions.byId(childId)?.title ?? 'fork';
     final text = forkQuestionsText([
       for (final q in item.questions)
@@ -5997,15 +6142,17 @@ final class CodeSessionController extends Notifier<CodeSessionState>
           multi: q.multiSelect,
         ),
     ]);
-    if (_background.containsKey(callId)) {
+    if (fork.delivery == ForkDelivery.notification) {
       _notifyLead(forkQuestionMessage(childId, title, text), kind: 'fork-question', id: childId);
       return;
     }
-    for (final MapEntry<String, String>(key: id, value: kid) in [..._childOf.entries]) {
-      if (_background.containsKey(id) || _reports.containsKey(id)) continue;
+    // A held call's fork asked: every fork whose call still waits moves to the background, and the calls return.
+    for (final r in [..._forks.live]) {
+      final kid = r.childId;
+      if (kid == null || r.delivery == ForkDelivery.notification || _reports.containsKey(r.callId)) continue;
       final t = sessions.byId(kid)?.title ?? 'fork';
-      _background[id] = (childId: kid, title: t);
-      _reports[id] = id == callId ? forkAsks(kid, t, text) : movedToBackground(kid);
+      r.delivery = ForkDelivery.notification;
+      _reports[r.callId] = r.callId == callId ? forkAsks(kid, t, text) : movedToBackground(kid);
     }
     _syncSideWork();
     _deliver();
@@ -6090,7 +6237,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     // Through the container, as in [stop]: the parent listens to this session.
     if (parentId == null || !ref.container.exists(codeSessionProvider(parentId))) return;
     final parent = ref.container.read(codeSessionProvider(parentId).notifier);
-    final callId = parent._childOf.entries.where((e) => e.value == sessionId).firstOrNull?.key;
+    final callId = parent._forks.byChild(sessionId)?.callId;
     if (callId != null) parent._onSubagent(callId, state);
   }
 
@@ -6109,7 +6256,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (info.parentId != null) return no("a fork can't start forks. Do this part yourself.");
     final task = str('task');
     if (task.isEmpty) return no('task is empty. Say in full what the fork should do.');
-    if (_childOf.length + _spawning.length >= maxConcurrentSubagents) {
+    if (_forks.live.length >= maxConcurrentSubagents) {
       return no(
         'at most $maxConcurrentSubagents forks run at once. Start this one once another has reported '
         '(check_forks lists them).',
@@ -6158,7 +6305,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     }
     // Its own id, not the host call's (which repeats after a restart).
     final callId = 'mf-${const Uuid().v7()}';
-    _spawning.add(callId);
+    final fork = _forks.spawn(callId, title: title);
     try {
       // A gated batch needs its own copy (the gate sits on the merge back), unless the lead said otherwise.
       final isolate = call.args['worktree'] is bool
@@ -6191,12 +6338,13 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         effort: harness == info.harness ? null : '',
         forkCopy: copy,
         briefed: true,
+        ownProcesses: true,
       );
-      if (!ref.mounted || _abandoned.remove(callId)) {
+      if (!ref.mounted || fork.state is! ForkSpawning) {
         unawaited(ref.read(_liveProvider)[child.id]?.interrupt());
         return no('the session stopped before the fork started.');
       }
-      _background[callId] = (childId: child.id, title: child.title);
+      _forks.started(callId, child.id, title: child.title, delivery: ForkDelivery.notification);
       if (batch != null) _forkBatches[callId] = batch;
       _syncSideWork();
       _watch(callId, child.id);
@@ -6209,9 +6357,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         isError: false,
       );
     } on Object catch (e) {
+      if (fork.state is ForkSpawning) _forks.to(callId, ForkDropped("It couldn't start: $e"));
       return no("the fork couldn't start: $e");
-    } finally {
-      _spawning.remove(callId);
     }
   }
 
@@ -6237,7 +6384,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
 
   /// This session's forks still at work (or waiting), by child id.
   Map<String, String> get _activeForks => {
-    for (final MapEntry(key: callId, value: childId) in _childOf.entries) childId: callId,
+    for (final MapEntry(key: callId, value: childId) in _forks.children.entries) childId: callId,
   };
 
   Future<String> _forkTool(ActionCall call) => forkTool(call.toolName, call.action);
@@ -6258,16 +6405,18 @@ final class CodeSessionController extends Notifier<CodeSessionState>
             held.isEmpty ? 'No forks are running. Every fork you started has reported.' : 'No forks are running.'
           else
             for (final id in _activeForks.keys) _forkStatus(id),
-          if (_forksReported.isNotEmpty)
+          if (_forks.reported.isNotEmpty)
             [
               'Forks that reported (you got each report as a task notification):',
-              for (final f in _forksReported) '- ${f.childId} "${f.title}": ${f.status.name}',
+              for (final f in _forks.reported) '- ${f.childId} "${f.title}": ${f.reportedAs!.name}',
             ].join('\n'),
           ...held,
         ].join('\n\n');
       case answerForkTool:
         if (!_activeForks.containsKey(forkId)) return _noSuchFork(forkId);
+        final asked = _forks.byChild(forkId)?.asks.whereType<AskToLead>().lastOrNull;
         final ok = await ref.read(codeSessionProvider(forkId).notifier).answerFromOrchestrator(str('answer'));
+        if (ok && asked != null) _forks.answered(asked.questionId, byUser: false);
         return ok
             ? 'Sent. The fork carries on; its report arrives as a <task-notification>.'
             : 'That fork has no open question now (it may have been answered in its own view).';
@@ -6283,6 +6432,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       case stopForkTool:
         if (!_activeForks.containsKey(forkId)) return _noSuchFork(forkId);
         final title = sessions.byId(forkId)?.title ?? forkId;
+        _forks.to(_activeForks[forkId]!, const ForkStopping());
         await ref.read(codeSessionProvider(forkId).notifier).stop();
         return 'Stopped "$title". What it did so far arrives as its report.';
       case endWorkflowTool:
@@ -6298,8 +6448,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     final info = sessions.byId(sessionId);
     if (info == null) return 'Error: this session is closed.';
     if (info.workflow != maxWorkflowId) return 'Max is not on in this session, so there is nothing to end.';
-    if (_spawning.isNotEmpty) {
-      return 'Error: ${_spawning.length} fork(s) are still starting. Wait for them to start, then stop or wait for '
+    if (_forks.spawning.isNotEmpty) {
+      return 'Error: ${_forks.spawning.length} fork(s) are still starting. Wait for them to start, then stop or wait for '
           'them, and call end_workflow again.';
     }
     if (_activeForks.isNotEmpty) {
@@ -6384,7 +6534,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// it had said so far and carries on.
   void subagentStopped(String childId, SubagentReport report) {
     if (_reviewOf.containsKey(childId)) return _reviewDone(childId, report);
-    final callId = _childOf.entries.where((e) => e.value == childId).firstOrNull?.key;
+    final callId = _forks.byChild(childId)?.callId;
     if (callId != null) _finishChild(callId, report);
   }
 
@@ -6420,16 +6570,18 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   Future<void> _stopSubagents() async {
     final open = [for (final s in state.transcript.openSubagents) s.step.call.id];
     if (open.isEmpty) return;
-    final children = [..._childOf.values];
-    _abandoned.addAll(_spawning);
-    for (final s in _childSubs.values) {
-      s.close();
+    // The forks whose calls are open (background forks run on; Stop all ends those).
+    final stopping = [
+      for (final id in open)
+        if (_forks.of(id) case final r? when r.state.live && r.delivery == ForkDelivery.call) r,
+    ];
+    final children = [for (final r in stopping) ?r.childId];
+    for (final r in stopping) {
+      _childSubs.remove(r.callId)?.close();
+      _forks.to(r.callId, const ForkDropped('Stopped by the user.'));
     }
-    _childSubs.clear();
-    _childOf.clear();
     _reports.clear();
-    _childWaiting.clear();
-    state = state.copyWith(subagentNeedsInput: false);
+    _syncNeedsInput();
     await Future.wait([for (final c in children) ref.read(codeSessionProvider(c).notifier).stop()]);
     if (!_holds) {
       _builder.settleSubagents(open, const SubagentReport(SubagentStatus.stopped, 'Stopped by the user.'));
@@ -6552,11 +6704,11 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       _parentController?.forkAnsweredByUser(sessionId, item, answers);
 
   /// Whether a fork's question [callId] went to this session's agent (its orchestrator) rather than the user.
-  bool askedLead(String callId) => _forwarded.contains(callId);
+  bool askedLead(String callId) => _forks.askedLead(callId);
 
-  /// [_tellOrchestrator] arriving: only for questions this session passed on.
+  /// [_tellOrchestrator] arriving: only for questions this session passed on (and not yet answered by the lead).
   void forkAnsweredByUser(String childId, QuestionItem item, List<QuestionAnswer> answers) {
-    if (!_forwarded.contains(item.call.id)) return;
+    if (!_forks.answered(item.call.id, byUser: true)) return;
     final title = ref.read(codeSessionsProvider.notifier).byId(childId)?.title ?? 'fork';
     _notifyLead(
       forkAnsweredMessage(childId, title, answersSummary(item.questions, answers)),
@@ -6905,7 +7057,8 @@ int budgetSpentMicros(
 /// Whether Stop on [info] ends the background processes tagged with its id:
 /// a top-level session, or a child with its own tag (an Ultra step). Other
 /// subagents carry their parent's tag, so the parent's Stop ends theirs.
-bool killsOwnProcesses(CodeSessionInfo info) => !noLocalFolder(info.workingDir) && (!info.isSubagent || info.ownTag);
+bool killsOwnProcesses(CodeSessionInfo info) =>
+    !noLocalFolder(info.workingDir) && (!info.isSubagent || info.ownTag || info.ownProcesses);
 
 /// Whether no other session works in [info]'s folder: a session worktree, or
 /// an Ultra step's own worktree (a folder other than its [parent]'s).
@@ -7596,6 +7749,20 @@ final class _WorkflowLauncher implements AgentLauncher {
     await LiveBrowsers.release(childId);
     NestedDisplays.stop(childId);
     await AppSources.release(childId);
+  }
+
+  @override
+  Future<void> pause(String childId) async {
+    if (_ref.exists(codeSessionProvider(childId))) {
+      await _ref.read(codeSessionProvider(childId).notifier).pauseAfterStep();
+    }
+  }
+
+  @override
+  Future<void> resume(String childId) async {
+    if (_ref.exists(codeSessionProvider(childId))) {
+      await _ref.read(codeSessionProvider(childId).notifier).resumeAfterPause();
+    }
   }
 
   @override

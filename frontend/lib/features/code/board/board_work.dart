@@ -306,7 +306,7 @@ class _ChildLine extends ConsumerWidget {
                 SessionStatus.needsInput => askedLead ? DotStatus.running : DotStatus.waiting,
                 SessionStatus.done => DotStatus.done,
                 SessionStatus.failed => DotStatus.failed,
-                SessionStatus.idle => DotStatus.idle,
+                SessionStatus.idle || SessionStatus.paused => DotStatus.idle,
               },
               title: child.title,
               trailing: askedLead ? 'asked the lead' : (waits != null ? 'needs you' : status.label),

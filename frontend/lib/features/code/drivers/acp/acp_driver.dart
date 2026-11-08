@@ -378,7 +378,7 @@ final class AcpDriver
       id: conversationId,
       dir: '${await _root()}/$conversationId',
       cwd: spec.workingDir,
-      sessionTag: spec.sessionTag,
+      sessionTag: spec.procTag,
       launcher: _launcher,
       mode: spec.mode,
       briefing: spec.briefing,
