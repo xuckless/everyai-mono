@@ -3642,8 +3642,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       checks,
       _context?.takeNote() ?? '',
       _workflowNote(),
-      rewound,
       _tierNote,
+      rewound,
     ].where((n) => n.isNotEmpty).join('\n\n');
     _tierNote = '';
     final body = context.isEmpty ? text : (text.isEmpty ? context : '$context\n\n$text');
