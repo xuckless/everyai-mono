@@ -248,7 +248,7 @@ void main() {
       await pumpEventQueue();
       final kept = [
         for (final l in lines)
-          if ((jsonDecode(l) as Map)['t'] != 'end') l,
+          if (!const {'end', 'ending'}.contains((jsonDecode(l) as Map)['t'])) l,
       ];
       await run;
       final child = launcher.started.single.childId;
@@ -268,6 +268,78 @@ void main() {
       expect(launcher.released, [child]);
       expect(trace, contains('host:lead:stopped'));
       expect((jsonDecode(lines.last) as Map)['status'], 'stopped');
+    });
+
+    test(
+      'a quit during the shutdown of a done run resumes into that shutdown, with its result, not the script',
+      () async {
+        launcher.gate = (call) => Completer<void>().future;
+        final first = engine();
+        final run = first.run();
+        unawaited(bridge.agent('left behind').catchError((Object _) => null));
+        await pumpEventQueue();
+        bridge.finish({'answer': 42});
+        await run;
+        final child = launcher.started.single.childId;
+        // The app quit before the end was journalled.
+        final kept = [
+          for (final l in lines)
+            if ((jsonDecode(l) as Map)['t'] != 'end') l,
+        ];
+        expect(kept.map((l) => (jsonDecode(l) as Map)['t']), contains('ending'));
+        launcher = FakeLauncher();
+        bridge = FakeBridge();
+        lines = [];
+        final trace = <Object>[];
+        final end = await traced(
+          trace,
+          journal: WorkflowJournal.parse(kept.join('\n'), (l) async => lines.add(l)),
+          via: bridge,
+        ).run();
+        expect(end.status, WorkflowStatus.done);
+        expect(end.result, {'answer': 42});
+        expect(end.error, isNull);
+        expect(launcher.started, isEmpty);
+        expect(launcher.watched, isEmpty);
+        expect(launcher.released, [child]);
+        expect(trace, contains('host:lead:done'));
+      },
+    );
+
+    test('a child whose start outlasts the stop is released once it starts', () async {
+      final starting = Completer<void>();
+      launcher.startGate = (call) => starting.future;
+      final e = WorkflowEngine(
+        runId: 'r1',
+        name: 'test',
+        bridge: bridge,
+        launcher: launcher,
+        journal: WorkflowJournal.fresh((l) async => lines.add(l)),
+        timer: FakeTimers().call,
+        stepTimeout: const Duration(milliseconds: 30),
+      );
+      final run = e.run();
+      unawaited(bridge.agent('slow start').catchError((Object _) => null));
+      await pumpEventQueue();
+      e.stop();
+      final end = await run;
+      expect(end.state, isA<RunEnded>());
+      expect(launcher.released, isEmpty);
+      // It starts after the run ended.
+      starting.complete();
+      await pumpEventQueue();
+      final child = launcher.started.single.childId;
+      expect(launcher.stopped, [child]);
+      expect(launcher.released, [child]);
+    });
+
+    test("Stop all's stop is journalled as quiet, so a resume doesn't wake the lead either", () async {
+      final e = engine();
+      final run = e.run();
+      e.stop('Stopped.', true);
+      await run;
+      final stop = lines.map((l) => jsonDecode(l) as Map).firstWhere((m) => m['t'] == 'stop');
+      expect(stop['quiet'], isTrue);
     });
 
     test("a script that didn't start ends as failed through the same steps", () async {
@@ -484,7 +556,7 @@ void main() {
       await first;
       final journal = [
         for (final l in lines)
-          if ((jsonDecode(l) as Map)['t'] != 'end') l,
+          if (!const {'end', 'ending'}.contains((jsonDecode(l) as Map)['t'])) l,
       ];
       bridge = FakeBridge();
       launcher = FakeLauncher();
@@ -740,7 +812,7 @@ void main() {
       final third = launcher.started[2];
       final kept = journal.where((l) {
         final m = jsonDecode(l) as Map;
-        return m['t'] != 'end' && m['key'] != third.key;
+        return !const {'end', 'ending'}.contains(m['t']) && m['key'] != third.key;
       }).toList();
       final run = (await resumed(kept)).run();
       expect(await bridge.agent('a'), 'ok:a');
@@ -755,7 +827,9 @@ void main() {
       final journal = await firstRun(['a']);
       final key = launcher.started.single.key;
       final child = launcher.started.single.childId;
-      final kept = journal.where((l) => !isAgentOf(l, key) && (jsonDecode(l) as Map)['t'] != 'end').toList();
+      final kept = journal
+          .where((l) => !isAgentOf(l, key) && !const {'end', 'ending'}.contains((jsonDecode(l) as Map)['t']))
+          .toList();
       final run = (await resumed(kept)).run();
       expect(await bridge.agent('a'), 'ok:a');
       expect(launcher.started, isEmpty);
@@ -769,7 +843,7 @@ void main() {
       launcher.spent = (call) => 60;
       final journal = [
         jsonEncode({'t': 'start', 'name': 'test', 'source': '', 'args': <String, Object?>{}, 'at': 0}),
-        ...(await firstRun(['a', 'b'])).where((l) => (jsonDecode(l) as Map)['t'] != 'end'),
+        ...(await firstRun(['a', 'b'])).where((l) => !const {'end', 'ending'}.contains((jsonDecode(l) as Map)['t'])),
       ];
       bridge = FakeBridge();
       launcher = FakeLauncher()..spent = (call) => 60;
@@ -798,7 +872,10 @@ void main() {
 
     test('a torn last line is skipped, and an edited prompt runs fresh', () async {
       final journal = await firstRun(['a']);
-      final kept = [...journal.where((l) => (jsonDecode(l) as Map)['t'] != 'end'), '{"t":"agent","ke'];
+      final kept = [
+        ...journal.where((l) => !const {'end', 'ending'}.contains((jsonDecode(l) as Map)['t'])),
+        '{"t":"agent","ke',
+      ];
       final j = WorkflowJournal.parse(kept.join('\n'), (l) async {});
       expect(j.agents, hasLength(1));
       expect(j.ended, isFalse);

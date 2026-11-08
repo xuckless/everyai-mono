@@ -351,8 +351,9 @@ final class WorkflowEngine {
 
   void _emit() => onProgress?.call(snapshot);
 
-  /// Stops the run: no new agents, live children stopped, the script killed; then the shutdown runs.
-  void stop([String why = 'Stopped.']) => _halt(WorkflowOutcome.stopped, why);
+  /// Stops the run: no new agents, live children stopped, the script killed; then the shutdown runs. [quiet]: Stop
+  /// all, whose end doesn't wake the lead (kept in the journal for a resume).
+  void stop([String why = 'Stopped.', bool quiet = false]) => _halt(WorkflowOutcome.stopped, why, quiet: quiet);
 
   /// The session is closing: the script is killed but its children keep
   /// working and no end is journalled, so the run resumes next time. A run
@@ -364,18 +365,19 @@ final class WorkflowEngine {
     bridge?.kill();
   }
 
-  void _halt(WorkflowOutcome outcome, String why) {
+  void _halt(WorkflowOutcome outcome, String why, {bool quiet = false}) {
     if (_state is! RunStarting && _state is! RunRunning) return;
     _error = why;
     _to(RunStopping(outcome, why));
     // A resume after a quit mid-shutdown shuts down instead of running the script again.
-    unawaited(journal.write({'t': 'stop', 'outcome': outcome.name, 'why': why}));
+    unawaited(journal.write({'t': 'stop', 'outcome': outcome.name, 'why': why, if (quiet) 'quiet': true}));
     _stopAgents(why);
     bridge?.kill();
   }
 
-  /// Children already told to stop: each is told once.
+  /// Children already told to stop, and already released: each is told once.
   final _stopped = <String>{};
+  final _released = <String>{};
 
   /// Stops every live child and marks the agents not finished.
   void _stopAgents(String why) {
@@ -393,10 +395,14 @@ final class WorkflowEngine {
   /// Runs the script to its end, then the shutdown. Returns the run as it ended (or as it was when [detach]ed).
   Future<WorkflowRun> run() async {
     final bridge = this.bridge;
-    // A run the app quit while it stopped or shut down: only its shutdown is left (the host starts no script).
-    if (journal.stop case {'outcome': final String o, 'why': final String why}) {
+    // A run the app quit while it stopped or shut down (or before the lead had its result): only its shutdown is
+    // left, with the outcome and result it had (the host starts no script).
+    if (resumesIntoShutdown(journal) case (final outcome, final why)) {
       bridge?.kill();
-      return end(WorkflowOutcome.values.asNameMap()[o] ?? WorkflowOutcome.stopped, why);
+      final last = journal.end ?? journal.ending;
+      _result = last?['result'];
+      if (last?['error'] case final String e) _error = e;
+      return end(outcome, why);
     }
     if (bridge == null) return end(WorkflowOutcome.failed, _error ?? "The workflow script didn't start.");
     // Wall time counts from the run's start, so a resume gets only what is left.
@@ -453,13 +459,24 @@ final class WorkflowEngine {
   /// Ends a run that has no script to run (it couldn't start, or a resume found it already stopping): straight to
   /// the shutdown with [outcome].
   Future<WorkflowRun> end(WorkflowOutcome outcome, String why) {
-    _error ??= why;
+    if (why.isNotEmpty) _error ??= why;
     if (_state is RunStarting || _state is RunRunning) _to(RunStopping(outcome, why));
     return _shutdown(outcome);
   }
 
   /// The one shutdown sequence (see [ShutdownStep]): every step runs, in order, each within [stepTimeout].
   Future<WorkflowRun> _shutdown(WorkflowOutcome outcome) async {
+    // A quit from here on resumes into this shutdown, not the script.
+    if (journal.ending == null && journal.end == null) {
+      unawaited(
+        journal.write({
+          't': 'ending',
+          'outcome': outcome.name,
+          if (_result != null) 'result': _result,
+          if (_error != null) 'error': _error,
+        }),
+      );
+    }
     for (final step in ShutdownStep.values) {
       _to(RunShuttingDown(step, outcome));
       try {
@@ -483,16 +500,19 @@ final class WorkflowEngine {
       case ShutdownStep.children:
         // Each child on its own clock: one that won't let go doesn't keep the others.
         await Future.wait([
-          for (final id in _children)
-            launcher
-                .release(id)
-                .timeout(stepTimeout)
-                .catchError(
-                  (Object e) => _log('Releasing $id: ${e is TimeoutException ? 'took too long, moved on' : e}'),
-                ),
+          for (final id in [..._children])
+            if (_released.add(id))
+              launcher
+                  .release(id)
+                  .timeout(stepTimeout)
+                  .catchError(
+                    (Object e) => _log('Releasing $id: ${e is TimeoutException ? 'took too long, moved on' : e}'),
+                  ),
         ]);
       case ShutdownStep.journal:
         _ended = _clock();
+        // A resume of a run already journalled as ended (the lead hadn't its result) writes no second end.
+        if (journal.end != null) return;
         await journal.write({
           't': 'end',
           'status': outcome.name,
@@ -655,16 +675,21 @@ final class WorkflowEngine {
         // Stopped while it started: it isn't left working on its own (the shutdown releases it).
         if (_capProblem() case final why? when !_state.acceptsAgents) {
           if (_stopped.add(childId)) launcher.stop(childId);
-          // Started after the shutdown released the run's children (a slow start): released here instead.
-          if (_state case RunShuttingDown(:final step) when step.index > ShutdownStep.children.index) {
-            unawaited(launcher.release(childId).catchError((Object _) {}));
-          }
+          // Started once the shutdown took its list of children (a slow start): released here instead.
+          final late = switch (_state) {
+            RunShuttingDown(:final step) => step.index >= ShutdownStep.children.index,
+            RunEnded() => true,
+            _ => false,
+          };
+          if (late && _released.add(childId)) unawaited(launcher.release(childId).catchError((Object _) {}));
           throw WorkflowCapped(why);
         }
       } else {
         _children.add(childId);
         _view(call.key, (v) => v.copyWith(childId: childId));
       }
+      // Stopped while it was being set up (a reattached child): no watch starts.
+      if (_capProblem() case final why? when !_state.acceptsAgents) throw WorkflowCapped(why);
       _live.add(childId);
       _view(call.key, (v) => v.copyWith(status: WorkflowAgentStatus.running));
       var r = await launcher.watch(childId, reattached: reattached);
@@ -758,6 +783,16 @@ final class WorkflowEngine {
       _slots.release();
     }
   }
+}
+
+/// Whether a resume of [journal] runs only the shutdown, and with what outcome and reason: it was stopped, its
+/// shutdown began, or it ended before the lead had its result.
+(WorkflowOutcome, String)? resumesIntoShutdown(WorkflowJournal journal) {
+  final m = journal.end ?? journal.ending ?? journal.stop;
+  if (m == null) return null;
+  final outcome = WorkflowOutcome.values.asNameMap()['${m['outcome'] ?? m['status']}'] ?? WorkflowOutcome.stopped;
+  final why = '${m['why'] ?? m['error'] ?? (outcome == WorkflowOutcome.done ? '' : 'Stopped.')}';
+  return (outcome, why);
 }
 
 /// A first-come-first-served counting semaphore.

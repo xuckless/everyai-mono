@@ -854,7 +854,7 @@ void main() {
     final path = '${dir.path}/r-left.jsonl';
     File(path).writeAsStringSync(
       [
-        jsonEncode({'t': 'start', 'name': 'demo', 'source': 'src', 'args': const {}, 'at': 0}),
+        jsonEncode({'t': 'start', 'name': 'demo', 'source': 'src', 'args': const <String, Object?>{}, 'at': 0}),
         jsonEncode({'t': 'stop', 'outcome': 'stopped', 'why': 'Stopped by the user.'}),
       ].join('\n'),
     );
@@ -876,6 +876,32 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
     expect(lead.sent.skip(before).where((m) => m.contains('status="stopped"')), hasLength(1));
+  });
+
+  test('a run Stop all ended, resumed at app start, still wakes no lead', () async {
+    final c = await open();
+    final id = c.sessionId;
+    final dir = Directory('${tmp.path}/data/workflows/$id')..createSync(recursive: true);
+    final path = '${dir.path}/r-quiet.jsonl';
+    File(path).writeAsStringSync(
+      [
+        jsonEncode({'t': 'start', 'name': 'demo', 'source': 'src', 'args': const <String, Object?>{}, 'at': 0}),
+        jsonEncode({'t': 'stop', 'outcome': 'stopped', 'why': 'Stopped.', 'quiet': true}),
+      ].join('\n'),
+    );
+    container.invalidate(codeSessionProvider(id));
+    final before = lead.sent.length;
+    await container.read(workflowResumeProvider.future);
+    await whenValue(
+      container,
+      workflowRunsProvider(id),
+      (List<WorkflowRun> r) => r.any((x) => x.runId == 'r-quiet' && x.state is RunEnded),
+    );
+    for (var i = 0; i < 20; i++) {
+      await pumpEventQueue();
+    }
+    expect(lead.sent.skip(before).where((m) => m.contains('<workflow-result')), isEmpty);
+    expect(File(path).existsSync(), isFalse);
   });
 
   test('a run the app quit in the middle of carries on when the session opens again', () async {

@@ -3605,7 +3605,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   Future<({WorkflowEntry? entry, String why})> _checkWorkflow(WorkflowEntry picked) async {
     final now = (await _workflowEntries()).where((w) => w.id == picked.id && w.digest == picked.digest).firstOrNull;
     if (now == null) return (entry: null, why: _changedWhy(picked));
-    if (_slot is! SlotFree) {
+    if (_slotNow is! SlotFree) {
       return (entry: null, why: 'A workflow is already running in this session. Wait for its result, then pick again.');
     }
     return (entry: now, why: '');
@@ -3639,8 +3639,13 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       final ctx = {
         'lead': {'harness': info?.harness, 'model': info?.model},
       };
-      if (await _askForBug(entry, args, ctx, fromCall: false, turnsBefore: turnsBefore)) return null;
-      await runWorkflow(entry.title, entry.source, args: args, ctx: ctx);
+      final took = _reserveSlot();
+      try {
+        if (await _askForBug(entry, args, ctx, fromCall: false, turnsBefore: turnsBefore)) return null;
+        await runWorkflow(entry.title, entry.source, args: args, ctx: ctx);
+      } finally {
+        _unreserve(took);
+      }
       return null;
     } on Object catch (e) {
       return "It couldn't start: $e.";
@@ -4088,7 +4093,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   Future<void> stopAll() async {
     for (final MapEntry(key: runId, value: engine) in _workflows.entries) {
       _quietRuns.add(runId);
-      engine.stop();
+      engine.stop('Stopped.', true);
     }
     await _stopEveryaiChildren();
     await stop();
@@ -5352,6 +5357,42 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// it asks for the report, or the run going on.
   RunSlot _slot = const SlotFree();
 
+  /// [_slot], or a run still going without it (a second run a resume found) when it is free: no new run starts
+  /// while any run of this session lives.
+  RunSlot get _slotNow => switch (_slot) {
+    SlotFree() => switch (_workflows.entries.where((e) => e.value.state.live).firstOrNull) {
+      final e? => SlotRunning(e.key),
+      null => const SlotFree(),
+    },
+    final s => s,
+  };
+
+  /// Run [runId] ended: the slot goes to another run still going, else it is free.
+  void _freeSlot(String runId) {
+    if (_slot case SlotRunning(runId: final held) when held == runId) {
+      final other = _workflows.entries.where((e) => e.key != runId && e.value.state.live).firstOrNull;
+      _slot = other == null ? const SlotFree() : SlotRunning(other.key);
+    }
+  }
+
+  /// Holds the slot for a run about to start (its awaits before [_runWorkflow] takes it); returns whether this took
+  /// it, so the caller frees it if the run doesn't start.
+  bool _reserveSlot() {
+    if (_slot is! SlotFree) return false;
+    _slot = const SlotReserved();
+    return true;
+  }
+
+  void _unreserve(bool took) {
+    if (took && _slot is SlotReserved) _slot = const SlotFree();
+  }
+
+  /// Runs whose lead step ran (the lead has the result, or Stop all kept it quiet): only their journal is retired.
+  final _leadTold = <String>{};
+
+  /// Runs resumed from a journal this launch, until their lead step.
+  final _resumedRuns = <String>{};
+
   /// Ended runs' results the agent hasn't been sent yet (see [_toLead]).
   final _workflowResults = <({String id, String text})>[];
 
@@ -5521,7 +5562,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     // A workflow's own agents would nest runs past its caps.
     if (info.parentId != null) return (text: 'Error: only the lead session starts workflows.', isError: true);
     // One at a time, or an agent could multiply every run's caps by starting many.
-    if (slotBusyText(_slot) case final why?) return (text: 'Error: $why', isError: true);
+    if (slotBusyText(_slotNow) case final why?) return (text: 'Error: $why', isError: true);
     // Only outside leads reach this (the host serves them), and a review on
     // EveryAI's models would spend in their session: the workflow's review
     // runs on a fresh agent of the lead's harness.
@@ -5568,8 +5609,24 @@ final class CodeSessionController extends Notifier<CodeSessionState>
 
   /// Runs the app quit in the middle of carry on from their journals.
   Future<void> _resumeWorkflows() async {
+    final List<String> paths;
     try {
-      for (final path in await listJournalFiles(await _workflowDir())) {
+      paths = await listJournalFiles(await _workflowDir());
+    } on Object {
+      return; // No data folder (tests, the web): nothing to resume.
+    }
+    // Runs to resume: the slot is held while their journals are read, so no new run starts beside them.
+    final took = paths.any((p) => !p.endsWith('/$_bugAskFileName.jsonl')) && _reserveSlot();
+    try {
+      await _resumeJournals(paths);
+    } finally {
+      _unreserve(took);
+    }
+  }
+
+  Future<void> _resumeJournals(List<String> paths) async {
+    try {
+      for (final path in paths) {
         final runId = path.split('/').last.replaceFirst(RegExp(r'\.jsonl$'), '');
         if (runId == _bugAskFileName) {
           await _bugAskLost(path);
@@ -5578,8 +5635,10 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         if (!ref.mounted || _workflows.containsKey(runId)) continue;
         final journal = WorkflowJournal.parse(await readJournalFile(path), (line) => appendJournalFile(path, line));
         final start = journal.start;
-        if (journal.ended || start == null) continue;
+        // Ended journals still on disk: the lead never got the result, which their shutdown sends.
+        if (start == null) continue;
         final args = (start['args'] as Map?)?.cast<String, Object?>() ?? const {};
+        _resumedRuns.add(runId);
         unawaited(_runWorkflow(runId, '${start['name']}', '${start['source']}', args, journal));
       }
     } on Object {
@@ -5594,14 +5653,14 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     Map<String, Object?> args,
     WorkflowJournal journal,
   ) async {
-    // A second run a resume found (only one can start at a time) runs on, without the slot.
-    final owns = _slot is! SlotRunning;
-    if (owns) _slot = SlotRunning(runId);
+    // It takes the slot when it is free or held for it; a second run a resume found (or one started while Bug fix
+    // asks) runs on without it, and [_slotNow] still counts it.
+    if (_slot is SlotFree || _slot is SlotReserved) _slot = SlotRunning(runId);
     try {
       await _runWorkflowSteps(runId, name, source, args, journal);
     } finally {
       // The shutdown's last step frees it; this is for a run that never got that far (the session closed).
-      if (_slot case SlotRunning(runId: final held) when owns && held == runId) _slot = const SlotFree();
+      _freeSlot(runId);
     }
   }
 
@@ -5771,6 +5830,16 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// all empty or there is a [problem] (the lead is told then).
   Future<void> _startBugAsk(_BugAsk ask, List<QuestionAnswer> answers, {String? problem}) async {
     _endBugAsk();
+    // Held from here: a run_workflow call meanwhile mustn't start a second run.
+    final took = _reserveSlot();
+    try {
+      await _startBugRun(ask, answers, problem: problem);
+    } finally {
+      _unreserve(took);
+    }
+  }
+
+  Future<void> _startBugRun(_BugAsk ask, List<QuestionAnswer> answers, {String? problem}) async {
     await _bugAskFile;
     final entry = ask.entry;
     final original = ask.args['bug'] is String ? ask.args['bug'] as String : '';
@@ -5810,8 +5879,10 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     final journalPath = '${await _workflowDir()}/$runId.jsonl';
     WorkflowBridge? bridge;
     String? startError;
-    // A resume of a run that was stopping needs no script: only its shutdown is left.
-    if (journal.stop == null) {
+    // Stop all ended it before a restart: still quiet.
+    if (journal.stop?['quiet'] == true) _quietRuns.add(runId);
+    // A resume of a run that was stopping or ending needs no script: only its shutdown is left.
+    if (resumesIntoShutdown(journal) == null) {
       try {
         bridge = await ref.read(workflowBridgeProvider)(
           dir: '${await _workflowDir()}/$runId',
@@ -5848,8 +5919,18 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     final runId = end.runId;
     switch (step) {
       case ShutdownStep.lead:
+        if (!ref.mounted) return;
         // Stop all ended it: the user stopped everything, so its end doesn't wake the lead (the card shows it).
-        if (!ref.mounted || _quietRuns.contains(runId)) return;
+        if (_quietRuns.contains(runId)) {
+          _leadTold.add(runId);
+          return;
+        }
+        // A resumed run (app start): after the lead's history, so the result follows its last turn, not one that
+        // only seems idle.
+        if (_resumedRuns.remove(runId)) {
+          await _historyIn.future;
+          if (!ref.mounted) return;
+        }
         final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
         final dir = info?.workingDir;
         // The files this run changed, and whether the card will ask what to do with them.
@@ -5872,17 +5953,19 @@ final class CodeSessionController extends Notifier<CodeSessionState>
           save: dir == null || noLocalFolder(dir) ? null : (json) => saveSpill(dir, 'workflow-$runId.json', json),
         );
         _toLead(message, runId: runId);
+        _leadTold.add(runId);
       case ShutdownStep.workflow:
         _startTrees.remove(runId);
         _quietRuns.remove(runId);
-        // Its journal is done with: the lead's message (queued above) is the only copy of the result now.
-        await retireJournalFile(journalPath);
+        // Its journal is done with once the lead's message is queued (the only copy of the result then). If the
+        // session closed before that, it stays: the next launch resumes into this shutdown and tells the lead.
+        if (_leadTold.remove(runId)) await retireJournalFile(journalPath);
         if (!ref.mounted) return;
         // Its agents no longer wait on anyone.
         for (final callId in [..._childWaiting]) {
           if (callId.startsWith('wf-$runId-')) _workflowChildWaiting(callId, false);
         }
-        if (_slot case SlotRunning(runId: final held) when held == runId) _slot = const SlotFree();
+        _freeSlot(runId);
       default:
         return;
     }
@@ -6215,6 +6298,10 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     final info = sessions.byId(sessionId);
     if (info == null) return 'Error: this session is closed.';
     if (info.workflow != maxWorkflowId) return 'Max is not on in this session, so there is nothing to end.';
+    if (_spawning.isNotEmpty) {
+      return 'Error: ${_spawning.length} fork(s) are still starting. Wait for them to start, then stop or wait for '
+          'them, and call end_workflow again.';
+    }
     if (_activeForks.isNotEmpty) {
       return 'Error: ${_activeForks.length} of your forks still run (${_activeForks.keys.join(', ')}). Wait for '
           'their reports or stop them with stop_fork, then call end_workflow again.';
@@ -7240,6 +7327,9 @@ final class _WorkflowLauncher implements AgentLauncher {
   /// Turns being watched, by child id, so a stop can end them.
   final _watching = <String, Completer<WorkflowAgentResult>>{};
 
+  /// Children stopped: a reattach that was still loading their history doesn't wake them after it.
+  final _stopped = <String>{};
+
   /// Batch checks running, by child id: completing one cancels its command.
   final _checking = <String, Completer<void>>{};
 
@@ -7384,6 +7474,7 @@ final class _WorkflowLauncher implements AgentLauncher {
     try {
       final controller = _ref.read(child.notifier);
       await controller._historyIn.future;
+      if (_stopped.contains(childId)) return (text: '', error: 'Stopped.', spentMicros: null);
       final now = _ref.read(child);
       if (!controller._attachedFresh || subagentOutcome(now.transcript, error: now.failure) != null) {
         return await _turnEnd(childId, null);
@@ -7509,6 +7600,7 @@ final class _WorkflowLauncher implements AgentLauncher {
 
   @override
   void stop(String childId) {
+    _stopped.add(childId);
     final check = _checking.remove(childId);
     if (check != null && !check.isCompleted) check.complete();
     final turn = _watching.remove(childId);
