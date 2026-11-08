@@ -25,7 +25,7 @@ final class WhatsNewItem {
 /// nothing after the update.
 const releaseNotes = <ReleaseNote>[
   ReleaseNote(
-    version: '0.1.0-alpha.7',
+    version: '0.2.0',
     title: 'No account needed, and a browser you can sign in to',
     date: 'Nov 8',
     items: [

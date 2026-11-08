@@ -14,7 +14,7 @@
 <a href="https://github.com/xuckless/everyai-mono/releases/latest"><img alt="Linux" src="https://img.shields.io/badge/Linux-download-FCC624?style=for-the-badge&logo=linux&logoColor=black"/></a>
 <a href="https://app.everyai.dev"><img alt="Web" src="https://img.shields.io/badge/Web-open-7C5CFF?style=for-the-badge&logo=googlechrome&logoColor=white"/></a>
 <br/>
-<a href="https://github.com/xuckless/everyai-mono/releases"><img alt="alpha 0.1.0-alpha.7, signed" src="https://img.shields.io/badge/alpha-0.1.0--alpha.7%20·%20signed-FF6B9A?style=flat-square"/></a>
+<a href="https://github.com/xuckless/everyai-mono/releases"><img alt="alpha 0.2.0, signed" src="https://img.shields.io/badge/alpha-0.2.0%20·%20signed-FF6B9A?style=flat-square"/></a>
 <br/><br/>
 
 <img src="docs/readme/console.webp" alt="A finished Code session: answered questions, a subagent that wrote the tests, and Session info in the right panel" width="92%"/>

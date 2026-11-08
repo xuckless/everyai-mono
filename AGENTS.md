@@ -1283,7 +1283,7 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   `keys_not_accepted`, `relay_check.dart` 4/4. Left on the VM from the direct setup: ttt's Caddy block for the sslip
   name, the `everyai-cert-reload` timer and the `everyai-api` firewall rule (owner's call to remove).
 
-- **0.1.0-alpha.7 (2026-11-08; branch `release/0.1.0-alpha.7`).** Release of PRs #45–#75: no account needed, email-link
+- **0.2.0 (2026-11-08; branch `release/0.1.0-alpha.7`, renumbered from alpha.7 before it shipped).** Release of PRs #45–#75: no account needed, email-link
   sign-in, remote control without an account, keys local only, per-session browser sign-ins, Auto mode, Pause all, the
   workflow estimate card, figures by id, local server states, one-line installs. Copy follows the owner's marketing plan
   (`marketing-plan.md`, local): no pricing, nothing about the vault, desktop control "macOS and Linux today, Windows

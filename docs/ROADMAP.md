@@ -1,6 +1,6 @@
 # EveryAI roadmap
 
-Status as of 2026-11-08: alpha `0.1.0-alpha.7` (signed: notarized macOS DMG, Microsoft Store, GPG-signed Linux packages; the apps update themselves; a web app at https://app.everyai.dev). macOS is the daily driver; Windows and Linux
+Status as of 2026-11-08: alpha `0.2.0` (signed: notarized macOS DMG, Microsoft Store, GPG-signed Linux packages; the apps update themselves; a web app at https://app.everyai.dev). macOS is the daily driver; Windows and Linux
 build in CI but haven't been tested on real machines. The Code workspace's internals are in
 [CODE_ROADMAP.md](CODE_ROADMAP.md).
 
