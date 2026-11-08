@@ -115,7 +115,13 @@ final class FakeLeadSession
   Future<void> respond({required bool accept, String? reason, List<String>? callIds}) async =>
       answers.add((accept: accept, reason: reason));
   @override
-  Future<void> send(String text, {bool run = true, List<String> images = const []}) async => sent.add(text);
+  Future<void> send(String text, {bool run = true, List<String> images = const []}) async {
+    sent.add(text);
+    await sendGate?.future;
+  }
+
+  /// When set, [send] waits for it after recording the text (a lead slow to take the message).
+  Completer<void>? sendGate;
   @override
   Future<void> steer(String text, {List<String> images = const []}) async => steered.add(text);
   @override
