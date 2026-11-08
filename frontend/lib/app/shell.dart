@@ -336,20 +336,21 @@ class _AppShellState extends ConsumerState<AppShell> {
     }
 
     // A deployed backend may still be starting: say so instead of failing quietly.
+    // The Stack is always there: wrapping the page only while the banner shows would rebuild the whole page
+    // (and mount a second PlatformMenuBar before the old one lets go of the menu, which asserts).
     final server = ref.watch(serverStatusProvider).value;
-    if (server == ServerStatus.waking || server == ServerStatus.unreachable) {
-      body = Stack(
-        children: [
-          body,
+    body = Stack(
+      children: [
+        body,
+        if (server == ServerStatus.waking || server == ServerStatus.unreachable)
           Positioned(
             top: 12,
             left: 0,
             right: 0,
             child: Center(child: _ServerBanner(status: server!)),
           ),
-        ],
-      );
-    }
+      ],
+    );
 
     // Material widgets need a Material ancestor for text editing.
     return m.Material(color: theme.background, child: body);
