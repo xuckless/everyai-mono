@@ -81,6 +81,9 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   var _cast = _Cast.off;
   var _castGen = 0;
   var _decoding = false;
+
+  /// Set when the page changed; a frame clears it. Still set after a while: the picture is stale, start again.
+  Timer? _staleCheck;
   DateTime _lastAck = DateTime.fromMillisecondsSinceEpoch(0);
   var _appVisible = true;
   var _size = PreviewSize.desktop;
@@ -175,6 +178,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     _shellChanges?.cancel();
     _appChanges?.cancel();
     _scanTimer?.cancel();
+    _staleCheck?.cancel();
     _detach();
     _ghostTimer?.cancel();
     _image?.dispose();
@@ -243,6 +247,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   }
 
   void _pageChanged() {
+    _watchForFrame();
     final url = _browser?.page.value.url ?? '';
     if (!_fieldFocus.hasFocus && url.isNotEmpty && url != 'about:blank') _field.text = url;
     if (mounted) setState(() {});
@@ -287,7 +292,19 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     _cast = _Cast.off;
   }
 
+  /// The page changed: a frame should follow. If none does within 1.5 s, the picture is restarted (safety net for
+  /// a screencast Chrome stopped; see HeadlessBrowser's own window per page).
+  void _watchForFrame() {
+    if (_cast != _Cast.on) return;
+    _staleCheck?.cancel();
+    _staleCheck = Timer(const Duration(milliseconds: 1500), () {
+      final b = _browser;
+      if (mounted && b != null && _cast == _Cast.on) unawaited(b.refreshScreencast());
+    });
+  }
+
   Future<void> _paint(ScreencastFrame f) async {
+    _staleCheck?.cancel();
     if (_decoding) {
       _browser?.ackFrame(f.session);
       return;

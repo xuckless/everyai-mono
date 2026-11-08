@@ -304,7 +304,9 @@ final class HeadlessBrowser {
       },
     );
     try {
-      final created = await _sendOn(browser, 'Target.createTarget', {'url': 'about:blank'});
+      // A window of its own: headless Chrome paints only the front tab of a window, so a page that shares one with
+      // another session's goes to the back and its screencast stops (the address still changes, the picture not).
+      final created = await _sendOn(browser, 'Target.createTarget', {'url': 'about:blank', 'newWindow': true});
       _targetId = created['targetId'] as String?;
       if (_targetId == null) throw const BrowserError('The browser has no page to drive.');
       _socket = await WebSocket.connect('ws://${endpoint.host}:${endpoint.port}/devtools/page/$_targetId');
@@ -993,6 +995,18 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
       scrollY: scroll is num ? scroll.toDouble() : 0,
       session: 0,
     ));
+  }
+
+  /// Starts the screencast again with a fresh picture (the Preview saw the page change and no frame came).
+  Future<void> refreshScreencast() async {
+    if (!_casting || _socket == null) return;
+    try {
+      await _send('Page.bringToFront');
+      await _send('Page.stopScreencast');
+      await _castStart();
+    } on Object {
+      // Closing.
+    }
   }
 
   Future<void> stopScreencast() async {
