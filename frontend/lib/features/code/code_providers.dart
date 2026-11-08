@@ -6184,8 +6184,26 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         final title = sessions.byId(forkId)?.title ?? forkId;
         await ref.read(codeSessionProvider(forkId).notifier).stop();
         return 'Stopped "$title". What it did so far arrives as its report.';
+      case endWorkflowTool:
+        return _endMax();
     }
     return 'Error: unknown tool $name.';
+  }
+
+  /// The lead says the Max task is over (end_workflow): the session goes back to no workflow. Its own forks must
+  /// have ended first, so nothing Max started is left working.
+  String _endMax() {
+    final sessions = ref.read(codeSessionsProvider.notifier);
+    final info = sessions.byId(sessionId);
+    if (info == null) return 'Error: this session is closed.';
+    if (info.workflow != maxWorkflowId) return 'Max is not on in this session, so there is nothing to end.';
+    if (_activeForks.isNotEmpty) {
+      return 'Error: ${_activeForks.length} of your forks still run (${_activeForks.keys.join(', ')}). Wait for '
+          'their reports or stop them with stop_fork, then call end_workflow again.';
+    }
+    // Told as it happens: no "Max off" note goes with the next message.
+    sessions.update(info.copyWith(clearWorkflow: true, clearToldWorkflow: true));
+    return 'Max is off. Work without a workflow from here on; the user can turn Max on again.';
   }
 
   static String _noSuchFork(String id) => 'Error: no running fork has id "$id". check_forks lists them.';

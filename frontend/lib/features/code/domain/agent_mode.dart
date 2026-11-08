@@ -318,6 +318,7 @@ List<Map<String, Object?>> clientToolSpecs({bool held = false}) => [
   answerForkSpec,
   stopForkSpec,
   messageForkSpec,
+  endWorkflowSpec,
   securityAlertSpec,
 ];
 

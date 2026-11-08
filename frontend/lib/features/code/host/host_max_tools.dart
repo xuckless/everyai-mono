@@ -8,6 +8,8 @@ import '../domain/subagents.dart'
         answerForkTool,
         checkForksSpec,
         checkForksTool,
+        endWorkflowSpec,
+        endWorkflowTool,
         forkTools,
         stopForkSpec,
         messageForkSpec,
@@ -60,7 +62,7 @@ const forkSpec = <String, Object?>{
 };
 
 /// The Max tools' specs in their fixed order (the host lists them so).
-const maxForkSpecs = [forkSpec, checkForksSpec, answerForkSpec, stopForkSpec, messageForkSpec];
+const maxForkSpecs = [forkSpec, checkForksSpec, answerForkSpec, stopForkSpec, messageForkSpec, endWorkflowSpec];
 
 /// What the session text tells an outside agent about each Max tool.
 const maxHostToolInfos = <HostToolInfo>[
@@ -74,6 +76,7 @@ const maxHostToolInfos = <HostToolInfo>[
   (name: answerForkTool, when: 'a <fork-question> reached you.'),
   (name: stopForkTool, when: 'a fork is stuck, looping or off its task.'),
   (name: messageForkTool, when: 'a fork needs a correction or a missing fact while it works.'),
+  (name: endWorkflowTool, when: 'the Max task is done, verified and reported: Max turns off.'),
 ];
 
 /// Why an outside lead can't fork on the EveryAI harness: that would spend
