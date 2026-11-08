@@ -271,6 +271,24 @@ String hostUnreachedNotice(String env) =>
 /// at a temporary folder.
 final driverDataDirProvider = Provider<Future<String> Function()>((ref) => GitService.dataDir);
 
+/// At app start: opens every lead session that has a workflow run the app quit in the middle of (or a Bug fix card
+/// left open), so its controller resumes the run (see `_resumeWorkflows`) without waiting for the user to open the
+/// session. Returns the sessions it opened.
+final workflowResumeProvider = FutureProvider<List<String>>((ref) async {
+  final opened = <String>[];
+  try {
+    final root = '${await ref.read(driverDataDirProvider)()}/workflows';
+    for (final info in ref.read(codeSessionsProvider)) {
+      if (info.parentId != null || (await listJournalFiles('$root/${info.id}')).isEmpty) continue;
+      ref.read(codeSessionProvider(info.id));
+      opened.add(info.id);
+    }
+  } on Object {
+    // No data folder (the web, tests): nothing to resume.
+  }
+  return opened;
+});
+
 /// The host token of each outside session opened in this run, by session
 /// id. Never stored: tokens die with the app.
 final _hostTokensProvider = Provider<Map<String, String>>((ref) => {});

@@ -393,12 +393,12 @@ final class WorkflowEngine {
   /// Runs the script to its end, then the shutdown. Returns the run as it ended (or as it was when [detach]ed).
   Future<WorkflowRun> run() async {
     final bridge = this.bridge;
-    if (bridge == null) return end(WorkflowOutcome.failed, _error ?? "The workflow script didn't start.");
-    // A run the app quit while it stopped or shut down: only its shutdown is left.
+    // A run the app quit while it stopped or shut down: only its shutdown is left (the host starts no script).
     if (journal.stop case {'outcome': final String o, 'why': final String why}) {
-      bridge.kill();
+      bridge?.kill();
       return end(WorkflowOutcome.values.asNameMap()[o] ?? WorkflowOutcome.stopped, why);
     }
+    if (bridge == null) return end(WorkflowOutcome.failed, _error ?? "The workflow script didn't start.");
     // Wall time counts from the run's start, so a resume gets only what is left.
     final at = journal.start?['at'];
     final elapsed = at is int ? _clock().difference(DateTime.fromMillisecondsSinceEpoch(at)) : Duration.zero;

@@ -846,6 +846,38 @@ void main() {
     expect(info.id, isNotEmpty);
   });
 
+  test('at app start a run left stopping is finished without its session being opened', () async {
+    final c = await open();
+    final id = c.sessionId;
+    // A run the app quit while it was stopping: started, an agent spawned, the stop journalled, no end.
+    final dir = Directory('${tmp.path}/data/workflows/$id')..createSync(recursive: true);
+    final path = '${dir.path}/r-left.jsonl';
+    File(path).writeAsStringSync(
+      [
+        jsonEncode({'t': 'start', 'name': 'demo', 'source': 'src', 'args': const {}, 'at': 0}),
+        jsonEncode({'t': 'stop', 'outcome': 'stopped', 'why': 'Stopped by the user.'}),
+      ].join('\n'),
+    );
+    // The app's next start: no controller yet (nobody opened the session).
+    container.invalidate(codeSessionProvider(id));
+    final before = lead.sent.length;
+    final opened = await container.read(workflowResumeProvider.future);
+    expect(opened, [id]);
+    final runs = await whenValue(
+      container,
+      workflowRunsProvider(id),
+      (List<WorkflowRun> r) => r.any((x) => x.runId == 'r-left' && x.state is RunEnded),
+    );
+    expect(runs.firstWhere((x) => x.runId == 'r-left').status, WorkflowStatus.stopped);
+    expect(File(path).existsSync(), isFalse);
+    // No script ran for it.
+    expect(bridge.killed, isFalse);
+    for (var i = 0; i < 100 && !lead.sent.skip(before).any((m) => m.contains('<workflow-result')); i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(lead.sent.skip(before).where((m) => m.contains('status="stopped"')), hasLength(1));
+  });
+
   test('a run the app quit in the middle of carries on when the session opens again', () async {
     final c = await open();
     final id = c.sessionId;

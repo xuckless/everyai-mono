@@ -22,7 +22,7 @@ import '../features/updates/ui/whats_new_dialog.dart' show showWhatsNewOnce;
 import '../core/theme/every_theme.dart';
 import '../core/ui/adaptive.dart' show AdaptiveButton, AdaptiveProgress, GlassSurface, GlassLevel, showAdaptiveToast;
 import '../features/code/automations/schedule_providers.dart' show scheduleRunnerProvider;
-import '../features/code/code_providers.dart' show driverShutdownProvider;
+import '../features/code/code_providers.dart' show driverShutdownProvider, workflowResumeProvider;
 import '../features/code/forks/orphan_forks.dart' show orphanForksProvider;
 import '../features/local_models/local_models_providers.dart' show serverLifecyclesProvider;
 import '../features/local_models/local_model_bridge.dart'
@@ -157,6 +157,8 @@ class _AppShellState extends ConsumerState<AppShell> {
       if (mounted && Host.isDesktop) ref.read(driverStatusesProvider);
       // Fork worktrees no session holds: the empty ones go now, the ones with work wait in Settings → Code.
       if (mounted && Host.isDesktop) ref.read(orphanForksProvider);
+      // Workflow runs the app quit in the middle of carry on now, not when their session is next opened.
+      if (mounted && Host.isDesktop) ref.read(workflowResumeProvider);
       // Updates: one check per launch (the controller waits a moment, and does nothing on dev or store installs).
       if (mounted && Host.isDesktop) ref.read(updateProvider);
       // After an update: this build's notes, once (never over the entry screen).
