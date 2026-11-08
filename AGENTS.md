@@ -1186,7 +1186,8 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   down. `AgentLauncher.release` ends a child's turn, tagged processes, app runs, browser, helpers, Preview page and
   devices through its own controller (its session stays open); every workflow agent has `ownTag` now. The user's Stop
   tells the lead (status "stopped"); Stop all stays quiet. `workflowResumeProvider` resumes runs at app start (shell).
-  Max ends with the `end_workflow` tool (client tool + host tool; refused while forks run). Not live-tested.- **Workflow rework, phase 2 (2026-11-08; branch `feat/fork-states`, on phase 1).** Forks: one `ForkBook`
+  Max ends with the `end_workflow` tool (client tool + host tool; refused while forks run). Not live-tested.
+- **Workflow rework, phase 2 (2026-11-08; branch `feat/fork-states`, on phase 1).** Forks: one `ForkBook`
   (`code/domain/fork_state.dart`) replaces the controller's fork maps and sets: a `ForkRecord` per call with a sealed
   `ForkState` (spawning, running(followUp), waitingOnLead(ask), waitingOnUser, pausing, paused, stopping, merging,
   reported, dropped), `forkEdge`, and a checked `to()` that records refused moves (asserts in debug). Questions carry an
@@ -1199,6 +1200,22 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   `SessionStatus.paused`); `pauseAll`/`resumeAll` cover the lead, background forks and workflow runs
   (`RunPausing`/`RunPaused`; `agent()` calls wait, a stop refuses them). UI: Pause all in the Stop-all menu,
   `PausedBar` with Resume above the composer, Pause/Resume on workflow cards. Not live-tested.
+- **Workflow rework, phase 3 (2026-11-08; branch `feat/workflow-guards`, on phase 2).** Owner answers in the plan
+  file. Estimate gate: `run_workflow` (host tool, and a client tool for the EveryAI lead) proposes; the run waits on
+  `ProposalCard` (Start / Adjust / Cancel) above the composer. `RunSlot` is free → proposed → reserved → running, and
+  the open card is kept in `proposal.jsonl`. Numbers come from `workflow_estimate.dart`: the meta's `agents` rule,
+  then dollars from past runs in this project (prefs `code.workflow.past.<project>`) or the model's price; time is
+  information only; outside leads show plan windows. A picked workflow sends the lead a `state="picked"` note, and it
+  clarifies first. Bug fix's own report card is gone. Guards (`workflow_guard.dart`): card rows at 50% and 80% of the
+  dollar ceiling. Past it the run pauses (`PauseReason.overEstimate`) for Continue (+50%) / Stop / Adjust. Outside
+  leads get rows at 50/80/90% of each window's share left at the start and never pause. Other leads get no measure.
+  **The 2-hour wall-time cap is gone.** Each phase end is a row. Stalls: `RunStalled(leadTold → userTold)` after 7
+  minutes with no session event or shell output from a live agent. The lead gets `<workflow-stalled>` and
+  `workflow_agents` (list, inspect, message, restart = a new turn with the context kept, ignore, stop, off_track).
+  If the lead does nothing for 7 more minutes, the card turns amber, the session needs the user, and an OS
+  notification goes out. Drift check at each phase end: the EveryAI lead makes one decide call (job `drift`; only a
+  clear no pauses), and an outside lead gets a `<workflow-checkpoint>` and answers with off_track. Off track pauses
+  the run (`PauseReason.offTrack`; Adjust / Go on). Not live-tested.
 
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
