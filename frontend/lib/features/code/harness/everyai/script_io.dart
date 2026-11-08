@@ -10,6 +10,7 @@ import 'llm.dart';
 import 'research_sites.dart' show secretPath;
 import 'exfil.dart';
 import 'tools_io.dart';
+import '../../../../core/process/child_processes.dart';
 
 // run_script: the model writes a TypeScript program that calls the harness's
 // read-only tools and two model helpers as functions, and only what it prints
@@ -336,6 +337,7 @@ final class ScriptRunner {
       includeParentEnvironment: false,
       environment: {'DENO_DIR': '$dir/cache', 'DENO_NO_UPDATE_CHECK': '1', 'NO_COLOR': '1'},
     );
+    ChildProcesses.track(process.pid, label: 'run_script', executable: deno, exited: process.exitCode);
     // Writes after the program ended fail; nothing waits on them.
     unawaited(process.stdin.done.catchError((_) {}));
     final out = StringBuffer();

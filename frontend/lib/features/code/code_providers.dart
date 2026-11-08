@@ -10,7 +10,10 @@ import '../models/domain/local_routes.dart';
 
 import 'package:uuid/uuid.dart';
 
+import '../../core/process/child_processes.dart';
 import '../../core/api/decide_client.dart' show decideClientProvider;
+import 'live/android_device_io.dart' show AndroidDevices;
+import 'live/app_sources.dart' show AppSources;
 import 'live/live_browsers.dart';
 import 'live/nested_display_io.dart';
 import 'shells/shell_registry.dart';
@@ -382,17 +385,23 @@ Future<List<WorkflowEntry>> _workflowsOfIn(Ref ref, String projectDir) async {
 /// disposal doesn't run then). The shell listens to it from app start, so
 /// every CLI is covered, however it was spawned.
 final driverShutdownProvider = Provider<void>((ref) {
-  Future<void> closeAll() => Future.wait([
+  // The registry's stop runs beside the owners' own (not after them, where one slow stop used up the budget); it only
+  // ends children still running, so a child an owner already ended isn't touched again.
+  Future<void> closeAll() => Future.wait<void>([
     closeAllDriverProcesses(),
     LiveBrowsers.stopAll(),
     Future(NestedDisplays.stopAll),
+    AndroidDevices.stopAll(),
+    AppSources.stopAll(),
     // The EveryAI harness's language servers (they outlived the app before).
     closeAllLanguageServers(),
-  ]).timeout(const Duration(seconds: 3), onTimeout: () => const []);
+    ChildProcesses.stopAll(),
+  ]).timeout(const Duration(seconds: 4), onTimeout: () => const []);
   final lifecycle = AppLifecycleListener(
     onExitRequested: () async {
       await closeAll();
-      await ref.read(hostServerProvider).stop();
+      // Never holds the quit up: the next listeners (the bundled server, local model servers) still have to run.
+      await ref.read(hostServerProvider).stop().timeout(const Duration(seconds: 1), onTimeout: () {});
       return AppExitResponse.exit;
     },
     onDetach: () => unawaited(closeAll()),

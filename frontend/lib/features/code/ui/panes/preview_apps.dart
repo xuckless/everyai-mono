@@ -22,6 +22,7 @@ import '../../live/ios_simulator_io.dart';
 import '../../live/live_session.dart';
 import '../../live/react_native_io.dart';
 import '../../live/scrcpy_io.dart';
+import '../../../../core/ui/image_decode.dart';
 
 // The Preview's views of the session's running apps (see AppSources): a Flutter app's picture with taps and the
 // wheel passed on, and a React Native app's element list.
@@ -194,8 +195,7 @@ class _FlutterAppViewState extends State<FlutterAppView> {
     _busy = true;
     try {
       final png = await _app.previewShot();
-      final codec = await ui.instantiateImageCodec(Uint8List.fromList(png));
-      final frame = await codec.getNextFrame();
+      final frame = (image: await decodeFirstFrame(Uint8List.fromList(png)));
       if (!mounted) {
         frame.image.dispose();
         return;
@@ -570,8 +570,7 @@ class _IosSimulatorViewState extends State<IosSimulatorView> {
     if (_decoding) return;
     _decoding = true;
     try {
-      final codec = await ui.instantiateImageCodec(jpeg);
-      final frame = await codec.getNextFrame();
+      final frame = (image: await decodeFirstFrame(jpeg));
       if (!mounted) {
         frame.image.dispose();
         return;
@@ -968,8 +967,7 @@ class _AndroidDeviceViewState extends State<AndroidDeviceView> {
     final gen = _gen;
     try {
       final png = await _device.screenshot();
-      final codec = await ui.instantiateImageCodec(png);
-      final frame = await codec.getNextFrame();
+      final frame = (image: await decodeFirstFrame(png));
       // Hidden or another device meanwhile: this picture is stale.
       if (!mounted || gen != _gen) {
         frame.image.dispose();
@@ -1280,8 +1278,7 @@ class _DesktopWindowViewState extends State<DesktopWindowView> {
     if (_decoding) return;
     _decoding = true;
     try {
-      final codec = await ui.instantiateImageCodec(jpeg);
-      final frame = await codec.getNextFrame();
+      final frame = (image: await decodeFirstFrame(jpeg));
       if (!mounted) {
         frame.image.dispose();
         return;
