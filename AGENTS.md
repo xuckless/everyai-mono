@@ -120,7 +120,7 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
     cached_tokens, cache_write_tokens, charged_micros}`: one per upstream call
     (follow-ups count toward cost, not context)
   - `followups {questions}`, `done {}`, `error {message, retryable, status?}`
-  - **402** `{message, code:"out_of_credits"}` before the stream starts.
+  - **402** `{message, code:"out_of_credits"}` before the stream starts (billing on only).
   - **Client-executed tools:** the request may carry `client_tools:[names]`
     (UI tools the app runs itself; server tools are never handed over). Such a
     call comes as `tool_wait {id, name, arguments}` instead of `tool`, and the
@@ -151,8 +151,13 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   "openrouter"|"anthropic", keys:{openrouter, anthropic}}`: where `anthropic/*`
   chat and gateway calls go (persisted in the `settings` table). Search,
   Research, follow-ups and images always use OpenRouter.
-- **Billing:** `GET /v1/plans`, `GET /v1/billing` (plan, quota, wallet,
-  recent usage, cached tokens), `GET /v1/usage`, `POST /v1/billing/checkout`
+- **Usage:** `GET /v1/usage` (always on).
+- **Billing (parked, 2026-11-08):** off unless `BILLING_ENABLED=true` (backend)
+  and `--dart-define=BILLING_ENABLED=true` (app, `BillingFlag`). Off: the routes
+  below are 404, prices are at cost, nothing is charged or refused for credit,
+  and the app shows no credits, plans, wallet or Top up. Don't wire it back
+  without the owner. On: `GET /v1/plans`, `GET /v1/billing` (plan, quota,
+  wallet, recent usage, cached tokens), `POST /v1/billing/checkout`
   (`{kind: topup|subscription, amount_cents?, plan?}` returns `{url, mock}`),
   `POST /v1/billing/webhook`.
 - **Remote hosts** (`backend-exp/src/remote.zig`, migration 003). A host is a
@@ -265,7 +270,7 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
 - **Models:** a Shop window (the full OpenRouter catalog) plus **My models**
   (a local list seeded with the featured defaults: Haiku/Sonnet/Opus 5.5,
   GPT-6.1 Sol/Terra, GPT-5.4 mini, and 2 free Chinese models).
-- **Billing:**
+- **Billing** (parked behind `BILLING_ENABLED` since 2026-11-08; BYOK only):
   - plans Free/Pro/Max plus prepaid top-ups, all at cost ×1.15
   - zero-cost models are free on every plan
   - Stripe test mode, mocked until keys arrive

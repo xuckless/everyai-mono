@@ -39,8 +39,17 @@ pub const Config = struct {
     /// Where `anthropic/*` models go until the switch is used: "openrouter" or "anthropic".
     anthropic_upstream: []const u8 = "openrouter",
 
-    /// Price multiplier on upstream cost for every paid request.
+    /// Price multiplier on upstream cost for every paid request (only with
+    /// billing on; see `priceMarkup`).
     markup: f64 = 1.15,
+    /// Credits, plans, wallet and Stripe. Parked: off by default, the
+    /// plan/billing/checkout/webhook routes are 404, nothing is charged and
+    /// prices show at cost. Usage is still recorded.
+    billing_enabled: bool = false,
+    /// With billing off, the server's own model key would be free to anyone
+    /// who can reach it. Production refuses to start with one unless this
+    /// says that is intended (a self-hosted, trusted server).
+    server_key_unmetered: bool = false,
     /// Model used when a request names none.
     default_model: []const u8 = "anthropic/claude-haiku-5.5",
     /// Research mode always runs on this model.
@@ -109,6 +118,18 @@ pub const Config = struct {
     local_parent_pid: ?i64 = null,
 
     pub const production = .{ .dev_auth = false };
+
+    /// The markup applied to prices and charges: 1.0 with billing parked.
+    pub fn priceMarkup(cfg: Config) f64 {
+        return if (cfg.billing_enabled) cfg.markup else 1.0;
+    }
+
+    /// True when the server holds its own model key while nothing is
+    /// billed and nobody acknowledged that (`SERVER_KEY_UNMETERED=true`).
+    pub fn unmeteredServerKey(cfg: Config) bool {
+        const has_key = cfg.openrouter_api_key != null or cfg.anthropic_api_key != null;
+        return has_key and !cfg.billing_enabled and !cfg.local_mode and !cfg.server_key_unmetered;
+    }
 };
 
 /// Whether `host` only accepts connections from this machine.
@@ -121,6 +142,20 @@ pub fn isLoopback(host: []const u8) bool {
 /// server, and nobody said that was intended (`DEV_AUTH_LAN=true`).
 pub fn lanExposure(cfg: Config) bool {
     return cfg.dev_auth and !cfg.dev_auth_lan and !isLoopback(cfg.host);
+}
+
+test "billing parked: prices at cost, an unmetered server key needs acknowledging" {
+    var c: Config = .{ .jwt_secret = .init("x") };
+    try std.testing.expectEqual(@as(f64, 1.0), c.priceMarkup());
+    try std.testing.expect(!c.unmeteredServerKey());
+    c.openrouter_api_key = .init("x");
+    try std.testing.expect(c.unmeteredServerKey());
+    c.server_key_unmetered = true;
+    try std.testing.expect(!c.unmeteredServerKey());
+    c.server_key_unmetered = false;
+    c.billing_enabled = true;
+    try std.testing.expect(!c.unmeteredServerKey());
+    try std.testing.expectEqual(@as(f64, 1.15), c.priceMarkup());
 }
 
 test "dev auth on a non-loopback host needs DEV_AUTH_LAN" {

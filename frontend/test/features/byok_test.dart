@@ -1,3 +1,4 @@
+import 'package:every_ai/core/config/billing_flag.dart';
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/core/theme/every_theme.dart';
@@ -49,6 +50,10 @@ Widget _app(List<Override> overrides, Widget child, {Preferences? prefs}) => Pro
 );
 
 void main() {
+  // Written for metered credits; the parked default has billing_parked_test.dart.
+  setUp(() => BillingFlag.enabled = true);
+  tearDown(() => BillingFlag.enabled = false);
+
   test('only providers with a proven path are offered', () {
     expect(byokProviders.map((p) => p.id), ['openrouter', 'anthropic']);
     for (final p in byokProviders) {

@@ -11,7 +11,7 @@ import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/anchored_popover.dart';
 import '../../../../core/ui/every_icons.dart';
-import '../../../billing/billing_providers.dart' show formatMicros;
+import '../../../../core/format/money.dart';
 import '../../code_providers.dart';
 import '../../code_settings_providers.dart' show codeSettingsProvider;
 import '../../domain/code_session.dart';

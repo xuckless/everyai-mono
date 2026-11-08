@@ -332,6 +332,7 @@ pub fn seedDevUser(app: *App, ctx: anytype) !void {
     const exists = try app.db.optional([]const u8, ctx, "SELECT id FROM users WHERE id = ?", .{dev_user_id});
     if (exists != null) return;
     _ = try app.db.exec(ctx, "INSERT INTO users (id, name, email, plan, created_at) VALUES (?, 'Developer', 'dev@everyai.local', 'pro', ?)", .{ dev_user_id, util.now(ctx.io) });
+    if (!app.cfg.billing_enabled) return;
     try billing.startPeriod(app, ctx, dev_user_id, "pro");
     // Credits only spend on the server's own key; without one, users run on theirs.
     if (app.cfg.openrouter_api_key != null) try billing.credit(app, ctx, dev_user_id, 20_000_000, .grant, "dev seed");

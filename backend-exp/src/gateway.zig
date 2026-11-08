@@ -34,7 +34,7 @@ fn completions(app: *App, req: *anole.Request, res: *anole.Response) !void {
     }
     try o.put(req.arena, "model", .{ .string = model });
 
-    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
+    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.priceMarkup());
     if (app.cfg.local_mode and app_local.isLocalId(model) and !app.isLocal(req, model))
         return res.fail(.bad_request, "a local model needs X-Local-Base-Url");
     const facts = if (app.isLocal(req, model)) app_local.facts(app_local.capsOf(req)) else app.catalog.facts(req.io, model);

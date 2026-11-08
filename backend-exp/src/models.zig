@@ -374,7 +374,7 @@ fn blurbOf(a: std.mem.Allocator, desc: []const u8) ![]const u8 {
 // ------------------------------------------------------------------ routes
 
 fn list(app: *App, req: *anole.Request, res: *anole.Response) !void {
-    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
+    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.priceMarkup());
     res.content_type = .json;
     res.body = try app.catalog.jsonCopy(req.io, req.arena);
 }

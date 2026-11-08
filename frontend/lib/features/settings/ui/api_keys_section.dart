@@ -1,3 +1,5 @@
+import '../../../core/config/billing_flag.dart';
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -46,7 +48,7 @@ class ApiKeysSection extends ConsumerWidget {
                     Text('Bring your own key', style: theme.type.body.semibold.tint(theme.text)),
                     const SizedBox(height: 2),
                     Text(
-                      'Models your key covers bill to your provider account instead of EveryAI credits. Keys stay in '
+                      'Models your key covers run on your provider account. Keys stay in '
                       'this device\'s keychain and go out only with the requests that use them. Pick the account per '
                       'model in the Model shop.',
                       style: theme.type.caption.tint(theme.textMuted),
@@ -137,7 +139,9 @@ class _ProviderCardState extends ConsumerState<_ProviderCard> {
     final ok = await showAdaptiveConfirm(
       context,
       title: 'Remove the ${provider.name} key?',
-      message: 'It is deleted from this device\'s keychain. Models billed to it go back to EveryAI credits.',
+      message: BillingFlag.enabled
+          ? 'It is deleted from this device\'s keychain. Models billed to it go back to EveryAI credits.'
+          : 'It is deleted from this device\'s keychain. Models that ran on it need another key.',
       confirmLabel: 'Remove',
       destructive: true,
     );

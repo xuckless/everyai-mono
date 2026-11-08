@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/every_icons.dart';
-import '../../../billing/billing_providers.dart' show formatMicros;
+import '../../../../core/format/money.dart';
 import '../../../models/domain/model_catalog.dart';
 import '../../../models/models_providers.dart';
 import '../../../remote/remote_providers.dart' show remoteHostingProvider;

@@ -23,7 +23,7 @@ import '../../core/providers.dart';
 import '../agents/agents_providers.dart' show AgentDefinition, agentLibrarySettingsProvider, childSetup, codeAgentsFor;
 import '../attachments/attachment.dart';
 import '../models/domain/model_catalog.dart';
-import '../billing/billing_providers.dart' show formatMicros;
+import '../../core/format/money.dart';
 import '../models/models_providers.dart';
 import '../settings/domain/byok_providers.dart' show ModelBilling;
 import '../skills/data/skill_import.dart' show findImportCandidates;

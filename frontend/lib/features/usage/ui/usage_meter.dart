@@ -1,10 +1,12 @@
+import '../../../core/config/billing_flag.dart';
+
 import 'dart:math' as math;
 
 import 'package:flutter/widgets.dart';
 
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/anchored_popover.dart';
-import '../../billing/billing_providers.dart';
+import '../../../core/format/money.dart';
 import '../usage_totals.dart';
 
 /// The composer's usage readout: "12.4K · $0.031" and a ring showing how full
@@ -185,7 +187,7 @@ class UsageBreakdown extends StatelessWidget {
           row('Output', formatTokens(totals.completionTokens)),
           row('Model calls', '${totals.calls}'),
           if (totals.ownKeyMicros > 0) ...[
-            row('EveryAI credits', formatMicros(totals.chargedMicros)),
+            if (BillingFlag.enabled) row('EveryAI credits', formatMicros(totals.chargedMicros)),
             row('On your own key', formatMicros(totals.ownKeyMicros)),
           ],
           // What an outside CLI did on the user's own subscription, priced as the API would charge.

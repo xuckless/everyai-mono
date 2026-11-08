@@ -1,5 +1,7 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import '../../../../core/config/billing_flag.dart';
+
 import 'package:flutter/widgets.dart';
 
 import '../../../../core/theme/every_theme.dart';
@@ -66,7 +68,9 @@ class _LeadOfferCardState extends State<LeadOfferCard> {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final w = widget;
-    final title = w.credits ? 'Your EveryAI credits ran out, switch to:' : 'Your ${w.lead} limit ran out, switch to:';
+    final title = w.credits
+        ? (BillingFlag.enabled ? 'Your EveryAI credits ran out, switch to:' : 'Your key ran out of credit, switch to:')
+        : 'Your ${w.lead} limit ran out, switch to:';
     final ready = w.choices.where((c) => c.blocked == null);
     final at = w.limit.resetsAt;
     final wait = w.change

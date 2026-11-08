@@ -35,7 +35,9 @@ fn start(env: *Env, responses: []const []const u8, dev_auth: bool) !void {
 }
 
 /// Settings beyond the defaults a test needs.
-const Extra = struct { stripe_webhook_secret: ?[]const u8 = null, no_server_key: bool = false };
+/// `billing` defaults to on here: most tests below were written for metered
+/// credits; the parked default (off) has its own tests.
+const Extra = struct { stripe_webhook_secret: ?[]const u8 = null, no_server_key: bool = false, billing: bool = true };
 
 fn startWith(env: *Env, responses: []const []const u8, dev_auth: bool, extra: Extra) !void {
     env.fake = .{ .responses = responses, .gpa = alloc, .models_json = models_json };
@@ -46,6 +48,7 @@ fn startWith(env: *Env, responses: []const []const u8, dev_auth: bool, extra: Ex
         .dev_auth = dev_auth,
     };
     cfg.max_tool_steps = 4;
+    cfg.billing_enabled = extra.billing;
     if (extra.stripe_webhook_secret) |secret| cfg.stripe_webhook_secret = .init(secret);
     if (extra.no_server_key) cfg.openrouter_api_key = null;
     env.state = .{
@@ -280,6 +283,45 @@ test "billing: paid models answer 402 when quota and wallet are spent; free mode
     var free = try env.t.post("/v1/chat/stream", .{ .json = .{ .model = "dots-studio/dots-3-note-preview:free", .messages = .{.{ .role = "user", .content = "hi" }}, .tools_enabled = false } });
     defer free.deinit();
     try free.expectStatus(.ok);
+}
+
+test "billing parked: plan and billing routes 404, prices at cost, usage recorded but never charged" {
+    var env: Env = undefined;
+    try startWith(&env, &.{final_turn}, true, .{ .billing = false });
+    defer env.deinit();
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = arena.allocator() };
+
+    for ([_][]const u8{ "/v1/plans", "/v1/billing" }) |path| {
+        var gone = try env.t.get(path, .{});
+        defer gone.deinit();
+        try gone.expectStatus(.not_found);
+    }
+    var checkout = try env.t.post("/v1/billing/checkout", .{ .json = .{ .kind = "topup", .amount_cents = 500 } });
+    defer checkout.deinit();
+    try checkout.expectStatus(.not_found);
+
+    var models = try env.t.get("/v1/models", .{});
+    defer models.deinit();
+    const list = try models.json(struct { data: []const struct { id: []const u8, prompt_per_mtok: f64 } });
+    try std.testing.expectApproxEqAbs(@as(f64, 0.1), list.data[1].prompt_per_mtok, 1e-9);
+
+    // No quota period or wallet exists, and a paid model still runs (no 402).
+    var paid = try env.t.post("/v1/chat/stream", .{ .json = .{ .model = "anthropic/claude-haiku-5.5", .messages = .{.{ .role = "user", .content = "hi" }}, .tools_enabled = false, .session = "s-parked" } });
+    defer paid.deinit();
+    try paid.expectStatus(.ok);
+    const charged = try env.state.db.one(struct { n: i64, charged: i64, cost: i64 }, &c, "SELECT COUNT(*) AS n, COALESCE(SUM(charged_micros), 0) AS charged, COALESCE(SUM(cost_micros), 0) AS cost FROM usage_events", .{});
+    try std.testing.expect(charged.n >= 1);
+    try std.testing.expectEqual(@as(i64, 0), charged.charged);
+    try std.testing.expect(charged.cost > 0);
+
+    var usage = try env.t.get("/v1/usage", .{});
+    defer usage.deinit();
+    try usage.expectStatus(.ok);
+    var session = try env.t.get("/v1/usage/session/s-parked", .{});
+    defer session.deinit();
+    try session.expectStatus(.ok);
 }
 
 test "no server key: a call without the user's key says to add one; with it, it runs" {

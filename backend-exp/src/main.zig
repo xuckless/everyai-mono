@@ -277,6 +277,13 @@ pub fn main(init: std.process.Init) !void {
         std.log.info("JWT_SECRET not set: using a random one for this run", .{});
         break :blk &jwt_hex;
     };
+    if (cfg.unmeteredServerKey()) {
+        if (anole.env.environment() != .development) {
+            std.log.err("refusing to start: a server model key with billing off is free to everyone; set SERVER_KEY_UNMETERED=true if that is intended", .{});
+            return error.UnmeteredServerKey;
+        }
+        std.log.warn("billing is off: calls on the server's own model key are free to every user", .{});
+    }
     if (cfg.openrouter_api_key == null) std.log.info("OPENROUTER_API_KEY not set: model calls run on the keys users add in the app", .{});
 
     var state: App = .{
@@ -357,13 +364,14 @@ pub fn main(init: std.process.Init) !void {
     try prepare(&state, &setup);
     // The catalog before the first request, so none waits for it (the first
     // stale one later refreshes; a failure here leaves that to it).
-    state.catalog.refresh(state.upstream, io, cfg.markup) catch |err| std.log.warn("model catalog not loaded at start: {t}", .{err});
+    state.catalog.refresh(state.upstream, io, cfg.priceMarkup()) catch |err| std.log.warn("model catalog not loaded at start: {t}", .{err});
 
     try routes(&app, &state);
     defer state.limiter.deinit();
     defer state.global_limiter.deinit();
-    std.log.info("EveryAI backend-exp on :{d} (dev_auth={}, markup={d:.2}, stripe={s}, claude via {s})", .{
-        cfg.port, cfg.dev_auth, cfg.markup, if (cfg.stripe_secret_key == null) "mock" else "test", state.route("anthropic/", true).provider,
+    std.log.info("EveryAI backend-exp on :{d} (dev_auth={}, billing={s}, claude via {s})", .{
+        cfg.port,                                                                                         cfg.dev_auth,
+        if (!cfg.billing_enabled) "off" else if (cfg.stripe_secret_key == null) "mock" else "stripe test", state.route("anthropic/", true).provider,
     });
     const Stop = struct {
         fn stop(ptr: *anyopaque) void {

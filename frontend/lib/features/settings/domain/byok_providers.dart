@@ -1,3 +1,5 @@
+import '../../../core/config/billing_flag.dart';
+
 import 'package:flutter/foundation.dart';
 
 import '../../models/domain/model_catalog.dart';
@@ -71,18 +73,23 @@ const byokProviders = <ByokProvider>[
   ),
 ];
 
-/// Who pays for a model's calls: EveryAI credits or one of the user's keys.
+/// Who pays for a model's calls: one of the user's keys, or (only with
+/// [BillingFlag.enabled]) EveryAI credits.
 @immutable
 final class Biller {
-  const Biller._(this.id, this.label, this.provider);
+  const Biller._(this.id, this._label, this.provider);
 
-  /// The user's plan and wallet.
-  static const everyai = Biller._('everyai', 'EveryAI credits', null);
+  /// No key of the user's covers the model. With billing on that means the
+  /// user's plan and wallet; parked, the call has nothing to run on (the
+  /// server answers `no_api_key` unless the model is local or free).
+  static const everyai = Biller._('everyai', null, null);
 
   factory Biller.key(ByokProvider p) => Biller._(p.id, 'Your ${p.name} key', p);
 
   final String id;
-  final String label;
+  final String? _label;
+
+  String get label => _label ?? (BillingFlag.enabled ? 'EveryAI credits' : 'No key yet');
 
   /// The key's provider; null for EveryAI credits.
   final ByokProvider? provider;
@@ -116,9 +123,10 @@ final class ModelBilling {
 
   bool get hasKeys => keys.isNotEmpty;
 
-  /// The accounts that can pay for [model]: EveryAI credits, then each key that covers it.
+  /// The accounts that can pay for [model]: EveryAI credits (billing on
+  /// only), then each key that covers it.
   List<Biller> billersFor(ModelId model) => [
-    Biller.everyai,
+    if (BillingFlag.enabled) Biller.everyai,
     for (final p in byokProviders)
       if (keys.containsKey(p.id) && p.covers(model)) Biller.key(p),
   ];
@@ -128,6 +136,7 @@ final class ModelBilling {
   Biller billerFor(ModelId model) {
     final options = billersFor(model);
     final picked = choices[model.value];
+    if (options.isEmpty) return Biller.everyai;
     if (picked != null) {
       final hit = options.where((b) => b.id == picked).firstOrNull;
       if (hit != null) return hit;

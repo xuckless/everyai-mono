@@ -1,3 +1,4 @@
+import 'package:every_ai/core/config/billing_flag.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -10,6 +11,10 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
+  // Written for metered credits; the parked default has billing_parked_test.dart.
+  setUp(() => BillingFlag.enabled = true);
+  tearDown(() => BillingFlag.enabled = false);
+
   test('a double tap buys once; a different checkout meanwhile is refused, not given the first answer', () async {
     final checkouts = <Object?>[];
     final answer = Completer<void>();

@@ -190,7 +190,7 @@ fn title(app: *App, req: *anole.Request, res: *anole.Response) !void {
     }
     if (std.mem.trim(u8, user, " \n\t").len == 0) return res.fail(.unprocessable_entity, "messages need a user message");
     const model = modelFor(app.cfg, .title);
-    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
+    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.priceMarkup());
     const aux = try app.aux(req);
     if (aux.unavailable) return res.fail(.service_unavailable, "No model for side jobs: add an API key or a local model.");
     billing.preflight(app, req, who.user_id, app.catalog.facts(req.io, model).free or aux.byok) catch |err| switch (err) {
@@ -379,7 +379,7 @@ fn skillDraft(app: *App, req: *anole.Request, res: *anole.Response) !void {
     if (source == .conversation and text.len > skill_transcript_max) text = text[text.len - skill_transcript_max ..];
     const hint = if (body.hint.len > 0) try std.fmt.allocPrint(req.arena, "The user says it is for: {s}\n", .{body.hint[0..@min(body.hint.len, 500)]}) else "";
     const model = modelFor(app.cfg, .compaction);
-    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
+    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.priceMarkup());
     const aux = try app.aux(req);
     if (aux.unavailable) return res.fail(.service_unavailable, "No model for side jobs: add an API key or a local model.");
     billing.preflight(app, req, who.user_id, app.catalog.facts(req.io, model).free or aux.byok) catch |err| switch (err) {

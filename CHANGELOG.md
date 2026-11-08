@@ -5,6 +5,9 @@ EveryAI is in alpha. Signed releases start at `0.1.0-alpha.1`; the earlier unsig
 
 ## Unreleased
 
+- **No credits or plans.** EveryAI runs on your own keys, your subscriptions and local models. Billing, plans,
+  the wallet and top-ups are gone from the app (the code is parked behind `BILLING_ENABLED`). Usage and spend caps
+  stay.
 - **Local servers you can start and stop.** Settings → Local models shows each server's state (Starting, Running
   and who started it, Stopping, Stopped, or why it failed) with Start and Stop: Ollama, LM Studio (`lms`), Apple's
   model, and a server added by URL with its own start command. A server started outside EveryAI can be stopped

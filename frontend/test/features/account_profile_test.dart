@@ -1,9 +1,14 @@
+import 'package:every_ai/core/config/billing_flag.dart';
 import 'package:every_ai/features/auth/domain/auth_state.dart';
 import 'package:every_ai/features/auth/profile.dart';
 import 'package:every_ai/features/settings/ui/account_menu.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  // Written for metered credits; the parked default has billing_parked_test.dart.
+  setUp(() => BillingFlag.enabled = true);
+  tearDown(() => BillingFlag.enabled = false);
+
   test('reads /v1/me and names the plan', () {
     final p = Profile.fromJson({'id': 'u1', 'name': 'Ada Lovelace', 'email': 'ada@example.com', 'plan': 'pro'})!;
     expect(p.displayName, 'Ada Lovelace');

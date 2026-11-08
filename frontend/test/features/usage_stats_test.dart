@@ -1,3 +1,4 @@
+import 'package:every_ai/core/config/billing_flag.dart';
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/theme/every_theme.dart';
 import 'package:every_ai/features/billing/billing_providers.dart';
@@ -29,6 +30,10 @@ class _Billing extends BillingController {
 int _s(DateTime d) => d.millisecondsSinceEpoch ~/ 1000;
 
 void main() {
+  // Written for metered credits; the parked default has billing_parked_test.dart.
+  setUp(() => BillingFlag.enabled = true);
+  tearDown(() => BillingFlag.enabled = false);
+
   final now = DateTime(2026, 10, 30, 15); // a Friday
 
   test('bucketStarts: days end today; weeks start on Monday', () {

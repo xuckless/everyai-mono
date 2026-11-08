@@ -1,3 +1,5 @@
+import '../../../core/config/billing_flag.dart';
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -179,12 +181,13 @@ class AccountSection extends ConsumerWidget {
               ],
             ),
             actions: [
-              KitButton(
-                key: const ValueKey('settings.account.plan'),
-                label: 'Manage plan',
-                style: KitButtonStyle.soft,
-                onPressed: () => showSettings(context, section: SettingsSection.billing),
-              ),
+              if (BillingFlag.enabled)
+                KitButton(
+                  key: const ValueKey('settings.account.plan'),
+                  label: 'Manage plan',
+                  style: KitButtonStyle.soft,
+                  onPressed: () => showSettings(context, section: SettingsSection.billing),
+                ),
             ],
           ),
         ),

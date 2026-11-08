@@ -1,3 +1,5 @@
+import '../../../core/config/billing_flag.dart';
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -16,9 +18,12 @@ import 'settings_modal.dart';
 /// The name and plan the account row shows: from [profile] (`/v1/me`) when
 /// it has loaded, else placeholders by sign-in state.
 (String name, String plan) accountSummary(AuthState auth, [Profile? profile]) => switch (auth) {
-  Bypassed() when profile != null => (profile.displayName, '${profile.planLabel} · Developer mode'),
+  Bypassed() when profile != null => (
+    profile.displayName,
+    [profile.planLabel, 'Developer mode'].where((s) => s.isNotEmpty).join(' · '),
+  ),
   Bypassed() => ('Guest', 'Developer mode'),
-  SignedIn() when profile != null => (profile.displayName, profile.planLabel),
+  SignedIn() when profile != null => (profile.displayName, profile.planLabel.isEmpty ? 'Signed in' : profile.planLabel),
   SignedIn() => ('Account', 'Signed in'),
   _ => ('Signed out', ''),
 };
@@ -195,12 +200,13 @@ class AccountMenu extends ConsumerWidget {
           // Not wired yet: shown, no action.
           _DeadRow(key: const ValueKey('account.help'), title: 'Get help', leading: icon(EveryIcon.help)),
           divider(),
-          PopoverRow(
-            key: const ValueKey('account.plans'),
-            title: 'View all plans',
-            leading: icon(EveryIcon.card),
-            onTap: () => open(SettingsSection.billing, anchor: 'plans'),
-          ),
+          if (BillingFlag.enabled)
+            PopoverRow(
+              key: const ValueKey('account.plans'),
+              title: 'View all plans',
+              leading: icon(EveryIcon.card),
+              onTap: () => open(SettingsSection.billing, anchor: 'plans'),
+            ),
           _DeadRow(
             key: const ValueKey('account.apps'),
             title: 'Get apps and extensions',
