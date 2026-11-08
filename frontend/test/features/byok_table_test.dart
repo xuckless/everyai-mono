@@ -7,6 +7,7 @@ import 'package:every_ai/core/net/api_client.dart';
 import 'package:every_ai/features/code/harness/everyai/llm.dart';
 import 'package:every_ai/features/models/domain/model_catalog.dart';
 import 'package:every_ai/features/settings/domain/byok_providers.dart';
+import 'package:every_ai/features/settings/domain/key_check.dart';
 import 'package:every_ai/features/settings/domain/provider_key_state.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -163,6 +164,38 @@ void main() {
         throwsA(isA<LlmError>().having((e) => e.message, 'message', LocalGateway.missing)),
       );
       expect(called, isFalse);
+    });
+  });
+  group('key check', () {
+    Future<KeyCheck> check(String id, int status, {List<Uri>? asked}) => checkProviderKey(
+      ByokProvider.byId(id)!,
+      'bad-key-0000',
+      client: MockClient((req) async {
+        asked?.add(req.url);
+        return http.Response('{}', status);
+      }),
+    );
+
+    test('a 400 is a rejected key (Google AI Studio and xAI answer a bad key so)', () async {
+      expect((await check('google', 400)).valid, isFalse);
+      expect((await check('xai', 400)).valid, isFalse);
+      expect((await check('openai', 401)).valid, isFalse);
+      expect((await check('openai', 200)).valid, isTrue);
+      expect((await check('openai', 503)).valid, isNull);
+    });
+
+    test('no check goes to an endpoint that lists models to anyone', () async {
+      for (final id in ['nvidia', 'sambanova']) {
+        final asked = <Uri>[];
+        final r = await check(id, 200, asked: asked);
+        expect(r.valid, isNull, reason: id);
+        expect(asked, isEmpty, reason: id);
+      }
+      for (final p in byokProviders) {
+        expect(p.checkUrl, isNot(contains('models.github.ai/catalog')), reason: p.id);
+        expect(p.checkUrl, isNot(contains('router.huggingface.co/v1/models')), reason: p.id);
+      }
+      expect(ByokProvider.byId('perplexity')!.checkUrl, 'https://api.perplexity.ai/v1/models');
     });
   });
 }

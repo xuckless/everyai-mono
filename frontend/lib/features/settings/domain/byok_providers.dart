@@ -67,7 +67,9 @@ final class ByokProvider {
   final ProviderAuth auth;
   final String baseUrl;
 
-  /// A free, read-only call that answers 200 for a good key.
+  /// A free, read-only call that answers 200 for a good key and refuses a bad
+  /// one. Empty when the provider has none (its model list is public, so it
+  /// would accept any key): such a key is saved unchecked.
   final String checkUrl;
 
   /// Where to make a key.
@@ -286,7 +288,7 @@ const byokProviders = <ByokProvider>[
     logo: 'perplexity-color',
     auth: ProviderAuth.bearer,
     baseUrl: 'https://api.perplexity.ai',
-    checkUrl: 'https://api.perplexity.ai/models',
+    checkUrl: 'https://api.perplexity.ai/v1/models',
     keysUrl: 'https://www.perplexity.ai/settings/api',
     keyHint: 'pplx-…',
     blurb: 'Sonar models, straight from Perplexity.',
@@ -361,7 +363,7 @@ const byokProviders = <ByokProvider>[
     logo: '',
     auth: ProviderAuth.bearer,
     baseUrl: 'https://api.sambanova.ai/v1',
-    checkUrl: 'https://api.sambanova.ai/v1/models',
+    checkUrl: '',
     keysUrl: 'https://cloud.sambanova.ai/apis',
     keyHint: '',
     blurb: 'Open models on SambaNova.',
@@ -376,7 +378,7 @@ const byokProviders = <ByokProvider>[
     logo: 'githubcopilot',
     auth: ProviderAuth.bearer,
     baseUrl: 'https://models.github.ai/inference',
-    checkUrl: 'https://models.github.ai/catalog/models',
+    checkUrl: 'https://api.github.com/user',
     keysUrl: 'https://github.com/settings/tokens',
     keyHint: 'github_pat_…',
     blurb: 'Models on GitHub, with a token that has models access.',
@@ -391,7 +393,7 @@ const byokProviders = <ByokProvider>[
     logo: 'huggingface-color',
     auth: ProviderAuth.bearer,
     baseUrl: 'https://router.huggingface.co/v1',
-    checkUrl: 'https://router.huggingface.co/v1/models',
+    checkUrl: 'https://huggingface.co/api/whoami-v2',
     keysUrl: 'https://huggingface.co/settings/tokens',
     keyHint: 'hf_…',
     blurb: 'Open models through Hugging Face\'s inference router.',
@@ -406,7 +408,7 @@ const byokProviders = <ByokProvider>[
     logo: 'nvidia-color',
     auth: ProviderAuth.bearer,
     baseUrl: 'https://integrate.api.nvidia.com/v1',
-    checkUrl: 'https://integrate.api.nvidia.com/v1/models',
+    checkUrl: '',
     keysUrl: 'https://build.nvidia.com',
     keyHint: 'nvapi-…',
     blurb: 'Open models on NVIDIA\'s hosted NIM endpoints.',

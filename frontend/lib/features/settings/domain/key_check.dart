@@ -18,6 +18,11 @@ final keyCheckProvider = Provider<Future<KeyCheck> Function(ByokProvider provide
 /// Asks the provider whether [key] works, with a free read-only call. The
 /// key goes only to that provider.
 Future<KeyCheck> checkProviderKey(ByokProvider provider, String key, {http.Client? client}) async {
+  // No authenticated read-only call (NVIDIA and SambaNova list their models
+  // to anyone): a 200 there would say any key works.
+  if (provider.checkUrl.isEmpty) {
+    return (valid: null, message: "${provider.name} keys can't be checked from here yet. The key is saved.");
+  }
   final c = client ?? http.Client();
   try {
     final res = await c
@@ -37,7 +42,9 @@ Future<KeyCheck> checkProviderKey(ByokProvider provider, String key, {http.Clien
     return switch (res.statusCode) {
       // Rate limited still means the key was accepted.
       200 || 429 => (valid: true, message: '${provider.name} key works'),
-      401 || 403 => (valid: false, message: '${provider.name} rejected this key.'),
+      // Google AI Studio and xAI answer a bad key with 400 (a check call has
+      // no parameters to get wrong).
+      400 || 401 || 403 => (valid: false, message: '${provider.name} rejected this key.'),
       final s => (valid: null, message: '${provider.name} answered $s. Try again in a moment.'),
     };
   } on TimeoutException {

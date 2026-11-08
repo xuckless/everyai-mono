@@ -111,6 +111,11 @@ pub const Config = struct {
     /// on a server that isn't the app's local one. Off, such a request is a
     /// 400 `keys_not_accepted`; production refuses to start with it on.
     accept_provider_keys: bool = false,
+    /// Development only, for `frontend/tool/byok_live_check.dart`: route calls
+    /// to providers.json entries still marked `saved`, so their path can be
+    /// checked live before one is flipped to `connected`. Without it such a
+    /// key is never used and the check would run on another route.
+    route_saved_providers: bool = false,
 
     /// Vault sync (vault.zig), dev only until reviewed: the /v1/vault routes
     /// exist only with this on, and production refuses to start with it.
@@ -187,6 +192,21 @@ pub fn lanExposure(cfg: Config) bool {
 /// behind its launch token).
 pub fn devAuthInProduction(cfg: Config, environment: anole.env.Environment) bool {
     return cfg.dev_auth and !cfg.local_mode and environment != .development;
+}
+
+/// Why a development-only switch can't be on in this run, or null.
+pub fn devOnlyProblem(cfg: Config, development: bool) ?[]const u8 {
+    if (development) return null;
+    if (cfg.route_saved_providers) return "ROUTE_SAVED_PROVIDERS sends calls to providers not checked live; it is for development";
+    return null;
+}
+
+test "routing to saved providers is for development only" {
+    var c: Config = .{ .jwt_secret = .init("x") };
+    try std.testing.expect(devOnlyProblem(c, false) == null);
+    c.route_saved_providers = true;
+    try std.testing.expect(devOnlyProblem(c, true) == null);
+    try std.testing.expect(devOnlyProblem(c, false) != null);
 }
 
 test "billing parked: prices at cost, an unmetered server key needs acknowledging" {

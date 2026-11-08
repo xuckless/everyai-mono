@@ -2,8 +2,9 @@
 // `"status": "connected"` in backend-exp/src/providers.json (and re-running
 // the generator in the commit that does). Spends a few cents on the key.
 //
-// Start a backend that takes keys, e.g. in backend-exp:
-//   ACCEPT_PROVIDER_KEYS=true DEV_AUTH=true zig build run        (development only)
+// Start a backend that takes keys and routes to providers still marked
+// "saved" (without ROUTE_SAVED_PROVIDERS their keys are never used), e.g. in backend-exp:
+//   ACCEPT_PROVIDER_KEYS=true ROUTE_SAVED_PROVIDERS=true DEV_AUTH=true zig build run   (development only)
 // then:
 //   BYOK_KEY=sk-... dart run tool/byok_live_check.dart openai openai/gpt-6.1-sol [http://127.0.0.1:8080]
 //

@@ -325,6 +325,14 @@ pub fn main(init: std.process.Init) !void {
         std.log.err("refusing to start: ACCEPT_PROVIDER_KEYS sends users' keys through this hosted server; they belong to the app's local one", .{});
         return error.ProviderKeysOnHostedServer;
     }
+    if (config.devOnlyProblem(cfg, anole.env.environment() == .development)) |problem| {
+        std.log.err("refusing to start: {s}", .{problem});
+        return error.DevOnlySetting;
+    }
+    if (cfg.route_saved_providers) {
+        byok.allow_saved = true;
+        std.log.warn("ROUTE_SAVED_PROVIDERS: keys of providers not yet connected are used (live checks only)", .{});
+    }
     if (cfg.openrouter_api_key == null) std.log.info("OPENROUTER_API_KEY not set: calls run on the app's local server with the user's keys, or on local models", .{});
 
     var state: App = .{
