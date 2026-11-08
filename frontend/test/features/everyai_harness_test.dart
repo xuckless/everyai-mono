@@ -916,6 +916,12 @@ for line in sys.stdin:
           ('read', {'file_path': 'main.c'}),
         ],
       )
+      // An edit doesn't wait for a server still starting: this call waits for it.
+      ..reply(
+        calls: [
+          ('diagnostics', {'path': 'main.c'}),
+        ],
+      )
       ..reply(
         calls: [
           ('edit', {'file_path': 'main.c', 'old_string': 'return 0;', 'new_string': 'return missing;'}),
@@ -930,6 +936,10 @@ for line in sys.stdin:
     final session = await harness.start(spec('break main.c'));
     final events = await drive(session, timeout: const Duration(seconds: 60));
     final results = {for (final r in events.whereType<ToolResult>()) r.toolName: r.text};
+    expect(
+      events.whereType<ToolResult>().where((r) => r.toolName == 'diagnostics').first.text,
+      'No errors or warnings in 1 file.',
+    );
     expect(results['edit'], contains('This edit added 1 error in main.c; call diagnostics to see it.'));
     expect(results['diagnostics'], startsWith('1 error, 0 warnings in 1 file:'));
     expect(results['diagnostics'], contains('main.c:1:'));

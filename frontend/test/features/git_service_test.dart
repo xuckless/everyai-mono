@@ -388,6 +388,20 @@ void main() {
       expect(found['committed']!.unsaved, isTrue);
       expect(File(found['empty']!.repoRoot).resolveSymbolicLinksSync(), Directory(repo).resolveSymbolicLinksSync());
 
+      // Held, spelled another way (a trailing separator, a `.` segment): still skipped.
+      expect([
+        for (final o in await GitService.orphanForks(forks, {'${held.root}/', '$forks/./held'})) o.path.split('/').last,
+      ], isNot(contains('held')));
+
+      // A fork whose repository can't be reached any more: kept, its work unknown.
+      final lost = Directory('$forks/lost')..createSync();
+      File('${lost.path}/.git').writeAsStringSync('gitdir: /nowhere/.git/worktrees/lost\n');
+      File('${lost.path}/notes.txt').writeAsStringSync('mine\n');
+      final again = {
+        for (final o in await GitService.orphanForks(forks, {held.root})) o.path.split('/').last: o,
+      };
+      expect(again['lost']!.unsaved, isTrue);
+
       await GitService.removeOrphanFork(found['empty']!);
       expect(Directory(empty.root).existsSync(), isFalse);
       expect(await _git(repo, ['worktree', 'list']), isNot(contains('/empty')));

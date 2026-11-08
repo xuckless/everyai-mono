@@ -3832,20 +3832,27 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// Gives [text] to the running turn after its current step, without stopping it (the orchestrator's message_fork,
   /// a fork row's Message). A lead that can't take a message mid-run, or a turn that isn't running, gets it as the
   /// next message (queued while busy). False when nothing went out or was queued.
-  Future<bool> tellWhileRunning(String text) async {
+  ///
+  /// Only the user's own message ([fromUser]) may start a turn that isn't running, or settle the session's waiting
+  /// cards (local consents, questions, plans): the orchestrator's never restarts a fork the user stopped or paused,
+  /// and never answers for the user.
+  Future<bool> tellWhileRunning(String text, {bool fromUser = false}) async {
     if (!_withinBudget()) return false;
+    final t = state.transcript;
+    // Stopped or paused by the user and still unwinding: the turn ends, and nothing joins it.
+    final stopping = _userStopped && t.running;
+    if (!fromUser && (stopping || !t.running)) return false;
     final out = await _outgoing(text, const []);
     if (out == null) return false;
     final session = _session;
-    final t = state.transcript;
-    if (t.running && t.pending.isEmpty && !_switching && !_rewinding) {
+    if (t.running && t.pending.isEmpty && !_switching && !_rewinding && !stopping) {
       final mid = switch (session) {
         final TakesMessagesMidRun s => s.tellMidRun,
         final SteersRuns s when _driver.caps.contains(DriverCap.steer) => s.steer,
         _ => null,
       };
       if (mid != null) {
-        _releaseHostCards();
+        if (fromUser) _releaseHostCards();
         _touchHost();
         await mid(_noted(out.text), images: out.images);
         return true;

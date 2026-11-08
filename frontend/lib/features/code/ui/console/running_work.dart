@@ -96,7 +96,9 @@ class _RunningWorkState extends ConsumerState<RunningWork> {
       confirmLabel: 'Send',
     );
     if (text == null || text.trim().isEmpty) return;
-    await ref.read(codeSessionProvider(child.id).notifier).tellWhileRunning(forkMessageFromUser(text.trim()));
+    await ref
+        .read(codeSessionProvider(child.id).notifier)
+        .tellWhileRunning(forkMessageFromUser(text.trim()), fromUser: true);
   }
 
   @override

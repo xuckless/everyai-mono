@@ -932,15 +932,27 @@ final class ToolRunner {
     final hints = <String>[];
     for (final p in paths) {
       var was = before[p];
-      if (was == null && out.observation['path'] == p) {
-        final old = out.observation['old_content'];
-        was = old is String && old.isNotEmpty
-            ? lspErrors(await hub!.check(p, text: old, timeout: wait) ?? const [])
-            : 0;
+      if (was == null) {
+        // No baseline from the server: the old text, when the result has it (a new file had none). Without one, or
+        // when the server didn't answer for it, the file's existing errors would read as added: no hint.
+        final old = out.observation['path'] == p
+            ? out.observation['old_content']
+            : [
+                for (final f in out.observation['files'] as List<Object?>? ?? const [])
+                  if (f is Map && f['path'] == p) f['old_content'],
+              ].firstOrNull;
+        if (old is! String) continue;
+        if (old.isEmpty) {
+          was = 0;
+        } else {
+          final found = await hub!.check(p, text: old, timeout: wait);
+          if (found == null) continue;
+          was = lspErrors(found);
+        }
       }
       final now = await hub!.check(p, timeout: wait);
       if (now == null) continue;
-      if (editDiagnosticsHint(_relative(p), was ?? 0, lspErrors(now)) case final h?) hints.add(h);
+      if (editDiagnosticsHint(_relative(p), was, lspErrors(now)) case final h?) hints.add(h);
     }
     return hints.isEmpty
         ? out
@@ -1337,13 +1349,26 @@ final class ToolRunner {
     );
     if (r.error case final e?) return ToolOutput('Error: $e', isError: true);
     file.writeAsStringSync(r.text!);
-    _read[path] = file.lastModifiedSync();
+    // Ids by position move when cells come or go: the next edit needs a fresh read (the stale-read check asks).
+    final shifted = mode != 'replace' && notebookIdsArePositions(before);
+    if (shifted) {
+      _read.remove(path);
+    } else {
+      _read[path] = file.lastModifiedSync();
+    }
     final what = switch (mode) {
       'replace' => 'Replaced cell ${r.cellId}',
       'insert' => 'Inserted cell ${r.cellId}',
       _ => 'Deleted cell ${args['cell_id']}',
     };
-    return ToolOutput('$what in $path.', observation: {'path': path, 'old_content': before, 'new_content': r.text});
+    final note = shifted
+        ? ' This notebook has no cell ids, so cells are named by position and the later ones moved: read it again '
+              'before the next edit.'
+        : '';
+    return ToolOutput(
+      '$what in $path.$note',
+      observation: {'path': path, 'old_content': before, 'new_content': r.text},
+    );
   }
 
   String? _staleRead(String path) {

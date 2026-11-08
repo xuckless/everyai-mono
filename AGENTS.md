@@ -531,7 +531,7 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   - Approvals: one decision per action id (`respond(callIds)`; none = all undecided; `PerCallApprovals`). Refused calls return as refusals and the run continues; only Deny all or Stop parks it. Controller auto-answers per call (`CodeSessionState.decided`, `rememberBy`); `ApprovalCard` stacks rows under Allow all / Deny all. OpenHands stays batch-wide.
   - Parallel reads: read-only bash (`runsInParallel`) batches with the read tools, up to 8 at a time.
   - Compaction: `clearOldToolOutput` (>40K tokens of output older than the last 3 model steps → 20K, placeholder) before summarising; continuation re-injects `<approved-plan>`, `<todos>`, `<files>` (last 5 touched, 8K/30K, marked read), `<skills>`. State in `state.json`.
-  - Families: `model_family.dart` `familyOf` fixed per session; `familyRules` `<MODEL-NOTES>` after `harnessRules`; GPT gets our own V4A `apply_patch` (`apply_patch.dart`) instead of edit/write, treated as edits per file.
+  - Families: `model_family.dart` `familyOf` per session, changed by a model switch only across vendors (since 2026-11-07); `familyRules` `<MODEL-NOTES>` after `harnessRules`; GPT gets our own V4A `apply_patch` (`apply_patch.dart`) instead of edit/write, treated as edits per file.
   - Verified: analyze clean, 686 flutter tests, zig tests pass. Not live-tested or clicked through.
 
 - **BYOK, UI fixes, Gemini/Kimi run fixes (2026-10-31; b22f889..39b53c2):**
@@ -1077,6 +1077,21 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   their reports and results dropped (`_quietRuns`), so nothing wakes the lead; `runningWork` (`SessionWork` in
   `domain/session_work.dart`) says what runs. UI: `StopAllButton` (a small up-chevron opening one kit menu row) beside
   Send/Stop while more than the lead's turn runs, and on Board cards while an open session runs anything.
+- **Harness gaps (2026-11-07; branch `feat/harness-gaps`; owner answers in `~/.claude/plans/harness-gaps.md`).**
+  Git buttons are prompts (`domain/git_requests.dart`): Commit, Create PR and Merge locally send a user turn to the
+  session's agent (queued while busy; `/commit` and `/pr` keep their drafts). Merge locally: the agent rebases and
+  squashes in its worktree, then the next press fast-forwards the base (`fastForwardMerge`, `BaseMoved` asks again).
+  Tier notes (`<everyai-tier>`) and `<workflow-result>` show as chips/notices, not the long text. Compaction: a plan
+  approved by message is kept; clearing keeps the current user turn plus the last 3 steps. Auto mode
+  (`AgentMode.auto`): EveryAI lead = Full auto; Claude Code = its `auto` permission mode behind our hook (floor and
+  deny still refused; escalated calls ask as in Ask); Codex = approvalsReviewer `auto_review` (EveryAI's floor
+  doesn't see those calls; the mode says so). Forks: left-over fork worktrees pruned at launch (kept with unsaved
+  work, listed in Settings → Code), `message_fork` reaches a running child after its current step, a per-fork
+  Changes picker in the Diff tab; MCP servers and language servers stop on session delete and after 10 idle minutes
+  (`StopsHelpers`). LSP (`harness/everyai/lsp*.dart`): `diagnostics` tool (EveryAI harness + host MCP), a one-line
+  hint on edits that add errors, servers from PATH or pinned npm installs (`assets/lsp/`, `npm ci --ignore-scripts`);
+  nothing from the repo runs. Notebooks: `read` shows cells, `notebook_edit` by cell id, read-only cell view in the
+  Files tab. Not live-tested; no widget test of the fork Diff picker.
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),

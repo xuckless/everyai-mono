@@ -350,6 +350,22 @@ void main() {
     expect(none.text, contains('no running fork'));
   });
 
+  test("message_fork doesn't restart a fork the user stopped, or one that isn't running", () async {
+    final l = await lead();
+    final f = await fork(l.info.id);
+    final idle = await hostCall(l.info.id, messageForkTool, {'fork_id': f.info.id, 'message': 'Go on.'});
+    expect(idle.text, startsWith('Not sent'));
+    f.session.add(stateEvent('r1', ExecutionStatus.running));
+    await pumpEventQueue();
+    await container.read(codeSessionProvider(f.info.id).notifier).stop();
+    // Still unwinding after the user's Stop.
+    expect(container.read(codeSessionProvider(f.info.id)).transcript.running, isTrue);
+    final stopping = await hostCall(l.info.id, messageForkTool, {'fork_id': f.info.id, 'message': 'Go on.'});
+    // Refused: as stopped, or as no longer one of the lead's running forks.
+    expect(stopping.text, isNot(startsWith('Sent')));
+    expect(container.read(codeSessionProvider(f.info.id)).queued, isEmpty);
+  });
+
   test('stop_fork stops the child, and what it did comes as its report', () async {
     final l = await lead();
     final f = await fork(l.info.id);

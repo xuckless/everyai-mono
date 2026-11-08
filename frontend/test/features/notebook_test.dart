@@ -97,6 +97,13 @@ void main() {
     final deleted = editNotebook(notebook(), mode: 'delete', cellId: 'intro');
     expect(((jsonDecode(deleted.text!) as Map)['cells'] as List).single, containsPair('id', 'load'));
 
+    // A markdown cell turned into code drops its attachments (code cells may not have them).
+    final withAttachment = notebook().replaceFirst('"id": "intro",', '"id": "intro", "attachments": {"a.png": {}},');
+    final asCode = editNotebook(withAttachment, mode: 'replace', cellId: 'intro', cellType: 'code', source: 'x');
+    expect(((jsonDecode(asCode.text!) as Map)['cells'] as List).first, isNot(contains('attachments')));
+    expect(notebookIdsArePositions(notebook()), isFalse);
+    expect(notebookIdsArePositions('{"cells": [{"cell_type": "code", "source": ""}]}'), isTrue);
+
     expect(editNotebook(notebook(), mode: 'replace', cellId: 'nope', source: '').error, contains('no cell has id'));
     expect(editNotebook('not json', mode: 'delete', cellId: 'a').error, contains('not valid JSON'));
     expect(editNotebook(notebook(), mode: 'move', cellId: 'load').error, contains('edit_mode'));

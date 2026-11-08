@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import 'git_env.dart';
@@ -769,11 +770,15 @@ Future<List<OrphanFork>> orphanForks(String forksDir, Set<String> held) async {
   final dir = Directory(forksDir);
   if (!dir.existsSync()) return const [];
   final out = <OrphanFork>[];
+  // Compared spelled the same way: listSync joins with the platform's separator, sessions store '/'.
+  final heldPaths = {for (final h in held) p.canonicalize(h)};
   for (final d in dir.listSync().whereType<Directory>()) {
-    if (held.contains(d.path)) continue;
+    if (heldPaths.contains(p.canonicalize(d.path))) continue;
     final common = await _git(d.path, ['rev-parse', '--path-format=absolute', '--git-common-dir'], check: false);
     if (common.exitCode != 0) {
-      out.add((path: d.path, repoRoot: '', unsaved: false));
+      // Its repository can't be reached (an unmounted disk, a moved project): what it holds can't be told, so it is
+      // kept for the user to remove.
+      out.add((path: d.path, repoRoot: '', unsaved: true));
       continue;
     }
     final repo = File('${common.stdout}'.trim()).parent.path;

@@ -94,6 +94,10 @@ String notebookForModel(String text, {int outputChars = 2000}) {
   return b.toString();
 }
 
+/// Whether [text]'s cell ids are positions (`cell-N`, a notebook from before nbformat 4.5), which an insert or
+/// delete moves.
+bool notebookIdsArePositions(String text) => parseNotebook(text)?.cells.any((c) => c.id.startsWith('cell-')) ?? false;
+
 /// [text] (a notebook) with one cell edit: [mode] `replace` (the source of [cellId]; [cellType] may change its kind),
 /// `insert` (a new cell of [cellType] after [cellId], or first when there is none) or `delete`. A code cell whose
 /// source changes loses its saved outputs, which no longer match it. The rest of the file is kept as it was. Returns
@@ -140,8 +144,11 @@ String notebookForModel(String text, {int outputChars = 2000}) {
       cell['cell_type'] = type;
       cell['source'] = _lines(source);
       if (type == 'code') {
-        cell['outputs'] = <Object?>[];
-        cell['execution_count'] = null;
+        // nbformat allows attachments on markdown and raw cells only.
+        cell
+          ..remove('attachments')
+          ..['outputs'] = <Object?>[]
+          ..['execution_count'] = null;
       } else {
         cell
           ..remove('outputs')

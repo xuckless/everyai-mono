@@ -3,12 +3,27 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data' show BytesBuilder;
 
+import 'dart:math' show Random;
+
 import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart' show rootBundle;
+import 'package:path/path.dart' as p;
 
 import 'lsp.dart';
 
 export 'lsp.dart';
+
+/// [path] spelled the way servers report it back: symlinks resolved (`/tmp` → `/private/tmp`), normalised, and on
+/// Windows in one case.
+String lspCanonical(String path) {
+  var real = path;
+  try {
+    if (FileSystemEntity.typeSync(path) != FileSystemEntityType.notFound) real = File(path).resolveSymbolicLinksSync();
+  } on FileSystemException {
+    // As given.
+  }
+  return p.canonicalize(real);
+}
 
 /// One language server over stdio (JSON-RPC with Content-Length framing): it gets each file's whole text and sends
 /// back what it finds (`publishDiagnostics`). Requests the server makes of us get empty answers.
@@ -32,6 +47,10 @@ final class LspClient {
   /// The text each open file was last given, and its version.
   final _open = <String, ({String text, int version})>{};
 
+  /// Checks still waiting for their findings, by path: another check of the same text joins one (sending the
+  /// text again would make the first report stale, and a server may not report unchanged text twice).
+  final _inflight = <String, ({String text, Future<List<LspDiagnostic>?> result})>{};
+
   static Future<LspClient?> start(
     LspCommand command, {
     required String root,
@@ -46,7 +65,7 @@ final class LspClient {
     }
     final c = LspClient._(p, root);
     try {
-      await c
+      final init = await c
           ._request('initialize', {
             'processId': pid,
             'rootUri': Uri.directory(root).toString(),
@@ -63,6 +82,8 @@ final class LspClient {
             'initializationOptions': ?initializationOptions,
           })
           .timeout(const Duration(seconds: 30));
+      // An error reply (or none) is no server.
+      if (init is! Map) throw StateError('initialize failed');
       c._notify('initialized', const {});
       return c;
     } on Object {
@@ -85,6 +106,25 @@ final class LspClient {
     if (_closed) return null;
     final was = _open[path];
     if (was != null && was.text == text && _diagnostics.containsKey(path)) return _diagnostics[path];
+    if (_inflight[path] case (text: final t, :final result) when t == text) {
+      return result.timeout(timeout, onTimeout: () => null);
+    }
+    final result = _check(path, text, languageId, was, timeout);
+    _inflight[path] = (text: text, result: result);
+    try {
+      return await result;
+    } finally {
+      if (identical(_inflight[path]?.result, result)) _inflight.remove(path);
+    }
+  }
+
+  Future<List<LspDiagnostic>?> _check(
+    String path,
+    String text,
+    String languageId,
+    ({String text, int version})? was,
+    Duration timeout,
+  ) async {
     final uri = Uri.file(path).toString();
     final next = _published.stream.where((p) => p == path);
     final first = next.first.timeout(timeout);
@@ -179,7 +219,12 @@ final class LspClient {
       final params = m['params'] as Map? ?? const {};
       final uri = params['uri'];
       if (uri is! String) return;
-      final path = Uri.parse(uri).toFilePath();
+      final String path;
+      try {
+        path = lspCanonical(Uri.parse(uri).toFilePath());
+      } on Object {
+        return;
+      }
       final version = params['version'];
       // A report for an older text than the server has now is stale.
       if (version is int && _open[path] != null && version != _open[path]!.version) return;
@@ -257,6 +302,9 @@ final class LspHub {
 
   final _clients = <LspLanguage, Future<LspClient?>>{};
 
+  /// The servers that have finished starting (what an edit's baseline and `all` read without waiting).
+  final _ready = <LspLanguage, LspClient>{};
+
   /// Why a language has no server, once found out (for the tool's answer).
   final missing = <LspLanguage, String>{};
 
@@ -265,9 +313,11 @@ final class LspHub {
   Future<LspClient?> _client(LspLanguage l) async {
     final c = await (_clients[l] ??= _start(l));
     if (c != null && !c.alive) {
+      _ready.remove(l);
       await _clients.remove(l);
       return _client(l);
     }
+    if (c != null) _ready[l] = c;
     return c;
   }
 
@@ -276,6 +326,11 @@ final class LspHub {
     final command = await _resolve(l, env);
     if (command == null) return null;
     final ts = l == LspLanguage.typescript ? _tsserver(command) : null;
+    if (l == LspLanguage.typescript && ts == null) {
+      // Without its own TypeScript the server would load the project's (and its tsconfig plugins).
+      missing[l] = "The TypeScript language server's own TypeScript is missing, so it isn't started.";
+      return null;
+    }
     final c = await LspClient.start(
       command,
       root: root,
@@ -297,9 +352,7 @@ final class LspHub {
   }
 
   Future<LspCommand?> _resolve(LspLanguage l, Map<String, String> env) async {
-    final options = File('$root/analysis_options.yaml');
-    if (lspProjectCodeRefusal(l, analysisOptions: options.existsSync() ? options.readAsStringSync() : '')
-        case final why?) {
+    if (projectCodeRefusal(root, l) case final why?) {
       missing[l] = why;
       return null;
     }
@@ -333,26 +386,40 @@ final class LspHub {
     final hash = sha256.convert(utf8.encode(lock)).toString().substring(0, 12);
     final dir = '$toolsDir/lsp/$id-$hash';
     if (File('$dir/.installed').existsSync()) return dir;
-    final tmp = Directory('$dir.tmp');
-    if (tmp.existsSync()) tmp.deleteSync(recursive: true);
-    tmp.createSync(recursive: true);
-    File('${tmp.path}/package.json').writeAsStringSync(manifest);
-    File('${tmp.path}/package-lock.json').writeAsStringSync(lock);
-    final res = await Process.run(
-      npm,
-      ['ci', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'],
-      workingDirectory: tmp.path,
-      environment: env,
-    );
-    if (res.exitCode != 0) {
-      tmp.deleteSync(recursive: true);
-      throw '${'${res.stderr}'.trim().split('\n').last} (npm ci)';
+    // A folder of its own: another session may be installing the same set at the same time.
+    final tmp = Directory('$dir.tmp-$pid-${Random().nextInt(1 << 32)}')..createSync(recursive: true);
+    try {
+      File('${tmp.path}/package.json').writeAsStringSync(manifest);
+      File('${tmp.path}/package-lock.json').writeAsStringSync(lock);
+      final proc = await Process.start(
+        npm,
+        ['ci', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'],
+        workingDirectory: tmp.path,
+        environment: env,
+      );
+      final err = StringBuffer();
+      unawaited(proc.stdout.drain<void>());
+      final errDone = proc.stderr.transform(utf8.decoder).forEach(err.write);
+      final code = await proc.exitCode.timeout(
+        const Duration(minutes: 5),
+        onTimeout: () {
+          proc.kill();
+          return -1;
+        },
+      );
+      await errDone.timeout(const Duration(seconds: 2), onTimeout: () {});
+      if (code != 0) {
+        throw code == -1 ? 'npm ci took over 5 minutes (offline?)' : '${'$err'.trim().split('\n').last} (npm ci)';
+      }
+      File('${tmp.path}/.installed').writeAsStringSync('');
+      if (File('$dir/.installed').existsSync()) return dir;
+      final target = Directory(dir);
+      if (target.existsSync()) target.deleteSync(recursive: true);
+      tmp.renameSync(dir);
+      return dir;
+    } finally {
+      if (tmp.existsSync()) tmp.deleteSync(recursive: true);
     }
-    File('${tmp.path}/.installed').writeAsStringSync('');
-    final target = Directory(dir);
-    if (target.existsSync()) target.deleteSync(recursive: true);
-    tmp.renameSync(dir);
-    return dir;
   }
 
   static String? _onPath(String name, Map<String, String> env) {
@@ -380,7 +447,7 @@ final class LspHub {
     if (content == null) return null;
     final c = await _client(l).timeout(timeout, onTimeout: () => null);
     if (c == null) return null;
-    return c.check(path, content, lspLanguageId(l, path), timeout: timeout);
+    return c.check(lspCanonical(path), content, lspLanguageId(l, path), timeout: timeout);
   }
 
   /// Opens [path] in its server in the background (after a read), so an edit has its findings to compare with.
@@ -391,19 +458,18 @@ final class LspHub {
   /// The errors [path] had in the text its server was last given, or null when none are known.
   Future<int?> knownErrors(String path) async {
     final l = lspLanguageOf(path);
-    final c = l == null || !_clients.containsKey(l) ? null : await _clients[l];
-    final d = c?.known(path);
+    // Only a server that is up: never wait for one still installing or starting.
+    final d = l == null ? null : _ready[l]?.known(lspCanonical(path));
     return d == null ? null : lspErrors(d);
   }
 
   /// Every file the servers were given, with what they found (checked again against the files on disk).
   Future<Map<String, List<LspDiagnostic>>> all({Duration timeout = const Duration(seconds: 20)}) async {
     final out = <String, List<LspDiagnostic>>{};
-    for (final f in [..._clients.values]) {
-      final c = await f;
-      for (final p in [...?c?.openPaths]) {
-        final d = await check(p, timeout: timeout);
-        if (d != null) out[p] = d;
+    for (final c in [..._ready.values]) {
+      for (final path in [...c.openPaths]) {
+        final d = await check(path, timeout: timeout);
+        if (d != null) out[path] = d;
       }
     }
     return out;
@@ -413,6 +479,7 @@ final class LspHub {
   Future<void> close() async {
     final all = [..._clients.values];
     _clients.clear();
+    _ready.clear();
     for (final f in all) {
       await (await f)?.close();
     }
@@ -422,7 +489,14 @@ final class LspHub {
 /// The diagnostics tool's answer in [root] for [rawPath] (relative or absolute; empty: every file checked so far),
 /// for the EveryAI harness and the host's tool alike.
 Future<({String text, bool isError})> diagnosticsAnswer(LspHub hub, String root, String rawPath) async {
-  String rel(String p) => p.startsWith('$root/') ? p.substring(root.length + 1) : p;
+  final real = lspCanonical(root);
+  String rel(String path) {
+    for (final r in {root, real}) {
+      if (p.isWithin(r, path)) return p.split(p.relative(path, from: r)).join('/');
+    }
+    return path;
+  }
+
   final raw = rawPath.trim();
   if (raw.isEmpty) {
     final all = await hub.all();
@@ -431,7 +505,7 @@ Future<({String text, bool isError})> diagnosticsAnswer(LspHub hub, String root,
     }
     return (text: formatDiagnostics({for (final e in all.entries) rel(e.key): e.value}), isError: false);
   }
-  final path = raw.startsWith('/') ? raw : '$root/$raw';
+  final path = p.isAbsolute(raw) ? raw : p.join(root, raw);
   if (!File(path).existsSync()) return (text: 'Error: $path does not exist.', isError: true);
   final language = lspLanguageOf(path);
   if (language == null) {
@@ -446,4 +520,118 @@ Future<({String text, bool isError})> diagnosticsAnswer(LspHub hub, String root,
     return (text: "$why Run the project's own checks instead.", isError: false);
   }
   return (text: formatDiagnostics({rel(path): found}), isError: false);
+}
+
+/// Why the [language] server isn't started for the project at [root], or null. Diagnostics run without asking, so
+/// nothing the repository controls may make the server run code:
+/// - Rust: a toolchain file can name a rust-analyzer inside the repo, and cargo config can name a rustc or a
+///   wrapper; rust-analyzer.toml can turn build scripts and proc macros back on.
+/// - Dart: analyzer plugins named in any analysis_options.yaml, directly or through what it includes.
+String? projectCodeRefusal(String root, LspLanguage language) {
+  if (language != LspLanguage.rust && language != LspLanguage.dart) return null;
+  for (final f in _projectFiles(root)) {
+    final name = p.basename(f);
+    final parent = p.basename(p.dirname(f));
+    if (language == LspLanguage.rust) {
+      final cargoConfig = parent == '.cargo' && (name == 'config' || name == 'config.toml');
+      if (name == 'rust-toolchain' || name == 'rust-toolchain.toml' || name == 'rust-analyzer.toml' || cargoConfig) {
+        return '${p.relative(f, from: root)} can make the Rust toolchain run programs from the project, so EveryAI '
+            "doesn't start rust-analyzer itself. Run cargo check instead.";
+      }
+    } else if (name == 'analysis_options.yaml' && _loadsPlugins(f, root, 0)) {
+      return '${lspProjectCodeRefusal(LspLanguage.dart, analysisOptions: 'plugins:')} '
+          '(${p.relative(f, from: root)})';
+    }
+  }
+  return null;
+}
+
+/// The files under [root] a server could read for its settings: folders a build or a package manager fills are
+/// skipped, and the walk is bounded.
+Iterable<String> _projectFiles(String root) sync* {
+  const skip = {'.git', 'node_modules', 'target', 'build', '.dart_tool', '.venv', 'venv', '__pycache__', 'Pods'};
+  var queue = [(dir: root, depth: 0)];
+  var seen = 0;
+  while (queue.isNotEmpty && seen < 4000) {
+    final next = <({String dir, int depth})>[];
+    for (final d in queue) {
+      seen++;
+      final List<FileSystemEntity> entries;
+      try {
+        entries = Directory(d.dir).listSync(followLinks: false);
+      } on FileSystemException {
+        continue;
+      }
+      for (final e in entries) {
+        final name = p.basename(e.path);
+        if (e is Directory) {
+          if (d.depth < 6 && !skip.contains(name)) next.add((dir: e.path, depth: d.depth + 1));
+        } else if (e is File) {
+          yield e.path;
+        }
+      }
+    }
+    queue = next;
+  }
+}
+
+/// Whether the analysis options file [path] names analyzer plugins, itself or through its `include:`s (files, and
+/// `package:` files found through the project's package config). An include that can't be found counts as plugins.
+bool _loadsPlugins(String path, String root, int depth) {
+  if (depth > 6) return true;
+  final String text;
+  try {
+    text = File(path).readAsStringSync();
+  } on FileSystemException {
+    return true;
+  }
+  if (lspProjectCodeRefusal(LspLanguage.dart, analysisOptions: text) != null) return true;
+  final includes = <String>[];
+  final lines = text.split('\n');
+  for (var i = 0; i < lines.length; i++) {
+    final m = RegExp(r'^include\s*:\s*(.*)$').firstMatch(lines[i]);
+    if (m == null) continue;
+    final rest = m[1]!.trim();
+    if (rest.isNotEmpty) {
+      includes.add(rest.replaceAll(RegExp('^["\']|["\']\$'), ''));
+    } else {
+      // A list of includes.
+      for (var j = i + 1; j < lines.length && RegExp(r'^\s+-').hasMatch(lines[j]); j++) {
+        includes.add(lines[j].replaceFirst(RegExp(r'^\s+-\s*'), '').trim().replaceAll(RegExp('^["\']|["\']\$'), ''));
+      }
+    }
+  }
+  for (final inc in includes) {
+    final target = inc.startsWith('package:') ? _packageFile(inc, p.dirname(path), root) : p.join(p.dirname(path), inc);
+    if (target == null || _loadsPlugins(target, root, depth + 1)) return true;
+  }
+  return false;
+}
+
+/// The file a `package:name/path` URI names, through the nearest `.dart_tool/package_config.json` at or above [from]
+/// (up to [root]); null when it can't be found.
+String? _packageFile(String uri, String from, String root) {
+  final rest = uri.substring('package:'.length);
+  final slash = rest.indexOf('/');
+  if (slash < 0) return null;
+  final name = rest.substring(0, slash);
+  for (var dir = from; ; dir = p.dirname(dir)) {
+    final config = File(p.join(dir, '.dart_tool', 'package_config.json'));
+    if (config.existsSync()) {
+      try {
+        final json = jsonDecode(config.readAsStringSync()) as Map<String, Object?>;
+        for (final pkg in json['packages'] as List<Object?>? ?? const []) {
+          if (pkg is! Map || pkg['name'] != name) continue;
+          final base = Uri.directory(p.join(dir, '.dart_tool'));
+          final pkgRoot = base.resolve('${pkg['rootUri']}'.endsWith('/') ? '${pkg['rootUri']}' : '${pkg['rootUri']}/');
+          final lib = pkgRoot.resolve('${pkg['packageUri'] ?? 'lib/'}');
+          return lib.resolve(rest.substring(slash + 1)).toFilePath();
+        }
+      } on Object {
+        return null;
+      }
+      return null;
+    }
+    if (p.equals(dir, root) || p.dirname(dir) == dir) return null;
+  }
 }
