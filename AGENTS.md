@@ -908,6 +908,14 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   cards are links). Source cards show the site's favicon through DuckDuckGo's icon service (`faviconUrl`; the sites
   themselves aren't contacted), with the letter badge while it loads or when there's none. Not reproduced in a test:
   a plain nested drag doesn't trip the assertion; the markdown code/table scrollers aren't changed.
+- **Usage card on every harness (2026-11-07; branch `fix/usage-every-harness`).** `/usage` on a Claude Code session in a
+  short window pushed the card's header (title, ×) out of the strip above the composer (≤70% of the window, scrolled
+  from the composer up), and the card's own scroller took the wheel. The card body now gets the room left
+  (`maxBodyHeight` from the session view), and Esc closes the newest card before it stops the agent
+  (`CodeComposer.onEscape`). Every harness's plan windows and the spending cap go through the plan report parser
+  (bars): `usageLines` says `Spending cap ($5.00): 40% used`. Codex is asked for fresh limits on `/usage`
+  (`RefreshesPlanLimits`, `account/rateLimits/read`); Claude Code's probe gets stdin closed (`EndsInput`; `claude -p`
+  waited 3 s for it). OpenCode and ACP leads report no plan limits, so their card shows tokens, cost and the cap.
 - **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
   `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
   `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,

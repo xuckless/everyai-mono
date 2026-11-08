@@ -1281,6 +1281,28 @@ ${_upTo('usage_limit', '"method":"turn/started"')}
     });
   });
 
+  test('/usage asks Codex for its limits now and sends them as PlanLimits', () async {
+    final at = DateTime.utc(2026, 11, 10, 20).millisecondsSinceEpoch ~/ 1000;
+    final script = [
+      _upTo('approve_command', '"method":"thread/started"'),
+      '{"dir":"out","msg":{"id":"{{any}}","method":"account/rateLimits/read","params":{}}}',
+      '{"dir":"in","msg":{"id":"{{any}}","result":{"ordinaryUsageAllowed":true,"rateLimits":null,'
+          '"rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":{"usedPercent":40,"windowDurationMins":300},'
+          '"secondary":{"usedPercent":76,"windowDurationMins":10080,"resetsAt":$at},"planType":"plus"}}}}}',
+    ].join('\n');
+    final channel = ReplayChannel(script);
+    final s = await _driver(data, [channel]).start(_spec(work));
+    final events = _listen(s);
+    await (s as RefreshesPlanLimits).refreshPlanLimits();
+    await pumpEventQueue();
+    channel.expectFinished();
+    final limits = events.whereType<PlanLimits>().single;
+    expect([for (final w in limits.windows) (w.used, w.minutes)], [(0.4, 300), (0.76, 10080)]);
+    expect(limits.windows.last.resetsAt, DateTime.fromMillisecondsSinceEpoch(at * 1000, isUtc: true));
+    expect(limits.warning, isTrue);
+    await s.close();
+  });
+
   test('caps and markers match what the session implements', () async {
     final channel = _fixture('approve_command');
     final d = _driver(data, [channel]);

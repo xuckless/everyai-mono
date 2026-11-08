@@ -405,6 +405,12 @@ abstract interface class ReportsPlanUsage {
   Future<String> planUsage();
 }
 
+/// A session whose harness can be asked for the plan's limits now (Codex's `account/rateLimits/read`), not only when
+/// it volunteers them. The answer arrives as a [PlanLimits] event, like the ones the harness sends on its own.
+abstract interface class RefreshesPlanLimits {
+  Future<void> refreshPlanLimits();
+}
+
 abstract interface class AnswersSideQuestion {
   /// The answer to [question], or a [HarnessError] saying why there is none.
   Future<String> sideAnswer(String question);
