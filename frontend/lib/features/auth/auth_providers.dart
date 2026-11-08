@@ -37,21 +37,46 @@ base class AuthController extends Notifier<AuthState> {
   @override
   AuthState build() {
     ref.onDispose(_stopPolling);
+    // The server refused the refresh token (revoked on another device,
+    // expired): the tokens are gone, so this device is signed out too.
+    final ended = _tokens.sessionEnded.listen((_) => unawaited(_sessionEnded()));
+    ref.onDispose(ended.cancel);
     unawaited(_restore());
     return const Restoring();
   }
 
   Future<void> _restore() async {
-    String? token;
+    var signedIn = false;
     try {
-      token = await _tokens.refreshAccessToken();
+      // A refresh that didn't go through (the server waking up, offline)
+      // keeps the stored token: the session is still this device's, and
+      // its calls carry it. Only a refused token (cleared) is signed out.
+      signedIn = await _tokens.refreshAccessToken() != null || await _tokens.readRefreshToken() != null;
     } on Object {
-      // No keychain (a test, a locked keyring) or no server: signed out,
-      // which the app handles like any other state.
-      token = null;
+      // No keychain (a test, a locked keyring): signed out, which the app
+      // handles like any other state.
+      signedIn = false;
     }
     if (!ref.mounted || state is! Restoring) return;
-    state = token == null ? const SignedOut() : const SignedIn();
+    state = signedIn ? const SignedIn() : const SignedOut();
+  }
+
+  Future<void> _sessionEnded() async {
+    if (state is! SignedIn) return;
+    await _forgetGatewayKey();
+    if (ref.mounted && state is SignedIn) {
+      state = const SignedOut(error: 'You were signed out (the session ended). Sign in again for account features.');
+    }
+  }
+
+  /// The Code gateway key belongs to the account it was minted for; the
+  /// next one mints its own.
+  Future<void> _forgetGatewayKey() async {
+    try {
+      await ref.read(gatewayKeysProvider).clear();
+    } on Object {
+      // No keychain (or no preferences in a test): nothing was kept.
+    }
   }
 
   MagicFlow? get _flow => switch (state) {
@@ -72,7 +97,8 @@ base class AuthController extends Notifier<AuthState> {
 
   /// Opens the email step (Settings → Account, the account menu).
   void startSignIn({String email = ''}) {
-    if (state is SignedIn || state is SigningOut) return;
+    // While restoring, a stored session may still turn out to be valid.
+    if (state is SignedIn || state is SigningOut || state is Restoring) return;
     _setFlow(EnterEmail(++_gen, email: email));
   }
 
@@ -87,6 +113,8 @@ base class AuthController extends Notifier<AuthState> {
   /// Sends the email with the link and code.
   Future<void> ask(String email) async {
     final address = email.trim();
+    // Signed in (or about to know): a stray send must not start a second session.
+    if (state is SignedIn || state is SigningOut || state is Restoring) return;
     if (_flow case Requesting()) return;
     final gen = ++_gen;
     _setFlow(Requesting(gen, address));
@@ -122,7 +150,7 @@ base class AuthController extends Notifier<AuthState> {
     try {
       final answer = await _magic.code(waiting.requestId, waiting.secret, code.trim());
       if (gen != _gen) return;
-      await _settle(gen, answer, waiting);
+      await _settle(gen, answer, waiting, fromCode: true);
     } on WrongCode catch (e) {
       if (gen != _gen || _flow is! Verifying) return;
       _setFlow(
@@ -169,11 +197,25 @@ base class AuthController extends Notifier<AuthState> {
 
   /// Applies a poll or code answer: signed in with tokens, or the request
   /// ended, or still waiting.
-  Future<void> _settle(int gen, MagicAnswer answer, Waiting waiting) async {
+  ///
+  /// [fromCode]: the answer to a typed code. A poll that is still pending
+  /// while a code is being checked leaves Verifying alone, so the code's
+  /// own answer (a wrong code) still shows.
+  Future<void> _settle(int gen, MagicAnswer answer, Waiting waiting, {bool fromCode = false}) async {
     if (answer case (accessToken: final String access, refreshToken: final String refresh, status: _)) {
       _stopPolling();
       _gen++;
-      await _tokens.save(accessToken: access, refreshToken: refresh);
+      try {
+        await _tokens.save(accessToken: access, refreshToken: refresh);
+      } on Object {
+        // The keychain refused the session: don't spin on a sign-in that
+        // can't be kept.
+        await _tokens.clear().catchError((Object _) {});
+        if (ref.mounted) state = const SignedOut(error: "The sign-in couldn't be saved to this device's keychain.");
+        return;
+      }
+      // A key minted while signed out isn't this account's.
+      await _forgetGatewayKey();
       if (ref.mounted) state = const SignedIn();
       return;
     }
@@ -186,7 +228,7 @@ base class AuthController extends Notifier<AuthState> {
     };
     if (reason != null) {
       _setFlow(Expired(gen, email: waiting.email, reason: reason));
-    } else if (_flow is Verifying) {
+    } else if (fromCode && _flow is Verifying) {
       _setFlow(waiting);
     }
   }
@@ -201,17 +243,23 @@ base class AuthController extends Notifier<AuthState> {
   Future<void> _signOut() async {
     if (state is! SignedIn) return;
     state = const SigningOut();
-    final refresh = await _tokens.readRefreshToken();
-    if (refresh != null) {
-      unawaited(_api.postJson('v1/auth/logout', {'refresh_token': refresh}).then((_) {}, onError: (_) {}));
-    }
-    await _tokens.clear();
-    // The Code gateway key belongs to this account; the next user mints their own.
     try {
-      await ref.read(gatewayKeysProvider).clear();
+      // A refresh on its way rotates the token: revoke the one it leaves.
+      await _tokens.settled();
+      final refresh = await _tokens.readRefreshToken();
+      if (refresh != null) {
+        unawaited(_api.postJson('v1/auth/logout', {'refresh_token': refresh}).then((_) {}, onError: (_) {}));
+      }
     } on Object {
-      // No keychain (or no preferences in a test): nothing was kept.
+      // No keychain to read: nothing to revoke from here.
     }
+    try {
+      await _tokens.clear();
+    } on Object {
+      // The keychain refused the delete; the access token is gone anyway.
+    }
+    // The Code gateway key belongs to this account; the next user mints their own.
+    await _forgetGatewayKey();
     if (ref.mounted) state = const SignedOut();
   }
 

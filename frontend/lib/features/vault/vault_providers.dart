@@ -62,9 +62,24 @@ final class VaultController extends Notifier<VaultState> {
     if (!VaultDev.enabled) throw StateError('The vault is dev only (VAULT_DEV).');
   }
 
+  /// The writes (create, put, remove) in order: each one reads the manifest
+  /// the previous one left, so none drops another's item or reuses its
+  /// manifest version.
+  Future<void> _writes = Future.value();
+
+  Future<T> _serial<T>(Future<T> Function() write) {
+    final done = _writes.then((_) => write());
+    _writes = done.then((_) {}, onError: (Object _) {});
+    return done;
+  }
+
   /// Makes a vault; returns the recovery key to show once.
   Future<String> create(String passphrase, {KdfParams kdf = defaultKdf}) async {
     _require();
+    return _serial(() => _create(passphrase, kdf));
+  }
+
+  Future<String> _create(String passphrase, KdfParams kdf) async {
     final free = switch (state) {
       VaultAbsent() => true,
       VaultFailed(:final header) => header == null,
@@ -81,13 +96,23 @@ final class VaultController extends Notifier<VaultState> {
     await store.saveSeen(1);
     _liveKey = made.vaultKey;
     state = VaultUnlocked(made.header, made.vaultKey, manifest);
-    return RecoveryKey.format(made.recoveryKey);
+    try {
+      return RecoveryKey.format(made.recoveryKey);
+    } finally {
+      wipe(made.recoveryKey);
+    }
   }
 
   Future<void> unlock(String passphrase) => _unlock((c, h) => c.unlockWithPassphrase(h, passphrase));
 
-  Future<void> unlockWithRecovery(String recoveryKey) =>
-      _unlock((c, h) => c.unlockWithRecovery(h, RecoveryKey.parse(recoveryKey)));
+  Future<void> unlockWithRecovery(String recoveryKey) => _unlock((c, h) {
+    final rk = RecoveryKey.parse(recoveryKey);
+    try {
+      return c.unlockWithRecovery(h, rk);
+    } finally {
+      wipe(rk);
+    }
+  });
 
   Future<void> _unlock(SecureKey Function(VaultCrypto c, VaultHeader h) open) {
     _require();
@@ -125,6 +150,12 @@ final class VaultController extends Notifier<VaultState> {
       key?.dispose();
       if (!ref.mounted) return;
       state = VaultFailed('The vault files are damaged: ${e.message}', header: header);
+    } on Object catch (e) {
+      // A file that can't be read or isn't JSON: never stay unlocking with
+      // the key out.
+      key?.dispose();
+      if (!ref.mounted) return;
+      state = VaultFailed("The vault can't be read: $e", header: header);
     }
   }
 
@@ -144,54 +175,85 @@ final class VaultController extends Notifier<VaultState> {
 
   /// Writes [id] (a new version when it exists) and re-signs the manifest.
   Future<void> put(String id, Map<String, Object?> value) async {
-    final u = _open();
-    final c = await ref.read(vaultCryptoProvider.future);
-    final store = await _store;
-    final previous = u.manifest.items.where((i) => i.id == id).firstOrNull;
-    final version = (previous?.version ?? 0) + 1;
-    final item = c.encryptItem(
-      u.key,
-      u.header.vaultId,
-      id,
-      version,
-      Uint8List.fromList(utf8.encode(jsonEncode(value))),
-    );
-    await store.saveItem(item);
-    await _resign(u, [
-      for (final i in u.manifest.items)
-        if (i.id != id) i,
-      (id: id, version: version, digest: c.digest(item.body.ct)),
-    ]);
+    _open();
+    return _serial(() async {
+      final c = await ref.read(vaultCryptoProvider.future);
+      final store = await _store;
+      // Everything that needs the key happens here, with no await between
+      // the state check and the last use: a lock meanwhile can't hand the
+      // crypto a disposed key.
+      final u = _open();
+      final previous = u.manifest.items.where((i) => i.id == id).firstOrNull;
+      final version = (previous?.version ?? 0) + 1;
+      final plain = Uint8List.fromList(utf8.encode(jsonEncode(value)));
+      final VaultItem item;
+      try {
+        item = c.encryptItem(u.key, u.header.vaultId, id, version, plain);
+      } finally {
+        wipe(plain);
+      }
+      final next = _next(c, u, [
+        for (final i in u.manifest.items)
+          if (i.id != id) i,
+        (id: id, version: version, digest: c.digest(item.body.ct)),
+      ]);
+      await store.saveItem(item);
+      await _commit(store, u, next);
+    });
   }
 
   Future<void> remove(String id) async {
-    final u = _open();
-    await (await _store).deleteItem(id);
-    await _resign(u, [
-      for (final i in u.manifest.items)
-        if (i.id != id) i,
-    ]);
+    _open();
+    return _serial(() async {
+      final c = await ref.read(vaultCryptoProvider.future);
+      final store = await _store;
+      final u = _open();
+      final next = _next(c, u, [
+        for (final i in u.manifest.items)
+          if (i.id != id) i,
+      ]);
+      await store.deleteItem(id);
+      await _commit(store, u, next);
+    });
   }
 
-  Future<void> _resign(VaultUnlocked u, List<ManifestEntry> items) async {
-    final c = await ref.read(vaultCryptoProvider.future);
-    final store = await _store;
+  /// The next manifest and its signature (synchronous: see [put]).
+  ({Manifest manifest, Uint8List signature}) _next(VaultCrypto c, VaultUnlocked u, List<ManifestEntry> items) {
     final next = Manifest(vaultId: u.header.vaultId, version: u.manifest.version + 1, items: items);
-    await store.saveManifest(next.bytes(), c.signManifest(u.key, u.header, next));
-    await store.saveSeen(next.version);
-    if (ref.mounted && identical(state, u)) state = VaultUnlocked(u.header, u.key, next);
+    return (manifest: next, signature: c.signManifest(u.key, u.header, next));
+  }
+
+  Future<void> _commit(VaultStore store, VaultUnlocked u, ({Manifest manifest, Uint8List signature}) next) async {
+    await store.saveManifest(next.manifest.bytes(), next.signature);
+    await store.saveSeen(next.manifest.version);
+    if (!ref.mounted) return;
+    // Still unlocked with the same key (not locked meanwhile): the state follows the files.
+    if (state case VaultUnlocked(:final key) when identical(key, u.key)) {
+      state = VaultUnlocked(u.header, u.key, next.manifest);
+    }
   }
 
   /// [id]'s value; refused when its file doesn't match the signed manifest.
+  /// In line with the writes, so a put half done isn't read as tampering.
   Future<Map<String, Object?>?> get(String id) async {
-    final u = _open();
-    final c = await ref.read(vaultCryptoProvider.future);
-    final entry = u.manifest.items.where((i) => i.id == id).firstOrNull;
-    if (entry == null) return null;
-    final item = await (await _store).item(id);
-    if (item == null || item.version != entry.version || c.digest(item.body.ct) != entry.digest) {
-      throw const VaultFormatError('the item does not match the signed manifest');
-    }
-    return jsonDecode(utf8.decode(c.decryptItem(u.key, u.header.vaultId, item))) as Map<String, Object?>;
+    _open();
+    return _serial(() async {
+      final c = await ref.read(vaultCryptoProvider.future);
+      final store = await _store;
+      final item = await store.item(id);
+      // Checked after the read: a lock meanwhile disposed the key.
+      final u = _open();
+      final entry = u.manifest.items.where((i) => i.id == id).firstOrNull;
+      if (entry == null) return null;
+      if (item == null || item.version != entry.version || c.digest(item.body.ct) != entry.digest) {
+        throw const VaultFormatError('the item does not match the signed manifest');
+      }
+      final plain = c.decryptItem(u.key, u.header.vaultId, item);
+      try {
+        return jsonDecode(utf8.decode(plain)) as Map<String, Object?>;
+      } finally {
+        wipe(plain);
+      }
+    });
   }
 }

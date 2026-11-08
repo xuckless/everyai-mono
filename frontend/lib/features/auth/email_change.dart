@@ -6,6 +6,7 @@ import '../../core/net/api_error.dart';
 import '../../core/providers.dart';
 import 'auth_providers.dart';
 import 'data/magic_api.dart';
+import 'domain/auth_state.dart';
 import 'data/token_store.dart';
 import 'profile.dart';
 
@@ -121,9 +122,15 @@ final class EmailChangeController extends Notifier<EmailChange> {
   }
 
   Future<void> _settle(MagicAnswer answer, EmailAwaitingLink waiting) async {
-    if (state != waiting) return;
+    if (!ref.mounted || state != waiting) return;
     if (answer case (accessToken: final String access, refreshToken: final String refresh, status: _)) {
       _stop();
+      // Logged out while the link was out: the new tokens must not sign this
+      // device back in behind the user's back.
+      if (ref.read(authProvider) is! SignedIn) {
+        state = const EmailIdle();
+        return;
+      }
       await ref.read(tokenStoreProvider).save(accessToken: access, refreshToken: refresh);
       ref.invalidate(profileProvider);
       if (ref.mounted) state = EmailIdle(note: 'Your account now uses ${waiting.email}.');

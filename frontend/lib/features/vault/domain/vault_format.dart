@@ -27,6 +27,10 @@ final class VaultAuthError implements Exception {
   String toString() => 'VaultAuthError: $what did not verify';
 }
 
+/// Overwrites a raw key copy once it has been used (only [SecureKey]s are
+/// zeroed by libsodium; a plain list stays in the Dart heap until collected).
+void wipe(Uint8List bytes) => bytes.fillRange(0, bytes.length, 0);
+
 Uint8List aadOf(List<Object> parts) => Uint8List.fromList(utf8.encode([vaultDomain, ...parts].join('|')));
 
 final class KdfParams {
@@ -276,27 +280,43 @@ final class VaultCrypto {
     final seed = random(32);
     final kek = passphraseKek(passphrase, salt, kdf);
     final kekR = recoveryKek(rk);
-    final pair = sodium.crypto.sign.seedKeyPair(_key(seed));
+    final seedKey = _key(seed);
+    final pair = sodium.crypto.sign.seedKeyPair(seedKey);
     final vkBytes = vk.extractBytes();
-    final header = VaultHeader(
-      vaultId: vaultId,
-      kdf: kdf,
-      salt: salt,
-      password: seal(vkBytes, kek, aadOf(['wrap', 'password', vaultId])),
-      recovery: seal(vkBytes, kekR, aadOf(['wrap', 'recovery', vaultId])),
-      signingPublic: pair.publicKey,
-      signing: seal(seed, vk, aadOf(['wrap', 'signing', vaultId])),
-    );
-    kek.dispose();
-    kekR.dispose();
-    pair.secretKey.dispose();
-    return (header: header, vaultKey: vk, recoveryKey: rk);
+    try {
+      final header = VaultHeader(
+        vaultId: vaultId,
+        kdf: kdf,
+        salt: salt,
+        password: seal(vkBytes, kek, aadOf(['wrap', 'password', vaultId])),
+        recovery: seal(vkBytes, kekR, aadOf(['wrap', 'recovery', vaultId])),
+        signingPublic: pair.publicKey,
+        signing: seal(seed, vk, aadOf(['wrap', 'signing', vaultId])),
+      );
+      return (header: header, vaultKey: vk, recoveryKey: rk);
+    } finally {
+      wipe(vkBytes);
+      wipe(seed);
+      seedKey.dispose();
+      kek.dispose();
+      kekR.dispose();
+      pair.secretKey.dispose();
+    }
+  }
+
+  /// A [SecureKey] from opened key bytes, the plain copy wiped.
+  SecureKey _keyOnce(Uint8List bytes) {
+    try {
+      return _key(bytes);
+    } finally {
+      wipe(bytes);
+    }
   }
 
   SecureKey unlockWithPassphrase(VaultHeader h, String passphrase) {
     final kek = passphraseKek(passphrase, h.salt, h.kdf);
     try {
-      return _key(open(h.password, kek, aadOf(['wrap', 'password', h.vaultId]), 'the passphrase'));
+      return _keyOnce(open(h.password, kek, aadOf(['wrap', 'password', h.vaultId]), 'the passphrase'));
     } finally {
       kek.dispose();
     }
@@ -305,7 +325,7 @@ final class VaultCrypto {
   SecureKey unlockWithRecovery(VaultHeader h, Uint8List recoveryKey) {
     final kek = recoveryKek(recoveryKey);
     try {
-      return _key(open(h.recovery, kek, aadOf(['wrap', 'recovery', h.vaultId]), 'the recovery key'));
+      return _keyOnce(open(h.recovery, kek, aadOf(['wrap', 'recovery', h.vaultId]), 'the recovery key'));
     } finally {
       kek.dispose();
     }
@@ -332,11 +352,13 @@ final class VaultCrypto {
       );
     } finally {
       ik.dispose();
+      // A key the caller passed (the vectors) is the caller's to keep.
+      if (itemKey == null) wipe(ikBytes);
     }
   }
 
   Uint8List decryptItem(SecureKey vk, String vaultId, VaultItem item) {
-    final ik = _key(open(item.key, vk, aadOf(['item-key', vaultId, item.id, item.version]), 'item ${item.id} key'));
+    final ik = _keyOnce(open(item.key, vk, aadOf(['item-key', vaultId, item.id, item.version]), 'item ${item.id} key'));
     try {
       return open(item.body, ik, aadOf(['item', vaultId, item.id, item.version]), 'item ${item.id}');
     } finally {
@@ -350,7 +372,7 @@ final class VaultCrypto {
   Uint8List _signed(Uint8List manifest) => Uint8List.fromList([...utf8.encode('$vaultDomain|manifest|'), ...manifest]);
 
   Uint8List signManifest(SecureKey vk, VaultHeader h, Manifest m) {
-    final seed = _key(open(h.signing, vk, aadOf(['wrap', 'signing', h.vaultId]), 'the signing key'));
+    final seed = _keyOnce(open(h.signing, vk, aadOf(['wrap', 'signing', h.vaultId]), 'the signing key'));
     final pair = sodium.crypto.sign.seedKeyPair(seed);
     try {
       return sodium.crypto.sign.detached(message: _signed(m.bytes()), secretKey: pair.secretKey);
@@ -400,14 +422,15 @@ final class VaultCrypto {
       serverSecretKey: pair.secretKey,
       clientPublicKey: devicePublic,
     );
+    final vkBytes = vk.extractBytes();
     try {
-      return (
-        approverPublic: pair.publicKey,
-        sealed: seal(vk.extractBytes(), keys.tx, aadOf(['join', vaultId]), nonce: nonce),
-      );
+      return (approverPublic: pair.publicKey, sealed: seal(vkBytes, keys.tx, aadOf(['join', vaultId]), nonce: nonce));
     } finally {
+      wipe(vkBytes);
       keys.rx.dispose();
       keys.tx.dispose();
+      // A pair made here is one-shot; one the caller passed is theirs.
+      if (approver == null) pair.secretKey.dispose();
     }
   }
 
@@ -419,7 +442,7 @@ final class VaultCrypto {
       serverPublicKey: approverPublic,
     );
     try {
-      return _key(open(sealed, keys.rx, aadOf(['join', vaultId]), 'the join'));
+      return _keyOnce(open(sealed, keys.rx, aadOf(['join', vaultId]), 'the join'));
     } finally {
       keys.rx.dispose();
       keys.tx.dispose();

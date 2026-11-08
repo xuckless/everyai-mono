@@ -29,16 +29,39 @@ final class TokenStore implements AccessTokenSource {
   DateTime? _accessExpiry;
   Future<String?>? _refreshing;
 
+  /// Bumped by [save] and [clear]: a refresh that was on its way when the
+  /// session changed (a sign-out, a new sign-in) keeps nothing it got back,
+  /// so a rotated refresh token can't come back after [clear].
+  int _epoch = 0;
+
+  final _ended = StreamController<void>.broadcast();
+
+  /// Fires when the server refused the stored refresh token (revoked
+  /// elsewhere, expired): the session is gone and the tokens were cleared.
+  Stream<void> get sessionEnded => _ended.stream;
+
+  /// The refresh under way, if any; sign-out waits for it so it revokes the
+  /// newest refresh token.
+  Future<void> settled() async {
+    try {
+      await _refreshing;
+    } on Object {
+      // Its caller sees the error.
+    }
+  }
+
   bool get hasValidAccessToken => _accessToken != null && DateTime.now().isBefore(_accessExpiry!);
 
   Future<String?> readRefreshToken() => _storage.read(key: _refreshKey);
 
   Future<void> save({required String accessToken, required String refreshToken}) async {
+    _epoch++;
     _setAccess(accessToken);
     await _storage.write(key: _refreshKey, value: refreshToken);
   }
 
   Future<void> clear() async {
+    _epoch++;
     _accessToken = null;
     _accessExpiry = null;
     await _storage.delete(key: _refreshKey);
@@ -53,8 +76,9 @@ final class TokenStore implements AccessTokenSource {
   Future<String?> refreshAccessToken() => _refreshing ??= _refresh().whenComplete(() => _refreshing = null);
 
   Future<String?> _refresh() async {
+    final epoch = _epoch;
     final refresh = await readRefreshToken();
-    if (refresh == null) return null;
+    if (refresh == null || epoch != _epoch) return null;
     // A bare client: going through ApiClient would recurse into this source.
     final client = http.Client();
     try {
@@ -65,8 +89,11 @@ final class TokenStore implements AccessTokenSource {
             body: jsonEncode({'refresh_token': refresh}),
           )
           .timeout(ApiClient.jsonTimeout);
+      // Signed out or in again meanwhile: this answer is the old session's.
+      if (epoch != _epoch) return null;
       if (res.statusCode == 401) {
         await clear();
+        _ended.add(null);
         return null;
       }
       if (res.statusCode != 200) return null;
@@ -85,10 +112,16 @@ final class TokenStore implements AccessTokenSource {
     }
   }
 
+  void dispose() => unawaited(_ended.close());
+
   void _setAccess(String token) {
     _accessToken = token;
     _accessExpiry = DateTime.now().add(accessTokenLifetime);
   }
 }
 
-final tokenStoreProvider = Provider<TokenStore>((ref) => TokenStore(ref.watch(appConfigProvider)));
+final tokenStoreProvider = Provider<TokenStore>((ref) {
+  final store = TokenStore(ref.watch(appConfigProvider));
+  ref.onDispose(store.dispose);
+  return store;
+});
