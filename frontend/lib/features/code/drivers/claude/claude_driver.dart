@@ -47,6 +47,9 @@ typedef ClaudeSpawn = Future<LineChannel> Function(
 ///   idle ──task_notification (a background task reported)──▶ waking ──first main-thread frame──▶ running
 ///                                                             waking ──no frame within [wakeWait], or Stop──▶ idle
 ///
+/// A Stop while waking can't stop a turn that hasn't started; the turn that starts within [wakeWait] after it is
+/// stopped as soon as its first frame comes ([_wakeStopped]).
+///
 /// Waking counts as working: a message sent then queues, so Claude's turn for the report and the user's don't
 /// overlap (each ends with its own `result`, and the first would end the user's).
 enum ClaudeTurn { idle, waking, running }
@@ -600,6 +603,10 @@ final class ClaudeSession
   Timer? _wakeTimer;
   ExecutionStatus _beforeWake = ExecutionStatus.idle;
 
+  /// The user stopped a wake: Claude starts that turn anyway, and it is interrupted when it does. Until then (or
+  /// [wakeWait], or the user's next message).
+  Timer? _wakeStopped;
+
   void _toTurn(ClaudeTurn next) {
     if (next != ClaudeTurn.waking) _wakeTimer?.cancel();
     _turnState = next;
@@ -743,6 +750,8 @@ final class ClaudeSession
     if (_running && _interrupting) _staleResults++;
     // Claude is starting a turn for a background report: that turn ends with its own result before this one's.
     if (_turnState == ClaudeTurn.waking) _staleResults++;
+    _wakeStopped?.cancel();
+    _wakeStopped = null;
     if (!_meta.sent || _meta.carry.length != _carry.length) {
       await _save(_meta.copyWith(sent: true, carry: List.unmodifiable(_carry)));
     }
@@ -762,8 +771,13 @@ final class ClaudeSession
   }
 
   void _stopTurn() {
-    // Nothing started yet: the wake is called off.
-    if (_turnState == ClaudeTurn.waking) return _wakeEnded();
+    // Nothing started yet: the wake is called off, and the turn Claude starts for it is stopped when it comes.
+    if (_turnState == ClaudeTurn.waking) {
+      _wakeEnded();
+      _wakeStopped?.cancel();
+      _wakeStopped = Timer(wakeWait, () => _wakeStopped = null);
+      return;
+    }
     if (!_running) return;
     _interrupting = true;
     _request({'subtype': 'interrupt'});
@@ -846,6 +860,7 @@ final class ClaudeSession
     if (_closed) return;
     _closed = true;
     _wakeTimer?.cancel();
+    _wakeStopped?.cancel();
     _driver._live.remove(id);
     await _drop();
     await _journal.close();
@@ -1011,6 +1026,12 @@ final class ClaudeSession
           final wasIdle = _turnState == ClaudeTurn.idle;
           _toTurn(ClaudeTurn.running);
           if (wasIdle) _emit(stateEvent(const Uuid().v4(), ExecutionStatus.running));
+          // The wake the user stopped: its turn has started now, and goes.
+          if (wasIdle && _wakeStopped != null) {
+            _wakeStopped!.cancel();
+            _wakeStopped = null;
+            _stopTurn();
+          }
         }
         final events = _decoder.decode(line);
         // The stopped turn's end: the new message's turn runs on (no paused state, the queue doesn't flush yet).
@@ -1146,6 +1167,9 @@ final class ClaudeSession
     _continueAfter = false;
     _staleResults = 0;
     _respawn = false;
+    // The process that would have started a stopped wake's turn is gone.
+    _wakeStopped?.cancel();
+    _wakeStopped = null;
     if (_closed || !_running) return;
     _toTurn(ClaudeTurn.idle);
     final why = c.lastError.trim();
