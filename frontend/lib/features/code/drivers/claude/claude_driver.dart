@@ -299,6 +299,10 @@ final class ClaudeDriver
       .._history.addAll(await journal.read())
       .._carry.addAll(meta.carry);
     _live[conversationId] = session;
+    // Subagents an earlier process left working ended with it.
+    for (final e in unfinishedSubagents(session._history, orphanedSubagent)) {
+      session._emit(e);
+    }
     session._emit(stateEvent(const Uuid().v4(), ExecutionStatus.idle), keep: false);
     return session;
   }
@@ -556,7 +560,8 @@ final class ClaudeSession
       if (_starting != null) _respawn = true;
       return;
     }
-    if (!_running) {
+    // A new process would end the subagents working in the background: it waits for the next turn's end.
+    if (!_running && !_decoder.hasBackground) {
       unawaited(_drop());
     } else {
       _respawn = true;
@@ -793,7 +798,8 @@ final class ClaudeSession
       _request({'subtype': 'set_permission_mode', 'mode': _meta.permissionMode});
     }
     if (restart && _channel != null) {
-      if (!_running) return _drop();
+      // Background subagents live in this process: the restart waits for them too.
+      if (!_running && !_decoder.hasBackground) return _drop();
       _respawn = true;
       return;
     }
@@ -819,6 +825,7 @@ final class ClaudeSession
   /// Ends the CLI's process quietly; the next turn starts it again.
   Future<void> _drop() async {
     final c = _channel;
+    if (c != null) _orphaned();
     _channel = null;
     _respawn = false;
     await _sub?.cancel();
@@ -955,6 +962,13 @@ final class ClaudeSession
         }
         if (line case {'type': 'system', 'subtype': 'init', 'skills': final List<Object?> l}) _skillsListed(l);
         if (line case {'type': 'system', 'permissionMode': final String mode}) _modeSaid(mode);
+        // Claude woke up by itself (a background subagent or command finished) and works outside any turn of ours.
+        if (!_running &&
+            line['parent_tool_use_id'] == null &&
+            const {'assistant', 'stream_event'}.contains(line['type'])) {
+          _running = true;
+          _emit(stateEvent(const Uuid().v4(), ExecutionStatus.running));
+        }
         final events = _decoder.decode(line);
         // The stopped turn's end: the new message's turn runs on (no paused state, the queue doesn't flush yet).
         final stale = line['type'] == 'result' && _staleResults > 0;
@@ -1000,7 +1014,7 @@ final class ClaudeSession
     _running = false;
     _waiting = false;
     _interrupting = false;
-    if (_respawn) unawaited(_drop());
+    if (_respawn && !_decoder.hasBackground) unawaited(_drop());
     if (_continueAfter) {
       _continueAfter = false;
       unawaited(_turn(continueMessage));
@@ -1071,6 +1085,7 @@ final class ClaudeSession
   /// starts it again.
   void _gone(LineChannel c) {
     if (!identical(_channel, c)) return;
+    _orphaned();
     _channel = null;
     unawaited(_sub?.cancel());
     _held.clear();
@@ -1085,6 +1100,13 @@ final class ClaudeSession
     final detail = why.isEmpty ? 'Claude Code stopped.' : 'Claude Code stopped: ${why.split('\n').last}';
     _emit(HarnessEvent.decode({'kind': 'ConversationErrorEvent', 'id': const Uuid().v4(), 'detail': detail}));
     _emit(stateEvent(const Uuid().v4(), ExecutionStatus.error));
+  }
+
+  /// Background subagents end with the process they run in.
+  void _orphaned() {
+    for (final e in _decoder.orphaned(orphanedSubagent)) {
+      _emit(e);
+    }
   }
 
   /// Shows [event] (and keeps it in the journal unless [keep] is off).
