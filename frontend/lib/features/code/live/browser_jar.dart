@@ -1,5 +1,6 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -144,26 +145,57 @@ class SealedStore {
 
   File _file(String name) => File('$dir/${name.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_')}.sealed');
 
-  Future<void> write(String name, Object? json) async {
+  /// The write in flight for each name: writes to one name run one after another.
+  final _writes = <String, Future<void>>{};
+  var _tmpCount = 0;
+
+  /// Seals [json] into [name]. Writes to one name are queued, each through a temporary file of its own, so two at
+  /// once (every session saving at quit) never publish a half-written file.
+  Future<void> write(String name, Object? json) {
+    final prev = _writes[name] ?? Future<void>.value();
+    final next = prev.then((_) => _write(name, json), onError: (Object _) => _write(name, json));
+    final tracked = next.then<void>((_) {}, onError: (Object _) {});
+    _writes[name] = tracked;
+    unawaited(
+      tracked.whenComplete(() {
+        if (identical(_writes[name], tracked)) _writes.remove(name);
+      }),
+    );
+    return next;
+  }
+
+  Future<void> _write(String name, Object? json) async {
     final box = await _aes.encrypt(utf8.encode(jsonEncode(json)), secretKey: await _key());
     final f = _file(name);
     f.parent.createSync(recursive: true);
-    final tmp = File('${f.path}.tmp');
-    await tmp.writeAsBytes(box.concatenation(), flush: true);
-    await tmp.rename(f.path);
+    final tmp = File('${f.path}.$pid-${_tmpCount++}-${Random().nextInt(1 << 32)}.tmp');
+    try {
+      await tmp.writeAsBytes(box.concatenation(), flush: true);
+      await tmp.rename(f.path);
+    } on Object {
+      if (tmp.existsSync()) tmp.deleteSync();
+      rethrow;
+    }
   }
 
-  /// [name]'s content, or null when there is none or it can't be opened (another key: a new keychain).
+  /// [name]'s content, or null when there is none or it can't be opened (another key: a new keychain). A key that
+  /// can't be had (a refused keychain prompt) throws, so the caller asks again next time.
   Future<Object?> read(String name) async {
     final f = _file(name);
     if (!f.existsSync()) return null;
+    final SecretBox box;
     try {
-      final box = SecretBox.fromConcatenation(
+      box = SecretBox.fromConcatenation(
         await f.readAsBytes(),
         nonceLength: _aes.nonceLength,
         macLength: _aes.macAlgorithm.macLength,
       );
-      return jsonDecode(utf8.decode(await _aes.decrypt(box, secretKey: await _key())));
+    } on Object {
+      return null;
+    }
+    final key = await _key();
+    try {
+      return jsonDecode(utf8.decode(await _aes.decrypt(box, secretKey: key)));
     } on Object {
       return null;
     }
@@ -173,6 +205,7 @@ class SealedStore {
   bool exists(String name) => _file(name).existsSync();
 
   Future<void> delete(String name) async {
+    if (_writes[name] case final w?) await w;
     final f = _file(name);
     if (f.existsSync()) await f.delete();
   }
@@ -242,11 +275,16 @@ class SavedLogins {
   /// The list's file is there but doesn't open (another keychain): nothing is saved over it.
   var unreadable = false;
 
-  Future<void> load() => _loading ??= () async {
-    final j = await store.read('logins');
-    if (j == null && store.exists('logins')) unreadable = true;
-    logins.value = [for (final l in (j is List ? j : const [])) ?_loginFrom(l)];
-  }();
+  /// Reads the list once; a read that fails (no key: a refused keychain prompt) is tried again next time.
+  Future<void> load() => _loading ??=
+      () async {
+        final j = await store.read('logins');
+        if (j == null && store.exists('logins')) unreadable = true;
+        logins.value = [for (final l in (j is List ? j : const [])) ?_loginFrom(l)];
+      }().catchError((Object e) {
+        _loading = null;
+        throw e;
+      });
 
   Future<void> _saveIndex() async {
     if (unreadable) {
@@ -297,7 +335,9 @@ class SavedLogins {
   }
 
   /// A session that started from login [id] ended still signed in: its refreshed sign-in replaces the saved one.
-  Future<void> writeBack(String id, JarData data) async {
+  /// [renewed]: the user signed in again this session (past a login wall), so an expired login works again; without
+  /// it the login keeps its expiry.
+  Future<void> writeBack(String id, JarData data, {bool renewed = false}) async {
     await load();
     final l = logins.value.where((x) => x.id == id).firstOrNull;
     if (l == null || data.cookies.isEmpty) return;
@@ -305,7 +345,14 @@ class SavedLogins {
     logins.value = [
       for (final x in logins.value)
         x.id == id
-            ? (id: x.id, site: x.site, scope: x.scope, projectId: x.projectId, saved: DateTime.now(), expired: false)
+            ? (
+                id: x.id,
+                site: x.site,
+                scope: x.scope,
+                projectId: x.projectId,
+                saved: DateTime.now(),
+                expired: x.expired && !renewed,
+              )
             : x,
     ];
     await _saveIndex();
@@ -331,6 +378,24 @@ class SavedLogins {
         if (x.id != id) x,
     ];
     await store.delete('login-$id');
+    await _saveIndex();
+  }
+
+  /// Project [projectId] was removed: its own saved logins go (those for every project stay).
+  Future<void> forgetProject(String projectId) async {
+    await load();
+    final gone = [
+      for (final l in logins.value)
+        if (l.scope == LoginScope.project && l.projectId == projectId) l.id,
+    ];
+    if (gone.isEmpty) return;
+    logins.value = [
+      for (final x in logins.value)
+        if (!gone.contains(x.id)) x,
+    ];
+    for (final id in gone) {
+      await store.delete('login-$id');
+    }
     await _saveIndex();
   }
 

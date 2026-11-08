@@ -52,6 +52,12 @@ final class LoginWall {
 
   bool skipped(String site) => _skipped.contains(site);
 
+  /// How the last wait for each site ended this session (none: the site never asked to sign in).
+  final _last = <String, WallOutcome>{};
+
+  /// How the last wait at the wall for [site] ended this session, or null when it never asked.
+  WallOutcome? lastOutcome(String site) => _last[site];
+
   /// Holds the agent's call until [probe] shows a page past the sign-in to [site] (checked every [every]), the user
   /// skips, [timeout] passes, or [stop]. One wait at a time: a second call joins the first.
   Future<WallOutcome> hold(
@@ -100,6 +106,7 @@ final class LoginWall {
     final h = _held;
     if (h == null || h.isCompleted) return;
     _held = null;
+    if (state.value case WallWaiting(:final site)) _last[site] = outcome;
     state.value = const WallIdle();
     waiting.value = [
       for (final w in waiting.value)
@@ -134,8 +141,45 @@ const _authHosts = {
   'auth.openai.com': 'openai.com',
 };
 
-// Only paths that are a sign-in page: not /auth, /oauth2 or /sessions, which are as often docs or an API.
-final _authPath = RegExp(r'/(log-?in|sign-?in|sign_in|sso|users/sign_in)(/|$|\.)', caseSensitive: false);
+// Only paths that are a sign-in page: not /auth, /oauth2 or /sessions, which are as often docs or an API. The sign-in
+// segment sits near the front ("/login", "/u/login", "/users/sign_in"), and never in docs ("/docs/sso/setup").
+final _authSegment = RegExp(r'^(log-?in|sign-?in|sign_in|sso)(\.\w+)?$', caseSensitive: false);
+const _docSegments = {
+  'docs',
+  'doc',
+  'documentation',
+  'help',
+  'blog',
+  'guide',
+  'guides',
+  'learn',
+  'support',
+  'kb',
+  'articles',
+  'wiki',
+  'reference',
+  'manual',
+  'tutorial',
+  'tutorials',
+  'changelog',
+  'news',
+  'faq',
+  'developers',
+  'dev-docs',
+  'api-docs',
+};
+
+bool _authPath(String path) {
+  final segments = [
+    for (final s in path.split('/'))
+      if (s.isNotEmpty) s.toLowerCase(),
+  ];
+  if (segments.any(_docSegments.contains)) return false;
+  for (var i = 0; i < segments.length && i < 3; i++) {
+    if (_authSegment.hasMatch(segments[i])) return true;
+  }
+  return false;
+}
 
 /// The site a sign-in page at [url] is for ("github.com"), or null when it isn't one: a page with a visible
 /// [password] field, a sign-in service (Google, Microsoft, Apple, Auth0, Okta…), or a sign-in path (/login,
@@ -149,7 +193,7 @@ String? loginWallSite(String url, {required bool password}) {
   for (final provider in const ['auth0.com', 'okta.com', 'onelogin.com', 'clerk.accounts.dev']) {
     if (host.endsWith('.$provider')) return host;
   }
-  if (password || _authPath.hasMatch(uri.path)) return siteOf(host);
+  if (password || _authPath(uri.path)) return siteOf(host);
   return null;
 }
 
@@ -205,13 +249,24 @@ const _sharedHosts = [
 @visibleForTesting
 var wallOnLocalPages = false;
 
-/// Whether [host] is this computer (the app the session builds).
+/// Whether [host] is this computer or the local network (the app the session builds, a dev box): loopback, private
+/// and link-local addresses, and local-only names (.localhost, .local, .test).
 bool isLocalHost(String host) {
-  final h = host.toLowerCase();
-  return h == 'localhost' ||
-      h.endsWith('.localhost') ||
-      h == '::1' ||
-      h == '[::1]' ||
-      h == '0.0.0.0' ||
-      RegExp(r'^127\.').hasMatch(h);
+  var h = host.toLowerCase();
+  if (h.startsWith('[') && h.endsWith(']')) h = h.substring(1, h.length - 1);
+  if (h.endsWith('.')) h = h.substring(0, h.length - 1);
+  if (h == 'localhost' || h == '0.0.0.0' || h == '::1' || h == '::') return true;
+  for (final suffix in const ['.localhost', '.local', '.test']) {
+    if (h.endsWith(suffix)) return true;
+  }
+  final v4 = RegExp(r'^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$').firstMatch(h);
+  if (v4 != null) {
+    final a = int.parse(v4[1]!), b = int.parse(v4[2]!);
+    return a == 127 || a == 10 || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168) || (a == 169 && b == 254);
+  }
+  if (h.contains(':')) {
+    // fc00::/7 (unique local) and fe80::/10 (link-local).
+    return RegExp(r'^f[cd][0-9a-f]{0,2}:').hasMatch(h) || RegExp(r'^fe[89ab][0-9a-f]?:').hasMatch(h);
+  }
+  return false;
 }

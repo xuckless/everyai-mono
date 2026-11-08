@@ -50,18 +50,33 @@ abstract final class LiveBrowsers {
     });
   }
 
-  /// The saved logins [b]'s session started from get its refreshed sign-ins (while it is still signed in).
-  static Future<void> _writeBack(HeadlessBrowser b) async {
+  /// The saved logins [b]'s session started from get its refreshed sign-ins (while it is still signed in). A login
+  /// the site asked to sign in to again this session (the wall marked it expired) is left as it is unless the user
+  /// signed in past that wall: what's left then is the site's signed-out cookies. [jar]: read just now.
+  static Future<void> _writeBack(HeadlessBrowser b, {JarData? jar}) async {
     final store = jars;
     if (store == null || b.usedLogins.isEmpty) return;
     try {
-      final jar = await b.captureJar();
+      final now = jar ?? await b.captureJar();
       final logins = SavedLogins.of(await store());
       for (final MapEntry(key: site, value: id) in b.usedLogins.entries) {
-        await logins.writeBack(id, jarForSite(jar, site));
+        final outcome = b.loginWall.lastOutcome(site);
+        if (outcome != null && outcome != WallOutcome.passed) continue;
+        await logins.writeBack(id, jarForSite(now, site), renewed: outcome == WallOutcome.passed);
       }
     } on Object {
       // Kept as saved.
+    }
+  }
+
+  /// Project [projectId] was removed: its own saved logins go with it (logins for every project stay).
+  static Future<void> forgetProjectLogins(String projectId) async {
+    final store = jars;
+    if (store == null) return;
+    try {
+      await SavedLogins.of(await store()).forgetProject(projectId);
+    } on Object {
+      // No keychain: they stay until the project's logins can be opened.
     }
   }
 
@@ -91,8 +106,15 @@ abstract final class LiveBrowsers {
   static Future<void> stopAll() async {
     final all = [..._bySession.values];
     _bySession.clear();
-    // Jars and saved logins first (close() saves the jar), then the pages, then Chrome.
-    await Future.wait([for (final b in all) _writeBack(b).then((_) => b.close()).then((_) => b.host.stop())]);
+    // Each jar is read once (the quit has a few seconds): its saved logins get it, close() saves it, then Chrome.
+    Future<void> stop(HeadlessBrowser b) async {
+      final jar = b.jarHome == null ? null : await b.captureJar().catchError((Object _) => emptyJar);
+      if (jar != null) await _writeBack(b, jar: jar);
+      await b.close(captured: jar != null);
+      await b.host.stop();
+    }
+
+    await Future.wait([for (final b in all) stop(b)]);
     // Profiles opened outside a session's page (sign-in, an agent's own browser) too.
     await ChromeHost.stopAll();
   }

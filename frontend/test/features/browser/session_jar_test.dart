@@ -6,6 +6,7 @@ import 'package:every_ai/features/code/harness/everyai/llm.dart';
 import 'package:every_ai/features/code/harness/everyai/shell_io.dart';
 import 'package:every_ai/features/code/harness/everyai/tools_io.dart';
 import 'package:every_ai/features/code/live/browser_jar.dart';
+import 'package:every_ai/features/code/live/live_browsers.dart';
 import 'package:every_ai/features/code/live/login_wall.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -14,7 +15,7 @@ void main() {
   final chrome = HeadlessBrowser.find();
   final skip = chrome == null ? 'no Chrome installed' : null;
   late Directory tmp;
-  late HttpServer server;
+  late HttpServer server, other;
   late SealedStore store;
   final open = <HeadlessBrowser>[];
 
@@ -30,6 +31,13 @@ void main() {
   setUp(() async {
     tmp = Directory.systemTemp.createTempSync('session-jar');
     store = SealedStore('${tmp.path}/sealed', () async => SecretKey(List.filled(32, 3)));
+    // A second origin of the same site (localhost, another port).
+    other = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    other.listen((r) {
+      r.response.headers.contentType = ContentType.html;
+      r.response.write('<!doctype html><title>Other</title>other');
+      r.response.close();
+    });
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     server.listen((r) {
       final signedIn = (r.cookies.where((c) => c.name == 'sid').firstOrNull?.value) ?? '';
@@ -53,6 +61,7 @@ void main() {
     if (open.isNotEmpty) await open.first.host.stop();
     open.clear();
     await server.close(force: true);
+    await other.close(force: true);
     wallOnLocalPages = false;
     tmp.deleteSync(recursive: true);
   });
@@ -92,6 +101,77 @@ void main() {
     skip: skip,
     timeout: const Timeout(Duration(minutes: 1)),
   );
+
+  String otherUrl(String path) => 'http://localhost:${other.port}$path';
+
+  test(
+    "signing out of a site clears every origin of it, not only the page's; signing out of all starts a fresh context",
+    () async {
+      final a = session('a');
+      await a.open(otherUrl('/'));
+      await a.evaluate('localStorage.setItem("token", "b-1")');
+      await a.open(url('/welcome?as=ada'));
+      await a.evaluate('localStorage.setItem("token", "a-1")');
+      await a.open(url('/'));
+      await a.clearJar(site: 'localhost');
+      expect((await a.captureJar()).storage, isEmpty);
+      await a.open(otherUrl('/'));
+      expect(await a.evaluate('localStorage.getItem("token")'), isNull);
+      expect((await a.captureJar()).storage, isEmpty);
+
+      // Everything: the context goes, the page comes back where it was, signed out.
+      await a.evaluate('localStorage.setItem("token", "b-2")');
+      await a.open(url('/welcome?as=grace'));
+      await a.open(url('/'));
+      expect(await a.evaluate('document.getElementById("who").textContent'), 'grace');
+      await a.clearJar();
+      for (var i = 0; i < 100 && a.page.value.url != url('/'); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      expect(a.page.value.url, url('/'));
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect(await a.evaluate('document.getElementById("who").textContent'), 'nobody');
+      await a.open(otherUrl('/'));
+      expect(await a.evaluate('localStorage.getItem("token")'), isNull);
+      final jar = await a.captureJar();
+      expect(jar.cookies, isEmpty);
+      expect(jar.storage, isEmpty);
+    },
+    skip: skip,
+    timeout: const Timeout(Duration(minutes: 1)),
+  );
+
+  test('a saved login the site asked to sign in to again is not written back with signed-out cookies', () async {
+    final logins = SavedLogins.of(store);
+    final saved = await logins.save('example.com', (
+      cookies: [
+        {'name': 'sid', 'value': 'good', 'domain': 'example.com', 'path': '/'},
+      ],
+      storage: const <String, Map<String, String>>{},
+    ), scope: LoginScope.global);
+    LiveBrowsers.jars = () async => store;
+    addTearDown(() => LiveBrowsers.jars = null);
+    // Never started: its jar is what was applied.
+    final b = LiveBrowsers.forSession('expiry', profileDir: '${tmp.path}/profile');
+    await b.applyJar(
+      (
+        cookies: [
+          {'name': 'anon', 'value': 'x', 'domain': 'example.com', 'path': '/'},
+        ],
+        storage: const {},
+      ),
+      site: 'example.com',
+      loginId: saved.id,
+    );
+    final held = b.loginWall.hold('example.com', 'https://example.com/login', probe: () async => null);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(logins.logins.value.single.expired, isTrue);
+    b.loginWall.skip();
+    await held;
+    await LiveBrowsers.stopAll();
+    expect(logins.logins.value.single.expired, isTrue);
+    expect((await logins.payload(saved.id))!.cookies.single['value'], 'good');
+  }, timeout: const Timeout(Duration(minutes: 1)));
 
   test(
     'a saved login signs another session in; a removed session leaves no jar',

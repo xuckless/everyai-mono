@@ -268,7 +268,8 @@ Future<ToolOutput> runBrowser(
         final outcome = await b.loginWall.hold(site, probe!.url, probe: b.loginProbe, timeout: loginHold);
         did = '$did\n${wallOutcomeText(site, outcome)}';
         if (outcome == WallOutcome.passed && b.running) {
-          did = '$did Now on ${await b.describe()}.';
+          // The address without its query and fragment: an OAuth callback can carry tokens there.
+          did = '$did Now on ${await b.describe(bare: true)}.';
           list = true;
         }
       }

@@ -26,7 +26,21 @@ import '../console/console_state.dart';
 /// The window stops the project's Chrome, so every session of the project saves its jar first and gets its page
 /// back afterwards. What comes over is every site whose sign-in the window changed (an OAuth sign-in sets the
 /// provider's cookies and the app's), not only the one the window opened at.
-Future<void> signInInWindow(HeadlessBrowser b, String url) async {
+///
+/// One window per project's profile at a time: a second call (a double click, the card and the key menu) joins the
+/// one open.
+Future<void> signInInWindow(HeadlessBrowser b, String url) {
+  if (_signInWindows[b.profileDir] case final open?) return open;
+  final run = _signInInWindow(b, url);
+  _signInWindows[b.profileDir] = run;
+  return run.whenComplete(() {
+    if (identical(_signInWindows[b.profileDir], run)) _signInWindows.remove(b.profileDir);
+  });
+}
+
+final _signInWindows = <String, Future<void>>{};
+
+Future<void> _signInInWindow(HeadlessBrowser b, String url) async {
   final here = b.page.value.url;
   final target = url.isEmpty || url == 'about:blank' ? 'https://accounts.google.com' : url;
   final siblings = [

@@ -219,9 +219,16 @@ final class ChromeHost {
   Future<void> signIn(String url) async {
     final exe = executable ?? HeadlessBrowser.find();
     if (exe == null) throw const BrowserError(noBrowserMessage);
-    await stop();
-    Directory(profileDir).createSync(recursive: true);
+    // Pages that go with the headless Chrome now went on purpose (their login walls keep waiting for this window).
+    _stoppingForSignIn = true;
     final done = Completer<void>();
+    try {
+      await stop();
+    } on Object {
+      _stoppingForSignIn = false;
+      rethrow;
+    }
+    Directory(profileDir).createSync(recursive: true);
     _state = ChromeSigningIn(done.future);
     try {
       final p = await Process.start(exe, [
@@ -239,12 +246,18 @@ final class ChromeHost {
       await p.exitCode;
     } finally {
       _state = const ChromeClosed();
+      _stoppingForSignIn = false;
       done.complete();
     }
   }
 
+  var _stoppingForSignIn = false;
+
   /// Whether the profile is open for sign-in now.
   bool get signingIn => _state is ChromeSigningIn;
+
+  /// Whether Chrome is stopped for, or open in, a sign-in window ([signIn]): its pages closed on purpose.
+  bool get closedForSignIn => _stoppingForSignIn || signingIn;
 
   /// Deletes the profile (sign-ins, cookies, storage): "Clear" in the project menu.
   Future<void> clear() async {
@@ -553,10 +566,12 @@ final class HeadlessBrowser {
     await Future.wait([
       _enablePage().then((_) => _learnFrames()),
       _sendOn(_browserSocket, 'Target.setDiscoverTargets', {'discover': true}),
+      // Per browser context: a session with a jar downloads in its own context, not the profile's default one.
       _sendOn(_browserSocket, 'Browser.setDownloadBehavior', {
         'behavior': dir == null ? 'deny' : 'allow',
         'downloadPath': ?dir,
         'eventsEnabled': true,
+        'browserContextId': ?_contextId,
       }),
     ]);
     await _viewport();
@@ -586,7 +601,10 @@ final class HeadlessBrowser {
         usedLogins.addAll({for (final e in (j['logins'] as Map).entries) '${e.key}': '${e.value}'});
       }
     } on Object {
-      // No keychain (a test without one), or no jar yet: a clean start.
+      // No key (a refused keychain prompt): the jar isn't loaded, so nothing is written over it, and the next use
+      // asks again.
+      _jarLoad = null;
+      return;
     }
     _jarLoaded = true;
   }
@@ -681,9 +699,10 @@ final class HeadlessBrowser {
     if (identical(_writing, w)) _writing = null;
   }
 
-  /// Saves the jar now (captured first while running).
-  Future<void> saveJar() async {
-    if (running) await captureJar();
+  /// Saves the jar now (captured first while running, unless [captured]: the caller just did).
+  Future<void> saveJar({bool captured = false}) async {
+    if (!_jarLoaded) await _loadJar();
+    if (running && !captured) await captureJar();
     await _writeJar();
   }
 
@@ -725,29 +744,59 @@ final class HeadlessBrowser {
     await _writeJar();
   }
 
-  /// Signs the session out of [site] (null: every site): its cookies and storage leave the jar and the browser.
+  /// Signs the session out of [site] (null: every site): its cookies and storage leave the jar and the browser. A
+  /// site's storage is cleared in each of its origins the session knows of (not only the page's); every site gets a
+  /// fresh browser context, its tabs opened again where they were.
   Future<void> clearJar({String? site}) async {
     await _loadJar();
-    if (running && _browserSocket != null && _contextId != null) {
-      final all = await captureJar();
-      final gone = site == null ? all.cookies : jarForSite(all, site).cookies;
-      if (site == null) {
-        await _sendOn(_browserSocket, 'Storage.clearCookies', {'browserContextId': _contextId});
-      } else {
-        for (final c in gone) {
-          await _send('Network.deleteCookies', {
-            'name': c['name'],
-            'domain': c['domain'],
-            'path': c['path'],
-            if (c['partitionKey'] case final Map<String, Object?> k) 'partitionKey': k,
+    final live = running && _browserSocket != null && _contextId != null;
+    final all = live ? await captureJar() : _jar;
+    if (site != null && live) {
+      for (final c in jarForSite(all, site).cookies) {
+        await _send('Network.deleteCookies', {
+          'name': c['name'],
+          'domain': c['domain'],
+          'path': c['path'],
+          if (c['partitionKey'] case final Map<String, Object?> k) 'partitionKey': k,
+        });
+      }
+      // Every origin of the site the session knows of: stored ones, the tabs', and the ones this tab went through.
+      final visited = <String>[];
+      try {
+        final h = await _send('Page.getNavigationHistory');
+        for (final e in (h['entries'] as List?) ?? const []) {
+          if (e is Map && e['url'] is String) visited.add(e['url'] as String);
+        }
+      } on Object {
+        // No history: the others still go.
+      }
+      final origins = <String>{
+        for (final o in all.storage.keys)
+          if (siteOf(Uri.tryParse(o)?.host ?? '') == site) o,
+        for (final o in _restore)
+          if (siteOf(Uri.tryParse(o)?.host ?? '') == site) o,
+        for (final t in [..._tabList.map((t) => t.url), page.value.url, ...visited])
+          if (webOrigin(t) case final o? when siteOf(Uri.parse(o).host) == site) o,
+        for (final c in jarForSite(all, site).cookies)
+          if ('${c['domain'] ?? ''}'.replaceFirst(RegExp(r'^\.'), '') case final d when d.isNotEmpty) ...[
+            'https://$d',
+            'http://$d',
+          ],
+      };
+      for (final origin in origins) {
+        try {
+          // Sent on the page: it clears in the page's own browser context.
+          await _send('Storage.clearDataForOrigin', {
+            'origin': origin,
+            'storageTypes': 'local_storage,indexeddb,cache_storage,service_workers,websql,file_systems',
           });
+        } on Object {
+          // An origin Chrome doesn't take (a bare cookie domain): nothing stored there.
         }
       }
       final here = Uri.tryParse(page.value.url);
-      if (here != null && here.hasAuthority && (site == null || siteOf(here.host) == site)) {
-        await _send('Runtime.evaluate', {
-          'expression': 'try { localStorage.clear(); sessionStorage.clear(); } catch (_) {}',
-        });
+      if (here != null && here.hasAuthority && siteOf(here.host) == site) {
+        await _send('Runtime.evaluate', {'expression': 'try { sessionStorage.clear(); } catch (_) {}'});
       }
     }
     _jar = site == null ? emptyJar : jarWithoutSite(_jar, site);
@@ -758,8 +807,39 @@ final class HeadlessBrowser {
       usedLogins.remove(site);
     }
     await _writeJar();
-    if (running) await reload();
+    if (site == null && live) {
+      await _freshContext();
+    } else if (running) {
+      await reload();
+    }
   }
+
+  /// Closes the session's browser context (with everything it holds) and starts a new, empty one, with the tabs
+  /// that were open opened again (the active one active).
+  Future<void> _freshContext() async {
+    final here = page.value.url;
+    final others = [
+      for (final t in _tabList)
+        if (t.id != _targetId && webOrigin(t.url) != null) t.url,
+    ];
+    _noSave = true;
+    try {
+      // Closing the browser socket disposes the context (disposeOnDetach).
+      await close();
+    } finally {
+      _noSave = false;
+    }
+    await _start();
+    final main = _targetId;
+    for (final u in others) {
+      await openTab(u).catchError((Object _) {});
+    }
+    if (main != null && _targetId != main) await switchTab(main);
+    if (webOrigin(here) != null) await userOpen(here);
+  }
+
+  /// Set while [_freshContext] closes the old context: what it held is not saved.
+  var _noSave = false;
 
   /// The sites this session is signed in to (it has cookies for), from the last reading.
   List<String> get signedInSites => jarSites(_jar);
@@ -1311,6 +1391,8 @@ final class HeadlessBrowser {
     _jarTimer?.cancel();
     _contextId = null;
     unawaited(_writeJar());
+    // A dead browser has no sign-in to wait for; a sign-in window closed it on purpose, and that wait goes on.
+    if (attachTo != null || !host.closedForSignIn) loginWall.stop();
     // Tabs still open (a switch to one failed) close with the session's browser instead of staying in Chrome.
     final browser = _browserSocket;
     if (browser != null && attachTo == null) {
@@ -1423,9 +1505,14 @@ final class HeadlessBrowser {
     return null;
   }
 
-  /// The page's address and title.
-  Future<String> describe() async {
-    final v = await evaluate('JSON.stringify({url: location.href, title: document.title})');
+  /// The page's address and title. [bare]: the address without its query and fragment (after a sign-in, where they
+  /// can carry tokens).
+  Future<String> describe({bool bare = false}) async {
+    final v = await evaluate(
+      bare
+          ? 'JSON.stringify({url: location.origin + location.pathname, title: document.title})'
+          : 'JSON.stringify({url: location.href, title: document.title})',
+    );
     final m = jsonDecode(v as String) as Map<String, Object?>;
     return '${m['title']} — ${m['url']}';
   }
@@ -1802,19 +1889,22 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
   }
 
   /// Closes this session's page (Chrome itself stops once no session has one).
-  Future<void> close() async {
+  /// Closes the page. [captured]: the caller read the jar just now (at quit), so it is saved without reading it again.
+  Future<void> close({bool captured = false}) async {
     _closing = true;
     try {
-      await _close();
+      await _close(captured: captured);
     } finally {
       _closing = false;
     }
   }
 
-  Future<void> _close() async {
+  Future<void> _close({bool captured = false}) async {
     await _switched();
     _jarTimer?.cancel();
-    if (running && !_forget) await saveJar().timeout(const Duration(seconds: 2), onTimeout: () {});
+    if (running && !_forget && !_noSave) {
+      await saveJar(captured: captured).timeout(const Duration(seconds: 2), onTimeout: () {});
+    }
     final targets = {for (final t in _tabList) t.id, ?_targetId};
     if (_browserSocket != null && attachTo == null) {
       for (final target in targets) {

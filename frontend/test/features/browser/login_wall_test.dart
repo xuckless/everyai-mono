@@ -129,12 +129,16 @@ void main() {
     expect(logins.logins.value, hasLength(2));
     await logins.markExpired(p.id);
     expect(logins.logins.value.firstWhere((l) => l.id == p.id).expired, isTrue);
-    await logins.writeBack(p.id, (
+    final v2 = (
       cookies: [
         {'name': 'sid', 'value': 'v2', 'domain': 'github.com', 'path': '/'},
       ],
-      storage: const {},
-    ));
+      storage: const <String, Map<String, String>>{},
+    );
+    // A write-back keeps the expiry; only a sign-in past the wall (renewed) clears it.
+    await logins.writeBack(p.id, v2);
+    expect(logins.logins.value.firstWhere((l) => l.id == p.id).expired, isTrue);
+    await logins.writeBack(p.id, v2, renewed: true);
     expect(logins.logins.value.firstWhere((l) => l.id == p.id).expired, isFalse);
     expect((await logins.payload(p.id))!.cookies.single['value'], 'v2');
     // A signed-out session doesn't wipe the saved login.
@@ -145,5 +149,72 @@ void main() {
     expect(reloaded.logins.value, hasLength(2));
     await reloaded.delete(g.id);
     expect(await reloaded.payload(g.id), isNull);
+    // A removed project's own logins go; logins for every project stay.
+    final g2 = await reloaded.save('github.com', data, scope: LoginScope.global);
+    await reloaded.forgetProject('p1');
+    expect(reloaded.logins.value.map((l) => l.id), [g2.id]);
+    expect(await reloaded.payload(p.id), isNull);
+  });
+
+  test('sealed writes to one name at once never leave a half-written file', () async {
+    final dir = Directory.systemTemp.createTempSync('sealed');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final store = SealedStore(dir.path, () async => SecretKey(List.filled(32, 7)));
+    final big = List.generate(2000, (i) => 'value $i ' * 10);
+    await Future.wait([
+      for (var i = 0; i < 12; i++) store.write('jar-q', {'n': i, 'big': big}),
+    ]);
+    final j = await store.read('jar-q') as Map;
+    expect(j['n'], 11);
+    expect(dir.listSync().where((f) => f.path.endsWith('.tmp')), isEmpty);
+  });
+
+  test(
+    'a key that cannot be had (refused keychain) throws, so it is asked again, and saved logins load later',
+    () async {
+      final dir = Directory.systemTemp.createTempSync('sealed');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final key = SecretKey(List.filled(32, 7));
+      await SealedStore(dir.path, () async => key).write('logins', [
+        {'id': 'a', 'site': 'github.com', 'scope': 'global', 'saved': DateTime.now().toIso8601String()},
+      ]);
+      var refuse = true;
+      final store = SealedStore(dir.path, () async => refuse ? throw StateError('refused') : key);
+      await expectLater(store.read('logins'), throwsStateError);
+      final logins = SavedLogins(store);
+      await expectLater(logins.load(), throwsStateError);
+      refuse = false;
+      await logins.load();
+      expect(logins.unreadable, isFalse);
+      expect(logins.logins.value.single.site, 'github.com');
+    },
+  );
+
+  test('docs pages about sign-in and local-network hosts are not walls', () {
+    expect(loginWallSite('https://example.com/docs/sso/setup', password: false), isNull);
+    expect(loginWallSite('https://example.com/help/login', password: false), isNull);
+    expect(loginWallSite('https://example.com/a/b/c/login', password: false), isNull);
+    expect(loginWallSite('https://example.com/u/login', password: false), 'example.com');
+    expect(loginWallSite('https://github.com/login/oauth/authorize', password: false), 'github.com');
+    expect(loginWallSite('https://example.com/login.php', password: false), 'example.com');
+    for (final host in [
+      '10.0.0.5',
+      '172.16.1.1',
+      '172.31.255.255',
+      '192.168.1.20',
+      '169.254.10.1',
+      '[fd12::1]',
+      '[fc00::1]',
+      '[fe80::1]',
+      'myapp.test',
+      'printer.local',
+      'api.localhost',
+    ]) {
+      expect(isLocalHost(host), isTrue, reason: host);
+      expect(loginWallSite('http://$host/login', password: true), isNull, reason: host);
+    }
+    for (final host in ['172.32.0.1', '11.0.0.1', '8.8.8.8', 'example.com', 'test.com', 'localhost.example.com']) {
+      expect(isLocalHost(host), isFalse, reason: host);
+    }
   });
 }

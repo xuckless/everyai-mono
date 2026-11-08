@@ -672,6 +672,8 @@ final class CodeProjects extends Notifier<List<CodeProject>> {
         if (p.id != id) p,
     ];
     _save();
+    // The project's own saved logins go with it.
+    unawaited(LiveBrowsers.forgetProjectLogins(id));
   }
 
   /// Where [id]'s sessions run from now on ([envId] from `ExecEnv.id`). Sessions already started keep theirs.
