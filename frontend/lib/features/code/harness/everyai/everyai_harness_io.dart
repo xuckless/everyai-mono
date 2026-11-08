@@ -802,8 +802,19 @@ final class EveryAISession
     File('${_dir.path}/messages.jsonl').writeAsStringSync('${jsonEncode(message)}\n', mode: FileMode.append);
   }
 
-  void _rewriteMessages() =>
-      File('${_dir.path}/messages.jsonl').writeAsStringSync(_messages.map((m) => '${jsonEncode(m)}\n').join());
+  void _rewriteMessages() {
+    // Pictures dropped from memory stay in the file.
+    final kept = _contentsOnDisk();
+    File('${_dir.path}/messages.jsonl').writeAsStringSync(
+      _messages.map((m) {
+        final whole = switch (m['_eid']) {
+          final String id when kept.containsKey(id) => {...m, 'content': kept[id]},
+          _ => m,
+        };
+        return '${jsonEncode(whole)}\n';
+      }).join(),
+    );
+  }
 
   void _rewriteEvents() =>
       File('${_dir.path}/events.jsonl').writeAsStringSync(_history.map((e) => '${jsonEncode(e.raw)}\n').join());
@@ -1086,6 +1097,12 @@ final class EveryAISession
     }
     _history.retainWhere((e) => e.id.isEmpty || keep.contains(e.id));
     _messages.retainWhere((m) => m['role'] == 'system' || keep.contains(m['_eid']));
+    // With fewer pictures left, the dropped ones may go out again: back from the file.
+    final whole = _contentsOnDisk();
+    for (final (i, m) in _messages.indexed) {
+      if (m['_eid'] case final String id when whole.containsKey(id)) _messages[i] = {...m, 'content': whole[id]};
+    }
+    _picturesOnDisk.removeWhere((id) => !keep.contains(id) || whole.containsKey(id));
     _trimDangling(_messages);
     _rewriteEvents();
     _rewriteMessages();
@@ -1150,7 +1167,39 @@ final class EveryAISession
   /// changed a message deep in the history on every screenshot, and each
   /// change made the provider re-read the whole conversation uncached (a
   /// felice-website run paid that 15 times, $13.81 on Opus).
-  List<Map<String, Object?>> _outgoing() => withOlderImagesNoted(_messages, keptImages);
+  List<Map<String, Object?>> _outgoing() {
+    // The pictures that will never go out again leave memory too (a session of screenshots kept every one). Only
+    // memory: messages.jsonl keeps them, so a rewind (or any rewrite of the file) takes them back from there.
+    final before = [for (final m in _messages) m['content']];
+    if (dropOlderImages(_messages, keptImages) > 0) {
+      for (final (i, m) in _messages.indexed) {
+        if (m['_eid'] case final String id when !identical(before[i], m['content'])) _picturesOnDisk.add(id);
+      }
+    }
+    return withOlderImagesNoted(_messages, keptImages);
+  }
+
+  /// Messages (by `_eid`) whose pictures were dropped from memory but are still in messages.jsonl.
+  final _picturesOnDisk = <String>{};
+
+  /// The contents in messages.jsonl of the messages in [_picturesOnDisk] (with their pictures).
+  Map<String, Object?> _contentsOnDisk() {
+    final file = File('${_dir.path}/messages.jsonl');
+    if (_picturesOnDisk.isEmpty || !file.existsSync()) return const {};
+    final out = <String, Object?>{};
+    for (final line in file.readAsLinesSync()) {
+      if (line.isEmpty) continue;
+      try {
+        if (jsonDecode(line) case {'_eid': final String id, 'content': final content}
+            when _picturesOnDisk.contains(id)) {
+          out[id] = content;
+        }
+      } on FormatException {
+        // A torn last line: the rest still counts.
+      }
+    }
+    return out;
+  }
 
   /// Tool pictures sent whole at least (see [_outgoing]).
   static const keptImages = 8;
@@ -2153,6 +2202,24 @@ Future<void> excludeScratch(String dir) async {
   }
 }
 
+/// Replaces, in [messages] itself, the pictures [withOlderImagesNoted] no longer sends with its note; returns how
+/// many. The same request goes out afterwards: what is dropped is always a whole number of batches of [kept], the
+/// oldest first.
+int dropOlderImages(List<Map<String, Object?>> messages, int kept) {
+  final noted = withOlderImagesNoted(messages, kept);
+  var dropped = 0;
+  for (var i = 0; i < messages.length; i++) {
+    final before = messages[i]['content'];
+    final after = noted[i]['content'];
+    if (identical(before, after) || before is! List<Object?> || after is! List<Object?>) continue;
+    dropped +=
+        before.where((p) => p is Map && p['type'] == 'image_url').length -
+        after.where((p) => p is Map && p['type'] == 'image_url').length;
+    messages[i] = {...messages[i], 'content': after};
+  }
+  return dropped;
+}
+
 /// [messages] without `_eid`, the oldest pictures as a note: none while at
 /// most [kept] × 2 − 1 are there, then whole batches of [kept] (the oldest
 /// first), so the history before the newest pictures changes rarely and the
@@ -2186,3 +2253,6 @@ List<Map<String, Object?>> withOlderImagesNoted(List<Map<String, Object?>> messa
       }(),
   ];
 }
+
+/// Ends every session's language servers (the app quits).
+Future<void> closeAllLanguageServers() => LspHub.closeAll();

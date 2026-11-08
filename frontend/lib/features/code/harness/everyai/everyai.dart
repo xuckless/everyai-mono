@@ -24,3 +24,6 @@ Future<HarnessSession>? forkSession(Harness harness, String parentConversationId
       final ForksSessions f => f.fork(parentConversationId, spec),
       _ => null,
     };
+
+/// Ends every EveryAI-harness session's language servers (the app quits).
+Future<void> closeAllLanguageServers() => impl.closeAllLanguageServers();

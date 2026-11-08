@@ -14,6 +14,7 @@ import 'driver.dart';
 import 'detection/cli_scan.dart' show findCli;
 import 'driver_process.dart';
 import 'json_rpc.dart' show EndsInput;
+import '../../../core/process/child_processes.dart';
 
 Future<DriverProcess> spawnDriver({
   required String executable,
@@ -33,6 +34,8 @@ Future<DriverProcess> spawnDriver({
     environment: {...shell.env, ...env, sessionEnvVar: sessionTag},
   );
   registerDriverRoot(sessionTag, process.pid);
+  // Only for the watchdog (a crash or Force Quit): a normal quit closes drivers through closeAllDriverProcesses.
+  ChildProcesses.track(process.pid, label: 'Driver $executable', executable: executable, exited: process.exitCode);
   return _Process(process, sessionTag, File(logPath).openWrite(mode: FileMode.append));
 }
 
@@ -115,6 +118,7 @@ Future<DriverProcess> spawnDriverTty({
     rethrow;
   }
   registerDriverRoot(sessionTag, program.pid);
+  ChildProcesses.track(program.pid, label: 'Driver $executable', executable: executable, exited: program.exitCode);
   return _TtyProcess(program, sessionTag, logPath, logStart, input, output);
 }
 
