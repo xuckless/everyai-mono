@@ -590,21 +590,35 @@ final class WorkflowEngine {
     return launcher.message(v.childId!, text);
   }
 
-  /// The lead's restart of a live agent: the same agent, a new turn with its context kept.
+  /// The lead's restart of a live agent: the same agent, a new turn with its context kept. Not while the run is
+  /// paused: the stop would end the agent's hold, and its new turn would run during the pause.
   Future<bool> restartAgent(String keyOrChild, String note) async {
     final v = liveAgent(keyOrChild);
-    if (v == null) return false;
+    if (v == null || _state is RunPausing || _state is RunPaused) return false;
     leadActed();
     await launcher.restart(v.childId!, note);
     return true;
   }
 
-  /// The lead's ignore: the run counts as running, and the stall clock starts over.
+  /// The lead's ignore: the run counts as running, and the stall clock starts over (also before a stall).
   void ignoreStall() {
-    if (_state case RunStalled(:final phase)) {
-      _stallBase = _clock();
-      _to(RunRunning(phase));
+    switch (_state) {
+      case RunStalled(:final phase):
+        _stallBase = _clock();
+        _to(RunRunning(phase));
+      case RunRunning():
+        _stallBase = _clock();
+      default:
+        break;
     }
+  }
+
+  /// [childId] leaves the live agents: its last progress still counts for the run (an agent that just finished
+  /// isn't quiet time of the others').
+  void _leave(String childId) {
+    if (!_live.remove(childId)) return;
+    final at = launcher.lastActivity(childId);
+    if (at != null && (_stallBase == null || at.isAfter(_stallBase!))) _stallBase = at;
   }
 
   /// The row for the phase that just ended: its agents, what they spent, and how long it took.
@@ -771,7 +785,10 @@ final class WorkflowEngine {
             _phaseReport(_phase);
             _phaseAt = _clock();
             final ended = _phase;
-            if (ended.isNotEmpty && onPhaseEnd != null && journal.driftChecked.add(ended)) {
+            // Not once the run is stopping or detached: nothing would act on the check (and an EveryAI lead's call
+            // would be spent for nothing).
+            final checks = _state is RunRunning || _state is RunStalled || _state is RunPausing || _state is RunPaused;
+            if (ended.isNotEmpty && onPhaseEnd != null && checks && journal.driftChecked.add(ended)) {
               unawaited(journal.write({'t': 'drift', 'phase': ended}));
               final results = [
                 for (final v in _agents.values)
@@ -1101,7 +1118,7 @@ final class WorkflowEngine {
       if (call.batch?.check != null && call.worktree && problem == null && _state.acceptsAgents) {
         gate = await launcher.batchCheckOf(childId, call.batch!);
       }
-      _live.remove(childId);
+      _leave(childId);
       if (gate != null && !_state.acceptsAgents) {
         // Stopped during the check: its verdict isn't the agent's answer.
         gate = null;
@@ -1145,7 +1162,7 @@ final class WorkflowEngine {
       _view(call.key, (v) => v.copyWith(status: WorkflowAgentStatus.done));
       _reply(id, result: value);
     } on Object catch (e) {
-      if (childId != null) _live.remove(childId);
+      if (childId != null) _leave(childId);
       final message = '$e'.replaceFirst('Exception: ', '');
       // A stop, a cap or the run's end isn't the agent's answer: a resumed run tries it again.
       final running = _state.acceptsAgents;

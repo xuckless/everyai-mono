@@ -386,6 +386,28 @@ void main() {
       expect(e.refused, isEmpty);
     });
 
+    test('a phase that ends while the run stops gets no drift check', () async {
+      final ended = <String>[];
+      final e = WorkflowEngine(
+        runId: 'r1',
+        name: 'test',
+        bridge: bridge,
+        launcher: launcher,
+        journal: WorkflowJournal.fresh((l) async => lines.add(l)),
+        timer: FakeTimers().call,
+        onPhaseEnd: (run, phase, results) => ended.add(phase),
+      );
+      final run = e.run();
+      bridge.note('phase', {'title': 'Research'});
+      expect(await bridge.agent('a'), 'ok:a');
+      // The script moved on just as the user stopped it: nothing would act on the check.
+      bridge.note('phase', {'title': 'Build'});
+      e.stop();
+      await run;
+      expect(ended, isEmpty);
+      expect(lines.where((l) => l.contains('"drift"')), isEmpty);
+    });
+
     group('after a restart', () {
       WorkflowEngine resumed(List<Map<String, Object?>> entries, {List<String>? decisions, List<String>? drifts}) =>
           WorkflowEngine(
@@ -560,6 +582,54 @@ void main() {
         await e.resume();
         e.checkStall();
         expect(e.state, isA<RunRunning>(), reason: 'held time is not a stall');
+        hold.complete();
+        await reply;
+        bridge.finish(null);
+        await run;
+        expect(e.refused, isEmpty);
+      });
+
+      test("an agent that just finished was progress: the others' quiet time isn't a stall yet", () async {
+        final quick = Completer<void>();
+        launcher.gate = (call) => call.prompt == 'b' ? quick.future : hold.future;
+        final run = e.run();
+        final a = bridge.agent('a');
+        final slow = await started();
+        final b = bridge.agent('b');
+        final fast = await started();
+        launcher.activity[slow] = clock;
+        clock = clock.add(const Duration(minutes: 6));
+        launcher.activity[fast] = clock;
+        quick.complete();
+        expect(await b, 'ok:b');
+        clock = clock.add(const Duration(minutes: 2));
+        e.checkStall();
+        expect(e.state, isA<RunRunning>(), reason: 'b made progress 2 minutes ago');
+        clock = clock.add(const Duration(minutes: 5));
+        e.checkStall();
+        expect(e.state, const RunStalled());
+        hold.complete();
+        await a;
+        bridge.finish(null);
+        await run;
+        expect(e.refused, isEmpty);
+      });
+
+      test('ignore before a stall starts the clock over too; no restart while paused', () async {
+        final run = e.run();
+        final reply = bridge.agent('a');
+        final child = await started();
+        launcher.activity[child] = clock;
+        clock = clock.add(const Duration(minutes: 6));
+        e.ignoreStall();
+        clock = clock.add(const Duration(minutes: 6));
+        e.checkStall();
+        expect(e.state, isA<RunRunning>(), reason: 'counted from the ignore');
+        await e.pause();
+        expect(await e.restartAgent(child, 'note'), isFalse);
+        expect(launcher.restarted, isEmpty, reason: 'its new turn would run during the pause');
+        await e.resume();
+        expect(await e.restartAgent(child, 'note'), isTrue);
         hold.complete();
         await reply;
         bridge.finish(null);

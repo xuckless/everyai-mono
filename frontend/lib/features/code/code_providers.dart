@@ -6601,7 +6601,11 @@ final class CodeSessionController extends Notifier<CodeSessionState>
             : 'Not sent: that agent has stopped or its budget is spent.';
       case 'restart':
         if (engine.liveAgent(key) == null) return noAgent();
-        await engine.restartAgent(key, workflowRestartNote(str('text')));
+        if (!await engine.restartAgent(key, workflowRestartNote(str('text')))) {
+          return engine.state is RunPausing || engine.state is RunPaused
+              ? 'Not restarted: the run is paused. Restart the agent once it resumes.'
+              : noAgent();
+        }
         return 'Restarted: its turn was stopped and it goes on in a new one, with its context.';
       case 'ignore':
         engine.ignoreStall();
@@ -7890,10 +7894,16 @@ final class _WorkflowLauncher implements AgentLauncher {
     var ending = false;
     void look(CodeSessionState next) {
       if (done.isCompleted || ending) return;
-      // A restart's stopped turn: the turn after it is the one this waits for.
-      if (_restarting.contains(childId)) {
-        busy = true;
-        return;
+      // A restart's stopped turn: the turn after it is the one this waits for. The stopped turn may end only after
+      // the restart sent its note (a slow stop), so the wait lasts until a turn runs after it ended.
+      if (_restarting[childId] case (:final ended, :final sending)) {
+        final running = next.transcript.running;
+        if (!ended || !sending || !running) {
+          if (!running) _restarting[childId] = (ended: true, sending: sending);
+          busy = true;
+          return;
+        }
+        _restarting.remove(childId);
       }
       _waiting(callId, next.status == SessionStatus.needsInput);
       final outcome = subagentOutcome(next.transcript, error: next.failure);
@@ -7991,27 +8001,33 @@ final class _WorkflowLauncher implements AgentLauncher {
   DateTime? lastActivity(String childId) =>
       _ref.exists(codeSessionProvider(childId)) ? _ref.read(codeSessionProvider(childId).notifier).lastActivity : null;
 
-  /// Children being restarted: the stopped turn's end isn't the end the engine waits for.
-  final _restarting = <String>{};
+  /// Children being restarted: whether their stopped turn has ended yet, and whether the note is being sent. The
+  /// stopped turn's end isn't the end the engine waits for; the watch goes on once a turn runs after both (see
+  /// [_turnEnd]).
+  final _restarting = <String, ({bool ended, bool sending})>{};
 
   @override
   Future<void> restart(String childId, String note) async {
     if (!_ref.exists(codeSessionProvider(childId)) || _stopped.contains(childId)) return;
     final c = _ref.read(codeSessionProvider(childId).notifier);
-    _restarting.add(childId);
+    _restarting[childId] = (ended: !_ref.read(codeSessionProvider(childId)).transcript.running, sending: false);
+    var sent = false;
     try {
       await c._stopAndSettle();
+      if (_restarting[childId] case final r?) _restarting[childId] = (ended: r.ended, sending: true);
       // The new turn: watched as the same agent() call's.
-      final sent = await c.send(note);
+      sent = await c.send(note);
       final end = DateTime.now().add(const Duration(seconds: 10));
       while (sent &&
+          _restarting.containsKey(childId) &&
           _ref.exists(codeSessionProvider(childId)) &&
-          !_ref.read(codeSessionProvider(childId)).transcript.running &&
           DateTime.now().isBefore(end)) {
         await Future<void>.delayed(const Duration(milliseconds: 50));
       }
     } finally {
-      _restarting.remove(childId);
+      // A refused send: the call ends with the stopped turn. A sent note that hasn't run yet (the stop is still
+      // settling) keeps the watch waiting for its turn.
+      if (!sent || !_ref.exists(codeSessionProvider(childId))) _restarting.remove(childId);
       // Changes while it restarted were skipped: the watch looks again now (a refused send ends the call with the
       // stopped turn; a new turn that already ended gives its answer).
       _recheck[childId]?.call();
@@ -8044,6 +8060,7 @@ final class _WorkflowLauncher implements AgentLauncher {
   @override
   void stop(String childId) {
     _stopped.add(childId);
+    _restarting.remove(childId);
     final check = _checking.remove(childId);
     if (check != null && !check.isCompleted) check.complete();
     final turn = _watching.remove(childId);

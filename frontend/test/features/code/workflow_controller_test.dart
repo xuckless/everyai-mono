@@ -385,13 +385,69 @@ void main() {
     // The stop reaches the agent, and its turn ends; that isn't the agent's answer.
     await Future<void>.delayed(const Duration(milliseconds: 100));
     agent.add(stateEvent('${agent.id}-s', ExecutionStatus.finished));
-    await Future<void>.delayed(const Duration(milliseconds: 100));
+    // The new turn starts once the note reaches the agent.
+    for (var i = 0; i < 200 && !agent.sent.any((m) => m.contains('use a timeout')); i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
     agent.add(stateEvent('${agent.id}-r1', ExecutionStatus.running));
     expect((await restarting).text, startsWith('Restarted'));
     expect(agent.sent.any((m) => m.contains('use a timeout')), isTrue, reason: '${agent.sent}');
     expect(settled, isFalse);
     answer(agent, 'Fixed it, with a timeout');
     expect(await reply, 'Fixed it, with a timeout');
+    bridge.finish(null);
+    await pumpEventQueue();
+  });
+
+  test("workflow_agents restart with a slow stop: the stopped turn's late end isn't the agent's answer", () async {
+    final c = await open();
+    await c.runWorkflow('demo', 'source', args: {'n': 1});
+    final reply = bridge.agent('Fix the bug', {'harness': 'fake2', 'label': 'Fixer'});
+    final kid = await child();
+    await whenValue(container, codeSessionProvider(kid.id).select((s) => s.connected), (bool b) => b);
+    final agent = drivers['fake2']!.latest!;
+    agent.add(stateEvent('${agent.id}-r0', ExecutionStatus.running));
+    await pumpEventQueue();
+    HostCall agents(Map<String, Object?> args) =>
+        HostCall(id: 'wa', sessionId: '', name: workflowAgentsTool, args: args, ended: Completer<HostEnd>().future);
+    final key = RegExp(r'agent (\S+),').firstMatch((await c.call(agents({'action': 'list'}))).text)![1]!;
+    var settled = false;
+    unawaited(reply.then((_) => settled = true));
+    final restarting = c.call(agents({'action': 'restart', 'agent': key, 'text': 'use a timeout'}));
+    // The stop takes longer than the 5 s the app waits for it; the note queues behind the stopping turn.
+    await Future<void>.delayed(const Duration(milliseconds: 5600));
+    agent.add(stateEvent('${agent.id}-s', ExecutionStatus.finished));
+    await pumpEventQueue();
+    expect(settled, isFalse, reason: "the stopped turn's end is not the answer");
+    for (var i = 0; i < 100 && !agent.sent.any((m) => m.contains('use a timeout')); i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    expect(agent.sent.any((m) => m.contains('use a timeout')), isTrue, reason: '${agent.sent}');
+    agent.add(stateEvent('${agent.id}-r1', ExecutionStatus.running));
+    expect((await restarting).text, startsWith('Restarted'));
+    expect(settled, isFalse);
+    answer(agent, 'Fixed it, with a timeout');
+    expect(await reply, 'Fixed it, with a timeout');
+    bridge.finish(null);
+    await pumpEventQueue();
+  });
+
+  test('workflow_agents restart is refused while the run is paused', () async {
+    final c = await open();
+    final runId = await c.runWorkflow('demo', 'source', args: {'n': 1});
+    final reply = bridge.agent('Fix the bug', {'harness': 'fake2', 'label': 'Fixer'});
+    final kid = await child();
+    await whenValue(container, codeSessionProvider(kid.id).select((s) => s.connected), (bool b) => b);
+    final agent = drivers['fake2']!.latest!;
+    HostCall agents(Map<String, Object?> args) =>
+        HostCall(id: 'wa', sessionId: '', name: workflowAgentsTool, args: args, ended: Completer<HostEnd>().future);
+    final key = RegExp(r'agent (\S+),').firstMatch((await c.call(agents({'action': 'list'}))).text)![1]!;
+    await c.pauseWorkflow(runId);
+    final r = await c.call(agents({'action': 'restart', 'agent': key}));
+    expect(r.text, startsWith('Not restarted: the run is paused'));
+    await c.resumeWorkflow(runId);
+    answer(agent, 'Fixed it');
+    expect(await reply, 'Fixed it');
     bridge.finish(null);
     await pumpEventQueue();
   });
