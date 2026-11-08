@@ -289,10 +289,11 @@ void main() {
           {...m, if (m['tool_call_id'] case final String id) 'tool_call_id': 't$id'},
       ];
       for (final m in turn) {
-        if (m['tool_calls'] case [final Map<String, Object?> c])
+        if (m['tool_calls'] case [final Map<String, Object?> c]) {
           m['tool_calls'] = [
             {...c, 'id': 't${c['id']}'},
           ];
+        }
       }
       final messages = [
         ...history(7),
