@@ -1109,6 +1109,12 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
     per colour behind it (`pictureUsesOf`, `colourBehind`; no white card, light text on dark), in PPTX too; the
     SVG checks place everything through full affine transforms, and a rotated label is checked in its own frame.
   - Not done: no live model run.
+- **Install scripts (2026-11-07; `packaging/install/`).** `get.everyai.dev` (Cloudflare worker `everyai-get`, deployed
+  with `packaging/install/deploy.sh`) serves `install.sh` (macOS: DMG checked by SHA-256, team signature and
+  Gatekeeper, into /Applications or ~/Applications; Linux x86_64: the .deb through apt, else the AppImage in
+  `~/.local/share/everyai` with menu entry, icons, `everyai://` handler and `~/.local/bin/everyai`; SHA256SUMS GPG-checked
+  when gpg is there; `--uninstall`), `install.ps1` (winget from the Store, else the Store page) and `/latest/version`.
+  Packages come from GitHub Releases, so releases need no step here.
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),
