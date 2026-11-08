@@ -520,6 +520,15 @@ void main() {
     expect(state().mode, ChatMode.learn);
   });
 
+  test('the model picked in a chat is what new chats start with', () async {
+    await settle();
+    final picked = builtInCatalog.resolve(autoModelId);
+    expect(container.read(defaultModelProvider).id, isNot(autoModelId));
+    ctl().selectModel(picked);
+    expect(container.read(defaultModelProvider).id, autoModelId);
+    expect(container.read(chatSessionProvider('another-chat')).model.id, autoModelId);
+  });
+
   test('Auto: the route is kept on the answer, survives a reopen, and a re-run uses the picked model', () async {
     await settle();
     ctl().selectModel(builtInCatalog.resolve(autoModelId));

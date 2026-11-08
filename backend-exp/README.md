@@ -85,7 +85,7 @@ cached_tokens, cache_write_tokens, charged_micros}` (one per upstream call),
 The app ships this server and starts it on loopback for chats on the user's
 local models (Ollama, Apple `fm serve`, LM Studio, llama.cpp, Jan, vLLM, MLX)
 and on their own keys, so neither reaches the deployed server. Code:
-`src/local.zig`, tests `src/local_test.zig`. The deployed server ignores every
+`src/local.zig` and `src/local_models.zig`, tests `src/local_test.zig`. The deployed server ignores every
 header below.
 
 - **Env:** `LOCAL_MODE=true`, `LOCAL_TOKEN` (16+ characters, random per launch),
@@ -116,6 +116,50 @@ header below.
   the same ledger, cache and untrusted wrapping as the web plugin's. Search
   mode on a model without tools searches the question first and puts the
   numbered results before it.
+- **Server kind:** `X-Local-Kind` (and `X-Local-Aux-Kind` for side jobs):
+  `ollama`, `lmstudio`, `fm`, `llamacpp`, `jan`, `vllm`, `mlx` or `custom`
+  (unknown or missing). Apple's `fm serve` (`fm`) refuses tool schemas with type
+  lists or `anyOf`, stop sequences and an effort on its on-device model, so its
+  calls go without `tools`, `tool_choice`, `parallel_tool_calls`, `stop`,
+  `reasoning`/`reasoning_effort` and `response_format` (a side job that wanted
+  JSON gets free text and reads it as "unsure").
+- **Small models:** a local model with a window of 16K tokens or less
+  (`X-Local-Context`), or without `tools` in `X-Local-Caps`, gets a short prompt
+  (`tools.light_system_prompt`) and no tool definitions or mode block: the full
+  prompt and tools are ~11K tokens, more than Apple's whole 4K window.
+- **Model states** (`src/local_models.zig`): one explicit state machine per
+  model (`base_url` + name): `unloaded → loading → loaded → unloading →
+  unloaded`, `failed` (with a reason) from a failed load or unload; what the
+  server itself reports moves a model to `loaded`/`unloaded` (ignored while a
+  load or unload of ours runs). `ours` = EveryAI put it in memory (a load call,
+  or a chat turn that found it unloaded); those are unloaded at quit. A chat
+  turn on a local model marks it `loading`, then `loaded` when the turn runs or
+  `failed` when it doesn't. Only Ollama and LM Studio can load and unload
+  (`controllable`); other kinds' models show what turns did. Base URLs must be
+  on this computer (loopback).
+  - `GET /v1/local/models[?server=<kind>|<base_url>…]` (each `server` value
+    URL-encoded; repeatable) → `{models:[{kind, base_url, name, state, ours,
+    reason, since, controllable}]}`. Each Ollama/LM Studio server the registry
+    knows or the query names is asked first (Ollama `/api/ps`, LM Studio
+    `/api/v0/models` `state`; 3 s): models it holds join as `loaded` (not ours),
+    tracked ones it no longer holds become `unloaded`.
+  - `POST /v1/local/models/load {kind, base_url, name}` (+ `X-Local-Api-Key`):
+    Ollama `POST <root>/api/generate {model, keep_alive: "30m", stream: false}`,
+    LM Studio `POST <root>/api/v1/models/load {model}` (120 s) → 200 `{model}`
+    (also when it was loaded already, without a call). 409 `{code: "unsupported"}`
+    for other kinds, 409 `{code: "busy", model}` while it loads or unloads, 502
+    `{code: "load_failed", message, model}`, 422 for a non-loopback URL.
+  - `POST /v1/local/models/unload {kind, base_url, name}`: Ollama `keep_alive: 0`,
+    LM Studio `POST <root>/api/v1/models/unload {instance_id}` (10 s); same
+    answers (`unload_failed`).
+  - `POST /v1/local/models/unload_ours` → `{unloaded: [names], failed: [{name,
+    reason}]}`: every model EveryAI loaded that is still in memory.
+  - `POST /v1/local/shutdown` → the same `{unloaded, failed}`, then the server
+    drains and exits.
+- **Parent watch:** with `LOCAL_PARENT_PID` (the app's pid) the server checks
+  every 2 s that the app is still there (POSIX: its parent pid is still that
+  one; Windows: the process still runs). When it's gone it unloads its models
+  (5 s per call) and exits, so a crashed or killed app leaves nothing behind.
 
 ## Prompt caching
 

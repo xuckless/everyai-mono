@@ -20,6 +20,7 @@
 const std = @import("std");
 const byok = @import("byok.zig");
 const local = @import("local.zig");
+const local_models = @import("local_models.zig");
 const anole = @import("anole");
 const App = @import("main.zig").App;
 const auth = @import("auth.zig");
@@ -237,6 +238,8 @@ const CallOpts = struct {
     /// Makes the call use this tool (`tool_choice` names it). Sits after the
     /// tools and system prompt in the body, so the cached prefix is unchanged.
     force_tool: ?[]const u8 = null,
+    /// A small local model ([local.light]): the light prompt, no mode block.
+    light: bool = false,
 };
 
 /// True when `name` is one of the tools every chat request defines.
@@ -289,7 +292,11 @@ fn buildBody(arena: std.mem.Allocator, model: []const u8, mode: Mode, with_tools
     try s.beginObject();
     try s.objectField("role");
     try s.write("system");
-    try writeSystem(&s, modes.block(mode, with_tools), bp, ttl);
+    if (opts.light) {
+        try writeContent(&s, tools.light_system_prompt, null, false, ttl);
+    } else {
+        try writeSystem(&s, modes.block(mode, with_tools), bp, ttl);
+    }
     try s.endObject();
     for (messages, 0..) |m, i| {
         try s.beginObject();
@@ -445,7 +452,27 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
         if (p.outcome) |o| try sink.send("usage", .{ .kind = "decide", .model = o.model, .prompt_tokens = o.prompt_tokens, .completion_tokens = o.completion_tokens, .cached_tokens = o.cached_tokens, .cache_write_tokens = 0, .charged_micros = o.charged_micros, .byok_cost_micros = o.byok_cost_micros });
     }
 
-    run(app, req, who, model, body, facts, sink) catch |err| switch (err) {
+    // A local model's state (local_models.zig): loading until the turn runs.
+    const tracked: ?local_models.Registry.Model = if (on_local) blk: {
+        const server = local.serverOf(req, .chat).?;
+        break :blk .{ .kind = server.kind, .base_url = server.base_url, .name = local.nameOf(model), .api_key = server.api_key };
+    } else null;
+    const loading = if (tracked) |m| local_models.turnStarts(app, req.io, m) else false;
+    run(app, req, who, model, body, facts, sink) catch |err| {
+        if (tracked) |m| local_models.turnEnded(app, req.io, m, loading, if (isConnectError(err))
+            "Couldn't reach the local model's server."
+        else if (err == error.Upstream)
+            "The local server refused the request."
+        else
+            @errorName(err));
+        return turnFailed(err, on_local, req, sink, &ev);
+    };
+    if (tracked) |m| local_models.turnEnded(app, req.io, m, loading, null);
+    try ev.end();
+}
+
+fn turnFailed(err: anyerror, on_local: bool, req: *anole.Request, sink: Sink, ev: anytype) !void {
+    switch (err) {
         error.Upstream, error.OutOfCredits => {}, // already reported
         // A restart: the app retries the turn once the server is back.
         error.ServerDraining => sink.send("error", .{ .message = "The server is restarting. Try again in a moment.", .retryable = true }) catch {},
@@ -458,7 +485,7 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
                 "Something went wrong while answering.";
             sink.send("error", .{ .message = message, .retryable = true }) catch {};
         },
-    };
+    }
     try ev.end();
 }
 
@@ -488,7 +515,8 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
             else => try messages.append(arena, .{ .role = role, .content = textOf(m.content) }),
         }
     }
-    const with_tools = body.tools_enabled and facts.tools;
+    const light = app.isLocal(req, model) and local.light(local.capsOf(req));
+    const with_tools = body.tools_enabled and facts.tools and !light;
     var inquiry: research.State = .{ .depth = body.research_depth orelse .standard };
     var docs: Artifacts = .{};
     for (messages.items) |m| if (std.mem.eql(u8, m.role, "assistant")) try docs.seed(arena, m.content);
@@ -504,7 +532,7 @@ fn run(app: *App, req: *anole.Request, who: auth.Identity, model: []const u8, bo
     if (modes.usesPlugin(body.mode, with_tools)) if (route.search) |engine| {
         try preSearch(app, req, who, body, engine, &messages, sink);
     };
-    const turn: Turn = .{ .app = app, .req = req, .who = who, .model = model, .body = body, .route = route, .with_tools = with_tools, .effort = effort };
+    const turn: Turn = .{ .app = app, .req = req, .who = who, .model = model, .body = body, .route = route, .with_tools = with_tools, .effort = effort, .light = light };
 
     var steps: u8 = 0;
     var continuations: u8 = 0;
@@ -630,6 +658,8 @@ const Turn = struct {
     body: ChatRequest,
     route: App.Route,
     with_tools: bool,
+    /// A small local model: the light prompt ([local.light]).
+    light: bool = false,
     /// `reasoning.effort` for every call of the turn, or null.
     effort: ?[]const u8 = null,
 
@@ -643,6 +673,7 @@ const Turn = struct {
         };
         var o = opts;
         o.effort = self.effort;
+        o.light = self.light;
         const request_body = try buildBody(self.req.arena, self.model, self.body.mode, self.with_tools, messages, app.cfg.cache_ttl, app.cfg.search_engine, o);
         var up_err: openrouter.UpstreamError = .{ .status = 0, .message = "" };
         const result = openrouter.complete(self.route.up, openrouter.ctxOf(self.req), self.req.arena, request_body, &.{}, deltas, &up_err) catch |err| switch (err) {
@@ -1364,6 +1395,21 @@ test {
     _ = web;
     _ = summarise;
     _ = auto;
+}
+
+test "a small local model gets the light prompt and no mode block" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const msgs = [_]Msg{.{ .role = "user", .content = "Hello" }};
+    const body = try buildBody(a, "local/system", .learn, false, &msgs, "5m", "exa", .{ .light = true });
+    try std.testing.expect(std.mem.indexOf(u8, body, "running on the user's own computer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"tools\"") == null);
+    try std.testing.expect(body.len < 2000);
+    try std.testing.expect(local.light(.{ .tools = false }));
+    try std.testing.expect(local.light(.{ .tools = true, .context = 8192 }));
+    try std.testing.expect(!local.light(.{ .tools = true, .context = 32768 }));
+    try std.testing.expect(!local.light(.{ .tools = true }));
 }
 
 test buildBody {

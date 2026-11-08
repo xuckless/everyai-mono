@@ -181,9 +181,12 @@ final class ChatController extends Notifier<ChatSessionState> {
   }
 
   /// Changes the conversation's model (the composer's model picker).
+  /// The pick is also what new chats start with from now on (Apple's model is
+  /// the default only until the user picks one).
   void selectModel(ModelSpec model) {
     if (state.phase.busy) return;
     state = state.copyWith(model: model);
+    ref.read(defaultModelProvider.notifier).set(model);
   }
 
   /// Idle/Failed → Awaiting. Ignored while a turn is in flight.

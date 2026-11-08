@@ -3,8 +3,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:io' as io show pid;
+
+import 'package:path_provider/path_provider.dart';
 
 import '../../code/drivers/acp/acp_files.dart' show whichCommand;
+import '../../code/harness/everyai/shell_io.dart' show killTree;
 import '../domain/fm.dart';
 import '../domain/hardware.dart';
 import 'hardware_scan.dart';
@@ -12,14 +16,17 @@ import 'local_system.dart';
 
 LocalSystem createLocalSystem() => IoLocalSystem();
 
-const fmPath = '/usr/bin/fm';
+const fmPath = fmExecutable;
 
 /// The real computer.
 final class IoLocalSystem implements LocalSystem {
   IoLocalSystem({LocalRun? run}) : _run = run ?? runProgram;
 
   final LocalRun _run;
-  final _started = <Process>[];
+
+  /// Server processes EveryAI launched, by server id.
+  final _owned = <String, Process>{};
+  String? _launchProblem;
 
   @override
   HostOs get os => Platform.isMacOS
@@ -48,7 +55,7 @@ final class IoLocalSystem implements LocalSystem {
   Future<String?> ollamaPath() async {
     final onPath = await whichCommand(Platform.isWindows ? 'ollama.exe' : 'ollama').catchError((_) => null);
     if (onPath != null) return onPath;
-    final home = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'] ?? '';
+    final home = _home;
     final local = Platform.environment['LOCALAPPDATA'] ?? '';
     final candidates = [
       if (Platform.isMacOS) ...[
@@ -60,23 +67,18 @@ final class IoLocalSystem implements LocalSystem {
       if (Platform.isLinux) ...['/usr/local/bin/ollama', '/usr/bin/ollama', '$home/.local/bin/ollama'],
       if (Platform.isWindows) '$local\\Programs\\Ollama\\ollama.exe',
     ];
-    for (final c in candidates) {
-      if (File(c).existsSync()) return c;
-    }
-    return null;
+    return candidates.where((c) => File(c).existsSync()).firstOrNull;
   }
 
   @override
-  Future<bool> startOllama(String path) async {
-    try {
-      final p = await Process.start(path, const ['serve'], environment: {'EVERYAI_LOCAL_SERVER': '1'});
-      _drain(p);
-      _started.add(p);
-      return true;
-    } on Object {
-      return false;
-    }
+  Future<String?> lmsPath() async {
+    final onPath = await whichCommand(Platform.isWindows ? 'lms.exe' : 'lms').catchError((_) => null);
+    if (onPath != null) return onPath;
+    final bundled = Platform.isWindows ? '$_home\\.lmstudio\\bin\\lms.exe' : '$_home/.lmstudio/bin/lms';
+    return File(bundled).existsSync() ? bundled : null;
   }
+
+  static String get _home => Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'] ?? '';
 
   @override
   Future<FmStatus> fmStatus() async {
@@ -98,14 +100,134 @@ final class IoLocalSystem implements LocalSystem {
   }
 
   @override
-  Future<int?> startFm() async {
+  Future<({int code, String out})?> run(String exe, List<String> args) => _run(exe, args);
+
+  @override
+  String? get launchProblem => _launchProblem;
+
+  @override
+  Future<LaunchedServer?> launch(
+    String id,
+    String exe,
+    List<String> args, {
+    Map<String, String> env = const {},
+    bool shell = false,
+    String? logPath,
+  }) async {
+    _launchProblem = null;
+    if (_owned.containsKey(id)) {
+      _launchProblem = 'It is already running.';
+      return null;
+    }
+    final Process p;
+    try {
+      p = shell
+          ? (Platform.isWindows
+                ? await Process.start('cmd.exe', ['/c', exe], environment: {...env, 'EVERYAI_LOCAL_SERVER': id})
+                : await Process.start('/bin/sh', ['-c', exe], environment: {...env, 'EVERYAI_LOCAL_SERVER': id}))
+          : await Process.start(exe, args, environment: {...env, 'EVERYAI_LOCAL_SERVER': id});
+    } on Object catch (e) {
+      _launchProblem = "Couldn't start it: $e";
+      return null;
+    }
+    _owned[id] = p;
+    IOSink? log;
+    if (logPath != null) {
+      try {
+        await File(logPath).parent.create(recursive: true);
+        log = File(logPath).openWrite(mode: FileMode.append);
+      } on Object {
+        log = null;
+      }
+    }
+    // Read even without a log: a full pipe would stall the server.
+    p.stdout.listen((d) => log?.add(d), onError: (_) {});
+    p.stderr.listen((d) => log?.add(d), onError: (_) {});
+    final exited = p.exitCode.then((code) async {
+      if (identical(_owned[id], p)) _owned.remove(id);
+      await log?.close().catchError((Object _) {});
+      return code;
+    });
+    return LaunchedServer(pid: p.pid, exited: exited);
+  }
+
+  @override
+  bool owns(String id) => _owned.containsKey(id);
+
+  @override
+  Future<String?> stopOwned(String id, {Duration grace = const Duration(seconds: 5)}) async {
+    final p = _owned[id];
+    if (p == null) return null;
+    Process.killPid(p.pid, ProcessSignal.sigterm);
+    final code = await p.exitCode.timeout(grace, onTimeout: () => -999);
+    if (code != -999) return null;
+    // Didn't end in time: it and its children, by force.
+    await killTree(p.pid);
+    final forced = await p.exitCode.timeout(const Duration(seconds: 2), onTimeout: () => -999);
+    return forced == -999 ? "It didn't stop (pid ${p.pid})." : null;
+  }
+
+  @override
+  Future<String?> stopListener(int port, {Duration grace = const Duration(seconds: 5)}) async {
+    final found = await listenerOf(port);
+    if (found == null) return null;
+    final (:pid, :command) = found;
+    if (pid == io.pid || command.contains('everyai-backend')) return "That's EveryAI's own server.";
+    for (final e in _owned.entries) {
+      if (e.value.pid == pid) return stopOwned(e.key, grace: grace);
+    }
+    // Ollama's menu-bar app restarts a server it lost: quit the app instead.
+    if (Platform.isMacOS && command.contains('/Ollama.app/')) {
+      await _run('/usr/bin/osascript', const ['-e', 'quit app "Ollama"']);
+    } else if (Platform.isWindows) {
+      final root = Platform.environment['SystemRoot'] ?? r'C:\Windows';
+      await _run('$root\\System32\\taskkill.exe', ['/PID', '$pid', '/T']);
+    } else if (!Process.killPid(pid, ProcessSignal.sigterm)) {
+      return command.contains('ollama')
+          ? 'It runs as a system service. Stop it with `sudo systemctl stop ollama`.'
+          : "EveryAI isn't allowed to stop it (it runs as another user).";
+    }
+    if (await _gone(port, grace)) return null;
+    if (Platform.isWindows) {
+      final root = Platform.environment['SystemRoot'] ?? r'C:\Windows';
+      await _run('$root\\System32\\taskkill.exe', ['/PID', '$pid', '/T', '/F']);
+    } else {
+      Process.killPid(pid, ProcessSignal.sigkill);
+    }
+    return await _gone(port, const Duration(seconds: 2)) ? null : "It didn't stop (pid $pid).";
+  }
+
+  Future<bool> _gone(int port, Duration within) async {
+    final until = DateTime.now().add(within);
+    while (DateTime.now().isBefore(until)) {
+      if (await listenerOf(port) == null) return true;
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+    return await listenerOf(port) == null;
+  }
+
+  /// The process listening on loopback [port], with its command line, or null.
+  Future<({int pid, String command})?> listenerOf(int port) async {
+    int? pid;
+    if (Platform.isWindows) {
+      final r = await _run('netstat', const ['-ano', '-p', 'TCP']);
+      pid = r == null ? null : parseNetstatListener(r.out, port);
+    } else {
+      final lsof = File('/usr/sbin/lsof').existsSync() ? '/usr/sbin/lsof' : 'lsof';
+      final r = await _run(lsof, ['-nP', '-iTCP:$port', '-sTCP:LISTEN', '-t']);
+      pid = r == null ? null : int.tryParse(r.out.trim().split('\n').first.trim());
+    }
+    if (pid == null) return null;
+    final cmd = Platform.isWindows ? null : await _run('/bin/ps', ['-o', 'command=', '-p', '$pid']);
+    return (pid: pid, command: cmd?.out.trim() ?? '');
+  }
+
+  @override
+  Future<int?> freePort() async {
     try {
       final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
       final port = socket.port;
       await socket.close();
-      final p = await Process.start(fmPath, ['serve', '--host', '127.0.0.1', '--port', '$port']);
-      _drain(p);
-      _started.add(p);
       return port;
     } on Object {
       return null;
@@ -113,18 +235,30 @@ final class IoLocalSystem implements LocalSystem {
   }
 
   @override
-  Future<void> stopStarted() async {
-    for (final p in _started) {
-      p.kill();
+  Future<String?> logDir() async {
+    try {
+      final dir = Directory('${(await getApplicationSupportDirectory()).path}/local-servers');
+      await dir.create(recursive: true);
+      return dir.path;
+    } on Object {
+      return null;
     }
-    _started.clear();
   }
 
-  /// Their output is read and dropped, so a full pipe never stalls them.
-  void _drain(Process p) {
-    p.stdout.listen((_) {}, onError: (_) {});
-    p.stderr.listen((_) {}, onError: (_) {});
+  @override
+  Future<void> stopAllOwned() async {
+    await Future.wait([for (final id in _owned.keys.toList()) stopOwned(id, grace: const Duration(seconds: 2))]);
   }
+}
+
+/// The pid listening on [port] in `netstat -ano -p TCP` output (Windows), or null.
+int? parseNetstatListener(String out, int port) {
+  for (final line in out.split('\n')) {
+    final cols = line.trim().split(RegExp(r'\s+'));
+    if (cols.length < 5 || cols[0] != 'TCP' || cols[3] != 'LISTENING') continue;
+    if (cols[1].endsWith(':$port')) return int.tryParse(cols[4]);
+  }
+  return null;
 }
 
 /// Where Ollama keeps models: `OLLAMA_MODELS`, else `~/.ollama/models` (or the home when that isn't there yet).

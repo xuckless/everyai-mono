@@ -13,7 +13,10 @@ import '../models/domain/local_routes.dart';
 import '../settings/byok_keys.dart' show byokKeysProvider;
 import 'data/local_system.dart' show runningUnderTest;
 import '../models/domain/model_catalog.dart';
+import 'data/model_states.dart';
 import 'local_models_providers.dart';
+
+export 'data/model_states.dart' show ModelLoad, ModelLoadState;
 
 /// Apple's on-device model, as the model list names it.
 const appleModelId = ModelId('local/system');
@@ -41,6 +44,7 @@ final localRoutesProvider = Provider<Map<String, LocalRoute>>((ref) {
         baseUrl: server.baseUrl,
         name: m.name,
         apiKey: server.apiKey,
+        kind: server.kind.name,
         contextTokens: m.contextTokens ?? 0,
         tools: m.tools,
         vision: m.vision,
@@ -80,7 +84,7 @@ final localModelSpecsProvider = Provider<List<ModelSpec>>((ref) {
 
 /// "Apple Intelligence", "qwen3.5 9b": the server's name, made readable.
 String localModelName(LocalModel m) {
-  if (m.serverId == 'fm') return m.name == 'pcc' ? 'Apple Private Cloud' : 'Apple Intelligence';
+  if (m.serverId == 'fm') return 'Apple Intelligence';
   return m.name.replaceAll(':latest', '').replaceAll(':', ' ');
 }
 
@@ -108,13 +112,17 @@ final chatNeedsModelProvider = Provider<bool>((ref) {
   return keys.value!.isEmpty && ref.watch(localModelSpecsProvider).isEmpty;
 });
 
-/// Ends what the app started for local models when it quits: the model
-/// servers (`ollama serve`, `fm serve`; ones the user runs are left alone)
-/// and the bundled EveryAI server. The shell listens to it from app start.
+/// Ends what the app started for local models when it quits, in order: the
+/// bundled server unloads every model EveryAI loaded (on any server, the
+/// user's too) and exits; then the model servers EveryAI started stop (ones
+/// the user runs are left running). One shutdown, joined by every caller; 8 s
+/// at most. The shell listens to it from app start.
 final localShutdownProvider = Provider<void>((ref) {
-  Future<void> stopAll() =>
-      Future.wait([ref.read(localSystemProvider).stopStarted(), ref.read(localBackendProvider).stop()])
-          .timeout(const Duration(seconds: 3), onTimeout: () => const []);
+  Future<void>? shutdown;
+  Future<void> stopAll() => shutdown ??= () async {
+    await ref.read(localBackendProvider).close();
+    await ref.read(serverLifecyclesProvider.notifier).stopOwned();
+  }().timeout(const Duration(seconds: 8), onTimeout: () {});
   final lifecycle = AppLifecycleListener(
     onExitRequested: () async {
       await stopAll();
@@ -123,6 +131,99 @@ final localShutdownProvider = Provider<void>((ref) {
     onDetach: () => unawaited(stopAll()),
   );
   ref.onDispose(lifecycle.dispose);
+});
+
+/// Each local model's load state, as the bundled server tracks it (by
+/// [ModelLoadState.key]), with Load / Unload. Refreshed with the servers, and
+/// every second while one is loading or unloading.
+final localModelStatesProvider = AsyncNotifierProvider<LocalModelStates, Map<String, ModelLoadState>>(
+  LocalModelStates.new,
+);
+
+final class LocalModelStates extends AsyncNotifier<Map<String, ModelLoadState>> {
+  Timer? _poll;
+  final _actions = <String, Future<String?>>{};
+
+  @override
+  Future<Map<String, ModelLoadState>> build() async {
+    ref.onDispose(() => _poll?.cancel());
+    if (!ref.watch(localDetectionProvider)) return const {};
+    final servers = ref.watch(localServersProvider).value ?? const <LocalServer>[];
+    final api = await _api();
+    if (api == null) return const {};
+    final list = await api.list(servers).catchError((Object _) => const <ModelLoadState>[]);
+    final out = {for (final m in list) m.key: m};
+    _schedule(out);
+    return out;
+  }
+
+  Future<ModelStatesApi?> _api() async {
+    final client = await ref.read(localApiProvider).client();
+    return client == null ? null : ModelStatesApi(client);
+  }
+
+  void _schedule(Map<String, ModelLoadState> states) {
+    _poll?.cancel();
+    if (states.values.any((m) => m.state.busy)) {
+      _poll = Timer(const Duration(seconds: 1), () {
+        if (ref.mounted) ref.invalidateSelf();
+      });
+    }
+  }
+
+  /// [model]'s state on [server], or null when the bundled server hasn't seen it (unloaded as far as it knows).
+  ModelLoadState? of(LocalServer server, String model) => state.value?['${server.baseUrl}|$model'];
+
+  /// Loads [model] on [server]: null when it worked, else why not. One action per model at a time.
+  Future<String?> load(LocalServer server, String model) => _act(server, model, load: true);
+
+  Future<String?> unload(LocalServer server, String model) => _act(server, model, load: false);
+
+  Future<String?> _act(LocalServer server, String model, {required bool load}) {
+    final key = '${server.baseUrl}|$model';
+    return _actions[key] ??=
+        () async {
+          try {
+            final api = await _api();
+            if (api == null) return ref.read(localBackendProvider).problem ?? 'The built-in server is not running.';
+            // Shown as loading/unloading at once; the server's answer replaces it.
+            final busy = ModelLoadState(
+              kind: server.kind.name,
+              baseUrl: server.baseUrl,
+              name: model,
+              state: load ? ModelLoad.loading : ModelLoad.unloading,
+              controllable: true,
+            );
+            state = AsyncData({...?state.value, key: busy});
+            final after = await (load ? api.load(server, model) : api.unload(server, model));
+            if (after != null && ref.mounted) state = AsyncData({...?state.value, key: after});
+            return after?.state == ModelLoad.failed ? after?.reason ?? 'It failed.' : null;
+          } on Object catch (e) {
+            return '$e';
+          } finally {
+            if (ref.mounted) ref.invalidateSelf();
+          }
+        }().whenComplete(() {
+          // A block body: returning the removed future would make whenComplete wait on itself.
+          _actions.remove(key);
+        });
+  }
+}
+
+/// Tells the bundled server about local models the Code harness calls
+/// directly, so what it loads is unloaded at quit too. Once per model and
+/// server per run.
+final localUseTrackerProvider = Provider<void>((ref) {
+  if (!ref.watch(localDetectionProvider)) return;
+  final told = <String>{};
+  LocalRoutes.onUse = (route) {
+    if (!told.add('${route.baseUrl}|${route.name}')) return;
+    final servers = ref.read(localServersProvider).value ?? const <LocalServer>[];
+    final server = servers.where((s) => s.baseUrl == route.baseUrl).firstOrNull;
+    if (server == null) return;
+    unawaited(ref.read(localModelStatesProvider.notifier).load(server, route.name));
+  };
+  ref.onDispose(() => LocalRoutes.onUse = null);
 });
 
 /// The local model new Code sessions default to when the user has no key: one

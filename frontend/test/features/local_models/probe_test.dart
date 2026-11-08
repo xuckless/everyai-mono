@@ -120,8 +120,8 @@ void main() {
       expect((m.name, m.vision, m.tools, m.contextTokens), ('qwen3-vl', true, true, 32768));
     });
 
-    test("Apple's fm: system with the assumed 4K window when it doesn't say", () async {
-      final http = FakeLocalHttp({'GET 127.0.0.1:5555/v1/models': json('{"data":[{"id":"system"}]}')});
+    test("Apple's fm: system with the assumed 4K window, without tools; pcc (Terminal.app only) left out", () async {
+      final http = FakeLocalHttp({'GET 127.0.0.1:5555/v1/models': json('{"data":[{"id":"system"},{"id":"pcc"}]}')});
       const server = LocalServer(
         id: 'fm',
         kind: LocalServerKind.fm,
@@ -129,7 +129,7 @@ void main() {
         baseUrl: 'http://127.0.0.1:5555/v1',
       );
       final m = (await listServerModels(http, server)).single;
-      expect((m.id, m.contextTokens, m.contextGuessed, m.tools), ('local/system', fmAssumedContext, true, true));
+      expect((m.id, m.contextTokens, m.contextGuessed, m.tools), ('local/system', fmAssumedContext, true, false));
     });
 
     test('a manual server sends its key and reports a refusal plainly', () async {

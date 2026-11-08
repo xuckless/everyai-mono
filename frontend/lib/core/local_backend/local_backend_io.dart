@@ -43,56 +43,84 @@ final class IoLocalBackend implements LocalBackend {
   final String? binary;
   final String? dataDir;
 
+  BackendPhase _phase = const BackendIdle();
   Process? _process;
-  LocalBackendInfo? _info;
+  String? _dir;
   Future<LocalBackendInfo?>? _starting;
-  String? _problem;
-  bool _stopped = false;
   final _recentCrashes = <DateTime>[];
 
   @override
-  String? get problem => _problem;
+  BackendPhase get phase => _phase;
 
   @override
-  bool get running => _info != null && _process != null;
+  String? get problem => switch (_phase) {
+    BackendUnavailable(:final reason) || BackendCrashed(:final reason) => reason,
+    BackendClosed() => 'EveryAI is quitting.',
+    _ => null,
+  };
+
+  @override
+  bool get running => _phase is BackendRunning;
+
+  bool _apply(BackendEvent e) {
+    final next = nextBackendPhase(_phase, e);
+    if (next == null) return false;
+    _phase = next;
+    return true;
+  }
 
   @override
   Future<LocalBackendInfo?> ensureStarted() {
-    if (_info != null && _process != null) return Future.value(_info);
-    return _starting ??= _start().whenComplete(() => _starting = null);
+    if (_phase case BackendRunning(:final info)) return Future.value(info);
+    if (_starting case final s?) return s;
+    if (!_apply(const BackendStartAsked())) return Future.value(null);
+    return _starting = _start().whenComplete(() => _starting = null);
   }
 
   Future<LocalBackendInfo?> _start() async {
-    _stopped = false;
     final bin = binary ?? findLocalBackend();
     if (bin == null) {
-      _problem = "This build doesn't include the built-in server.";
+      _apply(const BackendStartFailed("This build doesn't include the built-in server."));
       return null;
     }
-    final dir = dataDir ?? '${(await getApplicationSupportDirectory()).path}/local-backend';
+    final dir = _dir = dataDir ?? '${(await getApplicationSupportDirectory()).path}/local-backend';
     await Directory(dir).create(recursive: true);
     await _killOrphan(dir);
+    if (_phase is! BackendStarting) return null; // Closed or stopped meanwhile.
     final port = await _freePort();
     final token = _randomHex(24);
-    final process = await Process.start(
-      bin,
-      const [],
-      workingDirectory: dir,
-      environment: {
-        'ANOLE_ENV': 'production',
-        'LOCAL_MODE': 'true',
-        'LOCAL_TOKEN': token,
-        'HOST': '127.0.0.1',
-        'PORT': '$port',
-        'DATABASE_PATH': '$dir/everyai.db',
-        'DEV_AUTH': 'true',
-        // Signs nothing anyone sees (local mode has one user), but production mode wants one.
-        'JWT_SECRET': _randomHex(32),
-        'RATE_LIMIT_PER_MINUTE': '0',
-      },
-      // Only what we set: the user's shell variables (an OPENROUTER_API_KEY) must not leak in.
-      includeParentEnvironment: false,
-    );
+    final Process process;
+    try {
+      process = await Process.start(
+        bin,
+        const [],
+        workingDirectory: dir,
+        environment: {
+          'ANOLE_ENV': 'production',
+          'LOCAL_MODE': 'true',
+          'LOCAL_TOKEN': token,
+          // The server ends itself (unloading what EveryAI loaded) when this app is gone, even after a crash.
+          'LOCAL_PARENT_PID': '$pid',
+          'HOST': '127.0.0.1',
+          'PORT': '$port',
+          'DATABASE_PATH': '$dir/everyai.db',
+          'DEV_AUTH': 'true',
+          // Signs nothing anyone sees (local mode has one user), but production mode wants one.
+          'JWT_SECRET': _randomHex(32),
+          'RATE_LIMIT_PER_MINUTE': '0',
+        },
+        // Only what we set: the user's shell variables (an OPENROUTER_API_KEY) must not leak in.
+        includeParentEnvironment: false,
+      );
+    } on Object catch (e) {
+      _apply(BackendStartFailed("The built-in server didn't start: $e"));
+      return null;
+    }
+    if (_phase is! BackendStarting) {
+      // Closed while it launched: it must not outlive the app.
+      process.kill(ProcessSignal.sigkill);
+      return null;
+    }
     _process = process;
     await File('$dir/server.pid').writeAsString('${process.pid}');
     final log = File('$dir/server.log').openWrite(mode: FileMode.append);
@@ -104,10 +132,11 @@ final class IoLocalBackend implements LocalBackend {
         await log.close().catchError((Object _) {});
         if (!identical(_process, process)) return;
         _process = null;
-        _info = null;
-        if (_stopped) return;
-        _problem = 'The built-in server stopped (exit $code); see $dir/server.log.';
-        // Restart unless it keeps dying (3 times in a minute).
+        _removePidFile(dir);
+        final wasRunning = _phase is BackendRunning;
+        if (!_apply(BackendExited('The built-in server stopped (exit $code); see $dir/server.log.'))) return;
+        if (!wasRunning) return;
+        // Restarted unless it keeps dying (3 times in a minute).
         final now = DateTime.now();
         _recentCrashes
           ..add(now)
@@ -115,21 +144,22 @@ final class IoLocalBackend implements LocalBackend {
         if (_recentCrashes.length < 3) unawaited(ensureStarted());
       }),
     );
-    if (!await _ready(info)) {
-      _problem = "The built-in server didn't start; see $dir/server.log.";
-      process.kill();
-      _process = null;
+    if (!await _ready(info, process)) {
+      if (identical(_process, process)) {
+        _process = null;
+        process.kill(ProcessSignal.sigkill);
+      }
+      _apply(BackendStartFailed("The built-in server didn't start; see $dir/server.log."));
       return null;
     }
-    _problem = null;
-    return _info = info;
+    return _apply(BackendReady(info)) ? info : null;
   }
 
-  Future<bool> _ready(LocalBackendInfo info) async {
+  Future<bool> _ready(LocalBackendInfo info, Process process) async {
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 1);
     try {
       for (var i = 0; i < 100; i++) {
-        if (_process == null) return false;
+        if (!identical(_process, process) || _phase is! BackendStarting) return false;
         try {
           final req = await client.getUrl(info.baseUrl.resolve('v1/ping'));
           final res = await req.close();
@@ -153,14 +183,18 @@ final class IoLocalBackend implements LocalBackend {
     return port;
   }
 
-  /// A server left by a crashed app run would keep its port and database lock.
+  /// A server left by a crashed app run would keep its port and database lock (and models loaded).
   static Future<void> _killOrphan(String dir) async {
     final f = File('$dir/server.pid');
     if (!f.existsSync()) return;
-    final pid = int.tryParse(f.readAsStringSync().trim());
-    if (pid != null && pid > 0) Process.killPid(pid);
+    final old = int.tryParse(f.readAsStringSync().trim());
+    if (old != null && old > 0 && old != pid) Process.killPid(old);
+    _removePidFile(dir);
+  }
+
+  static void _removePidFile(String dir) {
     try {
-      f.deleteSync();
+      File('$dir/server.pid').deleteSync();
     } on Object {
       // Gone already.
     }
@@ -168,11 +202,43 @@ final class IoLocalBackend implements LocalBackend {
 
   @override
   Future<void> stop() async {
-    _stopped = true;
     final p = _process;
-    _process = null;
-    _info = null;
+    if (!_apply(const BackendStopAsked())) return;
+    if (p == null) {
+      _apply(const BackendExited('Stopped.'));
+      return;
+    }
+    await _end(p);
+  }
+
+  @override
+  Future<void> close({Duration unloadWithin = const Duration(seconds: 4)}) async {
+    final info = switch (_phase) {
+      BackendRunning(:final info) => info,
+      _ => null,
+    };
+    if (!_apply(const BackendCloseAsked())) return;
+    final p = _process;
     if (p == null) return;
+    // It unloads the models EveryAI loaded, then exits by itself.
+    if (info != null) {
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 1);
+      try {
+        final req = await client.postUrl(info.baseUrl.resolve('v1/local/shutdown'));
+        req.headers.set(LocalBackendInfo.tokenHeader, info.token);
+        await (await req.close().timeout(unloadWithin)).drain<void>();
+        await p.exitCode.timeout(unloadWithin, onTimeout: () => -1);
+      } on Object {
+        // An older server without the route, or it hung: it is ended below.
+      } finally {
+        client.close(force: true);
+      }
+    }
+    await _end(p);
+  }
+
+  /// SIGTERM, then SIGKILL after 2 s.
+  Future<void> _end(Process p) async {
     p.kill();
     await p.exitCode.timeout(
       const Duration(seconds: 2),
@@ -181,5 +247,7 @@ final class IoLocalBackend implements LocalBackend {
         return -1;
       },
     );
+    if (identical(_process, p)) _process = null;
+    if (_dir case final d?) _removePidFile(d);
   }
 }

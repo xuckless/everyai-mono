@@ -13,6 +13,9 @@
 //! - Side jobs with no OpenRouter key: `X-Local-Aux-Model` (`local/<name>`),
 //!   `X-Local-Aux-Base-Url`, optional `X-Local-Aux-Api-Key`; without them the
 //!   jobs are skipped.
+//! - `X-Local-Kind` / `X-Local-Aux-Kind` say which kind of server it is
+//!   (`ollama`, `lmstudio`, `fm`, …; see local_models.zig): Apple's `fm serve`
+//!   gets no tools, stop sequences, effort or response format (it refuses them).
 //! - Web search with no OpenRouter key: Brave (`X-Search-Brave-Key`), Tavily
 //!   (`X-Search-Tavily-Key`) or SearXNG (`X-Search-Searxng-Url`), the first one
 //!   sent, else DuckDuckGo's HTML results (keyless; see [parseDuckDuckGo]).
@@ -22,6 +25,8 @@ const openrouter = @import("openrouter.zig");
 const models = @import("models.zig");
 const config = @import("config.zig");
 const safe_fetch = @import("net/safe_fetch.zig");
+const local_models = @import("local_models.zig");
+pub const Kind = local_models.Kind;
 
 pub const token_header = "X-EveryAI-Local";
 pub const base_header = "X-Local-Base-Url";
@@ -80,7 +85,7 @@ fn sameSecret(a: []const u8, b: []const u8) bool {
 }
 
 /// An OpenAI-compatible server the app named.
-pub const Server = struct { base_url: []const u8, api_key: []const u8 = "" };
+pub const Server = struct { base_url: []const u8, api_key: []const u8 = "", kind: Kind = .custom };
 
 pub const Which = enum { chat, aux };
 
@@ -89,7 +94,8 @@ pub const Which = enum { chat, aux };
 pub fn serverOf(req: *anole.Request, which: Which) ?Server {
     const base = cleanUrl(req.headers.get(if (which == .chat) base_header else aux_base_header)) orelse return null;
     const key = req.headers.get(if (which == .chat) key_header else aux_key_header) orelse "";
-    return .{ .base_url = base, .api_key = if (printable(key)) key else "" };
+    const kind = Kind.parse(req.headers.get(if (which == .chat) local_models.kind_header else local_models.aux_kind_header));
+    return .{ .base_url = base, .api_key = if (printable(key)) key else "", .kind = kind };
 }
 
 pub fn cleanUrl(raw: ?[]const u8) ?[]const u8 {
@@ -99,6 +105,18 @@ pub fn cleanUrl(raw: ?[]const u8) ?[]const u8 {
     if (!std.mem.startsWith(u8, u, "http://") and !std.mem.startsWith(u8, u, "https://")) return null;
     _ = std.Uri.parse(u) catch return null;
     return u;
+}
+
+/// Whether `url` (already [cleanUrl]) points at this computer: the load and
+/// unload routes call only servers here.
+pub fn isLoopbackUrl(url: []const u8) bool {
+    const uri = std.Uri.parse(url) catch return false;
+    const host = uri.host orelse return false;
+    const h = switch (host) {
+        .raw => |r| r,
+        .percent_encoded => |e| e,
+    };
+    return config.isLoopback(h);
 }
 
 fn printable(s: []const u8) bool {
@@ -134,6 +152,13 @@ pub fn capsOf(req: *anole.Request) Caps {
 }
 
 /// The catalog facts of a local model: free, tools/vision/reasoning as told.
+/// Whether a local model gets the light prompt and no tools: a window of 16K tokens or less (the full prompt and
+/// tool definitions are ~11K tokens), or no tools at all.
+pub fn light(caps: Caps) bool {
+    if (!caps.tools) return true;
+    return if (caps.context) |c| c <= 16 * 1024 else false;
+}
+
 pub fn facts(caps: Caps) models.Catalog.Facts {
     return .{
         .known = true,
@@ -154,6 +179,7 @@ pub fn facts(caps: Caps) models.Catalog.Facts {
 pub const Rewrite = struct {
     inner: openrouter.Upstream,
     model: []const u8,
+    kind: Kind = .custom,
 
     pub fn upstream(self: *Rewrite) openrouter.Upstream {
         return .{ .ptr = self, .vtable = &.{ .post = post, .get = get } };
@@ -161,7 +187,7 @@ pub const Rewrite = struct {
 
     fn post(ptr: *anyopaque, cx: openrouter.Ctx, path: []const u8, body: []const u8, extra: []const [2][]const u8) anyerror!openrouter.Stream {
         const self: *Rewrite = @ptrCast(@alignCast(ptr));
-        return self.inner.post(cx, path, try rewriteBody(cx.arena, body, self.model), extra);
+        return self.inner.post(cx, path, try rewriteBody(cx.arena, body, self.model, self.kind), extra);
     }
 
     fn get(ptr: *anyopaque, io: std.Io, arena: std.mem.Allocator, path: []const u8) anyerror![]const u8 {
@@ -175,12 +201,19 @@ pub fn nameOf(model: []const u8) []const u8 {
     return if (isLocalId(model)) model[prefix.len..] else model;
 }
 
-pub fn rewriteBody(arena: std.mem.Allocator, body: []const u8, model: []const u8) ![]const u8 {
+pub fn rewriteBody(arena: std.mem.Allocator, body: []const u8, model: []const u8, kind: Kind) ![]const u8 {
     var v = std.json.parseFromSliceLeaky(std.json.Value, arena, body, .{}) catch return body;
     if (v != .object) return body;
     const o = &v.object;
     try o.put(arena, "model", .{ .string = nameOf(model) });
     inline for (.{ "plugins", "provider", "usage", "transforms", "models", "route", "fallbacks" }) |k| _ = o.orderedRemove(k);
+    // Apple's `fm serve` (probed 2026-11-07) refuses tool schemas with type
+    // lists or anyOf, stop sequences, and an effort on its on-device model; its
+    // window is too small for our tools anyway. A side job that asked for a JSON
+    // schema gets free text, which its parser reads as "unsure".
+    if (kind == .fm) inline for (.{ "tools", "tool_choice", "parallel_tool_calls", "stop", "reasoning_effort", "reasoning", "response_format" }) |k| {
+        _ = o.orderedRemove(k);
+    };
     if (o.get("reasoning")) |r| {
         if (r == .object) if (r.object.get("effort")) |e| if (e == .string) try o.put(arena, "reasoning_effort", e);
         _ = o.orderedRemove("reasoning");
@@ -469,7 +502,7 @@ test "rewriteBody asks for the local name and drops OpenRouter-only fields" {
         \\{"model":"local/qwen3:8b","stream":true,"usage":{"include":true},"reasoning":{"effort":"high"},"plugins":[{"id":"web"}],
         \\ "messages":[{"role":"system","content":[{"type":"text","text":"s","cache_control":{"type":"ephemeral"}}]},
         \\ {"role":"assistant","content":"x","reasoning_details":[]}]}
-    , "local/qwen3:8b");
+    , "local/qwen3:8b", .ollama);
     const v = try std.json.parseFromSliceLeaky(std.json.Value, a.allocator(), out, .{});
     try testing.expectEqualStrings("qwen3:8b", v.object.get("model").?.string);
     try testing.expect(v.object.get("usage") == null and v.object.get("plugins") == null and v.object.get("reasoning") == null);
@@ -479,7 +512,7 @@ test "rewriteBody asks for the local name and drops OpenRouter-only fields" {
     try testing.expect(msgs[0].object.get("content").?.array.items[0].object.get("cache_control") == null);
     try testing.expect(msgs[1].object.get("reasoning_details") == null);
     // A side job's body names the utility model: the local one is asked for instead.
-    const aux = try rewriteBody(a.allocator(), "{\"model\":\"google/gemini-3.5-flash-lite\",\"messages\":[]}", "local/llama3.2:3b");
+    const aux = try rewriteBody(a.allocator(), "{\"model\":\"google/gemini-3.5-flash-lite\",\"messages\":[]}", "local/llama3.2:3b", .custom);
     try testing.expect(std.mem.indexOf(u8, aux, "\"llama3.2:3b\"") != null);
 }
 
@@ -497,4 +530,25 @@ test "urls, ids and the start check" {
     try testing.expect(sameSecret("abc", "abc") and !sameSecret("abc", "abd") and !sameSecret("", ""));
     const f = facts(.{ .tools = true, .vision = false, .context = 8192 });
     try testing.expect(f.free and f.tools and !f.inputs.image and f.max_output == 2048);
+}
+
+test "rewriteBody: Apple's fm serve gets no tools, stop, effort or response format" {
+    var a = std.heap.ArenaAllocator.init(testing.allocator);
+    defer a.deinit();
+    const out = try rewriteBody(a.allocator(),
+        \\{"model":"local/system","stream":true,"tools":[{"type":"function"}],"tool_choice":"auto","parallel_tool_calls":true,
+        \\ "stop":["x"],"reasoning":{"effort":"high"},"response_format":{"type":"json_schema"},"messages":[]}
+    , "local/system", .fm);
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, a.allocator(), out, .{});
+    inline for (.{ "tools", "tool_choice", "parallel_tool_calls", "stop", "reasoning", "reasoning_effort", "response_format" }) |k|
+        try testing.expect(v.object.get(k) == null);
+    try testing.expectEqualStrings("system", v.object.get("model").?.string);
+    try testing.expect(v.object.get("stream_options") != null);
+}
+
+test "isLoopbackUrl" {
+    try testing.expect(isLoopbackUrl("http://127.0.0.1:11434/v1"));
+    try testing.expect(isLoopbackUrl("http://localhost:1234"));
+    try testing.expect(!isLoopbackUrl("http://192.168.1.4:11434/v1"));
+    try testing.expect(!isLoopbackUrl("https://example.com/v1"));
 }

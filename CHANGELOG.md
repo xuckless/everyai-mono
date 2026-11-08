@@ -3,6 +3,19 @@
 EveryAI is in alpha. Signed releases start at `0.1.0-alpha.1`; the earlier unsigned dev build was
 `0.1.0-dev-nonsigned`. Earlier changes are listed by date and pull request.
 
+## Unreleased
+
+- **Local servers you can start and stop.** Settings → Local models shows each server's state (Starting, Running
+  and who started it, Stopping, Stopped, or why it failed) with Start and Stop: Ollama, LM Studio (`lms`), Apple's
+  model, and a server added by URL with its own start command. A server started outside EveryAI can be stopped
+  too, after a confirm. Each model on Ollama and LM Studio shows whether it's loaded, with Load and Unload.
+- **Nothing left behind at quit.** EveryAI unloads every model it loaded (Chat and Code, on any server) and stops
+  the servers it started; servers you started keep running. The built-in server ends by itself if the app is
+  gone, and can no longer be started again while the app quits.
+- **Apple's model works.** It answers without tools (its server refuses most of our tool schemas, and its window
+  is small); Private Cloud Compute is no longer offered (Apple allows it only in Terminal).
+- **New chats start on the model you last picked.** Apple's model is the default only until you pick one.
+
 ## 0.1.0-alpha.6 (2026-11-07): the lead stays free, and a steadier app
 
 ### Sessions that keep talking

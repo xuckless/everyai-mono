@@ -104,6 +104,9 @@ pub const Config = struct {
     /// nothing charged. Off on a deployed server.
     local_mode: bool = false,
     local_token: ?anole.Secret = null,
+    /// The app's process id: when it is gone (the app crashed or was killed),
+    /// the sidecar unloads the models it loaded and exits (local_models.zig).
+    local_parent_pid: ?i64 = null,
 
     pub const production = .{ .dev_auth = false };
 };
