@@ -24,6 +24,7 @@ import '../core/ui/adaptive.dart' show AdaptiveButton, AdaptiveProgress, GlassSu
 import '../features/code/automations/schedule_providers.dart' show scheduleRunnerProvider;
 import '../features/code/code_providers.dart' show driverShutdownProvider;
 import '../features/local_models/local_model_bridge.dart' show localRoutesProvider, localShutdownProvider;
+import '../features/code/forks/orphan_forks.dart' show orphanForksProvider;
 import '../features/code/drivers/driver_registry.dart' show driverStatusesProvider;
 import '../features/code/ui/real_input_consent.dart' show connectRealInput;
 import '../features/history/ui/sidebar.dart';
@@ -152,6 +153,8 @@ class _AppShellState extends ConsumerState<AppShell> {
       // Which coding CLIs are installed: the last check at once, a new one in
       // the background, and again when the app comes back after a while.
       if (mounted && Host.isDesktop) ref.read(driverStatusesProvider);
+      // Fork worktrees no session holds: the empty ones go now, the ones with work wait in Settings → Code.
+      if (mounted && Host.isDesktop) ref.read(orphanForksProvider);
       // Updates: one check per launch (the controller waits a moment, and does nothing on dev or store installs).
       if (mounted && Host.isDesktop) ref.read(updateProvider);
       // After an update: this build's notes, once (never over the entry screen).

@@ -406,28 +406,36 @@ String clearedToolNote(String tool) =>
 /// call id and tool, and its text.
 typedef OldToolOutput = ({int index, String callId, String tool, String content});
 
-/// The tool results in [messages] older than the newest [keepTurns] model
-/// steps, oldest first, when together they are over [triggerTokens]
-/// (characters / 4); otherwise none, so nothing needs clearing yet.
+/// The tool results in [messages] that may be cleared, oldest first, when together they are over [triggerTokens]
+/// (characters / 4); otherwise none, so nothing needs clearing yet. Kept: the newest [keepTurns] model steps and
+/// everything since the user's last message, whichever reaches further back. Only when the current turn's own output
+/// is over [triggerTokens] (a long run on one message) can its older steps go too, still sparing the newest
+/// [keepTurns].
 List<OldToolOutput> oldToolOutputs(
   List<Map<String, Object?>> messages, {
   int triggerTokens = 40000,
   int keepTurns = 3,
 }) {
-  // Where the newest [keepTurns] model steps start: nothing from there on is touched.
+  // Where the newest [keepTurns] model steps start, and where the current user turn does.
   var steps = 0;
-  var boundary = messages.length;
+  var stepStart = messages.length;
   for (var i = messages.length - 1; i >= 0; i--) {
     if (messages[i]['role'] == 'assistant') {
-      boundary = i;
+      stepStart = i;
       if (++steps == keepTurns) break;
     }
   }
   if (steps < keepTurns) return const [];
+  var turnStart = 0;
+  for (var i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]['role'] == 'user') {
+      turnStart = i;
+      break;
+    }
+  }
   final names = <String, String>{};
-  final old = <OldToolOutput>[];
-  var chars = 0;
-  for (var i = 0; i < boundary; i++) {
+  final outputs = <OldToolOutput>[];
+  for (var i = 0; i < stepStart; i++) {
     final m = messages[i];
     if (m['role'] == 'assistant') {
       for (final c in m['tool_calls'] as List<Object?>? ?? const []) {
@@ -438,10 +446,13 @@ List<OldToolOutput> oldToolOutputs(
     final content = m['content'];
     if (content is! String || content.startsWith('[output cleared to save context')) continue;
     final id = m['tool_call_id'] as String? ?? '';
-    old.add((index: i, callId: id, tool: names[id] ?? '', content: content));
-    chars += content.length;
+    outputs.add((index: i, callId: id, tool: names[id] ?? '', content: content));
   }
-  return chars / 4 <= triggerTokens ? const [] : old;
+  int tokens(Iterable<OldToolOutput> o) => o.fold<int>(0, (n, x) => n + x.content.length) ~/ 4;
+  final beforeTurn = [...outputs.where((o) => o.index < turnStart)];
+  if (tokens(beforeTurn) > triggerTokens) return beforeTurn;
+  final inTurn = outputs.where((o) => o.index > turnStart);
+  return tokens(inTurn) > triggerTokens ? outputs : const [];
 }
 
 /// Clears old tool output in [messages] (OpenAI chat format, changed in

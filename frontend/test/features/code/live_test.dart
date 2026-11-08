@@ -98,56 +98,67 @@ void main() {
       tmp.deleteSync(recursive: true);
     });
 
-    test('two sessions share one Chrome; refs click; frames and screencast work', () async {
-      final a = HeadlessBrowser(profileDir: '${tmp.path}/profile');
-      final b = HeadlessBrowser(profileDir: '${tmp.path}/profile');
-      final url = 'http://127.0.0.1:${server.port}/';
-      String fit(String t, String _) => t;
-      final opened = await runBrowser(a, {'action': 'open', 'url': url}, root: tmp.path, vision: true, fit: fit);
-      expect(opened.text, contains('button "Add to cart"'));
-      expect(opened.text, contains('textbox "Search" value="tea"'));
-      // A password field's value is never listed.
-      expect(opened.text, isNot(contains('value="" (password')));
-      expect(opened.text, contains('heading h1 "Items"'));
-      final ref = RegExp(r'\[(ref_\d+)\] button').firstMatch(opened.text)!.group(1)!;
-      final clicked = await runBrowser(a, {'action': 'click', 'ref': ref}, root: tmp.path, vision: true, fit: fit);
-      expect(await a.evaluate('document.title'), 'added');
-      expect(clicked.text, contains('button#add "Add to cart"'));
-      expect(clicked.text, contains('The title is now "added"'));
-      // The same element keeps its ref in the next list.
-      final again = await runBrowser(a, {'action': 'snapshot'}, root: tmp.path, vision: true, fit: fit);
-      expect(again.text, contains('[$ref] button "Add to cart"'));
-      final missing = await runBrowser(a, {'action': 'click', 'ref': 'ref_99'}, root: tmp.path, vision: true, fit: fit);
-      expect(missing.text, startsWith('Error: No element ref_99'));
-      // The other session's page is its own.
-      await b.open('about:blank');
-      expect(await b.evaluate('document.title'), '');
-      final shot = await runBrowser(a, {'action': 'screenshot'}, root: tmp.path, vision: true, fit: fit);
-      expect(shot.text, contains('Frame f_1'));
-      expect(shot.images, hasLength(1));
-      final zoomed = await runBrowser(
-        a,
-        {'action': 'zoom', 'x': 0, 'y': 0, 'width': 200, 'height': 100, 'frame': 'f_1'},
-        root: tmp.path,
-        vision: true,
-        fit: fit,
-      );
-      expect(zoomed.text, contains('Frame f_2: a zoom'));
-      final frames = <ScreencastFrame>[];
-      final sub = a.screencast.listen((f) {
-        frames.add(f);
-        a.ackFrame(f.session);
-      });
-      await a.startScreencast();
-      await Future<void>.delayed(const Duration(milliseconds: 800));
-      await a.stopScreencast();
-      await sub.cancel();
-      expect(frames, isNotEmpty);
-      expect(frames.first.width, 1280);
-      // The user types into the page directly (no guard: it is them).
-      await a.userMouse('mousePressed', 5, 5, button: 'left', buttons: 1, clickCount: 1);
-      await a.close();
-      await b.close();
-    }, skip: chrome == null ? 'no Chrome here' : null, timeout: const Timeout(Duration(minutes: 2)));
+    test(
+      'two sessions share one Chrome; refs click; frames and screencast work',
+      () async {
+        final a = HeadlessBrowser(profileDir: '${tmp.path}/profile');
+        final b = HeadlessBrowser(profileDir: '${tmp.path}/profile');
+        final url = 'http://127.0.0.1:${server.port}/';
+        String fit(String t, String _) => t;
+        final opened = await runBrowser(a, {'action': 'open', 'url': url}, root: tmp.path, vision: true, fit: fit);
+        expect(opened.text, contains('button "Add to cart"'));
+        expect(opened.text, contains('textbox "Search" value="tea"'));
+        // A password field's value is never listed.
+        expect(opened.text, isNot(contains('value="" (password')));
+        expect(opened.text, contains('heading h1 "Items"'));
+        final ref = RegExp(r'\[(ref_\d+)\] button').firstMatch(opened.text)!.group(1)!;
+        final clicked = await runBrowser(a, {'action': 'click', 'ref': ref}, root: tmp.path, vision: true, fit: fit);
+        expect(await a.evaluate('document.title'), 'added');
+        expect(clicked.text, contains('button#add "Add to cart"'));
+        expect(clicked.text, contains('The title is now "added"'));
+        // The same element keeps its ref in the next list.
+        final again = await runBrowser(a, {'action': 'snapshot'}, root: tmp.path, vision: true, fit: fit);
+        expect(again.text, contains('[$ref] button "Add to cart"'));
+        final missing = await runBrowser(
+          a,
+          {'action': 'click', 'ref': 'ref_99'},
+          root: tmp.path,
+          vision: true,
+          fit: fit,
+        );
+        expect(missing.text, startsWith('Error: No element ref_99'));
+        // The other session's page is its own.
+        await b.open('about:blank');
+        expect(await b.evaluate('document.title'), '');
+        final shot = await runBrowser(a, {'action': 'screenshot'}, root: tmp.path, vision: true, fit: fit);
+        expect(shot.text, contains('Frame f_1'));
+        expect(shot.images, hasLength(1));
+        final zoomed = await runBrowser(
+          a,
+          {'action': 'zoom', 'x': 0, 'y': 0, 'width': 200, 'height': 100, 'frame': 'f_1'},
+          root: tmp.path,
+          vision: true,
+          fit: fit,
+        );
+        expect(zoomed.text, contains('Frame f_2: a zoom'));
+        final frames = <ScreencastFrame>[];
+        final sub = a.screencast.listen((f) {
+          frames.add(f);
+          a.ackFrame(f.session);
+        });
+        await a.startScreencast();
+        await Future<void>.delayed(const Duration(milliseconds: 800));
+        await a.stopScreencast();
+        await sub.cancel();
+        expect(frames, isNotEmpty);
+        expect(frames.first.width, 1280);
+        // The user types into the page directly (no guard: it is them).
+        await a.userMouse('mousePressed', 5, 5, button: 'left', buttons: 1, clickCount: 1);
+        await a.close();
+        await b.close();
+      },
+      skip: chrome == null ? 'no Chrome here' : null,
+      timeout: const Timeout(Duration(minutes: 2)),
+    );
   });
 }

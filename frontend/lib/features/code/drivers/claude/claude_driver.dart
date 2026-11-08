@@ -448,7 +448,7 @@ final class _Meta {
   final bool autoMode;
 
   /// [effort] is taken as given (null is Claude's default), not kept.
-  _Meta withLlm({required String model, required String? effort}) => _Meta(
+  _Meta withLlm({required String model, required String? effort, required bool autoMode}) => _Meta(
     cwd: cwd,
     sessionTag: sessionTag,
     model: model,
@@ -482,8 +482,9 @@ final class _Meta {
     autoMode: autoMode ?? this.autoMode,
   );
 
-  /// The permission mode the CLI runs in.
-  String get permissionMode => native ?? permissionModeFor(mode);
+  /// The permission mode the CLI runs in. Auto on a model without Claude's reviewer runs in `default`, where the
+  /// app's policy (as in Full auto) answers.
+  String get permissionMode => native ?? (mode == AgentMode.auto && !autoMode ? 'default' : permissionModeFor(mode));
 
   Map<String, Object?> toJson() => {
     'cwd': cwd,
@@ -784,7 +785,13 @@ final class ClaudeSession
   Future<void> switchLlm(SessionSpec spec) async {
     final effort = spec.effort == null || spec.effort!.isEmpty ? null : spec.effort;
     final restart = effort != _meta.effort;
-    await _save(_meta.withLlm(model: spec.model, effort: effort));
+    final was = _meta.permissionMode;
+    // Whether the new model has Claude's reviewer (auto mode) is its own; until initialize says, what the model
+    // list said.
+    await _save(_meta.withLlm(model: spec.model, effort: effort, autoMode: _driver._autoModes[spec.model] ?? false));
+    if (_meta.permissionMode != was && _channel != null) {
+      _request({'subtype': 'set_permission_mode', 'mode': _meta.permissionMode});
+    }
     if (restart && _channel != null) {
       if (!_running) return _drop();
       _respawn = true;
@@ -894,7 +901,8 @@ final class ClaudeSession
       sessionId: id,
       resume: _meta.sent,
       mode: _meta.mode,
-      nativeMode: _meta.native,
+      // Resolved: Auto on a model without Claude's reviewer starts in `default`.
+      nativeMode: _meta.permissionMode,
       model: _meta.model,
       effort: _meta.effort,
       briefing: _briefing?.call(_skillsOff),
@@ -971,10 +979,19 @@ final class ClaudeSession
 
   /// What `initialize` says about modes: whether the model has `auto`, and the mode it runs in.
   void _initialized(Map<String, Object?> init) {
+    final spawned = _meta.permissionMode;
     final auto = _driver._autoModeIn(init, _meta.model);
     if (auto != _meta.autoMode) unawaited(_save(_meta.copyWith(autoMode: auto)));
     _modes.set(modes: claudeModes(autoMode: auto));
-    if (init['current_permission_mode'] case final String mode) _modeSaid(mode);
+    final said = init['current_permission_mode'] as String?;
+    final want = _meta.permissionMode;
+    // Auto turned out to be there after the CLI started in the mode used without it: move it to auto.
+    if (want != spawned && (said == null || said == spawned)) {
+      _modes.set(current: want);
+      _request({'subtype': 'set_permission_mode', 'mode': want});
+      return;
+    }
+    if (said != null) _modeSaid(said);
   }
 
   /// A turn ended: replace a process with an old effort, and run on when
@@ -1014,7 +1031,17 @@ final class ClaudeSession
     final input = body[hook ? 'tool_input' : 'input'] as Map<String, Object?>? ?? const {};
     final held = (requestId: requestId, hook: hook, name: name, input: input);
     if (!_decoder.knows(callId)) _emit(_decoder.action(callId, name, input));
+    // EveryAI's own tools (questions, plans, todos) are always allowed, also when Claude's reviewer asks about them.
     if (_selfAnswered(name)) return _answer(callId, held, accept: true);
+    // Claude's own reviewer (auto mode) passed back a call our hook let through to it: the user decides this one.
+    if (!hook && _meta.permissionMode == 'auto' && _answered.contains(callId)) {
+      _let.remove(callId);
+      _emit(escalatedEvent(const Uuid().v4(), [callId]));
+      _held[callId] = held;
+      _waiting = true;
+      _emit(stateEvent(const Uuid().v4(), ExecutionStatus.waitingForConfirmation));
+      return;
+    }
     if (_early.remove(callId) case final a?) return _answer(callId, held, accept: a.accept, reason: a.reason);
     _held[callId] = held;
     _waiting = true;
@@ -1025,7 +1052,12 @@ final class ClaudeSession
     _answered.add(callId);
     if (accept) _letRun(callId);
     if (!accept) _decoder.refused[callId] = reason == null || reason.isEmpty ? refusedByUser : reason;
-    final answer = approvalAnswer(hook: h.hook, accept: accept, reason: reason, input: h.input);
+    // In auto mode a call the app lets through goes on to Claude's own reviewer (no decision from the hook); a
+    // refusal (the floor, a deny rule) still stops it here.
+    // EveryAI's own tools get a real allow, so the reviewer never judges them.
+    final answer = accept && h.hook && _meta.permissionMode == 'auto' && !_selfAnswered(h.name)
+        ? const <String, Object?>{}
+        : approvalAnswer(hook: h.hook, accept: accept, reason: reason, input: h.input);
     _channel?.send(jsonEncode(controlResponse(h.requestId, answer)));
     // An approved plan: whether Claude leaves plan by itself under `-p` is unverified, so it is moved back.
     if (accept && h.name == 'ExitPlanMode' && _meta.permissionMode == 'plan') {

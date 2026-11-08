@@ -13,6 +13,13 @@ final class GitError implements Exception {
   String toString() => message;
 }
 
+/// A fast-forward merge found the base branch moved on since the session branch was prepared.
+final class BaseMoved implements Exception {
+  const BaseMoved();
+  @override
+  String toString() => 'The base branch moved on since this branch was prepared.';
+}
+
 /// Session worktrees and what the app does with them, on top of the `git`
 /// and `gh` command-line tools. See `git_service_io.dart`.
 abstract final class GitService {
@@ -136,9 +143,21 @@ abstract final class GitService {
 
   static Future<({int ahead, int behind})> aheadBehind(SessionWorktree w) => impl.aheadBehind(w);
 
-  /// Commits pending work, then squashes the session branch onto the base
-  /// branch in the main checkout. Returns the new commit.
-  static Future<String> squashMerge(SessionWorktree w, String message) => impl.squashMerge(w, message);
+  /// Fast-forwards the base branch in the main checkout to [sha] (the session's one prepared commit, as the user
+  /// confirmed it); [BaseMoved] when the base has moved on since.
+  static Future<String> fastForwardMerge(SessionWorktree w, String sha) => impl.fastForwardMerge(w, sha);
+
+  /// The session worktree's newest commit and its subject.
+  static Future<({String sha, String subject})> mergeCandidate(SessionWorktree w) => impl.mergeCandidate(w);
+
+  /// What a fork changed in its own worktree since its base.
+  static Future<List<FileDiff>> forkDiff(ForkCopy copy) => impl.forkDiff(copy);
+
+  /// The fork worktrees in [forksDir] no session holds ([held]: the roots of those that do).
+  static Future<List<OrphanFork>> orphanForks(String forksDir, Set<String> held) => impl.orphanForks(forksDir, held);
+
+  /// Deletes an orphaned fork worktree.
+  static Future<void> removeOrphanFork(OrphanFork o) => impl.removeOrphanFork(o);
 
   static Future<void> push(SessionWorktree w) => impl.push(w);
 
