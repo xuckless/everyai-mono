@@ -7,6 +7,7 @@ import '../core/motion/motion.dart';
 import '../core/theme/every_theme.dart';
 import '../core/theme/native_themes.dart';
 import '../features/settings/appearance.dart';
+import 'app_menu.dart';
 import 'router.dart';
 
 /// Root widget. One EveryAI look on every platform: Material is only the
@@ -21,26 +22,29 @@ class EveryApp extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final appearance = ref.watch(appearanceProvider);
     final router = ref.watch(routerProvider);
-    return m.MaterialApp.router(
-      title: title,
-      debugShowCheckedModeBanner: false,
-      routerConfig: router,
-      scrollBehavior: const EveryScrollBehavior(),
-      theme: kitMaterialTheme(Brightness.light),
-      darkTheme: kitMaterialTheme(Brightness.dark, pureBlack: appearance.pureBlack),
-      themeMode: switch (appearance.theme) {
-        ThemePreference.system => m.ThemeMode.system,
-        ThemePreference.light => m.ThemeMode.light,
-        ThemePreference.dark => m.ThemeMode.dark,
-      },
-      builder: (context, child) => EveryThemeScope(
-        theme: EveryTheme.resolve(
-          appearance.design,
-          appearance.brightness(MediaQuery.platformBrightnessOf(context)),
-          pureBlack: appearance.pureBlack,
+    // Outermost, so the one macOS menu bar mounts once and never moves (see app_menu.dart).
+    return AppMenuBar(
+      child: m.MaterialApp.router(
+        title: title,
+        debugShowCheckedModeBanner: false,
+        routerConfig: router,
+        scrollBehavior: const EveryScrollBehavior(),
+        theme: kitMaterialTheme(Brightness.light),
+        darkTheme: kitMaterialTheme(Brightness.dark, pureBlack: appearance.pureBlack),
+        themeMode: switch (appearance.theme) {
+          ThemePreference.system => m.ThemeMode.system,
+          ThemePreference.light => m.ThemeMode.light,
+          ThemePreference.dark => m.ThemeMode.dark,
+        },
+        builder: (context, child) => EveryThemeScope(
+          theme: EveryTheme.resolve(
+            appearance.design,
+            appearance.brightness(MediaQuery.platformBrightnessOf(context)),
+            pureBlack: appearance.pureBlack,
+          ),
+          // Windows/Linux: the window buttons float over every route and dialog.
+          child: WindowButtonsOverlay(child: child ?? const SizedBox.shrink()),
         ),
-        // Windows/Linux: the window buttons float over every route and dialog.
-        child: WindowButtonsOverlay(child: child ?? const SizedBox.shrink()),
       ),
     );
   }
