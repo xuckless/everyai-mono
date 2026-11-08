@@ -33,6 +33,7 @@ pub const egress = @import("egress.zig");
 pub const hooks = @import("hooks.zig");
 pub const byok = @import("byok.zig");
 pub const openai_compat = @import("openai_compat.zig");
+pub const vault = @import("vault.zig");
 pub const decide = @import("decide.zig");
 pub const local = @import("local.zig");
 pub const local_models = @import("local_models.zig");
@@ -242,6 +243,7 @@ pub fn routes(app: *anole.Server(App), state: *App) !void {
     agents.routes(app, state);
     remote.routes(app, state);
     hooks.routes(app, state);
+    vault.routes(app, state);
     local_models.routes(app, state);
 }
 
@@ -306,6 +308,10 @@ pub fn main(init: std.process.Init) !void {
             return error.UnmeteredServerKey;
         }
         std.log.warn("billing is off: calls on the server's own model key are free to every user", .{});
+    }
+    if (cfg.vault_sync_dev and anole.env.environment() != .development) {
+        std.log.err("refusing to start: VAULT_SYNC_DEV is for development until the vault has had an external review", .{});
+        return error.VaultSyncNotReviewed;
     }
     if (cfg.accept_provider_keys and !cfg.local_mode and anole.env.environment() != .development) {
         std.log.err("refusing to start: ACCEPT_PROVIDER_KEYS sends users' keys through this hosted server; they belong to the app's local one", .{});
@@ -436,6 +442,7 @@ pub fn main(init: std.process.Init) !void {
 
 test {
     _ = util;
+    _ = vault;
     _ = openai_compat;
     _ = egress;
     _ = magic;

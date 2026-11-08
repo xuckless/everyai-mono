@@ -1,0 +1,55 @@
+{
+  "comment": "EveryAI vault format v1 vectors, made by docs/vault/make_vectors.py with libsodium. All binary values base64.",
+  "libsodium": "1.0.22",
+  "vault_id": "v-0001",
+  "vault_key": "lZyjqrG4v8bN1Nvi6fD3/gUMExohKC82PURLUllgZ24=",
+  "kdf": {
+    "alg": "argon2id13",
+    "ops": 2,
+    "mem": 8388608,
+    "salt": "tLvCydDX3uXs8/oBCA8WHQ==",
+    "passphrase_utf8": "Y29ycmVjdCBob3JzZSBiYXR0ZXJ5IHN0YXBsZSDinJM=",
+    "kek": "5DwR+03U+ztAAzCXwmFa6ezyWWRxO+jt5WEFFOWsQg8="
+  },
+  "password_wrap": {
+    "nonce": "pq20u8LJ0Nfe5ezz+gEIDxYdJCsyOUBH",
+    "aad": "ZXZlcnlhaS12YXVsdC92MXx3cmFwfHBhc3N3b3JkfHYtMDAwMQ==",
+    "ct": "uGH8+d9SrDEULoW6W1QQnEITgsHCWW3PitWLkW4JBPvRM7JOLDbFvqRiYINB4ghv"
+  },
+  "recovery": {
+    "key": "2N/m7fT7AgkQFx4lLDM6QUhPVl1ka3J5gIeOlZyjqrE=",
+    "kek": "LNw5cM/t+sy7YzPN83Q5zWKF2+CHk6WyYQkN4vYbw3Y=",
+    "nonce": "oqmwt77FzNPa4ejv9v0ECxIZICcuNTxD",
+    "ct": "tYtfDzcGjPwaBG7nwD+DbSl47OYFdUS5ZS5S2hXugHquoUcmy5OsHtHf+dMDP+0A"
+  },
+  "signing": {
+    "seed": "sLe+xczT2uHo7/b9BAsSGSAnLjU8Q0pRWF9mbXR7gok=",
+    "public": "UHI63sQxDCVh+jxhIJUZjR/4Urc9Gigzq/qkhnYhu40=",
+    "nonce": "IikwNz5FTFNaYWhvdn2Ei5KZoKeutbzD",
+    "ct": "ZpryEWkbfF+aL6JXYjpDVx5AXDFXSq6EYljV9bZQGcbY02zAUWx+VYZkJN1PRgbl"
+  },
+  "item": {
+    "id": "item-1",
+    "version": 3,
+    "key": "GB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dzj6vE=",
+    "key_nonce": "S1JZYGdudXyDipGYn6attLvCydDX3uXs",
+    "key_ct": "JdTraAm0B3fkEA0yyzEfsTm6ph4ow7o/b/H+lQDR6SwSm1DMsozegSZmyR5g3tOr",
+    "nonce": "sLe+xczT2uHo7/b9BAsSGSAnLjU8Q0pR",
+    "plaintext": "eyJraW5kIjoibG9naW4iLCJzaXRlIjoiZXhhbXBsZS5jb20iLCJ1c2VyIjoiYWRhIiwic2VjcmV0IjoiaHVudGVyMiJ9",
+    "ct": "5hvKIoRsZw0jKC4aFqhLLzRk1j6LgQvayhwYo8MDgeTOiz1asQqIHMh8HKyX5RNnemL5QXuECs++fXWwIRYkEOeU0ZLGdiaZAQY08J4cgbrl6LwyAw=="
+  },
+  "manifest": {
+    "bytes": "eyJ2IjoxLCJ2YXVsdF9pZCI6InYtMDAwMSIsInZlcnNpb24iOjcsIml0ZW1zIjpbeyJpZCI6Iml0ZW0tMSIsInZlcnNpb24iOjMsImRpZ2VzdCI6ImZjODY5MWQ0OGRiZmUxMzhkMWZjN2YyYmI2YWYzNGJkZmY1NmM5MWU1MTkyZjA5MTk0OGFjMmZhY2FmNDcyMDkifV19",
+    "signature": "1wkOXymtQTQOnVNCDpHoY+Ru09D2ylYkoqsGGDVEuUxWSDe4xRTzjAZTV8SOJ/vlNDvp13E+qD3QZPFhxanpBQ=="
+  },
+  "join": {
+    "approver_public": "vJmXGbDzmt5L2MdriQcIpdcLYy3ngytUjS/GTBR3OxM=",
+    "approver_secret": "c7PGCJFyo0PMhVM3PhMWlG0wFUVmylqyW7gZtepwp94=",
+    "device_public": "Gb3zYP94Cs63q8uMQKkJ4NknMHDhOUAaeHcktDbOX1g=",
+    "device_secret": "KNx3Z4Dokiy39QY4Jk/VjMF6VzGrojJbWP/f4/ecEtw=",
+    "approver_tx": "u9ZREK9bkYhhZFEFhkGoCTT/SL5hqeR2sRRKp7eJmtw=",
+    "nonce": "4+rx+P8GDRQbIikwNz5FTFNaYWhvdn2E",
+    "ct": "idtoIdLiupR0drn3pINP+GSUGu7B5LzVDFOsrr7JKyhYqBKJzqfI+h1FeHYO3tYT",
+    "confirm": "944543"
+  }
+}

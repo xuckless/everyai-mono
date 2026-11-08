@@ -37,8 +37,14 @@ String? credentialPath(String path, {required String home}) {
   for (final (dir, what) in _stores) {
     if (under(dir)) return what;
   }
+  // The app's own vault (features/vault/), wherever the OS keeps app data.
+  if (_vaultDir.hasMatch(rel)) return 'your EveryAI vault';
   return null;
 }
+
+/// `<app data>/vault` on every OS: macOS `Library/Application Support/dev.alidirect.everyai`, Linux
+/// `.local/share/dev.alidirect.everyai`, Windows `AppData/Roaming/<company>/EveryAI`.
+final _vaultDir = RegExp(r'(^|/)(dev\.alidirect\.everyai|EveryAI|every_ai)/vault(/|$)', caseSensitive: false);
 
 const _stores = [
   ('.aws', 'your AWS credentials'),

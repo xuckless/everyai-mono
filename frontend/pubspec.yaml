@@ -70,6 +70,7 @@ dependencies:
   app_links: ^7.2.2
   flutter_animate: ^4.5.2
   lucide_icons_flutter: ^4.0.2
+  sodium: ^4.1.2+1
 
 dev_dependencies:
   flutter_test:

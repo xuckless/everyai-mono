@@ -41,7 +41,7 @@ fn start(env: *Env, responses: []const []const u8, dev_auth: bool) !void {
 /// Settings beyond the defaults a test needs.
 /// `billing` defaults to on here: most tests below were written for metered
 /// credits; the parked default (off) has its own tests.
-const Extra = struct { stripe_webhook_secret: ?[]const u8 = null, no_server_key: bool = false, billing: bool = true, accept_keys: bool = true };
+const Extra = struct { stripe_webhook_secret: ?[]const u8 = null, no_server_key: bool = false, billing: bool = true, accept_keys: bool = true, vault: bool = false };
 
 fn startWith(env: *Env, responses: []const []const u8, dev_auth: bool, extra: Extra) !void {
     env.fake = .{ .responses = responses, .gpa = alloc, .models_json = models_json };
@@ -55,6 +55,7 @@ fn startWith(env: *Env, responses: []const []const u8, dev_auth: bool, extra: Ex
     cfg.billing_enabled = extra.billing;
     // The hosted byok tests: a hosted server takes keys only with this on.
     cfg.accept_provider_keys = extra.accept_keys;
+    cfg.vault_sync_dev = extra.vault;
     if (extra.stripe_webhook_secret) |secret| cfg.stripe_webhook_secret = .init(secret);
     if (extra.no_server_key) cfg.openrouter_api_key = null;
     env.state = .{
@@ -2489,4 +2490,45 @@ test "byok: a direct provider's key runs its vendor's models under its own id, p
     const row = try env.state.db.one(struct { provider: []const u8, charged_micros: i64 }, &c, "SELECT provider, charged_micros FROM usage_events WHERE kind = 'chat'", .{});
     try std.testing.expectEqualStrings("openai-byok", row.provider);
     try std.testing.expectEqual(@as(i64, 0), row.charged_micros);
+}
+
+test "vault (dev only): blobs with optimistic versions; off, no routes" {
+    var off: Env = undefined;
+    try startWith(&off, &.{}, true, .{});
+    var none = try off.t.get("/v1/vault/blobs", .{});
+    try none.expectStatus(.not_found);
+    none.deinit();
+    off.deinit();
+
+    var env: Env = undefined;
+    try startWith(&env, &.{}, true, .{ .vault = true });
+    defer env.deinit();
+    var made = try env.t.put("/v1/vault/blobs/manifest.json", .{ .json = .{ .version = 0, .data = "c2VhbGVkLTE=" } });
+    defer made.deinit();
+    try made.expectStatus(.ok);
+    try std.testing.expectEqual(@as(i64, 1), (try made.json(struct { version: i64 })).version);
+    // A second device that didn't see version 1 can't overwrite it.
+    var stale = try env.t.put("/v1/vault/blobs/manifest.json", .{ .json = .{ .version = 0, .data = "b3RoZXI=" } });
+    defer stale.deinit();
+    try stale.expectStatus(.conflict);
+    try std.testing.expectEqual(@as(i64, 1), (try stale.json(struct { version: i64 })).version);
+    var next = try env.t.put("/v1/vault/blobs/manifest.json", .{ .json = .{ .version = 1, .data = "c2VhbGVkLTI=" } });
+    defer next.deinit();
+    try std.testing.expectEqual(@as(i64, 2), (try next.json(struct { version: i64 })).version);
+    var got = try env.t.get("/v1/vault/blobs/manifest.json", .{});
+    defer got.deinit();
+    const blob = try got.json(struct { version: i64, data: []const u8 });
+    try std.testing.expectEqualStrings("c2VhbGVkLTI=", blob.data);
+    var listed = try env.t.get("/v1/vault/blobs", .{});
+    defer listed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), (try listed.json([]const struct { name: []const u8, size: i64 })).len);
+    var bad = try env.t.put("/v1/vault/blobs/..%2Fescape", .{ .json = .{ .version = 0, .data = "eA==" } });
+    defer bad.deinit();
+    try std.testing.expect(bad.status != .ok);
+    var old_delete = try env.t.delete("/v1/vault/blobs/manifest.json?version=1", .{});
+    defer old_delete.deinit();
+    try old_delete.expectStatus(.conflict);
+    var gone = try env.t.delete("/v1/vault/blobs/manifest.json?version=2", .{});
+    defer gone.deinit();
+    try gone.expectStatus(.no_content);
 }

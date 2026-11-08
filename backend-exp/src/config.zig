@@ -112,6 +112,10 @@ pub const Config = struct {
     /// 400 `keys_not_accepted`; production refuses to start with it on.
     accept_provider_keys: bool = false,
 
+    /// Vault sync (vault.zig), dev only until reviewed: the /v1/vault routes
+    /// exist only with this on, and production refuses to start with it.
+    vault_sync_dev: bool = false,
+
     /// Relay egress (egress.zig). The server's send rate and month, sockets
     /// at once (more wait in one queue), and per-subject limits: an
     /// anonymous host, and an account (its claimed hosts together).
