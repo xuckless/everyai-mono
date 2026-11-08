@@ -55,3 +55,4 @@ Future<LaneLanding> landWithCommits(
 
 Future<List<OrphanFork>> orphanForks(String forksDir, Set<String> held) async => const [];
 Future<void> removeOrphanFork(OrphanFork o) async {}
+Future<List<FileDiff>> forkDiff(ForkCopy copy) async => const [];

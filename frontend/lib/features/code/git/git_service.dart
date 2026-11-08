@@ -150,6 +150,9 @@ abstract final class GitService {
   /// The subject of the session branch's newest commit.
   static Future<String> headSubject(SessionWorktree w) => impl.headSubject(w);
 
+  /// What a fork changed in its own worktree since its base.
+  static Future<List<FileDiff>> forkDiff(ForkCopy copy) => impl.forkDiff(copy);
+
   /// The fork worktrees in [forksDir] no session holds ([held]: the roots of those that do).
   static Future<List<OrphanFork>> orphanForks(String forksDir, Set<String> held) => impl.orphanForks(forksDir, held);
 

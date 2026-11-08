@@ -6937,6 +6937,13 @@ final class GitSnapshot {
 
 final codeGitProvider = AsyncNotifierProvider.family<CodeGit, GitSnapshot, String>(CodeGit.new);
 
+/// A fork's own changes in its worktree (nothing until its work merges back and the worktree goes); the Diff's
+/// fork picker shows them. Read again on Refresh or when picked.
+final forkDiffProvider = FutureProvider.autoDispose.family<List<FileDiff>, String>((ref, childId) async {
+  final copy = ref.watch(codeSessionsProvider.select((all) => all.where((s) => s.id == childId).firstOrNull?.forkCopy));
+  return copy == null ? const [] : GitService.forkDiff(copy);
+});
+
 /// The session's worktree: its diff, and what the user can do with it.
 base class CodeGit extends AsyncNotifier<GitSnapshot> {
   CodeGit(this.sessionId);

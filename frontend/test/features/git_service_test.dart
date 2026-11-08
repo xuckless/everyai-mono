@@ -335,6 +335,20 @@ void main() {
     expect(await _git(repo, ['for-each-ref', 'refs/everyai/']), isEmpty);
   });
 
+  test("a fork's own changes: edits and new files since its base, not the dependency folders it borrows", () async {
+    Directory('$repo/node_modules/x').createSync(recursive: true);
+    File('$repo/.gitignore').writeAsStringSync('node_modules/\n');
+    final copy = (await GitService.forkCopy(repo, worktreesDir: '${tmp.path}/forks', slug: 'mine'))!;
+    expect(copy.links, contains('node_modules'));
+    expect(await GitService.forkDiff(copy), isEmpty);
+    File('${copy.root}/README.md').writeAsStringSync('# App\n\nForked.\n');
+    File('${copy.root}/lib/new.txt').writeAsStringSync('new\n');
+    final files = await GitService.forkDiff(copy);
+    expect({for (final f in files) f.path}, {'README.md', 'lib/new.txt'});
+    // The parent's checkout is untouched.
+    expect(File('$repo/lib/new.txt').existsSync(), isFalse);
+  });
+
   test(
     'orphaned forks: held ones are skipped, empty ones carry no work, changes and commits count as unsaved',
     () async {

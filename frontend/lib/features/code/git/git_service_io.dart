@@ -344,6 +344,21 @@ Future<List<FileDiff>> diff(SessionWorktree w) => _withSnapshot(w, (env) async {
   return parseUnifiedDiff('${res.stdout}');
 });
 
+/// What a fork changed in its own worktree since its base, uncommitted work included; the dependency folders it
+/// borrows from its parent are left out.
+Future<List<FileDiff>> forkDiff(ForkCopy copy) async {
+  final tmp = await Directory.systemTemp.createTemp('everyai-index');
+  final env = {'GIT_INDEX_FILE': '${tmp.path}/index'};
+  try {
+    await _git(copy.root, ['read-tree', 'HEAD'], env: env);
+    await _git(copy.root, ['add', '-A', '--', '.', for (final l in copy.links) ':(exclude)$l'], env: env);
+    final res = await _git(copy.root, ['diff', '--cached', '-M', '--no-color', copy.base], env: env);
+    return parseUnifiedDiff('${res.stdout}');
+  } finally {
+    await tmp.delete(recursive: true);
+  }
+}
+
 Future<List<FileDiff>> uncommittedDiff(SessionWorktree w) => _withSnapshot(w, (env) async {
   final res = await _git(w.path, ['diff', '--cached', '-M', '--no-color', 'HEAD'], env: env);
   return parseUnifiedDiff('${res.stdout}');
