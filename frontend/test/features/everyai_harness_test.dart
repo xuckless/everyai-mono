@@ -936,6 +936,56 @@ for line in sys.stdin:
     await (session as StopsHelpers).stopHelpers();
   }, skip: File('/usr/bin/clangd').existsSync() ? false : 'clangd is not installed');
 
+  test('a notebook reads as cells, and notebook_edit changes one cell by id', () async {
+    File('$work/nb.ipynb').writeAsStringSync(
+      jsonEncode({
+        'nbformat': 4,
+        'nbformat_minor': 5,
+        'metadata': <String, Object?>{},
+        'cells': [
+          {
+            'cell_type': 'code',
+            'id': 'c1',
+            'metadata': <String, Object?>{},
+            'execution_count': 1,
+            'source': ['print(1)'],
+            'outputs': [
+              {
+                'output_type': 'stream',
+                'name': 'stdout',
+                'text': ['1\n'],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    gateway
+      ..reply(
+        calls: [
+          ('read', {'file_path': 'nb.ipynb'}),
+        ],
+      )
+      ..reply(
+        calls: [
+          (
+            'notebook_edit',
+            {'file_path': 'nb.ipynb', 'edit_mode': 'replace', 'cell_id': 'c1', 'new_source': 'print(2)'},
+          ),
+        ],
+      )
+      ..reply(text: 'Done.');
+    final session = await harness.start(spec('change the cell'));
+    final events = await drive(session);
+    final results = [for (final r in events.whereType<ToolResult>()) r.text];
+    expect(results[0], contains('<cell id="c1" type="code" run="1">\nprint(1)'));
+    expect(results[1], 'Replaced cell c1 in $work/nb.ipynb.');
+    final cell = ((jsonDecode(File('$work/nb.ipynb').readAsStringSync()) as Map)['cells'] as List).single as Map;
+    expect(cell['source'], ['print(2)']);
+    expect(cell['outputs'], isEmpty);
+    expect(events.whereType<ActionCall>().last.actionKind, 'EditAction');
+  });
+
   test('MCP servers stop after the session sits idle and start again with its next run', () async {
     final pids = File('$work/pids.txt');
     final server = File('$work/echo_mcp.py')

@@ -405,7 +405,7 @@ final class EveryAISession
       case ToolNames.todo:
         _todos = [...(args['todos'] as List<Object?>? ?? const []).whereType<Map<String, Object?>>()];
         changed = true;
-      case ToolNames.read || ToolNames.write || ToolNames.edit:
+      case ToolNames.read || ToolNames.write || ToolNames.edit || ToolNames.notebookEdit:
         final path = resolvePath(_spec.workingDir, args['file_path'] as String? ?? '');
         _touch(path);
         if (call.name == ToolNames.read && path.endsWith('/SKILL.md') && !_loadedSkills.contains(path)) {
