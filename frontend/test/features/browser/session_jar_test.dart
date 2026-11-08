@@ -49,6 +49,9 @@ void main() {
       }
       final page = switch (r.uri.path) {
         '/get' => '<a id="dl" href="/file.txt" download>Get</a>',
+        // Writes a token and leaves for another origin at once (an OAuth callback that stores, then redirects).
+        '/write-and-go' =>
+          '<script>localStorage.setItem("late", "v1"); location.replace("http://127.0.0.1:${server.port}/");</script>',
         '/welcome' => () {
           r.response.cookies.add(Cookie('sid', r.uri.queryParameters['as'] ?? 'u')..httpOnly = true);
           return '<title>Signed in</title>ok';
@@ -253,6 +256,22 @@ void main() {
       expect(b.downloads.value.single.path, startsWith('${tmp.path}/b-downloads/'));
       expect(File(a.downloads.value.single.path!).readAsStringSync(), 'hello');
       expect(File(b.downloads.value.single.path!).readAsStringSync(), 'hello');
+    },
+    skip: skip,
+    timeout: const Timeout(Duration(minutes: 1)),
+  );
+
+  test(
+    'storage a page writes just before it leaves for another origin is in the jar',
+    () async {
+      final a = session('late');
+      await a.open(url('/write-and-go'));
+      for (var i = 0; i < 40 && !a.page.value.url.contains('127.0.0.1'); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      expect(a.page.value.url, contains('127.0.0.1'));
+      final jar = await a.captureJar();
+      expect(jar.storage['http://localhost:${server.port}'], {'late': 'v1'});
     },
     skip: skip,
     timeout: const Timeout(Duration(minutes: 1)),
