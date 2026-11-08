@@ -14,6 +14,7 @@ import '../../domain/code_session.dart' show everyaiHarnessName;
 import '../../drivers/driver_registry.dart' show driverRegistryProvider;
 import '../webhook.dart';
 import '../webhook_providers.dart';
+import '../unattended.dart';
 import 'scheduled_tasks_body.dart' show whenLabel;
 
 String _message(Object e) => e is ApiError ? e.message : '$e';
@@ -428,9 +429,8 @@ class _WebhookFormState extends ConsumerState<_WebhookForm> {
         title: 'Run webhook sessions in ${m.label}?',
         message:
             'An outside service starts these sessions and nobody watches them. ${m.label} runs commands and edits '
-            'without asking, and what the sender writes could try to steer the agent. The safety floor and your deny '
-            'rules still apply.',
-        confirmLabel: 'Use Full auto',
+            'without asking, and what the sender writes could try to steer the agent. ${unattendedChecks(m, _harness)}',
+        confirmLabel: 'Use ${m.label}',
       );
       if (!ok) return;
       _confirmed = true;
