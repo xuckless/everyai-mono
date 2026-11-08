@@ -120,16 +120,20 @@ pub const Config = struct {
     /// at once (more wait in one queue), and per-subject limits: an
     /// anonymous host, and an account (its claimed hosts together).
     egress_rate_mbps: u64 = 40,
-    egress_monthly_gb: u64 = 100,
-    /// Log a warning once the month's relay bytes pass this many GB (0 = 80%
-    /// of EGRESS_MONTHLY_GB).
-    egress_warn_gb: u64 = 0,
+    /// The month is sized to GCP's Always Free egress (1 GB a month from
+    /// North America, Premium tier only; about $0.12/GB past it, checked
+    /// 2026-11-08 from secondary sources): 768 MB for the relay leaves room for
+    /// the API itself. Raise it once a budget allows.
+    egress_monthly_mb: u64 = 768,
+    /// Log a warning once the month's relay bytes pass this many MB (0 = 80%
+    /// of EGRESS_MONTHLY_MB).
+    egress_warn_mb: u64 = 0,
     relay_max_live: u32 = 500,
     relay_per_subject_live: u32 = 16,
-    relay_host_daily_mb: u64 = 512,
-    relay_host_monthly_mb: u64 = 4096,
-    relay_account_daily_mb: u64 = 2048,
-    relay_account_monthly_mb: u64 = 16384,
+    relay_host_daily_mb: u64 = 32,
+    relay_host_monthly_mb: u64 = 128,
+    relay_account_daily_mb: u64 = 64,
+    relay_account_monthly_mb: u64 = 256,
     /// Anonymous hosts: new ones per network per hour, live ones per
     /// network, devices per host, and days without a connection before one
     /// is removed (claimed hosts never expire).

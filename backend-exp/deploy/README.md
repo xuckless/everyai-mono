@@ -47,9 +47,11 @@ gcloud compute ssh ttt-server --zone us-east1-b --command 'sudo bash -s' < backe
 ```
 
 ### Egress: limits and a budget alert
-The relay meters itself (`src/egress.zig`): `EGRESS_RATE_MBPS` (40) paces sends, `EGRESS_MONTHLY_GB` (100) stops the
-relay for the month (sockets get `budget {resets_at}`), and a warning is logged at `EGRESS_WARN_GB` (default 80% of
-the month). Per host and per account limits: `RELAY_HOST_*_MB`, `RELAY_ACCOUNT_*_MB`. Byte totals are in the
+The relay meters itself (`src/egress.zig`): `EGRESS_RATE_MBPS` (40) paces sends, `EGRESS_MONTHLY_MB` (768) stops the
+relay for the month (sockets get `budget {resets_at}`), and a warning is logged at `EGRESS_WARN_MB` (default 80% of
+the month). 768 MB is sized to GCP's Always Free egress: 1 GB a month from North America, **Premium tier only**,
+about $0.12/GB past it (secondary sources, 2026-11-08; Google's own page wasn't checked). A Cloudflare Tunnel
+doesn't change this: the VM's traffic to Cloudflare is still GCP egress. Per host and per account limits: `RELAY_HOST_*_MB`, `RELAY_ACCOUNT_*_MB`. Byte totals are in the
 `egress_usage` table (`d<day>` / `m<month>` rows). Set the month below what the network tier lets you send for
 free, then add a billing alert so a mistake costs at most a dollar:
 

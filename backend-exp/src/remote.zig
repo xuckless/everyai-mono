@@ -572,8 +572,8 @@ pub fn setUpEgress(app: *App, ctx: anytype) !void {
     };
     app.egress = egress.Gate.init(app.gpa, .{
         .rate_bytes_per_s = c.egress_rate_mbps * 1_000_000 / 8,
-        .monthly_bytes = c.egress_monthly_gb * 1024 * mib,
-        .warn_share = if (c.egress_warn_gb > 0 and c.egress_monthly_gb > 0) @as(f64, @floatFromInt(c.egress_warn_gb)) / @as(f64, @floatFromInt(c.egress_monthly_gb)) else 0.8,
+        .monthly_bytes = c.egress_monthly_mb * mib,
+        .warn_share = if (c.egress_warn_mb > 0 and c.egress_monthly_mb > 0) @as(f64, @floatFromInt(c.egress_warn_mb)) / @as(f64, @floatFromInt(c.egress_monthly_mb)) else 0.8,
         .max_live = c.relay_max_live,
         .per_subject_live = c.relay_per_subject_live,
     }, app.egress_quotas.source());

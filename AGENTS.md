@@ -200,8 +200,8 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   - **Egress** (`src/egress.zig`): every relay socket is admitted by one gate: `RELAY_MAX_LIVE` (500) sockets at
     once, more wait in one FIFO queue (notice `queued {position}`, close 1013 after 15 min), `RELAY_PER_SUBJECT_LIVE`
     (16) per subject (1008). Relayed bytes count against the host (anonymous) or its account (claimed) per UTC day
-    and month (`RELAY_HOST_DAILY_MB`/`_MONTHLY_MB` 512/4096, `RELAY_ACCOUNT_…` 2048/16384) and the server's month
-    (`EGRESS_MONTHLY_GB` 100, a warning at 80%), paced to `EGRESS_RATE_MBPS` (40). Over a quota: `budget
+    and month (`RELAY_HOST_DAILY_MB`/`_MONTHLY_MB` 32/128, `RELAY_ACCOUNT_…` 64/256) and the server's month
+    (`EGRESS_MONTHLY_MB` 768, sized to GCP's 1 GB free egress; a warning at 80%), paced to `EGRESS_RATE_MBPS` (40). Over a quota: `budget
     {resets_at}`, close 4008; the app shows Relay limit reached and reconnects at the reset. Ledger table
     `egress_usage(subject, period d<day>|m<month>, bytes)`, flushed hourly and on socket close, read back at start.
     `QuotaSource` is a vtable (config tiers today; a plans table later) so metering can become a product.
