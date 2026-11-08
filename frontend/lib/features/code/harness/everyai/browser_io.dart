@@ -277,7 +277,29 @@ final class HeadlessBrowser {
   var width = 1280;
   var height = 800;
 
-  bool get running => _socket != null;
+  bool get running => _socket != null || _switching != null;
+
+  /// A tab switch in flight ([switchTab]); [_start] and further switches wait for it.
+  Future<void>? _switching;
+
+  /// Waits until no tab switch is in flight.
+  Future<void> _switched() async {
+    for (var s = _switching; s != null; s = _switching) {
+      await s.then((_) {}, onError: (Object _) {});
+    }
+  }
+
+  /// [close] is closing the tabs: a closed tab hands over to no other.
+  var _closing = false;
+
+  /// This browser counts as one of its host's pages (from [_start] until [_release]).
+  var _counted = false;
+
+  void _release() {
+    if (!_counted) return;
+    _counted = false;
+    host._closedPage();
+  }
 
   /// Everything the browser reports, page and browser level.
   @visibleForTesting
@@ -330,7 +352,9 @@ final class HeadlessBrowser {
   }
 
   Future<void> _start() async {
-    if (_socket != null) return;
+    // A tab switch in flight: its socket is coming, not a new page.
+    await _switched();
+    if (_socket != null || _closing || _switching != null) return;
     if (attachTo != null) return _attach(attachTo!);
     final endpoint = await host.endpoint(width: width, height: height);
     _endpointUri = endpoint;
@@ -338,7 +362,7 @@ final class HeadlessBrowser {
     final browser = await WebSocket.connect(endpoint.toString());
     _browserSocket = browser;
     browser.listen(
-      _onFrame,
+      (f) => _onFrame(f, browser),
       onError: (Object _) {},
       onDone: () {
         if (identical(_browserSocket, browser)) _closed();
@@ -356,9 +380,10 @@ final class HeadlessBrowser {
       _browserSocket = null;
       rethrow;
     }
+    _counted = true;
     host._opened();
     final page = _socket!;
-    page.listen(_onFrame, onDone: () => _pageGone(page), onError: (Object _) => _pageGone(page));
+    page.listen((f) => _onFrame(f, page), onDone: () => _pageGone(page), onError: (Object _) => _pageGone(page));
     _tabList
       ..clear()
       ..add((id: _targetId!, url: 'about:blank', title: ''));
@@ -389,8 +414,9 @@ final class HeadlessBrowser {
       _send('Target.setAutoAttach', {'autoAttach': true, 'waitForDebuggerOnStart': false, 'flatten': true}),
       _send('Page.setInterceptFileChooserDialog', {'enabled': true}),
       _send('Page.addScriptToEvaluateOnNewDocument', {'source': _contextTrackerJs}),
-      _send('Runtime.evaluate', {'expression': _contextTrackerJs}),
     ]);
+    // Not waited for: a page that shows a dialog runs no script until it is answered.
+    unawaited(_send('Runtime.evaluate', {'expression': _contextTrackerJs}).then((_) {}, onError: (Object _) {}));
   }
 
   /// Which socket each call in flight went out on.
@@ -403,7 +429,8 @@ final class HeadlessBrowser {
       if (!identical(e.value, socket)) continue;
       _callSockets.remove(e.key);
       final c = _calls.remove(e.key);
-      if (c != null && !c.isCompleted) c.complete(const {});
+      // An error, never an empty answer: a guard's check that never came back must not read as "allowed".
+      if (c != null && !c.isCompleted) c.completeError(const TabClosedError());
     }
   }
 
@@ -416,7 +443,7 @@ final class HeadlessBrowser {
   /// session takes over; with none left the browser counts as closed.
   void _pageGone(WebSocket socket) {
     _settleCallsOn(socket);
-    if (!identical(_socket, socket)) return;
+    if (!identical(_socket, socket) || _closing) return;
     final gone = _targetId;
     _tabList.removeWhere((t) => t.id == gone);
     _publishTabs();
@@ -428,20 +455,56 @@ final class HeadlessBrowser {
     _closed();
   }
 
-  /// Makes tab [id] the one the agent and the Preview act on.
-  Future<void> switchTab(String id) async {
-    final e = _endpointUri;
-    if (e == null || !_tabList.any((t) => t.id == id)) return;
-    if (id == _targetId && _socket != null) return;
+  /// Closes [socket], a tab switched away from, once the calls sent on it have answered (the click that opened the
+  /// pop-up being switched to is one).
+  Future<void> _retire(WebSocket socket) async {
+    final pending = [
+      for (final e in _callSockets.entries)
+        if (identical(e.value, socket)) ?_calls[e.key]?.future,
+    ];
+    await Future.wait([for (final f in pending) f.then((_) {}, onError: (Object _) {})]);
+    await socket.close();
+  }
+
+  /// Makes tab [id] the one the agent and the Preview act on. Switches run one after another, and the one in
+  /// flight is known at once ([_switching]), so input meanwhile waits for it instead of opening a page.
+  Future<void> switchTab(String id) {
+    final prev = _switching;
+    late final Future<void> done;
+    done = () async {
+      if (prev != null) await prev.then((_) {}, onError: (Object _) {});
+      final e = _endpointUri;
+      if (e == null || _closing || !_tabList.any((t) => t.id == id)) return;
+      if (id == _targetId && _socket != null) return;
+      await _switchTo(id, e);
+    }();
+    _switching = done;
+    unawaited(
+      done.then((_) {}, onError: (Object _) {}).whenComplete(() {
+        if (identical(_switching, done)) _switching = null;
+      }),
+    );
+    return done;
+  }
+
+  Future<void> _switchTo(String id, Uri e) async {
     final old = _socket;
     _socket = null;
     _targetId = id;
     dialog.value = null;
     fileChooser.value = null;
-    unawaited(old?.close());
+    if (old != null) unawaited(_retire(old));
     final socket = await WebSocket.connect('ws://${e.host}:${e.port}/devtools/page/$id');
+    if (_closing || _browserSocket == null) {
+      await socket.close();
+      return;
+    }
     _socket = socket;
-    socket.listen(_onFrame, onDone: () => _pageGone(socket), onError: (Object _) => _pageGone(socket));
+    socket.listen(
+      (f) => _onFrame(f, socket),
+      onDone: () => _pageGone(socket),
+      onError: (Object _) => _pageGone(socket),
+    );
     _frameSessions.clear();
     await _enablePage();
     await _viewport();
@@ -546,7 +609,7 @@ final class HeadlessBrowser {
   /// Runs Chrome's editing [command] (`selectAll`, `cut`, `undo`…) in the focused field, for the Preview's menu.
   Future<void> userCommand(String command) async {
     await _start();
-    await _send('Input.dispatchKeyEvent', {
+    await _userSend('Input.dispatchKeyEvent', {
       'type': 'rawKeyDown',
       'key': '',
       'code': '',
@@ -559,7 +622,7 @@ final class HeadlessBrowser {
     final browser = await WebSocket.connect(endpoint.toString());
     _browserSocket = browser;
     browser.listen(
-      _onFrame,
+      (f) => _onFrame(f, browser),
       onError: (Object _) {},
       onDone: () {
         if (identical(_browserSocket, browser)) _closed();
@@ -579,7 +642,8 @@ final class HeadlessBrowser {
       _browserSocket = null;
       rethrow;
     }
-    _socket!.listen(_onFrame, onDone: _closed, onError: (Object _) => _closed());
+    final page = _socket!;
+    page.listen((f) => _onFrame(f, page), onDone: _closed, onError: (Object _) => _closed());
     await Future.wait([_send('Page.enable'), _send('Runtime.enable'), _send('Log.enable'), _send('Network.enable')]);
     final size = await evaluate('[innerWidth, innerHeight]');
     if (size is List && size.length == 2) {
@@ -589,7 +653,9 @@ final class HeadlessBrowser {
     if (_casting) await _castStart();
   }
 
-  void _onFrame(Object? frame) {
+  /// A message on [from]: answers go to their calls whatever the socket; events only from the active page's socket
+  /// or the browser's (a tab switched away from may still send a few).
+  void _onFrame(Object? frame, WebSocket from) {
     if (frame is! String) return;
     final Map<String, Object?> msg;
     try {
@@ -607,6 +673,7 @@ final class HeadlessBrowser {
       }
       return;
     }
+    if (!identical(from, _socket) && !identical(from, _browserSocket)) return;
     final method = msg['method'] as String? ?? '';
     final params = (msg['params'] as Map<String, Object?>?) ?? const {};
     switch (method) {
@@ -672,11 +739,16 @@ final class HeadlessBrowser {
         );
         dialog.value = d;
         _log.add('The page opened a${d.type == 'alert' ? 'n' : ''} ${d.type} dialog: "${d.message}".');
-        // The page waits on it, and so would every call in flight: they end now and say why.
-        for (final c in [..._calls.values]) {
-          if (!c.isCompleted) c.completeError(BrowserError(dialogWaitingText(d)));
+        // The page waits on it, and so would the calls in flight to it: they end now and say why. Not a tab switch's
+        // own setup (Chrome tells a page's open dialog again on Page.enable), nor calls to the browser.
+        if (_switching == null) {
+          for (final e in [..._callSockets.entries]) {
+            if (!identical(e.value, from)) continue;
+            _callSockets.remove(e.key);
+            final c = _calls.remove(e.key);
+            if (c != null && !c.isCompleted) c.completeError(BrowserError(dialogWaitingText(d)));
+          }
         }
-        _calls.clear();
       case 'Page.javascriptDialogClosed' when msg['sessionId'] == null:
         dialog.value = null;
       case 'Page.fileChooserOpened' when msg['sessionId'] == null:
@@ -719,6 +791,11 @@ final class HeadlessBrowser {
         final r = p['response'] as Map<String, Object?>? ?? const {};
         final status = (r['status'] as num?)?.toInt() ?? 0;
         if (status >= 400) line = 'HTTP $status: ${r['url']}';
+      // Downloads of other sessions' pages in the same Chrome are theirs.
+      case 'Browser.downloadWillBegin' when !_tabList.any((t) => t.id == p['frameId']):
+        return;
+      case 'Browser.downloadProgress' when !_downloads.containsKey('${p['guid']}'):
+        return;
       case 'Browser.downloadWillBegin':
         _downloads['${p['guid']}'] = (name: '${p['suggestedFilename'] ?? 'download'}', done: Completer<void>());
         _download('${p['guid']}', name: '${p['suggestedFilename'] ?? 'download'}', state: 'inProgress');
@@ -764,10 +841,17 @@ final class HeadlessBrowser {
   }
 
   void _closed() {
-    if ((_socket != null || _browserSocket != null) && attachTo == null) host._closedPage();
+    // Tabs still open (a switch to one failed) close with the session's browser instead of staying in Chrome.
+    final browser = _browserSocket;
+    if (browser != null && attachTo == null) {
+      for (final t in _tabList) {
+        unawaited(_sendOn(browser, 'Target.closeTarget', {'targetId': t.id}).then((_) {}, onError: (Object _) {}));
+      }
+    }
+    _release();
     _socket = null;
     _targetId = null;
-    unawaited(_browserSocket?.close());
+    unawaited(Future<void>.delayed(const Duration(milliseconds: 200), () => browser?.close()));
     _browserSocket = null;
     _tabList.clear();
     _publishTabs();
@@ -1224,6 +1308,16 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
 
   /// Closes this session's page (Chrome itself stops once no session has one).
   Future<void> close() async {
+    _closing = true;
+    try {
+      await _close();
+    } finally {
+      _closing = false;
+    }
+  }
+
+  Future<void> _close() async {
+    await _switched();
     final targets = {for (final t in _tabList) t.id, ?_targetId};
     if (_browserSocket != null && attachTo == null) {
       for (final target in targets) {
@@ -1238,7 +1332,6 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     _publishTabs();
     dialog.value = null;
     fileChooser.value = null;
-    final had = _socket != null || _browserSocket != null;
     final socket = _socket;
     _socket = null;
     _targetId = null;
@@ -1246,7 +1339,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     final browserSocket = _browserSocket;
     _browserSocket = null;
     await browserSocket?.close();
-    if (had && attachTo == null) host._closedPage();
+    if (attachTo == null) _release();
   }
 
   /// The page's size now, in CSS pixels.
@@ -1341,7 +1434,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     // A dialog holds the page: the user answers it first.
     if (dialog.value != null) return;
     await _start();
-    await _send('Input.dispatchMouseEvent', {
+    await _userSend('Input.dispatchMouseEvent', {
       'type': type,
       'x': x,
       'y': y,
@@ -1366,7 +1459,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
   }) async {
     if (dialog.value != null) return;
     await _start();
-    await _send('Input.dispatchKeyEvent', {
+    await _userSend('Input.dispatchKeyEvent', {
       'type': type,
       'key': key,
       'code': code,
@@ -1383,7 +1476,16 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
   Future<void> userText(String text) async {
     if (dialog.value != null) return;
     await _start();
-    await _send('Input.insertText', {'text': text});
+    await _userSend('Input.insertText', {'text': text});
+  }
+
+  /// [_send] for the user's own input: a tab that closed on it (a pop-up's Close button) is no error.
+  Future<void> _userSend(String method, Map<String, Object?> params) async {
+    try {
+      await _send(method, params);
+    } on TabClosedError {
+      // Closed by this very input.
+    }
   }
 
   /// The page's selected text (the user's copy).
@@ -1537,7 +1639,7 @@ const deep = (x, y) => {
   return el;
 };''';
 
-final class BrowserError implements Exception {
+class BrowserError implements Exception {
   const BrowserError(this.message, {this.fromPage = false});
   final String message;
 
@@ -1545,4 +1647,9 @@ final class BrowserError implements Exception {
   final bool fromPage;
   @override
   String toString() => message;
+}
+
+/// The tab a call went to closed before it answered (a pop-up that closed itself on the click).
+final class TabClosedError extends BrowserError {
+  const TabClosedError() : super('The tab closed before it answered.');
 }

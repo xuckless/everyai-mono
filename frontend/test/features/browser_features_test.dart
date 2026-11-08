@@ -64,14 +64,22 @@ void main() {
       expect(browser.tabs.value, hasLength(2));
       await until(() => browser.page.value.title == 'Sign in');
       expect(await browser.evaluate('document.title'), 'Sign in');
-      await browser.click(selector: '#done');
+      // Its Close button closes it: the click answers, or ends with the tab (whichever comes first), never a 30 s
+      // wait.
+      final sw = Stopwatch()..start();
+      await browser.click(selector: '#done').then((_) {}, onError: (Object e) => expect(e, isA<TabClosedError>()));
+      expect(sw.elapsed, lessThan(const Duration(seconds: 10)));
       await until(() => browser.tabs.value.length == 1 && browser.activeTab == first);
       expect(browser.activeTab, first);
       expect(await browser.evaluate('document.title'), 'Home');
       // A target=_blank link too; switching back by hand.
       await browser.click(selector: '#newtab');
       await until(() => browser.tabs.value.length == 2);
-      await browser.switchTab(first!);
+      // Input while a switch is in flight waits for it instead of opening a page of its own.
+      final switching = browser.switchTab(first!);
+      await browser.userMouse('mouseMoved', 5, 5);
+      await switching;
+      expect(browser.tabs.value, hasLength(2));
       expect(await browser.evaluate('document.title'), 'Home');
     },
     skip: skip,
@@ -152,5 +160,8 @@ void main() {
     expect(uploadRefusal('https://example.com/', ['a.txt'], root: root), contains('example.com is for the user'));
     expect(uploadRefusal('http://localhost:3000/', ['/etc/hosts'], root: root), contains('outside the project'));
     expect(uploadRefusal('http://localhost:3000/', ['.env'], root: root), contains('secrets'));
+    expect(uploadRefusal('http://127.0.0.1:3000/', ['a.txt'], root: root), isNull);
+    // A name that only starts like a loopback address is another site.
+    expect(uploadRefusal('https://127.evil.example/', ['a.txt'], root: root), contains('is for the user'));
   });
 }

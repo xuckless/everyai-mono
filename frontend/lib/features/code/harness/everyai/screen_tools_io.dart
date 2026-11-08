@@ -184,12 +184,29 @@ Future<ToolOutput> runBrowser(
           );
         }
         await b.switchTab(all[i - 1].id);
+        // A pop-up may be on any site: judge it before the model reads it.
+        final here = await b.evaluate('location.href');
+        if (here is String) {
+          final now = browserLanded(_judged[b] ?? 'about:blank', here);
+          if (now.refusal case final refusal?) {
+            await b.closeTab(all[i - 1].id);
+            return ToolOutput('Closed that tab instead of reading it.\n$refusal', isError: true);
+          }
+          _judged[b] = here;
+          note = now.notice;
+        }
         did = 'Switched to tab $i: ${await b.describe()}';
         list = true;
       case 'dialog':
         final d = b.dialog.value;
         if (d == null) return const ToolOutput('Error: the page shows no dialog.', isError: true);
         final accept = args['accept'] != false;
+        // The text of a prompt goes to the page: judge its site (from the tab's address; the page runs no script
+        // while the dialog is up).
+        if (d.type == 'prompt' && accept && (args['text'] as String?)?.isNotEmpty == true) {
+          final now = browserLanded(_judged[b] ?? 'about:blank', b.page.value.url);
+          if (now.refusal case final refusal?) return ToolOutput(refusal, isError: true);
+        }
         await b.answerDialog(accept: accept, text: d.type == 'prompt' && accept ? args['text'] as String? : null);
         did = '${accept ? 'Accepted' : 'Dismissed'} the ${d.type} "${d.message}".';
       case 'upload':
@@ -258,6 +275,17 @@ Future<ToolOutput> runBrowser(
       'in this picture\'s pixels.',
       images: [(label: path, dataUrl: url)],
     );
+  } on TabClosedError {
+    // A pop-up that closed itself on the click (an OAuth window done), or a tab the user closed meanwhile.
+    final now = b.running ? await b.describe().then((d) => d, onError: (Object _) => 'nothing') : 'nothing';
+    return ToolOutput(
+      browserResultText(
+        action,
+        'The tab closed during the action (it closed itself, or the user closed it); nothing more was sent to it. '
+        'The browser is now on $now.',
+        b.takeLog(),
+      ),
+    );
   } on BrowserError catch (e) {
     return ToolOutput(browserErrorText(e.fromPage ? action : '', e.message, b.takeLog()), isError: true);
   }
@@ -276,13 +304,12 @@ String tabsText(List<BrowserTab> tabs, String? active) => [
 String? uploadRefusal(String pageUrl, List<String> files, {required String root}) {
   final uri = Uri.tryParse(pageUrl);
   final host = uri?.host ?? '';
+  // A loopback address itself, not a name that starts like one (127.example.com).
   final local =
       uri?.scheme == 'file' ||
       host == 'localhost' ||
       host.endsWith('.localhost') ||
-      host == '::1' ||
-      host == '[::1]' ||
-      RegExp(r'^127\.').hasMatch(host);
+      (InternetAddress.tryParse(host.replaceAll(RegExp(r'^\[|\]$'), ''))?.isLoopback ?? false);
   if (!local) {
     return 'Refused: the agent uploads files only to the app it is building (a local page). Sending files to '
         '${host.isEmpty ? 'this page' : host} is for the user: ask them, or they can pick the files in the Preview.';

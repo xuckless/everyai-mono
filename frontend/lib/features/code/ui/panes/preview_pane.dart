@@ -904,8 +904,9 @@ class _PreviewPageViewState extends State<PreviewPageView> {
         return KeyEventResult.handled;
       }
     }
-    // The clipboard and editing shortcuts headless Chrome doesn't map from keys itself.
-    if (meta && down) {
+    // The clipboard and editing shortcuts headless Chrome doesn't map from keys itself. Not with Alt: Ctrl+Alt is
+    // AltGr on Windows and Linux, which types (AltGr+C is 'ć' on a Polish keyboard).
+    if (meta && down && !HardwareKeyboard.instance.isAltPressed) {
       if (k == LogicalKeyboardKey.keyV) {
         unawaited(Clipboard.getData(Clipboard.kTextPlain).then((d) => d?.text == null ? null : _b.userText(d!.text!)));
         return KeyEventResult.handled;
