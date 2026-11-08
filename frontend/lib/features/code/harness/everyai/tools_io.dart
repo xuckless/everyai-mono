@@ -343,6 +343,7 @@ final _specs = [
     },
     ['query'],
   ),
+  // Prompt reason (press): combinations now work (Shift+Tab, Control+a), and the model only knew of single keys.
   _fn(
     ToolNames.browser,
     'Use a web page the way the user would, in the browser the user sees live in the Preview tab (a profile of this '
@@ -350,7 +351,8 @@ final _specs = [
     '(http://localhost:PORT with the dev server in the background, or file:///path/index.html), act on it, then '
     'look.\n'
     '- action: open {url} · snapshot · click {ref, or selector, or x and y with frame; count 2 = double-click} · '
-    'type {text, ref? or selector?, submit?} · press {key: Enter, Tab, Escape, ArrowUp…, or one character} · '
+    'type {text, ref? or selector?, submit?} · press {key: Enter, Tab, Escape, ArrowUp…, one character, or a '
+    'combination such as Shift+Tab or Control+a} · '
     'scroll {dy} · wait {selector? ms?} · screenshot {full_page?} · zoom {x, y, width, height, frame?} · '
     'back · forward · reload · eval {script: a JS expression; its JSON value comes back} · console · '
     'resize {width, height} · close.\n'

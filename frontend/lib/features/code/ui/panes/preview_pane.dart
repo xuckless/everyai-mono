@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -22,6 +23,7 @@ import '../../live/app_sources.dart';
 import '../../live/chrome_download.dart';
 import '../../live/android_device_io.dart';
 import '../../live/desktop_window_io.dart';
+import '../../live/key_map.dart';
 import '../../live/ios_simulator_io.dart';
 import '../../live/live_browsers.dart';
 import '../../live/live_session.dart';
@@ -679,6 +681,9 @@ class _PageView extends StatefulWidget {
 }
 
 class _PageViewState extends State<_PageView> {
+  /// The `key` each held key went down with, for its key-up (which carries no character).
+  final _downKeys = <PhysicalKeyboardKey, String>{};
+
   /// The picture's place in the pane: its offset and how many pane points one CSS pixel takes.
   var _offset = Offset.zero;
   var _scale = 1.0;
@@ -772,28 +777,31 @@ class _PageViewState extends State<_PageView> {
         if (k == LogicalKeyboardKey.keyC) return KeyEventResult.handled;
       }
     }
-    final dom = domKeyOf(e);
-    final commands = meta && down
-        ? editingCommands(k, shift: HardwareKeyboard.instance.isShiftPressed)
-        : const <String>[];
-    final text = !meta && down && e.character != null && e.character!.isNotEmpty && !_controlChar(e.character!)
-        ? e.character
-        : null;
+    final c = cdpKeyEvent(
+      e,
+      modifiers: _modifiers(),
+      shift: HardwareKeyboard.instance.isShiftPressed,
+      macOS: defaultTargetPlatform == TargetPlatform.macOS,
+      down: down ? null : _downKeys[e.physicalKey],
+    );
+    if (down) {
+      _downKeys[e.physicalKey] = c.key;
+    } else {
+      _downKeys.remove(e.physicalKey);
+    }
     unawaited(
       _b.userKey(
-        !down ? 'keyUp' : (text != null ? 'keyDown' : 'rawKeyDown'),
-        key: dom.key,
-        code: dom.code,
-        keyCode: dom.keyCode,
-        text: text,
-        modifiers: _modifiers(),
-        commands: commands,
+        c.type,
+        key: c.key,
+        code: c.code,
+        keyCode: c.keyCode,
+        text: c.text,
+        modifiers: c.modifiers,
+        commands: c.commands,
       ),
     );
     return KeyEventResult.handled;
   }
-
-  static bool _controlChar(String s) => s.codeUnits.every((c) => c < 0x20 || c == 0x7F);
 
   @override
   Widget build(BuildContext context) {
@@ -1019,52 +1027,51 @@ class _Empty extends StatelessWidget {
   }
 }
 
-/// The DOM `key`, `code` and Windows key code of a Flutter key event, for Chrome's key events.
-({String key, String code, int keyCode}) domKeyOf(KeyEvent e) {
-  final k = e.logicalKey;
-  final table = <LogicalKeyboardKey, (String, int)>{
-    LogicalKeyboardKey.enter: ('Enter', 13),
-    LogicalKeyboardKey.numpadEnter: ('Enter', 13),
-    LogicalKeyboardKey.backspace: ('Backspace', 8),
-    LogicalKeyboardKey.tab: ('Tab', 9),
-    LogicalKeyboardKey.escape: ('Escape', 27),
-    LogicalKeyboardKey.space: (' ', 32),
-    LogicalKeyboardKey.delete: ('Delete', 46),
-    LogicalKeyboardKey.arrowUp: ('ArrowUp', 38),
-    LogicalKeyboardKey.arrowDown: ('ArrowDown', 40),
-    LogicalKeyboardKey.arrowLeft: ('ArrowLeft', 37),
-    LogicalKeyboardKey.arrowRight: ('ArrowRight', 39),
-    LogicalKeyboardKey.home: ('Home', 36),
-    LogicalKeyboardKey.end: ('End', 35),
-    LogicalKeyboardKey.pageUp: ('PageUp', 33),
-    LogicalKeyboardKey.pageDown: ('PageDown', 34),
-    LogicalKeyboardKey.shiftLeft: ('Shift', 16),
-    LogicalKeyboardKey.shiftRight: ('Shift', 16),
-    LogicalKeyboardKey.controlLeft: ('Control', 17),
-    LogicalKeyboardKey.controlRight: ('Control', 17),
-    LogicalKeyboardKey.altLeft: ('Alt', 18),
-    LogicalKeyboardKey.altRight: ('Alt', 18),
-    LogicalKeyboardKey.metaLeft: ('Meta', 91),
-    LogicalKeyboardKey.metaRight: ('Meta', 91),
-  };
-  if (table[k] case (final key, final code)) {
-    final dom = key == ' ' ? 'Space' : key;
-    return (
-      key: key,
-      code: dom == 'Shift' || dom == 'Control' || dom == 'Alt' || dom == 'Meta' ? '${dom}Left' : dom,
-      keyCode: code,
-    );
-  }
-  final ch = e.character ?? k.keyLabel;
-  if (ch.length == 1) {
-    final up = ch.toUpperCase();
-    final c = up.codeUnitAt(0);
-    if (c >= 0x41 && c <= 0x5A) return (key: ch, code: 'Key$up', keyCode: c);
-    if (c >= 0x30 && c <= 0x39) return (key: ch, code: 'Digit$up', keyCode: c);
-    return (key: ch, code: '', keyCode: c);
-  }
-  return (key: k.keyLabel, code: '', keyCode: 0);
+/// The DOM `key`, physical `code` and Windows key code of [e], from its physical key ([keysByUsage]); [down] is the
+/// `key` its key-down had (a key-up carries no character).
+({String key, String code, int keyCode}) domKeyOf(KeyEvent e, {String? down}) {
+  final info = keysByUsage[e.physicalKey.usbHidUsage];
+  final ch = e.character;
+  final printable = ch != null && ch.isNotEmpty && !_controlChar(ch);
+  final key =
+      down ??
+      (printable ? ch : null) ??
+      info?.named ??
+      info?.plain ??
+      (e.logicalKey.keyLabel.isEmpty ? 'Unidentified' : e.logicalKey.keyLabel);
+  return (key: key, code: info?.code ?? '', keyCode: info?.vk ?? 0);
 }
+
+/// The DevTools key event for the user's key event [e] in the Preview: [modifiers] as CDP bits ([cdpShift]…),
+/// [shift] for the editing commands, [down] the `key` of [e]'s key-down when [e] is its key-up. ⌘, or Ctrl, makes a
+/// shortcut instead of text, except Ctrl+Alt off macOS, which is AltGr typing a character (@ on German keyboards).
+({String type, String key, String code, int keyCode, String? text, int modifiers, List<String> commands}) cdpKeyEvent(
+  KeyEvent e, {
+  required int modifiers,
+  required bool shift,
+  bool macOS = false,
+  String? down,
+}) {
+  final isDown = e is! KeyUpEvent;
+  final ch = e.character;
+  final printable = ch != null && ch.isNotEmpty && !_controlChar(ch);
+  final altGr = !macOS && printable && modifiers & cdpAlt != 0 && modifiers & cdpMeta == 0;
+  final command = modifiers & cdpMeta != 0 || (modifiers & cdpControl != 0 && !altGr);
+  final dom = domKeyOf(e, down: isDown ? null : down);
+  final commands = command && isDown ? editingCommands(e.logicalKey, shift: shift) : const <String>[];
+  final text = !command && isDown && printable ? ch : null;
+  return (
+    type: !isDown ? 'keyUp' : (text != null ? 'keyDown' : 'rawKeyDown'),
+    key: dom.key,
+    code: dom.code,
+    keyCode: dom.keyCode,
+    text: text,
+    modifiers: modifiers,
+    commands: commands,
+  );
+}
+
+bool _controlChar(String s) => s.codeUnits.every((c) => c < 0x20 || c == 0x7F);
 
 /// The editing commands Chrome runs for ⌘/Ctrl+[k] (headless Chrome doesn't map them from keys).
 List<String> editingCommands(LogicalKeyboardKey k, {required bool shift}) {

@@ -7,6 +7,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart' show ValueNotifier, visibleForTesting;
 
 import '../../live/frames.dart';
+import '../../live/key_map.dart';
 import '../../live/live_session.dart';
 import '../../live/page_snapshot.dart';
 import 'shell_io.dart' show killTree;
@@ -759,39 +760,28 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : f && sensitiveForm(f) ?
     return 'Typed ${text.length} characters${submit ? ' and pressed Enter' : ''}.';
   }
 
-  static const _keys = <String, (String code, int vk, String text)>{
-    'Enter': ('Enter', 13, '\r'),
-    'Tab': ('Tab', 9, ''),
-    'Escape': ('Escape', 27, ''),
-    'Backspace': ('Backspace', 8, ''),
-    'Delete': ('Delete', 46, ''),
-    'Space': ('Space', 32, ' '),
-    'ArrowUp': ('ArrowUp', 38, ''),
-    'ArrowDown': ('ArrowDown', 40, ''),
-    'ArrowLeft': ('ArrowLeft', 37, ''),
-    'ArrowRight': ('ArrowRight', 39, ''),
-    'Home': ('Home', 36, ''),
-    'End': ('End', 35, ''),
-    'PageUp': ('PageUp', 33, ''),
-    'PageDown': ('PageDown', 34, ''),
-  };
-
-  /// A key press: a named key ([_keys]) or one character ("a", "W").
+  /// A key press: a key's name ("Enter", "ArrowUp", "Space"), one character ("a", "W", "@"), or a combination
+  /// ("Shift+Tab", "Control+a", "Meta+Shift+z"). Characters press the US key that types them, with Shift when it
+  /// takes it, so pages that read `key`, `code` or `shiftKey` see what a keyboard sends.
   Future<String> press(String key) async {
     await _start();
-    final named = _keys[key];
-    final single = named == null && key.length == 1;
-    if (named == null && !single) {
-      throw BrowserError('Unknown key "$key". Use one of ${_keys.keys.join(', ')} or one character.');
+    final k = parseKeyPress(key);
+    if (k == null) {
+      throw BrowserError(
+        'Unknown key "$key". Use a key name (Enter, Tab, Escape, Backspace, Delete, Space, ArrowUp/Down/Left/Right, '
+        'Home, End, PageUp, PageDown, F1-F12), one character, or a combination such as Shift+Tab or Control+a.',
+      );
     }
-    final upper = single ? key.toUpperCase() : '';
     final base = <String, Object?>{
-      'key': key == 'Space' ? ' ' : key,
-      'code': named?.$1 ?? (RegExp(r'[a-zA-Z]').hasMatch(key) ? 'Key$upper' : ''),
-      'windowsVirtualKeyCode': named?.$2 ?? upper.codeUnitAt(0),
+      'key': k.key,
+      'code': k.code,
+      'windowsVirtualKeyCode': k.vk,
+      'modifiers': k.modifiers,
+      if (k.modifiers & (cdpControl | cdpMeta) != 0)
+        if (editingCommandFor(k.code, shift: k.modifiers & cdpShift != 0) case final c?) 'commands': [c],
     };
-    final text = named?.$3 ?? key;
-    if (key == 'Enter') {
+    final text = k.text ?? '';
+    if (k.code == 'Enter' || k.code == 'NumpadEnter') {
       await _refuse('''
 const el = focused();
 const f = el && (el.form || (el.closest && el.closest('form')));
@@ -801,7 +791,7 @@ return f && sensitiveForm(f) ? 'Enter would submit a form with ' + sensitiveForm
       await _refuse(
         '''
 const el = focused();
-const w = ${key == 'Space'} && submits(el);
+const w = ${k.code == 'Space'} && submits(el);
 return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press a button that submits a form with ' + w : null;''',
       );
     }
