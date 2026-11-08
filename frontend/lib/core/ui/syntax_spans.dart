@@ -18,16 +18,38 @@ TextSpan codeSpan(String code, String? language, {required TextStyle base, requi
   final hit = _cache.remove(key);
   if (hit != null) return _cache[key] = hit;
   final span = CodeHighlighter.highlight(code, language, base: base, theme: syntaxThemeFor(brightness));
+  // A big block isn't kept: while one streams in, every frame is a new, longer text, and keeping each one's spans
+  // took hundreds of MB for one written file.
+  if (code.length > syntaxCacheEntryChars) return span;
   _cache[key] = span;
-  if (_cache.length > _cacheSize) _cache.remove(_cache.keys.first);
+  _cachedChars += code.length;
+  while (_cache.length > _cacheSize || _cachedChars > syntaxCacheChars) {
+    final oldest = _cache.keys.first;
+    _cache.remove(oldest);
+    _cachedChars -= oldest.$1.length;
+  }
   return span;
 }
 
 const _cacheSize = 600;
+
+/// The most code the cache holds, in characters (its spans take ~10 KB per KB of code).
+const syntaxCacheChars = 256 * 1024;
+
+/// Longer code is highlighted but not kept.
+const syntaxCacheEntryChars = 8 * 1024;
 final _cache = <(String, String, TextStyle, Brightness), TextSpan>{};
+var _cachedChars = 0;
+
+/// How many characters of code the cache holds now (tests).
+@visibleForTesting
+int get syntaxCachedChars => _cachedChars;
 
 @visibleForTesting
-void clearSyntaxCache() => _cache.clear();
+void clearSyntaxCache() {
+  _cache.clear();
+  _cachedChars = 0;
+}
 
 /// A shell command, colored.
 TextSpan shellSpan(String command, {required TextStyle base, required Brightness brightness}) =>

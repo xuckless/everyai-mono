@@ -10,6 +10,7 @@ import '../../../../core/security/untrusted.dart';
 import '../../domain/mcp_tool_check.dart';
 import 'shell_io.dart';
 import 'tools_io.dart';
+import '../../../../core/process/child_processes.dart';
 
 /// One MCP server a session talks to: started over stdio (a local command)
 /// or reached over streamable HTTP, as `mcp_config` describes it (see
@@ -163,6 +164,13 @@ final class _StdioMcp extends McpConnection {
       environment: {...shellEnv.env, ...env},
       // Resolves the command on the login shell's PATH.
       runInShell: true,
+    );
+    // Through a shell: the watchdog ends the shell's children too.
+    ChildProcesses.track(
+      process.pid,
+      label: 'MCP server $name',
+      executable: Platform.isWindows ? 'cmd.exe' : 'sh',
+      exited: process.exitCode,
     );
     return _StdioMcp._(name, process);
   }
