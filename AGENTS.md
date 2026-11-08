@@ -126,7 +126,9 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
     call comes as `tool_wait {id, name, arguments}` instead of `tool`, and the
     loop waits until the app sends `POST /v1/chat/tool_result {call_id, result
     (string or any JSON), is_error?}` (200 `{ok}`; 404 when no turn of this user
-    waits for it). The model gets the result (`Error: …` when `is_error`). After
+    waits for it). The model gets the result (`Error: …` when `is_error`). `images` (≤6 PNG/JPEG/WebP data URLs,
+    24 MiB) go to the model as one user message after the step's tool results (a note instead for a model that
+    can't see images); the look tool uses them. After
     `CLIENT_TOOL_TIMEOUT_MS` (300 s) it gets `Error (timeout): …` instead. Either
     way a `tool_status {id, name, status: done|failed, detail?:"timed out"}`
     closes the wait. SSE comments keep the stream alive every 15 s meanwhile.
@@ -1077,6 +1079,36 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   their reports and results dropped (`_quietRuns`), so nothing wakes the lead; `runningWork` (`SessionWork` in
   `domain/session_work.dart`) says what runs. UI: `StopAllButton` (a small up-chevron opening one kit menu row) beside
   Send/Stop while more than the lead's turn runs, and on Board cards while an open session runs anything.
+- **SVG maker: figures, look, slides, svg_script (2026-11-07; branch `feat/svg-maker`, plan
+  `~/.claude/plans/svg-maker.md`).** Owner: render + look tool, figures by id, vector exports where possible, svg_script
+  in a Deno sandbox (desktop), unbounded slide design (presets plus a free layout), one quiet check row, and Point and
+  ask / Figures page / Insert into… / basic hand edits.
+  - `tool_result` takes `images` (≤6 PNG/JPEG/WebP data URLs, 24 MiB): `chat.zig` `Looks` adds them as a user message
+    after the step's tool results. Client tools `look {id, slide?}` and `svg_script {id?, title?, code}`.
+  - Figures (`artifacts/domain/figures.dart`): render_svg / svg_script / render_chart / render_diagram with an `id` are
+    versioned artifacts (edit_artifact edits the markup, Mermaid, or the chart's compact JSON);
+    `![caption](figure:id)` in Markdown expands at render and export time. `make_slides` with an id is versioned too.
+  - Slides: `domain/slide_spec.dart` compiles every slide to positioned elements on 960×540 (presets title, bullets,
+    figure_right/left, figure, background, grid, free; any layout adds elements; a first `title` slide replaces the
+    automatic one); `SlideCanvas` draws them, pictures pre-drawn by `slideArtProvider`. PPTX is native elements
+    (text boxes, shapes, arrows, tables, pictures with PNG + svgBlip); PDF draws SVG figures as vectors.
+  - Checks (`artifacts/checks/`): `svg_lint`, `slide_lint` (TextPainter-measured), offscreen `capture`, `look.dart`
+    (`Looker`: figures, charts, decks up to 6 slides, document pages + their figures).
+  - `artifacts/script/`: svg_script runs Deno with no permissions, 15 s, vendored d3-shape 3.2.0 + Rough.js 4.6.6
+    (`assets/svg_script/`, notices added); off on the web.
+  - UI: `ui/look_row.dart` (sealed `LookOutcome`; "Checked fig-x · 2 to fix", opens to the pictures and findings);
+    figure cards get a ⋯ menu (`ui/figure_actions.dart`): Point and ask (`FigureCardMode` viewing/picking, the part's
+    id goes to the composer via `composerInsertProvider`), Edit colours and text (`domain/svg_parts.dart`), Insert
+    into a document / Add as a slide (user versions). Artifacts page: All | Figures, with where each is used.
+  - Rig for agents: `frontend/tool/figure_rig/look_rig_test.dart` (calls.json in, look.txt + pictures out). Three
+    agent trials drove the tools; their fixes are in the commits.
+  - Charts: `colors` field, word units named once on the axis. svg_lint follows translate/scale transforms, curves
+    and the colour under each label.
+  - Follow-ups: page pictures cut in the gap between lines (`pageBreaks`), and `StillLayout` (everyai_markdown)
+    shrinks wide tables and display math to the page and wraps code; a chart on a slide is a `ChartSource` drawn
+    per colour behind it (`pictureUsesOf`, `colourBehind`; no white card, light text on dark), in PPTX too; the
+    SVG checks place everything through full affine transforms, and a rotated label is checked in its own frame.
+  - Not done: no live model run.
 - **Install scripts (2026-11-07; `packaging/install/`).** `get.everyai.dev` (Cloudflare worker `everyai-get`, deployed
   with `packaging/install/deploy.sh`) serves `install.sh` (macOS: DMG checked by SHA-256, team signature and
   Gatekeeper, into /Applications or ~/Applications; Linux x86_64: the .deb through apt, else the AppImage in

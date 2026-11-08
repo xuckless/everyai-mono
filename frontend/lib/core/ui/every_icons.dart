@@ -47,6 +47,7 @@ enum EveryIcon {
   chart(LucideIcons300.chartColumn),
   diagram(LucideIcons300.workflow),
   image(LucideIcons300.image),
+  eye(LucideIcons300.eye),
   play(LucideIcons300.circlePlay),
   pause(LucideIcons300.circlePause),
   drawing(LucideIcons300.penLine),

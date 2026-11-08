@@ -590,6 +590,35 @@ test "chat: a client-executed tool waits for the app's result" {
     try std.testing.expect(std.mem.indexOf(u8, second, "Shown to the user") == null);
 }
 
+test "chat: pictures in a client tool's answer reach the model after the tool results" {
+    var env: Env = undefined;
+    try start(&env, &.{ diagram_turn, final_turn, followups_reply }, true);
+    defer env.deinit();
+
+    var s = try env.t.open(.post, "/v1/chat/stream", .{ .json = .{
+        .model = "anthropic/claude-haiku-5.5",
+        .messages = .{.{ .role = "user", .content = "Draw it" }},
+        .client_tools = .{"render_diagram"},
+    } });
+    defer s.deinit();
+    _ = try untilEvent(s, "tool_wait");
+    // Not a picture: refused, and the turn still waits.
+    var bad = try env.t.post("/v1/chat/tool_result", .{ .json = .{ .call_id = "toolu_d1", .result = "x", .images = .{"https://evil.io/a.png"} } });
+    defer bad.deinit();
+    try bad.expectStatus(.unprocessable_entity);
+    var ok = try env.t.post("/v1/chat/tool_result", .{ .json = .{ .call_id = "toolu_d1", .result = "Rendered; 1 finding.", .images = .{"data:image/png;base64,iVBORw0KGgo="} } });
+    defer ok.deinit();
+    try ok.expectStatus(.ok);
+    _ = try untilEvent(s, "done");
+
+    const second = env.fake.bodies.items[1];
+    try std.testing.expect(std.mem.indexOf(u8, second, "Rendered; 1 finding.\\n[1 picture(s) follow in the next message.]") != null);
+    const tool_at = std.mem.indexOf(u8, second, "\"role\":\"tool\"").?;
+    const pic_at = std.mem.indexOf(u8, second, "data:image/png;base64,iVBORw0KGgo=").?;
+    try std.testing.expect(pic_at > tool_at);
+    try std.testing.expect(std.mem.indexOf(u8, second, "[Pictures from your render_diagram call, in order:]") != null);
+}
+
 test "chat: an unanswered client tool times out with a typed error; undeclared tools don't wait" {
     var env: Env = undefined;
     try start(&env, &.{ diagram_turn, final_turn, followups_reply, diagram_turn, final_turn, followups_reply }, true);

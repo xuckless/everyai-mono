@@ -8,6 +8,8 @@ import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/anchored_popover.dart';
 import '../../../core/ui/every_icons.dart';
+import '../../artifacts/checks/look.dart' show lookTool;
+import '../../artifacts/ui/look_row.dart';
 import '../../artifacts/ui/image_view.dart';
 import '../../artifacts/ui/visual_view.dart';
 import '../../attachments/attachment.dart';
@@ -796,6 +798,7 @@ class _PartView extends StatelessWidget {
       ),
       final ToolCallPart call when call.toolName == securityAlertTool => SecurityAlertCard(part: call),
       final ToolCallPart call when allLocalChatTools.contains(call.toolName) => LocalToolChip(part: call),
+      final ToolCallPart call when call.toolName == lookTool => LookRow(part: call),
       final ToolCallPart call => InlineVisual(part: call, conversationId: conversationId),
       ArtifactPart(:final title) => Text(title, style: theme.type.body.tint(theme.accent)),
       // The route shows as a chip in the header.

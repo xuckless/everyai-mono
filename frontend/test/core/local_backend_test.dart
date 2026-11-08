@@ -26,7 +26,7 @@ final class _Results implements ToolResults {
   final calls = <String>[];
 
   @override
-  Future<bool> resolve(String callId, Object? result, {bool isError = false}) async {
+  Future<bool> resolve(String callId, Object? result, {bool isError = false, List<String> images = const []}) async {
     calls.add(callId);
     return answers;
   }
