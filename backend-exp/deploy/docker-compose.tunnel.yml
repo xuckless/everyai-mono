@@ -14,7 +14,7 @@ services:
       PORT: "8080"
       HOST: 0.0.0.0
   tunnel:
-    image: cloudflare/cloudflared:2025.4.0
+    image: cloudflare/cloudflared:2026.10.7
     container_name: everyai-tunnel
     restart: always
     command: tunnel --no-autoupdate run
