@@ -3,7 +3,7 @@
 EveryAI is in alpha. Signed releases start at `0.1.0-alpha.1`; the earlier unsigned dev build was
 `0.1.0-dev-nonsigned`. Earlier changes are listed by date and pull request.
 
-## 0.1.0-alpha.7 (2026-11-08): no account needed, and a browser you can sign in to
+## 0.2.0 (2026-11-08): no account needed, and a browser you can sign in to
 
 ### No account needed
 - **Signed out is a normal state.** Chat, Code, local models and your own keys work without an account; nothing
