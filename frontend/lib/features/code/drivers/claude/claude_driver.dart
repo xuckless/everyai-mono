@@ -3,7 +3,7 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show listEquals;
+import 'package:flutter/foundation.dart' show listEquals, visibleForTesting;
 import 'package:uuid/uuid.dart';
 
 import '../../domain/agent_mode.dart';
@@ -41,6 +41,20 @@ typedef ClaudeSpawn = Future<LineChannel> Function(
 /// show it after a restart; the CLI keeps the conversation itself and
 /// continues it with `--resume`. It doesn't print history back, so the
 /// journal is the transcript.
+/// Where Claude Code's main thread is, between the app's turns and its own:
+///
+///   idle ──send──────────────────────────────────────────────▶ running ──result──▶ idle
+///   idle ──task_notification (a background task reported)──▶ waking ──first main-thread frame──▶ running
+///                                                             waking ──no frame within [wakeWait], or Stop──▶ idle
+///
+/// Waking counts as working: a message sent then queues, so Claude's turn for the report and the user's don't
+/// overlap (each ends with its own `result`, and the first would end the user's).
+enum ClaudeTurn { idle, waking, running }
+
+/// How long a wake waits for Claude's turn to start before the session counts as idle again.
+@visibleForTesting
+Duration wakeWait = const Duration(seconds: 15);
+
 final class ClaudeDriver
     implements
         HarnessDriver,
@@ -577,7 +591,20 @@ final class ClaudeSession
   StreamSubscription<String>? _sub;
   Future<LineChannel>? _starting;
   var _requests = 0;
-  var _running = false;
+
+  /// Where the CLI's main thread is (see [ClaudeTurn]); [_running] while it isn't idle.
+  var _turnState = ClaudeTurn.idle;
+  bool get _running => _turnState != ClaudeTurn.idle;
+
+  /// While [ClaudeTurn.waking]: falls back to idle when no turn starts, and the status shown before the wake.
+  Timer? _wakeTimer;
+  ExecutionStatus _beforeWake = ExecutionStatus.idle;
+
+  void _toTurn(ClaudeTurn next) {
+    if (next != ClaudeTurn.waking) _wakeTimer?.cancel();
+    _turnState = next;
+  }
+
   var _waiting = false;
 
   /// We asked the running turn to stop; [_continueAfter]: run on once it has.
@@ -714,11 +741,13 @@ final class ClaudeSession
   Future<void> _turn(String body, {List<String> images = const []}) async {
     final c = await _ensure();
     if (_running && _interrupting) _staleResults++;
+    // Claude is starting a turn for a background report: that turn ends with its own result before this one's.
+    if (_turnState == ClaudeTurn.waking) _staleResults++;
     if (!_meta.sent || _meta.carry.length != _carry.length) {
       await _save(_meta.copyWith(sent: true, carry: List.unmodifiable(_carry)));
     }
     c.send(jsonEncode(userLine(body, images: images)));
-    _running = true;
+    _toTurn(ClaudeTurn.running);
     _emit(stateEvent(const Uuid().v4(), ExecutionStatus.running));
   }
 
@@ -733,6 +762,8 @@ final class ClaudeSession
   }
 
   void _stopTurn() {
+    // Nothing started yet: the wake is called off.
+    if (_turnState == ClaudeTurn.waking) return _wakeEnded();
     if (!_running) return;
     _interrupting = true;
     _request({'subtype': 'interrupt'});
@@ -814,6 +845,7 @@ final class ClaudeSession
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
+    _wakeTimer?.cancel();
     _driver._live.remove(id);
     await _drop();
     await _journal.close();
@@ -964,12 +996,21 @@ final class ClaudeSession
         }
         if (line case {'type': 'system', 'subtype': 'init', 'skills': final List<Object?> l}) _skillsListed(l);
         if (line case {'type': 'system', 'permissionMode': final String mode}) _modeSaid(mode);
+        // A background task reported while the main thread was idle: Claude starts a turn for it. Until its first
+        // frame the session counts as working, so a message the user sends now queues instead of going in alongside.
+        if (line case {'type': 'system', 'subtype': 'task_notification'} when _turnState == ClaudeTurn.idle) {
+          _beforeWake = _status;
+          _toTurn(ClaudeTurn.waking);
+          _wakeTimer = Timer(wakeWait, _wakeEnded);
+          _emit(stateEvent(const Uuid().v4(), ExecutionStatus.running));
+        }
         // Claude woke up by itself (a background subagent or command finished) and works outside any turn of ours.
-        if (!_running &&
+        if (_turnState != ClaudeTurn.running &&
             line['parent_tool_use_id'] == null &&
             const {'assistant', 'stream_event'}.contains(line['type'])) {
-          _running = true;
-          _emit(stateEvent(const Uuid().v4(), ExecutionStatus.running));
+          final wasIdle = _turnState == ClaudeTurn.idle;
+          _toTurn(ClaudeTurn.running);
+          if (wasIdle) _emit(stateEvent(const Uuid().v4(), ExecutionStatus.running));
         }
         final events = _decoder.decode(line);
         // The stopped turn's end: the new message's turn runs on (no paused state, the queue doesn't flush yet).
@@ -1012,8 +1053,17 @@ final class ClaudeSession
 
   /// A turn ended: replace a process with an old effort, and run on when
   /// [resume] asked while it was being stopped.
+  /// A wake with no turn after it (within [wakeWait], or called off): back to what the session showed before.
+  void _wakeEnded() {
+    if (_turnState != ClaudeTurn.waking) return;
+    _toTurn(ClaudeTurn.idle);
+    _emit(
+      stateEvent(const Uuid().v4(), _beforeWake == ExecutionStatus.running ? ExecutionStatus.finished : _beforeWake),
+    );
+  }
+
   void _ended() {
-    _running = false;
+    _toTurn(ClaudeTurn.idle);
     _waiting = false;
     _interrupting = false;
     if (_respawn && !_decoder.hasBackground) unawaited(_drop());
@@ -1097,7 +1147,7 @@ final class ClaudeSession
     _staleResults = 0;
     _respawn = false;
     if (_closed || !_running) return;
-    _running = false;
+    _toTurn(ClaudeTurn.idle);
     final why = c.lastError.trim();
     final detail = why.isEmpty ? 'Claude Code stopped.' : 'Claude Code stopped: ${why.split('\n').last}';
     _emit(HarnessEvent.decode({'kind': 'ConversationErrorEvent', 'id': const Uuid().v4(), 'detail': detail}));

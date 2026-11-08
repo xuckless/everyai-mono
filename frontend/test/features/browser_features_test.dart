@@ -249,7 +249,7 @@ void main() {
   );
 
   test(
-    "a dialog in one tab holds up the pop-up it opened: an action there says so at once, not after 30 s",
+    'a dialog in one tab holds up the pop-up it opened: an action there says so at once, not after 30 s',
     () async {
       final runner = ToolRunner(
         root: tmp.path,
