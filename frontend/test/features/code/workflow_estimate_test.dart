@@ -17,6 +17,19 @@ void main() {
     expect(rules['security_review']!.fixed, (6, 6));
   });
 
+  test("a router's negative price is no price: no dollars, so no ceiling", () {
+    final e = estimateWorkflow(
+      workflowId: 'bugfix',
+      rule: const AgentRule(fixed: (2, 3)),
+      args: const {},
+      everyai: true,
+      price: (-1, -1),
+      modelName: 'Auto',
+    );
+    expect(e.dollars, isNull);
+    expect(e.ceilingMicros, isNull);
+  });
+
   test('a meta rule reads ranges and single numbers, and nothing else', () {
     final meta = parseWorkflowMeta(
       "export const meta = { id: 'x', agents: { fixed: 2, perItem: [1, 3], items: 'parts' } }",

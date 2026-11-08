@@ -679,6 +679,10 @@ final class WorkflowEngine {
     _to(RunRunning(phase));
     // Held time isn't a stall.
     _stallBase = _clock();
+    // Spend that came in while it held (agents ending their step) went past the estimate: it holds again, now for
+    // the user's decision, with the agents still held.
+    _checkSpend();
+    if (_state is! RunRunning) return;
     _unpaused?.complete();
     _unpaused = null;
     await Future.wait([

@@ -134,6 +134,16 @@ final class WorkflowEstimate {
   /// [dollars] is then one item's, and the run's total can't be told before it splits the task.
   int? get ceilingMicros => dollars == null || perItem != null ? null : (dollars!.$2 * 1e6).round();
 
+  /// This estimate with the plan [windows] as they are now (the guard counts from a run's start).
+  WorkflowEstimate withPlanWindows(List<PlanWindow> windows) => WorkflowEstimate(
+    agents: agents,
+    perItem: perItem,
+    dollars: dollars,
+    time: time,
+    planWindows: windows,
+    basis: basis,
+  );
+
   Map<String, Object?> toJson() => {
     if (agents case (final lo, final hi)) 'agents': [lo, hi],
     if (perItem case (final lo, final hi)) 'per_item': [lo, hi],
@@ -227,7 +237,8 @@ WorkflowEstimate estimateWorkflow({
     if (priced.isNotEmpty) {
       each = priced.reduce((a, b) => a + b) / priced.length;
       basis = 'from ${priced.length} past run${priced.length == 1 ? '' : 's'} here';
-    } else if (price != null) {
+    } else if (price != null && price.$1 >= 0 && price.$2 >= 0) {
+      // (A router's negative price is no price: the shop shows none either.)
       each = dollarsPerAgent(price.$1, price.$2);
       basis = modelName.isEmpty ? "from the model's price" : "from $modelName's price";
     } else {

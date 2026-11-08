@@ -285,6 +285,10 @@ void main() {
         'Off track: It works on billing, not the login bug. Paused until you decide.',
       );
       expect(container.read(codeSessionProvider(c.sessionId)).status, SessionStatus.needsInput);
+      // Pause all and Resume all don't answer the card's question.
+      await c.pauseAll();
+      await c.resumeAll();
+      expect(engine.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.offTrack));
       await c.resumeWorkflow(runId);
       expect(engine.state, isA<RunRunning>());
       bridge.finish(null);
@@ -1586,6 +1590,74 @@ void main() {
       await reply;
       bridge.finish(null);
       await pumpEventQueue();
+    });
+
+    test('Start counts the plan windows from the start, not from when the card opened', () async {
+      final c = await open();
+      lead.add(
+        PlanLimits.of(
+          id: 'pl1',
+          windows: const [PlanWindow(name: 'five_hour', used: 0.6, minutes: 300)],
+        ),
+      );
+      await pumpEventQueue();
+      await c.call(ultra(['a']));
+      // The window reset while the card waited.
+      lead.add(
+        PlanLimits.of(
+          id: 'pl2',
+          windows: const [PlanWindow(name: 'five_hour', used: 0.1, minutes: 300)],
+        ),
+      );
+      await pumpEventQueue();
+      await start(c);
+      final reply = bridge.agent('Build a', {'harness': 'fake2'});
+      final kid = await child();
+      await whenValue(container, codeSessionProvider(kid.id).select((s) => s.connected), (bool b) => b);
+      final agent = drivers['fake2']!.latest!;
+      // 0.1 + 0.9 × 0.5: half of what was left when it started.
+      agent.add(
+        PlanLimits.of(
+          id: 'pl3',
+          windows: const [PlanWindow(name: 'five_hour', used: 0.55, minutes: 300)],
+        ),
+      );
+      await pumpEventQueue();
+      final rows = container.read(workflowRunsProvider(c.sessionId)).single.rows;
+      expect(rows.single.text, startsWith('5-hour window: 50% of what was left at the start used'));
+      answer(agent, 'Built');
+      await reply;
+      bridge.finish(null);
+      await pumpEventQueue();
+    });
+
+    test('a workflow picked while a card is open goes to the lead, whose next call replaces the card', () async {
+      final c = await open();
+      await c.call(ultra(['a']));
+      final entry = (await loadBundledWorkflows()).firstWhere((w) => w.id == 'bugfix');
+      c.pickWorkflow(WorkflowPick.script(entry));
+      expect(await c.sendTyped('Saving crashes'), isTrue);
+      await pumpEventQueue();
+      expect(lead.sent.last, contains('state="picked"'));
+    });
+
+    test('end_workflow waits while an estimate is open, and says so', () async {
+      final c = await open();
+      final sessions = container.read(codeSessionsProvider.notifier);
+      sessions.update(sessions.byId(c.sessionId)!.copyWith(workflow: maxWorkflowId));
+      await c.call(ultra(['a']));
+      final r = await c.call(
+        HostCall(
+          id: 'h-end',
+          sessionId: '',
+          name: endWorkflowTool,
+          args: const {'outcome': 'done'},
+          ended: Completer<HostEnd>().future,
+        ),
+      );
+      expect(r.isError, isTrue);
+      expect(r.text, contains('its estimate waits for the user'));
+      expect(r.text, isNot(contains('Bug fix')));
     });
 
     test('a picked workflow goes to the lead to clarify and propose; nothing starts by itself', () async {

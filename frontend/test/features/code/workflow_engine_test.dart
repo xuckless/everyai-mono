@@ -283,6 +283,47 @@ void main() {
       expect(e.refused, isEmpty);
     });
 
+    test("spend that passes the estimate while the user's Pause holds asks on Resume", () async {
+      final decisions = <String>[];
+      final journal = WorkflowJournal.fresh((l) async => lines.add(l));
+      await journal.write({
+        't': 'start',
+        'estimate': {
+          'agents': [1, 1],
+          'dollars': [0.5, 1.0],
+        },
+      });
+      final e = WorkflowEngine(
+        runId: 'r1',
+        name: 'test',
+        bridge: bridge,
+        launcher: launcher,
+        journal: journal,
+        timer: FakeTimers().call,
+        onDecision: (run, text) => decisions.add(text),
+      );
+      final held = Completer<void>();
+      launcher.gate = (call) => held.future;
+      launcher.spent = (call) => 1200000;
+      final run = e.run();
+      final reply = bridge.agent('a');
+      await pumpEventQueue();
+      await e.pause();
+      // The agent ends its step past the estimate while the run holds: nothing is asked yet.
+      held.complete();
+      await reply;
+      await pumpEventQueue();
+      expect(e.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.user));
+      expect(decisions, isEmpty);
+      await e.resume();
+      await pumpEventQueue();
+      expect(e.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.overEstimate));
+      expect(decisions.single, contains('Past the estimate'));
+      e.stop();
+      await run;
+      expect(e.refused, isEmpty);
+    });
+
     test('a resumed run keeps its marks and pauses again when it is still past its estimate', () async {
       final journal = WorkflowJournal.parse(
         [

@@ -3747,7 +3747,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   Future<({WorkflowEntry? entry, String why})> _checkWorkflow(WorkflowEntry picked) async {
     final now = (await _workflowEntries()).where((w) => w.id == picked.id && w.digest == picked.digest).firstOrNull;
     if (now == null) return (entry: null, why: _changedWhy(picked));
-    if (_slotNow is! SlotFree) {
+    // An open estimate doesn't block it: the lead's next run_workflow replaces the card.
+    if (slotBusyText(_slotNow) != null) {
       return (entry: null, why: 'A workflow is already running in this session. Wait for its result, then pick again.');
     }
     return (entry: now, why: '');
@@ -4228,7 +4229,10 @@ final class CodeSessionController extends Notifier<CodeSessionState>
 
   Future<void> resumeAll() async {
     await Future.wait([
-      for (final e in _workflows.values) e.resume(),
+      // Only the runs Pause all held: one paused for the user's decision (past its estimate, off track) waits for
+      // its card's buttons.
+      for (final e in _workflows.values)
+        if (e.state case RunPausing(reason: PauseReason.user) || RunPaused(reason: PauseReason.user)) e.resume(),
       // Every fork still held, also one whose turn ended during the Pause (it reported, but holds until Resume).
       for (final r in _forks.all)
         if (r.childId case final c?
@@ -5988,7 +5992,12 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         entry.source,
         args: p.args,
         ctx: p.ctx,
-        estimate: p.estimate,
+        // The guard's windows count from the run's start, not from when the card opened (it may have waited past
+        // a window's reset, or a restart).
+        estimate: switch (ref.read(codePlanLimitsProvider(sessionId))?.windows) {
+          final now? when now.isNotEmpty && p.estimate.planWindows.isNotEmpty => p.estimate.withPlanWindows(now),
+          _ => p.estimate,
+        },
         workflowId: entry.id,
       );
       return null;
@@ -6657,9 +6666,9 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       return 'Error: ${_activeForks.length} of your forks still run (${_activeForks.keys.join(', ')}). Wait for '
           'their reports or stop them with stop_fork, then call end_workflow again.';
     }
-    // A workflow run (or Bug fix's card) the lead started is Max's work too.
+    // A workflow run (or its estimate card) the lead started is Max's work too.
     if (_slotNow is! SlotFree) {
-      return 'Error: a workflow run you started is still going (or Bug fix waits for the user). Wait for its '
+      return 'Error: a workflow run you started is still going (or its estimate waits for the user). Wait for its '
           '<workflow-result>, then call end_workflow again.';
     }
     // Told as it happens: no "Max off" note goes with the next message.
