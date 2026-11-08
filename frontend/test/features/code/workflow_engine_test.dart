@@ -345,6 +345,91 @@ void main() {
       expect(e.refused, isEmpty);
     });
 
+    group('after a restart', () {
+      WorkflowEngine resumed(List<Map<String, Object?>> entries, {List<String>? decisions, List<String>? drifts}) =>
+          WorkflowEngine(
+            runId: 'r1',
+            name: 'test',
+            bridge: bridge,
+            launcher: launcher,
+            journal: WorkflowJournal.parse(entries.map(jsonEncode).join('\n'), (l) async => lines.add(l)),
+            timer: FakeTimers().call,
+            onDecision: (run, text) => decisions?.add(text),
+            onPhaseEnd: (run, phase, results) => drifts?.add(phase),
+          );
+      final start = {
+        't': 'start',
+        'estimate': {
+          'dollars': [5.0, 10.0],
+          'agents': [1, 2],
+        },
+      };
+
+      test('still past its estimate: it holds again, with no second row and no second note to the lead', () async {
+        final decisions = <String>[];
+        final e = resumed([
+          start,
+          {'t': 'agent', 'key': 'k', 'ok': true, 'value': 'x', 'spent': 10500000},
+          {'t': 'row', 'kind': 'over', 'phase': '', 'text': 'Past', 'mark': 'over@10000000'},
+        ], decisions: decisions);
+        final run = e.run();
+        await pumpEventQueue();
+        expect(e.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.overEstimate));
+        expect(e.snapshot.rows.where((r) => r.kind == RowKind.over), hasLength(1));
+        expect(decisions, isEmpty);
+        e.stop();
+        await run;
+      });
+
+      test('marks Continue skipped stay skipped', () async {
+        final e = resumed([
+          start,
+          {'t': 'agent', 'key': 'k', 'ok': true, 'value': 'x', 'spent': 10500000},
+          {'t': 'raise', 'spent': 10500000},
+        ]);
+        final run = e.run();
+        await pumpEventQueue();
+        expect(e.state, isA<RunRunning>());
+        expect(e.snapshot.rows, isEmpty, reason: '\$10.50 is 70% of the raised \$15.00, and its 50% was skipped');
+        bridge.finish(null);
+        await run;
+      });
+
+      test('held off track: it holds again until the user lets it go on', () async {
+        final e = resumed([
+          {'t': 'start'},
+          {'t': 'hold', 'reason': 'offTrack'},
+        ]);
+        final run = e.run();
+        await pumpEventQueue();
+        expect(e.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.offTrack));
+        await e.resume();
+        expect(jsonDecode(lines.last), {'t': 'go'});
+        bridge.finish(null);
+        await run;
+      });
+
+      test('a phase reported and checked before the restart is not reported or checked again', () async {
+        final drifts = <String>[];
+        final e = resumed([
+          {'t': 'start'},
+          {'t': 'phase', 'title': 'Research'},
+          {'t': 'agent', 'key': 'k', 'ok': true, 'value': 'x'},
+          {'t': 'row', 'kind': 'phase', 'phase': 'Research', 'text': 'Research done · 1 agent'},
+          {'t': 'drift', 'phase': 'Research'},
+        ], drifts: drifts);
+        final run = e.run();
+        bridge.note('phase', {'title': 'Research'});
+        await bridge.agent('a');
+        bridge.note('phase', {'title': 'Build'});
+        await pumpEventQueue();
+        expect(e.snapshot.rows.where((r) => r.kind == RowKind.phase), hasLength(1));
+        expect(drifts, isEmpty);
+        bridge.finish(null);
+        await run;
+      });
+    });
+
     group('stalls', () {
       late DateTime clock;
       late List<(StallStage, List<String>)> told;

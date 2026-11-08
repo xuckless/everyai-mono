@@ -47,7 +47,8 @@ void main() {
     expect(listed.perItem, isNull);
     final split = estimateWorkflow(workflowId: 'ultra', rule: ultra, args: {'task': 'x'}, everyai: false);
     expect(split.perItem, (4, 5));
-    expect(estimateLine(split), '~5–7 agents per item (4–5 each)');
+    expect(estimateLine(split), '~5–7 agents for one item (4–5 each)');
+    expect(split.ceilingMicros, isNull, reason: 'one item\'s dollars are no ceiling for the run');
     expect(estimateWorkflow(workflowId: 'p', rule: null, args: {}, everyai: true).agents, isNull);
   });
 

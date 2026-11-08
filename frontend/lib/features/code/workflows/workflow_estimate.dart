@@ -130,8 +130,9 @@ final class WorkflowEstimate {
   /// Where the numbers come from ("from 3 past runs", "from Sonnet 5.5's price").
   final String basis;
 
-  /// The top of [dollars] in micros: past it the run pauses and asks.
-  int? get ceilingMicros => dollars == null ? null : (dollars!.$2 * 1e6).round();
+  /// The top of [dollars] in micros: past it the run pauses and asks. None while the items aren't known ([perItem]):
+  /// [dollars] is then one item's, and the run's total can't be told before it splits the task.
+  int? get ceilingMicros => dollars == null || perItem != null ? null : (dollars!.$2 * 1e6).round();
 
   Map<String, Object?> toJson() => {
     if (agents case (final lo, final hi)) 'agents': [lo, hi],
@@ -266,8 +267,9 @@ String estimateLine(WorkflowEstimate e) {
   String range((int, int) r) => r.$1 == r.$2 ? '${r.$1}' : '${r.$1}–${r.$2}';
   return [
     if (e.agents case final a?)
-      e.perItem == null ? '~${range(a)} agents' : '~${range(a)} agents per item (${range(e.perItem!)} each)',
-    if (e.dollars case (final lo, final hi)) '${_dollars(lo)}–${_dollars(hi).substring(1)}',
+      e.perItem == null ? '~${range(a)} agents' : '~${range(a)} agents for one item (${range(e.perItem!)} each)',
+    if (e.dollars case (final lo, final hi))
+      '${_dollars(lo)}–${_dollars(hi).substring(1)}${e.perItem == null ? '' : ' per item'}',
     if (e.time case (final lo, final hi)) '${_minutes(lo)}–${_minutes(hi)}',
   ].join(' · ');
 }

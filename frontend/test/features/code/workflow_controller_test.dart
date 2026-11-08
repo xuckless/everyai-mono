@@ -346,6 +346,50 @@ void main() {
     });
   });
 
+  test("workflow_agents restart: the same agent goes on in a new turn, and its call gets that turn's answer", () async {
+    final c = await open();
+    await c.runWorkflow('demo', 'source', args: {'n': 1});
+    final reply = bridge.agent('Fix the bug', {'harness': 'fake2', 'label': 'Fixer'});
+    final kid = await child();
+    await whenValue(container, codeSessionProvider(kid.id).select((s) => s.connected), (bool b) => b);
+    final agent = drivers['fake2']!.latest!;
+    agent.add(stateEvent('${agent.id}-r0', ExecutionStatus.running));
+    await pumpEventQueue();
+    final list = await c.call(
+      HostCall(
+        id: 'wa',
+        sessionId: '',
+        name: workflowAgentsTool,
+        args: {'action': 'list'},
+        ended: Completer<HostEnd>().future,
+      ),
+    );
+    final key = RegExp(r'agent (\S+),').firstMatch(list.text)![1]!;
+    var settled = false;
+    unawaited(reply.then((_) => settled = true));
+    final restarting = c.call(
+      HostCall(
+        id: 'wb',
+        sessionId: '',
+        name: workflowAgentsTool,
+        args: {'action': 'restart', 'agent': key, 'text': 'use a timeout'},
+        ended: Completer<HostEnd>().future,
+      ),
+    );
+    // The stop reaches the agent, and its turn ends; that isn't the agent's answer.
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    agent.add(stateEvent('${agent.id}-s', ExecutionStatus.finished));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    agent.add(stateEvent('${agent.id}-r1', ExecutionStatus.running));
+    expect((await restarting).text, startsWith('Restarted'));
+    expect(agent.sent.any((m) => m.contains('use a timeout')), isTrue, reason: '${agent.sent}');
+    expect(settled, isFalse);
+    answer(agent, 'Fixed it, with a timeout');
+    expect(await reply, 'Fixed it, with a timeout');
+    bridge.finish(null);
+    await pumpEventQueue();
+  });
+
   HostCall runCall(Map<String, Object?> args) =>
       HostCall(id: 'h1', sessionId: '', name: runWorkflowTool, args: args, ended: Completer<HostEnd>().future);
 

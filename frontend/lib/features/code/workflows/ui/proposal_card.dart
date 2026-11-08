@@ -96,6 +96,8 @@ class _ProposalCardState extends State<ProposalCard> {
             [
               if (p.capUsd case final cap?) 'Cap \$${cap.toStringAsFixed(0)}' else 'No money cap (your subscription)',
               if (e.time != null) 'time from past runs, not a limit',
+              // The items aren't known yet, so there is no total to check the spend against.
+              if (e.dollars != null && e.ceilingMicros == null) 'no spending checkpoints (items not known yet)',
               if (e.basis.isNotEmpty) e.basis,
             ].join(' · '),
             style: theme.type.caption.tint(theme.textSubtle),

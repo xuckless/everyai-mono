@@ -328,9 +328,10 @@ final class WorkflowEngine {
       windowsAtStart: {for (final w in e?.planWindows ?? const <PlanWindow>[]) w.name: w.used},
       passed: journal.marks,
     );
-    for (var i = 0; i < journal.raises; i++) {
-      _marks.raise();
+    for (final spent in journal.raiseSpends) {
+      _marks.raise(spentMicros: spent);
     }
+    _overRowed.addAll(journal.marks.where((m) => m.startsWith('over@')));
     for (final r in journal.rows) {
       _rows.add((kind: RowKind.values.asNameMap()[r.kind] ?? RowKind.mark, phase: r.phase, text: r.text));
     }
@@ -381,6 +382,9 @@ final class WorkflowEngine {
   DateTime? _leadActedAt;
 
   late final GuardMarks _marks;
+
+  /// Ceilings whose "past the estimate" row is on the card already (a resume pauses again, but adds no second row).
+  final _overRowed = <String>{};
   final _rows = <RunRow>[];
 
   /// When the current phase began, for its report row (time is information, never a limit).
@@ -458,12 +462,14 @@ final class WorkflowEngine {
         case GuardMark(:final id, :final text):
           _row(RowKind.mark, text, mark: id);
           _emit();
-        case GuardOver(:final text):
+        case GuardOver(:final id, :final text):
           // Once per crossing: while it holds (or the user's own Pause holds it) nothing more is asked.
           if (_state is! RunRunning && _state is! RunStalled) continue;
-          _row(RowKind.over, text);
+          final told = !_overRowed.add(id);
+          if (!told) _row(RowKind.over, text, mark: id);
           unawaited(pause(reason: PauseReason.overEstimate));
-          onDecision?.call(snapshot, text);
+          // A resumed run still past it: the card and the lead were told before the restart.
+          if (!told) onDecision?.call(snapshot, text);
       }
     }
   }
@@ -483,6 +489,8 @@ final class WorkflowEngine {
     if (_state is! RunRunning && _state is! RunStalled) return;
     final text = 'Off track: $why Paused until you decide.';
     _row(RowKind.drift, text);
+    // Kept across a restart: the run waits for the user's decision then too.
+    unawaited(journal.write({'t': 'hold', 'reason': 'offTrack'}));
     unawaited(pause(reason: PauseReason.offTrack));
     onDecision?.call(snapshot, text);
   }
@@ -491,7 +499,7 @@ final class WorkflowEngine {
   Future<void> continuePastEstimate() async {
     if (_state case RunPausing(reason: PauseReason.overEstimate) || RunPaused(reason: PauseReason.overEstimate)) {
       _marks.raise(spentMicros: _spentMicros);
-      unawaited(journal.write({'t': 'raise'}));
+      unawaited(journal.write({'t': 'raise', 'spent': _spentMicros}));
       await resume();
     }
   }
@@ -601,7 +609,8 @@ final class WorkflowEngine {
 
   /// The row for the phase that just ended: its agents, what they spent, and how long it took.
   void _phaseReport(String phase) {
-    if (phase.isEmpty) return;
+    // Once per phase: a resumed script calls phase() again for phases reported before the restart.
+    if (phase.isEmpty || _rows.any((r) => r.kind == RowKind.phase && r.phase == phase)) return;
     final mine = [
       for (final v in _agents.values)
         if (v.phase == phase) v,
@@ -664,6 +673,9 @@ final class WorkflowEngine {
       _ => null,
     };
     if (phase == null) return;
+    if (_state case RunPausing(reason: PauseReason.offTrack) || RunPaused(reason: PauseReason.offTrack)) {
+      unawaited(journal.write({'t': 'go'}));
+    }
     _to(RunRunning(phase));
     // Held time isn't a stall.
     _stallBase = _clock();
@@ -737,8 +749,9 @@ final class WorkflowEngine {
     // Stopped before the script got going: the loop below sees no calls.
     if (_state is RunStarting) _to(const RunRunning());
     _phaseAt = _clock();
-    // A resumed run still past its estimate holds again until the user decides.
+    // A resumed run still past its estimate, or held off track, holds again until the user decides.
     _checkSpend();
+    if (journal.heldOffTrack && _state is RunRunning) unawaited(pause(reason: PauseReason.offTrack));
     _stallBase = _clock();
     _armStall();
     await for (final req in bridge.requests) {
@@ -754,7 +767,8 @@ final class WorkflowEngine {
             _phaseReport(_phase);
             _phaseAt = _clock();
             final ended = _phase;
-            if (ended.isNotEmpty && onPhaseEnd != null) {
+            if (ended.isNotEmpty && onPhaseEnd != null && journal.driftChecked.add(ended)) {
+              unawaited(journal.write({'t': 'drift', 'phase': ended}));
               final results = [
                 for (final v in _agents.values)
                   if (v.phase == ended && _answers[v.key] != null) (label: v.label, text: _answers[v.key]!),
@@ -990,6 +1004,7 @@ final class WorkflowEngine {
     if (call.phase.isNotEmpty && !_phases.contains(call.phase)) _phases.add(call.phase);
     final base = WorkflowAgentView(key: call.key, label: call.label, phase: call.phase);
     if (journal.agents[call.key] case final j?) {
+      if (j.ok) _answers[call.key] = j.value is String ? j.value! as String : jsonEncode(j.value);
       _agents[call.key] = base.copyWith(
         status: j.ok ? WorkflowAgentStatus.done : WorkflowAgentStatus.failed,
         childId: journal.spawns[call.key],

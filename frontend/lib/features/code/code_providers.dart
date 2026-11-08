@@ -7809,7 +7809,7 @@ final class _WorkflowLauncher implements AgentLauncher {
     final callId = _sessions.byId(childId)?.parentCallId ?? childId;
     var busy = false;
     var ending = false;
-    final sub = _ref.listen(codeSessionProvider(childId), (_, next) {
+    void look(CodeSessionState next) {
       if (done.isCompleted || ending) return;
       // A restart's stopped turn: the turn after it is the one this waits for.
       if (_restarting.contains(childId)) {
@@ -7833,9 +7833,17 @@ final class _WorkflowLauncher implements AgentLauncher {
           }
         }),
       );
-    }, fireImmediately: true);
+    }
+
+    final sub = _ref.listen(codeSessionProvider(childId), (_, next) => look(next), fireImmediately: true);
+    void recheck() {
+      if (_ref.exists(codeSessionProvider(childId))) look(_ref.read(codeSessionProvider(childId)));
+    }
+
+    _recheck[childId] = recheck;
     return done.future.whenComplete(() {
       sub.close();
+      if (_recheck[childId] == recheck) _recheck.remove(childId);
       _waiting(callId, false);
       if (_watching[childId] == done) _watching.remove(childId);
     });
@@ -7915,17 +7923,24 @@ final class _WorkflowLauncher implements AgentLauncher {
     try {
       await c._stopAndSettle();
       // The new turn: watched as the same agent() call's.
-      await c.send(note);
+      final sent = await c.send(note);
       final end = DateTime.now().add(const Duration(seconds: 10));
-      while (_ref.exists(codeSessionProvider(childId)) &&
+      while (sent &&
+          _ref.exists(codeSessionProvider(childId)) &&
           !_ref.read(codeSessionProvider(childId)).transcript.running &&
           DateTime.now().isBefore(end)) {
         await Future<void>.delayed(const Duration(milliseconds: 50));
       }
     } finally {
       _restarting.remove(childId);
+      // Changes while it restarted were skipped: the watch looks again now (a refused send ends the call with the
+      // stopped turn; a new turn that already ended gives its answer).
+      _recheck[childId]?.call();
     }
   }
+
+  /// Each watched turn's look at its child's current state (see [restart]).
+  final _recheck = <String, void Function()>{};
 
   @override
   Future<bool> message(String childId, String text) async {
