@@ -2235,6 +2235,11 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   @visibleForTesting
   static Duration liveAfter = const Duration(milliseconds: 1500);
 
+  /// What Stop ends a session's leftover processes with (a test sees the tags).
+  @visibleForTesting
+  static Future<List<int>> Function({required String tag, required String workingDir, required bool ownsDir})
+  killProcesses = killSessionProcesses;
+
   /// What earlier leads did, oldest first (a session that switched harness).
   List<LeadSegment> _timeline = const [];
 
@@ -3117,9 +3122,13 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     _held = null;
     // Only a run this Pause paused natively goes on (a parked one runs, one still in its step drops the request);
     // a run the user stopped earlier stays stopped.
+    // A turn that ended on its own meanwhile (finished, failed) is not run again: that would call the model with
+    // nothing new to do.
     if (_pausedNatively) {
       _pausedNatively = false;
-      if (_session case final s?) await s.resume();
+      final t = state.transcript;
+      final runOn = t.status == ExecutionStatus.paused || t.running || t.pending.isNotEmpty || t.held.isNotEmpty;
+      if (_session case final s? when runOn) await s.resume();
     }
     _answered = '';
     _autoRespond(state.transcript);
@@ -4200,7 +4209,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     await Future.wait([
       pauseAfterStep(),
       for (final e in _workflows.values) e.pause(),
-      for (final r in _forks.background)
+      for (final r in _forks.live)
         if (r.childId case final c? when r.state.working && ref.exists(codeSessionProvider(c)))
           ref.read(codeSessionProvider(c).notifier).pauseAfterStep(),
     ]);
@@ -4209,11 +4218,20 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   Future<void> resumeAll() async {
     await Future.wait([
       for (final e in _workflows.values) e.resume(),
-      for (final r in _forks.background)
-        if (r.childId case final c? when ref.exists(codeSessionProvider(c)))
+      // Every fork still held, also one whose turn ended during the Pause (it reported, but holds until Resume).
+      for (final r in _forks.all)
+        if (r.childId case final c?
+            when ref.exists(codeSessionProvider(c)) && ref.read(codeSessionProvider(c)).hold != StepHold.none)
           ref.read(codeSessionProvider(c).notifier).resumeAfterPause(),
     ]);
     await resumeAfterPause();
+  }
+
+  /// A fork that started while this session holds (Pause all) holds too.
+  void _holdIfPaused(String childId) {
+    if (state.hold != StepHold.none && ref.exists(codeSessionProvider(childId))) {
+      unawaited(ref.read(codeSessionProvider(childId).notifier).pauseAfterStep());
+    }
   }
 
   /// Stops the background forks; their reports don't go to the next lead.
@@ -5174,13 +5192,25 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     await Future.wait([
       ?_session?.interrupt(),
       if (info != null && killsOwnProcesses(info))
-        killSessionProcesses(
+        killProcesses(
           tag: info.id,
           workingDir: info.workingDir,
           ownsDir: ownsWorkingDir(info, parent: ref.read(codeSessionsProvider.notifier).byId(info.parentId ?? '')),
         ),
       // The host's process walk can't see inside an environment.
       if (info != null && killsOwnProcesses(info) && info.environment != HostEnv.instance.id) _endInside(info),
+      // Forks carry their own process tag: what those that no longer run left behind (a server, a watcher) ends
+      // with this Stop, as when they shared this session's tag. Forks still at work keep theirs (Stop all ends them).
+      if (info != null && killsOwnProcesses(info))
+        for (final r in _forks.all)
+          if (!r.state.live)
+            if (r.childId case final c?)
+              if (ref.read(codeSessionsProvider.notifier).byId(c) case final child? when child.ownProcesses)
+                killProcesses(
+                  tag: child.id,
+                  workingDir: child.workingDir,
+                  ownsDir: ownsWorkingDir(child, parent: info),
+                ),
     ]);
   }
 
@@ -5265,6 +5295,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         _deliver();
       }
       _watch(callId, child.id);
+      _holdIfPaused(child.id);
     } on Object catch (e) {
       if (ref.mounted && fork.state is ForkSpawning) {
         final report = SubagentReport(SubagentStatus.notStarted, "The subagent couldn't start: $e");
@@ -6383,6 +6414,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       if (batch != null) _forkBatches[callId] = batch;
       _syncSideWork();
       _watch(callId, child.id);
+      _holdIfPaused(child.id);
       return (
         text:
             'Started fork ${child.id} ("$title") on $label${model.isEmpty ? '' : ', $model'}'
