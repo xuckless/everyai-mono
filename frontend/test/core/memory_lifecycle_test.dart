@@ -30,7 +30,9 @@ void main() {
 
     test('a child is tracked until it exits; two stops kill once; stopAll ends the rest', () async {
       final killed = <int>[];
-      final exits = {for (final pid in [101, 102, 103]) pid: Completer<int>()};
+      final exits = {
+        for (final pid in [101, 102, 103]) pid: Completer<int>(),
+      };
       io.killChildTree = (pid) async {
         killed.add(pid);
         exits[pid]!.complete(-9);
@@ -62,8 +64,10 @@ void main() {
       addTearDown(() => dir.delete(recursive: true));
       // A stand-in Chrome: says where DevTools is after a moment, then waits.
       final fake = File('${dir.path}/chrome')
-        ..writeAsStringSync('#!/bin/sh\nsleep 0.3\necho "DevTools listening on ws://127.0.0.1:1/devtools/browser/x" >&2\n'
-            'exec sleep 30\n');
+        ..writeAsStringSync(
+          '#!/bin/sh\nsleep 0.3\necho "DevTools listening on ws://127.0.0.1:1/devtools/browser/x" >&2\n'
+          'exec sleep 30\n',
+        );
       await Process.run('chmod', ['+x', fake.path]);
       final stopped = <int>[];
       io.killChildTree = (pid) async {
@@ -85,6 +89,28 @@ void main() {
       expect(ChromeHost.launchArgs('/p', 800, 600), containsAll(['--disable-breakpad', '--disable-crash-reporter']));
     });
   });
+
+  test("the watchdog ends a listed child only while its start time matches (a reused pid isn't touched)", () async {
+    final dir = Directory.systemTemp.createTempSync('watchdog');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final ours = await Process.start('sleep', ['30']);
+    final stranger = await Process.start('sleep', ['30']);
+    addTearDown(() {
+      ours.kill(ProcessSignal.sigkill);
+      stranger.kill(ProcessSignal.sigkill);
+    });
+    // An app pid that has already ended, so the watchdog acts at once.
+    final gone = await Process.start('true', const []);
+    await gone.exitCode;
+    final started = await io.startTimeOf(ours.pid);
+    expect(started, isNotNull);
+    final list = File('${dir.path}/list')
+      ..writeAsStringSync('${ours.pid} $started\n${stranger.pid} Mon Jan  1 00:00:00 2001\n');
+    final run = await Process.run('/bin/sh', ['-c', io.watchdogScript, 'everyai-watchdog', '${gone.pid}', list.path]);
+    expect(run.exitCode, 0);
+    expect(await ours.exitCode.timeout(const Duration(seconds: 5)), isNot(0));
+    expect(Process.runSync('kill', ['-0', '${stranger.pid}']).exitCode, 0);
+  }, skip: Platform.isWindows);
 
   test('the syntax cache stays small while a long file streams in', () {
     clearSyntaxCache();

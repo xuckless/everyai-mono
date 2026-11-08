@@ -385,13 +385,16 @@ Future<List<WorkflowEntry>> _workflowsOfIn(Ref ref, String projectDir) async {
 /// disposal doesn't run then). The shell listens to it from app start, so
 /// every CLI is covered, however it was spawned.
 final driverShutdownProvider = Provider<void>((ref) {
+  // The registry's stop runs beside the owners' own (not after them, where one slow stop used up the budget); it only
+  // ends children still running, so a child an owner already ended isn't touched again.
   Future<void> closeAll() => Future.wait<void>([
     closeAllDriverProcesses(),
     LiveBrowsers.stopAll(),
     Future(NestedDisplays.stopAll),
     AndroidDevices.stopAll(),
     AppSources.stopAll(),
-  ]).then((_) => ChildProcesses.stopAll()).timeout(const Duration(seconds: 4), onTimeout: () {});
+    ChildProcesses.stopAll(),
+  ]).timeout(const Duration(seconds: 4), onTimeout: () => const []);
   final lifecycle = AppLifecycleListener(
     onExitRequested: () async {
       await closeAll();

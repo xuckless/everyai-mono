@@ -9,12 +9,13 @@ import '../../features/code/harness/everyai/shell_io.dart' show killTree;
 import 'child_processes.dart';
 
 final class _Child {
-  _Child(this.pid, this.label, this.command);
+  _Child(this.pid, this.label);
   final int pid;
   final String label;
 
-  /// The executable's file name, which the watchdog checks before it kills (a pid can be reused).
-  final String command;
+  /// When the process started (`ps -o lstart=`), which the watchdog checks before it kills: a pid can be reused,
+  /// but not with the same start time. Null until read (the watchdog leaves the child alone meanwhile).
+  String? started;
   var phase = ChildPhase.running;
   Future<void>? stopping;
 }
@@ -30,9 +31,16 @@ void _apply(_Child c, ChildEvent e) {
 }
 
 void track(int pid, {required String label, required String executable, required Future<int> exited}) {
-  final c = _children[pid] = _Child(pid, label, executable.split(Platform.pathSeparator).last);
-  _writeList();
+  final c = _children[pid] = _Child(pid, label);
   _ensureWatchdog();
+  if (_watching) {
+    unawaited(
+      startTimeOf(pid).then((t) {
+        c.started = t;
+        _writeList();
+      }),
+    );
+  }
   unawaited(exited.then((_) => _apply(c, ChildEvent.exited), onError: (Object _) => _apply(c, ChildEvent.exited)));
 }
 
@@ -58,6 +66,18 @@ Future<void> _kill(_Child c) async {
   _apply(c, ChildEvent.exited);
 }
 
+/// [pid]'s start time as `ps` prints it, or null when it can't be read.
+@visibleForTesting
+Future<String?> startTimeOf(int pid) async {
+  try {
+    final r = await Process.run('ps', ['-o', 'lstart=', '-p', '$pid']);
+    final t = (r.stdout as String).trim();
+    return r.exitCode == 0 && t.isNotEmpty ? t : null;
+  } on Object {
+    return null;
+  }
+}
+
 /// How a child's tree is ended; tests replace it.
 @visibleForTesting
 Future<void> Function(int pid) killChildTree = killTree;
@@ -81,7 +101,12 @@ bool watchdogEnabled = !Platform.isWindows;
 void _writeList() {
   if (!_watching) return;
   try {
-    _list.writeAsStringSync([for (final c in _children.values) '${c.pid} ${c.command}\n'].join());
+    _list.writeAsStringSync(
+      [
+        for (final c in _children.values)
+          if (c.started case final t?) '${c.pid} $t\n',
+      ].join(),
+    );
   } on Object {
     // A full or read-only temp folder: the quit path still stops them.
   }
@@ -95,16 +120,19 @@ void _deleteList() {
   }
 }
 
-/// Waits for this app process to end; then ends the children still listed whose command still matches.
-const _watchdogScript = r'''
+/// Waits for this app process to end; then ends the children still listed that started when they were listed as
+/// starting (the same pid with another start time is someone else's process).
+@visibleForTesting
+const watchdogScript = r'''
 app=$1; f=$2
 while kill -0 "$app" 2>/dev/null; do sleep 2; done
 [ -f "$f" ] || exit 0
 end() {
-  while read -r p c; do
+  while read -r p t; do
     [ -n "$p" ] || continue
-    now=$(ps -o comm= -p "$p" 2>/dev/null)
-    case "$now" in *"$c"*) pkill -"$1" -P "$p" 2>/dev/null; kill -"$1" "$p" 2>/dev/null;; esac
+    now=$(ps -o lstart= -p "$p" 2>/dev/null | sed 's/^ *//;s/ *$//')
+    [ -n "$now" ] && [ "$now" = "$t" ] || continue
+    pkill -"$1" -P "$p" 2>/dev/null; kill -"$1" "$p" 2>/dev/null
   done < "$f"
 }
 end TERM; sleep 2; end KILL
@@ -118,7 +146,7 @@ void _ensureWatchdog() {
   unawaited(
     Process.start(
       '/bin/sh',
-      ['-c', _watchdogScript, 'everyai-watchdog', '$pid', _list.path],
+      ['-c', watchdogScript, 'everyai-watchdog', '$pid', _list.path],
       mode: ProcessStartMode.detached,
     ).then<void>((_) {}, onError: (Object e) => debugPrint('The child-process watchdog did not start: $e')),
   );

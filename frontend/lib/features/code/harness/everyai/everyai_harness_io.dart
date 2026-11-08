@@ -802,8 +802,19 @@ final class EveryAISession
     File('${_dir.path}/messages.jsonl').writeAsStringSync('${jsonEncode(message)}\n', mode: FileMode.append);
   }
 
-  void _rewriteMessages() =>
-      File('${_dir.path}/messages.jsonl').writeAsStringSync(_messages.map((m) => '${jsonEncode(m)}\n').join());
+  void _rewriteMessages() {
+    // Pictures dropped from memory stay in the file.
+    final kept = _contentsOnDisk();
+    File('${_dir.path}/messages.jsonl').writeAsStringSync(
+      _messages.map((m) {
+        final whole = switch (m['_eid']) {
+          final String id when kept.containsKey(id) => {...m, 'content': kept[id]},
+          _ => m,
+        };
+        return '${jsonEncode(whole)}\n';
+      }).join(),
+    );
+  }
 
   void _rewriteEvents() =>
       File('${_dir.path}/events.jsonl').writeAsStringSync(_history.map((e) => '${jsonEncode(e.raw)}\n').join());
@@ -1086,6 +1097,12 @@ final class EveryAISession
     }
     _history.retainWhere((e) => e.id.isEmpty || keep.contains(e.id));
     _messages.retainWhere((m) => m['role'] == 'system' || keep.contains(m['_eid']));
+    // With fewer pictures left, the dropped ones may go out again: back from the file.
+    final whole = _contentsOnDisk();
+    for (final (i, m) in _messages.indexed) {
+      if (m['_eid'] case final String id when whole.containsKey(id)) _messages[i] = {...m, 'content': whole[id]};
+    }
+    _picturesOnDisk.removeWhere((id) => !keep.contains(id) || whole.containsKey(id));
     _trimDangling(_messages);
     _rewriteEvents();
     _rewriteMessages();
@@ -1151,9 +1168,37 @@ final class EveryAISession
   /// change made the provider re-read the whole conversation uncached (a
   /// felice-website run paid that 15 times, $13.81 on Opus).
   List<Map<String, Object?>> _outgoing() {
-    // The pictures that will never go out again leave memory too (a session of screenshots kept every one).
-    if (dropOlderImages(_messages, keptImages) > 0) _rewriteMessages();
+    // The pictures that will never go out again leave memory too (a session of screenshots kept every one). Only
+    // memory: messages.jsonl keeps them, so a rewind (or any rewrite of the file) takes them back from there.
+    final before = [for (final m in _messages) m['content']];
+    if (dropOlderImages(_messages, keptImages) > 0) {
+      for (final (i, m) in _messages.indexed) {
+        if (m['_eid'] case final String id when !identical(before[i], m['content'])) _picturesOnDisk.add(id);
+      }
+    }
     return withOlderImagesNoted(_messages, keptImages);
+  }
+
+  /// Messages (by `_eid`) whose pictures were dropped from memory but are still in messages.jsonl.
+  final _picturesOnDisk = <String>{};
+
+  /// The contents in messages.jsonl of the messages in [_picturesOnDisk] (with their pictures).
+  Map<String, Object?> _contentsOnDisk() {
+    final file = File('${_dir.path}/messages.jsonl');
+    if (_picturesOnDisk.isEmpty || !file.existsSync()) return const {};
+    final out = <String, Object?>{};
+    for (final line in file.readAsLinesSync()) {
+      if (line.isEmpty) continue;
+      try {
+        if (jsonDecode(line) case {'_eid': final String id, 'content': final content}
+            when _picturesOnDisk.contains(id)) {
+          out[id] = content;
+        }
+      } on FormatException {
+        // A torn last line: the rest still counts.
+      }
+    }
+    return out;
   }
 
   /// Tool pictures sent whole at least (see [_outgoing]).

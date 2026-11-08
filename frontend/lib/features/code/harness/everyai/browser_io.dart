@@ -191,10 +191,15 @@ final class ChromeHost {
         return done;
       case ChromeClosed():
         return Future.value();
-      case ChromeLaunching():
+      case ChromeLaunching(:final ready):
+        // The launch that lands is ended by its generation check; until then the old Chrome holds the profile, so
+        // a new start waits for it.
         _generation++;
-        _state = const ChromeClosed();
-        return Future.value();
+        final done = ready.then<void>((_) {}, onError: (Object _) {}).whenComplete(() {
+          if (_state is ChromeStopping) _state = const ChromeClosed();
+        });
+        _state = ChromeStopping(done);
+        return done;
       case ChromeUp(:final process):
         _generation++;
         final done = ChildProcesses.stop(process.pid).whenComplete(() {
