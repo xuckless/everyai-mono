@@ -11,6 +11,7 @@ import '../../live/frames.dart';
 import '../../live/live_session.dart';
 import 'browser_io.dart';
 import 'exfil.dart';
+import 'research_sites.dart' show secretPath;
 import 'tools_io.dart' show ToolOutput, imageDataUrl;
 import 'window_ax_io.dart';
 import 'window_capture_io.dart';
@@ -45,10 +46,14 @@ Future<ToolOutput> runBrowser(
   }
   final gaveBack = b.control.takeGiveBack();
   ViewRect? zoom;
+  // The page waits on a dialog: only answering it (or the tabs, or closing) gets anywhere.
+  if (b.dialog.value case final d? when !const {'dialog', 'tabs', 'tab', 'close'}.contains(action)) {
+    return ToolOutput(browserErrorText('', dialogWaitingText(d), b.takeLog()), isError: true);
+  }
   try {
     // A link, a script or a form may have taken the page to another site since the last action: judge it before
     // acting on it.
-    if (action != 'open' && action != 'close' && b.running) {
+    if (!const {'open', 'close', 'dialog', 'tabs', 'tab'}.contains(action) && b.running) {
       final here = await b.evaluate('location.href');
       if (here is String) {
         final now = browserLanded(_judged[b] ?? 'about:blank', here);
@@ -167,6 +172,39 @@ Future<ToolOutput> runBrowser(
         await b.close();
         _judged[b] = null;
         return const ToolOutput('Closed the browser.');
+      case 'tabs':
+        did = tabsText(b.tabs.value, b.activeTab);
+      case 'tab':
+        final i = (args['index'] as num?)?.toInt();
+        final all = b.tabs.value;
+        if (i == null || i < 1 || i > all.length) {
+          return ToolOutput(
+            'Error: tab needs an index from 1 to ${all.length}. ${tabsText(all, b.activeTab)}',
+            isError: true,
+          );
+        }
+        await b.switchTab(all[i - 1].id);
+        did = 'Switched to tab $i: ${await b.describe()}';
+        list = true;
+      case 'dialog':
+        final d = b.dialog.value;
+        if (d == null) return const ToolOutput('Error: the page shows no dialog.', isError: true);
+        final accept = args['accept'] != false;
+        await b.answerDialog(accept: accept, text: d.type == 'prompt' && accept ? args['text'] as String? : null);
+        did = '${accept ? 'Accepted' : 'Dismissed'} the ${d.type} "${d.message}".';
+      case 'upload':
+        final files = [
+          for (final f in (args['files'] as List<Object?>? ?? const []))
+            if (f is String) f,
+        ];
+        if (files.isEmpty) return const ToolOutput('Error: upload needs files (paths).', isError: true);
+        final here = await b.evaluate('location.href');
+        if (uploadRefusal(here is String ? here : '', files, root: root) case final why?) {
+          return ToolOutput(why, isError: true);
+        }
+        final paths = [for (final f in files) f.startsWith('/') ? f : '$root/$f'];
+        await b.setFiles(paths, selector: str('selector'), ref: str('ref'));
+        did = 'Gave the page ${paths.length} file${paths.length == 1 ? '' : 's'}: ${files.join(', ')}.';
       default:
         return ToolOutput('Error: unknown browser action "$action".', isError: true);
     }
@@ -179,6 +217,9 @@ Future<ToolOutput> runBrowser(
         change = pageElementsChange(before, await b.elements());
       }
       did = '$did\n${change ?? 'Nothing visible changed on the page.'}';
+    }
+    if (b.fileChooser.value != null && action != 'upload') {
+      did = '$did\nA file picker opened: give it files with browser {action: "upload", files: [paths]}.';
     }
     final listed = list ? '\n${await b.snapshot()}' : '';
     final page = browserResultText(list ? 'snapshot' : action, '$did$listed', b.takeLog());
@@ -220,6 +261,43 @@ Future<ToolOutput> runBrowser(
   } on BrowserError catch (e) {
     return ToolOutput(browserErrorText(e.fromPage ? action : '', e.message, b.takeLog()), isError: true);
   }
+}
+
+/// The session's tabs as the agent sees them, the active one marked.
+String tabsText(List<BrowserTab> tabs, String? active) => [
+  'Tabs (switch with tab {index}):',
+  for (final (i, t) in tabs.indexed)
+    '${i + 1}. ${t.title.isEmpty ? '(no title)' : t.title} — ${t.url}${t.id == active ? '  [active]' : ''}',
+].join('\n');
+
+/// Why the agent may not give the page at [pageUrl] the files [files]: only the app the session builds (a local
+/// page) takes uploads from the agent, and only files of the project ([root]); other sites are the user's to send
+/// files to. Null when it may.
+String? uploadRefusal(String pageUrl, List<String> files, {required String root}) {
+  final uri = Uri.tryParse(pageUrl);
+  final host = uri?.host ?? '';
+  final local =
+      uri?.scheme == 'file' ||
+      host == 'localhost' ||
+      host.endsWith('.localhost') ||
+      host == '::1' ||
+      host == '[::1]' ||
+      RegExp(r'^127\.').hasMatch(host);
+  if (!local) {
+    return 'Refused: the agent uploads files only to the app it is building (a local page). Sending files to '
+        '${host.isEmpty ? 'this page' : host} is for the user: ask them, or they can pick the files in the Preview.';
+  }
+  for (final f in files) {
+    final abs = File(f.startsWith('/') ? f : '$root/$f').absolute.path;
+    final real = FileSystemEntity.typeSync(abs) == FileSystemEntityType.notFound
+        ? abs
+        : File(abs).resolveSymbolicLinksSync();
+    final r = Directory(root).existsSync() ? Directory(root).resolveSymbolicLinksSync() : root;
+    if (!real.startsWith('$r/')) return 'Refused: $f is outside the project; upload only files from the project.';
+    if (!File(real).existsSync()) return 'Error: $f does not exist.';
+    if (secretPath(real)) return 'Refused: $f holds secrets or credentials; the agent never uploads those.';
+  }
+  return null;
 }
 
 /// Where the model's [x],[y] in frame [frame] (null: its latest) lands on [b]'s page. Before any screenshot the

@@ -158,6 +158,28 @@ typedef ScreencastFrame = ({List<int> jpeg, int width, int height, double scroll
 /// What the Preview shows about the page: its address and title, and whether it can go back or forward.
 typedef PageState = ({String url, String title, bool canBack, bool canForward, bool loading});
 
+/// A tab of a session's browser: the session's own page, or one a page of it opened (a pop-up, a link to a new tab).
+typedef BrowserTab = ({String id, String url, String title});
+
+/// A dialog the page opened and waits on (`alert`, `confirm`, `prompt`, `beforeunload`).
+typedef PageDialog = ({String type, String message, String defaultPrompt});
+
+/// A file picker the page opened (a click on a file input): what to set the files on.
+typedef FileChooser = ({int backendNodeId, bool multiple});
+
+/// A download of the session's browser, newest last.
+typedef BrowserDownload = ({String guid, String name, String? path, String state, double progress});
+
+/// What is under the pointer for the Preview's right-click menu.
+typedef PageContext = ({
+  bool prevented,
+  String? link,
+  String? image,
+  bool editable,
+  String selection,
+  String description,
+});
+
 /// A headless Chrome the session owns, driven over the DevTools protocol:
 /// its own profile under the session's scratch folder (never the user's
 /// browser or cookies), started on first use and stopped with the session.
@@ -191,6 +213,24 @@ final class HeadlessBrowser {
 
   /// The page's address, title and history, for the Preview's bar.
   final page = ValueNotifier<PageState>((url: '', title: '', canBack: false, canForward: false, loading: false));
+
+  /// The session's tabs, in the order they opened; the active one is [activeTab].
+  final tabs = ValueNotifier<List<BrowserTab>>(const []);
+
+  /// The dialog the active page waits on, or null.
+  final dialog = ValueNotifier<PageDialog?>(null);
+
+  /// The file picker the active page opened, or null.
+  final fileChooser = ValueNotifier<FileChooser?>(null);
+
+  /// This session's downloads (the last 20).
+  final downloads = ValueNotifier<List<BrowserDownload>>(const []);
+
+  /// The tab the agent and the Preview act on.
+  String? get activeTab => _targetId;
+
+  /// The browser's DevTools address (to connect to another tab).
+  Uri? _endpointUri;
 
   String? _targetId;
   // ignore: close_sinks
@@ -293,6 +333,7 @@ final class HeadlessBrowser {
     if (_socket != null) return;
     if (attachTo != null) return _attach(attachTo!);
     final endpoint = await host.endpoint(width: width, height: height);
+    _endpointUri = endpoint;
     // A page of our own, with its own socket: commands go to it without per-target sessions.
     final browser = await WebSocket.connect(endpoint.toString());
     _browserSocket = browser;
@@ -316,16 +357,16 @@ final class HeadlessBrowser {
       rethrow;
     }
     host._opened();
-    _socket!.listen(_onFrame, onDone: _closed, onError: (Object _) => _closed());
+    final page = _socket!;
+    page.listen(_onFrame, onDone: () => _pageGone(page), onError: (Object _) => _pageGone(page));
+    _tabList
+      ..clear()
+      ..add((id: _targetId!, url: 'about:blank', title: ''));
+    _publishTabs();
     final dir = downloadDir;
     if (dir != null) Directory(dir).createSync(recursive: true);
     await Future.wait([
-      _send('Page.enable'),
-      _send('Runtime.enable'),
-      _send('Log.enable'),
-      _send('Network.enable'),
-      // Frames of other origins as their own targets, so the guards can look inside.
-      _send('Target.setAutoAttach', {'autoAttach': true, 'waitForDebuggerOnStart': false, 'flatten': true}),
+      _enablePage(),
       _sendOn(_browserSocket, 'Target.setDiscoverTargets', {'discover': true}),
       _sendOn(_browserSocket, 'Browser.setDownloadBehavior', {
         'behavior': dir == null ? 'deny' : 'allow',
@@ -335,6 +376,182 @@ final class HeadlessBrowser {
     ]);
     await _viewport();
     if (_casting) await _castStart();
+  }
+
+  /// What every page of ours is driven with: events, frames of other origins as their own targets (so the guards
+  /// can look inside), file pickers handed to us instead of opening, and the right-click tracker.
+  Future<void> _enablePage() async {
+    await Future.wait([
+      _send('Page.enable'),
+      _send('Runtime.enable'),
+      _send('Log.enable'),
+      _send('Network.enable'),
+      _send('Target.setAutoAttach', {'autoAttach': true, 'waitForDebuggerOnStart': false, 'flatten': true}),
+      _send('Page.setInterceptFileChooserDialog', {'enabled': true}),
+      _send('Page.addScriptToEvaluateOnNewDocument', {'source': _contextTrackerJs}),
+      _send('Runtime.evaluate', {'expression': _contextTrackerJs}),
+    ]);
+  }
+
+  /// Which socket each call in flight went out on.
+  final _callSockets = <int, WebSocket>{};
+
+  /// [socket]'s page went (it closed itself, say from a click on its own Close button): what was sent there is
+  /// done, with no answer coming.
+  void _settleCallsOn(WebSocket socket) {
+    for (final e in [..._callSockets.entries]) {
+      if (!identical(e.value, socket)) continue;
+      _callSockets.remove(e.key);
+      final c = _calls.remove(e.key);
+      if (c != null && !c.isCompleted) c.complete(const {});
+    }
+  }
+
+  /// The tabs, with their latest address and title.
+  final _tabList = <BrowserTab>[];
+
+  void _publishTabs() => tabs.value = List.unmodifiable(_tabList);
+
+  /// The active page's socket closed: its tab went (a pop-up closed itself) or the browser did. Another tab of the
+  /// session takes over; with none left the browser counts as closed.
+  void _pageGone(WebSocket socket) {
+    _settleCallsOn(socket);
+    if (!identical(_socket, socket)) return;
+    final gone = _targetId;
+    _tabList.removeWhere((t) => t.id == gone);
+    _publishTabs();
+    if (_tabList.isNotEmpty && _browserSocket != null) {
+      _socket = null;
+      unawaited(switchTab(_tabList.last.id).catchError((Object _) => _closed()));
+      return;
+    }
+    _closed();
+  }
+
+  /// Makes tab [id] the one the agent and the Preview act on.
+  Future<void> switchTab(String id) async {
+    final e = _endpointUri;
+    if (e == null || !_tabList.any((t) => t.id == id)) return;
+    if (id == _targetId && _socket != null) return;
+    final old = _socket;
+    _socket = null;
+    _targetId = id;
+    dialog.value = null;
+    fileChooser.value = null;
+    unawaited(old?.close());
+    final socket = await WebSocket.connect('ws://${e.host}:${e.port}/devtools/page/$id');
+    _socket = socket;
+    socket.listen(_onFrame, onDone: () => _pageGone(socket), onError: (Object _) => _pageGone(socket));
+    _frameSessions.clear();
+    await _enablePage();
+    await _viewport();
+    await _sendOn(_browserSocket, 'Target.activateTarget', {'targetId': id});
+    frames.moved();
+    await _refreshPage();
+    _publishTabs();
+    if (_casting) await _castStart();
+  }
+
+  /// Opens [url] in a new tab of the session and makes it active (the Preview's "Open link in new tab").
+  Future<void> openTab(String url) async {
+    await _start();
+    final created = await _sendOn(_browserSocket, 'Target.createTarget', {'url': url, 'newWindow': true});
+    final id = created['targetId'] as String?;
+    if (id == null) return;
+    if (!_tabList.any((t) => t.id == id)) _tabList.add((id: id, url: url, title: ''));
+    await switchTab(id);
+  }
+
+  /// Closes tab [id]; the session's last tab stays.
+  Future<void> closeTab(String id) async {
+    if (_tabList.length < 2 || _browserSocket == null) return;
+    await _sendOn(_browserSocket, 'Target.closeTarget', {'targetId': id});
+  }
+
+  /// Answers the page's dialog: OK ([accept]) or Cancel, with [text] for a prompt.
+  Future<void> answerDialog({required bool accept, String? text}) async {
+    if (dialog.value == null) return;
+    dialog.value = null;
+    await _send('Page.handleJavaScriptDialog', {'accept': accept, 'promptText': ?text});
+  }
+
+  /// Gives the page's file picker (or the file input at [selector] or [ref]) the files at [paths].
+  Future<void> setFiles(List<String> paths, {String? selector, String? ref}) async {
+    await _start();
+    final chooser = fileChooser.value;
+    if (selector == null && ref == null) {
+      if (chooser == null) throw const BrowserError('No file picker is open: name the file input by ref or selector.');
+      fileChooser.value = null;
+      await _send('DOM.setFileInputFiles', {'files': paths, 'backendNodeId': chooser.backendNodeId});
+      return;
+    }
+    final find = ref != null
+        ? 'window.__everyaiRefs && window.__everyaiRefs.get(${jsonEncode(ref)})'
+        : 'document.querySelector(${jsonEncode(selector)})';
+    final r = await _send('Runtime.evaluate', {'expression': find});
+    final id = (r['result'] as Map<String, Object?>?)?['objectId'];
+    if (id is! String) throw BrowserError('No element ${ref ?? selector} on the page now.');
+    final isFile = await _send('Runtime.callFunctionOn', {
+      'objectId': id,
+      'functionDeclaration': 'function() { return this.tagName === "INPUT" && this.type === "file"; }',
+      'returnByValue': true,
+    });
+    if ((isFile['result'] as Map<String, Object?>?)?['value'] != true) {
+      throw BrowserError('${ref ?? selector} is not a file input.');
+    }
+    fileChooser.value = null;
+    await _send('DOM.setFileInputFiles', {'files': paths, 'objectId': id});
+  }
+
+  /// Leaves the page's file picker without files.
+  void cancelFileChooser() => fileChooser.value = null;
+
+  /// What is at [x],[y] (CSS pixels), for the Preview's right-click menu; null when it can't be read.
+  Future<PageContext?> contextAt(double x, double y) async {
+    try {
+      final v = await evaluate('($_contextAtJs)($x, $y)');
+      if (v is! Map) return null;
+      return (
+        prevented: v['prevented'] == true,
+        link: v['link'] as String?,
+        image: v['image'] as String?,
+        editable: v['editable'] == true,
+        selection: '${v['selection'] ?? ''}',
+        description: '${v['description'] ?? ''}',
+      );
+    } on BrowserError {
+      return null;
+    }
+  }
+
+  /// Finds [text] in the page from the selection on (wrapping), selecting and scrolling to it; how many times the
+  /// page's text has it (0: none, nothing selected).
+  Future<int> findText(String text, {bool backwards = false}) async {
+    if (text.isEmpty) {
+      await evaluate('getSelection().removeAllRanges()');
+      return 0;
+    }
+    final v = await evaluate('''
+(() => {
+  const q = ${jsonEncode(text)};
+  const body = (document.body && document.body.innerText || '').toLowerCase();
+  let n = 0, i = 0;
+  while ((i = body.indexOf(q.toLowerCase(), i)) >= 0) { n++; i += q.length; }
+  if (n) window.find(q, false, $backwards, true, false, false, false);
+  return n;
+})()''');
+    return v is num ? v.toInt() : 0;
+  }
+
+  /// Runs Chrome's editing [command] (`selectAll`, `cut`, `undo`…) in the focused field, for the Preview's menu.
+  Future<void> userCommand(String command) async {
+    await _start();
+    await _send('Input.dispatchKeyEvent', {
+      'type': 'rawKeyDown',
+      'key': '',
+      'code': '',
+      'commands': [command],
+    });
   }
 
   /// Attaches to the first window of the app at [endpoint] (see [HeadlessBrowser.attached]).
@@ -425,6 +642,46 @@ final class HeadlessBrowser {
       case 'Target.targetInfoChanged':
         final t = params['targetInfo'] as Map<String, Object?>? ?? const {};
         if (t['targetId'] == _targetId) unawaited(_refreshPage(url: t['url'] as String?, title: t['title'] as String?));
+        final i = _tabList.indexWhere((x) => x.id == t['targetId']);
+        if (i >= 0) {
+          _tabList[i] = (id: _tabList[i].id, url: '${t['url'] ?? ''}', title: '${t['title'] ?? ''}');
+          _publishTabs();
+        }
+      case 'Target.targetCreated' when msg['sessionId'] == null:
+        // A pop-up or a new tab one of the session's pages opened: it joins the session and becomes the active tab,
+        // as in a browser. Other sessions' pages in the same Chrome are not ours.
+        final t = params['targetInfo'] as Map<String, Object?>? ?? const {};
+        final id = '${t['targetId']}';
+        if (t['type'] == 'page' && _tabList.any((x) => x.id == t['openerId']) && !_tabList.any((x) => x.id == id)) {
+          _tabList.add((id: id, url: '${t['url'] ?? ''}', title: '${t['title'] ?? ''}'));
+          _publishTabs();
+          _log.add('A new tab opened: ${t['url'] ?? ''} (now the active tab; tabs lists them).');
+          unawaited(switchTab(id).catchError((Object _) {}));
+        }
+      case 'Target.targetDestroyed' when msg['sessionId'] == null:
+        final id = params['targetId'];
+        if (id != _targetId && _tabList.any((x) => x.id == id)) {
+          _tabList.removeWhere((x) => x.id == id);
+          _publishTabs();
+        }
+      case 'Page.javascriptDialogOpening' when msg['sessionId'] == null:
+        final d = (
+          type: '${params['type'] ?? 'alert'}',
+          message: '${params['message'] ?? ''}',
+          defaultPrompt: '${params['defaultPrompt'] ?? ''}',
+        );
+        dialog.value = d;
+        _log.add('The page opened a${d.type == 'alert' ? 'n' : ''} ${d.type} dialog: "${d.message}".');
+        // The page waits on it, and so would every call in flight: they end now and say why.
+        for (final c in [..._calls.values]) {
+          if (!c.isCompleted) c.completeError(BrowserError(dialogWaitingText(d)));
+        }
+        _calls.clear();
+      case 'Page.javascriptDialogClosed' when msg['sessionId'] == null:
+        dialog.value = null;
+      case 'Page.fileChooserOpened' when msg['sessionId'] == null:
+        final node = (params['backendNodeId'] as num?)?.toInt();
+        if (node != null) fileChooser.value = (backendNodeId: node, multiple: params['mode'] == 'selectMultiple');
       case 'Target.attachedToTarget':
         final t = params['targetInfo'] as Map<String, Object?>? ?? const {};
         if (t['type'] == 'iframe') _frameSessions['${t['targetId']}'] = '${params['sessionId']}';
@@ -464,8 +721,16 @@ final class HeadlessBrowser {
         if (status >= 400) line = 'HTTP $status: ${r['url']}';
       case 'Browser.downloadWillBegin':
         _downloads['${p['guid']}'] = (name: '${p['suggestedFilename'] ?? 'download'}', done: Completer<void>());
+        _download('${p['guid']}', name: '${p['suggestedFilename'] ?? 'download'}', state: 'inProgress');
       case 'Browser.downloadProgress':
         final state = p['state'];
+        final total = (p['totalBytes'] as num?)?.toDouble() ?? 0;
+        _download(
+          '${p['guid']}',
+          state: '$state',
+          path: p['filePath'] as String?,
+          progress: total > 0 ? ((p['receivedBytes'] as num?)?.toDouble() ?? 0) / total : 0,
+        );
         if (state != 'completed' && state != 'canceled') break;
         final d = _downloads.remove('${p['guid']}');
         d?.done.complete();
@@ -479,12 +744,35 @@ final class HeadlessBrowser {
     if (_log.length > 200) _log.removeRange(0, _log.length - 200);
   }
 
+  void _download(String guid, {String? name, required String state, String? path, double progress = 0}) {
+    final list = [...downloads.value];
+    final i = list.indexWhere((d) => d.guid == guid);
+    final was = i < 0 ? null : list[i];
+    final d = (
+      guid: guid,
+      name: name ?? was?.name ?? 'download',
+      path: path ?? was?.path,
+      state: state,
+      progress: state == 'completed' ? 1.0 : progress,
+    );
+    if (i < 0) {
+      list.add(d);
+    } else {
+      list[i] = d;
+    }
+    downloads.value = list.length > 20 ? list.sublist(list.length - 20) : list;
+  }
+
   void _closed() {
     if ((_socket != null || _browserSocket != null) && attachTo == null) host._closedPage();
     _socket = null;
     _targetId = null;
     unawaited(_browserSocket?.close());
     _browserSocket = null;
+    _tabList.clear();
+    _publishTabs();
+    dialog.value = null;
+    fileChooser.value = null;
     for (final d in _downloads.values) {
       d.done.complete();
     }
@@ -511,11 +799,14 @@ final class HeadlessBrowser {
     final id = ++_nextId;
     final c = Completer<Map<String, Object?>>();
     _calls[id] = c;
+    _callSockets[id] = socket;
+    unawaited(c.future.then((_) {}, onError: (Object _) {}).whenComplete(() => _callSockets.remove(id)));
     socket.add(jsonEncode({'id': id, 'method': method, 'params': params, 'sessionId': ?session}));
     return c.future.timeout(
       const Duration(seconds: 30),
       onTimeout: () {
         _calls.remove(id);
+        _callSockets.remove(id);
         throw BrowserError('$method took longer than 30 s.');
       },
     );
@@ -933,14 +1224,20 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
 
   /// Closes this session's page (Chrome itself stops once no session has one).
   Future<void> close() async {
-    final target = _targetId;
-    if (target != null && _browserSocket != null && attachTo == null) {
-      try {
-        await _sendOn(_browserSocket, 'Target.closeTarget', {'targetId': target}).timeout(const Duration(seconds: 3));
-      } on Object {
-        // Gone already.
+    final targets = {for (final t in _tabList) t.id, ?_targetId};
+    if (_browserSocket != null && attachTo == null) {
+      for (final target in targets) {
+        try {
+          await _sendOn(_browserSocket, 'Target.closeTarget', {'targetId': target}).timeout(const Duration(seconds: 3));
+        } on Object {
+          // Gone already.
+        }
       }
     }
+    _tabList.clear();
+    _publishTabs();
+    dialog.value = null;
+    fileChooser.value = null;
     final had = _socket != null || _browserSocket != null;
     final socket = _socket;
     _socket = null;
@@ -1041,6 +1338,8 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     double deltaX = 0,
     double deltaY = 0,
   }) async {
+    // A dialog holds the page: the user answers it first.
+    if (dialog.value != null) return;
     await _start();
     await _send('Input.dispatchMouseEvent', {
       'type': type,
@@ -1065,6 +1364,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     int modifiers = 0,
     List<String> commands = const [],
   }) async {
+    if (dialog.value != null) return;
     await _start();
     await _send('Input.dispatchKeyEvent', {
       'type': type,
@@ -1081,6 +1381,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
 
   /// Text the user pasted or composed (an IME), inserted at the caret.
   Future<void> userText(String text) async {
+    if (dialog.value != null) return;
     await _start();
     await _send('Input.insertText', {'text': text});
   }
@@ -1120,6 +1421,62 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     if (_casting) await _castStart();
   }
 }
+
+/// What the agent is told while the page waits on [d].
+String dialogWaitingText(PageDialog d) {
+  final what = switch (d.type) {
+    'beforeunload' => 'asks whether to leave the page',
+    'confirm' => 'asks to confirm',
+    'prompt' => 'asks for text',
+    _ => 'shows an alert',
+  };
+  return 'The page $what: "${d.message}". It waits until the dialog is answered: browser {action: "dialog", '
+      'accept: true or false${d.type == 'prompt' ? ', text' : ''}}, or the user answers it in the Preview.';
+}
+
+/// Records, on every page, whether the page took the last right-click for its own menu (preventDefault): then the
+/// Preview shows none of its own.
+const _contextTrackerJs = '''
+(() => {
+  if (window.__everyaiCtxTracker) return;
+  window.__everyaiCtxTracker = true;
+  addEventListener('contextmenu', (e) => { window.__everyaiCtxPrevented = e.defaultPrevented; });
+})()''';
+
+/// What is at a point, for the right-click menu: a link, a picture, an editable field, the selection, and a short
+/// description of the element (for "Ask the agent about this").
+const _contextAtJs = r'''
+(x, y) => {
+  let el = document.elementFromPoint(x, y);
+  while (el && el.shadowRoot) {
+    const under = el.shadowRoot.elementFromPoint(x, y);
+    if (!under || under === el) break;
+    el = under;
+  }
+  if (!el) return null;
+  const a = el.closest && el.closest('a[href]');
+  const img = el.closest && el.closest('img');
+  const field = el.closest && el.closest('input, textarea, [contenteditable=""], [contenteditable="true"]');
+  const editable = !!field && !(field.readOnly || field.disabled);
+  const path = [];
+  for (let e = el; e && e.nodeType === 1 && path.length < 4; e = e.parentElement) {
+    let part = e.tagName.toLowerCase();
+    if (e.id) { path.unshift(part + '#' + e.id); break; }
+    const cls = [...e.classList].slice(0, 2).join('.');
+    if (cls) part += '.' + cls;
+    path.unshift(part);
+  }
+  const text = (el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('alt') || '')
+    .trim().replace(/\s+/g, ' ').slice(0, 80);
+  return {
+    prevented: window.__everyaiCtxPrevented === true,
+    link: a ? a.href : null,
+    image: img ? (img.currentSrc || img.src) : null,
+    editable,
+    selection: String(getSelection()),
+    description: '<' + el.tagName.toLowerCase() + '>' + (text ? ' "' + text + '"' : '') + ' (' + path.join(' > ') + ')',
+  };
+}''';
 
 /// Page helpers for the guards: `sensitive(el)` says what a password, one-time
 /// code or payment field is ("a password field") or null; `sensitiveForm(f)`
