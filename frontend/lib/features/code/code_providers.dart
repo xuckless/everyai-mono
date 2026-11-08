@@ -2687,7 +2687,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         // floor and risky ones still ask) and still asks before edits (owner, 2026-11-07).
         if ((info?.ownApprovals ?? false) &&
             (info?.isWorkflowAgent ?? false) &&
-            const {AgentMode.fullAuto, AgentMode.bypass}.contains(_parentController?.checkMode))
+            const {AgentMode.fullAuto, AgentMode.auto, AgentMode.bypass}.contains(_parentController?.checkMode))
           '*',
       },
       workingDir: info == null || isDemoPath(info.workingDir) ? null : info.workingDir,
@@ -2796,6 +2796,16 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     // runs, and that one must not be asked about again.
     final ended = !transcript.running && transcript.pending.isEmpty && transcript.held.isEmpty;
     final settled = event is ToolResult ? event.actionId : null;
+    // The lead's own reviewer passed calls back: the app's answer (the mode let them through) no longer settles
+    // them, and the user decides.
+    if (event case StateChange(key: escalatedCallsKey, :final raw)) {
+      for (final id in (raw['value'] as List<Object?>? ?? const []).whereType<String>()) {
+        _decided.remove(id);
+        _escalated.add(id);
+      }
+    }
+    if (settled != null) _escalated.remove(settled);
+    if (ended) _escalated.clear();
     if (_decided.isNotEmpty && (ended || _decided.containsKey(settled))) {
       if (ended) {
         _decided.clear();
@@ -3125,17 +3135,23 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// [verdict], except that an outside driver's own tools (kinds the rules
   /// can't judge) are never approved without the user, even in Full auto.
   /// Full auto approves them too (it never asks), and so does a rule the user saved for that tool (`Tool(…)`).
-  ({bool accept, String? reason})? _gated(List<ActionCall> calls, ({bool accept, String? reason})? verdict) {
+  ({bool accept, String? reason})? _gated(
+    List<ActionCall> calls,
+    ({bool accept, String? reason})? verdict, {
+    AgentMode? mode,
+  }) {
     if (verdict == null || !verdict.accept || _driver.info.id == everyaiHarnessName) return verdict;
-    if (checkMode == AgentMode.fullAuto) return verdict;
+    final m = mode ?? checkMode;
+    if (m.runsFreely) return verdict;
     final p = policy;
-    return calls.every((c) => autoDecidable(c) || p.decide(c, checkMode).source == DecisionSource.allowRule)
-        ? verdict
-        : null;
+    return calls.every((c) => autoDecidable(c) || p.decide(c, m).source == DecisionSource.allowRule) ? verdict : null;
   }
 
   /// Answers given to the calls waiting now (see [CodeSessionState.decided]).
   final _decided = <String, bool>{};
+
+  /// Calls the lead's own reviewer passed back to the user (Auto on Claude Code): they ask as in Ask mode.
+  final _escalated = <String>{};
 
   /// Floor reasons an outside harness was already advised about: when the
   /// model hits one again, the user decides (see [outsideVerdict]).
@@ -3169,14 +3185,16 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       if (_decided.containsKey(call.id)) continue;
       // A fork's question waits for the agent that started it (answerFromOrchestrator).
       if (_isSubagent && isHeldTool(call)) continue;
+      final mode = _escalated.contains(call.id) ? AgentMode.ask : checkMode;
       final verdict = switch (_mustWait([call], t)) {
         final reason? => (accept: false, reason: reason),
         null when checksBypassed && _driver.info.id != everyaiHarnessName => _bypassVerdict([call]),
         null => _gated(
           [call],
           _driver.info.id == everyaiHarnessName
-              ? policy.decideAll([call], checkMode)
-              : outsideVerdict(policy, call, checkMode, advised: _floorAdvised),
+              ? policy.decideAll([call], mode)
+              : outsideVerdict(policy, call, mode, advised: _floorAdvised),
+          mode: mode,
         ),
       };
       if (verdict == null) continue;

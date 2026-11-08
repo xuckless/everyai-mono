@@ -156,7 +156,7 @@ final class PermissionPolicy {
       if (_matching(call, [...rules.allow, ...session], allowing: true) case final rule?) {
         return Decision(Verdict.allow, DecisionSource.allowRule, rule: rule);
       }
-      return Decision(mode == AgentMode.fullAuto ? Verdict.allow : Verdict.ask, DecisionSource.mode);
+      return Decision(mode.runsFreely ? Verdict.allow : Verdict.ask, DecisionSource.mode);
     }
     // A bug_check without a command records a step, or re-runs the repro already approved.
     if (call.toolName == 'bug_check' && command == null) return const Decision(Verdict.allow, DecisionSource.readOnly);
@@ -180,7 +180,7 @@ final class PermissionPolicy {
         : [for (final e in edits) ?editDangerReason(e, workingDir: workingDir)].firstOrNull;
     // Full auto never asks. Elsewhere a risky action asks once: Allow saves it as a rule without wildcards (the exact
     // command, the file, the folder outside the project), which settles it from then on.
-    if (danger != null && mode != AgentMode.fullAuto) {
+    if (danger != null && !mode.runsFreely) {
       if (_matching(call, [...rules.allow, ...session].where(_pinned).toList(), allowing: true) case final rule?) {
         return Decision(Verdict.allow, DecisionSource.allowRule, rule: rule);
       }
@@ -192,7 +192,7 @@ final class PermissionPolicy {
       }
     }
     final allowed = switch (mode) {
-      AgentMode.fullAuto || AgentMode.bypass => true,
+      AgentMode.fullAuto || AgentMode.auto || AgentMode.bypass => true,
       AgentMode.autoEdit => edits.isNotEmpty,
       AgentMode.ask || AgentMode.plan => false,
     };
@@ -239,7 +239,7 @@ final class PermissionPolicy {
     }
     if (askMcp &&
         mode != AgentMode.bypass &&
-        mode != AgentMode.fullAuto &&
+        !mode.runsFreely &&
         decisions.any((e) => isMcpTool(e.$1) && e.$2.source == DecisionSource.mode)) {
       return null;
     }

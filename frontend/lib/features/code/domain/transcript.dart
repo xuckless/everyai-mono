@@ -425,6 +425,9 @@ final class TranscriptBuilder {
   final _byToolCall = <String, String>{};
   final _open = <String, ActionCall>{};
 
+  /// Calls the driver let run before their result (`approvedCallsKey`), kept in case its reviewer passes one back.
+  final _letRun = <String, ActionCall>{};
+
   /// A patch's call id → its per-file step ids.
   final _patchParts = <String, List<String>>{};
   final _streaming = StringBuffer();
@@ -492,7 +495,12 @@ final class TranscriptBuilder {
         }
       case StateChange(key: approvedCallsKey, :final raw):
         for (final id in raw['value'] as List<Object?>? ?? const []) {
-          _open.remove(id);
+          if (_open.remove(id) case final call?) _letRun[call.id] = call;
+        }
+      // Waiting again: the lead's reviewer passed the call to the user.
+      case StateChange(key: escalatedCallsKey, :final raw):
+        for (final id in raw['value'] as List<Object?>? ?? const []) {
+          if (_letRun.remove(id) case final call?) _open[call.id] = call;
         }
       case StateChange(:final executionStatus) when executionStatus != ExecutionStatus.unknown:
         _status = executionStatus;
@@ -759,6 +767,7 @@ final class TranscriptBuilder {
   void _result(ToolResult r) {
     final actionId = r.actionId.isNotEmpty ? r.actionId : (_byToolCall[r.toolCallId] ?? '');
     _open.remove(actionId);
+    _letRun.remove(actionId);
     if (_patchParts.remove(actionId) case final parts?) {
       // Each file's step gets its own part of the result (its diff).
       final files = [...(r.observation['files'] as List<Object?>? ?? const []).whereType<Map<String, Object?>>()];

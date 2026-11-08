@@ -482,8 +482,9 @@ final class _Meta {
     autoMode: autoMode ?? this.autoMode,
   );
 
-  /// The permission mode the CLI runs in.
-  String get permissionMode => native ?? permissionModeFor(mode);
+  /// The permission mode the CLI runs in. Auto on a model without Claude's reviewer runs in `default`, where the
+  /// app's policy (as in Full auto) answers.
+  String get permissionMode => native ?? (mode == AgentMode.auto && !autoMode ? 'default' : permissionModeFor(mode));
 
   Map<String, Object?> toJson() => {
     'cwd': cwd,
@@ -1014,6 +1015,15 @@ final class ClaudeSession
     final input = body[hook ? 'tool_input' : 'input'] as Map<String, Object?>? ?? const {};
     final held = (requestId: requestId, hook: hook, name: name, input: input);
     if (!_decoder.knows(callId)) _emit(_decoder.action(callId, name, input));
+    // Claude's own reviewer (auto mode) passed back a call our hook let through to it: the user decides this one.
+    if (!hook && _meta.permissionMode == 'auto' && _answered.contains(callId)) {
+      _let.remove(callId);
+      _emit(escalatedEvent(const Uuid().v4(), [callId]));
+      _held[callId] = held;
+      _waiting = true;
+      _emit(stateEvent(const Uuid().v4(), ExecutionStatus.waitingForConfirmation));
+      return;
+    }
     if (_selfAnswered(name)) return _answer(callId, held, accept: true);
     if (_early.remove(callId) case final a?) return _answer(callId, held, accept: a.accept, reason: a.reason);
     _held[callId] = held;
@@ -1025,7 +1035,11 @@ final class ClaudeSession
     _answered.add(callId);
     if (accept) _letRun(callId);
     if (!accept) _decoder.refused[callId] = reason == null || reason.isEmpty ? refusedByUser : reason;
-    final answer = approvalAnswer(hook: h.hook, accept: accept, reason: reason, input: h.input);
+    // In auto mode a call the app lets through goes on to Claude's own reviewer (no decision from the hook); a
+    // refusal (the floor, a deny rule) still stops it here.
+    final answer = accept && h.hook && _meta.permissionMode == 'auto'
+        ? const <String, Object?>{}
+        : approvalAnswer(hook: h.hook, accept: accept, reason: reason, input: h.input);
     _channel?.send(jsonEncode(controlResponse(h.requestId, answer)));
     // An approved plan: whether Claude leaves plan by itself under `-p` is unverified, so it is moved back.
     if (accept && h.name == 'ExitPlanMode' && _meta.permissionMode == 'plan') {

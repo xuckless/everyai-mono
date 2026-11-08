@@ -223,6 +223,7 @@ void main() {
           AgentMode.ask: 'default',
           AgentMode.autoEdit: 'acceptEdits',
           AgentMode.plan: 'plan',
+          AgentMode.auto: 'auto',
           AgentMode.fullAuto: 'default',
           AgentMode.bypass: 'default',
         },
@@ -900,6 +901,55 @@ void main() {
       await session.close();
     });
 
+    test("Auto: the hook leaves an allowed call to Claude's reviewer; one it passes back asks the user", () async {
+      const input = {'command': 'rm -rf build'};
+      final channel = ReplayChannel(
+        _script([
+          _out(controlRequest('req_1', {'subtype': 'initialize', 'hooks': gateHooks})),
+          _in(
+            controlResponse('req_1', const {
+              'models': [
+                {'value': 'haiku', 'supportsAutoMode': true},
+              ],
+              'current_permission_mode': 'auto',
+            }),
+          ),
+          _say('Clean up.'),
+          _use('toolu_r', 'Bash', input),
+          _hook('h1', 'toolu_r', 'Bash', input),
+          // No decision: Claude's own reviewer judges it.
+          _out(controlResponse('h1', const {})),
+          _in({
+            'type': 'control_request',
+            'request_id': 'p1',
+            'request': {'subtype': 'can_use_tool', 'tool_name': 'Bash', 'input': input, 'tool_use_id': 'toolu_r'},
+          }),
+          _out(controlResponse('p1', approvalAnswer(hook: false, accept: true, input: input))),
+          _results(['toolu_r']),
+          _done('r1'),
+        ]),
+      );
+      final session = await driver(_Spawner([channel])).start(_spec(message: 'Clean up.', mode: AgentMode.auto));
+      final t = TranscriptBuilder();
+      final asked = <List<String>>[];
+      final events = _record(session, (e) {
+        t.add(e);
+        if (_isState(e, ExecutionStatus.waitingForConfirmation)) {
+          asked.add([for (final c in t.snapshot.pending) c.id]);
+          unawaited(session.respond(accept: true, callIds: ['toolu_r']));
+        }
+      });
+      await _played(channel);
+      // Asked twice: by the hook (the app's policy), then by Claude's reviewer, which reopened the call.
+      expect(asked, [
+        ['toolu_r'],
+        ['toolu_r'],
+      ]);
+      expect(events.whereType<StateChange>().where((e) => e.key == escalatedCallsKey), hasLength(1));
+      expect(t.snapshot.pending, isEmpty);
+      await session.close();
+    });
+
     test("a running subagent isn't asked about again while its own call waits", () async {
       final channel = ReplayChannel(
         _script([
@@ -1282,13 +1332,13 @@ void main() {
         final after = await native.nativeModes.first;
         expect([for (final m in after.modes) m.id], ['default', 'acceptEdits', 'plan', 'auto']);
         expect(after.current, 'default');
-        expect(nativeModeOf(after.modes, 'auto')!.policy, AgentMode.fullAuto);
+        expect(nativeModeOf(after.modes, 'auto')!.policy, AgentMode.auto);
         expect(
           [
             for (final m in after.modes)
               if (m.blocked == null) m.policy,
           ],
-          [AgentMode.ask, AgentMode.autoEdit, AgentMode.plan, AgentMode.fullAuto],
+          [AgentMode.ask, AgentMode.autoEdit, AgentMode.plan, AgentMode.auto],
         );
         await session.close();
         // The reopened session lists auto before its CLI starts again.

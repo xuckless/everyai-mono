@@ -482,20 +482,24 @@ typedef NativeModeSet = ({List<NativeMode> modes, String? current});
 NativeMode? nativeModeOf(List<NativeMode> modes, String? id) => modes.where((m) => m.id == id).firstOrNull;
 
 /// The offered entry of [modes] for the app's [mode]: one with that policy,
-/// else the most permissive one below it (Plan < Ask < Auto-edit < Full auto;
-/// Start building on a lead without an edit mode lands in its asking mode).
+/// else the most permissive one below it (Plan < Ask < Auto-edit < Auto < Full auto;
+/// Start building on a lead without an edit mode lands in its asking mode). A lead's own reviewer (Auto) is chosen
+/// for Auto only.
 /// Null when none is that careful (a Plan the harness has no mode for).
 NativeMode? nativeModeFor(List<NativeMode> modes, AgentMode mode) {
   int rank(AgentMode m) => switch (m) {
     AgentMode.plan => 0,
     AgentMode.ask => 1,
     AgentMode.autoEdit => 2,
-    AgentMode.fullAuto => 3,
-    AgentMode.bypass => 4,
+    AgentMode.auto => 3,
+    AgentMode.fullAuto => 4,
+    AgentMode.bypass => 5,
   };
   NativeMode? best;
   for (final m in modes) {
     if (m.blocked != null || rank(m.policy) > rank(mode)) continue;
+    // A lead's own reviewer is picked for Auto only: Full auto and Bypass keep EveryAI's checks deciding.
+    if (m.policy == AgentMode.auto && mode != AgentMode.auto) continue;
     if (best == null || rank(m.policy) > rank(best.policy)) best = m;
   }
   return best;
