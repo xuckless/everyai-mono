@@ -21,7 +21,7 @@ enum ServerStatus {
 
 /// Supplies bearer tokens for authenticated requests. Implemented by the auth feature.
 abstract interface class AccessTokenSource {
-  /// The current access token, or null when signed out or bypassed.
+  /// The current access token, or null when signed out.
   Future<String?> accessToken();
 
   /// Called once after a 401. Returns a fresh token, or null if the session is gone.
@@ -251,10 +251,16 @@ final class ApiClient {
         ..headers['Content-Type'] = 'application/json; charset=utf-8'
         ..bodyBytes = utf8.encode(jsonEncode(json));
     }
+    // An account is optional: a signed-out request goes without a token, and
+    // the server decides (most routes work anonymously; account routes 401).
+    var signedIn = false;
     if (authenticated) {
       final token = isRetry ? await _tokens?.refreshAccessToken() : await _tokens?.accessToken();
-      if (token == null) throw const UnauthorizedError();
-      request.headers['Authorization'] = 'Bearer $token';
+      if (token == null && isRetry) throw const UnauthorizedError();
+      if (token != null) {
+        request.headers['Authorization'] = 'Bearer $token';
+        signedIn = true;
+      }
     }
 
     final http.StreamedResponse res;
@@ -270,7 +276,8 @@ final class ApiClient {
       throw NetworkError(e.message);
     }
 
-    if (res.statusCode == 401 && authenticated && !isRetry) {
+    // A 401 on a signed-in call: the access token expired; refresh once.
+    if (res.statusCode == 401 && signedIn && !isRetry) {
       await res.stream.drain<void>();
       return _send(
         method,

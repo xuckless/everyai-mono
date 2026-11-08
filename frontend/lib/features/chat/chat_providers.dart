@@ -40,7 +40,7 @@ final chatRepositoryProvider = Provider<ChatRepository>((ref) {
 final chatTransportProvider = Provider<ChatTransport>((ref) {
   final api = ref.watch(apiClientProvider);
   // With dev auth the backend serves anonymous requests as its dev user.
-  final authenticated = !ref.watch(appConfigProvider).devSkipAuth;
+  final authenticated = true;
   final local = ref.watch(localApiProvider);
   return SplitTransport(
     remote: TransportRouter(
@@ -62,7 +62,7 @@ final chatTitlerProvider = Provider<ChatTitler?>((ref) {
   if (ref.watch(chatTransportProvider) is! SplitTransport) return null;
   final local = ref.watch(localApiProvider);
   return _SplitTitler(
-    HttpChatTitler(ref.watch(apiClientProvider), authenticated: !ref.watch(appConfigProvider).devSkipAuth),
+    HttpChatTitler(ref.watch(apiClientProvider), authenticated: true),
     () async => switch (await local.client()) {
       final ApiClient c => HttpChatTitler(c),
       null => null,
@@ -94,7 +94,7 @@ final class _SplitTitler implements ChatTitler {
 final toolResultsProvider = Provider<ToolResults>((ref) {
   final local = ref.watch(localApiProvider);
   return SplitToolResults(
-    remote: HttpToolResults(ref.watch(apiClientProvider), authenticated: !ref.watch(appConfigProvider).devSkipAuth),
+    remote: HttpToolResults(ref.watch(apiClientProvider), authenticated: true),
     // Only once it runs: answering a tool must not start the server.
     local: () async => switch (local.backend.running ? await local.client() : null) {
       final ApiClient c => HttpToolResults(c),

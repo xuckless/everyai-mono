@@ -23,8 +23,7 @@ void main() {
     final p = Profile.fromJson({'id': 'u1', 'name': 'Ada', 'email': 'ada@example.com', 'plan': 'max'});
     expect(accountSummary(const SignedIn(), p), ('Ada', 'Max plan'));
     expect(accountSummary(const SignedIn()), ('Account', 'Signed in'));
-    expect(accountSummary(const Bypassed(), p), ('Ada', 'Max plan · Developer mode'));
-    expect(accountSummary(const Bypassed()), ('Guest', 'Developer mode'));
-    expect(accountSummary(const SignedOut(), p), ('Signed out', ''));
+    expect(accountSummary(const SignedOut(), p), ('Guest', 'Not signed in'));
+    expect(accountSummary(const SigningOut()), ('Guest', 'Not signed in'));
   });
 }

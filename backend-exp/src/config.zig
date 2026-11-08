@@ -94,7 +94,7 @@ pub const Config = struct {
     gateway_cache_ttl: []const u8 = "1h",
 
     /// Prototype convenience: requests without credentials act as the seeded
-    /// dev user (the app's DEV_SKIP_AUTH mode). Off in production builds.
+    /// dev user (local development only). Off in production builds.
     dev_auth: bool = true,
     /// Acknowledges that DEV_AUTH is open to the network when `host` is not
     /// loopback; without it `main` refuses to start (see `lanExposure`).

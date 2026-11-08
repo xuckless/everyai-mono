@@ -130,7 +130,7 @@ final billingProvider = AsyncNotifierProvider.autoDispose<BillingController, Bil
 
 class BillingController extends AsyncNotifier<BillingSummary> {
   ApiClient get _api => ref.read(apiClientProvider);
-  bool get _authenticated => !ref.read(appConfigProvider).devSkipAuth;
+  bool get _authenticated => true;
 
   @override
   Future<BillingSummary> build() async =>

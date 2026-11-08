@@ -18,14 +18,10 @@ import 'settings_modal.dart';
 /// The name and plan the account row shows: from [profile] (`/v1/me`) when
 /// it has loaded, else placeholders by sign-in state.
 (String name, String plan) accountSummary(AuthState auth, [Profile? profile]) => switch (auth) {
-  Bypassed() when profile != null => (
-    profile.displayName,
-    [profile.planLabel, 'Developer mode'].where((s) => s.isNotEmpty).join(' · '),
-  ),
-  Bypassed() => ('Guest', 'Developer mode'),
   SignedIn() when profile != null => (profile.displayName, profile.planLabel.isEmpty ? 'Signed in' : profile.planLabel),
   SignedIn() => ('Account', 'Signed in'),
-  _ => ('Signed out', ''),
+  Restoring() => ('Account', ''),
+  SignedOut() || Authenticating() || SigningOut() => ('Guest', 'Not signed in'),
 };
 
 /// Asks, then signs out. Chats stay on this device.
@@ -33,7 +29,7 @@ Future<void> confirmSignOut(BuildContext context, WidgetRef ref) async {
   final ok = await showAdaptiveConfirm(
     context,
     title: 'Log out?',
-    message: 'Chats stay on this device.',
+    message: 'Chats and remote pairings stay on this device.',
     confirmLabel: 'Log out',
     destructive: true,
   );
@@ -226,15 +222,23 @@ class AccountMenu extends ConsumerWidget {
             onTap: () => open(SettingsSection.apiKeys),
           ),
           divider(),
-          PopoverRow(
-            key: const ValueKey('account.logout'),
-            title: 'Log out',
-            leading: icon(EveryIcon.signOut),
-            onTap: () {
-              close();
-              confirmSignOut(context, ref);
-            },
-          ),
+          if (ref.watch(authProvider) is SignedIn)
+            PopoverRow(
+              key: const ValueKey('account.logout'),
+              title: 'Log out',
+              leading: icon(EveryIcon.signOut),
+              onTap: () {
+                close();
+                confirmSignOut(context, ref);
+              },
+            )
+          else
+            PopoverRow(
+              key: const ValueKey('account.sign-in'),
+              title: 'Sign in',
+              leading: icon(EveryIcon.person),
+              onTap: () => open(SettingsSection.account),
+            ),
         ],
       ),
     );

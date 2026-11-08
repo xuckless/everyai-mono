@@ -121,7 +121,7 @@ final class FigurePolisher extends Notifier<bool> {
     state = true;
     try {
       final api = ref.read(apiClientProvider);
-      final authenticated = !ref.read(appConfigProvider).devSkipAuth;
+      final authenticated = true;
       final result = await polishFigure(
         svg: svgOf(v),
         rasterize: _reviewRaster,

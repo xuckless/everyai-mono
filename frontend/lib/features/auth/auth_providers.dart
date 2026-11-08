@@ -8,7 +8,6 @@ import '../../core/net/api_client.dart';
 import '../../core/net/api_error.dart';
 import '../../core/providers.dart';
 import '../code/gateway_key.dart';
-import '../remote/remote_providers.dart' show pairedHostsProvider, remoteHostingProvider;
 import 'data/token_store.dart';
 import 'domain/auth_state.dart';
 
@@ -20,13 +19,19 @@ final class AuthController extends Notifier<AuthState> {
 
   @override
   AuthState build() {
-    if (ref.watch(appConfigProvider).devSkipAuth) return const Bypassed();
     unawaited(_restore());
     return const Restoring();
   }
 
   Future<void> _restore() async {
-    final token = await _tokens.refreshAccessToken();
+    String? token;
+    try {
+      token = await _tokens.refreshAccessToken();
+    } on Object {
+      // No keychain (a test, a locked keyring) or no server: signed out,
+      // which the app handles like any other state.
+      token = null;
+    }
     if (!ref.mounted) return;
     state = token == null ? const SignedOut() : const SignedIn();
   }
@@ -55,10 +60,16 @@ final class AuthController extends Notifier<AuthState> {
     return _api.postJson('v1/auth/google', {'token': idToken});
   });
 
-  Future<void> signOut() async {
-    // Remote hosting and pairings belong to this account too. They go
-    // first, while the backend still takes this account's calls.
-    await _leaveRemote();
+  Future<void>? _signingOut;
+
+  /// Ends the account session on this device. Remote pairings stay: they
+  /// work without an account (owner, 2026-11-08), and unpairing is its own
+  /// action in Settings → Remote.
+  Future<void> signOut() => _signingOut ??= _signOut().whenComplete(() => _signingOut = null);
+
+  Future<void> _signOut() async {
+    if (state is! SignedIn) return;
+    state = const SigningOut();
     final refresh = await _tokens.readRefreshToken();
     if (refresh != null) {
       unawaited(_api.postJson('v1/auth/logout', {'refresh_token': refresh}).then((_) {}, onError: (_) {}));
@@ -70,24 +81,7 @@ final class AuthController extends Notifier<AuthState> {
     } on Object {
       // No keychain (or no preferences in a test): nothing was kept.
     }
-    if (ref.read(appConfigProvider).devSkipAuth) return;
-    state = const SignedOut();
-  }
-
-  /// Stops hosting and drops this device's pairings: the next account to
-  /// sign in here must not drive this computer for the old one's devices,
-  /// nor reach the old account's hosts.
-  Future<void> _leaveRemote() async {
-    try {
-      await ref.read(remoteHostingProvider.notifier).signedOut();
-    } on Object {
-      // No keychain (a test): nothing was kept.
-    }
-    try {
-      await ref.read(pairedHostsProvider.notifier).signedOut();
-    } on Object {
-      // Likewise.
-    }
+    if (ref.mounted) state = const SignedOut();
   }
 
   Future<void> _authenticate(AuthMethod method, Future<Map<String, Object?>> Function() call) async {

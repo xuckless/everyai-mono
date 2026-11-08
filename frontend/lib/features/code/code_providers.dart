@@ -7437,9 +7437,7 @@ final class CodeUsage extends AsyncNotifier<UsageTotals> {
     // EveryAI asks its backend nothing for a session it doesn't lead (no-spend): the ledger can only have changed
     // while EveryAI led, and its last reading is kept.
     if (isOutsideLead(info.harness, info.workingDir)) return _backend;
-    final json = await ref
-        .read(apiClientProvider)
-        .getJson('v1/usage/session/$sessionId', authenticated: !ref.read(appConfigProvider).devSkipAuth);
+    final json = await ref.read(apiClientProvider).getJson('v1/usage/session/$sessionId', authenticated: true);
     return UsageTotals.fromJson(json);
   }
 

@@ -128,7 +128,7 @@ final gatewayKeysProvider = Provider<GatewayKeys>((ref) {
     legacy: ref.watch(preferencesProvider),
     mint: () async {
       // Dev builds skip sign-in; the backend's DEV_AUTH treats them as its dev user.
-      final authenticated = !ref.read(appConfigProvider).devSkipAuth;
+      final authenticated = true;
       final res = await ref.read(apiClientProvider).postJson('v1/keys', {
         'name': 'EveryAI Code',
       }, authenticated: authenticated);

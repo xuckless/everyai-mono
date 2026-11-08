@@ -29,9 +29,7 @@ import 'host_mirror.dart';
 
 final remoteStoreProvider = Provider<RemoteStore>((ref) => RemoteStore(ref.watch(secretStoreProvider)));
 
-final remoteApiProvider = Provider<RemoteApi>(
-  (ref) => RemoteApi(ref.watch(apiClientProvider), authenticated: !ref.watch(appConfigProvider).devSkipAuth),
-);
+final remoteApiProvider = Provider<RemoteApi>((ref) => RemoteApi(ref.watch(apiClientProvider), authenticated: true));
 
 /// Opens relay sockets; tests override it with a fake relay.
 final relayConnectorProvider = Provider<RelayConnector>((ref) {

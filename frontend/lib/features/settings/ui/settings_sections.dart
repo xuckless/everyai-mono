@@ -195,13 +195,21 @@ class AccountSection extends ConsumerWidget {
           section: SettingsSection.account,
           id: 'sign-out',
           child: switch (auth) {
-            Bypassed() => const AdaptiveListTile(
-              title: Text('Signed out (development mode)'),
-              subtitle: Text('Sign-in is skipped while DEV_SKIP_AUTH is on.'),
+            SignedOut() || Authenticating() => AdaptiveListTile(
+              title: const Text('No account needed'),
+              subtitle: const Text(
+                'Chat, Code, your keys and remote control all work without one. Sign in to see your paired '
+                'computers on every device, and for sync later.',
+              ),
+              trailing: AdaptiveButton(
+                key: const ValueKey('settings.sign-in'),
+                label: 'Sign in',
+                onPressed: () => context.go(Routes.signIn),
+              ),
             ),
             SignedIn() => AdaptiveListTile(
               title: const Text('Log out of this device'),
-              subtitle: const Text('Chats stay on this device.'),
+              subtitle: const Text('Chats and remote pairings stay on this device.'),
               trailing: AdaptiveButton(
                 key: const ValueKey('settings.sign-out'),
                 label: 'Log out',
@@ -275,11 +283,11 @@ class DeveloperSection extends ConsumerWidget {
     final config = ref.watch(appConfigProvider);
     return KitGroupedList(
       children: [
-        if (!config.devSkipAuth)
+        if (!config.devTools)
           AdaptiveListTile(
             title: const Text('Nothing to set here'),
             subtitle: Text(
-              'Developer switches show in development builds (DEV_SKIP_AUTH).',
+              'Developer switches show in debug builds (DEV_TOOLS).',
               style: theme.type.body.tint(theme.textMuted),
             ),
           )

@@ -77,7 +77,6 @@ DEFINES="$DEV/defines-launch.json"
 cat >"$DEFINES" <<EOF
 {
   "API_BASE_URL": "$API",
-  "DEV_SKIP_AUTH": true,
   "SSE_ENABLED": true,
   "GOOGLE_SERVER_CLIENT_ID": ""
 }

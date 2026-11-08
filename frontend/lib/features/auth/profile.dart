@@ -38,8 +38,8 @@ final class Profile {
 /// can't be reached (the account row then shows placeholders). Refetched
 /// whenever the sign-in state changes.
 final profileProvider = FutureProvider<Profile?>((ref) async {
-  if (!ref.watch(authProvider).canUseApp) return null;
-  final authenticated = !ref.watch(appConfigProvider).devSkipAuth;
+  if (!ref.watch(authProvider).hasAccount) return null;
+  final authenticated = true;
   try {
     return Profile.fromJson(await ref.watch(apiClientProvider).getJson('v1/me', authenticated: authenticated));
   } on Object {

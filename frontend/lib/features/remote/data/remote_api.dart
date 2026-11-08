@@ -30,7 +30,7 @@ final class RemoteApi {
 
   final ApiClient _api;
 
-  /// False with `DEV_SKIP_AUTH` (the backend's dev user answers).
+  /// Attaches the account token when signed in (remote works without one).
   final bool authenticated;
 
   static DateTime _time(Object? seconds) =>

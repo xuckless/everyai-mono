@@ -117,13 +117,14 @@ final routerProvider = Provider<GoRouter>((ref) {
     redirect: (context, state) {
       final path = state.uri.path;
       final onAuthPage = path == Routes.signIn || path == Routes.signUp;
+      // An account is optional: nothing redirects to sign-in. The sign-in
+      // pages leave once signed in.
       switch (auth.value) {
         case Restoring():
           return null;
-        case SignedOut() || Authenticating():
-          return onAuthPage ? null : Routes.signIn;
-        case SignedIn() || Bypassed():
-          if (onAuthPage) return Routes.newChat;
+        case SignedIn() when onAuthPage:
+          return Routes.newChat;
+        case _:
           if (path == '/' || path == Routes.newChat) return Routes.chat(const Uuid().v7());
           return null;
       }

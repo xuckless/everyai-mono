@@ -143,7 +143,7 @@ DEFINES="$DEV/defines-$TARGET.json"
 python3 - "$FRONTEND/config/dev.json" "$DEFINES" "$API" <<'PY'
 import json, os, sys
 src, dst, api = sys.argv[1:]
-base = json.load(open(src)) if os.path.exists(src) else {"DEV_SKIP_AUTH": True, "SSE_ENABLED": True}
+base = json.load(open(src)) if os.path.exists(src) else {"SSE_ENABLED": True}
 base["API_BASE_URL"] = api
 json.dump(base, open(dst, "w"), indent=2)
 PY
