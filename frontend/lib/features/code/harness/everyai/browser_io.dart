@@ -903,6 +903,33 @@ final class HeadlessBrowser {
   /// the dialog.
   final _parked = <String, ({WebSocket socket, PageDialog dialog})>{};
 
+  /// Tabs that share their opener's renderer, by tab id: the tab that opened each.
+  final _openerOf = <String, String>{};
+
+  /// The first tab of [id]'s renderer group (pages opened from one another).
+  String _groupOf(String id) {
+    var at = id;
+    for (var hops = 0; hops < 20; hops++) {
+      final up = _openerOf[at];
+      if (up == null) break;
+      at = up;
+    }
+    return at;
+  }
+
+  /// The dialog another tab waits on that holds up the active one too (they share a renderer), with that tab's
+  /// number (from 1), or null.
+  ({int tab, PageDialog dialog})? get dialogHoldingThis {
+    final here = _targetId;
+    if (here == null) return null;
+    final group = _groupOf(here);
+    for (final (i, t) in _tabList.indexed) {
+      if (t.id == here) continue;
+      if (_parked[t.id] case final p? when _groupOf(t.id) == group) return (tab: i + 1, dialog: p.dialog);
+    }
+    return null;
+  }
+
   /// The dialog another tab of the session waits on, with its tab's number (from 1), or null.
   ({int tab, PageDialog dialog})? get dialogElsewhere {
     for (final (i, t) in _tabList.indexed) {
@@ -1260,6 +1287,9 @@ final class HeadlessBrowser {
         final id = '${t['targetId']}';
         if (t['type'] == 'page' && _tabList.any((x) => x.id == t['openerId']) && !_tabList.any((x) => x.id == id)) {
           _tabList.add((id: id, url: '${t['url'] ?? ''}', title: '${t['title'] ?? ''}'));
+          // Opened with a handle on its opener (window.open, a link without noopener): they share a renderer, so a
+          // dialog in one holds up the other.
+          if (t['canAccessOpener'] == true) _openerOf[id] = '${t['openerId']}';
           _publishTabs();
           _log.add('A new tab opened: ${t['url'] ?? ''} (now the active tab; tabs lists them).');
           unawaited(switchTab(id).catchError((Object _) {}));
@@ -1965,7 +1995,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     await _send('Page.startScreencast', {'format': 'jpeg', 'quality': 72, 'maxWidth': width, 'maxHeight': height});
     // Chrome sends frames on changes only: a still page would show nothing until it moves. One picture now.
     // A page waiting on a dialog paints nothing and runs no script: the picture would wait out the call's timeout.
-    if (dialog.value != null) return;
+    if (dialog.value != null || dialogHoldingThis != null) return;
     final shot = await _send('Page.captureScreenshot', {'format': 'jpeg', 'quality': 72});
     // Straight to the page, not through [evaluate]: that waits for a tab switch in flight, and a switch casts
     // through here (it would wait for itself).
@@ -2025,7 +2055,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     double deltaY = 0,
   }) async {
     // A dialog holds the page: the user answers it first.
-    if (dialog.value != null) return;
+    if (dialog.value != null || dialogHoldingThis != null) return;
     await _start();
     await _userSend('Input.dispatchMouseEvent', {
       'type': type,
@@ -2050,7 +2080,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     int modifiers = 0,
     List<String> commands = const [],
   }) async {
-    if (dialog.value != null) return;
+    if (dialog.value != null || dialogHoldingThis != null) return;
     await _start();
     await _userSend('Input.dispatchKeyEvent', {
       'type': type,
@@ -2067,7 +2097,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
 
   /// Text the user pasted or composed (an IME), inserted at the caret.
   Future<void> userText(String text) async {
-    if (dialog.value != null) return;
+    if (dialog.value != null || dialogHoldingThis != null) return;
     await _start();
     await _userSend('Input.insertText', {'text': text});
   }

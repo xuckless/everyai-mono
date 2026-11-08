@@ -248,6 +248,40 @@ void main() {
     timeout: const Timeout(Duration(minutes: 1)),
   );
 
+  test(
+    "a dialog in one tab holds up the pop-up it opened: an action there says so at once, not after 30 s",
+    () async {
+      final runner = ToolRunner(
+        root: tmp.path,
+        shell: SessionShell(root: tmp.path, sessionTag: 't', scratchDir: '${tmp.path}/.sh'),
+        gateway: GatewayClient(baseUrl: 'http://127.0.0.1:9/v1', apiKey: ''),
+        sessionTag: 't',
+        vision: false,
+        browser: browser,
+      );
+      await runner.run('browser', {'action': 'open', 'url': home()});
+      await runner.run('browser', {'action': 'click', 'selector': '#pop'});
+      await until(() => browser.tabs.value.length == 2);
+      await runner.run('browser', {'action': 'tab', 'index': 1});
+      await runner.run('browser', {'action': 'click', 'selector': '#ask'});
+      expect(browser.dialog.value?.type, 'confirm');
+      await runner.run('browser', {'action': 'tab', 'index': 2});
+      final sw = Stopwatch()..start();
+      final held = await runner.run('browser', {'action': 'snapshot'});
+      expect(sw.elapsed, lessThan(const Duration(seconds: 5)));
+      expect(held.isError, isTrue);
+      expect(held.text, contains('Tab 1 waits on a dialog'));
+      // Answered there, the pop-up works again.
+      await runner.run('browser', {'action': 'tab', 'index': 1});
+      await runner.run('browser', {'action': 'dialog', 'accept': true});
+      await runner.run('browser', {'action': 'tab', 'index': 2});
+      final ok = await runner.run('browser', {'action': 'snapshot'});
+      expect(ok.isError, isFalse);
+    },
+    skip: skip,
+    timeout: const Timeout(Duration(minutes: 1)),
+  );
+
   test("the page's links open in a new tab only past the browser tool's guard", () {
     final home = Platform.environment['HOME'] ?? '/Users/someone';
     PageContext link(String url) =>
