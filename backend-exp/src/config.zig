@@ -182,6 +182,13 @@ pub fn lanExposure(cfg: Config) bool {
     return cfg.dev_auth and !cfg.dev_auth_lan and !isLoopback(cfg.host);
 }
 
+/// True when dev auth is on in a production process that isn't the app's
+/// own local server (which runs as production with dev auth on loopback,
+/// behind its launch token).
+pub fn devAuthInProduction(cfg: Config, environment: anole.env.Environment) bool {
+    return cfg.dev_auth and !cfg.local_mode and environment != .development;
+}
+
 test "billing parked: prices at cost, an unmetered server key needs acknowledging" {
     var c: Config = .{ .jwt_secret = .init("x") };
     try std.testing.expectEqual(@as(f64, 1.0), c.priceMarkup());
@@ -208,4 +215,15 @@ test "dev auth on a non-loopback host needs DEV_AUTH_LAN" {
     lan.dev_auth = false;
     try std.testing.expect(!lanExposure(lan));
     try std.testing.expect(isLoopback("127.0.0.1") and isLoopback("localhost") and !isLoopback("192.168.1.5"));
+}
+
+test "production refuses dev auth, except the app's local server" {
+    var c: Config = .{ .jwt_secret = .init("x"), .dev_auth = true };
+    try std.testing.expect(!devAuthInProduction(c, .development));
+    try std.testing.expect(devAuthInProduction(c, .production));
+    c.local_mode = true;
+    try std.testing.expect(!devAuthInProduction(c, .production));
+    c.local_mode = false;
+    c.dev_auth = false;
+    try std.testing.expect(!devAuthInProduction(c, .production));
 }

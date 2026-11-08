@@ -304,15 +304,25 @@ fn enterCode(app: *App, req: *anole.Request, res: *anole.Response) !void {
         res.status = .gone;
         return res.json(.{ .message = "This code has expired. Ask for a new one.", .code = "magic_gone", .status = @tagName(status) });
     }
-    const attempts = row.attempts + 1;
+    // Take an attempt before comparing, in one statement: guesses sent at
+    // once can't all read the same count and so get more than five tries.
+    const now = util.now(req.io);
+    const attempts = try app.db.optional(i64, req,
+        \\UPDATE magic_requests SET attempts = attempts + 1
+        \\WHERE id = ? AND status IN ('pending', 'approved') AND expires_at > ? AND attempts < ?
+        \\RETURNING attempts
+    , .{ row.id, now, max_code_attempts }) orelse {
+        res.status = .gone;
+        return res.json(.{ .message = "This code has expired. Ask for a new one.", .code = "magic_gone", .status = if (now >= row.expires_at) "expired" else "dead" });
+    };
     const code = std.mem.trim(u8, in.code, " -");
     if (sameDigest(row.code_hash, try codeHash(app, req.arena, row.id, code))) {
-        const won = try app.db.exec(req, "UPDATE magic_requests SET status = 'redeemed', attempts = ? WHERE id = ? AND status IN ('pending', 'approved')", .{ attempts, row.id });
+        const won = try app.db.exec(req, "UPDATE magic_requests SET status = 'redeemed' WHERE id = ? AND status IN ('pending', 'approved')", .{row.id});
         if (won == 0) return error.NotFound;
         return res.json(PollAnswer{ .status = "redeemed", .tokens = try finish(app, req, row, "code") });
     }
     const dead = attempts >= max_code_attempts;
-    _ = try app.db.exec(req, "UPDATE magic_requests SET attempts = ?, status = CASE WHEN ? THEN 'dead' ELSE status END WHERE id = ?", .{ attempts, dead, row.id });
+    if (dead) _ = try app.db.exec(req, "UPDATE magic_requests SET status = 'dead' WHERE id = ? AND status IN ('pending', 'approved')", .{row.id});
     res.status = .unauthorized;
     return res.json(.{
         .message = if (dead) "Too many wrong codes. Ask for a new one." else "That code isn't right.",
@@ -334,7 +344,11 @@ fn finish(app: *App, req: *anole.Request, row: Row, method: []const u8) !auth.To
         },
         .sign_in => if (try app.db.optional([]const u8, req, "SELECT id FROM users WHERE email = ?", .{row.email})) |id| id else blk: {
             const local = row.email[0 .. std.mem.indexOfScalar(u8, row.email, '@') orelse row.email.len];
-            break :blk (try auth.createUser(app, req, local, row.email, null, null)).id;
+            break :blk (auth.createUser(app, req, local, row.email, null, null) catch |err| {
+                // Two first sign-ins for one address at once: the other one
+                // made the account (email is UNIQUE); this one joins it.
+                break :blk try app.db.optional([]const u8, req, "SELECT id FROM users WHERE email = ?", .{row.email}) orelse return err;
+            }).id;
         },
     };
     _ = try app.db.exec(req, "INSERT INTO sign_ins (user_id, at, device_name, ip_prefix, method) VALUES (?, ?, ?, ?, ?)", .{ user_id, now, row.device_name, row.ip_prefix, method });
@@ -409,7 +423,10 @@ const page_tail = "</main></body></html>";
 fn securityHeaders(res: *anole.Response) !void {
     try res.header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
     try res.header("X-Frame-Options", "DENY");
-    try res.header("Referrer-Policy", "no-referrer");
+    // Not no-referrer: under it a browser sends `Origin: null` with the
+    // button's form POST, and `sameOrigin` would refuse every press.
+    // same-origin keeps the token-bearing URL from any other site.
+    try res.header("Referrer-Policy", "same-origin");
     try res.header("Cache-Control", "no-store");
     try res.header("X-Content-Type-Options", "nosniff");
 }

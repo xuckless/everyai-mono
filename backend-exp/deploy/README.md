@@ -73,7 +73,8 @@ Read Google's current free-tier and network-tier pages before choosing; record w
 ### TLS: Cloudflare Tunnel (optional) or Anole's own
 - **Tunnel:** create a named tunnel on the Cloudflare account (Zero Trust → Networks → Tunnels), add the public
   hostname `api.everyai.dev → http://backend:8080` (`cloudflared.example.yml` records it), put
-  `TUNNEL_TOKEN=…` in `/opt/everyai/secrets.env`, and run
+  `TUNNEL_TOKEN=…` in the root `.env` and run `set-secrets.sh` (it goes to `/opt/everyai/tunnel.env`, so the
+  cloudflared container never sees the backend's secrets), then
   `docker compose -f docker-compose.yml -f docker-compose.tunnel.yml up -d`. No open port or certificate on the VM;
   the 8443 firewall rule can go. Check the relay through it:
   `cd frontend && dart run tool/relay_check.dart https://api.everyai.dev` (pairs an anonymous host and device and

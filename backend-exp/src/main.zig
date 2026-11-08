@@ -271,6 +271,10 @@ fn pruneExpired(state: *App, ctx: anytype) !void {
     try remote.prune(state, ctx);
 }
 
+/// Paths the access log leaves out: the probes, and the magic-link page,
+/// whose path is the sign-in token itself (magic.zig keeps only its hash).
+pub const access_log_exclude = anole.observe.probe_paths ++ [_][]const u8{"/auth/l/*"};
+
 pub fn main(init: std.process.Init) !void {
     // Development reads backend-exp/.env, then the monorepo's root .env; a
     // production process reads the real environment only (Config: a dev .env
@@ -281,6 +285,10 @@ pub fn main(init: std.process.Init) !void {
     if (local.startProblem(cfg)) |problem| {
         std.log.err("refusing to start: {s}", .{problem});
         return error.BadLocalMode;
+    }
+    if (config.devAuthInProduction(cfg, anole.env.environment())) {
+        std.log.err("refusing to start: DEV_AUTH=true hands the dev account to every caller; it is for development (and the app's local server) only", .{});
+        return error.DevAuthInProduction;
     }
     if (config.lanExposure(cfg)) {
         std.log.err("refusing to start: HOST={s} is reachable from the network and DEV_AUTH=true lets anyone there use the dev account. " ++
@@ -394,7 +402,7 @@ pub fn main(init: std.process.Init) !void {
     } else std.log.warn("RESEND_API_KEY not set: sign-in is unavailable", .{});
 
     app.use(anole.middleware.RequestId.init(.{}));
-    app.use(anole.observe.AccessLog.init(.{ .exclude = &anole.observe.probe_paths }));
+    app.use(anole.observe.AccessLog.init(.{ .exclude = &access_log_exclude }));
     app.use(anole.middleware.Cors.init(.{}));
 
     const dir = std.fs.path.dirname(cfg.database_path) orelse ".";
@@ -473,4 +481,10 @@ test {
     _ = @import("web.zig");
     _ = @import("tool_check.zig");
     _ = @import("modes.zig");
+}
+
+test "the access log never records a magic-link token" {
+    var found = false;
+    for (access_log_exclude) |p| found = found or std.mem.eql(u8, p, "/auth/l/*");
+    try std.testing.expect(found);
 }

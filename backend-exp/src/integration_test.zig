@@ -282,6 +282,41 @@ test "magic link: wrong codes end the request, per-address limits, the daily mai
     try std.testing.expectEqualStrings("mail_unavailable", (try none.json(struct { code: []const u8 })).code);
 }
 
+test "magic link: attempts are taken before the compare, so racing guesses get no extra tries" {
+    var env: Env = undefined;
+    try start(&env, &.{""}, false);
+    defer env.deinit();
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = arena.allocator() };
+
+    var asked = try env.t.post("/v1/auth/magic", .{ .json = .{ .email = "race@example.com" } });
+    defer asked.deinit();
+    const req = try asked.json(kit.Asked);
+    const right = kit.codeIn(env.mails.last().?);
+    // Five guesses landed together: each read 0 attempts, the count is spent,
+    // but none of them wrote the status yet.
+    _ = try env.state.db.exec(&c, "UPDATE magic_requests SET attempts = 5 WHERE id = ?", .{req.request_id});
+    var sixth = try env.t.post("/v1/auth/magic/code", .{ .json = .{ .request_id = req.request_id, .request_secret = req.request_secret, .code = right } });
+    defer sixth.deinit();
+    try sixth.expectStatus(.gone);
+}
+
+test "magic link: the page lets the browser send our Origin with the button" {
+    var env: Env = undefined;
+    try start(&env, &.{""}, false);
+    defer env.deinit();
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    var asked = try env.t.post("/v1/auth/magic", .{ .json = .{ .email = "page@example.com" } });
+    defer asked.deinit();
+    var view = try env.t.get(try std.fmt.allocPrint(arena.allocator(), "/auth/l/{s}", .{kit.tokenIn(env.mails.last().?)}), .{});
+    defer view.deinit();
+    try view.expectStatus(.ok);
+    // no-referrer makes a form POST carry `Origin: null`, which the button refuses.
+    try std.testing.expectEqualStrings("same-origin", view.header("Referrer-Policy").?);
+}
+
 test "account: sign-in history, log out everywhere, change email by link" {
     var env: Env = undefined;
     try start(&env, &.{""}, false);
