@@ -4,7 +4,7 @@
 # RESEND_API_KEY from the repo-root .env. Values go over ssh stdin, never as
 # command-line arguments or into the image.
 # Usage: backend-exp/deploy/set-secrets.sh   (run once, and after a key change)
-#   EVERYAI_TUNNEL_TOKEN=… backend-exp/deploy/set-secrets.sh   also stores the Cloudflare Tunnel token
+#   With TUNNEL_TOKEN=… in the root .env (or EVERYAI_TUNNEL_TOKEN set), also stores the Cloudflare Tunnel token
 #   (kept on later runs that don't pass one).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -16,7 +16,8 @@ root_env="$here/../../.env"
 resend="$(grep -E '^RESEND_API_KEY=' "$root_env" | head -1 | cut -d= -f2- || true)"
 [ -n "$resend" ] || { echo "RESEND_API_KEY missing in $root_env" >&2; exit 1; }
 
-tunnel="${EVERYAI_TUNNEL_TOKEN:-}"
+# The tunnel token: EVERYAI_TUNNEL_TOKEN, else TUNNEL_TOKEN in the root .env (so it never goes on a command line).
+tunnel="${EVERYAI_TUNNEL_TOKEN:-$(grep -E '^TUNNEL_TOKEN=' "$root_env" | head -1 | cut -d= -f2- || true)}"
 printf '%s\n%s\n' "$resend" "$tunnel" | gcloud compute ssh "$vm" --zone "$zone" --project "$project" --command '
 set -e
 read -r resend

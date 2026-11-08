@@ -28,7 +28,7 @@ ssh_vm() { gcloud compute ssh "$vm" --zone "$zone" --project "$project" --comman
 ssh_vm 'test -s /opt/everyai/secrets.env' || { echo "no /opt/everyai/secrets.env on the VM: run deploy/set-secrets.sh first" >&2; exit 1; }
 if [ "$ingress" = tunnel ]; then
   ssh_vm 'sudo grep -q "^TUNNEL_TOKEN=." /opt/everyai/secrets.env' ||
-    { echo "no TUNNEL_TOKEN in secrets.env: EVERYAI_TUNNEL_TOKEN=… deploy/set-secrets.sh first" >&2; exit 1; }
+    { echo "no TUNNEL_TOKEN in secrets.env: put TUNNEL_TOKEN=… in the root .env and run deploy/set-secrets.sh first" >&2; exit 1; }
   files="-f docker-compose.yml -f docker-compose.tunnel.yml"
 else
   files="-f docker-compose.yml"
