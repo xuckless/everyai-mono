@@ -1077,6 +1077,12 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   their reports and results dropped (`_quietRuns`), so nothing wakes the lead; `runningWork` (`SessionWork` in
   `domain/session_work.dart`) says what runs. UI: `StopAllButton` (a small up-chevron opening one kit menu row) beside
   Send/Stop while more than the lead's turn runs, and on Board cards while an open session runs anything.
+- **Install scripts (2026-11-07; `packaging/install/`).** `get.everyai.dev` (Cloudflare worker `everyai-get`, deployed
+  with `packaging/install/deploy.sh`) serves `install.sh` (macOS: DMG checked by SHA-256, team signature and
+  Gatekeeper, into /Applications or ~/Applications; Linux x86_64: the .deb through apt, else the AppImage in
+  `~/.local/share/everyai` with menu entry, icons, `everyai://` handler and `~/.local/bin/everyai`; SHA256SUMS GPG-checked
+  when gpg is there; `--uninstall`), `install.ps1` (winget from the Store, else the Store page) and `/latest/version`.
+  Packages come from GitHub Releases, so releases need no step here.
 - **Harness gaps (2026-11-07; branch `feat/harness-gaps`; owner answers in `~/.claude/plans/harness-gaps.md`).**
   Git buttons are prompts (`domain/git_requests.dart`): Commit, Create PR and Merge locally send a user turn to the
   session's agent (queued while busy; `/commit` and `/pr` keep their drafts). Merge locally: the agent rebases and
