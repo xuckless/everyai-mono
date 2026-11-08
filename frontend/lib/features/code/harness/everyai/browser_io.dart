@@ -655,6 +655,31 @@ final class HeadlessBrowser {
     }
   }
 
+  /// Origins this session's tabs showed as their page (not iframes': their storage is another site's partition).
+  final _topOrigins = <String>{};
+
+  /// A local storage change Chrome reported (DOMStorage events), into the jar: only for the tabs' own origins.
+  void _storageChanged(String method, Map<String, Object?> p) {
+    final origin = storageEventOrigin(p['storageId'] as Map<String, Object?>? ?? const {});
+    if (origin == null || !_topOrigins.contains(origin)) return;
+    final items = {...?_jar.storage[origin]};
+    switch (method) {
+      case 'DOMStorage.domStorageItemAdded' || 'DOMStorage.domStorageItemUpdated':
+        items['${p['key']}'] = '${p['newValue'] ?? ''}';
+      case 'DOMStorage.domStorageItemRemoved':
+        items.remove('${p['key']}');
+      case 'DOMStorage.domStorageItemsCleared':
+        items.clear();
+    }
+    final storage = {..._jar.storage};
+    if (items.isEmpty) {
+      storage.remove(origin);
+    } else {
+      storage[origin] = items;
+    }
+    _jar = (cookies: _jar.cookies, storage: storage);
+  }
+
   /// The jar as it is now: the context's cookies and the storage read from its pages.
   Future<JarData> captureJar() async {
     if (_contextId != null && _browserSocket != null) {
@@ -870,6 +895,9 @@ final class HeadlessBrowser {
       _send('Target.setAutoAttach', {'autoAttach': true, 'waitForDebuggerOnStart': false, 'flatten': true}),
       _send('Page.setInterceptFileChooserDialog', {'enabled': true}),
       _send('Page.addScriptToEvaluateOnNewDocument', {'source': _contextTrackerJs}),
+      // A session with a jar follows its pages' local storage as it changes, so a write just before the page leaves
+      // (a token saved right before an OAuth redirect) is kept.
+      if (jarHome != null) _send('DOMStorage.enable'),
     ]);
     // Not waited for: a page that shows a dialog runs no script until it is answered.
     unawaited(_send('Runtime.evaluate', {'expression': _contextTrackerJs}).then((_) {}, onError: (Object _) {}));
@@ -902,6 +930,36 @@ final class HeadlessBrowser {
   /// Tabs switched away from while they showed a dialog: their socket (the only one the page still answers) and
   /// the dialog.
   final _parked = <String, ({WebSocket socket, PageDialog dialog})>{};
+
+  /// Tabs that share their opener's renderer, by tab id: the tab that opened each.
+  final _openerOf = <String, String>{};
+
+  /// The first tab of [id]'s renderer group (pages opened from one another).
+  String _groupOf(String id) {
+    var at = id;
+    for (var hops = 0; hops < 20; hops++) {
+      final up = _openerOf[at];
+      if (up == null) break;
+      at = up;
+    }
+    return at;
+  }
+
+  /// The dialog another tab waits on that holds up the active one too (they share a renderer), with that tab's
+  /// number (from 1), or null.
+  ({int tab, PageDialog dialog})? get dialogHoldingThis {
+    final here = _targetId;
+    if (here == null) return null;
+    final group = _groupOf(here);
+    final hereUrl = _tabList.where((t) => t.id == here).firstOrNull?.url ?? page.value.url;
+    for (final (i, t) in _tabList.indexed) {
+      if (t.id == here) continue;
+      if (_parked[t.id] case final p? when _groupOf(t.id) == group && maySharePageProcess(hereUrl, t.url)) {
+        return (tab: i + 1, dialog: p.dialog);
+      }
+    }
+    return null;
+  }
 
   /// The dialog another tab of the session waits on, with its tab's number (from 1), or null.
   ({int tab, PageDialog dialog})? get dialogElsewhere {
@@ -1225,14 +1283,19 @@ final class HeadlessBrowser {
           unawaited(_refreshPage(url: f['url'] as String?));
           // The first page of an origin with stored storage: it gets its own storage, then reloads.
           final origin = webOrigin('${f['url'] ?? ''}');
+          if (origin != null) _topOrigins.add(origin);
           if (origin != null && _restore.remove(origin)) unawaited(_restoreOrigin(origin));
         }
       case 'Page.navigatedWithinDocument':
         frames.moved();
         unawaited(_refreshPage(url: params['url'] as String?));
+      case 'DOMStorage.domStorageItemAdded' ||
+              'DOMStorage.domStorageItemUpdated' ||
+              'DOMStorage.domStorageItemRemoved' ||
+              'DOMStorage.domStorageItemsCleared'
+          when jarHome != null && msg['sessionId'] == null:
+        _storageChanged(method, params);
       case 'Page.frameStartedLoading':
-        // The page is about to go: what it stored last (a token an OAuth callback wrote before it redirected).
-        if (jarHome != null && params['frameId'] == _targetId) unawaited(_readStorage());
         page.value = (
           url: page.value.url,
           title: page.value.title,
@@ -1260,6 +1323,9 @@ final class HeadlessBrowser {
         final id = '${t['targetId']}';
         if (t['type'] == 'page' && _tabList.any((x) => x.id == t['openerId']) && !_tabList.any((x) => x.id == id)) {
           _tabList.add((id: id, url: '${t['url'] ?? ''}', title: '${t['title'] ?? ''}'));
+          // Opened with a handle on its opener (window.open, a link without noopener): they share a renderer, so a
+          // dialog in one holds up the other.
+          if (t['canAccessOpener'] == true) _openerOf[id] = '${t['openerId']}';
           _publishTabs();
           _log.add('A new tab opened: ${t['url'] ?? ''} (now the active tab; tabs lists them).');
           unawaited(switchTab(id).catchError((Object _) {}));
@@ -1387,10 +1453,12 @@ final class HeadlessBrowser {
   }
 
   void _closed() {
-    // Chrome went at once (it crashed, or stopped for a sign-in window): the jar keeps its last reading.
+    // The page went (its last tab closed itself) or Chrome did (it crashed, or stopped for a sign-in window). While
+    // the browser still answers, its cookies are read once more before its socket closes (which disposes the
+    // context); otherwise the jar keeps its last reading.
     _jarTimer?.cancel();
+    final context = _contextId, alive = _browserSocket;
     _contextId = null;
-    unawaited(_writeJar());
     // A dead browser has no sign-in to wait for; a sign-in window closed it on purpose, and that wait goes on.
     if (attachTo != null || !host.closedForSignIn) loginWall.stop();
     // Tabs still open (a switch to one failed) close with the session's browser instead of staying in Chrome.
@@ -1403,7 +1471,8 @@ final class HeadlessBrowser {
     _release();
     _socket = null;
     _targetId = null;
-    unawaited(Future<void>.delayed(const Duration(milliseconds: 200), () => browser?.close()));
+    // Late enough for the last cookie read above and the tabs' closes.
+    unawaited(Future<void>.delayed(const Duration(milliseconds: 2500), () => browser?.close()));
     _browserSocket = null;
     _tabList.clear();
     _publishTabs();
@@ -1422,7 +1491,26 @@ final class HeadlessBrowser {
     for (final c in _calls.values) {
       if (!c.isCompleted) c.completeError(const BrowserError('The browser closed.'));
     }
-    _calls.clear();
+    _calls.clear(); // After the calls above ended: this read is the last one.
+    unawaited(() async {
+      if (context != null && alive != null) {
+        try {
+          final r = await _sendOn(alive, 'Storage.getCookies', {
+            'browserContextId': context,
+          }).timeout(const Duration(seconds: 2));
+          _jar = (
+            cookies: [
+              for (final c in (r['cookies'] as List?) ?? const [])
+                if (c is Map) c.cast<String, Object?>(),
+            ],
+            storage: _jar.storage,
+          );
+        } on Object {
+          // Gone already.
+        }
+      }
+      await _writeJar();
+    }());
   }
 
   Future<Map<String, Object?>> _send(String method, [Map<String, Object?> params = const {}]) =>
@@ -1965,7 +2053,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     await _send('Page.startScreencast', {'format': 'jpeg', 'quality': 72, 'maxWidth': width, 'maxHeight': height});
     // Chrome sends frames on changes only: a still page would show nothing until it moves. One picture now.
     // A page waiting on a dialog paints nothing and runs no script: the picture would wait out the call's timeout.
-    if (dialog.value != null) return;
+    if (dialog.value != null || dialogHoldingThis != null) return;
     final shot = await _send('Page.captureScreenshot', {'format': 'jpeg', 'quality': 72});
     // Straight to the page, not through [evaluate]: that waits for a tab switch in flight, and a switch casts
     // through here (it would wait for itself).
@@ -2025,7 +2113,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     double deltaY = 0,
   }) async {
     // A dialog holds the page: the user answers it first.
-    if (dialog.value != null) return;
+    if (dialog.value != null || dialogHoldingThis != null) return;
     await _start();
     await _userSend('Input.dispatchMouseEvent', {
       'type': type,
@@ -2050,7 +2138,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     int modifiers = 0,
     List<String> commands = const [],
   }) async {
-    if (dialog.value != null) return;
+    if (dialog.value != null || dialogHoldingThis != null) return;
     await _start();
     await _userSend('Input.dispatchKeyEvent', {
       'type': type,
@@ -2067,7 +2155,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
 
   /// Text the user pasted or composed (an IME), inserted at the caret.
   Future<void> userText(String text) async {
-    if (dialog.value != null) return;
+    if (dialog.value != null || dialogHoldingThis != null) return;
     await _start();
     await _userSend('Input.insertText', {'text': text});
   }
@@ -2243,6 +2331,35 @@ class BrowserError implements Exception {
 }
 
 /// [url]'s origin when it is a web page (http or https), else null (file:, about:, data:).
+/// The origin a DOMStorage event's [storageId] is the first-party local storage of, or null: session storage, and
+/// storage partitioned under another top-level site (a key with a '^' part: a frame embedded in another site, even
+/// one in the page's own renderer), are not that origin's own.
+@visibleForTesting
+String? storageEventOrigin(Map<String, Object?> storageId) {
+  if (storageId['isLocalStorage'] != true) return null;
+  final key = storageId['storageKey'];
+  if (key is String && key.contains('^')) return null;
+  return webOrigin('${storageId['securityOrigin'] ?? key ?? ''}');
+}
+
+/// Whether pages at [a] and [b] (in one browsing group) may run in one renderer: Chrome isolates sites, so pages of
+/// different sites never do. Errs towards yes: a page with no web address (about:blank inherits its opener's), and
+/// hosts whose last two labels match (a superset of one registrable domain).
+@visibleForTesting
+bool maySharePageProcess(String a, String b) {
+  String? site(String url) {
+    final u = Uri.tryParse(url);
+    if (u == null || (u.scheme != 'http' && u.scheme != 'https') || u.host.isEmpty) return null;
+    final host = u.host.toLowerCase();
+    if (InternetAddress.tryParse(host) != null || !host.contains('.')) return host;
+    final labels = host.split('.');
+    return labels.sublist(labels.length - 2).join('.');
+  }
+
+  final x = site(a), y = site(b);
+  return x == null || y == null || x == y;
+}
+
 String? webOrigin(String url) {
   final u = Uri.tryParse(url);
   return u != null && (u.scheme == 'http' || u.scheme == 'https') && u.host.isNotEmpty ? u.origin : null;

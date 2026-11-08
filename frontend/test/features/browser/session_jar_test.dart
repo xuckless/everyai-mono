@@ -41,7 +41,17 @@ void main() {
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     server.listen((r) {
       final signedIn = (r.cookies.where((c) => c.name == 'sid').firstOrNull?.value) ?? '';
+      if (r.uri.path == '/file.txt') {
+        r.response.headers.contentType = ContentType.text;
+        r.response.write('hello');
+        r.response.close();
+        return;
+      }
       final page = switch (r.uri.path) {
+        '/get' => '<a id="dl" href="/file.txt" download>Get</a>',
+        // Writes a token and leaves for another origin at once (an OAuth callback that stores, then redirects).
+        '/write-and-go' =>
+          '<script>localStorage.setItem("late", "v1"); location.replace("http://127.0.0.1:${server.port}/");</script>',
         '/welcome' => () {
           r.response.cookies.add(Cookie('sid', r.uri.queryParameters['as'] ?? 'u')..httpOnly = true);
           return '<title>Signed in</title>ok';
@@ -227,6 +237,41 @@ void main() {
       // Skipped: that site doesn't hold the agent again.
       final third = await runner.run('browser', {'action': 'snapshot'});
       expect(third.text, isNot(contains('sign in')));
+    },
+    skip: skip,
+    timeout: const Timeout(Duration(minutes: 1)),
+  );
+
+  test(
+    "each session's downloads go to its own folder, though the sessions share one Chrome",
+    () async {
+      final a = session('dl-a'), b = session('dl-b');
+      a.downloadDir = '${tmp.path}/a-downloads';
+      b.downloadDir = '${tmp.path}/b-downloads';
+      await a.open(url('/get'));
+      await b.open(url('/get'));
+      await a.click(selector: '#dl');
+      await b.click(selector: '#dl');
+      expect(a.downloads.value.single.path, startsWith('${tmp.path}/a-downloads/'));
+      expect(b.downloads.value.single.path, startsWith('${tmp.path}/b-downloads/'));
+      expect(File(a.downloads.value.single.path!).readAsStringSync(), 'hello');
+      expect(File(b.downloads.value.single.path!).readAsStringSync(), 'hello');
+    },
+    skip: skip,
+    timeout: const Timeout(Duration(minutes: 1)),
+  );
+
+  test(
+    'storage a page writes just before it leaves for another origin is in the jar',
+    () async {
+      final a = session('late');
+      await a.open(url('/write-and-go'));
+      for (var i = 0; i < 40 && !a.page.value.url.contains('127.0.0.1'); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      expect(a.page.value.url, contains('127.0.0.1'));
+      final jar = await a.captureJar();
+      expect(jar.storage['http://localhost:${server.port}'], {'late': 'v1'});
     },
     skip: skip,
     timeout: const Timeout(Duration(minutes: 1)),

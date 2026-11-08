@@ -7022,7 +7022,9 @@ final class CodeUsage extends AsyncNotifier<UsageTotals> {
       _later?.cancel();
     });
     _loadReports();
+    final was = _backend;
     _backend = await _fetch();
+    if (_backend != was) _saveReports();
     return _total;
   }
 
@@ -7032,6 +7034,7 @@ final class CodeUsage extends AsyncNotifier<UsageTotals> {
     try {
       final j = jsonDecode(raw) as Map<String, Object?>;
       _reported = UsageTotals.fromJson(j['totals'] as Map<String, Object?>? ?? const {});
+      if (j['backend'] case final Map<String, Object?> b) _backend = UsageTotals.fromJson(b);
       _reportIds.addAll([...?(j['ids'] as List<Object?>?)?.whereType<String>()]);
       if (j['by_harness'] case final Map<String, Object?> by) {
         for (final MapEntry(:key, :value) in by.entries) {
@@ -7066,12 +7069,18 @@ final class CodeUsage extends AsyncNotifier<UsageTotals> {
     _reported = next;
     final harness = ref.read(codeSessionsProvider.notifier).byId(sessionId)?.harness ?? everyaiHarnessName;
     _byHarness[harness] = add(_byHarness[harness] ?? UsageTotals.zero);
+    _saveReports();
+    state = AsyncData(_total);
+  }
+
+  void _saveReports() {
     ref.read(preferencesProvider)[_reportsKey] = jsonEncode({
       'totals': _reported.toJson(),
+      // The ledger's last reading: a session now on an outside lead shows it without asking the backend.
+      if (!_backend.isEmpty) 'backend': _backend.toJson(),
       'ids': [..._reportIds],
       'by_harness': {for (final MapEntry(:key, :value) in _byHarness.entries) key: value.toJson()},
     });
-    state = AsyncData(_total);
   }
 
   /// The session moved to another lead: its context starts empty, so the
@@ -7084,6 +7093,9 @@ final class CodeUsage extends AsyncNotifier<UsageTotals> {
   Future<UsageTotals> _fetch() async {
     final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
     if (info == null || isDemoPath(info.workingDir)) return UsageTotals.zero;
+    // EveryAI asks its backend nothing for a session it doesn't lead (no-spend): the ledger can only have changed
+    // while EveryAI led, and its last reading is kept.
+    if (isOutsideLead(info.harness, info.workingDir)) return _backend;
     final json = await ref
         .read(apiClientProvider)
         .getJson('v1/usage/session/$sessionId', authenticated: !ref.read(appConfigProvider).devSkipAuth);
@@ -7119,7 +7131,9 @@ final class CodeUsage extends AsyncNotifier<UsageTotals> {
     if (!ref.mounted || !next.hasValue) return;
     // A new call on the ledger is the new lead's (EveryAI) first reading.
     if (next.requireValue.calls != _backend.calls) _freshLead = false;
+    final changed = next.requireValue != _backend;
     _backend = next.requireValue;
+    if (changed) _saveReports();
     state = AsyncData(_total);
   }
 }
