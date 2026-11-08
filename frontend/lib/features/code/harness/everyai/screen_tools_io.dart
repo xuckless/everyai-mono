@@ -9,6 +9,7 @@ import '../../../../core/security/untrusted.dart';
 import '../../live/app_view.dart';
 import '../../live/frames.dart';
 import '../../live/live_session.dart';
+import '../../live/login_wall.dart';
 import 'browser_io.dart';
 import 'exfil.dart';
 import 'research_sites.dart' show secretPath;
@@ -30,6 +31,7 @@ Future<ToolOutput> runBrowser(
   required bool vision,
   required String Function(String text, String name) fit,
   String Function(String text)? scrub,
+  Duration loginHold = const Duration(minutes: 10),
 }) async {
   final action = args['action'] as String? ?? '';
   String? str(String k) => (args[k] as String?)?.trim().isEmpty ?? true ? null : (args[k] as String).trim();
@@ -234,6 +236,23 @@ Future<ToolOutput> runBrowser(
         change = pageElementsChange(before, await b.elements());
       }
       did = '$did\n${change ?? 'Nothing visible changed on the page.'}';
+    }
+    // A sign-in page: signing in is the user's. The call waits while a card asks them, then goes on.
+    if (b.jarHome != null &&
+        b.running &&
+        b.dialog.value == null &&
+        !const {'tabs', 'dialog', 'console'}.contains(action)) {
+      final probe = await b.loginProbe();
+      final site = probe == null ? null : loginWallSite(probe.url, password: probe.password);
+      if (site != null && !b.loginWall.skipped(site)) {
+        b.control.report(LiveActivity('look', caption: 'Waiting for you to sign in to $site'));
+        final outcome = await b.loginWall.hold(site, probe!.url, probe: b.loginProbe, timeout: loginHold);
+        did = '$did\n${wallOutcomeText(site, outcome)}';
+        if (outcome == WallOutcome.passed && b.running) {
+          did = '$did Now on ${await b.describe()}.';
+          list = true;
+        }
+      }
     }
     if (b.fileChooser.value != null && action != 'upload') {
       did = '$did\nA file picker opened: give it files with browser {action: "upload", files: [paths]}.';

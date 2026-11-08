@@ -32,6 +32,7 @@ import '../../panes/panes_providers.dart';
 import '../../panes/processes.dart';
 import '../../shells/shell_registry.dart';
 import 'browser_overlays.dart';
+import 'browser_sign_ins.dart';
 import 'preview_apps.dart';
 
 /// The page sizes the Preview offers (CSS pixels); phones and tablets get a device frame.
@@ -424,11 +425,9 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
       if (mounted) setState(() => _signingIn = false);
       rethrow;
     }
-    final url = b.page.value.url;
     try {
-      await b.close();
-      await b.host.signIn(url.isEmpty || url == 'about:blank' ? 'https://accounts.google.com' : url);
-      if (url.isNotEmpty) await b.userOpen(url);
+      // A real window on the project's profile; the site's sign-in comes over into this session.
+      await signInInWindow(b, b.page.value.url);
     } on BrowserError catch (e) {
       if (mounted) setState(() => _problem = e.message);
     } finally {
@@ -442,10 +441,10 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   Future<void> _clearProfile() async {
     final ok = await showAdaptiveConfirm(
       context,
-      title: 'Clear the browser data?',
+      title: "Clear the project's browser data?",
       message:
-          "Signs out of every site in this project's Preview browser and deletes its cookies and storage. Every "
-          'session of the project shares it.',
+          "Deletes the project's shared browser profile: the sign-ins made in a window and its cache. Each session's "
+          'own sign-ins stay (sign out of them from the key menu).',
       confirmLabel: 'Clear',
       destructive: true,
     );
@@ -603,6 +602,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
                     child: Icon(EveryIcon.globe.of(theme.design), size: 16, color: theme.accent),
                   ),
                 ),
+              if (b != null) BrowserKeysButton(browser: b, projectId: widget.session.projectId),
               if (b != null) BrowserDownloadsButton(browser: b),
               AdaptiveMenuButton(
                 tooltip: 'Page size',
@@ -628,8 +628,8 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
                 tooltip: 'More',
                 actions: [
                   if (!blank) MenuAction(label: 'Open in my browser', onSelected: () => _openOutside(page.url)),
-                  MenuAction(label: 'Sign in to a site…', onSelected: _signIn),
-                  MenuAction(label: 'Clear browser data…', destructive: true, onSelected: _clearProfile),
+                  MenuAction(label: 'Sign in in a window…', onSelected: _signIn),
+                  MenuAction(label: "Clear the project's browser data…", destructive: true, onSelected: _clearProfile),
                 ],
                 child: Padding(
                   padding: const EdgeInsets.all(7),

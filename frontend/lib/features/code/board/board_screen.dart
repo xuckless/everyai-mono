@@ -23,6 +23,8 @@ import 'board_work.dart';
 import '../workflows/workflow_runs.dart' show workflowRunsProvider;
 import '../domain/session_work.dart';
 import '../ui/stop_all_button.dart';
+import '../ui/panes/browser_sign_ins.dart';
+import '../ui/console/console_state.dart';
 import '../workflows/workflow_engine.dart' show WorkflowStatus;
 
 /// Every session at a glance: Needs you, Running, Done, side by side with hairlines between them (drag one to
@@ -582,6 +584,17 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                 ).settle(),
               ),
             BoardWork(sessionId: info.id),
+            Padding(
+              padding: const EdgeInsets.only(left: 36, top: 8),
+              child: LoginWallCard(
+                sessionId: info.id,
+                projectId: info.projectId,
+                onOpen: () {
+                  ref.read(consolePanelProvider(info.id).notifier).show(ConsoleView.preview);
+                  openSession();
+                },
+              ),
+            ),
             // Its own approvals; Open for a waiting session not open here yet (one whose child waits shows that above).
             if (waiting && !asking && (pending.isNotEmpty || live == null))
               Padding(

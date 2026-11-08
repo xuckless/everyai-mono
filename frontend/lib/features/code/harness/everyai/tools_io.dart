@@ -346,10 +346,12 @@ final _specs = [
   // Prompt reason (press): combinations now work (Shift+Tab, Control+a), and the model only knew of single keys.
   // Prompt reason (tabs, tab, dialog, upload): pop-ups and new tabs, page dialogs and file pickers used to hang or
   // be lost; the model needs the actions and to know a pop-up becomes the active tab.
+  // Prompt reason (own profile, sign-in pages): each session now has its own cookies, and a call on a sign-in page
+  // waits for the user; without saying so the model would try to sign in itself or read the wait as a hang.
   _fn(
     ToolNames.browser,
-    'Use a web page the way the user would, in the browser the user sees live in the Preview tab (a profile of this '
-    'project\'s own: never the user\'s everyday browser, so never quit or kill theirs). Open what you built '
+    'Use a web page the way the user would, in the browser the user sees live in the Preview tab (this session\'s own '
+    'cookies and sign-ins: never the user\'s everyday browser, so never quit or kill theirs). Open what you built '
     '(http://localhost:PORT with the dev server in the background, or file:///path/index.html), act on it, then '
     'look.\n'
     '- action: open {url} · snapshot · click {ref, or selector, or x and y with frame; count 2 = double-click} · '
@@ -362,7 +364,8 @@ final _specs = [
     '- A pop-up or a link to a new tab opens as a new tab and becomes the active one (a sign-in pop-up that closes '
     'itself hands back to the page that opened it); tabs lists them. While the page shows a dialog (alert, confirm, '
     'prompt, leave page?) it waits: answer it with dialog. upload gives an open file picker (or a file input) files '
-    'of the project, on local pages only.\n'
+    'of the project, on local pages only. On a site\'s sign-in page the call waits while the user is asked to sign in '
+    '(never type passwords or codes yourself), then says how it went.\n'
     '- open and snapshot return the element list: one line per button, link, field and heading, as '
     '`[ref_3] button "Sign in"`. Click and type by ref: exact, and far cheaper than a picture. Refs hold until the '
     'next list.\n'

@@ -77,6 +77,9 @@ final class _Browser implements ScreenBrowser {
       vision: true,
       fit: (text, _) => _cut(text),
       scrub: Scrubber.forProject(root).redact,
+      // An outside CLI may give up on a tool call that runs for long: the wait is shorter, and the result says to
+      // check again.
+      loginHold: const Duration(minutes: 3),
     ),
   );
 

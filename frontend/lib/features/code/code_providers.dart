@@ -11,6 +11,7 @@ import '../models/domain/local_routes.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../core/api/decide_client.dart' show decideClientProvider;
+import 'live/browser_jar.dart' show SealedStore;
 import 'live/live_browsers.dart';
 import 'live/nested_display_io.dart';
 import 'shells/shell_registry.dart';
@@ -382,6 +383,8 @@ Future<List<WorkflowEntry>> _workflowsOfIn(Ref ref, String projectDir) async {
 /// disposal doesn't run then). The shell listens to it from app start, so
 /// every CLI is covered, however it was spawned.
 final driverShutdownProvider = Provider<void>((ref) {
+  // Sessions' browser jars and saved logins are sealed under the app's data folder (with a keychain key).
+  LiveBrowsers.jars ??= () async => SealedStore.app(await GitService.dataDir());
   Future<void> closeAll() =>
       Future.wait([closeAllDriverProcesses(), LiveBrowsers.stopAll(), Future(NestedDisplays.stopAll)])
           .timeout(const Duration(seconds: 3), onTimeout: () => const []);

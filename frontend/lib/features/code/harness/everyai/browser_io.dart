@@ -7,7 +7,9 @@ import 'dart:io';
 import 'package:flutter/foundation.dart' show ValueNotifier, visibleForTesting;
 
 import '../../live/frames.dart';
+import '../../live/browser_jar.dart';
 import '../../live/key_map.dart';
+import '../../live/login_wall.dart';
 import '../../live/live_session.dart';
 import '../../live/page_snapshot.dart';
 import 'shell_io.dart' show killTree;
@@ -189,12 +191,36 @@ typedef PageContext = ({
 /// fields nor submits their forms ([_guardJs]), and its downloads land in
 /// [downloadDir].
 final class HeadlessBrowser {
-  HeadlessBrowser({required this.profileDir, this.executable}) : attachTo = null;
+  HeadlessBrowser({required this.profileDir, this.executable, this.jarHome}) : attachTo = null;
 
   /// Drives a page of a Chromium-based app that is already running (an Electron app started with
   /// `--remote-debugging-port`), at its browser-level DevTools [endpoint]: the app's own window, at its own size.
   /// Closing detaches; the app keeps running.
-  HeadlessBrowser.attached(Uri endpoint) : attachTo = endpoint, profileDir = '', executable = null;
+  HeadlessBrowser.attached(Uri endpoint) : attachTo = endpoint, profileDir = '', executable = null, jarHome = null;
+
+  /// Where the session's own cookie jar is kept: with one, the browser runs in a context of its own in the
+  /// project's Chrome (cookies and storage apart from other sessions'), started from the jar and saved back to it.
+  /// Without one, it uses the profile's shared cookies.
+  final JarHome? jarHome;
+
+  /// The session's browser context in Chrome, while running with a [jarHome].
+  String? _contextId;
+
+  /// The jar as last read or captured; [_jarLoaded] once read from disk this run.
+  JarData _jar = emptyJar;
+  var _jarLoaded = false;
+
+  /// Saved logins this session started from, by site: their refreshed sign-ins are written back.
+  final usedLogins = <String, String>{};
+
+  /// Keeps the jar current while running (a Chrome that stops all at once loses at most this much).
+  Timer? _jarTimer;
+
+  /// Set by [forgetJar]: the session is gone, so its jar is deleted rather than saved.
+  var _forget = false;
+
+  /// The login wall: the agent's call waits on a sign-in page until the user signs in or skips.
+  final loginWall = LoginWall();
 
   /// The running app's DevTools endpoint this browser attaches to, or null for our own Chrome.
   final Uri? attachTo;
@@ -371,7 +397,21 @@ final class HeadlessBrowser {
     try {
       // A window of its own: headless Chrome paints only the front tab of a window, so a page that shares one with
       // another session's goes to the back and its screencast stops (the address still changes, the picture not).
-      final created = await _sendOn(browser, 'Target.createTarget', {'url': 'about:blank', 'newWindow': true});
+      if (jarHome != null) {
+        // Disposed with the browser socket: a context left by an app that crashed goes with it.
+        final ctx = await _sendOn(browser, 'Target.createBrowserContext', {'disposeOnDetach': true});
+        _contextId = ctx['browserContextId'] as String?;
+        await _loadJar();
+        final cookies = [for (final c in _jar.cookies) ?cookieParam(c)];
+        if (cookies.isNotEmpty) {
+          await _sendOn(browser, 'Storage.setCookies', {'cookies': cookies, 'browserContextId': _contextId});
+        }
+      }
+      final created = await _sendOn(browser, 'Target.createTarget', {
+        'url': 'about:blank',
+        'newWindow': true,
+        'browserContextId': ?_contextId,
+      });
       _targetId = created['targetId'] as String?;
       if (_targetId == null) throw const BrowserError('The browser has no page to drive.');
       _socket = await WebSocket.connect('ws://${endpoint.host}:${endpoint.port}/devtools/page/$_targetId');
@@ -401,6 +441,184 @@ final class HeadlessBrowser {
     ]);
     await _viewport();
     if (_casting) await _castStart();
+    if (jarHome != null) {
+      _jarTimer?.cancel();
+      _jarTimer = Timer.periodic(const Duration(seconds: 30), (_) => unawaited(_keepJar()));
+    }
+  }
+
+  // ----------------------------------------------------------------------------------- the session's cookie jar
+
+  Future<void> _loadJar() async {
+    final home = jarHome;
+    if (home == null || _jarLoaded) return;
+    _jarLoaded = true;
+    try {
+      final j = await (await home.store()).read(home.name);
+      _jar = jarFromJson(j);
+      if (j is Map && j['logins'] is Map) {
+        usedLogins.addAll({for (final e in (j['logins'] as Map).entries) '${e.key}': '${e.value}'});
+      }
+    } on Object {
+      // No keychain (a test without one), or no jar yet: a clean start.
+    }
+  }
+
+  /// The page's local storage into the jar (the app reads it, not the agent).
+  Future<void> _readStorage() async {
+    if (_socket == null || dialog.value != null) return;
+    try {
+      final r = await _send('Runtime.evaluate', {
+        'expression': storageReadJs,
+        'returnByValue': true,
+        'objectGroup': 'everyai-jar',
+      }).timeout(const Duration(seconds: 3));
+      final v = (r['result'] as Map<String, Object?>?)?['value'];
+      if (v is List && v.length == 2 && v[0] is String && v[1] is Map) {
+        final items = {for (final e in (v[1] as Map).entries) '${e.key}': '${e.value}'};
+        final storage = {..._jar.storage};
+        if (items.isEmpty) {
+          storage.remove(v[0]);
+        } else {
+          storage[v[0] as String] = items;
+        }
+        _jar = (cookies: _jar.cookies, storage: storage);
+      }
+    } on Object {
+      // A page that's busy or gone: the last reading stands.
+    }
+  }
+
+  /// The jar as it is now: the context's cookies and the storage read from its pages.
+  Future<JarData> captureJar() async {
+    if (_contextId != null && _browserSocket != null) {
+      try {
+        final r = await _sendOn(_browserSocket, 'Storage.getCookies', {
+          'browserContextId': _contextId,
+        }).timeout(const Duration(seconds: 3));
+        _jar = (
+          cookies: [
+            for (final c in (r['cookies'] as List?) ?? const [])
+              if (c is Map) c.cast<String, Object?>(),
+          ],
+          storage: _jar.storage,
+        );
+      } on Object {
+        // Keep the last reading.
+      }
+      await _readStorage();
+    }
+    return _jar;
+  }
+
+  Future<void> _keepJar() async {
+    await captureJar();
+    await _writeJar();
+  }
+
+  Future<void> _writeJar() async {
+    final home = jarHome;
+    if (home == null || _forget || !_jarLoaded) return;
+    try {
+      await (await home.store()).write(home.name, {...jarToJson(_jar), 'logins': usedLogins});
+    } on Object {
+      // No keychain: the jar lives for this run only.
+    }
+  }
+
+  /// Saves the jar now (captured first while running).
+  Future<void> saveJar() async {
+    if (running) await captureJar();
+    await _writeJar();
+  }
+
+  /// The session was removed: its jar is deleted, and nothing is saved when the browser closes.
+  Future<void> forgetJar() async {
+    _forget = true;
+    final home = jarHome;
+    if (home == null) return;
+    try {
+      await (await home.store()).delete(home.name);
+    } on Object {
+      // Nothing kept.
+    }
+  }
+
+  /// Adds [data] (a saved login, or a sign-in made in a real window) to the session: its cookies at once, its
+  /// storage now on a page of its origin (which reloads) and otherwise when one first loads. [loginId] records the
+  /// saved login it came from, for writing the refreshed sign-in back.
+  Future<void> applyJar(JarData data, {String? site, String? loginId}) async {
+    await _loadJar();
+    _jar = jarMerged(_jar, data);
+    if (site != null && loginId != null) usedLogins[site] = loginId;
+    if (running && _browserSocket != null) {
+      final cookies = [for (final c in data.cookies) ?cookieParam(c)];
+      if (cookies.isNotEmpty) {
+        await _sendOn(_browserSocket, 'Storage.setCookies', {'cookies': cookies, 'browserContextId': ?_contextId});
+      }
+      if (data.storage.isNotEmpty) {
+        await _send('Page.addScriptToEvaluateOnNewDocument', {'source': storageSeedJs(data.storage)});
+        final here = Uri.tryParse(page.value.url);
+        final origin = here == null || !here.hasAuthority ? null : here.origin;
+        if (data.storage[origin] case final items?) {
+          await _send('Runtime.evaluate', {
+            'expression':
+                '(() => { const items = ${jsonEncode(items)}; '
+                'for (const [k, v] of Object.entries(items)) localStorage.setItem(k, v); })()',
+          });
+        }
+      }
+      if (data.cookies.isNotEmpty || data.storage.isNotEmpty) await reload();
+    }
+    await _writeJar();
+  }
+
+  /// Signs the session out of [site] (null: every site): its cookies and storage leave the jar and the browser.
+  Future<void> clearJar({String? site}) async {
+    await _loadJar();
+    if (running && _browserSocket != null && _contextId != null) {
+      final all = await captureJar();
+      final gone = site == null ? all.cookies : jarForSite(all, site).cookies;
+      if (site == null) {
+        await _sendOn(_browserSocket, 'Storage.clearCookies', {'browserContextId': _contextId});
+      } else {
+        for (final c in gone) {
+          await _send('Network.deleteCookies', {'name': c['name'], 'domain': c['domain'], 'path': c['path']});
+        }
+      }
+      final here = Uri.tryParse(page.value.url);
+      if (here != null && here.hasAuthority && (site == null || siteOf(here.host) == site)) {
+        await _send('Runtime.evaluate', {
+          'expression': 'try { localStorage.clear(); sessionStorage.clear(); } catch (_) {}',
+        });
+      }
+    }
+    _jar = site == null ? emptyJar : jarWithoutSite(_jar, site);
+    if (site == null) {
+      usedLogins.clear();
+    } else {
+      usedLogins.remove(site);
+    }
+    await _writeJar();
+    if (running) await reload();
+  }
+
+  /// The sites this session is signed in to (it has cookies for), from the last reading.
+  List<String> get signedInSites => jarSites(_jar);
+
+  /// The sign-ins in the project's shared profile (the "Sign in in a window" Chrome, and sign-ins made before
+  /// sessions had jars of their own): its cookies for [site], or for every site.
+  Future<JarData> profileSignIns({String? site}) async {
+    await _start();
+    final r = await _sendOn(_browserSocket, 'Storage.getCookies', const {});
+    final all = (
+      cookies: [
+        for (final c in (r['cookies'] as List?) ?? const [])
+          if (c is Map) c.cast<String, Object?>(),
+      ],
+      storage: const <String, Map<String, String>>{},
+    );
+    return site == null ? all : jarForSite(all, site);
   }
 
   /// What every page of ours is driven with: events, frames of other origins as their own targets (so the guards
@@ -414,6 +632,8 @@ final class HeadlessBrowser {
       _send('Target.setAutoAttach', {'autoAttach': true, 'waitForDebuggerOnStart': false, 'flatten': true}),
       _send('Page.setInterceptFileChooserDialog', {'enabled': true}),
       _send('Page.addScriptToEvaluateOnNewDocument', {'source': _contextTrackerJs}),
+      if (_jar.storage.isNotEmpty)
+        _send('Page.addScriptToEvaluateOnNewDocument', {'source': storageSeedJs(_jar.storage)}),
     ]);
     // Not waited for: a page that shows a dialog runs no script until it is answered.
     unawaited(_send('Runtime.evaluate', {'expression': _contextTrackerJs}).then((_) {}, onError: (Object _) {}));
@@ -518,7 +738,11 @@ final class HeadlessBrowser {
   /// Opens [url] in a new tab of the session and makes it active (the Preview's "Open link in new tab").
   Future<void> openTab(String url) async {
     await _start();
-    final created = await _sendOn(_browserSocket, 'Target.createTarget', {'url': url, 'newWindow': true});
+    final created = await _sendOn(_browserSocket, 'Target.createTarget', {
+      'url': url,
+      'newWindow': true,
+      'browserContextId': ?_contextId,
+    });
     final id = created['targetId'] as String?;
     if (id == null) return;
     if (!_tabList.any((t) => t.id == id)) _tabList.add((id: id, url: url, title: ''));
@@ -706,6 +930,9 @@ final class HeadlessBrowser {
         );
       case 'Page.loadEventFired':
         unawaited(_refreshPage());
+        if (jarHome != null) {
+          unawaited(Future<void>.delayed(const Duration(seconds: 1), _readStorage));
+        }
       case 'Target.targetInfoChanged':
         final t = params['targetInfo'] as Map<String, Object?>? ?? const {};
         if (t['targetId'] == _targetId) unawaited(_refreshPage(url: t['url'] as String?, title: t['title'] as String?));
@@ -841,6 +1068,10 @@ final class HeadlessBrowser {
   }
 
   void _closed() {
+    // Chrome went at once (it crashed, or stopped for a sign-in window): the jar keeps its last reading.
+    _jarTimer?.cancel();
+    _contextId = null;
+    unawaited(_writeJar());
     // Tabs still open (a switch to one failed) close with the session's browser instead of staying in Chrome.
     final browser = _browserSocket;
     if (browser != null && attachTo == null) {
@@ -926,6 +1157,26 @@ final class HeadlessBrowser {
     // A moment for scripts that run after load (frameworks mounting).
     await Future<void>.delayed(const Duration(milliseconds: 400));
     return describe();
+  }
+
+  /// The page's address and whether it shows a password field (for the login wall); null when it can't tell (a
+  /// dialog, a page loading).
+  Future<LoginProbe?> loginProbe() async {
+    if (_socket == null || dialog.value != null) return null;
+    try {
+      final r = await _send('Runtime.evaluate', {
+        'expression':
+            '[location.href, [...document.querySelectorAll("input[type=password]")]'
+            '.some(e => e.getClientRects().length > 0 && getComputedStyle(e).visibility !== "hidden")]',
+        'returnByValue': true,
+        'objectGroup': 'everyai-wall',
+      }).timeout(const Duration(seconds: 3));
+      final v = (r['result'] as Map<String, Object?>?)?['value'];
+      if (v is List && v.length == 2 && v[0] is String) return (url: v[0] as String, password: v[1] == true);
+    } on Object {
+      // Unknown this time.
+    }
+    return null;
   }
 
   /// The page's address and title.
@@ -1318,6 +1569,8 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
 
   Future<void> _close() async {
     await _switched();
+    _jarTimer?.cancel();
+    if (running && !_forget) await saveJar().timeout(const Duration(seconds: 2), onTimeout: () {});
     final targets = {for (final t in _tabList) t.id, ?_targetId};
     if (_browserSocket != null && attachTo == null) {
       for (final target in targets) {
@@ -1339,6 +1592,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     final browserSocket = _browserSocket;
     _browserSocket = null;
     await browserSocket?.close();
+    _contextId = null;
     if (attachTo == null) _release();
   }
 
