@@ -2,12 +2,13 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import 'git_env.dart';
 import 'git_guard.dart';
 import 'git_models.dart';
-import 'git_service.dart' show GitError;
+import 'git_service.dart' show BaseMoved, GitError;
 
 export 'repo_check_io.dart' show checkRepo;
 
@@ -344,6 +345,21 @@ Future<List<FileDiff>> diff(SessionWorktree w) => _withSnapshot(w, (env) async {
   return parseUnifiedDiff('${res.stdout}');
 });
 
+/// What a fork changed in its own worktree since its base, uncommitted work included; the dependency folders it
+/// borrows from its parent are left out.
+Future<List<FileDiff>> forkDiff(ForkCopy copy) async {
+  final tmp = await Directory.systemTemp.createTemp('everyai-index');
+  final env = {'GIT_INDEX_FILE': '${tmp.path}/index'};
+  try {
+    await _git(copy.root, ['read-tree', 'HEAD'], env: env);
+    await _git(copy.root, ['add', '-A', '--', '.', for (final l in copy.links) ':(exclude)$l'], env: env);
+    final res = await _git(copy.root, ['diff', '--cached', '-M', '--no-color', copy.base], env: env);
+    return parseUnifiedDiff('${res.stdout}');
+  } finally {
+    await tmp.delete(recursive: true);
+  }
+}
+
 Future<List<FileDiff>> uncommittedDiff(SessionWorktree w) => _withSnapshot(w, (env) async {
   final res = await _git(w.path, ['diff', '--cached', '-M', '--no-color', 'HEAD'], env: env);
   return parseUnifiedDiff('${res.stdout}');
@@ -527,7 +543,10 @@ Future<({int ahead, int behind})> aheadBehind(SessionWorktree w) async {
   return (ahead: ahead, behind: behind);
 }
 
-Future<String> squashMerge(SessionWorktree w, String message) async {
+/// Fast-forwards the base branch in the main checkout to [sha], the commit the user confirmed, which must be one
+/// commit on top of it. Returns the merged commit. Nothing merges when the base moved (not a fast forward):
+/// [BaseMoved]; any other failure is a [GitError] with git's own words.
+Future<String> fastForwardMerge(SessionWorktree w, String sha) async {
   final dirty = await _out(w.repoRoot, ['status', '--porcelain', '--untracked-files=no']);
   if (dirty.isNotEmpty) {
     throw const GitError('Your main checkout has uncommitted changes. Commit or stash them, then merge again.');
@@ -536,12 +555,24 @@ Future<String> squashMerge(SessionWorktree w, String message) async {
   if (current != w.baseBranch) {
     throw GitError('Your main checkout is on $current. Switch it to ${w.baseBranch} to merge this session.');
   }
-  await commitAll(w, message);
-  await _git(w.repoRoot, ['merge', '--squash', '-q', w.branch]);
-  final staged = await _git(w.repoRoot, ['diff', '--cached', '--quiet'], check: false);
-  if (staged.exitCode == 0) throw const GitError('There is nothing to merge: the session made no changes.');
-  await _git(w.repoRoot, ['commit', '-q', '-m', stripBranding(message)]);
+  final onTop = await _git(w.repoRoot, ['merge-base', '--is-ancestor', w.baseBranch, sha], check: false);
+  if (onTop.exitCode != 0) throw const BaseMoved();
+  if (await _out(w.repoRoot, ['rev-list', '--count', '${w.baseBranch}..$sha']) != '1') {
+    throw GitError('The commit to merge is no longer one commit on top of ${w.baseBranch}. Press Merge again.');
+  }
+  final res = await _git(w.repoRoot, ['merge', '--ff-only', '-q', sha], check: false);
+  if (res.exitCode != 0) {
+    final why = '${res.stderr}'.trim();
+    throw GitError(why.isEmpty ? "git couldn't fast-forward ${w.baseBranch}." : why);
+  }
   return _out(w.repoRoot, ['rev-parse', 'HEAD']);
+}
+
+/// The session worktree's newest commit and its subject: what Merge would put on the base.
+Future<({String sha, String subject})> mergeCandidate(SessionWorktree w) async {
+  final out = await _out(w.path, ['log', '-1', '--format=%H%n%s']);
+  final [sha, ...subject] = out.split('\n');
+  return (sha: sha, subject: subject.join('\n'));
 }
 
 /// Pushes the session branch. Not to a folder on this computer: git runs that repository's own hooks (and a
@@ -730,6 +761,50 @@ Future<ForkMerge> mergeFork(ForkCopy copy, {required String slug, bool merge = t
   }
   await _git(copy.repoRoot, ['worktree', 'remove', '--force', wt], check: false);
   return (merged: merged, conflicts: conflicts, ref: ref);
+}
+
+/// The fork worktrees in [forksDir] that no session holds ([held]: their roots), each with its repository ('' when
+/// git can't tell any more) and whether it has work of its own: uncommitted changes (the borrowed dependency links
+/// aside) or commits past its base.
+Future<List<OrphanFork>> orphanForks(String forksDir, Set<String> held) async {
+  final dir = Directory(forksDir);
+  if (!dir.existsSync()) return const [];
+  final out = <OrphanFork>[];
+  // Compared spelled the same way: listSync joins with the platform's separator, sessions store '/'.
+  final heldPaths = {for (final h in held) p.canonicalize(h)};
+  for (final d in dir.listSync().whereType<Directory>()) {
+    if (heldPaths.contains(p.canonicalize(d.path))) continue;
+    final common = await _git(d.path, ['rev-parse', '--path-format=absolute', '--git-common-dir'], check: false);
+    if (common.exitCode != 0) {
+      // Its repository can't be reached (an unmounted disk, a moved project): what it holds can't be told, so it is
+      // kept for the user to remove.
+      out.add((path: d.path, repoRoot: '', unsaved: true));
+      continue;
+    }
+    final repo = File('${common.stdout}'.trim()).parent.path;
+    final status = await _git(d.path, ['status', '--porcelain', '--untracked-files=normal'], check: false);
+    final changes = [
+      for (final line in const LineSplitter().convert('${status.stdout}'))
+        if (line.length > 3 && !_borrowedLink(d.path, line.substring(3).trim().replaceAll(RegExp(r'/$'), ''))) line,
+    ];
+    final subject = await _git(d.path, ['log', '-1', '--format=%s'], check: false);
+    final committed = subject.exitCode == 0 && '${subject.stdout}'.trim() != 'EveryAI fork base';
+    out.add((path: d.path, repoRoot: repo, unsaved: changes.isNotEmpty || committed));
+  }
+  return out;
+}
+
+bool _borrowedLink(String root, String path) =>
+    _borrowed.contains(path.split('/').last) && FileSystemEntity.isLinkSync('$root/$path');
+
+/// Deletes an orphaned fork worktree: git forgets it, then its folder goes.
+Future<void> removeOrphanFork(OrphanFork o) async {
+  if (o.repoRoot.isNotEmpty) {
+    await _git(o.repoRoot, ['worktree', 'remove', '--force', o.path], check: false);
+    await _git(o.repoRoot, ['worktree', 'prune'], check: false);
+  }
+  final d = Directory(o.path);
+  if (d.existsSync()) await d.delete(recursive: true);
 }
 
 // --------------------------------------------------------- landing lanes

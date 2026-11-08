@@ -701,7 +701,7 @@ class SessionActionsButton extends StatelessWidget {
   }
 }
 
-/// Ask · Auto-edit · Plan · Full auto.
+/// Ask · Auto-edit · Plan · Auto · Full auto · Bypass.
 class ModeMenu extends StatelessWidget {
   const ModeMenu({super.key, required this.mode, required this.onChanged});
 
@@ -838,7 +838,7 @@ class _ModeChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final tint = switch (policy) {
-      AgentMode.fullAuto || AgentMode.bypass => theme.danger,
+      AgentMode.fullAuto || AgentMode.auto || AgentMode.bypass => theme.danger,
       _ => null,
     };
     return Semantics(

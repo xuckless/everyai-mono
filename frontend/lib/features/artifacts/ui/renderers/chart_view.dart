@@ -20,7 +20,7 @@ class ChartView extends StatefulWidget {
   /// Draw the title above (in documents; cards show it in their header).
   final bool showTitle;
 
-  static Color colorOf(int i) => Color(chartPalette[i % chartPalette.length]);
+  static Color colorOf(ChartSpec spec, int i) => Color(spec.colorAt(i));
 
   @override
   State<ChartView> createState() => _ChartViewState();
@@ -38,8 +38,11 @@ class _ChartViewState extends State<ChartView> {
     if (spec.isEmpty) return Text('No data to chart.', style: theme.type.body.tint(theme.textMuted));
     final label = theme.type.footnote.tint(theme.textMuted);
     final legend = spec.isRound
-        ? [for (final (i, s) in spec.slices.indexed) (s.label, s.other ? Color(chartOtherColor) : ChartView.colorOf(i))]
-        : [for (final (i, _) in spec.series.indexed) (spec.seriesName(i), ChartView.colorOf(i))];
+        ? [
+            for (final (i, s) in spec.slices.indexed)
+              (s.label, s.other ? Color(chartOtherColor) : ChartView.colorOf(spec, i)),
+          ]
+        : [for (final (i, _) in spec.series.indexed) (spec.seriesName(i), ChartView.colorOf(spec, i))];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -132,7 +135,7 @@ class _ChartViewState extends State<ChartView> {
       topTitles: const AxisTitles(),
       rightTitles: const AxisTitles(),
       leftTitles: AxisTitles(
-        axisNameWidget: spec.yLabel.isEmpty ? null : Text(spec.yLabel, style: label),
+        axisNameWidget: spec.valueAxisName.isEmpty ? null : Text(spec.valueAxisName, style: label),
         sideTitles: SideTitles(
           showTitles: true,
           reservedSize: 44,
@@ -140,7 +143,7 @@ class _ChartViewState extends State<ChartView> {
               ? const SizedBox.shrink()
               : SideTitleWidget(
                   meta: meta,
-                  child: Text(spec.format(v), style: label),
+                  child: Text(spec.tickLabel(v), style: label),
                 ),
         ),
       ),
@@ -209,7 +212,7 @@ class _ChartViewState extends State<ChartView> {
               for (final (i, s) in slices.indexed)
                 PieChartSectionData(
                   value: s.value,
-                  color: s.other ? Color(chartOtherColor) : ChartView.colorOf(i),
+                  color: s.other ? Color(chartOtherColor) : ChartView.colorOf(spec, i),
                   title: s.value / total >= 0.06 ? _pct(s.value / total) : '',
                   radius: donut ? widget.height * 0.16 : widget.height * 0.4,
                   titlePositionPercentageOffset: donut ? 0.5 : 0.62,
@@ -268,7 +271,7 @@ class _ChartViewState extends State<ChartView> {
                           for (final (si, s) in spec.series.indexed)
                             BarChartRodData(
                               toY: spec.valueAt(s, c) ?? 0,
-                              color: ChartView.colorOf(si),
+                              color: ChartView.colorOf(spec, si),
                               width: (240 / (n * cats.length).clamp(1, 240)).clamp(4, 24),
                               borderRadius: const BorderRadius.vertical(top: Radius.circular(3)),
                             ),
@@ -286,7 +289,11 @@ class _ChartViewState extends State<ChartView> {
             scatterSpots: [
               for (final (si, s) in spec.series.indexed)
                 for (final p in s.points)
-                  ScatterSpot(xOf(p.x), p.y, dotPainter: FlDotCirclePainter(radius: 4, color: ChartView.colorOf(si))),
+                  ScatterSpot(
+                    xOf(p.x),
+                    p.y,
+                    dotPainter: FlDotCirclePainter(radius: 4, color: ChartView.colorOf(spec, si)),
+                  ),
             ],
           ),
         );
@@ -316,7 +323,7 @@ class _ChartViewState extends State<ChartView> {
                   spots: [for (final p in s.points) FlSpot(xOf(p.x), p.y)]..sort((a, b) => a.x.compareTo(b.x)),
                   isCurved: true,
                   preventCurveOverShooting: true,
-                  color: ChartView.colorOf(si),
+                  color: ChartView.colorOf(spec, si),
                   barWidth: 2.5,
                   dotData: FlDotData(
                     show: s.points.length <= 24 || marked.isNotEmpty,
@@ -325,7 +332,7 @@ class _ChartViewState extends State<ChartView> {
                   ),
                   belowBarData: BarAreaData(
                     show: spec.type == ChartType.area,
-                    color: ChartView.colorOf(si).withValues(alpha: 0.18),
+                    color: ChartView.colorOf(spec, si).withValues(alpha: 0.18),
                   ),
                 ),
             ],
@@ -341,10 +348,10 @@ class _ChartViewState extends State<ChartView> {
     for (final (si, s) in spec.series.indexed) {
       final v = spec.valueAt(s, category) ?? 0;
       if (v >= 0) {
-        items.add(BarChartRodStackItem(up, up + v, ChartView.colorOf(si)));
+        items.add(BarChartRodStackItem(up, up + v, ChartView.colorOf(spec, si)));
         up += v;
       } else {
-        items.add(BarChartRodStackItem(down + v, down, ChartView.colorOf(si)));
+        items.add(BarChartRodStackItem(down + v, down, ChartView.colorOf(spec, si)));
         down += v;
       }
     }
@@ -391,7 +398,7 @@ class _HorizontalBars extends StatelessWidget {
                   width: at(up + v) - at(up),
                   top: 0,
                   bottom: 0,
-                  child: ColoredBox(color: ChartView.colorOf(si)),
+                  child: ColoredBox(color: ChartView.colorOf(spec, si)),
                 ),
               );
               up += v;
@@ -436,7 +443,7 @@ class _HorizontalBars extends StatelessWidget {
                                     width: math.max(1, at(v) - at(math.max(lo, 0))),
                                     height: spec.series.length > 1 ? 10 : 16,
                                     decoration: BoxDecoration(
-                                      color: ChartView.colorOf(si),
+                                      color: ChartView.colorOf(spec, si),
                                       borderRadius: const BorderRadius.horizontal(right: Radius.circular(3)),
                                     ),
                                   ),

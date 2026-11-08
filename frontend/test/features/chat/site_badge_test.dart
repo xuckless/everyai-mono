@@ -15,7 +15,9 @@ void main() {
         textDirection: TextDirection.ltr,
         child: EveryThemeScope(
           theme: EveryTheme.resolve(DesignLanguage.material, Brightness.dark),
-          child: const Center(child: SiteBadge(site: 'sudbury.com', host: 'www.sudbury.com')),
+          child: const Center(
+            child: SiteBadge(site: 'sudbury.com', host: 'www.sudbury.com'),
+          ),
         ),
       ),
     );

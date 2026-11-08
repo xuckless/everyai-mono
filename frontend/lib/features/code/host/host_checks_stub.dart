@@ -26,3 +26,5 @@ Future<HostResult> hostBugCheck(HostCheckContext c, Map<String, Object?> args, F
 Future<Map<String, Object?>?> readBugCheckState(String stateDir) async => null;
 
 Future<void> writeBugCheckState(String stateDir, Map<String, Object?> record, {required String workingDir}) async {}
+
+Future<HostResult> hostDiagnostics(HostCheckContext c, String path) async => _none;

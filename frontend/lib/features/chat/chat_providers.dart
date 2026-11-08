@@ -6,6 +6,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/net/api_error.dart';
 import '../../core/preferences.dart';
 import '../../core/providers.dart';
+import '../artifacts/checks/capture.dart' show shrinkPngs;
+import '../artifacts/checks/look.dart';
+import '../artifacts/script/svg_script.dart';
 import '../artifacts/checks/tool_checks.dart';
 import '../attachments/attachment.dart';
 import '../code/session_notifications.dart' show appFocusedProvider, systemNotifierProvider;
@@ -101,13 +104,15 @@ final toolResultsProvider = Provider<ToolResults>((ref) {
 });
 
 /// UI tools the app runs itself and answers with [ChatController.resolveTool]
-/// (sent as `client_tools`): the question card (`ask_user`).
+/// (sent as `client_tools`): the question card (`ask_user`), `look` (pictures of what the model made).
 final chatClientToolsProvider = Provider<Set<String>>(
   // …and the artifact and diagram checks (Mermaid errors, bad TeX).
   // …and, with memory on, the local memory and chat-search tools.
   // …and, when the user has skills for Chat, load_skill and read_skill_file.
   (ref) => {
     askUserTool,
+    lookTool,
+    if (svgScriptAvailable) svgScriptTool,
     ...ref.watch(appToolCheckerProvider).tools,
     ...ref.watch(enabledLocalChatToolsProvider),
     if (ref.watch(chatSkillsProvider).isNotEmpty) ...skillChatTools,
@@ -327,10 +332,74 @@ final class ChatController extends Notifier<ChatSessionState> {
   /// [ChatSessionState.pendingTools]). [result] is a string or any JSON;
   /// [isError] says the app could not run it. False when the call isn't
   /// pending or the server no longer waits for it (timed out, turn over).
-  Future<bool> resolveTool(String callId, Object? result, {bool isError = false}) async {
+  Future<bool> resolveTool(
+    String callId,
+    Object? result, {
+    bool isError = false,
+    List<String> images = const [],
+  }) async {
     if (!state.pendingTools.any((t) => t.id == callId)) return false;
     _settleTool(callId);
-    return ref.read(toolResultsProvider).resolve(callId, result, isError: isError);
+    return ref.read(toolResultsProvider).resolve(callId, result, isError: isError, images: images);
+  }
+
+  /// Answers an `svg_script` call: runs the program in Deno (no permissions), keeps what it printed on the part
+  /// (the card shows that SVG, and with an id it is a figure), and answers with the checks and a picture.
+  Future<void> _answerSvgScript(ToolWait wait) async {
+    final args = switch (_decodeArgs(wait.argumentsJson)) {
+      final Map<String, Object?> m => m,
+      _ => const <String, Object?>{},
+    };
+    final run = await runSvgScript(args['code'] as String? ?? '');
+    if (!ref.mounted) return;
+    _recordResult?.call(wait.id, jsonEncode({'svg': run.svg, 'error': run.error}));
+    final printed = run.output.isEmpty
+        ? ''
+        : '\nIt also printed:\n${run.output.length > 2000 ? '${run.output.substring(0, 2000)}…' : run.output}';
+    try {
+      if (run.svg case final svg?) {
+        final id = (args['id'] as String?)?.trim() ?? '';
+        final answer = await ref.read(lookerProvider).figure(id.isEmpty ? 'this figure' : id, svg, 'SVG figure');
+        final shown =
+            'The program ran; its SVG (${(svg.length / 1024).toStringAsFixed(1)} KB) is shown to the user'
+            '${id.isEmpty ? '' : ' as figure "$id"'}.$printed';
+        await resolveTool(wait.id, '$shown\n${answer.text}', images: [for (final p in answer.pictures) pngDataUrl(p)]);
+      } else {
+        await resolveTool(wait.id, 'Error: the program made no figure: ${run.error}$printed', isError: true);
+      }
+    } on Object {
+      // The turn ended or the server stopped waiting; it times out on its own.
+    }
+  }
+
+  /// Answers a `look` call: draws what the model named, this turn's own calls included, and sends the pictures
+  /// with the findings.
+  Future<void> _answerLook(ToolWait wait) async {
+    final turn = Message(
+      id: '_live',
+      conversationId: conversationId,
+      role: Role.assistant,
+      parts: state.liveParts,
+      createdAt: DateTime.now(),
+    );
+    final answer = await ref.read(lookerProvider).look(wait.argumentsJson, [...state.messages, turn]);
+    if (!ref.mounted) return;
+    final id = switch (_decodeArgs(wait.argumentsJson)) {
+      {'id': final String id} => id,
+      _ => '',
+    };
+    _recordResult?.call(wait.id, lookRecord(id, answer, thumbnails: await shrinkPngs(answer.pictures.take(3))));
+    if (!ref.mounted) return;
+    try {
+      await resolveTool(
+        wait.id,
+        answer.text,
+        isError: answer.isError,
+        images: [for (final p in answer.pictures) pngDataUrl(p)],
+      );
+    } on Object {
+      // The turn ended or the server stopped waiting; it times out on its own.
+    }
   }
 
   /// Answers a pending `ask_user` card: the outcome is kept on its part (so
@@ -613,6 +682,8 @@ final class ChatController extends Notifier<ChatSessionState> {
               pendingTools: List.unmodifiable([...state.pendingTools, wait]),
             );
             if (ref.read(appToolCheckerProvider).handles(wait.name)) unawaited(_answerCheck(wait));
+            if (wait.name == lookTool) unawaited(_answerLook(wait));
+            if (wait.name == svgScriptTool) unawaited(_answerSvgScript(wait));
             if (ref.read(localChatToolsProvider).handles(wait.name)) unawaited(_answerLocal(wait));
           // The server stopped waiting (answered elsewhere, or timed out). A
           // question card shows its own state, and a checked visual its own
@@ -746,3 +817,11 @@ String toolStatusLabel(String tool, String? detail) => switch (tool) {
   'summarise_parts' => 'Reading a long source${detail == null || detail.isEmpty ? '' : ' · $detail'}…',
   _ => 'Working…',
 };
+
+Object? _decodeArgs(String json) {
+  try {
+    return jsonDecode(json);
+  } on FormatException {
+    return null;
+  }
+}

@@ -9,6 +9,7 @@ import 'package:every_ai/features/code/drivers/briefing/recipes.dart' show claud
 import 'package:every_ai/features/code/drivers/claude/claude_driver.dart';
 import 'package:every_ai/features/code/drivers/claude/claude_wire.dart';
 import 'package:every_ai/features/code/drivers/driver.dart';
+import 'package:every_ai/features/code/drivers/driver_events.dart' show actionEvent;
 import 'package:every_ai/features/code/drivers/driver_policy.dart';
 import 'package:every_ai/features/code/drivers/json_rpc.dart';
 import 'package:every_ai/features/code/drivers/usage_limit.dart';
@@ -129,7 +130,84 @@ String _results(List<String> callIds) => _in({
   },
   'uuid': 'res-${callIds.join()}',
 });
+Map<String, Object?> _msg(String line) => (jsonDecode(line) as Map<String, Object?>)['msg']! as Map<String, Object?>;
 String _script(List<String> lines) => '${lines.join('\n')}\n';
+
+// A background subagent, as Claude Code 2.1.319 streams it: the Agent call, its task, the launch notice, the
+// subagent's own frames (parent_tool_use_id set), and the task's notification when it ends.
+const _explore = {'description': 'Map the coach', 'prompt': 'Find the coach code.', 'subagent_type': 'Explore'};
+Map<String, Object?> _taskStarted(String callId, {bool background = true}) => {
+  'type': 'system',
+  'subtype': 'task_started',
+  'task_id': 'task-$callId',
+  'tool_use_id': callId,
+  'description': 'Map the coach',
+  'subagent_type': 'Explore',
+  'is_backgrounded': background,
+  'task_type': 'local_agent',
+};
+Map<String, Object?> _launched(String callId) => {
+  'type': 'user',
+  'message': {
+    'role': 'user',
+    'content': [
+      {
+        'type': 'tool_result',
+        'tool_use_id': callId,
+        'content': [
+          {'type': 'text', 'text': 'Async agent launched successfully.\nagentId: a1 (internal ID)'},
+        ],
+      },
+    ],
+  },
+  'uuid': 'launch-$callId',
+};
+Map<String, Object?> _inner(String parent) => {
+  'type': 'assistant',
+  'message': {
+    'content': [
+      {'type': 'text', 'text': "I'm the subagent."},
+      {
+        'type': 'tool_use',
+        'id': 'inner-1',
+        'name': 'Bash',
+        'input': {'command': 'ls'},
+      },
+    ],
+  },
+  'parent_tool_use_id': parent,
+  'uuid': 'inner-a',
+};
+Map<String, Object?> _innerResult(String parent) => {
+  'type': 'user',
+  'message': {
+    'content': [
+      {'type': 'tool_result', 'tool_use_id': 'inner-1', 'content': 'src'},
+    ],
+  },
+  'parent_tool_use_id': parent,
+  'uuid': 'inner-u',
+};
+Map<String, Object?> _notified(String callId, {String status = 'completed', Map<String, Object?>? report}) => {
+  'type': 'system',
+  'subtype': 'task_notification',
+  'task_id': 'task-$callId',
+  'tool_use_id': callId,
+  'status': status,
+  'output_file': '/tmp/x.output',
+  'summary': 'Agent "Map the coach" completed',
+  'handback_report': ?report,
+};
+Map<String, Object?> _words(String uuid, String text) => {
+  'type': 'assistant',
+  'message': {
+    'content': [
+      {'type': 'text', 'text': text},
+    ],
+  },
+  'parent_tool_use_id': null,
+  'uuid': uuid,
+};
 
 void main() {
   late Directory tmp;
@@ -223,6 +301,7 @@ void main() {
           AgentMode.ask: 'default',
           AgentMode.autoEdit: 'acceptEdits',
           AgentMode.plan: 'plan',
+          AgentMode.auto: 'auto',
           AgentMode.fullAuto: 'default',
           AgentMode.bypass: 'default',
         },
@@ -463,6 +542,144 @@ void main() {
       d.decode(apiError('limit', api: 'usage_limit_reached'));
       d.decode(apiError('Overloaded', error: 'overloaded'));
       expect(d.decode(failed('Overloaded')).map(usageLimitOf).nonNulls, isEmpty);
+    });
+  });
+
+  group('subagents', () {
+    test("Claude's Agent call is a subagent card; the subagent's own frames stay off the transcript", () {
+      final d = ClaudeDecoder();
+      final call = d.decode(_msg(_use('t1', 'Agent', _explore))).single as ActionCall;
+      expect(call.actionKind, 'TaskAction');
+      expect(call.action, containsPair('agent', 'Explore'));
+      expect(d.decode(_taskStarted('t1')), isEmpty);
+      // The launch notice isn't the subagent's result.
+      expect(d.decode(_launched('t1')), isEmpty);
+      expect(d.hasBackground, isTrue);
+      expect((TranscriptBuilder()..add(call)).snapshot.items.whereType<SubagentItem>().single.done, isFalse);
+      expect(d.decode(_inner('t1')), isEmpty);
+      expect(d.decode(_innerResult('t1')), isEmpty);
+      final report = d.decode(_notified('t1', report: {'text': 'The coach lives in lib/review.'})).single as ToolResult;
+      expect((report.actionId, report.text, report.outcome), ('t1', 'The coach lives in lib/review.', ToolOutcome.ok));
+      expect(d.hasBackground, isFalse);
+
+      final t = TranscriptBuilder()
+        ..add(call)
+        ..add(report);
+      final card = t.snapshot.items.whereType<SubagentItem>().single;
+      expect((card.task.title, card.task.agent, card.done), ('Map the coach', 'Explore', true));
+    });
+
+    test("a subagent call the user approves shows with its result; a foreground subagent's result is its own", () {
+      final d = ClaudeDecoder();
+      d.decode(_msg(_use('t1', 'Agent', _explore)));
+      d.decode(_taskStarted('t1', background: false));
+      // The driver shows a call the CLI asks about.
+      d.action('inner-1', 'Bash', {'command': 'ls'});
+      expect(d.decode(_innerResult('t1')).single, isA<ToolResult>().having((r) => r.actionId, 'actionId', 'inner-1'));
+      final done = d.decode(_msg(_results(['t1'])));
+      expect(done.single, isA<ToolResult>().having((r) => r.actionId, 'actionId', 't1'));
+      expect(d.hasBackground, isFalse);
+    });
+
+    test('a failed task says so; one whose process ended is closed with the reason', () {
+      final d = ClaudeDecoder();
+      d.decode(_msg(_use('t1', 'Agent', _explore)));
+      d.decode(_msg(_use('t2', 'Agent', _explore)));
+      // No task_started: the launch notice alone marks it as working in the background.
+      d.decode(_launched('t1'));
+      d.decode(_taskStarted('t2'));
+      d.decode(_launched('t2'));
+      final failed = d.decode(_notified('t2', status: 'failed')).single as ToolResult;
+      expect((failed.text, failed.outcome), ('Agent "Map the coach" completed', ToolOutcome.error));
+      final closed = d.orphaned(orphanedSubagent).single as ToolResult;
+      expect((closed.actionId, closed.text), ('t1', orphanedSubagent));
+      expect(d.hasBackground, isFalse);
+    });
+
+    test('a task resumed by SendMessage counts as working until it reports again', () {
+      final d = ClaudeDecoder();
+      d.decode(_msg(_use('t1', 'Agent', _explore)));
+      d.decode(_taskStarted('t1'));
+      d.decode(_launched('t1'));
+      d.decode(_notified('t1'));
+      expect(d.hasBackground, isFalse);
+      d.decode(_msg(_use('s1', 'SendMessage', {'to': 'a1', 'message': 'Go on.'})));
+      d.decode({..._taskStarted('t1'), 'tool_use_id': 's1'});
+      expect(d.hasBackground, isTrue);
+      final again = d.decode(_notified('t1', report: {'text': 'More found.'})).single as ToolResult;
+      expect((again.actionId, again.text), ('t1', 'More found.'));
+      expect(d.hasBackground, isFalse);
+    });
+
+    test("a report that comes before the launch notice isn't undone by the notice", () {
+      final d = ClaudeDecoder();
+      d.decode(_msg(_use('t1', 'Agent', _explore)));
+      d.decode(_taskStarted('t1', background: false));
+      final report = d.decode(_notified('t1', report: {'text': 'Quick.'})).single as ToolResult;
+      expect(report.text, 'Quick.');
+      expect(d.decode(_launched('t1')), isEmpty);
+      expect(d.hasBackground, isFalse);
+      expect(d.orphaned(orphanedSubagent), isEmpty);
+    });
+
+    test('a session wakes when a background subagent reports, and its card gets the report', () async {
+      final channel = ReplayChannel(
+        _script([
+          _init,
+          _say('Look around.'),
+          _use('t1', 'Agent', _explore),
+          _in(_taskStarted('t1')),
+          _in(_launched('t1')),
+          _in(_inner('t1')),
+          _in(_innerResult('t1')),
+          _done('r1'),
+          _in(_notified('t1', report: {'text': 'Found it.'})),
+          _in(_words('w1', 'The subagent found it.')),
+          _done('r2'),
+        ]),
+      );
+      final session = await driver(_Spawner([channel])).start(_spec());
+      final events = _record(session);
+      await session.send('Look around.');
+      await _played(channel);
+
+      final states = [
+        for (final e in events)
+          if (e is StateChange && e.executionStatus != ExecutionStatus.unknown) e.executionStatus,
+      ];
+      expect(states, [
+        ExecutionStatus.running,
+        ExecutionStatus.finished,
+        ExecutionStatus.running,
+        ExecutionStatus.finished,
+      ]);
+      expect(events.whereType<ActionCall>().map((c) => c.id), ['t1']);
+      expect(events.whereType<ChatMessage>().where((m) => !m.fromUser).map((m) => m.text), ['The subagent found it.']);
+      final t = TranscriptBuilder();
+      events.forEach(t.add);
+      final card = t.snapshot.items.whereType<SubagentItem>().single;
+      expect((card.step.result?.text, card.done), ('Found it.', true));
+      await session.close();
+    });
+
+    test("closing the process ends a working subagent's card; so does reopening a session left with one", () async {
+      final channel = ReplayChannel(
+        _script([_init, _say('Look around.'), _use('t1', 'Agent', _explore), _in(_launched('t1')), _done('r1')]),
+      );
+      final d = driver(_Spawner([channel]));
+      final session = await d.start(_spec());
+      final events = _record(session);
+      await session.send('Look around.');
+      await _played(channel);
+      expect(events.whereType<ToolResult>(), isEmpty);
+      await session.close();
+      expect(events.whereType<ToolResult>().single.text, orphanedSubagent);
+
+      final history = [
+        actionEvent(id: 'old', toolName: 'Agent', kind: 'TaskAction', args: {'description': 'x'}),
+        actionEvent(id: 'other', toolName: 'Bash', kind: 'TerminalAction'),
+      ];
+      expect(unfinishedSubagents(history, orphanedSubagent).map((r) => r.actionId), ['old']);
     });
   });
 
@@ -900,6 +1117,115 @@ void main() {
       await session.close();
     });
 
+    test("Auto: the hook leaves an allowed call to Claude's reviewer; one it passes back asks the user", () async {
+      const input = {'command': 'rm -rf build'};
+      final channel = ReplayChannel(
+        _script([
+          _out(controlRequest('req_1', {'subtype': 'initialize', 'hooks': gateHooks})),
+          _in(
+            controlResponse('req_1', const {
+              'models': [
+                {'value': 'haiku', 'supportsAutoMode': true},
+              ],
+              'current_permission_mode': 'auto',
+            }),
+          ),
+          _say('Clean up.'),
+          _use('toolu_r', 'Bash', input),
+          _hook('h1', 'toolu_r', 'Bash', input),
+          // No decision: Claude's own reviewer judges it.
+          _out(controlResponse('h1', const {})),
+          _in({
+            'type': 'control_request',
+            'request_id': 'p1',
+            'request': {'subtype': 'can_use_tool', 'tool_name': 'Bash', 'input': input, 'tool_use_id': 'toolu_r'},
+          }),
+          _out(controlResponse('p1', approvalAnswer(hook: false, accept: true, input: input))),
+          _results(['toolu_r']),
+          _done('r1'),
+        ]),
+      );
+      final session = await driver(_Spawner([channel])).start(_spec(message: 'Clean up.', mode: AgentMode.auto));
+      final t = TranscriptBuilder();
+      final asked = <List<String>>[];
+      final events = _record(session, (e) {
+        t.add(e);
+        if (_isState(e, ExecutionStatus.waitingForConfirmation)) {
+          asked.add([for (final c in t.snapshot.pending) c.id]);
+          unawaited(session.respond(accept: true, callIds: ['toolu_r']));
+        }
+      });
+      await _played(channel);
+      // Asked twice: by the hook (the app's policy), then by Claude's reviewer, which reopened the call.
+      expect(asked, [
+        ['toolu_r'],
+        ['toolu_r'],
+      ]);
+      expect(events.whereType<StateChange>().where((e) => e.key == escalatedCallsKey), hasLength(1));
+      expect(t.snapshot.pending, isEmpty);
+      await session.close();
+    });
+
+    test("Auto: EveryAI's own tools get a real allow; a model without the reviewer starts in default", () async {
+      const todos = {
+        'todos': [
+          {'content': 'a', 'status': 'pending', 'activeForm': 'a'},
+        ],
+      };
+      final channel = ReplayChannel(
+        _script([
+          _out(controlRequest('req_1', {'subtype': 'initialize', 'hooks': gateHooks})),
+          _in(
+            controlResponse('req_1', const {
+              'models': [
+                {'value': 'haiku', 'supportsAutoMode': true},
+              ],
+              'current_permission_mode': 'auto',
+            }),
+          ),
+          _say('Plan.'),
+          _use('toolu_t', 'TodoWrite', todos),
+          _hook('h1', 'toolu_t', 'TodoWrite', todos),
+          _out(controlResponse('h1', approvalAnswer(hook: true, accept: true, input: todos))),
+          _results(['toolu_t']),
+          _done('r1'),
+        ]),
+      );
+      final s = _Spawner([channel]);
+      final session = await driver(s).start(_spec(message: 'Plan.', mode: AgentMode.auto));
+      _record(session, (_) {});
+      await _played(channel);
+      // Nothing said yet whether this model has auto mode: the CLI starts in default, the app's policy answers.
+      expect(s.calls.single.args, containsAllInOrder(['--permission-mode', 'default']));
+      await session.close();
+    });
+
+    test('Auto: a CLI started in default before auto was known is moved to auto once initialize offers it', () async {
+      final channel = ReplayChannel(
+        _script([
+          _out(controlRequest('req_1', {'subtype': 'initialize', 'hooks': gateHooks})),
+          _in(
+            controlResponse('req_1', const {
+              'models': [
+                {'value': 'haiku', 'supportsAutoMode': true},
+              ],
+              'current_permission_mode': 'default',
+            }),
+          ),
+          _out(controlRequest('req_2', {'subtype': 'set_permission_mode', 'mode': 'auto'})),
+          _say('Plan.'),
+          _done('r1'),
+        ]),
+      );
+      final s = _Spawner([channel]);
+      final session = await driver(s).start(_spec(message: 'Plan.', mode: AgentMode.auto));
+      _record(session, (_) {});
+      await _played(channel);
+      expect(s.calls.single.args, containsAllInOrder(['--permission-mode', 'default']));
+      expect((await (session as NativeModes).nativeModes.first).current, 'auto');
+      await session.close();
+    });
+
     test("a running subagent isn't asked about again while its own call waits", () async {
       final channel = ReplayChannel(
         _script([
@@ -1282,13 +1608,13 @@ void main() {
         final after = await native.nativeModes.first;
         expect([for (final m in after.modes) m.id], ['default', 'acceptEdits', 'plan', 'auto']);
         expect(after.current, 'default');
-        expect(nativeModeOf(after.modes, 'auto')!.policy, AgentMode.fullAuto);
+        expect(nativeModeOf(after.modes, 'auto')!.policy, AgentMode.auto);
         expect(
           [
             for (final m in after.modes)
               if (m.blocked == null) m.policy,
           ],
-          [AgentMode.ask, AgentMode.autoEdit, AgentMode.plan, AgentMode.fullAuto],
+          [AgentMode.ask, AgentMode.autoEdit, AgentMode.plan, AgentMode.auto],
         );
         await session.close();
         // The reopened session lists auto before its CLI starts again.

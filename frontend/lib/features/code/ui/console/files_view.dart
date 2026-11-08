@@ -12,6 +12,8 @@ import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/every_icons.dart';
 import '../../../../core/ui/syntax_spans.dart' show syntaxThemeFor;
 import '../../code_providers.dart';
+import 'notebook_view.dart';
+import '../../domain/notebook.dart';
 import '../../domain/code_session.dart';
 import '../../git/git_service.dart';
 import '../../panes/file_tree.dart' as fs;
@@ -390,6 +392,9 @@ class _FileEditorState extends ConsumerState<_FileEditor> {
 
   FilesEditor get _editor => ref.read(filesEditorProvider(widget.session.id).notifier);
 
+  /// A notebook shows as cells unless the user asked for its JSON.
+  bool _source = false;
+
   @override
   void initState() {
     super.initState();
@@ -471,6 +476,14 @@ class _FileEditorState extends ConsumerState<_FileEditor> {
                     ),
                   ),
                 ),
+              if (b.opened != null && isNotebookPath(path))
+                AdaptiveIconButton(
+                  key: const ValueKey('files.notebook-source'),
+                  icon: _source ? EveryIcon.document : EveryIcon.code,
+                  tooltip: _source ? 'Show cells' : 'Edit the JSON',
+                  size: 15,
+                  onPressed: () => setState(() => _source = !_source),
+                ),
               if (b.opened != null)
                 AdaptiveIconButton(
                   key: const ValueKey('files.save'),
@@ -522,6 +535,8 @@ class _FileEditorState extends ConsumerState<_FileEditor> {
         Expanded(
           child: b.opened == null
               ? Center(child: Text(b.note ?? '', style: theme.type.callout.tint(theme.textMuted)))
+              : isNotebookPath(path) && !_source
+              ? NotebookView(text: b.text)
               : CallbackShortcuts(
                   bindings: {
                     const SingleActivator(LogicalKeyboardKey.keyS, meta: true): _save,
