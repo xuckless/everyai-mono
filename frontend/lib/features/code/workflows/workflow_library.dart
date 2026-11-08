@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/preferences.dart';
 import 'workflow_files_stub.dart' if (dart.library.io) 'workflow_files_io.dart' as files;
+import 'workflow_estimate.dart' show AgentRule;
 import 'workflow_meta.dart';
 
 // The workflows a session can run: the ones bundled with the app
@@ -28,6 +29,7 @@ final class WorkflowEntry {
     this.whenToUse = '',
     this.args = '',
     this.phases = const [],
+    this.agents,
     this.projectDir,
     this.path,
   });
@@ -42,6 +44,9 @@ final class WorkflowEntry {
   final String whenToUse;
   final String args;
   final List<({String title, String detail})> phases;
+
+  /// How many agents a run starts, for the estimate (see [AgentRule]).
+  final AgentRule? agents;
   final String? projectDir;
   final String? path;
 
@@ -73,6 +78,7 @@ WorkflowEntry _entry(String source, String id, WorkflowOrigin origin, {String? p
     whenToUse: meta?.whenToUse ?? '',
     args: meta?.args ?? '',
     phases: meta?.phases ?? const [],
+    agents: meta?.agents,
     projectDir: projectDir,
     path: path,
   );

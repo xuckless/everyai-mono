@@ -4,6 +4,9 @@ export const meta = {
   description: 'Several independent changes at once. Each item gets its own research note, an implementation in its own worktree, a review through two lenses and a fix round, alongside the other items; then one full test round on the combined work',
   whenToUse: 'The task splits into two or more independent changes that each need research, code and tests',
   args: '{items: [{id, title, spec, files?, check?}], plan_ref?} or {task, plan_ref?}: one entry per independent change, spec saying what to build and how to tell it works; files and check: the plan batch\'s (check {files: [...]}, {command: "..."} or {full: true}), and the app runs that check in the item\'s worktree before merging it; or the whole task, which a first agent splits into items; plan_ref: a file name from saved_plans (e.g. 2026-11-05-x.md) the user picked or approved in this conversation (never one you found on your own). With plan_ref, the plan\'s batches fill in each item\'s files and check by id, and given only a task they are the items',
+  // About 5 agents per item (research, implement, two review lenses, a refix when needed), plus the integration
+  // and, given one task, the split.
+  agents: { fixed: [1, 2], perItem: [4, 5], items: 'items' },
   phases: [
     { title: 'Split', detail: 'given one task: split it into independent items' },
     { title: 'Research', detail: 'per item, read-only, with a concrete plan' },

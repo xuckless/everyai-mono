@@ -4,6 +4,8 @@ export const meta = {
   description: 'Fixes one bug with proof: reproduce it, find the cause, fix it, show the repro passes, then a review by a fresh agent and one more fix round if the review asks for it',
   whenToUse: 'The user reports a bug or a failing behaviour and wants it fixed, not just explained',
   args: '{bug}: the bug report in the user\'s words, with any error output, steps or files they gave',
+  // Fix and review, and a refix when the review asks for one.
+  agents: { fixed: [2, 3] },
   phases: [
     { title: 'Fix', detail: 'reproduce, find the cause, fix, verify, in one agent' },
     { title: 'Review', detail: 'a read-only review of the fix by a fresh agent' },

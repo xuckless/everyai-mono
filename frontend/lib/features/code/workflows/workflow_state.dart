@@ -208,10 +208,11 @@ RunState runTransition(RunState from, RunState to, {void Function(String edge)? 
 
 /// What a session's one workflow slot holds (one run at a time, so an agent can't multiply the caps):
 ///
-///   free ──run_workflow call──▶ reserved ──its run starts──▶ running(runId) ──the run ended──▶ free
-///     │                            └──it didn't start──────────────────────────────────────▶ free
-///     └──Bug fix needs the user's report──▶ askingBug ──answered: the run starts──▶ running(runId)
-///                                              └──no report, rewound, stopped──────────────▶ free
+///   free ──run_workflow call──▶ proposed(estimate) ──Start──▶ reserved ──its run starts──▶ running(runId) ──ended──▶ free
+///                                  │  ▲                         └──it didn't start───────────────────────────────▶ free
+///                                  │  └──run_workflow again (the lead changed the args): the new estimate replaces it
+///                                  └──Cancel, Adjust, or the app closed and the card is gone──────────────────────▶ free
+///   free ──a resume after a restart──▶ reserved
 @immutable
 sealed class RunSlot {
   const RunSlot();
@@ -221,14 +222,15 @@ final class SlotFree extends RunSlot {
   const SlotFree();
 }
 
-/// A run_workflow call is starting a run.
-final class SlotReserved extends RunSlot {
-  const SlotReserved();
+/// An estimate waits for the user to start it (see workflow_proposal.dart).
+final class SlotProposed extends RunSlot {
+  const SlotProposed(this.proposalId);
+  final String proposalId;
 }
 
-/// Bug fix waits for the user to answer its card before its run starts.
-final class SlotAskingBug extends RunSlot {
-  const SlotAskingBug();
+/// A run is starting.
+final class SlotReserved extends RunSlot {
+  const SlotReserved();
 }
 
 final class SlotRunning extends RunSlot {
@@ -236,12 +238,9 @@ final class SlotRunning extends RunSlot {
   final String runId;
 }
 
-/// Why a new run can't take [slot], or null when it is free.
+/// Why a new run can't take [slot], or null when it is free (an open estimate is replaced, see [RunSlot]).
 String? slotBusyText(RunSlot slot) => switch (slot) {
-  SlotFree() => null,
-  SlotAskingBug() =>
-    'Bug fix is waiting for the user to answer its card in the app. Wait for its <workflow-result> before starting '
-        'another workflow.',
+  SlotFree() || SlotProposed() => null,
   SlotReserved() =>
     'a workflow is already starting in this session. Wait for its <workflow-result> before starting '
         'another.',

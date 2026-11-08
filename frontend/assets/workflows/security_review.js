@@ -4,6 +4,8 @@ export const meta = {
   description: 'A read-only security review of the current change: a threat model of the diff, four lenses in parallel (secrets, injection, authentication and access, unsafe data handling), then a pass that keeps only findings with a concrete exploit',
   whenToUse: 'Before merging a change that touches input handling, auth, secrets, files, the network or shell commands, or when the user asks for a security review',
   args: '{base?, focus?}: the git ref the change is compared with (default: where this branch left the default branch); focus, what the user asked to look at most',
+  // The threat model, four lenses and the verify pass.
+  agents: { fixed: [6, 6] },
   phases: [
     { title: 'Threat model', detail: 'what the diff exposes: entry points, trust boundaries, assets' },
     { title: 'Lenses', detail: 'secrets, injection, authn/authz, unsafe data handling, in parallel' },

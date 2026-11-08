@@ -220,8 +220,9 @@ String sessionBriefing(SessionSkillInput input) {
       ..writeln()
       ..writeln('## Workflows')
       ..writeln()
-      ..writeln('Start one with `run_workflow` when the task fits, or the user may type it as a command. Each runs')
-      ..writeln('several agents on the user\'s plan, so offer it rather than starting it unasked.')
+      ..writeln('Propose one with `run_workflow` when the task fits, or the user may type it as a command. Each runs')
+      ..writeln('several agents on the user\'s plan, so offer it rather than proposing it unasked; the user starts it')
+      ..writeln('from an estimate in the app.')
       ..writeln();
     for (final w in input.workflows) {
       b.writeln('- `${w.id}`: ${w.when}');

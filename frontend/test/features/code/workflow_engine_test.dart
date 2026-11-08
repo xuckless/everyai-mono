@@ -144,7 +144,7 @@ void main() {
     test('the slot names what holds it', () {
       expect(slotBusyText(const SlotFree()), isNull);
       expect(slotBusyText(const SlotRunning('r9')), contains('run r9'));
-      expect(slotBusyText(const SlotAskingBug()), contains('Bug fix'));
+      expect(slotBusyText(const SlotProposed('p')), isNull);
       expect(slotBusyText(const SlotReserved()), contains('starting'));
     });
   });

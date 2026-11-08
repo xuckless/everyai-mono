@@ -286,12 +286,8 @@ void main() {
       final c = await open(seeing);
       expect(c.acceptsFiles(_item), isTrue);
       final bug = QuestionItem(
-        HarnessEvent.decode({
-          'kind': 'ActionEvent',
-          'id': 'bugask-1',
-          'tool_name': 'ask_user_question',
-          'action': _args,
-        }) as ActionCall,
+        HarnessEvent.decode({'kind': 'ActionEvent', 'id': 'doom-1', 'tool_name': 'ask_user_question', 'action': _args})
+            as ActionCall,
         _item.questions,
       );
       expect(c.acceptsFiles(bug), isFalse);

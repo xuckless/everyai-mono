@@ -38,6 +38,7 @@ import 'code_composer.dart';
 import '../domain/fork_state.dart';
 import 'limit_banner.dart';
 import 'paused_bar.dart';
+import '../workflows/ui/proposal_card.dart';
 import 'code_slash_host.dart';
 import 'transcript/files_card.dart';
 import 'transcript/security_alert_card.dart';
@@ -299,6 +300,16 @@ class CodeSessionScreen extends ConsumerWidget {
                                           children: [
                                             TakeControlReminder(sessionId: sessionId),
                                             LoginWallCard(sessionId: sessionId, projectId: info.projectId),
+                                            if (state.proposal case final p?)
+                                              Padding(
+                                                padding: const EdgeInsets.only(bottom: 8),
+                                                child: ProposalCard(
+                                                  proposal: p,
+                                                  onStart: () async => controller.startProposal(),
+                                                  onAdjust: controller.adjustProposal,
+                                                  onCancel: controller.cancelProposal,
+                                                ),
+                                              ),
                                             // Paused: held calls wait for Resume, which decides them as the mode says.
                                             if (t.pending.isNotEmpty && state.hold == StepHold.none)
                                               Padding(
@@ -420,6 +431,7 @@ class CodeSessionScreen extends ConsumerWidget {
                                               ),
                                             CodeComposer(
                                               sessionId: sessionId,
+                                              prefill: state.composerPrefill,
                                               slashHost: codeSlashHost(context, ref, sessionId, busy: busy),
                                               project: ref
                                                   .watch(codeProjectsProvider)

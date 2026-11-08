@@ -1,5 +1,7 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -35,7 +37,8 @@ final class WorkflowPick {
 }
 
 /// The message the lead gets when the user starts [w] on [task].
-String workflowStartNote(WorkflowEntry w, String task) => workflowStartNoteOf(w.id, w.title, task);
+String workflowStartNote(WorkflowEntry w, String task) =>
+    workflowStartNoteOf(w.id, w.title, task, args: w.args, draft: jsonEncode(workflowArgsFor(w, task)));
 
 /// [w]'s args for the user's [task] (what they typed after picking it,
 /// with the paths of any files attached). The bundled ones take their own

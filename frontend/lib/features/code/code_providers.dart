@@ -11,7 +11,6 @@ import '../models/domain/local_routes.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../core/process/child_processes.dart';
-import '../../core/api/decide_client.dart' show decideClientProvider;
 import 'live/browser_jar.dart' show SealedStore;
 import 'live/android_device_io.dart' show AndroidDevices;
 import 'live/app_sources.dart' show AppSources;
@@ -118,11 +117,12 @@ import 'spill/spill.dart';
 import 'resume/past_sessions.dart';
 import 'resume/resume_providers.dart' show resumedJournal, saveResumedHistory;
 import 'uploads/uploads.dart';
-import 'workflows/bug_report.dart';
 import 'workflows/workflow_bridge.dart'
     show WorkflowBridge, appendJournalFile, listJournalFiles, readJournalFile, retireJournalFile;
 import 'domain/session_work.dart';
 import 'workflows/workflow_engine.dart';
+import 'workflows/workflow_estimate.dart';
+import 'workflows/workflow_proposal.dart';
 import 'workflows/workflow_journal.dart';
 import 'workflows/workflow_landing.dart';
 import 'workflows/workflow_library.dart';
@@ -1906,6 +1906,8 @@ final class CodeSessionState {
     this.armed,
     this.sideWork = false,
     this.hold = StepHold.none,
+    this.proposal,
+    this.composerPrefill,
   }) : link = link ?? (error != null ? SessionLink.broken : (connected ? SessionLink.live : SessionLink.connecting)),
        _brokenBy = brokenBy ?? error;
 
@@ -1916,6 +1918,12 @@ final class CodeSessionState {
 
   /// Pause: held after its current step (see [StepHold]).
   final StepHold hold;
+
+  /// A workflow run's estimate waiting for the user to start it (the card above the composer).
+  final WorkflowProposal? proposal;
+
+  /// Text the app puts in the composer (Adjust on an estimate); a new seq replaces what is there.
+  final ({String text, int seq})? composerPrefill;
 
   /// The agent (or the app for it) may be writing in the session's folder: the Files view's editor is read-only and
   /// [CodeSessionController.saveFile] refuses. A card or plan waiting for the user doesn't count.
@@ -1998,6 +2006,8 @@ final class CodeSessionState {
     _ when failure != null => SessionStatus.failed,
     // Held after its step: a call it made waits for Resume, not for the user.
     _ when hold == StepHold.paused => SessionStatus.paused,
+    // A workflow's estimate waits for the user's Start.
+    _ when proposal != null => SessionStatus.needsInput,
     Transcript(pending: [_, ...]) => SessionStatus.needsInput,
     final t when t.openQuestion != null || t.openPlan != null => SessionStatus.needsInput,
     // The agent stopped on a security alert: the user decides how to go on.
@@ -2038,9 +2048,14 @@ final class CodeSessionState {
     bool clearArmed = false,
     bool? sideWork,
     StepHold? hold,
+    WorkflowProposal? proposal,
+    bool clearProposal = false,
+    ({String text, int seq})? composerPrefill,
   }) => CodeSessionState(
     sideWork: sideWork ?? this.sideWork,
     hold: hold ?? this.hold,
+    proposal: clearProposal ? null : proposal ?? this.proposal,
+    composerPrefill: composerPrefill ?? this.composerPrefill,
     nativeModes: nativeModes ?? this.nativeModes,
     nativeMode: clearNativeMode ? null : nativeMode ?? this.nativeMode,
     armed: clearArmed ? null : armed ?? this.armed,
@@ -2847,7 +2862,6 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (!_mirror.isClosed) _mirror.add(event);
     final transcript = _builder.snapshot;
     state = state.copyWith(transcript: transcript);
-    if (_bugAsk != null) _watchBugAsk();
     if (_hostWaits.isNotEmpty) {
       _bindHostWaits();
       _childHostWait();
@@ -2977,8 +2991,6 @@ final class CodeSessionController extends Notifier<CodeSessionState>
             .whenComplete(() => _dequeuing = false)
             .catchError((Object _) => false),
       );
-    } else {
-      _droppedNote(next);
     }
   }
 
@@ -3698,45 +3710,15 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     return (entry: now, why: '');
   }
 
-  /// Starts [picked] on [task] (its lead was already told, as the session's
-  /// first message). Null when it started, else why not: the session shows
-  /// it, and the lead is told to do the task itself.
+  /// The session started with [picked] for [task] (its lead was already told, as the session's first message: it
+  /// clarifies and proposes the run). Null when the workflow can run here, else why not: the session shows it, and
+  /// the lead is told to do the task itself.
   Future<String?> launchWorkflow(WorkflowEntry picked, String task) async {
     final (:entry, :why) = await _checkWorkflow(picked);
-    // A new session: its first turn is the start note.
-    final problem = entry == null ? why : await _launch(entry, task, turnsBefore: const {});
-    if (problem == null) return null;
-    _workflowNotice(picked, problem, task);
-    await send(workflowFailedNote(picked.id, picked.title, problem));
-    return problem;
-  }
-
-  /// Starts [entry] on [task]; null when it started (or Bug fix asks the
-  /// user for the bug first, see [_askForBug]), else why not. [turnsBefore]:
-  /// the user turns before the start note, whose card waits for it.
-  Future<String?> _launch(WorkflowEntry entry, String task, {required Set<String> turnsBefore}) async {
-    final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
-    final dir = info?.workingDir ?? '';
-    try {
-      final args = workflowArgsFor(
-        entry,
-        task,
-        gitRef: entry.id == 'security_review' && looksLikeRef(task) && await isGitCommit(dir, task),
-      );
-      final ctx = {
-        'lead': {'harness': info?.harness, 'model': info?.model},
-      };
-      final took = _reserveSlot();
-      try {
-        if (await _askForBug(entry, args, ctx, fromCall: false, turnsBefore: turnsBefore)) return null;
-        await runWorkflow(entry.title, entry.source, args: args, ctx: ctx);
-      } finally {
-        _unreserve(took);
-      }
-      return null;
-    } on Object catch (e) {
-      return "It couldn't start: $e.";
-    }
+    if (entry != null) return null;
+    _workflowNotice(picked, why, task);
+    await send(workflowFailedNote(picked.id, picked.title, why));
+    return why;
   }
 
   void _workflowNotice(WorkflowEntry w, String why, String task) {
@@ -3767,16 +3749,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     final out = await _outgoing(text, files);
     if (out == null) return false;
     final task = out.text;
-    final before = {
-      for (final i in state.transcript.items)
-        if (i is UserTurn) i.key,
-    };
-    if (!await _sendOut(Outgoing(workflowStartNote(entry, task), images: out.images))) return false;
-    if (await _launch(entry, task, turnsBefore: before) case final problem?) {
-      _workflowNotice(entry, problem, task);
-      await send(workflowFailedNote(entry.id, entry.title, problem));
-    }
-    return true;
+    // The lead clarifies when it must, then proposes the run; the user starts it from the estimate.
+    return _sendOut(Outgoing(workflowStartNote(entry, task), images: out.images));
   }
 
   /// [text] with a mode note: the full one after a mode change, else a short reminder.
@@ -3792,10 +3766,13 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (info != null && (rewound.isNotEmpty || checks.isNotEmpty)) {
       sessions.update(info.copyWith(pendingRewind: '', pendingChecks: ''));
     }
+    final adjust = _adjustNote ?? '';
+    _adjustNote = null;
     final context = [
       checks,
       _context?.takeNote() ?? '',
       _workflowNote(),
+      adjust,
       _tierNote,
       rewound,
     ].where((n) => n.isNotEmpty).join('\n\n');
@@ -4928,17 +4905,11 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     _doom.reset();
     _doomOpen = false;
     if (!_mirror.isClosed) _mirror.add(null);
-    final dropped = state.queued;
     state = state.copyWith(transcript: _builder.snapshot, queued: const []);
-    dropped.forEach(_droppedNote);
-    // A Bug fix card it dropped can't be answered now.
-    _watchBugAsk();
   }
 
   void unqueue(int index) {
-    final dropped = state.queued[index];
     state = state.copyWith(queued: [...state.queued]..removeAt(index));
-    _droppedNote(dropped);
   }
 
   @override
@@ -5142,8 +5113,6 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (_busy) _userStopped = true;
     _checksDue = false;
     _cancelChecks();
-    // A Bug fix card still waiting for its start note won't show now.
-    if (_bugAsk case final ask? when !ask.shown) _endBugAsk();
     _pauseGoal('Stopped by you. Set the goal again to carry on.');
     state = state.copyWith(queued: const []);
     for (final w in [..._hostWaits]) {
@@ -5588,8 +5557,11 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     String source, {
     Map<String, Object?> args = const {},
     Map<String, Object?> ctx = const {},
+    WorkflowEstimate? estimate,
+    String? workflowId,
   }) async {
     final runId = const Uuid().v7();
+    if (workflowId != null) _runWorkflowIds[runId] = workflowId;
     // A script can't read files: the plan it was pointed at gives its batches through ctx (ultra.js reads them).
     final folder = ref.read(codeSessionsProvider.notifier).byId(sessionId)?.workingDir;
     if ((planFileName(args['plan_ref']), folder) case (final name?, final folder?)) {
@@ -5621,6 +5593,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       'name': name,
       'source': source,
       'args': args,
+      'workflow': ?workflowId,
+      if (estimate != null) 'estimate': estimate.toJson(),
       'at': DateTime.now().millisecondsSinceEpoch,
     });
     unawaited(_runWorkflow(runId, name, source, args, journal));
@@ -5745,27 +5719,12 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (info.parentId != null) return (text: 'Error: only the lead session starts workflows.', isError: true);
     // One at a time, or an agent could multiply every run's caps by starting many.
     if (slotBusyText(_slotNow) case final why?) return (text: 'Error: $why', isError: true);
-    // Only outside leads reach this (the host serves them), and a review on
-    // EveryAI's models would spend in their session: the workflow's review
-    // runs on a fresh agent of the lead's harness.
-    _slot = const SlotReserved();
-    final String runId;
-    try {
-      final ctx = {
-        'lead': {'harness': info.harness, 'model': info.model},
-      };
-      if (await _askForBug(entry, args, ctx, fromCall: true)) return (text: bugAskedResult, isError: false);
-      runId = await runWorkflow(entry.title, entry.source, args: args, ctx: ctx);
-    } finally {
-      // Didn't start (or Bug fix holds the slot now): a run that started holds it as running.
-      if (_slot is SlotReserved) _slot = const SlotFree();
-    }
-    return (
-      text:
-          'Started ${entry.title} (run $runId). It runs in the app, where the user follows it. Its result will '
-          'arrive as a message in a <workflow-result> block; tell the user it started and do not poll for it.',
-      isError: false,
-    );
+    // The user starts it from its estimate (owner, 2026-11-08). The workflow's review runs on a fresh agent of the
+    // lead's harness.
+    _propose(entry, args, {
+      'lead': {'harness': info.harness, 'model': info.model},
+    });
+    return (text: proposedResult(entry.title), isError: false);
   }
 
   /// A workflow's result [text] to the agent now, or once nothing runs.
@@ -5796,7 +5755,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       return; // No data folder (tests, the web): nothing to resume.
     }
     // Runs to resume: the slot is held while their journals are read, so no new run starts beside them.
-    final took = paths.any((p) => !p.endsWith('/$_bugAskFileName.jsonl')) && _reserveSlot();
+    final took = paths.any((p) => !p.endsWith('/$_proposalFileName.jsonl')) && _reserveSlot();
     try {
       await _resumeJournals(paths);
     } finally {
@@ -5808,8 +5767,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     try {
       for (final path in paths) {
         final runId = path.split('/').last.replaceFirst(RegExp(r'\.jsonl$'), '');
-        if (runId == _bugAskFileName) {
-          await _bugAskLost(path);
+        if (runId == _proposalFileName) {
+          await _restoreProposal(path);
           continue;
         }
         if (!ref.mounted || _workflows.containsKey(runId)) continue;
@@ -5818,6 +5777,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         // Ended journals still on disk: the lead never got the result, which their shutdown sends.
         if (start == null) continue;
         final args = (start['args'] as Map?)?.cast<String, Object?>() ?? const {};
+        if (start['workflow'] case final String w) _runWorkflowIds[runId] = w;
         _resumedRuns.add(runId);
         unawaited(_runWorkflow(runId, '${start['name']}', '${start['source']}', args, journal));
       }
@@ -5844,209 +5804,163 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     }
   }
 
-  /// The pending Bug fix card's file, beside the runs' journals.
-  static const _bugAskFileName = 'bugask';
+  // ------------------------------------------------------------- estimates
 
-  /// Bug fix waiting for the user's answers to its card.
-  _BugAsk? _bugAsk;
+  /// The open estimate's file, beside the runs' journals.
+  static const _proposalFileName = 'proposal';
 
-  /// Whether bundled Bug fix needs the user's report first (see
-  /// [_bugNeedsDetails]): then a card asks for it, and the run starts from
-  /// [_answerBugAsk]. [fromCall]: the lead's run_workflow asked for it.
-  Future<bool> _askForBug(
-    WorkflowEntry entry,
-    Map<String, Object?> args,
-    Map<String, Object?> ctx, {
-    required bool fromCall,
-    Set<String>? turnsBefore,
-  }) async {
-    if (entry.origin != WorkflowOrigin.bundled || entry.id != 'bugfix') return false;
-    final bug = args['bug'] is String ? args['bug'] as String : '';
-    final before = _slot;
-    _slot = const SlotAskingBug();
-    bool needs;
-    try {
-      needs = await _bugNeedsDetails(bug);
-    } on Object {
-      needs = bugLooksVague(bug);
-    }
-    if (!needs) {
-      if (_slot is SlotAskingBug) _slot = before;
-      return false;
-    }
-    _bugAsk = _BugAsk('bugask-${const Uuid().v7()}', entry, args, ctx, fromCall: fromCall, turnsBefore: turnsBefore);
-    _showBugAsk();
-    await _bugAskFile;
-    return true;
-  }
+  /// Its writes, in order (a quick Start must not leave the file behind).
+  Future<void> _proposalFile = Future<void>.value();
 
-  /// Whether [bug] names no symptom: empty, or vague by [bugLooksVague] on an
-  /// outside lead (EveryAI spends nothing there) and in the demo, else by one
-  /// decide call, which falls back to the heuristic when it is unsure.
-  Future<bool> _bugNeedsDetails(String bug) async {
-    if (bug.trim().isEmpty) return true;
+  Future<String> _proposalPath() async => '${await _workflowDir()}/$_proposalFileName.jsonl';
+
+  /// The user's change after Adjust: the note goes on their next message.
+  String? _adjustNote;
+
+  /// Past runs of workflows in [projectId], for estimates.
+  static String _pastRunsKey(String projectId) => 'code.workflow.past.$projectId';
+
+  /// run_workflow's estimate for [entry] on [args]: the card the user starts it from. A second call while one is open
+  /// replaces it (the lead changed the args).
+  WorkflowProposal _propose(WorkflowEntry entry, Map<String, Object?> args, Map<String, Object?> ctx) {
     final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
-    if (info == null || _onOutsideLead || noLocalFolder(info.workingDir)) return bugLooksVague(bug);
-    String? apiKey;
-    try {
-      apiKey = await ref.read(gatewayKeysProvider).key();
-    } on Object {
-      apiKey = null;
-    }
-    final r = await ref
-        .read(decideClientProvider)
-        .decide(
-          job: 'bug_report',
-          text: 'Bug report:\n$bug',
-          instructions: bugConcreteInstructions,
-          questions: const [bugConcreteQuestion],
-          apiKey: apiKey,
-          session: info.billingTag,
-        );
-    return switch (r[bugConcreteQuestion.id].asBool) {
-      false => true,
-      true => false,
-      null => bugLooksVague(bug),
+    final everyai = !_onOutsideLead;
+    final spec = info == null ? null : ref.read(modelCatalogProvider)[ModelId(info.model)];
+    final price = switch ((spec?.promptPrice, spec?.completionPrice)) {
+      (final double p?, final double c?) => (p, c),
+      _ => null,
     };
-  }
-
-  /// Shows the pending Bug fix card, once the start note it follows is in
-  /// the transcript (a card before it would close as answered in chat).
-  /// While open it is kept on disk, so a restart can tell the lead.
-  void _showBugAsk() {
-    final ask = _bugAsk;
-    if (ask == null || ask.shown) return;
-    if (ask.turnsBefore case final before?
-        when !state.transcript.items.any((i) => i is UserTurn && i.workflow.isNotEmpty && !before.contains(i.key))) {
-      return;
-    }
-    ask.shown = true;
-    _builder.addLocalQuestion(
-      ActionCall(id: ask.card, raw: const {}, toolName: askUserQuestionTool, toolCallId: ask.card, action: const {}),
-      bugQuestions,
+    final estimate = estimateWorkflow(
+      workflowId: entry.id,
+      rule: entry.agents,
+      args: args,
+      everyai: everyai,
+      past: info == null ? const [] : pastRunsOf(ref.read(preferencesProvider)[_pastRunsKey(info.projectId)]),
+      price: price,
+      modelName: spec?.name ?? info?.model ?? '',
+      planWindows: ref.read(codePlanLimitsProvider(sessionId))?.windows ?? const [],
     );
-    state = state.copyWith(transcript: _builder.snapshot);
-    final saved = jsonEncode({'id': ask.entry.id, 'title': ask.entry.title, 'from_call': ask.fromCall});
-    _bugAskFile = _bugAskFile.then((_) async {
+    final p = WorkflowProposal(
+      id: const Uuid().v7(),
+      workflowId: entry.id,
+      title: entry.title,
+      args: args,
+      ctx: ctx,
+      estimate: estimate,
+      phases: [for (final ph in entry.phases) ph.title],
+      capUsd: everyai ? const WorkflowCaps().costMicros / 1e6 : null,
+      items: proposalItems(args, entry.agents?.itemsKey ?? 'items'),
+    );
+    _slot = SlotProposed(p.id);
+    state = state.copyWith(proposal: p);
+    final saved = jsonEncode(p.toJson());
+    _proposalFile = _proposalFile.then((_) async {
       try {
-        await appendJournalFile(await _bugAskPath(), saved);
+        await appendJournalFile(await _proposalPath(), saved);
       } on Object {
         // No data folder (the web): a restart just loses the card.
       }
     });
+    return p;
   }
 
-  /// The pending card's file writes, in order (a quick answer must not
-  /// leave the file behind).
-  Future<void> _bugAskFile = Future<void>.value();
-
-  Future<String> _bugAskPath() async => '${await _workflowDir()}/$_bugAskFileName.jsonl';
-
-  /// Shows the pending card when it may, and ends the ask when its card
-  /// closed without its answers: a reply in chat is the report then, and a
-  /// card a rewind dropped tells the lead the run didn't start.
-  void _watchBugAsk() {
-    final ask = _bugAsk;
-    if (ask == null) return;
-    if (!ask.shown) return _showBugAsk();
-    final items = state.transcript.items;
-    final at = items.indexWhere((i) => i is QuestionItem && i.call.id == ask.card);
-    if (at >= 0 && (items[at] as QuestionItem).answers == null) return;
-    if (at < 0) {
-      unawaited(
-        _startBugAsk(ask, const [], problem: 'the conversation was rewound before the user answered its card.'),
-      );
-      return;
-    }
-    final reply = items.skip(at + 1).whereType<UserTurn>().where((t) => t.workflow.isEmpty).firstOrNull?.text ?? '';
-    unawaited(_startBugAsk(ask, [QuestionAnswer(other: reply)]));
-  }
-
-  /// [dropped] left the queue unsent: when it was the start note a Bug fix
-  /// card waits for, the card won't show, and nothing started.
-  void _droppedNote(Outgoing dropped) {
-    final ask = _bugAsk;
-    if (ask == null || ask.shown) return;
-    if (dropped.text == workflowStartNote(ask.entry, '${ask.args['bug'] ?? ''}')) _endBugAsk();
-  }
-
-  /// Bug fix no longer waits for the user: runs may start again.
-  void _endBugAsk() {
-    _bugAsk = null;
-    if (_slot is SlotAskingBug) _slot = const SlotFree();
-    _bugAskFile = _bugAskFile.then((_) async {
+  /// The open estimate is answered (or gone): the card closes, the slot frees and the file goes.
+  void _closeProposal() {
+    if (state.proposal != null) state = state.copyWith(clearProposal: true);
+    if (_slot is SlotProposed) _slot = const SlotFree();
+    _proposalFile = _proposalFile.then((_) async {
       try {
-        await retireJournalFile(await _bugAskPath());
+        await retireJournalFile(await _proposalPath());
       } on Object {
         // Nothing was saved.
       }
     });
   }
 
-  /// A Bug fix card open when the app quit (saved at [path]): the run never
-  /// started, and the lead, told it would, hears that it didn't.
-  Future<void> _bugAskLost(String path) async {
-    final saved = const LineSplitter().convert(await readJournalFile(path)).lastOrNull;
-    await retireJournalFile(path);
-    if (saved == null || !ref.mounted) return;
-    final j = jsonDecode(saved) as Map<String, Object?>;
-    // Once the history is in, so it goes after the lead's last turn, not into one that only seems idle.
-    await _historyIn.future;
-    if (!ref.mounted) return;
-    _toLead(workflowFailedNote('${j['id']}', '${j['title']}', 'the app closed before the user answered its card.'));
-  }
-
-  /// The user's report for the pending Bug fix (the card's answers): the
-  /// run starts with it.
-  Future<void> _answerBugAsk(QuestionItem item, List<QuestionAnswer> answers) async {
-    _builder.settleLocal(item.call.id, answers);
-    state = state.copyWith(transcript: _builder.snapshot);
-    final ask = _bugAsk;
-    if (ask == null || ask.card != item.call.id) return;
-    await _startBugAsk(ask, answers);
-  }
-
-  /// Ends [ask] and starts Bug fix with [answers], or doesn't when they are
-  /// all empty or there is a [problem] (the lead is told then).
-  Future<void> _startBugAsk(_BugAsk ask, List<QuestionAnswer> answers, {String? problem}) async {
-    _endBugAsk();
-    // Held from here: a run_workflow call meanwhile mustn't start a second run.
+  /// Start on the estimate card: the run starts with the args the lead gave. Null when it started, else why not
+  /// (the lead hears it too).
+  Future<String?> startProposal() async {
+    final p = state.proposal;
+    if (p == null) return null;
+    _closeProposal();
     final took = _reserveSlot();
     try {
-      await _startBugRun(ask, answers, problem: problem);
+      final entry = (await _workflowEntries()).where((w) => w.id == p.workflowId).firstOrNull;
+      if (entry == null) throw StateError('this project can no longer run ${p.title}');
+      await runWorkflow(
+        entry.title,
+        entry.source,
+        args: p.args,
+        ctx: p.ctx,
+        estimate: p.estimate,
+        workflowId: entry.id,
+      );
+      return null;
+    } on Object catch (e) {
+      final why = "it couldn't start: ${e is StateError ? e.message : e}.";
+      _builder.addNotice(NoticeItem('workflow-${_events.length}-${p.workflowId}', "${p.title} didn't start: $why"));
+      state = state.copyWith(transcript: _builder.snapshot);
+      _toLead(workflowFailedNote(p.workflowId, p.title, why));
+      return why;
     } finally {
       _unreserve(took);
     }
   }
 
-  Future<void> _startBugRun(_BugAsk ask, List<QuestionAnswer> answers, {String? problem}) async {
-    await _bugAskFile;
-    final entry = ask.entry;
-    final original = ask.args['bug'] is String ? ask.args['bug'] as String : '';
-    if (problem == null && answers.every((a) => a.isEmpty)) {
-      problem = original.trim().isEmpty ? 'no bug was given.' : 'the bug report was too thin, and no details came.';
-    }
-    if (problem == null) {
-      try {
-        await runWorkflow(
-          entry.title,
-          entry.source,
-          args: {...ask.args, 'bug': bugWithAnswers(original, answers)},
-          ctx: ask.ctx,
-        );
-        return;
-      } on Object catch (e) {
-        problem = "it couldn't start: $e.";
-      }
-    }
-    _workflowNotice(entry, "${entry.title} didn't start: $problem", original);
-    final note = workflowFailedNote(entry.id, entry.title, problem);
-    if (ask.fromCall) {
-      _notifyLead(note);
-    } else {
-      await send(note);
-    }
+  /// Cancel on the estimate card: nothing runs, and the lead is told.
+  void cancelProposal() {
+    final p = state.proposal;
+    if (p == null) return;
+    _closeProposal();
+    _toLead(proposalCancelledNote(p.title));
   }
+
+  /// Adjust on the estimate card: nothing runs; the composer gets a start for the user's change, and their next
+  /// message tells the lead to propose again.
+  void adjustProposal() {
+    final p = state.proposal;
+    if (p == null) return;
+    _closeProposal();
+    _adjustNote = proposalAdjustNote(p.title);
+    state = state.copyWith(
+      composerPrefill: (text: 'Change the ${p.title} run: ', seq: (state.composerPrefill?.seq ?? 0) + 1),
+    );
+  }
+
+  /// An estimate open when the app quit (saved at [path]): its card shows again.
+  Future<void> _restoreProposal(String path) async {
+    final saved = const LineSplitter().convert(await readJournalFile(path)).lastOrNull;
+    final p = saved == null ? null : WorkflowProposal.fromJson(jsonDecode(saved));
+    if (!ref.mounted) return;
+    if (p == null || _slot is! SlotFree) {
+      await retireJournalFile(path);
+      return;
+    }
+    _slot = SlotProposed(p.id);
+    state = state.copyWith(proposal: p);
+  }
+
+  /// Run [run] (of a workflow called [name]) finished: kept for the next estimates in this project.
+  void _rememberRun(String name, WorkflowRun run) {
+    final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
+    final took = run.took;
+    if (info == null || took == null || run.started == 0 || run.status == WorkflowStatus.stopped) return;
+    final key = _pastRunsKey(info.projectId);
+    final prefs = ref.read(preferencesProvider);
+    prefs[key] = pastRunsWith(
+      prefs[key],
+      PastRun(
+        workflow: _runWorkflowIds[run.runId] ?? name,
+        agents: run.started,
+        spentMicros: run.spentMicros,
+        took: took,
+        everyai: !_onOutsideLead,
+      ),
+    );
+  }
+
+  /// Each run's workflow id, for [_rememberRun].
+  final _runWorkflowIds = <String, String>{};
 
   Future<void> _runWorkflowSteps(
     String runId,
@@ -6137,6 +6051,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       case ShutdownStep.workflow:
         _startTrees.remove(runId);
         _quietRuns.remove(runId);
+        _rememberRun(end.name, end);
+        _runWorkflowIds.remove(runId);
         // Its journal is done with once the lead's message is queued (the only copy of the result then). If the
         // session closed before that, it stays: the next launch resumes into this shutdown and tells the lead.
         if (_leadTold.remove(runId)) await retireJournalFile(journalPath);
@@ -6402,7 +6318,9 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     final session = _session;
     if (session == null || !_live) return;
     for (final call in state.transcript.held) {
-      if (!forkTools.contains(call.toolName) || !_forkToolsDone.add(call.id)) continue;
+      // run_workflow too: the EveryAI lead's own (outside leads reach it through the host).
+      final ours = forkTools.contains(call.toolName) || call.toolName == runWorkflowTool;
+      if (!ours || !_forkToolsDone.add(call.id)) continue;
       unawaited(() async {
         final String out;
         try {
@@ -6430,6 +6348,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     String str(String key) => args[key] is String ? args[key]! as String : '';
     final forkId = str('fork_id').trim();
     switch (name) {
+      case runWorkflowTool:
+        return (await _runWorkflowCall(args)).text;
       case checkForksTool:
         // Reports and questions held for the end of an outside lead's turn come with the answer instead.
         // A tool result, not a user message: no notice wrapper (the briefing names this result as EveryAI's own).
@@ -6545,10 +6465,6 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     final item = state.transcript.openQuestion;
     if (item != null && item.call.id.startsWith('doom-')) {
       await _answerDoomLoop(item, [QuestionAnswer(other: answer)], by: 'The agent that started you');
-      return true;
-    }
-    if (item != null && item.call.id.startsWith('bugask-')) {
-      await _answerBugAsk(item, [QuestionAnswer(other: answer)]);
       return true;
     }
     // An outside fork asked through the host: the answer is its call's result.
@@ -6765,7 +6681,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     }
     final host = _hostFor(id);
     final session = _session;
-    final own = id.startsWith('bugask-') || id.startsWith('doom-');
+    final own = id.startsWith('doom-');
     final held = !own && host == null && _isHeld(item.call);
     // Held calls and host waits take text only; the rest is a user message.
     final base = host != null || held
@@ -6781,10 +6697,6 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       state = state.copyWith(transcript: _builder.snapshot);
       return true;
     }
-    if (id.startsWith('bugask-')) {
-      await _answerBugAsk(item, answers);
-      return true;
-    }
     if (session == null) return true;
     if (id.startsWith('doom-')) {
       await _answerDoomLoop(item, answers);
@@ -6798,10 +6710,10 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     return true;
   }
 
-  /// Whether the card can carry files: the app's own cards (bug questions, loop guards, host consents) can't.
+  /// Whether the card can carry files: the app's own cards (loop guards, host consents) can't.
   bool acceptsFiles(QuestionItem item) {
     final id = item.call.id;
-    return !id.startsWith('bugask-') && !id.startsWith('doom-') && !_localAsks.containsKey(id);
+    return !id.startsWith('doom-') && !_localAsks.containsKey(id);
   }
 
   bool _isHeld(ActionCall call) => state.transcript.held.any((c) => c.id == call.id);
@@ -7819,22 +7731,6 @@ final class _WorkflowLauncher implements AgentLauncher {
 /// Bug fix waits for the user's report: the card [card] asks for it, and
 /// the run starts with [args] and the answers. [turnsBefore]: the card shows
 /// once a start note not among them is in the transcript (null: at once).
-final class _BugAsk {
-  _BugAsk(this.card, this.entry, this.args, this.ctx, {required this.fromCall, this.turnsBefore});
-  final String card;
-  final WorkflowEntry entry;
-  final Map<String, Object?> args;
-  final Map<String, Object?> ctx;
-  final bool fromCall;
-  final Set<String>? turnsBefore;
-  bool shown = false;
-}
-
-/// run_workflow's result when Bug fix asked the user for the bug first.
-const bugAskedResult =
-    'Not started yet: the bug report is too thin, so the app asked the user what goes wrong, how to make it happen '
-    'and what should happen instead. Bug fix starts with their answers, and its result comes as a <workflow-result> '
-    "message. Tell the user to answer the card in the app; don't ask them yourself.";
 
 /// Sent to a workflow agent whose turn the app's restart cut off.
 const workflowCarryOn =

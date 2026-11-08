@@ -29,13 +29,19 @@ String maxWorkflowNote({required bool on}) => on
     : '${_open}name="$maxWorkflowId" state="off">The user turned the Max workflow off: stop following the '
           '$maxSkillId approach from here on.$_close';
 
-/// The message the lead gets when the user starts workflow [id] ([title])
-/// on [task]: the run goes on in the app, and its result comes back as a
-/// message.
-String workflowStartNoteOf(String id, String title, String task) =>
-    '${_open}name="${_attr(id)}" state="started" title="${_attr(title)}">The user started the $title workflow on the '
-    'task below. It runs in the app with its own agents, and its result reaches you later in a <workflow-result> '
-    'message. Don\'t work on the task yourself meanwhile: reply in one short line that it started.$_close\n\n$task';
+/// The message the lead gets when the user picks workflow [id] ([title]) for [task]: the lead clarifies when it must,
+/// then calls run_workflow, and the user starts the run from its estimate (owner, 2026-11-08: every workflow starts
+/// that way, the lead clarifies for all of them). [args] says what the workflow takes; [draft] is a first guess at them
+/// from the task.
+/// Prompt reason: picked runs used to start at once on the raw task; now they get the same clarify-then-estimate path
+/// as runs the lead starts, so the lead needs the args shape and a starting point.
+String workflowStartNoteOf(String id, String title, String task, {String args = '', String draft = ''}) =>
+    '${_open}name="${_attr(id)}" state="picked" title="${_attr(title)}">The user picked the $title workflow for the '
+    'task below. If the task leaves out something $title needs to do it well, ask the user with ask_user_question '
+    'first (only then, and only what is missing). Then call run_workflow with id "$id" and its args'
+    '${args.isEmpty ? '' : ' ($args)'}${draft.isEmpty ? '' : '; from the task alone they would be $draft'}. The user '
+    'then sees an estimate and starts it; its result reaches you later in a <workflow-result> message. Don\'t work '
+    'on the task yourself.$_close\n\n$task';
 
 /// The message the lead gets when the workflow [title] the user started
 /// couldn't start after all ([why]).
@@ -59,6 +65,8 @@ String workflowFailedNote(String id, String title, String why) =>
       'on' => 'Max on',
       'off' => 'Max off',
       'failed' => '$title didn\'t start',
+      'picked' => title,
+      'adjust' => 'Changing $title',
       _ => 'Started $title',
     });
     rest = rest.substring(end + _close.length).trimLeft();

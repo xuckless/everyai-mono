@@ -188,7 +188,7 @@ void main() {
       );
     final turns = b.snapshot.items.whereType<UserTurn>().toList();
     expect([for (final t in turns) t.text], ['fix the crash', 'Make it blue']);
-    expect([for (final t in turns) t.workflow], ['Started Bug fix', 'Max on']);
+    expect([for (final t in turns) t.workflow], ['Bug fix', 'Max on']);
     expect(userTextOf(workflowStartNoteOf('ultra', 'Ultra', 'Add it')), 'Add it');
   });
 
@@ -261,14 +261,15 @@ void main() {
 
     Future<WorkflowEntry> bundled(String id) async => (await loadBundledWorkflows()).firstWhere((w) => w.id == id);
 
-    test('from the home page, Ultra takes the prompt as its task after the lead is told', () async {
+    test('from the home page, Ultra goes to the lead with the prompt; the user starts it from the estimate', () async {
       final ultra = await bundled('ultra');
       await open(workflow: WorkflowPick.script(ultra), prompt: 'Add dark mode');
-      expect(driver.specs.single.initialMessage, contains('<everyai-workflow name="ultra"'));
-      expect(driver.specs.single.initialMessage, contains('Add dark mode'));
+      final first = driver.specs.single.initialMessage!;
+      expect(first, contains('<everyai-workflow name="ultra" state="picked"'));
+      expect(first, contains('{"task":"Add dark mode"}'));
+      expect(first, endsWith('Add dark mode'));
       await pumpEventQueue();
-      expect(started.single.source, ultra.source);
-      expect(started.single.args['task'], 'Add dark mode');
+      expect(started, isEmpty);
     });
 
     test('from the home page, a changed or empty workflow stops the start before the lead is told', () async {
@@ -313,16 +314,18 @@ void main() {
       expect(c.workflowPick?.id, 'bugfix');
       expect(await c.sendTyped('Saving crashes', files: [_file('crash.log')]), isTrue);
       await pumpEventQueue();
-      expect(lead.sent.last, contains('<everyai-workflow name="bugfix"'));
+      expect(lead.sent.last, contains('<everyai-workflow name="bugfix" state="picked"'));
       expect(lead.sent.last, contains('Saving crashes'));
-      // The workflow's agents get the attached file's path with the task.
-      expect(started.single.args['bug'], allOf(startsWith('Saving crashes'), contains('crash.log')));
+      // The draft args carry the attached file's path with the task, for the workflow's agents.
+      expect(lead.sent.last, contains('{"bug":"Saving crashes'));
+      expect(lead.sent.last, contains('crash.log'));
+      expect(started, isEmpty);
       expect(c.workflowPick, isNull);
 
       expect(await c.sendTyped('And the title too'), isTrue);
       await pumpEventQueue();
       expect(lead.sent.last, isNot(contains('<everyai-workflow')));
-      expect(started, hasLength(1));
+      expect(started, isEmpty);
     });
 
     test('messages the app sends itself leave an armed workflow alone', () async {

@@ -12,9 +12,7 @@ import 'package:every_ai/features/code/code_settings_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
 import 'package:every_ai/features/code/domain/permissions.dart' show ApprovalScope, Verdict;
-import 'package:every_ai/features/code/domain/questions.dart';
-import 'package:every_ai/features/code/domain/transcript.dart' show NoticeItem, QuestionItem;
-import 'package:every_ai/features/code/drivers/acp/acp_mapping.dart' show agentMessageEvent, userMessageEvent;
+import 'package:every_ai/features/code/drivers/acp/acp_mapping.dart' show agentMessageEvent;
 import 'package:every_ai/features/code/drivers/driver_events.dart';
 import 'package:every_ai/features/code/drivers/driver_registry.dart';
 import 'package:every_ai/features/code/git/git_service.dart';
@@ -24,11 +22,12 @@ import 'package:every_ai/features/code/harness/harness.dart' show NativeMode;
 import 'package:every_ai/features/code/host/host.dart';
 import 'package:every_ai/features/code/host/host_prompts.dart';
 import 'package:every_ai/features/code/host/host_providers.dart';
-import 'package:every_ai/features/code/workflows/bug_report.dart';
 import 'package:every_ai/features/code/workflows/workflow_engine.dart';
+import 'package:every_ai/features/code/workflows/workflow_estimate.dart';
+import 'package:every_ai/features/code/workflows/workflow_proposal.dart';
 import 'package:every_ai/features/code/workflows/workflow_landing.dart';
 import 'package:every_ai/features/code/workflows/workflow_library.dart' show loadBundledWorkflows;
-import 'package:every_ai/features/code/workflows/workflow_picker.dart' show WorkflowPick, workflowStartNote;
+import 'package:every_ai/features/code/workflows/workflow_picker.dart' show WorkflowPick;
 import 'package:every_ai/features/code/workflows/workflow_runs.dart';
 import 'package:every_ai/features/models/models_providers.dart';
 import 'package:every_ai/features/usage/usage_totals.dart';
@@ -131,7 +130,16 @@ void main() {
   tearDown(() async {
     container.dispose();
     await db.close();
-    await tmp.delete(recursive: true);
+    // A last write of the app's (an estimate's file) may still be landing.
+    for (var i = 0; ; i++) {
+      try {
+        await tmp.delete(recursive: true);
+        break;
+      } on FileSystemException {
+        if (i == 20) rethrow;
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+      }
+    }
   });
 
   Future<CodeSessionController> open({String harness = 'test'}) async {
@@ -201,7 +209,14 @@ void main() {
   HostCall runCall(Map<String, Object?> args) =>
       HostCall(id: 'h1', sessionId: '', name: runWorkflowTool, args: args, ended: Completer<HostEnd>().future);
 
-  test('run_workflow starts a listed workflow at once, and its result waits for the lead\'s turn to end', () async {
+  /// The estimate card for [c]'s open proposal; Start on it.
+  Future<void> start(CodeSessionController c) async {
+    expect(container.read(codeSessionProvider(c.sessionId)).proposal, isNotNull, reason: 'no estimate is open');
+    expect(await c.startProposal(), isNull);
+    await pumpEventQueue();
+  }
+
+  test('run_workflow proposes; Start runs it, and its result waits for the lead\'s turn to end', () async {
     final c = await open();
     expect([for (final p in await c.workflowPrompts()) p.id], ['ultra', 'bugfix', 'security_review']);
     var r = await c.call(runCall({'id': 'nope'}));
@@ -217,13 +232,19 @@ void main() {
       }),
     );
     expect(r.isError, isFalse);
-    expect(r.text, startsWith('Started Security review (run '));
-    await pumpEventQueue();
+    expect(r.text, startsWith('The user now sees an estimate for Security review'));
+    // Nothing runs until the user starts it; the session waits on them.
+    expect(startedArgs, isNull);
+    final card = container.read(codeSessionProvider(c.sessionId)).proposal!;
+    expect(card.estimate.agents, (6, 6));
+    expect(card.capUsd, isNull, reason: 'an outside lead has no money cap');
+    expect(container.read(codeSessionProvider(c.sessionId)).status, SessionStatus.needsInput);
+    await start(c);
+    expect(container.read(codeSessionProvider(c.sessionId)).proposal, isNull);
     expect(startedSource, contains("id: 'security_review'"));
     expect(startedArgs!['base'], 'main');
     // The script's ctx: the run, the lead, and no review model on an outside lead (it would spend).
     final ctx = startedArgs!['_ctx']! as Map;
-    expect(r.text, contains('${ctx['runId']}'));
     expect(ctx['lead'], {'harness': 'test', 'model': ''});
     expect(ctx['review'], isNull);
 
@@ -264,6 +285,7 @@ void main() {
       }),
     );
     expect(r.isError, isFalse);
+    expect(container.read(codeSessionProvider(c.sessionId)).proposal!.workflowId, 'bugfix');
   });
 
   test('a read-only agent of a Full auto lead runs commands but asks before edits', () async {
@@ -1173,202 +1195,114 @@ void main() {
     });
   });
 
-  group('a thin bug report', () {
-    QuestionItem card(CodeSessionController c) => container
-        .read(codeSessionProvider(c.sessionId))
-        .transcript
-        .items
-        .whereType<QuestionItem>()
-        .lastWhere((q) => q.call.id.startsWith('bugask-'));
-
-    HostCall bugfix(String bug) => HostCall(
-      id: 'h-$bug',
+  group('the estimate', () {
+    HostCall ultra(List<String> items, {String id = 'h-u'}) => HostCall(
+      id: id,
       sessionId: '',
       name: runWorkflowTool,
       args: {
-        'id': 'bugfix',
-        'args': {'bug': bug},
+        'id': 'ultra',
+        'args': {
+          'items': [
+            for (final i in items) {'id': i, 'title': 'Item $i', 'spec': 'Build $i'},
+          ],
+        },
       },
       ended: Completer<HostEnd>().future,
     );
 
-    const answers = [
-      QuestionAnswer(other: 'Saving a note crashes with a TypeError'),
-      QuestionAnswer(selected: {0}),
-      QuestionAnswer(other: 'It saves'),
-    ];
+    WorkflowProposal? card(CodeSessionController c) => container.read(codeSessionProvider(c.sessionId)).proposal;
 
-    test('on an outside lead: asked with no model call, then started with the answers', () async {
+    test('agents per item, the items listed; a second call replaces the open card', () async {
       final c = await open();
-      final r = await c.call(bugfix('fix it'));
-      expect(r, (text: bugAskedResult, isError: false));
+      await c.call(ultra(['a', 'b']));
+      expect(card(c)!.items, ['Item a', 'Item b']);
+      expect(card(c)!.estimate.agents, (9, 12));
+      expect(card(c)!.phases.first, 'Split');
+      final first = card(c)!.id;
+      final again = await c.call(ultra(['a', 'b', 'c'], id: 'h-2'));
+      expect(again.isError, isFalse);
+      expect(card(c)!.id, isNot(first));
+      expect(card(c)!.estimate.agents, (13, 17));
       expect(startedArgs, isNull);
-      final q = card(c);
-      expect(q.questions, hasLength(3));
-      expect(q.answers, isNull);
-      // One at a time: a run waits for the card.
-      final again = await c.call(bugfix('Saving crashes'));
-      expect(again.isError, isTrue);
-      expect(again.text, contains('waiting for the user'));
-      await c.answer(q, answers);
+    });
+
+    test('Cancel runs nothing and tells the lead; the slot is free again', () async {
+      final c = await open();
+      await c.call(ultra(['a']));
+      c.cancelProposal();
       await pumpEventQueue();
-      expect(startedArgs!['bug'], startsWith('fix it\nWhat goes wrong: Saving a note crashes with a TypeError'));
-      expect(startedArgs!['bug'], contains('Expected: It saves'));
-      expect(card(c).answers, answers);
-      expect(api.where((p) => p.endsWith('/aux/decide')), isEmpty);
+      expect(card(c), isNull);
+      expect(startedArgs, isNull);
+      expect(lead.sent.last, contains('cancelled the Ultra run before it started'));
+      expect((await c.call(ultra(['b']))).isError, isFalse);
     });
 
-    test('a reply in chat instead of the card is the report, and the card no longer holds runs back', () async {
+    test("Adjust prefills the composer, and the user's next message asks the lead for a new proposal", () async {
       final c = await open();
-      await c.call(bugfix('fix it'));
-      lead.add(userMessageEvent('u-chat', 'Saving a note crashes with a TypeError'));
-      for (var i = 0; i < 50 && startedArgs == null; i++) {
-        await pumpEventQueue();
-      }
-      expect(card(c).answers, isEmpty);
-      expect(startedArgs!['bug'], 'fix it\nWhat goes wrong: Saving a note crashes with a TypeError');
-      final next = await c.call(bugfix('Saving crashes'));
-      expect(next.text, isNot(contains('waiting for the user')));
-      expect(next.text, contains('already running'));
+      await c.call(ultra(['a']));
+      c.adjustProposal();
+      final s = container.read(codeSessionProvider(c.sessionId));
+      expect(s.proposal, isNull);
+      expect(s.composerPrefill!.text, 'Change the Ultra run: ');
+      await c.send('Change the Ultra run: drop the review');
+      await pumpEventQueue();
+      expect(lead.sent.last, contains('state="adjust"'));
+      expect(lead.sent.last, contains('drop the review'));
+      await c.send('and something else');
+      await pumpEventQueue();
+      expect(lead.sent.last, isNot(contains('state="adjust"')), reason: 'the note goes once');
     });
 
-    test('a card open when the app quits: after the restart the lead hears Bug fix never started', () async {
-      CodeSessionController.liveAfter = Duration.zero;
-      addTearDown(() => CodeSessionController.liveAfter = const Duration(milliseconds: 1500));
+    test('an open card survives a restart; a started one leaves nothing behind', () async {
       final c = await open();
-      final id = c.sessionId;
-      await c.call(bugfix('fix it'));
-      final saved = File('${tmp.path}/data/workflows/$id/bugask.jsonl');
+      await c.call(ultra(['a']));
+      final id = card(c)!.id;
+      await pumpEventQueue();
+      final saved = File('${tmp.path}/data/workflows/${c.sessionId}/proposal.jsonl');
       expect(saved.existsSync(), isTrue);
       container.dispose();
       container = makeContainer();
-      container.listen(codeSessionProvider(id), (_, _) {});
-      bool told() => lead.sent.any((m) => m.contains('state="failed"'));
-      for (var i = 0; i < 100 && !told(); i++) {
-        await pumpEventQueue();
-      }
-      expect(lead.sent.lastWhere((m) => m.contains('state="failed"')), contains('closed before the user answered'));
+      container.listen(codeSessionProvider(c.sessionId), (_, _) {});
+      final back = await whenValue(
+        container,
+        codeSessionProvider(c.sessionId).select((s) => s.proposal?.id),
+        (String? p) => p != null,
+      );
+      expect(back, id);
+      final again = container.read(codeSessionProvider(c.sessionId).notifier);
+      await whenValue(container, codeSessionProvider(c.sessionId).select((s) => s.connected), (bool b) => b);
+      expect(await again.startProposal(), isNull);
+      await pumpEventQueue();
+      expect(startedArgs!['items'], isNotEmpty);
       expect(saved.existsSync(), isFalse);
     });
 
-    test('an answered card leaves nothing for a restart to report', () async {
+    test('a finished run is remembered for the next estimate in the project', () async {
       final c = await open();
-      await c.call(bugfix('fix it'));
-      await c.answer(card(c), answers);
+      await c.call(ultra(['a']));
+      await start(c);
+      final reply = bridge.agent('Build a', {'harness': 'fake2'});
+      await child();
+      answer(drivers['fake2']!.latest!, 'Built');
+      await reply;
+      bridge.finish({'ok': true});
+      await whenValue(
+        container,
+        workflowRunsProvider(c.sessionId).select((r) => r.isNotEmpty && r.last.status == WorkflowStatus.done),
+        (bool d) => d,
+      );
       await pumpEventQueue();
-      expect(File('${tmp.path}/data/workflows/${c.sessionId}/bugask.jsonl').existsSync(), isFalse);
+      final past = pastRunsOf(prefs['code.workflow.past.p1']);
+      expect(past.single.workflow, 'ultra');
+      expect(past.single.everyai, isFalse);
+      // An outside lead's runs cost EveryAI nothing: time comes from them, never dollars.
+      await c.call(ultra(['a'], id: 'h-3'));
+      expect(card(c)!.estimate.dollars, isNull);
+      expect(card(c)!.estimate.basis, 'from 1 past run here');
     });
 
-    test('a start note taken out of the queue takes its waiting card with it', () async {
-      final entry = (await loadBundledWorkflows()).firstWhere((w) => w.id == 'bugfix');
-      final c = await open();
-      lead.add(stateEvent('busy', ExecutionStatus.running));
-      await whenValue(container, codeSessionProvider(c.sessionId).select((s) => s.transcript.running), (bool b) => b);
-      c.pickWorkflow(WorkflowPick.script(entry));
-      await c.sendTyped('fix it');
-      expect(container.read(codeSessionProvider(c.sessionId)).queued, hasLength(1));
-      expect((await c.call(bugfix('Saving crashes'))).text, contains('waiting for the user'));
-      c.unqueue(0);
-      expect((await c.call(bugfix('Saving a note crashes'))).text, startsWith('Started Bug fix'));
-    });
-
-    test('a concrete report on an outside lead starts at once', () async {
-      final c = await open();
-      final r = await c.call(bugfix('Saving a note crashes'));
-      expect(r.text, startsWith('Started Bug fix'));
-      await pumpEventQueue();
-      expect(startedArgs!['bug'], 'Saving a note crashes');
-    });
-
-    test('empty answers start nothing, and the lead is told', () async {
-      final c = await open();
-      await c.call(bugfix(''));
-      await c.answer(card(c), const [QuestionAnswer(), QuestionAnswer(), QuestionAnswer()]);
-      await pumpEventQueue();
-      expect(startedArgs, isNull);
-      final notices = container.read(codeSessionProvider(c.sessionId)).transcript.items.whereType<NoticeItem>();
-      expect(notices.last.message, "Bug fix didn't start: no bug was given.");
-      lead.add(stateEvent('idle', ExecutionStatus.finished));
-      for (var i = 0; i < 50 && !lead.sent.any((m) => m.contains('state="failed"')); i++) {
-        await pumpEventQueue();
-      }
-      expect(lead.sent.last, contains('state="failed"'));
-      // The card is closed, so another run may start.
-      expect((await c.call(bugfix('Saving a note crashes'))).isError, isFalse);
-    });
-
-    group('on the EveryAI harness', () {
-      setUp(() {
-        drivers['everyai'] = FakeLeadDriver('everyai', session: lead);
-        container.dispose();
-        container = makeContainer();
-      });
-
-      void decides(Object? concrete) => backend = (req) async => req.url.path.endsWith('/aux/decide')
-          ? http.Response(
-              jsonEncode({
-                'answers': [
-                  {'id': 'concrete', 'value': concrete},
-                ],
-              }),
-              200,
-              headers: {'content-type': 'application/json'},
-            )
-          : http.Response('no network in this test', 599);
-
-      test('decide says no symptom: the user is asked', () async {
-        decides(false);
-        final c = await open(harness: 'everyai');
-        expect((await c.call(bugfix('The save flow in notes needs a look please'))).text, bugAskedResult);
-        expect(api.where((p) => p.endsWith('/aux/decide')), hasLength(1));
-        expect(card(c).questions, bugQuestions);
-      });
-
-      test('decide says concrete: it starts at once', () async {
-        decides(true);
-        final c = await open(harness: 'everyai');
-        expect((await c.call(bugfix('the button'))).text, startsWith('Started Bug fix'));
-      });
-
-      test('a workflow agent on it reaches the restricted host, unsaved, and its proof tools are host tools', () async {
-        final c = await open(harness: 'everyai');
-        await c.runWorkflow('demo', 'source');
-        unawaited(bridge.agent('Fix', <String, Object?>{}).catchError((Object _) => null));
-        final info = await child();
-        expect(info.harness, 'everyai');
-        // Its security_alert is the client tool; the host doesn't list it a second time.
-        expect(host.only[info.id], {...workflowHostTools}..remove(securityAlertTool));
-        expect(drivers['everyai']!.specs.last.clientTools, [securityAlertSpec]);
-        final briefing = drivers['everyai']!.specs.last.briefing!;
-        expect(briefing.mcpToken, host.live[info.id]!.single);
-        expect(briefing.sessionSkill, isNull);
-        expect(prefs['code.sessions'], isNot(contains(briefing.mcpToken)));
-        final policy = container.read(codeSessionProvider(info.id).notifier).policy;
-        ActionCall mcp(String name) => ActionCall(
-          id: name,
-          raw: const {},
-          toolName: 'everyai__$name',
-          toolCallId: name,
-          action: const {'kind': 'MCPToolAction'},
-        );
-        expect(policy.decide(mcp('diff_stats'), AgentMode.autoEdit).verdict, Verdict.allow);
-        expect(policy.decide(mcp('bug_check'), AgentMode.autoEdit).verdict, Verdict.ask);
-        // The lead on the EveryAI harness has no host tools.
-        expect(c.policy.decide(mcp('diff_stats'), AgentMode.autoEdit).verdict, Verdict.ask);
-      });
-
-      test('a failed decide falls back to the heuristic', () async {
-        final c = await open(harness: 'everyai');
-        expect((await c.call(bugfix('the button'))).text, bugAskedResult);
-        expect((await c.call(bugfix('x'))).isError, isTrue);
-        await c.answer(card(c), answers);
-        await pumpEventQueue();
-        expect(startedArgs!['bug'], contains('What goes wrong'));
-        expect(api.where((p) => p.endsWith('/aux/decide')), hasLength(1));
-      });
-    });
-
-    test('a picked Bug fix asks once its start note is in, then starts', () async {
+    test('a picked workflow goes to the lead to clarify and propose; nothing starts by itself', () async {
       final entry = (await loadBundledWorkflows()).firstWhere((w) => w.id == 'bugfix');
       final info = await container
           .read(codeSessionsProvider.notifier)
@@ -1382,19 +1316,13 @@ void main() {
           );
       container.listen(codeSessionProvider(info.id), (_, _) {});
       await whenValue(container, codeSessionProvider(info.id).select((s) => s.connected), (bool c) => c);
-      final c = container.read(codeSessionProvider(info.id).notifier);
-      // Not before the start note: that turn would close the card as answered in chat.
-      expect(container.read(codeSessionProvider(info.id)).transcript.items.whereType<QuestionItem>(), isEmpty);
-      lead.add(userMessageEvent('u1', workflowStartNote(entry, 'fix it')));
-      await whenValue(
-        container,
-        codeSessionProvider(info.id).select((s) => s.transcript.openQuestion?.call.id ?? ''),
-        (String id) => id.startsWith('bugask-'),
-      );
-      expect(startedArgs, isNull);
-      await c.answer(card(c), answers);
       await pumpEventQueue();
-      expect(startedArgs!['bug'], startsWith('fix it\n'));
+      final first = drivers['test']!.specs.first.initialMessage!;
+      expect(first, contains('state="picked"'));
+      expect(first, contains('call run_workflow with id "bugfix"'));
+      expect(first, contains('{"bug":"fix it"}'));
+      expect(startedArgs, isNull);
+      expect(container.read(codeSessionProvider(info.id)).proposal, isNull);
     });
   });
 }
