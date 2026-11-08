@@ -9,6 +9,8 @@ import 'package:crypto/crypto.dart';
 import '../domain/plan_batches.dart';
 import '../harness/everyai/repro_paths_io.dart';
 import '../git/git_service_io.dart' show runGit;
+import '../git/git_service.dart' show GitService;
+import '../harness/everyai/lsp_io.dart';
 import '../harness/everyai/shell_io.dart';
 import 'host.dart';
 import 'host_checks.dart';
@@ -370,4 +372,29 @@ Future<HostResult> hostBugCheck(HostCheckContext c, Map<String, Object?> args, F
     default:
       return (text: 'Error: action must be reproduced, verify or status.', isError: true);
   }
+}
+
+/// One language-server hub per session folder for outside leads' diagnostics calls; each stops after 10 minutes
+/// without a call.
+final _hubs = <String, ({LspHub hub, Timer idle})>{};
+
+Future<HostResult> hostDiagnostics(HostCheckContext c, String path) async {
+  final root = c.workingDir;
+  final was = _hubs.remove(root);
+  was?.idle.cancel();
+  final hub =
+      was?.hub ??
+      LspHub(
+        root: root,
+        toolsDir: '${await GitService.dataDir()}/tools',
+        environment: () async => (await ShellEnv.load()).env,
+      );
+  _hubs[root] = (
+    hub: hub,
+    idle: Timer(const Duration(minutes: 10), () {
+      if (_hubs.remove(root) case final h?) unawaited(h.hub.close());
+    }),
+  );
+  final a = await diagnosticsAnswer(hub, root, path);
+  return (text: a.text, isError: a.isError);
 }

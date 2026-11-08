@@ -49,6 +49,7 @@ final List<Map<String, Object?>> hostToolSpecs = List.unmodifiable([
   hostBugCheckSpec,
   checkSpec,
   diffStatsSpec,
+  hostDiagnosticsSpec,
   goalCheckSpec,
   if (hostScriptsAvailable) hostRunScriptSpec,
   runWorkflowSpec,

@@ -7,6 +7,7 @@ import '../drivers/usage_limit.dart';
 import '../git/repo_check.dart' show splitRepoCheck;
 import '../harness/events.dart';
 import '../settings/context_files.dart' show splitContextNotes;
+import '../settings/agent_prompt.dart' show splitTierNote;
 import '../workflows/workflow_notes.dart' show splitWorkflowNotes;
 import 'agent_mode.dart';
 import 'compaction.dart' show splitCompacted, splitHandoff;
@@ -424,6 +425,9 @@ final class TranscriptBuilder {
   final _byToolCall = <String, String>{};
   final _open = <String, ActionCall>{};
 
+  /// Calls the driver let run before their result (`approvedCallsKey`), kept in case its reviewer passes one back.
+  final _letRun = <String, ActionCall>{};
+
   /// A patch's call id → its per-file step ids.
   final _patchParts = <String, List<String>>{};
   final _streaming = StringBuffer();
@@ -491,7 +495,12 @@ final class TranscriptBuilder {
         }
       case StateChange(key: approvedCallsKey, :final raw):
         for (final id in raw['value'] as List<Object?>? ?? const []) {
-          _open.remove(id);
+          if (_open.remove(id) case final call?) _letRun[call.id] = call;
+        }
+      // Waiting again: the lead's reviewer passed the call to the user.
+      case StateChange(key: escalatedCallsKey, :final raw):
+        for (final id in raw['value'] as List<Object?>? ?? const []) {
+          if (_letRun.remove(id) case final call?) _open[call.id] = call;
         }
       case StateChange(:final executionStatus) when executionStatus != ExecutionStatus.unknown:
         _status = executionStatus;
@@ -512,8 +521,10 @@ final class TranscriptBuilder {
         final (checks, afterChecks) = splitCheckReport(checked);
         if (checks != null) _items.add(NoticeItem('${e.id}-checks', checksNotice, detail: checks));
         final (_, afterContext) = splitContextNotes(afterChecks);
-        final (flows, afterFlows) = splitWorkflowNotes(afterContext);
-        var text = splitRewindNote(afterFlows);
+        final (flowNotes, afterFlows) = splitWorkflowNotes(afterContext);
+        final (tier, afterTier) = splitTierNote(afterFlows);
+        final flows = [...flowNotes, if (tier != null) '${tier.label} tier'];
+        var text = splitRewindNote(afterTier);
         final changed = mode != null && mode != _notedMode;
         if (mode != null) _notedMode = mode;
         // A continuation conversation opens with the summary, not something the user typed.
@@ -534,7 +545,9 @@ final class TranscriptBuilder {
         if (noticeBodies(text) case final bodies when bodies.isNotEmpty) {
           for (final (i, body) in bodies.indexed) {
             final id = bodies.length == 1 ? e.id : '${e.id}-$i';
-            if (parseTaskNotification(body) case final n?) {
+            if (workflowResultNotice(id, body) case final row?) {
+              _items.add(row);
+            } else if (parseTaskNotification(body) case final n?) {
               _items.add(
                 NoticeItem(
                   id,
@@ -550,6 +563,11 @@ final class TranscriptBuilder {
           return;
         }
         if (_answer(text) || _reported(text)) return;
+        // What a workflow returned is the app's message to the lead: a row the user can open, not their words.
+        if (workflowResultNotice(e.id, text) case final row?) {
+          _items.add(row);
+          return;
+        }
         if (text.trimLeft().startsWith('<$researchWorkflowTag')) {
           final n = RegExp(r'reports="(\d+)"').firstMatch(text)?[1] ?? '';
           _items.add(NoticeItem(e.id, 'Research workflow: $n reports', detail: text));
@@ -749,6 +767,7 @@ final class TranscriptBuilder {
   void _result(ToolResult r) {
     final actionId = r.actionId.isNotEmpty ? r.actionId : (_byToolCall[r.toolCallId] ?? '');
     _open.remove(actionId);
+    _letRun.remove(actionId);
     if (_patchParts.remove(actionId) case final parts?) {
       // Each file's step gets its own part of the result (its diff).
       final files = [...(r.observation['files'] as List<Object?>? ?? const []).whereType<Map<String, Object?>>()];
@@ -984,4 +1003,24 @@ String exploreSummary(List<ToolStep> steps) {
     if (searches > 0) n(searches, 'search', 'searches'),
     if (commands > 0) n(commands, 'command', 'commands'),
   ].join(', ');
+}
+
+/// A `<workflow-result>` message ([workflowResultMessage]) as the transcript's row: "Ultra finished", opening to
+/// the summary the workflow wrote (the JSON the lead also gets stays out). Null for any other text.
+NoticeItem? workflowResultNotice(String id, String text) {
+  final m = RegExp(r'^\s*<workflow-result name="([^"]*)" status="([^"]*)">\n?([\s\S]*?)\n?</workflow-result>')
+      .firstMatch(text);
+  if (m == null) return null;
+  final status = m[2]!;
+  final summary = m[3]!.split('\n\nDetails (the full result):').first.trim();
+  return NoticeItem(
+    id,
+    '${m[1]} ${switch (status) {
+      'done' => 'finished',
+      'capped' => 'stopped at its cap',
+      _ => status,
+    }}',
+    error: status == 'failed',
+    detail: summary,
+  );
 }

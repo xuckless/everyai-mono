@@ -422,12 +422,12 @@ class _WebhookFormState extends ConsumerState<_WebhookForm> {
   }
 
   Future<void> _pickMode(AgentMode m) async {
-    if (m == AgentMode.fullAuto && !_confirmed) {
+    if (m.runsFreely && !_confirmed) {
       final ok = await showAdaptiveConfirm(
         context,
-        title: 'Run webhook sessions in Full auto?',
+        title: 'Run webhook sessions in ${m.label}?',
         message:
-            'An outside service starts these sessions and nobody watches them. Full auto runs commands and edits '
+            'An outside service starts these sessions and nobody watches them. ${m.label} runs commands and edits '
             'without asking, and what the sender writes could try to steer the agent. The safety floor and your deny '
             'rules still apply.',
         confirmLabel: 'Use Full auto',
@@ -450,7 +450,7 @@ class _WebhookFormState extends ConsumerState<_WebhookForm> {
         harness: _harness,
         model: _model.text.trim(),
         mode: _mode,
-        unattendedConfirmed: _mode == AgentMode.fullAuto && _confirmed,
+        unattendedConfirmed: _mode.runsFreely && _confirmed,
         event: _event.text.trim(),
       ),
     );

@@ -57,7 +57,7 @@ final class WebhookAutomation {
 
   /// The mode a delivery runs in: anything that asks nobody falls back to Auto-edit unless the user confirmed it.
   AgentMode get effectiveMode =>
-      (mode == AgentMode.fullAuto || mode == AgentMode.bypass) && !unattendedConfirmed ? AgentMode.autoEdit : mode;
+      (mode.runsFreely || mode == AgentMode.bypass) && !unattendedConfirmed ? AgentMode.autoEdit : mode;
 
   static const _keep = Object();
 

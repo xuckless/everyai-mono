@@ -299,6 +299,9 @@ enum ExecutionStatus {
 /// `approvedEvent`): no longer waiting for an answer, results still to come.
 const approvedCallsKey = 'approved_calls';
 
+/// The lead's own reviewer handed these calls back to the user ([escalatedEvent]).
+const escalatedCallsKey = 'reviewer_escalated';
+
 final class StateChange extends HarnessEvent {
   const StateChange({required super.id, required super.raw, required this.executionStatus, required this.key});
   final ExecutionStatus executionStatus;

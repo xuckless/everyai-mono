@@ -36,7 +36,8 @@ Future<bool> isDirtyAmong(SessionWorktree w, List<String> paths) async => false;
 Future<String> checkpoint(SessionWorktree w, int turn) async => _unsupported();
 Future<void> restoreCheckpoint(SessionWorktree w, String ref) async => _unsupported();
 Future<({int ahead, int behind})> aheadBehind(SessionWorktree w) async => (ahead: 0, behind: 0);
-Future<String> squashMerge(SessionWorktree w, String message) async => _unsupported();
+Future<String> fastForwardMerge(SessionWorktree w, String sha) async => _unsupported();
+Future<({String sha, String subject})> mergeCandidate(SessionWorktree w) async => (sha: '', subject: '');
 Future<void> push(SessionWorktree w) async => _unsupported();
 Future<String> createPr(SessionWorktree w, {required String title, required String body}) async => _unsupported();
 Future<void> removeWorktree(SessionWorktree w, {required String hooksDir, bool deleteBranch = true}) async {}
@@ -51,3 +52,7 @@ Future<LaneLanding> landWithCommits(
   required String message,
   String? newBranch,
 }) async => _unsupported();
+
+Future<List<OrphanFork>> orphanForks(String forksDir, Set<String> held) async => const [];
+Future<void> removeOrphanFork(OrphanFork o) async {}
+Future<List<FileDiff>> forkDiff(ForkCopy copy) async => const [];

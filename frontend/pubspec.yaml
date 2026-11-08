@@ -93,8 +93,11 @@ flutter:
     - assets/brand/fields/
     - assets/brand/textures/
     - assets/web/
+    - assets/svg_script/
     - assets/legal/
     - assets/helpers/
+    - assets/lsp/typescript/
+    - assets/lsp/pyright/
     - assets/agents/
     - assets/workflows/
     - assets/skills/draw-diagram/

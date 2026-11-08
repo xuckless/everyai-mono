@@ -351,11 +351,11 @@ class _TaskFormState extends ConsumerState<_TaskForm> {
                 ? 'Model id (empty: the one picked in Code)'
                 : 'Model (empty: the one picked for this lead)',
           ),
-          if (_mode == AgentMode.fullAuto)
+          if (_mode.runsFreely)
             Padding(
               padding: const EdgeInsets.only(top: 6),
               child: Text(
-                'Full auto runs commands and edits with nobody watching. The safety floor and your deny rules still apply.',
+                '${_mode.label} runs commands and edits with nobody watching. The safety floor and your deny rules still apply.',
                 style: theme.type.caption.tint(theme.warning),
               ),
             ),

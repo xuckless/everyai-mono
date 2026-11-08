@@ -1,7 +1,21 @@
 import 'package:flutter/widgets.dart';
 
+/// Markdown laid out for a still picture (a page someone looks at, not
+/// scrolls): blocks that scroll sideways in the app are shrunk to fit the
+/// width instead, and code wraps, so nothing is cut off at the edge.
+class StillLayout extends InheritedWidget {
+  const StillLayout({super.key, required super.child});
+
+  /// Whether [context] is laid out for a still picture.
+  static bool of(BuildContext context) => context.dependOnInheritedWidgetOfExactType<StillLayout>() != null;
+
+  @override
+  bool updateShouldNotify(StillLayout oldWidget) => false;
+}
+
 /// A horizontal [SingleChildScrollView] with a thin, subtle scrollbar that
 /// shows while the pointer hovers it (desktop) or while scrolling (touch).
+/// Under a [StillLayout] it shrinks its child to fit instead.
 ///
 /// The platform's default scrollbar is suppressed so only one is drawn.
 class HorizontalScroller extends StatefulWidget {
@@ -31,6 +45,13 @@ class _HorizontalScrollerState extends State<HorizontalScroller> {
 
   @override
   Widget build(BuildContext context) {
+    if (StillLayout.of(context)) {
+      return FittedBox(
+        fit: BoxFit.scaleDown,
+        alignment: AlignmentDirectional.centerStart,
+        child: widget.padding == null ? widget.child : Padding(padding: widget.padding!, child: widget.child),
+      );
+    }
     return MouseRegion(
       onEnter: (_) => _setHovered(true),
       onExit: (_) => _setHovered(false),

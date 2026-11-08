@@ -126,7 +126,9 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
     call comes as `tool_wait {id, name, arguments}` instead of `tool`, and the
     loop waits until the app sends `POST /v1/chat/tool_result {call_id, result
     (string or any JSON), is_error?}` (200 `{ok}`; 404 when no turn of this user
-    waits for it). The model gets the result (`Error: …` when `is_error`). After
+    waits for it). The model gets the result (`Error: …` when `is_error`). `images` (≤6 PNG/JPEG/WebP data URLs,
+    24 MiB) go to the model as one user message after the step's tool results (a note instead for a model that
+    can't see images); the look tool uses them. After
     `CLIENT_TOOL_TIMEOUT_MS` (300 s) it gets `Error (timeout): …` instead. Either
     way a `tool_status {id, name, status: done|failed, detail?:"timed out"}`
     closes the wait. SSE comments keep the stream alive every 15 s meanwhile.
@@ -531,7 +533,7 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   - Approvals: one decision per action id (`respond(callIds)`; none = all undecided; `PerCallApprovals`). Refused calls return as refusals and the run continues; only Deny all or Stop parks it. Controller auto-answers per call (`CodeSessionState.decided`, `rememberBy`); `ApprovalCard` stacks rows under Allow all / Deny all. OpenHands stays batch-wide.
   - Parallel reads: read-only bash (`runsInParallel`) batches with the read tools, up to 8 at a time.
   - Compaction: `clearOldToolOutput` (>40K tokens of output older than the last 3 model steps → 20K, placeholder) before summarising; continuation re-injects `<approved-plan>`, `<todos>`, `<files>` (last 5 touched, 8K/30K, marked read), `<skills>`. State in `state.json`.
-  - Families: `model_family.dart` `familyOf` fixed per session; `familyRules` `<MODEL-NOTES>` after `harnessRules`; GPT gets our own V4A `apply_patch` (`apply_patch.dart`) instead of edit/write, treated as edits per file.
+  - Families: `model_family.dart` `familyOf` per session, changed by a model switch only across vendors (since 2026-11-07); `familyRules` `<MODEL-NOTES>` after `harnessRules`; GPT gets our own V4A `apply_patch` (`apply_patch.dart`) instead of edit/write, treated as edits per file.
   - Verified: analyze clean, 686 flutter tests, zig tests pass. Not live-tested or clicked through.
 
 - **BYOK, UI fixes, Gemini/Kimi run fixes (2026-10-31; b22f889..39b53c2):**
@@ -1077,12 +1079,57 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   their reports and results dropped (`_quietRuns`), so nothing wakes the lead; `runningWork` (`SessionWork` in
   `domain/session_work.dart`) says what runs. UI: `StopAllButton` (a small up-chevron opening one kit menu row) beside
   Send/Stop while more than the lead's turn runs, and on Board cards while an open session runs anything.
+- **SVG maker: figures, look, slides, svg_script (2026-11-07; branch `feat/svg-maker`, plan
+  `~/.claude/plans/svg-maker.md`).** Owner: render + look tool, figures by id, vector exports where possible, svg_script
+  in a Deno sandbox (desktop), unbounded slide design (presets plus a free layout), one quiet check row, and Point and
+  ask / Figures page / Insert into… / basic hand edits.
+  - `tool_result` takes `images` (≤6 PNG/JPEG/WebP data URLs, 24 MiB): `chat.zig` `Looks` adds them as a user message
+    after the step's tool results. Client tools `look {id, slide?}` and `svg_script {id?, title?, code}`.
+  - Figures (`artifacts/domain/figures.dart`): render_svg / svg_script / render_chart / render_diagram with an `id` are
+    versioned artifacts (edit_artifact edits the markup, Mermaid, or the chart's compact JSON);
+    `![caption](figure:id)` in Markdown expands at render and export time. `make_slides` with an id is versioned too.
+  - Slides: `domain/slide_spec.dart` compiles every slide to positioned elements on 960×540 (presets title, bullets,
+    figure_right/left, figure, background, grid, free; any layout adds elements; a first `title` slide replaces the
+    automatic one); `SlideCanvas` draws them, pictures pre-drawn by `slideArtProvider`. PPTX is native elements
+    (text boxes, shapes, arrows, tables, pictures with PNG + svgBlip); PDF draws SVG figures as vectors.
+  - Checks (`artifacts/checks/`): `svg_lint`, `slide_lint` (TextPainter-measured), offscreen `capture`, `look.dart`
+    (`Looker`: figures, charts, decks up to 6 slides, document pages + their figures).
+  - `artifacts/script/`: svg_script runs Deno with no permissions, 15 s, vendored d3-shape 3.2.0 + Rough.js 4.6.6
+    (`assets/svg_script/`, notices added); off on the web.
+  - UI: `ui/look_row.dart` (sealed `LookOutcome`; "Checked fig-x · 2 to fix", opens to the pictures and findings);
+    figure cards get a ⋯ menu (`ui/figure_actions.dart`): Point and ask (`FigureCardMode` viewing/picking, the part's
+    id goes to the composer via `composerInsertProvider`), Edit colours and text (`domain/svg_parts.dart`), Insert
+    into a document / Add as a slide (user versions). Artifacts page: All | Figures, with where each is used.
+  - Rig for agents: `frontend/tool/figure_rig/look_rig_test.dart` (calls.json in, look.txt + pictures out). Three
+    agent trials drove the tools; their fixes are in the commits.
+  - Charts: `colors` field, word units named once on the axis. svg_lint follows translate/scale transforms, curves
+    and the colour under each label.
+  - Follow-ups: page pictures cut in the gap between lines (`pageBreaks`), and `StillLayout` (everyai_markdown)
+    shrinks wide tables and display math to the page and wraps code; a chart on a slide is a `ChartSource` drawn
+    per colour behind it (`pictureUsesOf`, `colourBehind`; no white card, light text on dark), in PPTX too; the
+    SVG checks place everything through full affine transforms, and a rotated label is checked in its own frame.
+  - Not done: no live model run.
 - **Install scripts (2026-11-07; `packaging/install/`).** `get.everyai.dev` (Cloudflare worker `everyai-get`, deployed
   with `packaging/install/deploy.sh`) serves `install.sh` (macOS: DMG checked by SHA-256, team signature and
   Gatekeeper, into /Applications or ~/Applications; Linux x86_64: the .deb through apt, else the AppImage in
   `~/.local/share/everyai` with menu entry, icons, `everyai://` handler and `~/.local/bin/everyai`; SHA256SUMS GPG-checked
   when gpg is there; `--uninstall`), `install.ps1` (winget from the Store, else the Store page) and `/latest/version`.
   Packages come from GitHub Releases, so releases need no step here.
+- **Harness gaps (2026-11-07; branch `feat/harness-gaps`; owner answers in `~/.claude/plans/harness-gaps.md`).**
+  Git buttons are prompts (`domain/git_requests.dart`): Commit, Create PR and Merge locally send a user turn to the
+  session's agent (queued while busy; `/commit` and `/pr` keep their drafts). Merge locally: the agent rebases and
+  squashes in its worktree, then the next press fast-forwards the base (`fastForwardMerge`, `BaseMoved` asks again).
+  Tier notes (`<everyai-tier>`) and `<workflow-result>` show as chips/notices, not the long text. Compaction: a plan
+  approved by message is kept; clearing keeps the current user turn plus the last 3 steps. Auto mode
+  (`AgentMode.auto`): EveryAI lead = Full auto; Claude Code = its `auto` permission mode behind our hook (floor and
+  deny still refused; escalated calls ask as in Ask); Codex = approvalsReviewer `auto_review` (EveryAI's floor
+  doesn't see those calls; the mode says so). Forks: left-over fork worktrees pruned at launch (kept with unsaved
+  work, listed in Settings → Code), `message_fork` reaches a running child after its current step, a per-fork
+  Changes picker in the Diff tab; MCP servers and language servers stop on session delete and after 10 idle minutes
+  (`StopsHelpers`). LSP (`harness/everyai/lsp*.dart`): `diagnostics` tool (EveryAI harness + host MCP), a one-line
+  hint on edits that add errors, servers from PATH or pinned npm installs (`assets/lsp/`, `npm ci --ignore-scripts`);
+  nothing from the repo runs. Notebooks: `read` shows cells, `notebook_edit` by cell id, read-only cell view in the
+  Files tab. Not live-tested; no widget test of the fork Diff picker.
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),

@@ -308,19 +308,35 @@ void main() {
     expect(File('${w.path}/made.txt').readAsStringSync(), 'new\n');
   });
 
-  test('squash merge lands one commit on the base branch, then the session is removed', () async {
+  test('merge fast-forwards the base branch to the prepared commit, then the session is removed', () async {
     final w = await start();
     File('${w.path}/lib/new.txt').writeAsStringSync('feature\n');
-    expect(await GitService.commitAll(w, 'wip'), isTrue);
     File('${w.path}/README.md').writeAsStringSync('# App\n\nDocs.\n');
+    expect(await GitService.commitAll(w, 'feat: add new'), isTrue);
     expect((await GitService.aheadBehind(w)).ahead, 1);
+    final candidate = await GitService.mergeCandidate(w);
+    expect(candidate.subject, 'feat: add new');
 
     // A dirty main checkout is refused.
     File('$repo/README.md').writeAsStringSync('dirty\n');
-    await expectLater(GitService.squashMerge(w, 'feat: add new'), throwsA(isA<GitError>()));
+    await expectLater(GitService.fastForwardMerge(w, candidate.sha), throwsA(isA<GitError>()));
     await _git(repo, ['checkout', '--', 'README.md']);
 
-    final sha = await GitService.squashMerge(w, 'feat: add new');
+    // A commit the agent made after the user confirmed doesn't come along.
+    File('${w.path}/later.txt').writeAsStringSync('later\n');
+    expect(await GitService.commitAll(w, 'later'), isTrue);
+
+    // An untracked file the merge would overwrite is git's error, not "base moved".
+    File('$repo/lib/new.txt').writeAsStringSync('mine\n');
+    await expectLater(
+      GitService.fastForwardMerge(w, candidate.sha),
+      throwsA(isA<GitError>().having((e) => e is BaseMoved, 'base moved', isFalse)),
+    );
+    File('$repo/lib/new.txt').deleteSync();
+
+    final sha = await GitService.fastForwardMerge(w, candidate.sha);
+    expect(sha, candidate.sha);
+    expect(File('$repo/later.txt').existsSync(), isFalse);
     expect(await _git(repo, ['log', '-1', '--format=%H %s']), '$sha feat: add new');
     expect(await _git(repo, ['rev-list', '--count', 'HEAD']), '2');
     expect(File('$repo/lib/new.txt').readAsStringSync(), 'feature\n');
@@ -332,6 +348,66 @@ void main() {
     expect(await _git(repo, ['branch', '--list', w.branch]), isEmpty);
     expect(await _git(repo, ['for-each-ref', 'refs/everyai/']), isEmpty);
   });
+
+  test("a fork's own changes: edits and new files since its base, not the dependency folders it borrows", () async {
+    Directory('$repo/node_modules/x').createSync(recursive: true);
+    File('$repo/.gitignore').writeAsStringSync('node_modules/\n');
+    final copy = (await GitService.forkCopy(repo, worktreesDir: '${tmp.path}/forks', slug: 'mine'))!;
+    expect(copy.links, contains('node_modules'));
+    expect(await GitService.forkDiff(copy), isEmpty);
+    File('${copy.root}/README.md').writeAsStringSync('# App\n\nForked.\n');
+    File('${copy.root}/lib/new.txt').writeAsStringSync('new\n');
+    final files = await GitService.forkDiff(copy);
+    expect({for (final f in files) f.path}, {'README.md', 'lib/new.txt'});
+    // The parent's checkout is untouched.
+    expect(File('$repo/lib/new.txt').existsSync(), isFalse);
+  });
+
+  test(
+    'orphaned forks: held ones are skipped, empty ones carry no work, changes and commits count as unsaved',
+    () async {
+      final forks = '${tmp.path}/forks';
+      final empty = (await GitService.forkCopy(repo, worktreesDir: forks, slug: 'empty'))!;
+      final edited = (await GitService.forkCopy(repo, worktreesDir: forks, slug: 'edited'))!;
+      final committed = (await GitService.forkCopy(repo, worktreesDir: forks, slug: 'committed'))!;
+      final held = (await GitService.forkCopy(repo, worktreesDir: forks, slug: 'held'))!;
+      File('${edited.root}/lib/new.txt').writeAsStringSync('work\n');
+      File('${committed.root}/lib/c.txt').writeAsStringSync('c\n');
+      await _git(committed.root, ['add', '-A']);
+      await _git(committed.root, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'mine']);
+      // A borrowed dependency link isn't work.
+      Directory('${tmp.path}/deps').createSync();
+      Link('${empty.root}/node_modules').createSync('${tmp.path}/deps');
+
+      final found = {
+        for (final o in await GitService.orphanForks(forks, {held.root})) o.path.split('/').last: o,
+      };
+      expect(found.keys.toSet(), {'empty', 'edited', 'committed'});
+      expect(found['empty']!.unsaved, isFalse);
+      expect(found['edited']!.unsaved, isTrue);
+      expect(found['committed']!.unsaved, isTrue);
+      expect(File(found['empty']!.repoRoot).resolveSymbolicLinksSync(), Directory(repo).resolveSymbolicLinksSync());
+
+      // Held, spelled another way (a trailing separator, a `.` segment): still skipped.
+      expect([
+        for (final o in await GitService.orphanForks(forks, {'${held.root}/', '$forks/./held'})) o.path.split('/').last,
+      ], isNot(contains('held')));
+
+      // A fork whose repository can't be reached any more: kept, its work unknown.
+      final lost = Directory('$forks/lost')..createSync();
+      File('${lost.path}/.git').writeAsStringSync('gitdir: /nowhere/.git/worktrees/lost\n');
+      File('${lost.path}/notes.txt').writeAsStringSync('mine\n');
+      final again = {
+        for (final o in await GitService.orphanForks(forks, {held.root})) o.path.split('/').last: o,
+      };
+      expect(again['lost']!.unsaved, isTrue);
+
+      await GitService.removeOrphanFork(found['empty']!);
+      expect(Directory(empty.root).existsSync(), isFalse);
+      expect(await _git(repo, ['worktree', 'list']), isNot(contains('/empty')));
+      expect(Directory('${tmp.path}/deps').existsSync(), isTrue, reason: 'the link goes, not what it points at');
+    },
+  );
 
   test('unified diffs parse into files and hunks', () {
     final files = parseUnifiedDiff(
@@ -714,11 +790,15 @@ void main() {
       await GitService.revertHunk(w, readme, 0);
       expect(File('${w.path}/README.md').readAsStringSync(), '# App\n');
 
-      // The main checkout moved on at the other end of the file: git's own text merge joins them.
+      // The main checkout moved on: nothing merges there (the agent rebases in its worktree instead).
       File('$repo/lib/a.txt').writeAsStringSync('ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n');
       await safe(repo, ['commit', '-q', '-am', 'Shout one']);
-      await GitService.squashMerge(w, 'Merge the session');
-      expect(File('$repo/lib/a.txt').readAsStringSync(), 'ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nTEN\n');
+      await expectLater(
+        GitService.fastForwardMerge(w, (await GitService.mergeCandidate(w)).sha),
+        throwsA(isA<BaseMoved>()),
+      );
+      expect(await safe(repo, ['status', '--porcelain', '--untracked-files=no']), isEmpty);
+      expect(File('$repo/lib/a.txt').readAsStringSync(), startsWith('ONE\n'));
 
       File('${w.path}/lib/b.txt').writeAsStringSync('bee\n');
       expect(await GitService.commitOnNewBranch(w, 'everyai/bee', 'Bee'), isNotNull);

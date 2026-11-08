@@ -43,6 +43,8 @@ const _mcpTimeoutMs = '330000';
 String permissionModeFor(AgentMode mode) => switch (mode) {
   AgentMode.plan => 'plan',
   AgentMode.autoEdit => 'acceptEdits',
+  // Claude's own reviewer (where the model has it: see the session's `permissionMode`).
+  AgentMode.auto => 'auto',
   // Bypass too: our hook allows every call, so nothing reaches Claude's own prompts.
   AgentMode.ask || AgentMode.fullAuto || AgentMode.bypass => 'default',
 };
@@ -76,8 +78,9 @@ List<NativeMode> claudeModes({required bool autoMode}) => [
     const NativeMode(
       id: 'auto',
       label: 'Auto mode',
-      description: "Works without asking; EveryAI's safety check still runs before each call",
-      policy: AgentMode.fullAuto,
+      description:
+          "Claude's own reviewer approves calls and asks you about the rest; EveryAI's safety floor runs first",
+      policy: AgentMode.auto,
     ),
 ];
 
