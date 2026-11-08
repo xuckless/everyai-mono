@@ -6,10 +6,14 @@ import 'package:flutter/foundation.dart';
 //
 //   starting ──script up──▶ running(phase) ──phase()──▶ running(next phase)
 //      │                       │  ▲
-//      │                       │  └──Resume── pausing / paused ◀──Pause── running (each agent ends its step, then
-//      │                       │              pausing ──every agent holds──▶ paused        holds; new agents wait)
-//      │                       │
-//      │                       ├──Stop / out of time (also while paused)──▶ stopping(outcome) ──script gone──▶ ┐
+//      │                       │  └──Resume── pausing / paused ◀──Pause / past the estimate / off track── running (each agent
+//      │                       │              pausing ──every agent holds──▶ paused     ends its step, then holds;
+//      │                       │                                                         new agents wait)
+//      │                       ├──7 min with no progress from any agent──▶ stalled(lead told) ──7 more min and the
+//      │                       │      ▲ progress, or the lead's ignore ◀──┘      lead did nothing──▶ stalled(user told)
+//      │                       │      └────────────────────────────────── progress, ignore ◀────────────┘
+//      │                       │   (stalled takes the same Pause, Stop and end edges as running)
+//      │                       ├──Stop / a cap (also while paused)──▶ stopping(outcome) ──script gone──▶ ┐
 //      │                       └──the script ended (done() or not)───────────────────────────────────────────▶ ├─▶ shuttingDown(step 1…N)
 //      ├──Stop─────────────────────────────────────────▶ stopping(outcome)                                      │
 //      └──the script couldn't start─────────────────────────────────────────────────────────────────────────────┘
@@ -26,7 +30,16 @@ import 'package:flutter/foundation.dart';
 enum WorkflowOutcome { done, failed, capped, stopped }
 
 /// What a run in some state is waiting on: what the card says and what a stall check reads.
-enum RunWaitsOn { nothing, script, agents, shutdown }
+enum RunWaitsOn { nothing, script, agents, lead, user, shutdown }
+
+/// Who heard about a stall so far.
+enum StallStage {
+  /// The lead was told; it may inspect, message, restart, cancel or ignore the agents.
+  leadTold,
+
+  /// The lead did nothing about it for another stall period: the user is told.
+  userTold,
+}
 
 /// The steps every run's end goes through, in this order.
 enum ShutdownStep {
@@ -95,10 +108,23 @@ final class RunRunning extends RunState {
   int get hashCode => phase.hashCode;
 }
 
-/// Pause: each live agent ends its step and holds; agent() calls wait to start. Time still counts toward the cap.
+/// Why a run holds.
+enum PauseReason {
+  /// The user's Pause.
+  user,
+
+  /// It spent past the estimate the user approved: they decide (Continue, Stop, Adjust).
+  overEstimate,
+
+  /// A phase's drift check found the work off its task: the user decides (Resume, Stop, Adjust).
+  offTrack,
+}
+
+/// Pause: each live agent ends its step and holds; agent() calls wait to start.
 final class RunPausing extends RunState {
-  const RunPausing([this.phase = '']);
+  const RunPausing([this.phase = '', this.reason = PauseReason.user]);
   final String phase;
+  final PauseReason reason;
   @override
   RunWaitsOn get waitsOn => RunWaitsOn.agents;
   @override
@@ -109,14 +135,33 @@ final class RunPausing extends RunState {
 
 /// Every live agent holds; Resume goes on where it was.
 final class RunPaused extends RunState {
-  const RunPaused([this.phase = '']);
+  const RunPaused([this.phase = '', this.reason = PauseReason.user]);
   final String phase;
+  final PauseReason reason;
   @override
   RunWaitsOn get waitsOn => RunWaitsOn.nothing;
   @override
   bool get acceptsAgents => true;
   @override
   String get name => 'paused';
+}
+
+/// No agent of the run made progress for the stall period (owner, 2026-11-08: 7 minutes). Agents still work and new
+/// ones start; only who was told changes.
+final class RunStalled extends RunState {
+  const RunStalled([this.phase = '', this.stage = StallStage.leadTold]);
+  final String phase;
+  final StallStage stage;
+  @override
+  RunWaitsOn get waitsOn => stage == StallStage.leadTold ? RunWaitsOn.lead : RunWaitsOn.user;
+  @override
+  bool get acceptsAgents => true;
+  @override
+  String get name => 'stalled(${stage.name})';
+  @override
+  bool operator ==(Object other) => other is RunStalled && other.phase == phase && other.stage == stage;
+  @override
+  int get hashCode => Object.hash(phase, stage);
 }
 
 /// Stopped by the user or a cap: no new agents, and the script is being killed.
@@ -181,6 +226,11 @@ bool runEdge(RunState from, RunState to) => switch ((from, to)) {
   (RunRunning(), RunRunning() || RunStopping() || RunDetached()) => true,
   (RunRunning(), RunShuttingDown(step: ShutdownStep.script)) => true,
   (RunRunning(), RunPausing()) => true,
+  (RunRunning(), RunStalled(stage: StallStage.leadTold)) => true,
+  (RunStalled(stage: StallStage.leadTold), RunStalled(stage: StallStage.userTold)) => true,
+  // phase() while stalled: the phase moves on; it was progress, so the run is running again (see the engine).
+  (RunStalled(), RunRunning() || RunPausing() || RunStopping() || RunDetached()) => true,
+  (RunStalled(), RunShuttingDown(step: ShutdownStep.script)) => true,
   // phase() while paused: the phase moves on, the hold stays.
   (RunPausing(), RunPausing()) || (RunPaused(), RunPaused()) => true,
   (RunPausing(), RunPaused() || RunRunning() || RunStopping() || RunDetached()) => true,
@@ -208,10 +258,11 @@ RunState runTransition(RunState from, RunState to, {void Function(String edge)? 
 
 /// What a session's one workflow slot holds (one run at a time, so an agent can't multiply the caps):
 ///
-///   free ──run_workflow call──▶ reserved ──its run starts──▶ running(runId) ──the run ended──▶ free
-///     │                            └──it didn't start──────────────────────────────────────▶ free
-///     └──Bug fix needs the user's report──▶ askingBug ──answered: the run starts──▶ running(runId)
-///                                              └──no report, rewound, stopped──────────────▶ free
+///   free ──run_workflow call──▶ proposed(estimate) ──Start──▶ reserved ──its run starts──▶ running(runId) ──ended──▶ free
+///                                  │  ▲                         └──it didn't start───────────────────────────────▶ free
+///                                  │  └──run_workflow again (the lead changed the args): the new estimate replaces it
+///                                  └──Cancel, Adjust, or the app closed and the card is gone──────────────────────▶ free
+///   free ──a resume after a restart──▶ reserved
 @immutable
 sealed class RunSlot {
   const RunSlot();
@@ -221,14 +272,15 @@ final class SlotFree extends RunSlot {
   const SlotFree();
 }
 
-/// A run_workflow call is starting a run.
-final class SlotReserved extends RunSlot {
-  const SlotReserved();
+/// An estimate waits for the user to start it (see workflow_proposal.dart).
+final class SlotProposed extends RunSlot {
+  const SlotProposed(this.proposalId);
+  final String proposalId;
 }
 
-/// Bug fix waits for the user to answer its card before its run starts.
-final class SlotAskingBug extends RunSlot {
-  const SlotAskingBug();
+/// A run is starting.
+final class SlotReserved extends RunSlot {
+  const SlotReserved();
 }
 
 final class SlotRunning extends RunSlot {
@@ -236,12 +288,9 @@ final class SlotRunning extends RunSlot {
   final String runId;
 }
 
-/// Why a new run can't take [slot], or null when it is free.
+/// Why a new run can't take [slot], or null when it is free (an open estimate is replaced, see [RunSlot]).
 String? slotBusyText(RunSlot slot) => switch (slot) {
-  SlotFree() => null,
-  SlotAskingBug() =>
-    'Bug fix is waiting for the user to answer its card in the app. Wait for its <workflow-result> before starting '
-        'another workflow.',
+  SlotFree() || SlotProposed() => null,
   SlotReserved() =>
     'a workflow is already starting in this session. Wait for its <workflow-result> before starting '
         'another.',

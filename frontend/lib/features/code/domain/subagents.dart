@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../../../core/security/untrusted.dart';
 import '../../questions/domain/questions.dart' show Question, QuestionAnswer;
 import '../harness/events.dart';
+import '../host/host_prompts.dart' show runWorkflowTool;
 import '../settings/agent_settings.dart' show AgentType;
 import 'agent_mode.dart';
 import 'notice.dart';
@@ -434,6 +435,26 @@ const endWorkflowTool = 'end_workflow';
 /// The Max tools the session's controller answers (as client tools on the EveryAI harness, host tools elsewhere).
 const forkTools = {checkForksTool, answerForkTool, stopForkTool, messageForkTool, endWorkflowTool};
 
+/// run_workflow for the EveryAI lead (outside leads have it on the host, see host_prompts.dart).
+/// Prompt reason: a workflow the user picks no longer starts on the raw task; the lead clarifies, then proposes the run
+/// with this tool, and the user starts it from its estimate (owner, 2026-11-08). The EveryAI lead had no such tool.
+const runWorkflowClientSpec = <String, Object?>{
+  'name': runWorkflowTool,
+  'description':
+      'Proposes the EveryAI workflow the user picked (an <everyai-workflow state="picked"> note names it and its '
+      'args) with the args you worked out. The user sees an estimate in the app and starts, adjusts or cancels it; '
+      'this returns at once. Its result arrives later as a <workflow-result> message: do not work on the task '
+      'yourself meanwhile, and do not poll.',
+  'parameters': {
+    'type': 'object',
+    'properties': {
+      'id': {'type': 'string', 'description': 'The workflow id from the note, e.g. "bugfix"'},
+      'args': {'type': 'object', 'description': "The workflow's arguments, as the note describes them"},
+    },
+    'required': ['id', 'args'],
+  },
+};
+
 /// Prompt reason: Max stayed on after its task ("for this task and the ones after it"), so the session never went
 /// back to no workflow and the next, unrelated task ran Max's research, questions and forks too. The owner wants
 /// every workflow to end by itself; nothing in the app can tell when a Max task is done, so the lead says so.
@@ -548,9 +569,9 @@ SubagentReport forkAsks(String childId, String title, String questions) => Subag
   '${_forkQuestionBlock(childId, title, questions)}',
 );
 
-/// The app's own questions to a session (the loop guard, a bug question): a fork passes them to its orchestrator
+/// The app's own questions to a session (the loop guard): a fork passes them to its orchestrator
 /// like its own. Consents (a host tool asking to see a window) stay the user's.
-bool isAppAsk(String callId) => callId.startsWith('doom-') || callId.startsWith('bugask-');
+bool isAppAsk(String callId) => callId.startsWith('doom-');
 
 /// The user answered a fork's question themselves (in its view or on the Board) after it went to the orchestrator.
 String forkAnsweredMessage(String childId, String title, String answers) =>

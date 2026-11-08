@@ -188,6 +188,22 @@ final class FakeLauncher implements AgentLauncher {
   @override
   Future<void> resume(String childId) async => resumed.add(childId);
 
+  /// Each child's last progress; tests set it to make a run stall.
+  final activity = <String, DateTime>{};
+  @override
+  DateTime? lastActivity(String childId) => activity[childId];
+
+  final restarted = <(String, String)>[];
+  @override
+  Future<void> restart(String childId, String note) async => restarted.add((childId, note));
+
+  final messages = <(String, String)>[];
+  @override
+  Future<bool> message(String childId, String text) async {
+    messages.add((childId, text));
+    return true;
+  }
+
   /// Children released at the run's end, in order.
   final released = <String>[];
 

@@ -1,3 +1,4 @@
+import '../workflows/workflow_agents_tool.dart' show workflowAgentsSpec;
 import '../../../core/security/security_rules.dart';
 import '../harness/events.dart';
 import 'shell_readonly.dart';
@@ -319,6 +320,8 @@ List<Map<String, Object?>> clientToolSpecs({bool held = false}) => [
   stopForkSpec,
   messageForkSpec,
   endWorkflowSpec,
+  runWorkflowClientSpec,
+  workflowAgentsSpec,
   securityAlertSpec,
 ];
 

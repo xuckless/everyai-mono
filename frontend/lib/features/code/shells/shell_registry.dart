@@ -78,6 +78,9 @@ final class ShellEntry {
   final bool pty;
   final DateTime startedAt;
   DateTime? endedAt;
+
+  /// When it last printed something (a workflow's stall check counts that as progress).
+  DateTime? lastOutputAt;
   int? exitCode;
 
   /// Set while it runs and we hold its ends.
@@ -101,6 +104,7 @@ final class ShellEntry {
   /// newest output in memory instead ([memory]).
   void emit(Uint8List bytes) {
     logged += bytes.length;
+    lastOutputAt = DateTime.now();
     if (logPath == null) {
       _memory.add(bytes);
       _memoryLength += bytes.length;

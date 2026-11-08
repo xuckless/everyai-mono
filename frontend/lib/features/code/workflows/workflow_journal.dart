@@ -48,6 +48,20 @@ final class WorkflowJournal {
   final spawns = <String, String>{};
   final agents = <String, JournalledAgent>{};
   final phases = <String>[];
+
+  /// Rows on the run's card (phase reports, marks), and the guard marks passed (see workflow_guard.dart).
+  final rows = <({String kind, String phase, String text})>[];
+  final marks = <String>{};
+
+  /// Each time the user let it go on past its estimate: what it had spent then (so the marks it skipped stay skipped).
+  final raiseSpends = <int>[];
+  int get raises => raiseSpends.length;
+
+  /// A drift check paused it, and the user hasn't let it go on yet: a resume holds again.
+  var heldOffTrack = false;
+
+  /// Phases whose drift check ran (not run again after a restart).
+  final driftChecked = <String>{};
   Map<String, Object?>? stop;
   Map<String, Object?>? ending;
   Map<String, Object?>? end;
@@ -69,6 +83,17 @@ final class WorkflowJournal {
         );
       case 'phase':
         phases.add('${m['title']}');
+      case 'row':
+        rows.add((kind: '${m['kind']}', phase: '${m['phase'] ?? ''}', text: '${m['text']}'));
+        if (m['mark'] case final String id) marks.add(id);
+      case 'raise':
+        raiseSpends.add(m['spent'] is int ? m['spent']! as int : 0);
+      case 'hold':
+        if (m['reason'] == 'offTrack') heldOffTrack = true;
+      case 'go':
+        heldOffTrack = false;
+      case 'drift':
+        driftChecked.add('${m['phase']}');
       case 'stop':
         stop ??= m;
       case 'ending':

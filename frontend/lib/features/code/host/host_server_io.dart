@@ -8,6 +8,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
+import '../workflows/workflow_agents_tool.dart' show workflowAgentsSpec;
 import '../domain/agent_mode.dart' show askUserQuestionTool, clientToolSpecs, presentPlanTool, securityAlertSpec;
 import '../harness/everyai/project_notes_io.dart' show memoryToolSpec;
 import '../harness/everyai/tools_io.dart' show builtInToolSpecs;
@@ -53,6 +54,7 @@ final List<Map<String, Object?>> hostToolSpecs = List.unmodifiable([
   goalCheckSpec,
   if (hostScriptsAvailable) hostRunScriptSpec,
   runWorkflowSpec,
+  _mcpTool(workflowAgentsSpec),
   reportIssueSpec,
   {
     ..._mcpTool(builtInToolSpecs(only: [browserTool]).single),

@@ -166,6 +166,7 @@ void main() {
         'goal_check',
         if (hostScriptsAvailable) 'run_script',
         'run_workflow',
+        'workflow_agents',
         'report_issue',
         'browser',
         'screenshot',
@@ -192,7 +193,7 @@ void main() {
       [for (final t in c.tools) t['name']],
       ['security_alert', 'bug_check', 'check', 'diff_stats', 'diagnostics', 'report_issue'],
     );
-    for (final name in ['fork', 'run_workflow', 'ask_user_question', 'present_plan', 'memory']) {
+    for (final name in ['fork', 'run_workflow', 'workflow_agents', 'ask_user_question', 'present_plan', 'memory']) {
       final r = await post(rpc('tools/call', {'name': name, 'arguments': <String, Object?>{}}), token: w.token);
       expect(errorCode(r), -32602, reason: name);
       expect(r.body, contains('Unknown tool'), reason: name);
@@ -314,15 +315,16 @@ void main() {
     test('run_workflow is listed before report_issue and the screen tools, and its call goes to the session', () async {
       final list = resultOf(await post(rpc('tools/list'), token: p.token))['tools'] as List;
       final names = [for (final t in list) (t as Map)['name']];
-      expect(names.sublist(names.length - 6), [
+      expect(names.sublist(names.length - 7), [
         'run_workflow',
+        'workflow_agents',
         'report_issue',
         'browser',
         'screenshot',
         'app_run',
         'app',
       ]);
-      final run = list[list.length - 6] as Map;
+      final run = list[list.length - 7] as Map;
       expect(run['name'], 'run_workflow');
       expect(run['annotations'], containsPair('readOnlyHint', false));
       expect((run['inputSchema'] as Map)['required'], ['id']);

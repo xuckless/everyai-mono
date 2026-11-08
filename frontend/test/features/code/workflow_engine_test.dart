@@ -144,7 +144,7 @@ void main() {
     test('the slot names what holds it', () {
       expect(slotBusyText(const SlotFree()), isNull);
       expect(slotBusyText(const SlotRunning('r9')), contains('run r9'));
-      expect(slotBusyText(const SlotAskingBug()), contains('Bug fix'));
+      expect(slotBusyText(const SlotProposed('p')), isNull);
       expect(slotBusyText(const SlotReserved()), contains('starting'));
     });
   });
@@ -232,6 +232,428 @@ void main() {
       e.stop('Stopped by the user.');
       await run;
       expect(e.refused, isEmpty);
+    });
+
+    test('the estimate: rows at 50% and 80%, then past it a pause for the user; Continue raises it', () async {
+      final trace = <Object>[];
+      final decisions = <String>[];
+      final journal = WorkflowJournal.fresh((l) async => lines.add(l));
+      await journal.write({
+        't': 'start',
+        'estimate': {
+          'agents': [2, 3],
+          'dollars': [0.5, 1.0],
+        },
+      });
+      final e = WorkflowEngine(
+        runId: 'r1',
+        name: 'test',
+        bridge: bridge,
+        launcher: launcher,
+        journal: journal,
+        timer: FakeTimers().call,
+        onProgress: (run) {
+          if (trace.lastOrNull != run.state) trace.add(run.state);
+        },
+        onDecision: (run, text) => decisions.add(text),
+      );
+      launcher.spent = (call) => 600000;
+      final run = e.run();
+      bridge.note('phase', {'title': 'Build'});
+      expect(await bridge.agent('a'), isNotNull);
+      expect(e.snapshot.rows.map((r) => r.text), ['50% of the estimate used (\$0.60 of \$1.00)']);
+      expect(e.snapshot.rows.single.phase, 'Build');
+      expect(await bridge.agent('b'), isNotNull);
+      await pumpEventQueue();
+      expect(e.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.overEstimate));
+      expect(decisions.single, contains('Past the estimate: \$1.20 of \$1.00'));
+      expect(e.snapshot.rows.map((r) => r.kind), [RowKind.mark, RowKind.mark, RowKind.over]);
+      // The user's Resume button isn't it: Continue raises the ceiling and goes on.
+      await e.continuePastEstimate();
+      expect(e.state, isA<RunRunning>());
+      expect(lines.map((l) => (jsonDecode(l) as Map)['t']), contains('raise'));
+      bridge.note('phase', {'title': 'Check'});
+      await pumpEventQueue();
+      expect(
+        e.snapshot.rows.where((r) => r.kind == RowKind.phase).single.text,
+        startsWith('Build done · 2 agents · \$1.20'),
+      );
+      bridge.finish(null);
+      await run;
+      expect(e.refused, isEmpty);
+    });
+
+    test("spend that passes the estimate while the user's Pause holds asks on Resume", () async {
+      final decisions = <String>[];
+      final journal = WorkflowJournal.fresh((l) async => lines.add(l));
+      await journal.write({
+        't': 'start',
+        'estimate': {
+          'agents': [1, 1],
+          'dollars': [0.5, 1.0],
+        },
+      });
+      final e = WorkflowEngine(
+        runId: 'r1',
+        name: 'test',
+        bridge: bridge,
+        launcher: launcher,
+        journal: journal,
+        timer: FakeTimers().call,
+        onDecision: (run, text) => decisions.add(text),
+      );
+      final held = Completer<void>();
+      launcher.gate = (call) => held.future;
+      launcher.spent = (call) => 1200000;
+      final run = e.run();
+      final reply = bridge.agent('a');
+      await pumpEventQueue();
+      await e.pause();
+      // The agent ends its step past the estimate while the run holds: nothing is asked yet.
+      held.complete();
+      await reply;
+      await pumpEventQueue();
+      expect(e.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.user));
+      expect(decisions, isEmpty);
+      await e.resume();
+      await pumpEventQueue();
+      expect(e.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.overEstimate));
+      expect(decisions.single, contains('Past the estimate'));
+      e.stop();
+      await run;
+      expect(e.refused, isEmpty);
+    });
+
+    test('a resumed run keeps its marks and pauses again when it is still past its estimate', () async {
+      final journal = WorkflowJournal.parse(
+        [
+          jsonEncode({
+            't': 'start',
+            'estimate': {
+              'dollars': [0.5, 1.0],
+              'agents': [1, 2],
+            },
+          }),
+          jsonEncode({'t': 'agent', 'key': 'k', 'ok': true, 'value': 'x', 'spent': 1500000}),
+          jsonEncode({'t': 'row', 'kind': 'mark', 'phase': '', 'text': '50%', 'mark': 'spend50@1000000'}),
+        ].join('\n'),
+        (l) async => lines.add(l),
+      );
+      final e = engine(journal: journal);
+      final run = e.run();
+      await pumpEventQueue();
+      expect(e.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.overEstimate));
+      // Its row stayed; only 80% and the pause are new.
+      expect(e.snapshot.rows.map((r) => r.text), ['50%', startsWith('80%'), startsWith('Past the estimate')]);
+      e.stop();
+      await run;
+    });
+
+    test("a phase's end hands its agents' answers to the drift check; offTrack pauses for the user", () async {
+      final ended = <(String, List<String>)>[];
+      final decisions = <String>[];
+      final e = WorkflowEngine(
+        runId: 'r1',
+        name: 'test',
+        bridge: bridge,
+        launcher: launcher,
+        journal: WorkflowJournal.fresh((l) async => lines.add(l)),
+        timer: FakeTimers().call,
+        onPhaseEnd: (run, phase, results) => ended.add((phase, [for (final r in results) r.text])),
+        onDecision: (run, text) => decisions.add(text),
+      );
+      final run = e.run();
+      bridge.note('phase', {'title': 'Research'});
+      expect(await bridge.agent('a'), 'ok:a');
+      expect(await bridge.agent('b'), 'ok:b');
+      bridge.note('phase', {'title': 'Research'});
+      await pumpEventQueue();
+      expect(ended, isEmpty, reason: 'the same phase again is no end');
+      bridge.note('phase', {'title': 'Build'});
+      await pumpEventQueue();
+      expect(ended.single.$1, 'Research');
+      expect(ended.single.$2, ['ok:a', 'ok:b']);
+      e.offTrack('it works on something else.');
+      await pumpEventQueue();
+      expect(e.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.offTrack));
+      expect(decisions.single, 'Off track: it works on something else. Paused until you decide.');
+      e.offTrack('again');
+      expect(decisions, hasLength(1), reason: 'a held run is not paused twice');
+      await e.resume();
+      expect(e.state, const RunRunning('Build'));
+      bridge.finish(null);
+      await run;
+      expect(e.refused, isEmpty);
+    });
+
+    test('a phase that ends while the run stops gets no drift check', () async {
+      final ended = <String>[];
+      final e = WorkflowEngine(
+        runId: 'r1',
+        name: 'test',
+        bridge: bridge,
+        launcher: launcher,
+        journal: WorkflowJournal.fresh((l) async => lines.add(l)),
+        timer: FakeTimers().call,
+        onPhaseEnd: (run, phase, results) => ended.add(phase),
+      );
+      final run = e.run();
+      bridge.note('phase', {'title': 'Research'});
+      expect(await bridge.agent('a'), 'ok:a');
+      // The script moved on just as the user stopped it: nothing would act on the check.
+      bridge.note('phase', {'title': 'Build'});
+      e.stop();
+      await run;
+      expect(ended, isEmpty);
+      expect(lines.where((l) => l.contains('"drift"')), isEmpty);
+    });
+
+    group('after a restart', () {
+      WorkflowEngine resumed(List<Map<String, Object?>> entries, {List<String>? decisions, List<String>? drifts}) =>
+          WorkflowEngine(
+            runId: 'r1',
+            name: 'test',
+            bridge: bridge,
+            launcher: launcher,
+            journal: WorkflowJournal.parse(entries.map(jsonEncode).join('\n'), (l) async => lines.add(l)),
+            timer: FakeTimers().call,
+            onDecision: (run, text) => decisions?.add(text),
+            onPhaseEnd: (run, phase, results) => drifts?.add(phase),
+          );
+      final start = {
+        't': 'start',
+        'estimate': {
+          'dollars': [5.0, 10.0],
+          'agents': [1, 2],
+        },
+      };
+
+      test('still past its estimate: it holds again, with no second row and no second note to the lead', () async {
+        final decisions = <String>[];
+        final e = resumed([
+          start,
+          {'t': 'agent', 'key': 'k', 'ok': true, 'value': 'x', 'spent': 10500000},
+          {'t': 'row', 'kind': 'over', 'phase': '', 'text': 'Past', 'mark': 'over@10000000'},
+        ], decisions: decisions);
+        final run = e.run();
+        await pumpEventQueue();
+        expect(e.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.overEstimate));
+        expect(e.snapshot.rows.where((r) => r.kind == RowKind.over), hasLength(1));
+        expect(decisions, isEmpty);
+        e.stop();
+        await run;
+      });
+
+      test('marks Continue skipped stay skipped', () async {
+        final e = resumed([
+          start,
+          {'t': 'agent', 'key': 'k', 'ok': true, 'value': 'x', 'spent': 10500000},
+          {'t': 'raise', 'spent': 10500000},
+        ]);
+        final run = e.run();
+        await pumpEventQueue();
+        expect(e.state, isA<RunRunning>());
+        expect(e.snapshot.rows, isEmpty, reason: '\$10.50 is 70% of the raised \$15.00, and its 50% was skipped');
+        bridge.finish(null);
+        await run;
+      });
+
+      test('held off track: it holds again until the user lets it go on', () async {
+        final e = resumed([
+          {'t': 'start'},
+          {'t': 'hold', 'reason': 'offTrack'},
+        ]);
+        final run = e.run();
+        await pumpEventQueue();
+        expect(e.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.offTrack));
+        await e.resume();
+        expect(jsonDecode(lines.last), {'t': 'go'});
+        bridge.finish(null);
+        await run;
+      });
+
+      test('a phase reported and checked before the restart is not reported or checked again', () async {
+        final drifts = <String>[];
+        final e = resumed([
+          {'t': 'start'},
+          {'t': 'phase', 'title': 'Research'},
+          {'t': 'agent', 'key': 'k', 'ok': true, 'value': 'x'},
+          {'t': 'row', 'kind': 'phase', 'phase': 'Research', 'text': 'Research done · 1 agent'},
+          {'t': 'drift', 'phase': 'Research'},
+        ], drifts: drifts);
+        final run = e.run();
+        bridge.note('phase', {'title': 'Research'});
+        await bridge.agent('a');
+        bridge.note('phase', {'title': 'Build'});
+        await pumpEventQueue();
+        expect(e.snapshot.rows.where((r) => r.kind == RowKind.phase), hasLength(1));
+        expect(drifts, isEmpty);
+        bridge.finish(null);
+        await run;
+      });
+    });
+
+    group('stalls', () {
+      late DateTime clock;
+      late List<(StallStage, List<String>)> told;
+      late WorkflowEngine e;
+      late Completer<void> hold;
+
+      setUp(() {
+        clock = DateTime(2026, 11, 8, 12);
+        told = [];
+        hold = Completer<void>();
+        launcher.gate = (call) => hold.future;
+        e = WorkflowEngine(
+          runId: 'r1',
+          name: 'test',
+          bridge: bridge,
+          launcher: launcher,
+          journal: WorkflowJournal.fresh((l) async => lines.add(l)),
+          timer: FakeTimers().call,
+          now: () => clock,
+          onStall: (run, stage, agents) => told.add((stage, [for (final a in agents) a.key])),
+        );
+      });
+
+      Future<String> started() async {
+        await pumpEventQueue();
+        return launcher.started.last.childId;
+      }
+
+      test('7 quiet minutes tell the lead; 7 more with nothing from it tell the user; progress clears it', () async {
+        final run = e.run();
+        final reply = bridge.agent('a');
+        final child = await started();
+        launcher.activity[child] = clock;
+        clock = clock.add(const Duration(minutes: 6));
+        e.checkStall();
+        expect(e.state, isA<RunRunning>());
+        clock = clock.add(const Duration(minutes: 1));
+        e.checkStall();
+        expect(e.state, const RunStalled());
+        expect(told.single.$1, StallStage.leadTold);
+        expect(told.single.$2, hasLength(1));
+        // The lead looked after 3 minutes: the user's clock starts from there.
+        clock = clock.add(const Duration(minutes: 3));
+        e.leadActed();
+        clock = clock.add(const Duration(minutes: 5));
+        e.checkStall();
+        expect(e.state, const RunStalled());
+        clock = clock.add(const Duration(minutes: 2));
+        e.checkStall();
+        expect(e.state, const RunStalled('', StallStage.userTold));
+        expect(told.last.$1, StallStage.userTold);
+        // The agent printed something: running again.
+        launcher.activity[child] = clock;
+        clock = clock.add(const Duration(seconds: 30));
+        e.checkStall();
+        expect(e.state, isA<RunRunning>());
+        hold.complete();
+        await reply;
+        bridge.finish(null);
+        await run;
+        expect(e.refused, isEmpty);
+      });
+
+      test("the lead's ignore starts the clock over; a paused run never stalls; actions reach the agent", () async {
+        final run = e.run();
+        final reply = bridge.agent('a');
+        final child = await started();
+        launcher.activity[child] = clock;
+        clock = clock.add(const Duration(minutes: 8));
+        e.checkStall();
+        expect(e.state, const RunStalled());
+        e.ignoreStall();
+        expect(e.state, isA<RunRunning>());
+        clock = clock.add(const Duration(minutes: 6));
+        e.checkStall();
+        expect(e.state, isA<RunRunning>(), reason: 'counted from the ignore');
+        expect(await e.messageAgent('a', 'hi'), isFalse, reason: 'key is the call key, not the prompt');
+        final key = launcher.started.last.key;
+        expect(await e.messageAgent(key, 'hi'), isTrue);
+        expect(await e.restartAgent(child, 'note'), isTrue);
+        expect(launcher.messages.single, (child, 'hi'));
+        expect(launcher.restarted.single, (child, 'note'));
+        await e.pause();
+        clock = clock.add(const Duration(hours: 3));
+        e.checkStall();
+        expect(e.state, isA<RunPaused>());
+        await e.resume();
+        e.checkStall();
+        expect(e.state, isA<RunRunning>(), reason: 'held time is not a stall');
+        hold.complete();
+        await reply;
+        bridge.finish(null);
+        await run;
+        expect(e.refused, isEmpty);
+      });
+
+      test("an agent that just finished was progress: the others' quiet time isn't a stall yet", () async {
+        final quick = Completer<void>();
+        launcher.gate = (call) => call.prompt == 'b' ? quick.future : hold.future;
+        final run = e.run();
+        final a = bridge.agent('a');
+        final slow = await started();
+        final b = bridge.agent('b');
+        final fast = await started();
+        launcher.activity[slow] = clock;
+        clock = clock.add(const Duration(minutes: 6));
+        launcher.activity[fast] = clock;
+        quick.complete();
+        expect(await b, 'ok:b');
+        clock = clock.add(const Duration(minutes: 2));
+        e.checkStall();
+        expect(e.state, isA<RunRunning>(), reason: 'b made progress 2 minutes ago');
+        clock = clock.add(const Duration(minutes: 5));
+        e.checkStall();
+        expect(e.state, const RunStalled());
+        hold.complete();
+        await a;
+        bridge.finish(null);
+        await run;
+        expect(e.refused, isEmpty);
+      });
+
+      test('ignore before a stall starts the clock over too; no restart while paused', () async {
+        final run = e.run();
+        final reply = bridge.agent('a');
+        final child = await started();
+        launcher.activity[child] = clock;
+        clock = clock.add(const Duration(minutes: 6));
+        e.ignoreStall();
+        clock = clock.add(const Duration(minutes: 6));
+        e.checkStall();
+        expect(e.state, isA<RunRunning>(), reason: 'counted from the ignore');
+        await e.pause();
+        expect(await e.restartAgent(child, 'note'), isFalse);
+        expect(launcher.restarted, isEmpty, reason: 'its new turn would run during the pause');
+        await e.resume();
+        expect(await e.restartAgent(child, 'note'), isTrue);
+        hold.complete();
+        await reply;
+        bridge.finish(null);
+        await run;
+        expect(e.refused, isEmpty);
+      });
+
+      test('a stalled run still stops, and nothing stalls without a live agent', () async {
+        final run = e.run();
+        clock = clock.add(const Duration(hours: 1));
+        e.checkStall();
+        expect(e.state, isA<RunRunning>(), reason: 'the script is between agents');
+        final reply = bridge.agent('a');
+        final child = await started();
+        launcher.activity[child] = clock;
+        clock = clock.add(const Duration(minutes: 7));
+        e.checkStall();
+        expect(e.state, isA<RunStalled>());
+        e.stop();
+        await expectLater(reply, throwsA(anything));
+        await run;
+        expect(e.state, const RunEnded(WorkflowOutcome.stopped));
+        expect(e.refused, isEmpty);
+      });
     });
 
     test('a stop while paused refuses the waiting calls and shuts down', () async {
@@ -845,21 +1267,13 @@ void main() {
       await run;
     });
 
-    test('wall time stops the children and kills the script', () async {
+    test('no wall-time cap: the only timer is the stall check', () async {
       final timers = FakeTimers();
-      launcher.gate = (call) => Completer<void>().future;
       final run = engine(timers: timers).run();
-      unawaited(bridge.agent('slow').catchError((Object _) => null));
       await pumpEventQueue();
-      expect(timers.durations.single, const Duration(hours: 2));
-      timers.fire();
-      final end = await run;
-      expect(end.status, WorkflowStatus.capped);
-      expect(end.error, contains('ran out of time'));
-      expect(bridge.killed, isTrue);
-      expect(launcher.stopped, [launcher.started.single.childId]);
-      expect(end.agents.single.status, WorkflowAgentStatus.failed);
-      expect((jsonDecode(lines.last) as Map)['status'], 'capped');
+      expect(timers.durations, [const Duration(minutes: 1)]);
+      bridge.finish(null);
+      await run;
     });
 
     test('only EveryAI-harness spend counts toward the cost cap', () async {
@@ -930,7 +1344,7 @@ void main() {
       await run;
     });
 
-    test('a resumed run keeps what it used of its caps: agents, spend and wall time', () async {
+    test('a resumed run keeps what it used of its caps: agents and spend', () async {
       launcher.spent = (call) => 60;
       final journal = [
         jsonEncode({'t': 'start', 'name': 'test', 'source': '', 'args': <String, Object?>{}, 'at': 0}),
@@ -950,7 +1364,7 @@ void main() {
         timer: timers.call,
         now: () => DateTime.fromMillisecondsSinceEpoch(0).add(const Duration(minutes: 90)),
       ).run();
-      expect(timers.durations.single, const Duration(minutes: 30));
+      expect(timers.durations, [const Duration(minutes: 1)], reason: 'no wall-time cap, only the stall check');
       expect(await bridge.agent('a'), 'ok:a');
       // 2 started and 120 spent before the restart: one more agent fits, then the agent cap.
       expect(await bridge.agent('c'), 'ok:c');
@@ -1067,4 +1481,10 @@ final class _HangingRelease implements AgentLauncher {
   Future<void> pause(String childId) => _inner.pause(childId);
   @override
   Future<void> resume(String childId) => _inner.resume(childId);
+  @override
+  DateTime? lastActivity(String childId) => _inner.lastActivity(childId);
+  @override
+  Future<void> restart(String childId, String note) => _inner.restart(childId, note);
+  @override
+  Future<bool> message(String childId, String text) => _inner.message(childId, text);
 }

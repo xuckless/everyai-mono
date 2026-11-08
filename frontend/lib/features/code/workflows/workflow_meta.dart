@@ -6,6 +6,8 @@
 // comments). Anything else (a variable, a call, a template with `${}`) makes
 // the meta unreadable, and the file is listed by its name only.
 
+import 'workflow_estimate.dart' show AgentRule;
+
 /// What a workflow says about itself.
 final class WorkflowMeta {
   const WorkflowMeta({
@@ -15,6 +17,7 @@ final class WorkflowMeta {
     this.whenToUse = '',
     this.args = '',
     this.phases = const [],
+    this.agents,
   });
 
   /// The id it asks for (else the file's stem).
@@ -26,6 +29,9 @@ final class WorkflowMeta {
   /// A plain-text description of the args object.
   final String args;
   final List<({String title, String detail})> phases;
+
+  /// How many agents a run starts (see [AgentRule]); null when the meta doesn't say.
+  final AgentRule? agents;
 }
 
 /// [source]'s meta, or null when it has none the parser can read.
@@ -53,6 +59,7 @@ WorkflowMeta? parseWorkflowMeta(String source) {
         for (final p in phases)
           if (p is Map && p['title'] is String) (title: p['title'] as String, detail: '${p['detail'] ?? ''}'),
     ],
+    agents: AgentRule.of(map['agents']),
   );
 }
 
