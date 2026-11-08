@@ -1303,6 +1303,22 @@ ${_upTo('usage_limit', '"method":"turn/started"')}
     await s.close();
   });
 
+  test("/usage on a Codex without the limits read doesn't fail; there are just no fresh windows", () async {
+    final script = [
+      _upTo('approve_command', '"method":"thread/started"'),
+      '{"dir":"out","msg":{"id":"{{any}}","method":"account/rateLimits/read","params":{}}}',
+      '{"dir":"in","msg":{"id":"{{any}}","error":{"code":-32601,"message":"Method not found"}}}',
+    ].join('\n');
+    final channel = ReplayChannel(script);
+    final s = await _driver(data, [channel]).start(_spec(work));
+    final events = _listen(s);
+    await (s as RefreshesPlanLimits).refreshPlanLimits();
+    await pumpEventQueue();
+    channel.expectFinished();
+    expect(events.whereType<PlanLimits>(), isEmpty);
+    await s.close();
+  });
+
   test('caps and markers match what the session implements', () async {
     final channel = _fixture('approve_command');
     final d = _driver(data, [channel]);

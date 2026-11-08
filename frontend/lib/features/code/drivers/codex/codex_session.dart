@@ -303,15 +303,16 @@ final class CodexSession
   }
 
   /// Merges one limit's snapshot (sparse: a field left out keeps what came before) and sends [PlanLimits] when the
-  /// numbers changed.
-  void _takeRateLimits(Map<String, Object?> update, {String? limitId}) {
+  /// numbers changed. A [full] snapshot (a read, not a notification) replaces the old one, and doesn't decide which
+  /// limit a later usage-limit error belongs to.
+  void _takeRateLimits(Map<String, Object?> update, {String? limitId, bool full = false}) {
     final id = limitId ?? update['limitId'] as String? ?? 'codex';
     _rateLimits[id] = {
-      ...?_rateLimits[id],
+      if (!full) ...?_rateLimits[id],
       for (final e in update.entries)
         if (e.value != null) e.key: e.value,
     };
-    _lastLimit = id;
+    if (!full) _lastLimit = id;
     if (codexPlanLimits(_rateLimits, id: _newId()) case final limits?) {
       final said = [
         limits.warning,
@@ -329,13 +330,19 @@ final class CodexSession
   /// [PlanLimits] event when they changed.
   @override
   Future<void> refreshPlanLimits() async {
-    final res = await _peer.request('account/rateLimits/read', const <String, Object?>{}, codexSetupTimeout);
+    final Object? res;
+    try {
+      res = await _peer.request('account/rateLimits/read', const <String, Object?>{}, codexSetupTimeout);
+    } on Object {
+      // An older Codex without the method, or no answer: no fresh windows; the card keeps the last ones it saw.
+      return;
+    }
     if (res case {'rateLimitsByLimitId': final Map<String, Object?> byId} when byId.isNotEmpty) {
       for (final e in byId.entries) {
-        if (e.value case final Map<String, Object?> snapshot) _takeRateLimits(snapshot, limitId: e.key);
+        if (e.value case final Map<String, Object?> snapshot) _takeRateLimits(snapshot, limitId: e.key, full: true);
       }
     } else if (res case {'rateLimits': final Map<String, Object?> snapshot}) {
-      _takeRateLimits(snapshot);
+      _takeRateLimits(snapshot, full: true);
     }
   }
 
