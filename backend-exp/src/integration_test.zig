@@ -41,7 +41,7 @@ fn start(env: *Env, responses: []const []const u8, dev_auth: bool) !void {
 /// Settings beyond the defaults a test needs.
 /// `billing` defaults to on here: most tests below were written for metered
 /// credits; the parked default (off) has its own tests.
-const Extra = struct { stripe_webhook_secret: ?[]const u8 = null, no_server_key: bool = false, billing: bool = true };
+const Extra = struct { stripe_webhook_secret: ?[]const u8 = null, no_server_key: bool = false, billing: bool = true, accept_keys: bool = true };
 
 fn startWith(env: *Env, responses: []const []const u8, dev_auth: bool, extra: Extra) !void {
     env.fake = .{ .responses = responses, .gpa = alloc, .models_json = models_json };
@@ -53,6 +53,8 @@ fn startWith(env: *Env, responses: []const []const u8, dev_auth: bool, extra: Ex
     };
     cfg.max_tool_steps = 4;
     cfg.billing_enabled = extra.billing;
+    // The hosted byok tests: a hosted server takes keys only with this on.
+    cfg.accept_provider_keys = extra.accept_keys;
     if (extra.stripe_webhook_secret) |secret| cfg.stripe_webhook_secret = .init(secret);
     if (extra.no_server_key) cfg.openrouter_api_key = null;
     env.state = .{
@@ -2439,4 +2441,52 @@ test "chat: web_fetch reads a link the user pasted even when it looks like it ca
     try res.expectStatus(.ok);
     try std.testing.expectEqual(before + 1, LongSite.hits);
     try std.testing.expect(std.mem.indexOf(u8, env.fake.bodies.items[1], "the report") != null);
+}
+
+test "byok: the hosted server refuses provider keys; they belong to the app's local server" {
+    var env: Env = undefined;
+    try startWith(&env, &.{}, true, .{ .accept_keys = false });
+    defer env.deinit();
+    var res = try env.t.post("/v1/chat/stream", .{
+        .headers = &.{.{ "X-Provider-Key-OpenRouter", "sk-or-v1-user-key" }},
+        .json = .{ .model = "anthropic/claude-haiku-5.5", .messages = .{.{ .role = "user", .content = "hi" }} },
+    });
+    defer res.deinit();
+    try res.expectStatus(.bad_request);
+    try std.testing.expectEqualStrings("keys_not_accepted", (try res.json(struct { code: []const u8 })).code);
+    // A provider the table doesn't know yet, too.
+    var other = try env.t.get("/v1/models", .{ .headers = &.{.{ "X-Provider-Key-Someday", "sk-something-long" }} });
+    defer other.deinit();
+    try other.expectStatus(.bad_request);
+    var plain = try env.t.get("/v1/ping", .{});
+    defer plain.deinit();
+    try plain.expectStatus(.ok);
+}
+
+test "byok: a direct provider's key runs its vendor's models under its own id, priced from the catalog" {
+    var env: Env = undefined;
+    try start(&env, &.{followups_reply}, true); // follow-ups go to the server's key
+    defer env.deinit();
+    app_main.byok.allow_saved = true; // OpenAI is saved only until checked live
+    defer app_main.byok.allow_saved = false;
+    var keyed: openrouter.Fake = .{ .responses = &.{final_turn}, .gpa = alloc, .models_json = models_json };
+    defer keyed.deinit();
+    env.state.keyed_transport = keyed.upstream();
+    var models = try env.t.get("/v1/models", .{});
+    models.deinit();
+
+    var res = try env.t.post("/v1/chat/stream", .{
+        .headers = &.{.{ "X-Provider-Key-OpenAI", "sk-openai-user-key" }},
+        .json = .{ .model = "openai/gpt-6.1-sol", .messages = .{.{ .role = "user", .content = "hi" }}, .tools_enabled = false },
+    });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    try std.testing.expectEqual(@as(usize, 1), keyed.bodies.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, keyed.bodies.items[0], "\"model\":\"gpt-6.1-sol\"") != null);
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = arena.allocator() };
+    const row = try env.state.db.one(struct { provider: []const u8, charged_micros: i64 }, &c, "SELECT provider, charged_micros FROM usage_events WHERE kind = 'chat'", .{});
+    try std.testing.expectEqualStrings("openai-byok", row.provider);
+    try std.testing.expectEqual(@as(i64, 0), row.charged_micros);
 }

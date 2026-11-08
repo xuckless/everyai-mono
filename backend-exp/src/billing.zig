@@ -120,7 +120,7 @@ pub const Usage = struct {
     cost_usd: f64 = 0,
     session: ?[]const u8 = null,
     api_key_id: ?[]const u8 = null,
-    /// Who served the call: "openrouter" or "anthropic".
+    /// Who served the call: "openrouter", "anthropic", "local" or a byok.zig provider id.
     provider: []const u8 = "openrouter",
     /// Ran on the user's own key (byok.zig): recorded at cost, never charged.
     byok: bool = false,
@@ -148,6 +148,18 @@ pub fn charge(app: *App, ctx: anytype, user_id: []const u8, u: Usage) !Charge {
     var call = u;
     // The sidecar records usage but never charges (local models, own keys).
     if (app.cfg.local_mode) call.byok = true;
+    // Direct providers (openai_compat.zig) report tokens but no cost: price
+    // the call from the catalog, so the meter and spend caps see it.
+    if (call.cost_usd == 0 and call.byok and !std.mem.eql(u8, call.provider, "local") and !std.mem.eql(u8, call.provider, "openrouter"))
+        if (app.catalog.pricesOf(ctx.io, call.model)) |p| {
+            call.cost_usd = p.cost(.{
+                .input = @max(0, call.prompt_tokens - call.cached_tokens - call.cache_write_tokens),
+                .cache_read = call.cached_tokens,
+                .cache_write_5m = call.cache_write_tokens,
+                .cache_write_1h = 0,
+                .output = call.completion_tokens,
+            });
+        };
     // With billing parked (BILLING_ENABLED=false) usage is still recorded
     // (meters and spend caps read it), but nothing is charged.
     return app.db.transaction(ctx, .{ .retries = 3 }, Run.run, .{ ctx, user_id, call, app.cfg.priceMarkup(), app.cfg.billing_enabled });
@@ -169,15 +181,16 @@ fn chargeIn(db: anytype, ctx: anytype, user_id: []const u8, u: Usage, markup: f6
         \\INSERT INTO usage_events (user_id, api_key_id, session, kind, model, prompt_tokens, completion_tokens,
         \\  cached_tokens, cache_write_tokens, cost_micros, charged_micros, from_quota_micros, from_wallet_micros, created_at, provider)
         \\VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    , .{ user_id, u.api_key_id, u.session, u.kind, u.model, u.prompt_tokens, u.completion_tokens, u.cached_tokens, u.cache_write_tokens, cost, charged, from_quota, from_wallet, util.now(ctx.io), providerLabel(u) });
+    , .{ user_id, u.api_key_id, u.session, u.kind, u.model, u.prompt_tokens, u.completion_tokens, u.cached_tokens, u.cache_write_tokens, cost, charged, from_quota, from_wallet, util.now(ctx.io), try providerLabel(ctx.arena, u) });
     return .{ .cost_micros = cost, .charged_micros = charged, .from_quota = from_quota, .from_wallet = from_wallet };
 }
 
-/// usage_events.provider: "openrouter" | "anthropic", with "-byok" on the user's key.
-fn providerLabel(u: Usage) []const u8 {
+/// usage_events.provider: "openrouter" | "anthropic" | "local", or the
+/// provider with "-byok" on the user's key ("openai-byok").
+fn providerLabel(arena: std.mem.Allocator, u: Usage) ![]const u8 {
     if (std.mem.eql(u8, u.provider, "local")) return "local";
     if (!u.byok) return u.provider;
-    return if (std.mem.eql(u8, u.provider, "anthropic")) "anthropic-byok" else "openrouter-byok";
+    return std.fmt.allocPrint(arena, "{s}-byok", .{u.provider});
 }
 
 // ------------------------------------------------------------------ routes

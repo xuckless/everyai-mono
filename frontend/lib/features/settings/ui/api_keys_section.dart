@@ -10,7 +10,7 @@ import '../../../core/ui/layout.dart';
 import '../../../core/ui/every_icons.dart';
 import '../byok_keys.dart';
 import '../domain/byok_providers.dart';
-import '../domain/key_check.dart';
+import '../domain/provider_key_state.dart';
 import '../settings_registry.dart';
 import 'settings_modal.dart';
 import '../../../core/ui/logos.dart';
@@ -60,13 +60,29 @@ class ApiKeysSection extends ConsumerWidget {
           ),
         ),
         for (final p in byokProviders)
-          SettingsAnchor(
-            section: SettingsSection.apiKeys,
-            id: p.id,
-            child: _ProviderCard(provider: p, savedKey: keys[p.id]),
-          ),
+          if (p.connected)
+            SettingsAnchor(
+              section: SettingsSection.apiKeys,
+              id: p.id,
+              child: _ProviderCard(provider: p, savedKey: keys[p.id]),
+            ),
         const SizedBox(height: 10),
         const _UltraCapRow(),
+        const AdaptiveSectionHeader('More providers'),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Text(
+            'You can save and check these keys now. EveryAI starts running models on them once each one is connected.',
+            style: theme.type.caption.tint(theme.textMuted),
+          ),
+        ),
+        for (final p in byokProviders)
+          if (!p.connected)
+            SettingsAnchor(
+              section: SettingsSection.apiKeys,
+              id: p.id,
+              child: _ProviderCard(provider: p, savedKey: keys[p.id]),
+            ),
       ],
     );
   }
@@ -85,14 +101,6 @@ class _ProviderCard extends ConsumerStatefulWidget {
 }
 
 class _ProviderCardState extends ConsumerState<_ProviderCard> {
-  bool _checking = false;
-
-  /// The last check: the key it was for and whether it worked (null: unknown).
-  ({String key, bool? valid})? _lastCheck;
-
-  /// The saved key's check result, if it was checked.
-  bool? get _works => _lastCheck != null && _lastCheck!.key == widget.savedKey ? _lastCheck!.valid : null;
-
   ByokProvider get provider => widget.provider;
 
   Future<void> _add() async {
@@ -113,26 +121,9 @@ class _ProviderCardState extends ConsumerState<_ProviderCard> {
     }
   }
 
-  /// The newest check; an older one still answering (the key was replaced meanwhile) is dropped.
-  var _gen = 0;
-
   Future<void> _check() async {
-    final key = ref.read(byokKeysProvider).value?[provider.id];
-    if (key == null) return;
-    final gen = ++_gen;
-    setState(() => _checking = true);
-    KeyCheck result;
-    try {
-      result = await ref.read(keyCheckProvider)(provider, key);
-    } on Object catch (e) {
-      result = (valid: null, message: "Couldn't check the key: $e");
-    }
-    if (!mounted || gen != _gen) return;
-    setState(() {
-      _checking = false;
-      _lastCheck = (key: key, valid: result.valid);
-    });
-    showAdaptiveToast(context, result.message);
+    final message = await ref.read(providerKeyStatesProvider.notifier).check(provider.id);
+    if (mounted && message != null) showAdaptiveToast(context, message);
   }
 
   Future<void> _remove() async {
@@ -153,11 +144,9 @@ class _ProviderCardState extends ConsumerState<_ProviderCard> {
     final theme = EveryTheme.of(context);
     final saved = widget.savedKey;
     final connected = saved != null;
-    final status = !connected
-        ? 'Not connected'
-        : _works == false
-        ? '•••• ${ByokKeys.lastFour(saved)} · rejected'
-        : '•••• ${ByokKeys.lastFour(saved)}';
+    final state = ref.watch(providerKeyStatesProvider)[provider.id] ?? const KeyUnset();
+    final status = state.label(saved == null ? '' : ByokKeys.lastFour(saved));
+    final checking = state is KeyChecking;
     return Container(
       key: ValueKey('byok.${provider.id}'),
       margin: const EdgeInsets.only(bottom: 8),
@@ -173,7 +162,7 @@ class _ProviderCardState extends ConsumerState<_ProviderCard> {
         lead: Row(
           children: [
             LogoTile(
-              logo: Logo.vendor(provider.id),
+              logo: Logo.file(provider.logo),
               letters: provider.name[0],
               color: theme.accent,
               size: 34,
@@ -189,13 +178,11 @@ class _ProviderCardState extends ConsumerState<_ProviderCard> {
                   Text(
                     status,
                     key: ValueKey('byok.${provider.id}.status'),
-                    style: (connected ? theme.type.caption.mono : theme.type.caption).tint(
-                      !connected
-                          ? theme.textMuted
-                          : _works == false
-                          ? theme.danger
-                          : theme.success,
-                    ),
+                    style: (connected ? theme.type.caption.mono : theme.type.caption).tint(switch (state) {
+                      KeyRejected() => theme.danger,
+                      KeyConnected() || KeySaved() => theme.success,
+                      _ => theme.textMuted,
+                    }),
                   ),
                 ],
               ),
@@ -218,9 +205,9 @@ class _ProviderCardState extends ConsumerState<_ProviderCard> {
           ] else ...[
             AdaptiveButton(
               key: ValueKey('byok.${provider.id}.test'),
-              label: _checking ? 'Testing…' : 'Test',
+              label: checking ? 'Testing…' : 'Test',
               emphasis: ButtonEmphasis.plain,
-              onPressed: _checking ? null : _check,
+              onPressed: checking ? null : _check,
             ),
             AdaptiveMenuButton(
               key: ValueKey('byok.${provider.id}.more'),

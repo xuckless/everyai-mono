@@ -162,6 +162,18 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   completion_tokens, cached_tokens, cache_write_tokens, charged_micros,
   last_prompt_tokens, last_completion_tokens}` for a chat conversation or a Code
   session (the composer meter). `usage_events.provider` is openrouter|anthropic.
+- **BYOK (2026-11-08):** providers live in `backend-exp/src/providers.json` (byok.zig embeds it; the app's
+  `settings/domain/byok_providers.dart` is generated from it and `test/features/byok_table_test.dart` fails on drift).
+  A key goes out as its provider's `X-Provider-Key-<Id>` header **to the app's bundled server only**: the hosted
+  server answers 400 `keys_not_accepted` to any `X-Provider-Key-*` (`byok.Refuse`; `ACCEPT_PROVIDER_KEYS` is for
+  tests and development, production refuses to start with it), the hosted `ApiClient` drops them (assert),
+  `SplitTransport`, the titler, Code's `GatewayClient` and the summarizer never fall back (`LocalGateway`). Routing
+  (`Keys.pick`): Anthropic native for `anthropic/*`, then a `connected` direct provider covering the vendor slug
+  (`openai_compat.zig`: our body rewritten for a plain endpoint, the provider's own model id), then OpenRouter.
+  Direct providers report no cost, so `billing.charge` prices them from the catalog; usage rows say
+  `<id>-byok`. Only OpenRouter and Anthropic are `connected`; the rest are `saved` ("Saved · not connected yet",
+  never offered) until the owner runs `frontend/tool/byok_live_check.dart` and flips them. Key states:
+  `ProviderKeyState` (prefs `byok.checks`).
 - **Dev (DEV_AUTH only):** `GET/PUT /v1/dev/upstream` `{anthropic:
   "openrouter"|"anthropic", keys:{openrouter, anthropic}}`: where `anthropic/*`
   chat and gateway calls go (persisted in the `settings` table). Search,

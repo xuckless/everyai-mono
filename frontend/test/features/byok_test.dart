@@ -55,9 +55,8 @@ void main() {
   tearDown(() => BillingFlag.enabled = false);
 
   test('only providers with a proven path are offered', () {
-    expect(byokProviders.map((p) => p.id), ['openrouter', 'anthropic']);
+    expect([for (final p in byokProviders) if (p.connected) p.id], ['openrouter', 'anthropic']);
     for (final p in byokProviders) {
-      expect(p.logo, startsWith('assets/'));
       expect(p.header, startsWith('X-Provider-Key-'));
     }
   });
@@ -144,7 +143,7 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('Bring your own key'), findsOneWidget);
-    expect(find.text('Not connected'), findsNWidgets(2));
+    expect(tester.widget<Text>(find.byKey(const ValueKey('byok.openrouter.status'))).data, 'Not connected');
 
     await tester.tap(find.byKey(const ValueKey('byok.openrouter.add')));
     await tester.pumpAndSettle();
@@ -164,7 +163,7 @@ void main() {
     await tester.tap(find.text('Remove'));
     await tester.pumpAndSettle();
     expect(store.values, isEmpty);
-    expect(find.text('Not connected'), findsNWidgets(2));
+    expect(tester.widget<Text>(find.byKey(const ValueKey('byok.openrouter.status'))).data, 'Not connected');
     await tester.pumpAndSettle(const Duration(seconds: 3));
   });
 

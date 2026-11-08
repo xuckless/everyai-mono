@@ -38,6 +38,7 @@ final class ApiClient {
     this.waitForServer = false,
     this.wakeBackoff = const Duration(milliseconds: 500),
     this.defaultHeaders = const {},
+    this.acceptsProviderKeys = false,
   }) : _client = client, // ignore: prefer_initializing_formals
        _tokens = tokens; // ignore: prefer_initializing_formals
 
@@ -46,6 +47,14 @@ final class ApiClient {
   /// Sent with every request, under the call's own headers (the bundled
   /// server's `X-EveryAI-Local` token).
   final Map<String, String> defaultHeaders;
+
+  /// Only the bundled server's client takes the user's provider keys
+  /// (`X-Provider-Key-*`). Every other client drops them, so a key can never
+  /// reach the hosted server (which refuses them too).
+  final bool acceptsProviderKeys;
+
+  /// Whether [name] is a user's provider key header.
+  static bool isProviderKeyHeader(String name) => name.toLowerCase().startsWith('x-provider-key-');
   final http.Client _client;
   final AccessTokenSource? _tokens;
 
@@ -248,7 +257,18 @@ final class ApiClient {
     if (waitForServer) await awaitOnline();
     final request = http.AbortableRequest(method, resolve(path), abortTrigger: cancel)
       ..headers.addAll(defaultHeaders)
-      ..headers.addAll(headers);
+      ..headers.addAll(
+        acceptsProviderKeys
+            ? headers
+            : {
+                for (final e in headers.entries)
+                  if (!isProviderKeyHeader(e.key)) e.key: e.value,
+              },
+      );
+    assert(
+      acceptsProviderKeys || !headers.keys.any(isProviderKeyHeader),
+      'A provider key was about to go to $baseUrl; keys go to the bundled server only.',
+    );
     if (json != null) {
       request
         ..headers['Content-Type'] = 'application/json; charset=utf-8'

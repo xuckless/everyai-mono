@@ -85,8 +85,10 @@ final class _SplitTitler implements ChatTitler {
     required String session,
     Map<String, String> headers = const {},
   }) async {
-    final titler = headers.isEmpty ? remote : await local() ?? remote;
-    return titler.title(user: user, assistant: assistant, session: session, headers: headers);
+    if (headers.isEmpty) return remote.title(user: user, assistant: assistant, session: session);
+    // Own keys and local models never go to ours: no bundled server, no title.
+    final titler = await local();
+    return titler?.title(user: user, assistant: assistant, session: session, headers: headers);
   }
 }
 

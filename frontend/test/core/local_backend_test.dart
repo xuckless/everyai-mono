@@ -71,10 +71,13 @@ void main() {
       expect(remote.sent.single.providerKeys, isEmpty);
     });
 
-    test('without a bundled server: own keys fall back to ours, local models fail with the reason', () async {
+    test('without a bundled server: own keys never go to ours; both fail with the reason', () async {
       final split = SplitTransport(remote: remote, local: () async => null, localProblem: () => 'No server here.');
-      await split.send(_request('openai/gpt-6.1', keys: {'X-Provider-Key-OpenRouter': 'k'})).drain<void>();
-      expect(remote.sent, hasLength(1));
+      expect(
+        split.send(_request('openai/gpt-6.1', keys: {'X-Provider-Key-OpenRouter': 'k'})).drain<void>(),
+        throwsA(isA<ProtocolError>().having((e) => e.message, 'message', 'No server here.')),
+      );
+      expect(remote.sent, isEmpty);
       expect(
         split.send(_request('local/llama')).drain<void>(),
         throwsA(isA<ProtocolError>().having((e) => e.message, 'message', 'No server here.')),

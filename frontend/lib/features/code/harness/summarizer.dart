@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../../models/domain/model_catalog.dart' show ModelId;
+import '../../../core/local_backend/local_gateway.dart';
 import '../../settings/domain/byok_providers.dart' show ModelBilling;
 
 import '../domain/compaction.dart';
@@ -47,14 +48,18 @@ Future<String> Function(String apiKey, List<Map<String, Object?>> messages) _gat
     final c = client ?? http.Client();
     try {
       final base = baseUrl.endsWith('/') ? baseUrl : '$baseUrl/';
+      // A model on the user's own key runs on the bundled server only (LocalGateway).
+      final keys = ModelBilling.current.headersFor(ModelId(model));
+      final local = keys.isEmpty ? null : await LocalGateway.resolve?.call();
+      if (keys.isNotEmpty && local == null) throw const HarnessError(LocalGateway.missing);
       final res = await c
           .post(
-            Uri.parse('${base}chat/completions'),
+            local == null ? Uri.parse('${base}chat/completions') : LocalGateway.completions(local),
             headers: {
-              'Authorization': 'Bearer $apiKey',
+              if (local == null) 'Authorization': 'Bearer $apiKey',
               'Content-Type': 'application/json',
               'X-EveryAI-Session': sessionTag,
-              ...ModelBilling.current.headersFor(ModelId(model)),
+              if (local != null) ...LocalGateway.headers(local, keys),
             },
             body: jsonEncode({'model': model, 'messages': messages, 'max_tokens': 6000, 'stream': false}),
           )

@@ -15,6 +15,9 @@ final class Logo {
   final String name;
 
   String get asset => 'assets/logos/$name.svg';
+
+  /// A file under `assets/logos/` by name (`providers.json`'s `logo`); null for none.
+  static Logo? file(String name) => name.isEmpty ? null : Logo._(name);
   bool get colored => name.endsWith('-color');
 
   /// The EveryAI mark, drawn from the brand kit instead.

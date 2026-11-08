@@ -4,72 +4,415 @@ import 'package:flutter/foundation.dart';
 
 import '../../models/domain/model_catalog.dart';
 
-/// A provider whose API key the user can bring (BYOK).
-///
-/// Only providers whose whole path the backend has proven (streaming, tool
-/// calls, prompt caching, usage) are listed: OpenRouter, which serves every
-/// catalog model, and Anthropic, which serves `anthropic/*` through the
-/// backend's native adapter.
+/// How a provider wants its key.
+enum ProviderAuth { bearer, anthropic }
+
+/// `connected`: checked live end to end (stream, tool call, usage), offered
+/// in the picker and the shop. `saved`: its key can be saved and checked,
+/// but nothing runs on it yet ("Saved · not connected yet").
+enum ProviderStatus { connected, saved }
+
+/// Which models a provider's key runs.
+@immutable
+sealed class ProviderCovers {
+  const ProviderCovers();
+  const factory ProviderCovers.all() = _CoversAll;
+  const factory ProviderCovers.vendors(List<String> slugs) = CoversVendors;
+  const factory ProviderCovers.ownIds() = _CoversOwnIds;
+}
+
+final class _CoversAll extends ProviderCovers {
+  const _CoversAll();
+}
+
+final class CoversVendors extends ProviderCovers {
+  const CoversVendors(this.slugs);
+  final List<String> slugs;
+}
+
+/// The host has its own model ids; it needs its own catalog source first.
+final class _CoversOwnIds extends ProviderCovers {
+  const _CoversOwnIds();
+}
+
+/// A provider whose API key the user can bring (BYOK). The table is
+/// `backend-exp/src/providers.json`, copied here; `test/features/byok_table_test.dart` fails when they differ.
 @immutable
 final class ByokProvider {
   const ByokProvider({
     required this.id,
     required this.name,
-    required this.logo,
     required this.header,
+    required this.logo,
+    required this.auth,
+    required this.baseUrl,
+    required this.checkUrl,
+    required this.keysUrl,
     required this.keyHint,
     required this.blurb,
-    required this.keysUrl,
+    required this.covers,
+    required this.idMap,
+    required this.status,
   });
 
   /// Also the secure-storage key suffix (`byok.<id>`) and the billing account id.
   final String id;
   final String name;
 
-  /// Logo asset.
-  final String logo;
-
-  /// The request header the backend reads the key from.
+  /// The request header the bundled server reads the key from.
   final String header;
+
+  /// A file under `assets/logos/` (`Logo.file`); empty for a monogram.
+  final String logo;
+  final ProviderAuth auth;
+  final String baseUrl;
+
+  /// A free, read-only call that answers 200 for a good key.
+  final String checkUrl;
+
+  /// Where to make a key.
+  final String keysUrl;
 
   /// What a key starts with, as a placeholder.
   final String keyHint;
 
   /// Which models the key runs.
   final String blurb;
+  final ProviderCovers covers;
+  final Map<String, String> idMap;
+  final ProviderStatus status;
 
-  /// Where to make a key.
-  final String keysUrl;
+  bool get connected => status == ProviderStatus.connected;
 
-  /// Whether this provider's key can run [model].
-  bool covers(ModelId model) => switch (id) {
-    'openrouter' => true,
-    'anthropic' => ModelProvider.ofModel(model).slug == 'anthropic',
-    _ => false,
+  /// Whether this provider's key can run [model] (whatever its [status]).
+  bool coversModel(ModelId model) => switch (covers) {
+    _CoversAll() => true,
+    CoversVendors(:final slugs) => slugs.contains(ModelProvider.ofModel(model).slug),
+    _CoversOwnIds() => false,
   };
+
+  /// Whether calls to [model] can run on this key now: it covers it and is connected.
+  bool runs(ModelId model) => connected && coversModel(model);
 
   static ByokProvider? byId(String id) => byokProviders.where((p) => p.id == id).firstOrNull;
 }
 
-/// The providers the Add API keys page lists, in order.
+/// The providers the API keys page lists, in order (generated from `providers.json`).
 const byokProviders = <ByokProvider>[
   ByokProvider(
     id: 'openrouter',
     name: 'OpenRouter',
-    logo: 'assets/models/openrouter.png',
     header: 'X-Provider-Key-OpenRouter',
+    logo: 'openrouter-color',
+    auth: ProviderAuth.bearer,
+    baseUrl: 'https://openrouter.ai/api/v1',
+    checkUrl: 'https://openrouter.ai/api/v1/key',
+    keysUrl: 'https://openrouter.ai/settings/keys',
     keyHint: 'sk-or-v1-…',
     blurb: 'Every model in the shop, plus web search, follow-ups and images.',
-    keysUrl: 'https://openrouter.ai/settings/keys',
+    covers: ProviderCovers.all(),
+    idMap: {},
+    status: ProviderStatus.connected,
   ),
   ByokProvider(
     id: 'anthropic',
     name: 'Anthropic',
-    logo: 'assets/models/claude.webp',
     header: 'X-Provider-Key-Anthropic',
+    logo: 'claude-color',
+    auth: ProviderAuth.anthropic,
+    baseUrl: 'https://api.anthropic.com/v1',
+    checkUrl: 'https://api.anthropic.com/v1/models?limit=1',
+    keysUrl: 'https://console.anthropic.com/settings/keys',
     keyHint: 'sk-ant-…',
     blurb: 'Claude models, straight from Anthropic.',
-    keysUrl: 'https://console.anthropic.com/settings/keys',
+    covers: ProviderCovers.vendors(['anthropic']),
+    idMap: {},
+    status: ProviderStatus.connected,
+  ),
+  ByokProvider(
+    id: 'openai',
+    name: 'OpenAI',
+    header: 'X-Provider-Key-OpenAI',
+    logo: 'openai',
+    auth: ProviderAuth.bearer,
+    baseUrl: 'https://api.openai.com/v1',
+    checkUrl: 'https://api.openai.com/v1/models',
+    keysUrl: 'https://platform.openai.com/api-keys',
+    keyHint: 'sk-…',
+    blurb: 'GPT models, straight from OpenAI.',
+    covers: ProviderCovers.vendors(['openai']),
+    idMap: {},
+    status: ProviderStatus.saved,
+  ),
+  ByokProvider(
+    id: 'google',
+    name: 'Google AI Studio',
+    header: 'X-Provider-Key-Google',
+    logo: 'gemini-color',
+    auth: ProviderAuth.bearer,
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    checkUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/models',
+    keysUrl: 'https://aistudio.google.com/apikey',
+    keyHint: 'AIza…',
+    blurb: 'Gemini models, through AI Studio\'s OpenAI-compatible endpoint.',
+    covers: ProviderCovers.vendors(['google']),
+    idMap: {},
+    status: ProviderStatus.saved,
+  ),
+  ByokProvider(
+    id: 'xai',
+    name: 'xAI',
+    header: 'X-Provider-Key-XAI',
+    logo: 'grok',
+    auth: ProviderAuth.bearer,
+    baseUrl: 'https://api.x.ai/v1',
+    checkUrl: 'https://api.x.ai/v1/models',
+    keysUrl: 'https://console.x.ai',
+    keyHint: 'xai-…',
+    blurb: 'Grok models, straight from xAI.',
+    covers: ProviderCovers.vendors(['x-ai']),
+    idMap: {},
+    status: ProviderStatus.saved,
+  ),
+  ByokProvider(
+    id: 'deepseek',
+    name: 'DeepSeek',
+    header: 'X-Provider-Key-DeepSeek',
+    logo: 'deepseek-color',
+    auth: ProviderAuth.bearer,
+    baseUrl: 'https://api.deepseek.com/v1',
+    checkUrl: 'https://api.deepseek.com/v1/models',
+    keysUrl: 'https://platform.deepseek.com/api_keys',
+    keyHint: 'sk-…',
+    blurb: 'DeepSeek models, straight from DeepSeek.',
+    covers: ProviderCovers.vendors(['deepseek']),
+    idMap: {},
+    status: ProviderStatus.saved,
+  ),
+  ByokProvider(
+    id: 'mistral',
+    name: 'Mistral',
+    header: 'X-Provider-Key-Mistral',
+    logo: 'mistral-color',
+    auth: ProviderAuth.bearer,
+    baseUrl: 'https://api.mistral.ai/v1',
+    checkUrl: 'https://api.mistral.ai/v1/models',
+    keysUrl: 'https://console.mistral.ai/api-keys',
+    keyHint: '',
+    blurb: 'Mistral models, straight from Mistral.',
+    covers: ProviderCovers.vendors(['mistralai']),
+    idMap: {},
+    status: ProviderStatus.saved,
+  ),
+  ByokProvider(
+    id: 'moonshot',
+    name: 'Moonshot',
+    header: 'X-Provider-Key-Moonshot',
+    logo: 'kimi',
+    auth: ProviderAuth.bearer,
+    baseUrl: 'https://api.moonshot.ai/v1',
+    checkUrl: 'https://api.moonshot.ai/v1/models',
+    keysUrl: 'https://platform.moonshot.ai/console/api-keys',
+    keyHint: 'sk-…',
+    blurb: 'Kimi models, straight from Moonshot (global platform keys).',
+    covers: ProviderCovers.vendors(['moonshotai']),
+    idMap: {},
+    status: ProviderStatus.saved,
+  ),
+  ByokProvider(
+    id: 'zai',
+    name: 'Z.ai',
+    header: 'X-Provider-Key-ZAI',
+    logo: 'zai',
+    auth: ProviderAuth.bearer,
+    baseUrl: 'https://api.z.ai/api/paas/v4',
+    checkUrl: 'https://api.z.ai/api/paas/v4/models',
+    keysUrl: 'https://z.ai/manage-apikey/apikey-list',
+    keyHint: '',
+    blurb: 'GLM models, straight from Z.ai (global keys, pay as you go).',
+    covers: ProviderCovers.vendors(['z-ai']),
+    idMap: {},
+    status: ProviderStatus.saved,
+  ),
+  ByokProvider(
+    id: 'minimax',
+    name: 'MiniMax',
+    header: 'X-Provider-Key-MiniMax',
+    logo: 'minimax-color',
+    auth: ProviderAuth.bearer,
+    baseUrl: 'https://api.minimax.io/v1',
+    checkUrl: 'https://api.minimax.io/v1/models',
+    keysUrl: 'https://platform.minimax.io/user-center/basic-information/interface-key',
+    keyHint: '',
+    blurb: 'MiniMax models, straight from MiniMax.',
+    covers: ProviderCovers.vendors(['minimax']),
+    idMap: {},
+    status: ProviderStatus.saved,
+  ),
+  ByokProvider(
+    id: 'dashscope',
+    name: 'Alibaba Model Studio',
+    header: 'X-Provider-Key-DashScope',
+    logo: 'qwen-color',
+    auth: ProviderAuth.bearer,
+    baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+    checkUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models',
+    keysUrl: 'https://modelstudio.console.alibabacloud.com/',
+    keyHint: 'sk-…',
+    blurb: 'Qwen models, through DashScope (international, Singapore).',
+    covers: ProviderCovers.vendors(['qwen']),
+    idMap: {},
+    status: ProviderStatus.saved,
+  ),
+  ByokProvider(
+    id: 'cohere',
+    name: 'Cohere',
+    header: 'X-Provider-Key-Cohere',
+    logo: 'cohere-color',
+    auth: ProviderAuth.bearer,
+    baseUrl: 'https://api.cohere.ai/compatibility/v1',
+    checkUrl: 'https://api.cohere.ai/compatibility/v1/models',
+    keysUrl: 'https://dashboard.cohere.com/api-keys',
+    keyHint: '',
+    blurb: 'Command models, through Cohere\'s compatibility API.',
+    covers: ProviderCovers.vendors(['cohere']),
+    idMap: {},
+    status: ProviderStatus.saved,
+  ),
+  ByokProvider(
+    id: 'perplexity',
+    name: 'Perplexity',
+    header: 'X-Provider-Key-Perplexity',
+    logo: 'perplexity-color',
+    auth: ProviderAuth.bearer,
+    baseUrl: 'https://api.perplexity.ai',
+    checkUrl: 'https://api.perplexity.ai/models',
+    keysUrl: 'https://www.perplexity.ai/settings/api',
+    keyHint: 'pplx-…',
+    blurb: 'Sonar models, straight from Perplexity.',
+    covers: ProviderCovers.vendors(['perplexity']),
+    idMap: {},
+    status: ProviderStatus.saved,
+  ),
+  ByokProvider(
+    id: 'groq',
+    name: 'Groq',
+    header: 'X-Provider-Key-Groq',
+    logo: '',
+    auth: ProviderAuth.bearer,
+    baseUrl: 'https://api.groq.com/openai/v1',
+    checkUrl: 'https://api.groq.com/openai/v1/models',
+    keysUrl: 'https://console.groq.com/keys',
+    keyHint: 'gsk_…',
+    blurb: 'Open models on Groq\'s hardware.',
+    covers: ProviderCovers.ownIds(),
+    idMap: {},
+    status: ProviderStatus.saved,
+  ),
+  ByokProvider(
+    id: 'together',
+    name: 'Together AI',
+    header: 'X-Provider-Key-Together',
+    logo: '',
+    auth: ProviderAuth.bearer,
+    baseUrl: 'https://api.together.xyz/v1',
+    checkUrl: 'https://api.together.xyz/v1/models',
+    keysUrl: 'https://api.together.ai/settings/api-keys',
+    keyHint: '',
+    blurb: 'Open models on Together.',
+    covers: ProviderCovers.ownIds(),
+    idMap: {},
+    status: ProviderStatus.saved,
+  ),
+  ByokProvider(
+    id: 'fireworks',
+    name: 'Fireworks',
+    header: 'X-Provider-Key-Fireworks',
+    logo: 'fireworks-color',
+    auth: ProviderAuth.bearer,
+    baseUrl: 'https://api.fireworks.ai/inference/v1',
+    checkUrl: 'https://api.fireworks.ai/inference/v1/models',
+    keysUrl: 'https://fireworks.ai/account/api-keys',
+    keyHint: 'fw_…',
+    blurb: 'Open models on Fireworks.',
+    covers: ProviderCovers.ownIds(),
+    idMap: {},
+    status: ProviderStatus.saved,
+  ),
+  ByokProvider(
+    id: 'cerebras',
+    name: 'Cerebras',
+    header: 'X-Provider-Key-Cerebras',
+    logo: '',
+    auth: ProviderAuth.bearer,
+    baseUrl: 'https://api.cerebras.ai/v1',
+    checkUrl: 'https://api.cerebras.ai/v1/models',
+    keysUrl: 'https://cloud.cerebras.ai',
+    keyHint: 'csk-…',
+    blurb: 'Open models on Cerebras.',
+    covers: ProviderCovers.ownIds(),
+    idMap: {},
+    status: ProviderStatus.saved,
+  ),
+  ByokProvider(
+    id: 'sambanova',
+    name: 'SambaNova',
+    header: 'X-Provider-Key-SambaNova',
+    logo: '',
+    auth: ProviderAuth.bearer,
+    baseUrl: 'https://api.sambanova.ai/v1',
+    checkUrl: 'https://api.sambanova.ai/v1/models',
+    keysUrl: 'https://cloud.sambanova.ai/apis',
+    keyHint: '',
+    blurb: 'Open models on SambaNova.',
+    covers: ProviderCovers.ownIds(),
+    idMap: {},
+    status: ProviderStatus.saved,
+  ),
+  ByokProvider(
+    id: 'github',
+    name: 'GitHub Models',
+    header: 'X-Provider-Key-GitHub',
+    logo: 'githubcopilot',
+    auth: ProviderAuth.bearer,
+    baseUrl: 'https://models.github.ai/inference',
+    checkUrl: 'https://models.github.ai/catalog/models',
+    keysUrl: 'https://github.com/settings/tokens',
+    keyHint: 'github_pat_…',
+    blurb: 'Models on GitHub, with a token that has models access.',
+    covers: ProviderCovers.ownIds(),
+    idMap: {},
+    status: ProviderStatus.saved,
+  ),
+  ByokProvider(
+    id: 'huggingface',
+    name: 'Hugging Face',
+    header: 'X-Provider-Key-HuggingFace',
+    logo: 'huggingface-color',
+    auth: ProviderAuth.bearer,
+    baseUrl: 'https://router.huggingface.co/v1',
+    checkUrl: 'https://router.huggingface.co/v1/models',
+    keysUrl: 'https://huggingface.co/settings/tokens',
+    keyHint: 'hf_…',
+    blurb: 'Open models through Hugging Face\'s inference router.',
+    covers: ProviderCovers.ownIds(),
+    idMap: {},
+    status: ProviderStatus.saved,
+  ),
+  ByokProvider(
+    id: 'nvidia',
+    name: 'NVIDIA NIM',
+    header: 'X-Provider-Key-NVIDIA',
+    logo: 'nvidia-color',
+    auth: ProviderAuth.bearer,
+    baseUrl: 'https://integrate.api.nvidia.com/v1',
+    checkUrl: 'https://integrate.api.nvidia.com/v1/models',
+    keysUrl: 'https://build.nvidia.com',
+    keyHint: 'nvapi-…',
+    blurb: 'Open models on NVIDIA\'s hosted NIM endpoints.',
+    covers: ProviderCovers.ownIds(),
+    idMap: {},
+    status: ProviderStatus.saved,
   ),
 ];
 
@@ -128,7 +471,7 @@ final class ModelBilling {
   List<Biller> billersFor(ModelId model) => [
     if (BillingFlag.enabled) Biller.everyai,
     for (final p in byokProviders)
-      if (keys.containsKey(p.id) && p.covers(model)) Biller.key(p),
+      if (keys.containsKey(p.id) && p.runs(model)) Biller.key(p),
   ];
 
   /// Who pays for [model]: the user's pick while it's still possible, else

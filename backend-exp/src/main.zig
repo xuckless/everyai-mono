@@ -32,6 +32,7 @@ pub const remote = @import("remote.zig");
 pub const egress = @import("egress.zig");
 pub const hooks = @import("hooks.zig");
 pub const byok = @import("byok.zig");
+pub const openai_compat = @import("openai_compat.zig");
 pub const decide = @import("decide.zig");
 pub const local = @import("local.zig");
 pub const local_models = @import("local_models.zig");
@@ -124,18 +125,26 @@ pub const App = struct {
             const server = local.serverOf(req, .chat) orelse return error.NoLocalServer;
             return self.onLocal(req, server, model);
         }
-        const keys = byok.Keys.of(req);
-        if (native_ok and byok.isAnthropic(model)) if (keys.anthropic) |k| {
+        const pick = byok.Keys.of(req).pick(model, native_ok) orelse return self.route(model, native_ok);
+        const p = pick.provider;
+        if (p.covers == .all) return self.onOpenRouterKey(req, pick.key);
+        if (p.auth == .anthropic) {
             const adapter = try req.arena.create(anthropic.Adapter);
             adapter.* = .{ .inner = self.keyed_transport orelse inner: {
                 const client = try req.arena.create(openrouter.Client);
-                client.* = .{ .base_url = self.cfg.anthropic_base_url, .api_key = k, .auth = .anthropic };
+                client.* = .{ .base_url = self.cfg.anthropic_base_url, .api_key = pick.key, .auth = .anthropic };
                 break :inner client.upstream();
             }, .catalog = &self.catalog };
             return .{ .up = adapter.upstream(), .provider = "anthropic", .byok = true };
-        };
-        if (keys.openrouter) |k| return self.onOpenRouterKey(req, k);
-        return self.route(model, native_ok);
+        }
+        // A direct OpenAI-compatible provider (openai_compat.zig).
+        const adapter = try req.arena.create(openai_compat.Adapter);
+        adapter.* = .{ .provider = p, .model = model, .inner = self.keyed_transport orelse inner: {
+            const client = try req.arena.create(openrouter.Client);
+            client.* = .{ .base_url = p.base_url, .api_key = pick.key };
+            break :inner client.upstream();
+        } };
+        return .{ .up = adapter.upstream(), .provider = p.id, .byok = true };
     }
 
     /// Whether a call nobody's key covers has nowhere to go: no server
@@ -148,7 +157,7 @@ pub const App = struct {
     /// Side calls (follow-ups, titles, researchers, search, images) use
     /// OpenRouter models: on the user's OpenRouter key when there is one.
     pub fn aux(self: *App, req: *anole.Request) !Route {
-        if (byok.Keys.of(req).openrouter) |k| return self.onOpenRouterKey(req, k);
+        if (byok.Keys.of(req).get("openrouter")) |k| return self.onOpenRouterKey(req, k);
         if (self.cfg.openrouter_api_key == null and self.cfg.local_mode) {
             // No OpenRouter anywhere: the app's local side-job model, else nothing.
             const engine = local.engineOf(req);
@@ -213,6 +222,8 @@ pub fn routes(app: *anole.Server(App), state: *App) !void {
     }));
     // Local mode (the app's sidecar): every route but the probes needs the launch token.
     if (state.cfg.local_mode) app.use(local.Guard{ .token = if (state.cfg.local_token) |t| t.expose() else "" });
+    // Provider keys reach only the app's bundled server (byok.zig).
+    if (!state.cfg.local_mode and !state.cfg.accept_provider_keys) app.use(byok.Refuse{});
     // /readyz waits for the model catalog: without it chat can't price or route.
     try app.health(.{}).addCheck("catalog", catalogLoaded, state);
     app.openapi(.{ .info = .{ .title = "EveryAI API", .version = "0.1.0-dev-nonsigned" } });
@@ -236,6 +247,7 @@ pub fn routes(app: *anole.Server(App), state: *App) !void {
 
 /// Schema and seed data; run before serving.
 pub fn prepare(state: *App, ctx: anytype) !void {
+    try byok.load();
     _ = try anole.db.migrate(state.db, ctx, &migrations.all);
     const saved = try state.db.optional([]const u8, ctx, "SELECT value FROM settings WHERE key = 'upstream.anthropic'", .{});
     state.native_anthropic.store(std.mem.eql(u8, saved orelse state.cfg.anthropic_upstream, "anthropic"), .monotonic);
@@ -295,7 +307,11 @@ pub fn main(init: std.process.Init) !void {
         }
         std.log.warn("billing is off: calls on the server's own model key are free to every user", .{});
     }
-    if (cfg.openrouter_api_key == null) std.log.info("OPENROUTER_API_KEY not set: model calls run on the keys users add in the app", .{});
+    if (cfg.accept_provider_keys and !cfg.local_mode and anole.env.environment() != .development) {
+        std.log.err("refusing to start: ACCEPT_PROVIDER_KEYS sends users' keys through this hosted server; they belong to the app's local one", .{});
+        return error.ProviderKeysOnHostedServer;
+    }
+    if (cfg.openrouter_api_key == null) std.log.info("OPENROUTER_API_KEY not set: calls run on the app's local server with the user's keys, or on local models", .{});
 
     var state: App = .{
         .gpa = init.gpa,
@@ -413,6 +429,7 @@ pub fn main(init: std.process.Init) !void {
 
 test {
     _ = util;
+    _ = openai_compat;
     _ = egress;
     _ = magic;
     _ = mail;

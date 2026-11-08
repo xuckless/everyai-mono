@@ -107,6 +107,11 @@ pub const Config = struct {
     /// Sends a day, under Resend's free 100: past it sign-in answers 503.
     mail_daily_cap: i64 = 90,
 
+    /// Tests and a developer's own hosted run only: take `X-Provider-Key-*`
+    /// on a server that isn't the app's local one. Off, such a request is a
+    /// 400 `keys_not_accepted`; production refuses to start with it on.
+    accept_provider_keys: bool = false,
+
     /// Relay egress (egress.zig). The server's send rate and month, sockets
     /// at once (more wait in one queue), and per-subject limits: an
     /// anonymous host, and an account (its claimed hosts together).
