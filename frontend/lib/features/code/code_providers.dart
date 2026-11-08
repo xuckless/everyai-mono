@@ -2240,6 +2240,10 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   static Future<List<int>> Function({required String tag, required String workingDir, required bool ownsDir})
   killProcesses = killSessionProcesses;
 
+  /// The longest one step of a workflow run's shutdown may take (see [WorkflowEngine.stepTimeout]).
+  @visibleForTesting
+  static Duration workflowStepTimeout = const Duration(seconds: 30);
+
   /// What earlier leads did, oldest first (a session that switched harness).
   List<LeadSegment> _timeline = const [];
 
@@ -3735,12 +3739,13 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       final ctx = {
         'lead': {'harness': info?.harness, 'model': info?.model},
       };
-      final took = _reserveSlot();
+      // Taken meanwhile (a run_workflow call, a resume): a second run would multiply the caps.
+      if (!_reserveSlot()) return "It couldn't start: ${slotBusyText(_slotNow) ?? 'a workflow is already running.'}";
       try {
         if (await _askForBug(entry, args, ctx, fromCall: false, turnsBefore: turnsBefore)) return null;
         await runWorkflow(entry.title, entry.source, args: args, ctx: ctx);
       } finally {
-        _unreserve(took);
+        _unreserve(true);
       }
       return null;
     } on Object catch (e) {
@@ -5598,6 +5603,10 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// Runs whose lead step ran (the lead has the result, or Stop all kept it quiet): only their journal is retired.
   final _leadTold = <String>{};
 
+  /// Runs whose workflow step ran while their lead step was still going (past its cutoff): that step retires the
+  /// journal once it has told the lead.
+  final _shutDownBeforeLead = <String>{};
+
   /// Runs resumed from a journal this launch, until their lead step.
   final _resumedRuns = <String>{};
 
@@ -6115,6 +6124,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         if (ref.mounted) runs.put(run);
       },
       onShutdown: (step, run) => _shutdownStep(step, run, journalPath),
+      stepTimeout: workflowStepTimeout,
     );
     if (startError != null) {
       await engine.end(WorkflowOutcome.failed, startError);
@@ -6164,13 +6174,23 @@ final class CodeSessionController extends Notifier<CodeSessionState>
           save: dir == null || noLocalFolder(dir) ? null : (json) => saveSpill(dir, 'workflow-$runId.json', json),
         );
         _toLead(message, runId: runId);
-        _leadTold.add(runId);
+        // This step ran past its cutoff and the workflow step is done: the journal goes now, or the next launch
+        // would tell the lead again.
+        if (_shutDownBeforeLead.remove(runId)) {
+          await retireJournalFile(journalPath);
+        } else {
+          _leadTold.add(runId);
+        }
       case ShutdownStep.workflow:
         _startTrees.remove(runId);
         _quietRuns.remove(runId);
         // Its journal is done with once the lead's message is queued (the only copy of the result then). If the
         // session closed before that, it stays: the next launch resumes into this shutdown and tells the lead.
-        if (_leadTold.remove(runId)) await retireJournalFile(journalPath);
+        if (_leadTold.remove(runId)) {
+          await retireJournalFile(journalPath);
+        } else {
+          _shutDownBeforeLead.add(runId);
+        }
         if (!ref.mounted) return;
         // Its agents no longer wait on anyone.
         for (final callId in [..._workflowAgentsWaiting]) {
@@ -6525,6 +6545,11 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (_activeForks.isNotEmpty) {
       return 'Error: ${_activeForks.length} of your forks still run (${_activeForks.keys.join(', ')}). Wait for '
           'their reports or stop them with stop_fork, then call end_workflow again.';
+    }
+    // A workflow run (or Bug fix's card) the lead started is Max's work too.
+    if (_slotNow is! SlotFree) {
+      return 'Error: a workflow run you started is still going (or Bug fix waits for the user). Wait for its '
+          '<workflow-result>, then call end_workflow again.';
     }
     // Told as it happens: no "Max off" note goes with the next message.
     sessions.update(info.copyWith(clearWorkflow: true, clearToldWorkflow: true));
