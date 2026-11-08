@@ -10,6 +10,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:path/path.dart' as p;
 
 import 'lsp.dart';
+import 'shell_io.dart' show killTree;
 import 'research_sites.dart' show secretPath;
 
 export 'lsp.dart';
@@ -273,19 +274,24 @@ final class LspClient {
     unawaited(_published.close());
   }
 
-  /// Asks the server to shut down, then ends it.
+  /// Asks the server to shut down and waits for it to exit, then ends whatever is left of its tree. Killing it
+  /// right after `exit` (as before) left the TypeScript server's tsserver children running, ~0.5–1 GB each.
   Future<void> close() async {
     if (!_closed) {
       try {
         await _request('shutdown', const {}).timeout(const Duration(seconds: 2));
         _notify('exit', const {});
+        await _process.exitCode.timeout(const Duration(seconds: 2));
       } on Object {
-        // Killed below.
+        // Ended below.
       }
     }
     _gone();
-    _process.kill();
+    await lspKillTree(_process.pid);
   }
+
+  /// The server's process id (tests).
+  int get processId => _process.pid;
 }
 
 /// A session's language servers, one per language, started on first use: the project's own install, else the
@@ -301,26 +307,143 @@ final class LspHub {
   /// The user's login environment (their PATH); null: this process's.
   final Future<Map<String, String>> Function()? environment;
 
-  final _clients = <LspLanguage, Future<LspClient?>>{};
+  final _slots = <LspLanguage, _LspSlot>{};
 
-  /// The servers that have finished starting (what an edit's baseline and `all` read without waiting).
-  final _ready = <LspLanguage, LspClient>{};
+  /// The servers that are up (what an edit's baseline and `all` read without waiting).
+  Map<LspLanguage, LspClient> get _ready => {
+    for (final e in _slots.entries)
+      if (e.value.phase == LspPhase.ready && e.value.client != null) e.key: e.value.client!,
+  };
 
   /// Why a language has no server, once found out (for the tool's answer).
   final missing = <LspLanguage, String>{};
 
   bool handles(String path) => lspLanguageOf(path) != null;
 
+  /// [l]'s phase in this hub (tests, diagnostics).
+  LspPhase phaseOf(LspLanguage l) => _slots[l]?.phase ?? LspPhase.notStarted;
+
+  void _move(_LspSlot slot, LspEvent e) {
+    final next = nextLspPhase(slot.phase, e);
+    if (next != null) slot.phase = next;
+  }
+
   Future<LspClient?> _client(LspLanguage l) async {
-    final c = await (_clients[l] ??= _start(l));
-    if (c != null && !c.alive) {
-      _ready.remove(l);
-      await _clients.remove(l);
-      return _client(l);
+    final slot = _slots[l] ??= _LspSlot(l);
+    while (true) {
+      switch (slot.phase) {
+        case LspPhase.ready when slot.client!.alive:
+          _touch(slot);
+          return slot.client;
+        case LspPhase.ready:
+          // It died on its own: started again below.
+          _move(slot, LspEvent.died);
+          _pool.remove((this, l));
+        case LspPhase.starting:
+          return slot.starting;
+        case LspPhase.stopping:
+          await slot.stopping;
+        case LspPhase.failed:
+          return null;
+        case LspPhase.notStarted || LspPhase.stopped:
+          _move(slot, LspEvent.use);
+          final generation = ++slot.generation;
+          final started = _startIn(slot, generation);
+          slot.starting = started;
+          return started;
+      }
     }
-    if (c != null) _ready[l] = c;
+  }
+
+  Future<LspClient?> _startIn(_LspSlot slot, int generation) async {
+    await _makeRoom();
+    final LspClient? c;
+    try {
+      c = await _start(slot.language);
+    } on Object catch (e) {
+      missing[slot.language] = "The ${slot.language.label} language server didn't start: $e";
+      if (generation == slot.generation) _move(slot, LspEvent.fail);
+      return null;
+    }
+    // Closed while it started: this server isn't wanted any more.
+    if (generation != slot.generation) {
+      await c?.close();
+      return null;
+    }
+    slot.starting = null;
+    if (c == null) {
+      _move(slot, LspEvent.fail);
+      return null;
+    }
+    slot.client = c;
+    _move(slot, LspEvent.up);
+    _hubs.add(this);
+    _pool.add((this, slot.language));
+    _touch(slot);
     return c;
   }
+
+  /// Marks [slot] used now, and stops it after [serverIdle] without use.
+  void _touch(_LspSlot slot) {
+    slot.lastUsed = DateTime.now();
+    slot.idle?.cancel();
+    slot.idle = Timer(serverIdle, () => unawaited(_stop(slot)));
+  }
+
+  /// Ends [slot]'s server (idle, evicted, or the hub closes); a stop under way is joined.
+  Future<void> _stop(_LspSlot slot, {LspEvent why = LspEvent.idle}) async {
+    slot.idle?.cancel();
+    switch (slot.phase) {
+      case LspPhase.stopping:
+        return slot.stopping;
+      case LspPhase.starting:
+        // The start that lands is closed by its generation check.
+        slot.generation++;
+        slot.starting = null;
+        _move(slot, why);
+        _move(slot, LspEvent.gone);
+        return;
+      case LspPhase.ready:
+        _move(slot, why);
+        _pool.remove((this, slot.language));
+        final c = slot.client;
+        slot.client = null;
+        final done = (c?.close() ?? Future<void>.value()).whenComplete(() => _move(slot, LspEvent.gone));
+        slot.stopping = done;
+        return done;
+      case LspPhase.notStarted || LspPhase.stopped || LspPhase.failed:
+        return;
+    }
+  }
+
+  /// Stops the least recently used servers of every session until there is room for one more.
+  static Future<void> _makeRoom() async {
+    while (_pool.length >= maxRunningServers) {
+      final (hub, language) = _pool.reduce(
+        (a, b) => a.$1._slots[a.$2]!.lastUsed.isBefore(b.$1._slots[b.$2]!.lastUsed) ? a : b,
+      );
+      await hub._stop(hub._slots[language]!, why: LspEvent.evicted);
+    }
+  }
+
+  /// How long a server stays up without a check.
+  static Duration serverIdle = const Duration(minutes: 10);
+
+  /// How many language servers run at once across every session (each can take 0.5–2 GB): the least recently
+  /// used one stops to make room, and starts again on its next check.
+  static int maxRunningServers = 4;
+
+  /// Running servers, by hub and language.
+  static final _pool = <(LspHub, LspLanguage)>{};
+
+  /// Hubs that started a server and haven't closed (for [closeAll]).
+  static final _hubs = <LspHub>{};
+
+  /// Ends every session's servers (the app quits).
+  static Future<void> closeAll() => Future.wait([for (final h in _hubs.toList()) h.close()]);
+
+  /// How many servers run now, across sessions (tests, diagnostics).
+  static int get runningServers => _pool.length;
 
   Future<LspClient?> _start(LspLanguage l) async {
     final env = await environment?.call() ?? Platform.environment;
@@ -476,14 +599,14 @@ final class LspHub {
     return out;
   }
 
-  /// Ends every server; the next use starts them again.
+  /// Ends every server; the next use starts them again (a language that failed is tried again too).
   Future<void> close() async {
-    final all = [..._clients.values];
-    _clients.clear();
-    _ready.clear();
-    for (final f in all) {
-      await (await f)?.close();
+    await Future.wait([for (final slot in _slots.values) _stop(slot, why: LspEvent.close)]);
+    for (final slot in _slots.values) {
+      if (slot.phase == LspPhase.failed) slot.phase = LspPhase.notStarted;
     }
+    missing.clear();
+    _hubs.remove(this);
   }
 }
 
@@ -641,3 +764,44 @@ String? _packageFile(String uri, String from, String root) {
     if (p.equals(dir, root) || p.dirname(dir) == dir) return null;
   }
 }
+
+/// Where one language server of a session is.
+///
+/// ```
+///   notStarted / stopped ──use──▶ starting ──up──▶ ready ──idle / evicted / close──▶ stopping ──gone──▶ stopped
+///                                   │  └──fail──▶ failed (until the hub closes)          ▲
+///                                   └──idle / evicted / close (the late start is closed)─┘
+///   ready ──died (exited by itself)──▶ stopped
+/// ```
+enum LspPhase { notStarted, starting, ready, stopping, stopped, failed }
+
+enum LspEvent { use, up, fail, idle, evicted, close, gone, died }
+
+/// The next phase, or null when [event] means nothing in [from].
+LspPhase? nextLspPhase(LspPhase from, LspEvent event) => switch ((from, event)) {
+  (LspPhase.notStarted || LspPhase.stopped, LspEvent.use) => LspPhase.starting,
+  (LspPhase.starting, LspEvent.up) => LspPhase.ready,
+  (LspPhase.starting, LspEvent.fail) => LspPhase.failed,
+  (LspPhase.starting || LspPhase.ready, LspEvent.idle || LspEvent.evicted || LspEvent.close) => LspPhase.stopping,
+  (LspPhase.stopping, LspEvent.gone) => LspPhase.stopped,
+  (LspPhase.ready, LspEvent.died) => LspPhase.stopped,
+  _ => null,
+};
+
+/// One language's server in a hub.
+final class _LspSlot {
+  _LspSlot(this.language);
+  final LspLanguage language;
+  var phase = LspPhase.notStarted;
+
+  /// Bumped by every start and stop: a start that lands under another one was stopped meanwhile.
+  var generation = 0;
+  Future<LspClient?>? starting;
+  Future<void>? stopping;
+  LspClient? client;
+  DateTime lastUsed = DateTime.fromMillisecondsSinceEpoch(0);
+  Timer? idle;
+}
+
+/// Ends a server's process tree; tests replace it.
+Future<void> Function(int pid) lspKillTree = killTree;

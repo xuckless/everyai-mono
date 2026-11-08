@@ -382,9 +382,13 @@ Future<List<WorkflowEntry>> _workflowsOfIn(Ref ref, String projectDir) async {
 /// disposal doesn't run then). The shell listens to it from app start, so
 /// every CLI is covered, however it was spawned.
 final driverShutdownProvider = Provider<void>((ref) {
-  Future<void> closeAll() =>
-      Future.wait([closeAllDriverProcesses(), LiveBrowsers.stopAll(), Future(NestedDisplays.stopAll)])
-          .timeout(const Duration(seconds: 3), onTimeout: () => const []);
+  Future<void> closeAll() => Future.wait([
+    closeAllDriverProcesses(),
+    LiveBrowsers.stopAll(),
+    Future(NestedDisplays.stopAll),
+    // The EveryAI harness's language servers (they outlived the app before).
+    closeAllLanguageServers(),
+  ]).timeout(const Duration(seconds: 3), onTimeout: () => const []);
   final lifecycle = AppLifecycleListener(
     onExitRequested: () async {
       await closeAll();

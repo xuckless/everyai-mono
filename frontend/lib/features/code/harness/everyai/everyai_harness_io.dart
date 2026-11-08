@@ -2186,3 +2186,6 @@ List<Map<String, Object?>> withOlderImagesNoted(List<Map<String, Object?>> messa
       }(),
   ];
 }
+
+/// Ends every session's language servers (the app quits).
+Future<void> closeAllLanguageServers() => LspHub.closeAll();
