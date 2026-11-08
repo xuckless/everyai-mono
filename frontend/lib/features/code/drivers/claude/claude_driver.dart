@@ -979,10 +979,19 @@ final class ClaudeSession
 
   /// What `initialize` says about modes: whether the model has `auto`, and the mode it runs in.
   void _initialized(Map<String, Object?> init) {
+    final spawned = _meta.permissionMode;
     final auto = _driver._autoModeIn(init, _meta.model);
     if (auto != _meta.autoMode) unawaited(_save(_meta.copyWith(autoMode: auto)));
     _modes.set(modes: claudeModes(autoMode: auto));
-    if (init['current_permission_mode'] case final String mode) _modeSaid(mode);
+    final said = init['current_permission_mode'] as String?;
+    final want = _meta.permissionMode;
+    // Auto turned out to be there after the CLI started in the mode used without it: move it to auto.
+    if (want != spawned && (said == null || said == spawned)) {
+      _modes.set(current: want);
+      _request({'subtype': 'set_permission_mode', 'mode': want});
+      return;
+    }
+    if (said != null) _modeSaid(said);
   }
 
   /// A turn ended: replace a process with an old effort, and run on when

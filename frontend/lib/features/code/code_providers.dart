@@ -3726,10 +3726,11 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     return _sendOut(out);
   }
 
-  /// Sends or queues [out] (see [send]).
-  Future<bool> _sendOut(Outgoing out) async {
+  /// Sends or queues [out] (see [send]). Only the user's own message settles the waiting cards ([release]); the
+  /// orchestrator's queues behind them.
+  Future<bool> _sendOut(Outgoing out, {bool release = true}) async {
     // An outside agent waiting on a card is mid-turn: free it, so the turn can end and the message go out.
-    _releaseHostCards();
+    if (release) _releaseHostCards();
     final t = state.transcript;
     // During a lead switch it waits for the new lead, during a rewind for the files.
     // While the last turn's checks run it waits in the queue too (they go with it, see [_startChecks]).
@@ -3858,7 +3859,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         return true;
       }
     }
-    return _sendOut(out);
+    return _sendOut(out, release: fromUser);
   }
 
   /// Sends queued message [index] now, interrupting the agent (the queue's "Send now").

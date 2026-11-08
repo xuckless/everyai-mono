@@ -138,7 +138,13 @@ Future<void> mergeLocally(BuildContext context, WidgetRef ref, CodeSessionInfo i
     if (context.mounted) showAdaptiveToast(context, 'The agent is still working. Merge once it has finished.');
     return;
   }
-  final candidate = await GitService.mergeCandidate(w);
+  final ({String sha, String subject}) candidate;
+  try {
+    candidate = await GitService.mergeCandidate(w);
+  } on Object catch (e) {
+    if (context.mounted) showAdaptiveToast(context, '$e');
+    return;
+  }
   if (!context.mounted) return;
   final go = await showAdaptiveConfirm(
     context,

@@ -984,6 +984,32 @@ void main() {
       await session.close();
     });
 
+    test('Auto: a CLI started in default before auto was known is moved to auto once initialize offers it', () async {
+      final channel = ReplayChannel(
+        _script([
+          _out(controlRequest('req_1', {'subtype': 'initialize', 'hooks': gateHooks})),
+          _in(
+            controlResponse('req_1', const {
+              'models': [
+                {'value': 'haiku', 'supportsAutoMode': true},
+              ],
+              'current_permission_mode': 'default',
+            }),
+          ),
+          _out(controlRequest('req_2', {'subtype': 'set_permission_mode', 'mode': 'auto'})),
+          _say('Plan.'),
+          _done('r1'),
+        ]),
+      );
+      final s = _Spawner([channel]);
+      final session = await driver(s).start(_spec(message: 'Plan.', mode: AgentMode.auto));
+      _record(session, (_) {});
+      await _played(channel);
+      expect(s.calls.single.args, containsAllInOrder(['--permission-mode', 'default']));
+      expect((await (session as NativeModes).nativeModes.first).current, 'auto');
+      await session.close();
+    });
+
     test("a running subagent isn't asked about again while its own call waits", () async {
       final channel = ReplayChannel(
         _script([

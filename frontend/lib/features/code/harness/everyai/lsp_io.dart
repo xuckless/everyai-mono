@@ -10,6 +10,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:path/path.dart' as p;
 
 import 'lsp.dart';
+import 'research_sites.dart' show secretPath;
 
 export 'lsp.dart';
 
@@ -505,7 +506,12 @@ Future<({String text, bool isError})> diagnosticsAnswer(LspHub hub, String root,
     }
     return (text: formatDiagnostics({for (final e in all.entries) rel(e.key): e.value}), isError: false);
   }
-  final path = p.isAbsolute(raw) ? raw : p.join(root, raw);
+  final path = p.normalize(p.isAbsolute(raw) ? raw : p.join(root, raw));
+  // Like a read, but only inside the project: a server's messages quote the file, and nothing wraps them here.
+  if (!p.isWithin(root, path) && !p.isWithin(real, path)) {
+    return (text: 'Error: diagnostics check files inside the project only.', isError: true);
+  }
+  if (secretPath(path)) return (text: 'Error: ${rel(path)} may hold secrets; it is not checked.', isError: true);
   if (!File(path).existsSync()) return (text: 'Error: $path does not exist.', isError: true);
   final language = lspLanguageOf(path);
   if (language == null) {
