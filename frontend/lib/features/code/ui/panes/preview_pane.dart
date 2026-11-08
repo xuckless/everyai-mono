@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatform;
+import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatform, visibleForTesting;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -508,7 +508,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
               AppKind.electron =>
                 b == null || (_image == null && _problem != null)
                     ? _Note(_problem ?? 'Connecting to the app…')
-                    : _PageView(
+                    : PreviewPageView(
                         image: _image,
                         browser: b,
                         focus: _viewFocus,
@@ -617,7 +617,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
               ? _Note(_problem!)
               : blank && _image == null
               ? _Empty(candidates: candidates, onPick: _go)
-              : _PageView(
+              : PreviewPageView(
                   image: _image,
                   browser: b!,
                   focus: _viewFocus,
@@ -676,8 +676,10 @@ class _DriverBar extends StatelessWidget {
 
 /// The page's picture, scaled into the pane, with the user's input forwarded (in the page's CSS pixels) and the
 /// agent's ghost cursor on top.
-class _PageView extends StatefulWidget {
-  const _PageView({
+@visibleForTesting
+class PreviewPageView extends StatefulWidget {
+  const PreviewPageView({
+    super.key,
     required this.image,
     required this.browser,
     required this.focus,
@@ -694,10 +696,10 @@ class _PageView extends StatefulWidget {
   final VoidCallback onInput;
 
   @override
-  State<_PageView> createState() => _PageViewState();
+  State<PreviewPageView> createState() => _PreviewPageViewState();
 }
 
-class _PageViewState extends State<_PageView> {
+class _PreviewPageViewState extends State<PreviewPageView> {
   /// The `key` each held key went down with, for its key-up (which carries no character).
   final _downKeys = <PhysicalKeyboardKey, String>{};
 
