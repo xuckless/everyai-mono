@@ -107,6 +107,25 @@ pub const Config = struct {
     /// Sends a day, under Resend's free 100: past it sign-in answers 503.
     mail_daily_cap: i64 = 90,
 
+    /// Relay egress (egress.zig). The server's send rate and month, sockets
+    /// at once (more wait in one queue), and per-subject limits: an
+    /// anonymous host, and an account (its claimed hosts together).
+    egress_rate_mbps: u64 = 40,
+    egress_monthly_gb: u64 = 100,
+    relay_max_live: u32 = 500,
+    relay_per_subject_live: u32 = 16,
+    relay_host_daily_mb: u64 = 512,
+    relay_host_monthly_mb: u64 = 4096,
+    relay_account_daily_mb: u64 = 2048,
+    relay_account_monthly_mb: u64 = 16384,
+    /// Anonymous hosts: new ones per network per hour, live ones per
+    /// network, devices per host, and days without a connection before one
+    /// is removed (claimed hosts never expire).
+    anon_hosts_per_hour: i64 = 5,
+    anon_hosts_per_network: i64 = 20,
+    devices_per_host: i64 = 10,
+    anon_host_idle_days: i64 = 30,
+
     /// Stripe test mode. Without a key, checkout credits immediately (mock).
     stripe_secret_key: ?anole.Secret = null,
     stripe_webhook_secret: ?anole.Secret = null,

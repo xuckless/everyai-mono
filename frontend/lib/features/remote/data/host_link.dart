@@ -113,13 +113,21 @@ typedef ConnectedDevice = ({int channel, String deviceId, String deviceName});
 /// Where this host's relay socket stands:
 ///
 /// ```text
-///  connecting ──hello──► online ──socket dropped──► connecting (reconnects)
-///       │                  │
-///       └──── replaced / revoked (from either) ────► replaced | revoked   (final: no reconnect)
+///  connecting ──queued──► queued(position) ──hello──► online ──socket dropped──► connecting (reconnects)
+///       │                                                 │
+///       ├──budget──► overBudget(resetsAt) ──resetsAt──► connecting
+///       └──── replaced / revoked (from any) ────► replaced | revoked   (final: no reconnect)
 /// ```
 enum HostLinkStatus {
   connecting,
+
+  /// The relay is full; this host waits in line ([HostLinkState.queuePosition]).
+  queued,
   online,
+
+  /// The relay's limit for this host (or its account) is spent until
+  /// [HostLinkState.budgetResetsAt]; it reconnects then by itself.
+  overBudget,
 
   /// Another copy of this host connected (it took over).
   replaced,
@@ -132,9 +140,21 @@ enum HostLinkStatus {
 
 @immutable
 final class HostLinkState {
-  const HostLinkState({this.status = HostLinkStatus.connecting, this.clients = const [], this.pending = const []});
+  const HostLinkState({
+    this.status = HostLinkStatus.connecting,
+    this.clients = const [],
+    this.pending = const [],
+    this.queuePosition,
+    this.budgetResetsAt,
+  });
 
   final HostLinkStatus status;
+
+  /// Set while [status] is [HostLinkStatus.queued] (1 = next).
+  final int? queuePosition;
+
+  /// Set while [status] is [HostLinkStatus.overBudget].
+  final DateTime? budgetResetsAt;
   final List<ConnectedDevice> clients;
   final List<PairRequest> pending;
 
@@ -144,10 +164,24 @@ final class HostLinkState {
   bool get replaced => status == HostLinkStatus.replaced;
 
   /// Moves to [next] unless the link already ended (a hello or a drop after `replaced` changes nothing).
-  HostLinkState to(HostLinkStatus next) => status.ended ? this : copyWith(status: next);
+  /// The queue place and reset time belong to their states and are dropped on leaving them.
+  HostLinkState to(HostLinkStatus next, {int? queuePosition, DateTime? budgetResetsAt}) => status.ended
+      ? this
+      : HostLinkState(
+          status: next,
+          clients: clients,
+          pending: pending,
+          queuePosition: next == HostLinkStatus.queued ? queuePosition : null,
+          budgetResetsAt: next == HostLinkStatus.overBudget ? budgetResetsAt : null,
+        );
 
-  HostLinkState copyWith({HostLinkStatus? status, List<ConnectedDevice>? clients, List<PairRequest>? pending}) =>
-      HostLinkState(status: status ?? this.status, clients: clients ?? this.clients, pending: pending ?? this.pending);
+  HostLinkState copyWith({List<ConnectedDevice>? clients, List<PairRequest>? pending}) => HostLinkState(
+    status: status,
+    clients: clients ?? this.clients,
+    pending: pending ?? this.pending,
+    queuePosition: queuePosition,
+    budgetResetsAt: budgetResetsAt,
+  );
 }
 
 /// This desktop's socket to the relay (`WS /v1/remote/host`): it keeps it up,
@@ -248,6 +282,19 @@ final class RemoteHostLink {
     if (_ws != ws) return;
     _ws = null;
     _bridge.closeAll();
+    if (_state.status == HostLinkStatus.overBudget) {
+      // Back when the limit resets (at least a minute from now).
+      _set(_state.copyWith(clients: const []));
+      _retry?.cancel();
+      var wait = (_state.budgetResetsAt ?? DateTime.now().add(const Duration(hours: 1))).difference(DateTime.now());
+      if (wait < const Duration(minutes: 1)) wait = const Duration(minutes: 1);
+      _retry = Timer(wait, () {
+        _retries = 0;
+        _set(_state.to(HostLinkStatus.connecting));
+        unawaited(_connect());
+      });
+      return;
+    }
     _set(_state.to(HostLinkStatus.connecting).copyWith(clients: const []));
     if (!_state.status.ended) _scheduleReconnect();
   }
@@ -304,6 +351,16 @@ final class RemoteHostLink {
         }
       case 'webhook':
         if (WebhookDelivery.fromJson(n) case final d?) onWebhook?.call(d);
+      case 'queued':
+        _set(_state.to(HostLinkStatus.queued, queuePosition: (n['position'] as num?)?.toInt()));
+      case 'budget':
+        final at = (n['resets_at'] as num?)?.toInt();
+        _set(
+          _state.to(
+            HostLinkStatus.overBudget,
+            budgetResetsAt: at == null ? null : DateTime.fromMillisecondsSinceEpoch(at * 1000),
+          ),
+        );
       case 'replaced':
         _set(_state.to(HostLinkStatus.replaced));
       case 'revoked':

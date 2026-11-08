@@ -100,6 +100,9 @@ class RemoteSessionList extends ConsumerWidget {
       RemoteLinkStatus.revoked => 'This device was unpaired. Pair it again in Settings → Remote.',
       RemoteLinkStatus.keyMismatch => "${list.hostName}'s keys changed. Pair this device again.",
       RemoteLinkStatus.connecting => 'Connecting to ${list.hostName}…',
+      RemoteLinkStatus.queued => 'The relay is busy. Waiting in line for ${list.hostName}…',
+      RemoteLinkStatus.overBudget =>
+        "The relay's limit for ${list.hostName} is used up for now. It reconnects by itself.",
     };
     if (!list.loaded) return message(linkNote ?? 'Loading sessions…');
 

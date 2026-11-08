@@ -175,34 +175,49 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   wallet, recent usage, cached tokens), `POST /v1/billing/checkout`
   (`{kind: topup|subscription, amount_cents?, plan?}` returns `{url, mock}`),
   `POST /v1/billing/webhook`.
-- **Remote hosts** (`backend-exp/src/remote.zig`, migration 003). A host is a
-  desktop running the sidecar; clients are the same account's other devices.
+- **Remote hosts** (`backend-exp/src/remote.zig`, migrations 003 and 006). A host is a
+  desktop running the sidecar; clients are devices paired with it.
   The backend relays WebSocket frames and never parses a payload. The
   endpoints do the E2E encryption with the public keys exchanged at pairing.
+  - **No account needed** (2026-11-08): the `rh_`/`rd_` tokens are the identity, and a JWT is optional everywhere
+    except the account list. A host made signed out belongs to the reserved user `anonymous` (its address is
+    `.invalid`; magic sign-in refuses it). `POST /v1/remote/hosts/:id/claim` (JWT + `X-Remote-Host-Token`) moves it,
+    its devices and pairings to the account (again = 200, another account's = 409); the app claims on every sign-in
+    (`HostClaim`). Anonymous hosts: `ANON_HOSTS_PER_HOUR` (5) and `ANON_HOSTS_PER_NETWORK` (20) per /24 or /48
+    (429), removed after `ANON_HOST_IDLE_DAYS` (30) without a connection. `DEVICES_PER_HOST` (10, 409).
+  - **Egress** (`src/egress.zig`): every relay socket is admitted by one gate: `RELAY_MAX_LIVE` (500) sockets at
+    once, more wait in one FIFO queue (notice `queued {position}`, close 1013 after 15 min), `RELAY_PER_SUBJECT_LIVE`
+    (16) per subject (1008). Relayed bytes count against the host (anonymous) or its account (claimed) per UTC day
+    and month (`RELAY_HOST_DAILY_MB`/`_MONTHLY_MB` 512/4096, `RELAY_ACCOUNT_…` 2048/16384) and the server's month
+    (`EGRESS_MONTHLY_GB` 100, a warning at 80%), paced to `EGRESS_RATE_MBPS` (40). Over a quota: `budget
+    {resets_at}`, close 4008; the app shows Relay limit reached and reconnects at the reset. Ledger table
+    `egress_usage(subject, period d<day>|m<month>, bytes)`, flushed hourly and on socket close, read back at start.
+    `QuotaSource` is a vtable (config tiers today; a plans table later) so metering can become a product.
   - `POST /v1/remote/hosts {name, platform?, public_key}` returns 201
     `{id, name, platform, public_key, host_token}`. The `rh_` token is shown
-    once. `GET /v1/remote/hosts` returns `[{id, name, platform, public_key,
+    once. `GET /v1/remote/hosts` (signed in) returns the account's claimed hosts: `[{id, name, platform, public_key,
     online, created_at, last_seen_at, devices:[{id, host_id, name, public_key,
     created_at, last_seen_at}]}]` (approved devices only).
     `DELETE /v1/remote/hosts/:id` and `DELETE /v1/remote/devices/:id` revoke
     at once: live sockets get `revoked` and their next frame closes them (4003
     for a client, 4001 for a host).
-  - Pairing, all with the user's JWT:
+  - Pairing (no JWT needed):
     - The host asks `POST /v1/remote/pair {host_id}` and gets 201 `{id, code
       "ABCD-EFGH", host_id, expires_at}`: 8 symbols, no I/O/0/1, 5 min, single
       use. The app shows the code as text plus a QR.
     - The client sends `POST /v1/remote/pair/redeem {code, device_name,
       public_key}` (case, dashes and spaces are ignored). It gets `{id,
       status:"pending", device_id, device_token (rd_, shown once), decide_by,
-      host:{id, name, platform, public_key}}`. A wrong, spent, expired or other
-      account's code is a 404.
+      host:{id, name, platform, public_key}}`. A wrong, spent or expired code is a
+      404. The device belongs to the host's owner.
     - The host gets a `pair_request` notice and decides with
       `POST /v1/remote/pair/:id/approve|deny`, which also needs the header
       `X-Remote-Host-Token: rh_…` (so a client cannot approve itself). It has
       10 min.
-    - The client polls `GET /v1/remote/pair/:id` for `{status:
-      open|pending|approved|denied|expired}`.
-  - Sockets take their own token in `Authorization: Bearer` or `?token=`:
+    - The client polls `GET /v1/remote/pair/:id` with `X-Remote-Device-Token` (or the host with its token) for
+      `{status: open|pending|approved|denied|expired}`.
+  - Sockets take their own token in `Authorization: Bearer` or `?token=`, nothing else (the earlier account-JWT
+    check is gone with accounts being optional):
     - `WS /v1/remote/host` (rh_). A reconnect replaces the old socket, which
       gets `replaced`.
     - `WS /v1/remote/client/:host_id` (rd_, approved only; otherwise 401/403
@@ -216,10 +231,11 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
       device_name, public_key}], pending_pairings:[…]}`, `client_open
       {channel, device_id, device_name, public_key}`, `client_close
       {channel}`, `pair_request {pairing_id, decide_by, device:{id, name,
-      public_key}}`, `replaced`, `revoked`. The host may send
+      public_key}}`, `replaced`, `revoked`, `queued {position}`, `budget {resets_at}`. The host may send
       `{"type":"close_channel","channel":N}`.
     - Notices to a client: `hello {channel, host_online}`, `host_online`,
-      `host_offline` (frames sent meanwhile are dropped), `closed`, `revoked`.
+      `host_offline` (frames sent meanwhile are dropped), `closed`, `revoked`, `queued {position}`,
+      `budget {resets_at}`.
   - **App side** (`frontend/lib/features/remote/`): binary payloads are E2E
     frames (`domain/remote_crypto.dart`): `01|v|eph_c` init, `02|v|eph_h|tag`
     accept, `03|counter(8)|ct|tag` data (ChaCha20-Poly1305, per-direction

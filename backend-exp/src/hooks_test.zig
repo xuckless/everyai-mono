@@ -24,6 +24,7 @@ const Env = struct {
         self.server.deinit();
         self.state.limiter.deinit();
         self.state.global_limiter.deinit();
+        self.state.egress.deinit();
         self.state.relay.deinit();
         self.state.catalog.deinit();
         self.fake.deinit();

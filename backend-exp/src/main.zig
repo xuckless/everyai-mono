@@ -29,6 +29,7 @@ pub const devtools = @import("devtools.zig");
 pub const safe_fetch = @import("net/safe_fetch.zig");
 pub const tool_wait = @import("tool_wait.zig");
 pub const remote = @import("remote.zig");
+pub const egress = @import("egress.zig");
 pub const hooks = @import("hooks.zig");
 pub const byok = @import("byok.zig");
 pub const decide = @import("decide.zig");
@@ -80,6 +81,9 @@ pub const App = struct {
     web: ?*const safe_fetch.Fetcher = null,
     /// Live remote-host and client sockets (remote.zig).
     relay: remote.Relay = .{},
+    /// Relay egress: quotas, pacing, the queue (egress.zig); set up in `routes`.
+    egress: egress.Gate = undefined,
+    egress_quotas: egress.StaticQuotas = undefined,
     /// Request buckets for the rate-limited routes (auth, pairing); set up in `routes`.
     limiter: anole.ratelimit.MemoryLimiter = undefined,
     /// The API-wide limit's buckets, apart from `limiter`'s: a bucket is per key, so
@@ -237,6 +241,8 @@ pub fn prepare(state: *App, ctx: anytype) !void {
     state.native_anthropic.store(std.mem.eql(u8, saved orelse state.cfg.anthropic_upstream, "anthropic"), .monotonic);
     if (state.cfg.dev_auth) try auth.seedDevUser(state, ctx);
     try pruneExpired(state, ctx);
+    // The relay's egress gate, with this day's and month's bytes read back.
+    try remote.setUpEgress(state, ctx);
 }
 
 /// Drops refresh tokens, pairing codes and webhook deliveries nobody can use
@@ -248,6 +254,7 @@ fn pruneExpired(state: *App, ctx: anytype) !void {
     _ = try state.db.exec(ctx, "DELETE FROM remote_pairings WHERE expires_at < ? AND (decide_by IS NULL OR decide_by < ?)", .{ now - 86_400, now - 86_400 });
     try hooks.prune(state, ctx);
     try magic.prune(state, ctx);
+    try remote.prune(state, ctx);
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -372,11 +379,12 @@ pub fn main(init: std.process.Init) !void {
     // stale one later refreshes; a failure here leaves that to it).
     state.catalog.refresh(state.upstream, io, cfg.priceMarkup()) catch |err| std.log.warn("model catalog not loaded at start: {t}", .{err});
 
+    defer state.egress.deinit();
     try routes(&app, &state);
     defer state.limiter.deinit();
     defer state.global_limiter.deinit();
     std.log.info("EveryAI backend-exp on :{d} (dev_auth={}, billing={s}, claude via {s})", .{
-        cfg.port,                                                                                         cfg.dev_auth,
+        cfg.port,                                                                                          cfg.dev_auth,
         if (!cfg.billing_enabled) "off" else if (cfg.stripe_secret_key == null) "mock" else "stripe test", state.route("anthropic/", true).provider,
     });
     const Stop = struct {
@@ -405,6 +413,7 @@ pub fn main(init: std.process.Init) !void {
 
 test {
     _ = util;
+    _ = egress;
     _ = magic;
     _ = mail;
     _ = tools;

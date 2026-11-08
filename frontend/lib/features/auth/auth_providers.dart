@@ -22,7 +22,8 @@ final magicPollIntervalProvider = Provider<Duration>((_) => const Duration(secon
 /// The name the sign-in email and page show ("Sign in EveryAI on Mac?").
 final signInDeviceNameProvider = Provider<String>((_) => thisDeviceName());
 
-final class AuthController extends Notifier<AuthState> {
+/// `base` so tests can stand in a fake (`authProvider.overrideWith`).
+base class AuthController extends Notifier<AuthState> {
   TokenStore get _tokens => ref.read(tokenStoreProvider);
   ApiClient get _api => ref.read(apiClientProvider);
   MagicApi get _magic => ref.read(magicApiProvider);

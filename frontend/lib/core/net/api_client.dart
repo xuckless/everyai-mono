@@ -123,8 +123,9 @@ final class ApiClient {
     String path, {
     bool authenticated = false,
     Duration timeout = jsonTimeout,
+    Map<String, String> headers = const {},
   }) async {
-    final res = await _send('GET', path, authenticated: authenticated, timeout: timeout);
+    final res = await _send('GET', path, authenticated: authenticated, timeout: timeout, headers: headers);
     return _decodeObject(await _readBody(res));
   }
 

@@ -29,6 +29,7 @@ const Env = struct {
         self.state.catalog.deinit();
         self.state.limiter.deinit();
         self.state.global_limiter.deinit();
+        self.state.egress.deinit();
         self.fake.deinit();
     }
 };

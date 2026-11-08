@@ -33,6 +33,9 @@ pub fn identity(req: *anole.Request) !Identity {
 pub const Authenticate = struct {
     app: *App,
     keys: bool = false,
+    /// No credentials is fine (the handler reads `optionalIdentity`); bad
+    /// ones are still refused. Remote control works without an account.
+    optional: bool = false,
 
     /// What /docs shows for the routes behind it.
     pub const openapi: anole.openapi.MiddlewareDoc = .{
@@ -73,6 +76,7 @@ pub const Authenticate = struct {
             try req.setLocal("identity", Identity{ .user_id = dev_user_id });
             return next.call();
         }
+        if (self.optional) return next.call();
         return challenge(res, "sign in required");
     }
 };
@@ -81,6 +85,12 @@ pub const Authenticate = struct {
 fn challenge(res: *anole.Response, message: []const u8) !void {
     try res.header("WWW-Authenticate", "Bearer realm=\"everyai\"");
     return res.fail(.unauthorized, message);
+}
+
+/// The signed-in caller, or null on a route behind `Authenticate{.optional}`
+/// called without credentials.
+pub fn optionalIdentity(req: *anole.Request) ?Identity {
+    return req.local(Identity, "identity");
 }
 
 /// The account behind an access JWT, or null when it is invalid or expired.

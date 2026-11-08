@@ -153,6 +153,10 @@ class _HostSectionState extends ConsumerState<_HostSection> {
             HostLinkStatus.replaced => 'Another copy of EveryAI took over hosting.',
             HostLinkStatus.online => 'Online${link.clients.isEmpty ? '' : ', ${link.clients.length} connected'}',
             HostLinkStatus.connecting => 'Connecting to the relay…',
+            HostLinkStatus.queued =>
+              'The relay is busy. Waiting in line${link.queuePosition == null ? '' : ' (#${link.queuePosition})'}…',
+            HostLinkStatus.overBudget =>
+              "The relay's limit for this computer is used up. It reconnects ${_resetText(link.budgetResetsAt)}.",
           };
 
     return Column(
@@ -173,6 +177,18 @@ class _HostSectionState extends ConsumerState<_HostSection> {
           ),
           trailing: AdaptiveSwitch(value: hosting.enabled, onChanged: _busy || !hosting.loaded ? null : _toggle),
         ),
+        if (hosting.host != null)
+          AdaptiveListTile(
+            title: const Text('Account'),
+            subtitle: Text(switch (hosting.claim) {
+              HostClaim.signedOut => 'Works without an account. Sign in to list this computer on your other devices.',
+              HostClaim.claiming => 'Linking to your account…',
+              HostClaim.linked => 'Linked to your account.',
+              HostClaim.otherAccount =>
+                'Linked to another account. Its devices keep working; remove the host to move it.',
+              HostClaim.failed => "Couldn't link to your account. It tries again next time you sign in.",
+            }),
+          ),
         if (hosting.enabled) ...[
           AdaptiveListTile(
             title: const Text('Security code'),
@@ -547,4 +563,18 @@ class _PairedHostTile extends ConsumerWidget {
 
   static Future<String> _deviceFingerprint(PairedHost host) async =>
       keyFingerprint((await RemoteIdentity.restore(host.privateKey)).publicKey);
+}
+
+/// "at 14:00", "tomorrow at 00:00" or "on 1 Dec", for a relay limit's reset.
+String _resetText(DateTime? at) {
+  if (at == null) return 'later';
+  final local = at.toLocal();
+  final now = DateTime.now();
+  String two(int n) => n.toString().padLeft(2, '0');
+  final time = '${two(local.hour)}:${two(local.minute)}';
+  final days = DateTime(local.year, local.month, local.day).difference(DateTime(now.year, now.month, now.day)).inDays;
+  if (days <= 0) return 'at $time';
+  if (days == 1) return 'tomorrow at $time';
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return 'on ${local.day} ${months[local.month - 1]}';
 }

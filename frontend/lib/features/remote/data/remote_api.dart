@@ -18,7 +18,7 @@ typedef Redeemed = ({
 /// A device paired with one of the account's hosts.
 typedef RemoteDevice = ({String id, String hostId, String name, String publicKey, DateTime? lastSeen});
 
-/// A host on the account.
+/// A host on the account (`GET /v1/remote/hosts` needs one).
 typedef RemoteHostInfo = ({String id, String name, String platform, bool online, List<RemoteDevice> devices});
 
 /// A webhook on the account (`GET /v1/hooks`); the secret is only in [RemoteApi.createHook]'s answer.
@@ -113,11 +113,25 @@ final class RemoteApi {
     );
   }
 
-  /// `open`, `pending`, `approved`, `denied` or `expired`.
-  Future<String> pairingStatus(String pairingId) async {
-    final r = await _api.getJson('v1/remote/pair/$pairingId', authenticated: authenticated);
+  /// `open`, `pending`, `approved`, `denied` or `expired`. Only the device
+  /// that redeemed the code ([deviceToken]) or the host may ask.
+  Future<String> pairingStatus(String pairingId, {required String deviceToken}) async {
+    final r = await _api.getJson(
+      'v1/remote/pair/$pairingId',
+      authenticated: authenticated,
+      headers: {'X-Remote-Device-Token': deviceToken},
+    );
     return r['status'] as String? ?? 'expired';
   }
+
+  /// Adds this desktop's host (made signed out) and its devices to the
+  /// signed-in account. Throws a 409 [ApiError] when another account has it.
+  Future<void> claimHost(String id, {required String hostToken}) => _api.postJson(
+    'v1/remote/hosts/$id/claim',
+    const {},
+    authenticated: true,
+    headers: {'X-Remote-Host-Token': hostToken},
+  );
 
   Future<void> decide(String pairingId, {required bool approve, required String hostToken}) => _api.postJson(
     'v1/remote/pair/$pairingId/${approve ? 'approve' : 'deny'}',

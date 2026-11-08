@@ -7,7 +7,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/platform/platform_kind.dart';
 import '../../core/providers.dart';
 import '../attachments/attachment.dart';
-import '../auth/data/token_store.dart' show tokenStoreProvider;
+import '../auth/auth_providers.dart' show authProvider;
+import '../auth/domain/auth_state.dart';
+import '../../core/net/api_error.dart' show HttpStatusError;
 import '../code/automations/webhook_providers.dart' show webhookRunnerProvider;
 import '../code/code_providers.dart' show CodeSessionState, Outgoing;
 import '../code/domain/agent_mode.dart';
@@ -32,10 +34,7 @@ final remoteStoreProvider = Provider<RemoteStore>((ref) => RemoteStore(ref.watch
 final remoteApiProvider = Provider<RemoteApi>((ref) => RemoteApi(ref.watch(apiClientProvider), authenticated: true));
 
 /// Opens relay sockets; tests override it with a fake relay.
-final relayConnectorProvider = Provider<RelayConnector>((ref) {
-  final tokens = ref.watch(tokenStoreProvider);
-  return (url, token) async => connectRelay(url, token, userToken: await tokens.accessToken());
-});
+final relayConnectorProvider = Provider<RelayConnector>((ref) => connectRelay);
 
 /// A name for this device, as other devices and the host list show it.
 String thisDeviceName() {
@@ -54,9 +53,29 @@ String _platform() => kIsWeb ? 'web' : defaultTargetPlatform.name;
 
 // ------------------------------------------------------------------ host mode (desktop)
 
+/// Whether this desktop's host is on the signed-in account:
+///
+/// ```text
+///  signedOut ──sign in (with a host)──► claiming ──200──► linked
+///                                         │──409──► otherAccount   (made under another account)
+///                                         └──error──► failed ──next sign-in or launch──► claiming
+///  any ──sign out──► signedOut
+/// ```
+///
+/// Hosting works in every state: an account only lists the host on its
+/// other devices and counts its relay use against the account's (larger)
+/// limit.
+enum HostClaim { signedOut, claiming, linked, otherAccount, failed }
+
 @immutable
 final class RemoteHostingState {
-  const RemoteHostingState({this.host, this.fingerprint = '', this.link = const HostLinkState(), this.loaded = false});
+  const RemoteHostingState({
+    this.host,
+    this.fingerprint = '',
+    this.link = const HostLinkState(),
+    this.loaded = false,
+    this.claim = HostClaim.signedOut,
+  });
 
   /// Null until this desktop is set up as a host.
   final HostRegistration? host;
@@ -65,16 +84,23 @@ final class RemoteHostingState {
   final String fingerprint;
   final HostLinkState link;
   final bool loaded;
+  final HostClaim claim;
 
   bool get enabled => host?.enabled ?? false;
 
-  RemoteHostingState copyWith({HostRegistration? host, String? fingerprint, HostLinkState? link, bool? loaded}) =>
-      RemoteHostingState(
-        host: host ?? this.host,
-        fingerprint: fingerprint ?? this.fingerprint,
-        link: link ?? this.link,
-        loaded: loaded ?? this.loaded,
-      );
+  RemoteHostingState copyWith({
+    HostRegistration? host,
+    String? fingerprint,
+    HostLinkState? link,
+    bool? loaded,
+    HostClaim? claim,
+  }) => RemoteHostingState(
+    host: host ?? this.host,
+    fingerprint: fingerprint ?? this.fingerprint,
+    link: link ?? this.link,
+    loaded: loaded ?? this.loaded,
+    claim: claim ?? this.claim,
+  );
 }
 
 final remoteHostingProvider = NotifierProvider<RemoteHosting, RemoteHostingState>(RemoteHosting.new);
@@ -89,48 +115,57 @@ final class RemoteHosting extends Notifier<RemoteHostingState> {
   @override
   RemoteHostingState build() {
     ref.onDispose(_stopLink);
+    ref.listen(authProvider, (prev, next) {
+      if (next is SignedIn && prev is! SignedIn) {
+        unawaited(_claim());
+      } else if (next is SignedOut) {
+        _claiming = null;
+        state = state.copyWith(claim: HostClaim.signedOut);
+      }
+    });
     if (Host.isDesktop) unawaited(_load());
     return const RemoteHostingState();
+  }
+
+  /// The claim under way; a second sign-in event joins it.
+  Future<void>? _claiming;
+
+  /// Puts this desktop's host on the signed-in account (idempotent on the
+  /// backend), so its other devices list it. Nothing to do without a host.
+  Future<void> _claim() => _claiming ??= _doClaim().whenComplete(() => _claiming = null);
+
+  Future<void> _doClaim() async {
+    final host = state.host ?? await _store.host();
+    if (host == null || !ref.mounted || ref.read(authProvider) is! SignedIn) return;
+    state = state.copyWith(claim: HostClaim.claiming);
+    HostClaim next;
+    try {
+      await _api.claimHost(host.id, hostToken: host.token);
+      next = HostClaim.linked;
+    } on HttpStatusError catch (e) {
+      next = e.statusCode == 409 ? HostClaim.otherAccount : HostClaim.failed;
+    } on Object {
+      next = HostClaim.failed;
+    }
+    // Signed out meanwhile: that wins.
+    if (ref.mounted && ref.read(authProvider) is SignedIn) state = state.copyWith(claim: next);
   }
 
   RemoteStore get _store => ref.read(remoteStoreProvider);
   RemoteApi get _api => ref.read(remoteApiProvider);
 
-  /// Bumped on sign-out, so a load still under way doesn't start hosting again.
-  int _epoch = 0;
-
   Future<void> _load() async {
-    final epoch = _epoch;
     final host = await _store.host();
-    if (epoch != _epoch || !ref.mounted) return;
+    if (!ref.mounted) return;
     if (host == null) {
       state = state.copyWith(loaded: true);
       return;
     }
     final identity = await RemoteIdentity.restore(host.privateKey);
-    if (epoch != _epoch || !ref.mounted) return;
+    if (!ref.mounted) return;
     state = RemoteHostingState(host: host, fingerprint: keyFingerprint(identity.publicKey), loaded: true);
+    unawaited(_claim());
     if (host.enabled) await _startLink(host, identity);
-  }
-
-  /// The account signed out: hosting stops and this desktop leaves the
-  /// account. Its `rh_` token and key belong to that account, so the next
-  /// one to sign in sets up hosting of its own, and the old account's
-  /// devices can no longer reach this computer. Call it while still signed
-  /// in (the host is removed on the backend too, best effort).
-  Future<void> signedOut() async {
-    _epoch++;
-    final host = state.host ?? await _store.host();
-    await _stopLink();
-    if (host != null) {
-      try {
-        await _api.deleteHost(host.id, hostToken: host.token);
-      } on Object {
-        // Offline: the backend's entry stays, but nothing here can use it.
-      }
-    }
-    await _store.saveHost(null);
-    if (ref.mounted) state = const RemoteHostingState(loaded: true);
   }
 
   /// The [enable] under way: a second call (a double click, or Settings and Webhooks at once) joins it instead of
@@ -154,6 +189,7 @@ final class RemoteHosting extends Notifier<RemoteHostingState> {
     }
     await _store.saveHost(host);
     state = state.copyWith(host: host, fingerprint: keyFingerprint(identity.publicKey));
+    unawaited(_claim());
     await _startLink(host, identity);
   }
 
@@ -165,7 +201,7 @@ final class RemoteHosting extends Notifier<RemoteHostingState> {
     state = RemoteHostingState(host: host, fingerprint: state.fingerprint, loaded: true);
   }
 
-  /// Removes this host from the account; every paired device loses it.
+  /// Removes this host (from the account too, when claimed); every paired device loses it.
   Future<void> forget() async {
     final host = state.host;
     await _stopLink();
@@ -326,7 +362,7 @@ final class PairedHosts extends AsyncNotifier<List<PairedHost>> {
   /// (`pending`, `approved`, `denied` or `expired`). A denied or expired
   /// pairing is dropped.
   Future<String> poll(PairedHost host) async {
-    final status = await ref.read(remoteApiProvider).pairingStatus(host.pairingId);
+    final status = await ref.read(remoteApiProvider).pairingStatus(host.pairingId, deviceToken: host.deviceToken);
     switch (status) {
       case 'approved':
         await _save([for (final h in _hosts) h.hostId == host.hostId && h.deviceId == host.deviceId ? h.approve() : h]);
@@ -334,24 +370,6 @@ final class PairedHosts extends AsyncNotifier<List<PairedHost>> {
         await _save([..._hosts.where((h) => h.deviceId != host.deviceId)]);
     }
     return status;
-  }
-
-  /// The account signed out: every pairing goes, here and on the backend
-  /// (best effort), and the open links close. The `rd_` tokens and keys
-  /// belong to that account; the next one to sign in pairs its own.
-  Future<void> signedOut() async {
-    final store = ref.read(remoteStoreProvider);
-    final hosts = state.value ?? await store.paired();
-    await ref.read(remoteLinksProvider).closeAll();
-    for (final h in hosts) {
-      try {
-        await ref.read(remoteApiProvider).deleteDevice(h.deviceId, deviceToken: h.deviceToken);
-      } on Object {
-        // Offline or gone already.
-      }
-    }
-    await store.savePaired(const []);
-    if (ref.mounted) state = const AsyncData([]);
   }
 
   /// Unpairs this device from [hostId].

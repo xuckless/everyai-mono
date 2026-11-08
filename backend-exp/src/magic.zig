@@ -221,6 +221,8 @@ fn changeEmail(app: *App, req: *anole.Request, res: *anole.Response) !void {
 }
 
 fn start(app: *App, req: *anole.Request, res: *anole.Response, purpose: Purpose, user_id: ?[]const u8, email: []const u8, device_in: []const u8) !void {
+    // The reserved owner of anonymous remote hosts (remote.zig) can't sign in.
+    if (std.ascii.endsWithIgnoreCase(email, ".invalid")) return error.UnprocessableEntity;
     const mailer = app.mailer orelse {
         res.status = .service_unavailable;
         return res.json(.{ .message = "Sign-in email isn't set up on this server.", .code = "mail_unavailable" });
@@ -249,9 +251,9 @@ fn start(app: *App, req: *anole.Request, res: *anole.Response, purpose: Purpose,
         \\INSERT INTO magic_requests (id, purpose, user_id, email, token_hash, code_hash, secret_hash, device_name, ip_prefix, status, attempts, created_at, expires_at)
         \\VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
     , .{
-        id,                                       @tagName(purpose),                          user_id,                                  email,
-        try util.sha256Hex(req.arena, token),     try codeHash(app, req.arena, id, code),     try util.sha256Hex(req.arena, secret),    device,
-        ipPrefix(req, &ip_buf),                   now,                                        now + ttl_seconds,
+        id,                                   @tagName(purpose),                      user_id,                               email,
+        try util.sha256Hex(req.arena, token), try codeHash(app, req.arena, id, code), try util.sha256Hex(req.arena, secret), device,
+        ipPrefix(req, &ip_buf),               now,                                    now + ttl_seconds,
     });
 
     const m = try compose(req.arena, purpose, try linkUrl(app, req.arena, token), code, device);
