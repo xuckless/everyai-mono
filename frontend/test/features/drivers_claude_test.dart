@@ -662,6 +662,92 @@ void main() {
       await session.close();
     });
 
+    List<ExecutionStatus> statesOf(List<HarnessEvent> events) => [
+      for (final e in events)
+        if (e is StateChange && e.executionStatus != ExecutionStatus.unknown) e.executionStatus,
+    ];
+    List<String> background(String id) => [
+      _init,
+      _say('Look around.'),
+      _use(id, 'Agent', _explore),
+      _in(_taskStarted(id)),
+      _in(_launched(id)),
+      _done('r1'),
+      _in(_notified(id, report: {'text': 'Found it.'})),
+    ];
+
+    test('a report while idle shows the session working until Claude starts its turn, or for a bounded wait', () async {
+      final saved = wakeWait;
+      wakeWait = const Duration(milliseconds: 60);
+      addTearDown(() => wakeWait = saved);
+      final channel = ReplayChannel(_script(background('t1')));
+      final session = await driver(_Spawner([channel])).start(_spec());
+      final events = _record(session);
+      await session.send('Look around.');
+      await _played(channel);
+      // Waking: the notification came, no turn yet.
+      expect(statesOf(events), [ExecutionStatus.running, ExecutionStatus.finished, ExecutionStatus.running]);
+      // No turn followed: back to what it showed before.
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      expect(statesOf(events).last, ExecutionStatus.finished);
+      await session.close();
+    });
+
+    test("a message sent while Claude wakes for a report isn't ended by the report's turn", () async {
+      final channel = ReplayChannel(
+        _script([
+          ...background('t2'),
+          _say('And the tests?'),
+          _in(_words('w1', 'The subagent found it.')),
+          _done('r2'),
+          _in(_words('w2', 'Tests pass.')),
+          _done('r3'),
+        ]),
+      );
+      final session = await driver(_Spawner([channel])).start(_spec());
+      final events = _record(session);
+      await session.send('Look around.');
+      for (var i = 0; i < 50 && events.whereType<ToolResult>().isEmpty; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      await session.send('And the tests?');
+      await _played(channel);
+      final states = statesOf(events);
+      // The report's turn ends with r2, which isn't the end of the user's: only r3 is.
+      expect(states.where((s) => s == ExecutionStatus.finished), hasLength(2));
+      expect(states.last, ExecutionStatus.finished);
+      final r2At = events.indexWhere((e) => e is ChatMessage && e.text == 'The subagent found it.');
+      final r3At = events.indexWhere((e) => e is ChatMessage && e.text == 'Tests pass.');
+      expect(
+        events.sublist(r2At, r3At).whereType<StateChange>().map((e) => e.executionStatus),
+        isNot(contains(ExecutionStatus.finished)),
+      );
+      await session.close();
+    });
+
+    test('Stop while Claude wakes for a report stops the turn it then starts', () async {
+      final channel = _LiveChannel();
+      final session = await driver(_Spawner([channel])).start(_spec());
+      final events = _record(session);
+      await session.send('Look around.');
+      await pumpEventQueue();
+      for (final line in background('t3').skip(2)) {
+        final m = jsonDecode(line) as Map<String, Object?>;
+        if (m['dir'] == 'in') channel.push(m['msg']! as Map<String, Object?>);
+      }
+      await pumpEventQueue();
+      expect(statesOf(events).last, ExecutionStatus.running);
+      await session.interrupt();
+      await pumpEventQueue();
+      expect(statesOf(events).last, ExecutionStatus.finished);
+      expect(channel.interrupts, 0);
+      // Claude starts the report's turn anyway: it is stopped at once.
+      channel.push(_words('w1', 'The subagent found it.'));
+      await pumpEventQueue();
+      expect(channel.interrupts, 1);
+      await session.close();
+    });
+
     test("closing the process ends a working subagent's card; so does reopening a session left with one", () async {
       final channel = ReplayChannel(
         _script([_init, _say('Look around.'), _use('t1', 'Agent', _explore), _in(_launched('t1')), _done('r1')]),
@@ -1684,4 +1770,32 @@ void main() {
       await session.close();
     });
   });
+}
+
+/// A CLI side the test feeds by hand: it answers initialize and counts interrupts.
+final class _LiveChannel implements LineChannel {
+  final _lines = StreamController<String>();
+  var interrupts = 0;
+
+  void push(Map<String, Object?> msg) => _lines.add(jsonEncode(msg));
+
+  @override
+  Stream<String> get lines => _lines.stream;
+
+  @override
+  String get lastError => '';
+
+  @override
+  void send(String line) {
+    final m = jsonDecode(line) as Map<String, Object?>;
+    if (m case {'type': 'control_request', 'request_id': final String id, 'request': final Map<String, Object?> r}) {
+      if (r['subtype'] == 'initialize') push(controlResponse(id, const {}));
+      if (r['subtype'] == 'interrupt') interrupts++;
+    }
+  }
+
+  @override
+  Future<void> close() async {
+    if (!_lines.isClosed) await _lines.close();
+  }
 }

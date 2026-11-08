@@ -52,6 +52,19 @@ Future<ToolOutput> runBrowser(
   if (b.dialog.value case final d? when !const {'dialog', 'tabs', 'tab', 'close'}.contains(action)) {
     return ToolOutput(browserErrorText('', dialogWaitingText(d), b.takeLog()), isError: true);
   }
+  // A dialog in a tab this one shares a renderer with (one opened the other) holds this page too: say so now rather
+  // than after a 30 s wait.
+  if (b.dialogHoldingThis case final other? when !const {'dialog', 'tabs', 'tab', 'close'}.contains(action)) {
+    return ToolOutput(
+      browserErrorText(
+        '',
+        'Tab ${other.tab} waits on a dialog, and this tab waits with it (pages opened from one another share one '
+            'renderer): switch to tab ${other.tab} and answer it first. ${tabsText(b.tabs.value, b.activeTab)}',
+        b.takeLog(),
+      ),
+      isError: true,
+    );
+  }
   try {
     // A link, a script or a form may have taken the page to another site since the last action: judge it before
     // acting on it.
