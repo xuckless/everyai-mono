@@ -334,6 +334,38 @@ void main() {
     );
   });
 
+  test('message_fork reaches a working fork without stopping it; an unknown fork is refused', () async {
+    final l = await lead();
+    final f = await fork(l.info.id);
+    f.session.add(stateEvent('r1', ExecutionStatus.running));
+    await pumpEventQueue();
+    final out = await hostCall(l.info.id, messageForkTool, {'fork_id': f.info.id, 'message': 'Use the v2 API.'});
+    expect(out.text, startsWith('Sent'));
+    expect(f.session.interrupts, 0);
+    // This lead takes no message mid-run, so it waits for the turn's end instead of stopping it.
+    final queued = container.read(codeSessionProvider(f.info.id)).queued.single.text;
+    expect(queued, contains('A message from the agent that started you'));
+    expect(queued, contains('Use the v2 API.'));
+    final none = await hostCall(l.info.id, messageForkTool, {'fork_id': 'nope', 'message': 'x'});
+    expect(none.text, contains('no running fork'));
+  });
+
+  test("message_fork doesn't restart a fork the user stopped, or one that isn't running", () async {
+    final l = await lead();
+    final f = await fork(l.info.id);
+    final idle = await hostCall(l.info.id, messageForkTool, {'fork_id': f.info.id, 'message': 'Go on.'});
+    expect(idle.text, startsWith('Not sent'));
+    f.session.add(stateEvent('r1', ExecutionStatus.running));
+    await pumpEventQueue();
+    await container.read(codeSessionProvider(f.info.id).notifier).stop();
+    // Still unwinding after the user's Stop.
+    expect(container.read(codeSessionProvider(f.info.id)).transcript.running, isTrue);
+    final stopping = await hostCall(l.info.id, messageForkTool, {'fork_id': f.info.id, 'message': 'Go on.'});
+    // Refused: as stopped, or as no longer one of the lead's running forks.
+    expect(stopping.text, isNot(startsWith('Sent')));
+    expect(container.read(codeSessionProvider(f.info.id)).queued, isEmpty);
+  });
+
   test('stop_fork stops the child, and what it did comes as its report', () async {
     final l = await lead();
     final f = await fork(l.info.id);

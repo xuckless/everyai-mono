@@ -44,7 +44,7 @@ class FakeToolResults implements ToolResults {
   bool delivered = true;
 
   @override
-  Future<bool> resolve(String callId, Object? result, {bool isError = false}) async {
+  Future<bool> resolve(String callId, Object? result, {bool isError = false, List<String> images = const []}) async {
     answers.add((callId, result, isError));
     return delivered;
   }

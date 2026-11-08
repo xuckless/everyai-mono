@@ -607,6 +607,12 @@ class SubagentView extends StatelessWidget {
     final step = item.step;
     final tasks = item.tasks;
     final names = tasks.keys.isEmpty ? ['subagent'] : tasks.keys.toList();
+    // An outside harness's own subagent (Claude Code's Agent, Cursor's and Grok's tasks): one task with a title.
+    final task = item.task;
+    final single = tasks.isEmpty && (task.description.isNotEmpty || task.prompt.isNotEmpty);
+    final title = single
+        ? '${task.title}${task.agent.isEmpty ? '' : ' · ${task.agent}'}'
+        : (step.done ? 'Subagent ${names.join(', ')} finished' : 'Subagent ${names.join(', ')} working…');
     return Container(
       decoration: BoxDecoration(
         border: Border.all(color: theme.border),
@@ -622,13 +628,32 @@ class SubagentView extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  step.done ? 'Subagent ${names.join(', ')} finished' : 'Subagent ${names.join(', ')} working…',
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: theme.type.callout.semibold.tint(theme.text),
                 ),
               ),
+              if (single) ...[
+                Text(switch (step.result?.outcome) {
+                  null => 'Working',
+                  ToolOutcome.ok => 'Done',
+                  ToolOutcome.rejected => 'Refused',
+                  ToolOutcome.error => "Didn't finish",
+                }, style: theme.type.caption.tint(theme.textMuted)),
+                const SizedBox(width: 8),
+              ],
               _StatusDot(step: step),
             ],
           ),
+          if (single && task.prompt.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6, left: 22),
+              child: _Disclosure(
+                title: 'Instructions',
+                child: Text(task.prompt, style: theme.type.callout.tint(theme.textMuted)),
+              ),
+            ),
           for (final e in tasks.entries)
             Padding(
               padding: const EdgeInsets.only(top: 6, left: 22),

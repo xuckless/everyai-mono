@@ -173,9 +173,33 @@ const _thoroughRules =
     'Going beyond the minimum is welcome where it clearly makes the result better.';
 
 /// Sent with the next message when the user moves a running session to [tier].
+///
+/// Prompt reason: the note is wrapped in an `<everyai-tier>` tag so the transcript can show a short "Thorough tier"
+/// chip instead of the whole block; the words the model reads are unchanged.
 String tierChangeNote(HarnessTier tier, {bool forks = false}) =>
-    'The user moved this session to the ${tier.label} tier. From now on this replaces the HARNESS_TIER block in '
-    'your instructions:\n${tierBlock(tier, forks: forks)}';
+    '$_tierOpen${tier.name}">The user moved this session to the ${tier.label} tier. From now on this replaces the '
+    'HARNESS_TIER block in your instructions:\n${tierBlock(tier, forks: forks)}$_tierClose';
+
+const _tierOpen = '<everyai-tier name="';
+const _tierClose = '</everyai-tier>';
+
+/// Splits a [tierChangeNote] off the start of [text]: the tier it moved to, and the rest.
+/// Notes sent before the tag (older sessions) are recognised by their words.
+(HarnessTier?, String) splitTierNote(String text) {
+  const legacy = 'The user moved this session to the ';
+  if (text.startsWith(legacy)) {
+    final end = text.indexOf('</HARNESS_TIER>');
+    final name = RegExp(r'<HARNESS_TIER name="(\w+)"').firstMatch(text)?[1];
+    if (end < 0 || name == null) return (null, text);
+    return (HarnessTier.values.asNameMap()[name], text.substring(end + '</HARNESS_TIER>'.length).trimLeft());
+  }
+  if (!text.startsWith(_tierOpen)) return (null, text);
+  final end = text.indexOf(_tierClose);
+  final quote = text.indexOf('"', _tierOpen.length);
+  if (end < 0 || quote < 0) return (null, text);
+  final tier = HarnessTier.values.asNameMap()[text.substring(_tierOpen.length, quote)];
+  return (tier, text.substring(end + _tierClose.length).trimLeft());
+}
 
 /// How [tier] asks the agent to work. [forks]: the session can fork itself,
 /// so independent parts can run in parallel.

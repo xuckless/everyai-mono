@@ -943,7 +943,7 @@ ImportItem mapClaudeAgent(String fileName, String text, {String? project}) {
   final raw = meta['permissionMode'];
   if (raw != null && raw.isNotEmpty) {
     final mode = parseAgentMode(raw);
-    if (mode == null || mode == AgentMode.fullAuto || mode == AgentMode.bypass) {
+    if (mode == null || mode.runsFreely || mode == AgentMode.bypass) {
       notes.add('Permission mode "$raw" is not carried over; it asks like any session.');
     } else {
       head.add(

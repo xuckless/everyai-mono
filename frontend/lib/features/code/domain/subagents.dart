@@ -421,7 +421,8 @@ final _notification = RegExp(
 const checkForksTool = 'check_forks';
 const answerForkTool = 'answer_fork';
 const stopForkTool = 'stop_fork';
-const forkTools = {checkForksTool, answerForkTool, stopForkTool};
+const messageForkTool = 'message_fork';
+const forkTools = {checkForksTool, answerForkTool, stopForkTool, messageForkTool};
 
 const checkForksSpec = <String, Object?>{
   'name': checkForksTool,
@@ -450,6 +451,24 @@ const answerForkSpec = <String, Object?>{
   },
 };
 
+/// Prompt reason: forks could only be answered (when they asked) or stopped; a fork drifting from its task had to be
+/// stopped and redone. This lets the orchestrator correct one while it works, without losing what it did.
+const messageForkSpec = <String, Object?>{
+  'name': messageForkTool,
+  'description':
+      'Send a running fork a message without stopping it: a correction, a fact it is missing, or a change of scope. '
+      'It reads the message after its current step and carries on with it in mind. Use stop_fork instead when it '
+      'should not go on at all.',
+  'parameters': {
+    'type': 'object',
+    'properties': {
+      'fork_id': {'type': 'string'},
+      'message': {'type': 'string', 'description': 'What the fork should know or do differently'},
+    },
+    'required': ['fork_id', 'message'],
+  },
+};
+
 const stopForkSpec = <String, Object?>{
   'name': stopForkTool,
   'description':
@@ -465,6 +484,13 @@ const stopForkSpec = <String, Object?>{
     'required': ['fork_id'],
   },
 };
+
+/// What a fork gets from message_fork. Prompt reason: the fork has to know who is talking (its orchestrator, not
+/// the user) so it weighs the message as a correction to its task.
+String forkMessageFromLead(String message) => 'A message from the agent that started you, while you work:\n$message';
+
+/// What a fork gets from its row's Message in the app.
+String forkMessageFromUser(String message) => 'A message from the user, while you work:\n$message';
 
 /// [questions] as plain text for the orchestrator: each question with its
 /// options.

@@ -23,6 +23,7 @@ class AsideCard extends StatelessWidget {
     this.contextWindow = 0,
     this.modelName,
     this.limitLines = const [],
+    this.maxBodyHeight,
     this.onSendToAgent,
     this.onOpenSession,
     this.onCommit,
@@ -37,8 +38,13 @@ class AsideCard extends StatelessWidget {
   final int contextWindow;
   final String? modelName;
 
-  /// For a usage card: the cap and plan limit lines Session info shows.
+  /// For a usage card: the cap and plan limit lines Session info shows, drawn by the plan report's parser (limits
+  /// as bars).
   final List<String> limitLines;
+
+  /// The most the body may take before it scrolls; the card's header (title and Dismiss) always stays in view.
+  /// Defaults to 420 for a usage card, 280 otherwise.
+  final double? maxBodyHeight;
 
   /// A review: hands the findings to the agent.
   final VoidCallback? onSendToAgent;
@@ -90,10 +96,11 @@ class AsideCard extends StatelessWidget {
             const SizedBox.shrink()
           else
             UsageBreakdown(totals: usage, contextWindow: contextWindow, modelName: modelName),
-          for (final line in limitLines)
+          if (limitLines.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text(line, style: theme.type.callout.tint(theme.textMuted)),
+              key: const ValueKey('usage.limits'),
+              padding: const EdgeInsets.only(top: 8),
+              child: PlanReportView(limitLines.join('\n')),
             ),
           // The lead's own report of the plan (Claude Code's /usage): waiting, its text, or why there is none.
           if (aside.busy)
@@ -171,7 +178,7 @@ class AsideCard extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(right: 6),
             child: ConstrainedBox(
-              constraints: BoxConstraints(maxHeight: aside.kind == AsideKind.cost ? 420 : 280),
+              constraints: BoxConstraints(maxHeight: maxBodyHeight ?? (aside.kind == AsideKind.cost ? 420 : 280)),
               child: SingleChildScrollView(child: body),
             ),
           ),

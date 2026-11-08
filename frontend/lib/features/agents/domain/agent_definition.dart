@@ -233,24 +233,31 @@ Write the agent's instructions here: what it focuses on, how it works, and what 
   }
 }
 
-/// `ask`, `auto-edit`, `plan`, `full-auto` (any case, `_`/space/`-`
+/// `ask`, `auto-edit`, `plan`, `auto`, `full-auto` (any case, `_`/space/`-`
 /// tolerant); null for anything else.
 AgentMode? parseAgentMode(String raw) => switch (raw.toLowerCase().replaceAll(RegExp(r'[\s_-]'), '')) {
   'ask' || 'default' => AgentMode.ask,
   'autoedit' || 'acceptedits' => AgentMode.autoEdit,
   'plan' || 'readonly' => AgentMode.plan,
+  'auto' => AgentMode.auto,
   'fullauto' => AgentMode.fullAuto,
   _ => null,
 };
 
-/// The more careful of two modes: Plan, then Ask, Auto-edit, Full auto.
+/// The more careful of two modes: Plan, then Ask, Auto-edit, Auto, Full auto. Auto never replaces Full auto or
+/// Bypass: it hands the calls to the lead's own reviewer, which on Codex skips EveryAI's floor and deny rules, so
+/// it would be less careful there, not more.
 AgentMode stricterMode(AgentMode a, AgentMode b) {
+  bool free(AgentMode m) => m == AgentMode.fullAuto || m == AgentMode.bypass;
+  if (a == AgentMode.auto && free(b)) return b;
+  if (b == AgentMode.auto && free(a)) return a;
   int rank(AgentMode m) => switch (m) {
     AgentMode.plan => 0,
     AgentMode.ask => 1,
     AgentMode.autoEdit => 2,
-    AgentMode.fullAuto => 3,
-    AgentMode.bypass => 4,
+    AgentMode.auto => 3,
+    AgentMode.fullAuto => 4,
+    AgentMode.bypass => 5,
   };
   return rank(a) <= rank(b) ? a : b;
 }

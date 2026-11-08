@@ -12,6 +12,7 @@ import 'package:every_ai/features/artifacts/artifact_providers.dart';
 import 'package:every_ai/features/artifacts/checks/tool_checks.dart';
 import 'package:every_ai/features/artifacts/data/artifact_library.dart';
 import 'package:every_ai/features/artifacts/domain/artifact.dart';
+import 'package:every_ai/features/artifacts/domain/slide_spec.dart';
 import 'package:every_ai/features/artifacts/export/pptx_writer.dart';
 import 'package:every_ai/features/artifacts/ui/panel_split.dart';
 import 'package:every_ai/features/chat/chat_providers.dart';
@@ -250,16 +251,16 @@ void main() {
   });
 
   group('PPTX speaker notes', () {
-    PptxSlide slide(String title, String notes) =>
-        (title: title, bullets: const [], body: '', notes: notes, isTitle: false);
-    const colors = (background: 'FFFFFF', title: '000000', text: '111111', accent: '6E56CF');
+    PptxPage slide(String title, String notes) => (
+      slide: slideOf({'title': title, 'notes': notes}, DeckTheme.of('light')),
+      pictures: const <String, PptxPicture>{},
+    );
 
     test('slides with notes get notes pages under one notes master', () {
       final zip = ZipDecoder().decodeBytes(
         buildPptx(
           title: 'Deck',
-          colors: colors,
-          slides: [slide('One', 'Say hi <warmly>\nThen pause'), slide('Two', ''), slide('Three', 'Wrap up')],
+          pages: [slide('One', 'Say hi <warmly>\nThen pause'), slide('Two', ''), slide('Three', 'Wrap up')],
         ),
       );
       final names = zip.files.map((f) => f.name).toSet();
@@ -288,7 +289,7 @@ void main() {
     });
 
     test('a deck without notes has no notes master', () {
-      final zip = ZipDecoder().decodeBytes(buildPptx(title: 'D', colors: colors, slides: [slide('One', ' ')]));
+      final zip = ZipDecoder().decodeBytes(buildPptx(title: 'D', pages: [slide('One', ' ')]));
       expect(zip.files.any((f) => f.name.contains('notes')), isFalse);
       expect(_file(zip, 'ppt/presentation.xml'), isNot(contains('notesMasterIdLst')));
     });

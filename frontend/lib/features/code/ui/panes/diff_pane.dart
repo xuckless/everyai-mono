@@ -9,6 +9,7 @@ import '../../../../core/ui/every_icons.dart';
 import '../../../../core/ui/syntax_spans.dart';
 import '../../code_providers.dart';
 import '../../domain/code_session.dart';
+import '../../domain/git_requests.dart';
 import '../../git/git_service.dart';
 import '../../panes/panes_providers.dart';
 import '../console/console_state.dart';
@@ -72,16 +73,13 @@ class _DiffPaneState extends ConsumerState<DiffPane> {
     }
   }
 
-  Future<void> _commit() async {
-    final message = await showAdaptivePrompt(
-      context,
-      title: 'Commit message',
-      confirmLabel: 'Commit',
-      initialValue: widget.session.title,
-    );
-    if (message == null || message.trim().isEmpty) return;
-    await _run(() async => await _git.commit(message.trim()) ? 'Committed' : 'Nothing to commit');
+  /// Commit and Create PR are requests to the agent, like the console's git button.
+  Future<void> _ask(String request, String toast) async {
+    final sent = await ref.read(codeSessionProvider(widget.session.id).notifier).send(request);
+    if (sent && mounted) showAdaptiveToast(context, toast);
   }
+
+  Future<void> _commit() => _ask(commitRequest, 'Asked the agent to commit');
 
   Future<void> _merge() async {
     if (_busy) return;
@@ -98,16 +96,10 @@ class _DiffPaneState extends ConsumerState<DiffPane> {
     return 'Pushed ${w.branch}';
   });
 
-  Future<void> _pr() async {
-    final title = await showAdaptivePrompt(
-      context,
-      title: 'Pull request title',
-      confirmLabel: 'Create',
-      initialValue: widget.session.title,
-    );
-    if (title == null || title.trim().isEmpty) return;
-    await _run(() async => 'Opened ${await _git.createPr(title: title.trim(), body: '')}');
-  }
+  Future<void> _pr() => _ask(
+    prRequest(widget.session.worktree?.baseBranch ?? 'the base branch'),
+    'Asked the agent to open a pull request',
+  );
 
   Future<void> _discard() async {
     final ok = await showAdaptiveConfirm(
@@ -135,6 +127,17 @@ class _DiffPaneState extends ConsumerState<DiffPane> {
     if (git != null) _scrollToFocus(git);
 
     final panel = widget.onClose == null;
+    // Forks working in their own worktrees, whose changes the picker can show before they merge back.
+    final forks = ref.watch(
+      codeSessionsProvider.select(
+        (all) => [
+          for (final s in all)
+            if (s.parentId == widget.session.id && s.forkCopy != null) s,
+        ],
+      ),
+    );
+    final pickedId = ref.watch(consolePanelProvider(widget.session.id).select((p) => p.diffFork));
+    final picked = forks.where((f) => f.id == pickedId).firstOrNull;
     return DecoratedBox(
       decoration: BoxDecoration(color: theme.surface),
       child: Column(
@@ -166,40 +169,49 @@ class _DiffPaneState extends ConsumerState<DiffPane> {
                     ],
                   ),
                 ),
-                AdaptiveIconButton(icon: EveryIcon.retry, tooltip: 'Refresh', size: 16, onPressed: _git.refresh),
+                if (forks.isNotEmpty) _ForkPicker(sessionId: widget.session.id, forks: forks, picked: picked),
+                AdaptiveIconButton(
+                  icon: EveryIcon.retry,
+                  tooltip: 'Refresh',
+                  size: 16,
+                  onPressed: picked == null ? _git.refresh : () => ref.invalidate(forkDiffProvider(picked.id)),
+                ),
                 if (!panel)
                   AdaptiveIconButton(icon: EveryIcon.close, tooltip: 'Close', size: 16, onPressed: widget.onClose),
               ],
             ),
           ),
-          Expanded(
-            child: switch ((widget.session.diffTarget, snapshot)) {
-              (null, _) => _Empty(
-                'This folder isn\'t a git repository, so the agent works in it directly and there is no diff to show.',
-              ),
-              (_, AsyncError(:final error)) => _Empty('$error'),
-              (_, AsyncData(value: GitSnapshot(files: []))) => const _Empty(
-                'No changes yet. Edits the agent makes in this session show up here.',
-              ),
-              (_, AsyncData(value: final g)) => ListView(
-                padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
-                children: [
-                  for (final f in g.files)
-                    _FileView(
-                      key: _fileKeys.putIfAbsent(f.path, GlobalKey.new),
-                      file: f,
-                      collapsed: _collapsed.contains(f.path),
-                      onToggle: () => setState(
-                        () => _collapsed.contains(f.path) ? _collapsed.remove(f.path) : _collapsed.add(f.path),
+          if (picked != null)
+            Expanded(child: _ForkChanges(fork: picked))
+          else
+            Expanded(
+              child: switch ((widget.session.diffTarget, snapshot)) {
+                (null, _) => _Empty(
+                  'This folder isn\'t a git repository, so the agent works in it directly and there is no diff to show.',
+                ),
+                (_, AsyncError(:final error)) => _Empty('$error'),
+                (_, AsyncData(value: GitSnapshot(files: []))) => const _Empty(
+                  'No changes yet. Edits the agent makes in this session show up here.',
+                ),
+                (_, AsyncData(value: final g)) => ListView(
+                  padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+                  children: [
+                    for (final f in g.files)
+                      _FileView(
+                        key: _fileKeys.putIfAbsent(f.path, GlobalKey.new),
+                        file: f,
+                        collapsed: _collapsed.contains(f.path),
+                        onToggle: () => setState(
+                          () => _collapsed.contains(f.path) ? _collapsed.remove(f.path) : _collapsed.add(f.path),
+                        ),
+                        onRevert: _busy ? null : (i) => _run(() async => _git.revertHunk(f, i).then((_) => null)),
                       ),
-                      onRevert: _busy ? null : (i) => _run(() async => _git.revertHunk(f, i).then((_) => null)),
-                    ),
-                ],
-              ),
-              _ => const Center(child: AdaptiveProgress()),
-            },
-          ),
-          if (w != null)
+                  ],
+                ),
+                _ => const Center(child: AdaptiveProgress()),
+              },
+            ),
+          if (w != null && picked == null)
             Container(
               padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
               decoration: BoxDecoration(
@@ -451,5 +463,81 @@ class _HunkView extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+/// Whose changes the Diff shows: the session's (its worktree or folder) or one of its forks' (each in its own
+/// worktree until its work merges back), with what each fork changed so far.
+class _ForkPicker extends ConsumerWidget {
+  const _ForkPicker({required this.sessionId, required this.forks, required this.picked});
+
+  final String sessionId;
+  final List<CodeSessionInfo> forks;
+  final CodeSessionInfo? picked;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final panel = ref.read(consolePanelProvider(sessionId).notifier);
+    String counts(CodeSessionInfo f) {
+      final files = ref.watch(forkDiffProvider(f.id)).value;
+      if (files == null || files.isEmpty) return '';
+      final added = files.fold(0, (n, x) => n + x.hunks.fold(0, (m, h) => m + h.added));
+      final removed = files.fold(0, (n, x) => n + x.hunks.fold(0, (m, h) => m + h.removed));
+      return '  +$added −$removed';
+    }
+
+    return AdaptiveMenuButton(
+      key: const ValueKey('diff.fork-picker'),
+      width: 300,
+      actions: [
+        MenuAction(label: 'This session', onSelected: () => panel.pickDiff(null)),
+        for (final f in forks) MenuAction(label: '${f.title}${counts(f)}', onSelected: () => panel.pickDiff(f.id)),
+      ],
+      child: MenuTrigger(picked?.title ?? 'This session'),
+    );
+  }
+}
+
+/// A fork's own changes, read-only: they are the fork's until its work merges back into the session.
+class _ForkChanges extends ConsumerStatefulWidget {
+  const _ForkChanges({required this.fork});
+
+  final CodeSessionInfo fork;
+
+  @override
+  ConsumerState<_ForkChanges> createState() => _ForkChangesState();
+}
+
+class _ForkChangesState extends ConsumerState<_ForkChanges> {
+  final _collapsed = <String>{};
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    return switch (ref.watch(forkDiffProvider(widget.fork.id))) {
+      AsyncError(:final error) => _Empty('$error'),
+      AsyncData(value: []) => _Empty('${widget.fork.title} hasn\'t changed anything yet.'),
+      AsyncData(value: final files) => ListView(
+        padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
+            child: Text(
+              'In its own worktree; merged into this session when it finishes.',
+              style: theme.type.caption.tint(theme.textMuted),
+            ),
+          ),
+          for (final f in files)
+            _FileView(
+              file: f,
+              collapsed: _collapsed.contains(f.path),
+              onToggle: () =>
+                  setState(() => _collapsed.contains(f.path) ? _collapsed.remove(f.path) : _collapsed.add(f.path)),
+              onRevert: null,
+            ),
+        ],
+      ),
+      _ => const Center(child: AdaptiveProgress()),
+    };
   }
 }

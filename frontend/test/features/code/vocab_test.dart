@@ -3,18 +3,14 @@ import 'dart:io';
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/theme/every_theme.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
-import 'package:every_ai/features/code/domain/compaction.dart'
-    show renderStep, userTextOf;
-import 'package:every_ai/features/code/domain/transcript_export.dart'
-    show transcriptSteps;
+import 'package:every_ai/features/code/domain/compaction.dart' show renderStep, userTextOf;
+import 'package:every_ai/features/code/domain/transcript_export.dart' show transcriptSteps;
 import 'package:every_ai/features/code/domain/plan_batches.dart';
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/drivers/acp/acp_driver.dart';
 import 'package:every_ai/features/code/drivers/acp/acp_mapping.dart';
-import 'package:every_ai/features/code/drivers/briefing/recipes.dart'
-    as recipes;
-import 'package:every_ai/features/code/drivers/claude/claude_wire.dart'
-    show claudeAction;
+import 'package:every_ai/features/code/drivers/briefing/recipes.dart' as recipes;
+import 'package:every_ai/features/code/drivers/claude/claude_wire.dart' show claudeAction;
 import 'package:every_ai/features/code/drivers/codex/codex_mapping.dart';
 import 'package:every_ai/features/code/drivers/driver_events.dart';
 import 'package:every_ai/features/code/drivers/opencode/opencode_events.dart';
@@ -45,76 +41,51 @@ List<TranscriptItem> _fold(Iterable<HarnessEvent> events) {
 
 void main() {
   group('tool names', () {
-    test(
-      'outside calls keep the harness name and are marked native; ours are not',
-      () {
-        final bash = _claude('a', 'Bash', {'command': 'ls'});
-        expect(bash.toolName, 'Bash');
-        expect(bash.native, isTrue);
-        expect(bash.nativeName, 'Bash');
-        expect(
-          actionEvent(
-            id: 'b',
-            toolName: 'acp:edit',
-            kind: 'FileEditorAction',
-          ).nativeName,
-          'edit',
-        );
-        expect(_claude('c', 'Read', {'file_path': '/x'}).nativeName, 'Read');
-        final ours = HarnessEvent.decode({
-          'kind': 'ActionEvent',
-          'id': 'd',
-          'tool_name': 'terminal',
-          'tool_call_id': 'd',
-          'action': {'kind': 'TerminalAction', 'command': 'ls'},
-        }) as ActionCall;
-        expect(ours.native, isFalse);
-        expect(ours.nativeName, '');
-      },
-    );
+    test('outside calls keep the harness name and are marked native; ours are not', () {
+      final bash = _claude('a', 'Bash', {'command': 'ls'});
+      expect(bash.toolName, 'Bash');
+      expect(bash.native, isTrue);
+      expect(bash.nativeName, 'Bash');
+      expect(actionEvent(id: 'b', toolName: 'acp:edit', kind: 'FileEditorAction').nativeName, 'edit');
+      expect(_claude('c', 'Read', {'file_path': '/x'}).nativeName, 'Read');
+      final ours = HarnessEvent.decode({
+        'kind': 'ActionEvent',
+        'id': 'd',
+        'tool_name': 'terminal',
+        'tool_call_id': 'd',
+        'action': {'kind': 'TerminalAction', 'command': 'ls'},
+      }) as ActionCall;
+      expect(ours.native, isFalse);
+      expect(ours.nativeName, '');
+    });
 
-    testWidgets(
-      'the row shows the native name before our title, and only for outside calls',
-      (tester) async {
-        final outside = _claude('a', 'Bash', {'command': 'git status'});
-        final ours = HarnessEvent.decode({
-          'kind': 'ActionEvent',
-          'id': 'd',
-          'tool_name': 'terminal',
-          'tool_call_id': 'd',
-          'action': {'kind': 'TerminalAction', 'command': 'git log'},
-        }) as ActionCall;
-        late BuildContext ctx;
-        await tester.pumpWidget(
-          _host(
-            Builder(
-              builder: (c) {
-                ctx = c;
-                return const SizedBox();
-              },
-            ),
+    testWidgets('the row shows the native name before our title, and only for outside calls', (tester) async {
+      final outside = _claude('a', 'Bash', {'command': 'git status'});
+      final ours = HarnessEvent.decode({
+        'kind': 'ActionEvent',
+        'id': 'd',
+        'tool_name': 'terminal',
+        'tool_call_id': 'd',
+        'action': {'kind': 'TerminalAction', 'command': 'git log'},
+      }) as ActionCall;
+      late BuildContext ctx;
+      await tester.pumpWidget(
+        _host(
+          Builder(
+            builder: (c) {
+              ctx = c;
+              return const SizedBox();
+            },
           ),
-        );
-        expect(
-          stepTitleSpan(ctx, outside, const TextStyle()).toPlainText(),
-          startsWith('Bash  '),
-        );
-        expect(
-          stepTitleSpan(ctx, ours, const TextStyle()).toPlainText(),
-          isNot(contains('terminal')),
-        );
-        expect(
-          approvalTitle(
-            actionEvent(
-              id: 'x',
-              toolName: 'acp:update_todos',
-              kind: 'AcpToolAction',
-            ),
-          ),
-          'Allow update_todos?',
-        );
-      },
-    );
+        ),
+      );
+      expect(stepTitleSpan(ctx, outside, const TextStyle()).toPlainText(), startsWith('Bash  '));
+      expect(stepTitleSpan(ctx, ours, const TextStyle()).toPlainText(), isNot(contains('terminal')));
+      expect(
+        approvalTitle(actionEvent(id: 'x', toolName: 'acp:update_todos', kind: 'AcpToolAction')),
+        'Allow update_todos?',
+      );
+    });
   });
 
   group('todos', () {
@@ -124,11 +95,7 @@ void main() {
       final item = plan(
         _claude('t', 'TodoWrite', {
           'todos': [
-            {
-              'content': 'Run tests',
-              'status': 'in_progress',
-              'activeForm': 'Running tests',
-            },
+            {'content': 'Run tests', 'status': 'in_progress', 'activeForm': 'Running tests'},
             {'content': 'Ship', 'status': 'pending'},
           ],
         }),
@@ -152,11 +119,7 @@ void main() {
                 'input': {
                   'todos': [
                     {'content': 'A', 'status': 'completed', 'priority': 'high'},
-                    {
-                      'content': 'B',
-                      'status': 'in_progress',
-                      'priority': 'medium',
-                    },
+                    {'content': 'B', 'status': 'in_progress', 'priority': 'medium'},
                     {'content': 'C', 'status': 'cancelled', 'priority': 'low'},
                     {'content': 'D', 'status': 'pending', 'priority': 'low'},
                   ],
@@ -170,18 +133,8 @@ void main() {
       final call = events.whereType<ActionCall>().single;
       expect(call.toolName, 'todowrite');
       final item = plan(call);
-      expect(item.tasks.map((t) => t.status), [
-        'done',
-        'in_progress',
-        'done',
-        'todo',
-      ]);
-      expect(item.tasks.map((t) => t.priority), [
-        'high',
-        'medium',
-        'low',
-        'low',
-      ]);
+      expect(item.tasks.map((t) => t.status), ['done', 'in_progress', 'done', 'todo']);
+      expect(item.tasks.map((t) => t.priority), ['high', 'medium', 'low', 'low']);
       expect(item.tasks[2].notes, 'cancelled');
     });
 
@@ -203,9 +156,7 @@ void main() {
       expect(plan(call).tasks.map((t) => t.status), ['in_progress', 'done']);
     });
 
-    testWidgets('the plan shows priority, notes and the in-progress wording', (
-      tester,
-    ) async {
+    testWidgets('the plan shows priority, notes and the in-progress wording', (tester) async {
       await tester.pumpWidget(
         _host(
           const PlanView(
@@ -225,11 +176,7 @@ void main() {
   group('plan text', () {
     test('Claude ExitPlanMode, Codex plan items and Grok plans become a plan card that never waits', () {
       final claude = _claude('e', 'ExitPlanMode', {'plan': '# Plan\n1. Do it'});
-      final (codex, codexResult) = planTextEvents(
-        'c',
-        toolName: 'plan',
-        body: 'Steps',
-      );
+      final (codex, codexResult) = planTextEvents('c', toolName: 'plan', body: 'Steps');
       for (final call in [claude, codex]) {
         final item = _fold([call]).whereType<PlanProposal>().single;
         expect(item.shown, isTrue);
@@ -240,10 +187,7 @@ void main() {
         ..add(codexResult);
       expect(b.snapshot.openPlan, isNull);
       expect(b.snapshot.status, isNot(ExecutionStatus.waitingForConfirmation));
-      expect(
-        _fold(<HarnessEvent>[claude]).whereType<PlanProposal>().single.body,
-        '# Plan\n1. Do it',
-      );
+      expect(_fold(<HarnessEvent>[claude]).whereType<PlanProposal>().single.body, '# Plan\n1. Do it');
     });
 
     test('present_plan steps with an id and a check end the plan in a json batches block', () {
@@ -253,11 +197,7 @@ void main() {
           raw: const {},
           toolName: presentPlanTool,
           toolCallId: 'p',
-          action: {
-            'kind': 'PresentPlanAction',
-            'title': 'Form',
-            'steps': steps,
-          },
+          action: {'kind': 'PresentPlanAction', 'title': 'Form', 'steps': steps},
         ),
       );
       final batched = plan([
@@ -316,10 +256,7 @@ void main() {
         },
       ]);
       expect(plain.markdown, isNot(contains('batches')));
-      expect(
-        plain.markdown,
-        endsWith('1. Add the form\n   Files: lib/form.dart'),
-      );
+      expect(plain.markdown, endsWith('1. Add the form\n   Files: lib/form.dart'));
     });
   });
 
@@ -333,29 +270,18 @@ void main() {
 
   group('briefing row', () {
     test('the notice carries its detail through the lead timeline', () {
-      final event = leadNoticeEvent(
-        const NoticeItem(
-          'briefing-0',
-          briefingNotice,
-          detail: 'the exact text',
-        ),
-      );
+      final event = leadNoticeEvent(const NoticeItem('briefing-0', briefingNotice, detail: 'the exact text'));
       final item = _fold([event]).whereType<NoticeItem>().single;
       expect(item.message, briefingNotice);
       expect(item.detail, 'the exact text');
     });
 
     test('a briefing block is a row, never a user message', () {
-      final (block, rest) = splitSessionBlock(
-        '<everyai-session>\nbrief\n</everyai-session>\n\nfix it',
-      );
+      final (block, rest) = splitSessionBlock('<everyai-session>\nbrief\n</everyai-session>\n\nfix it');
       expect(block, 'brief');
       expect(rest, 'fix it');
       expect(splitSessionBlock('plain'), (null, 'plain'));
-      expect(
-        userTextOf('<everyai-session>\nbrief\n</everyai-session>\n\nfix it'),
-        'fix it',
-      );
+      expect(userTextOf('<everyai-session>\nbrief\n</everyai-session>\n\nfix it'), 'fix it');
       final user = HarnessEvent.decode({
         'kind': 'MessageEvent',
         'id': 'u',
@@ -363,10 +289,7 @@ void main() {
         'llm_message': {
           'role': 'user',
           'content': [
-            {
-              'type': 'text',
-              'text': '<everyai-session>\nbrief\n</everyai-session>\n\nfix it',
-            },
+            {'type': 'text', 'text': '<everyai-session>\nbrief\n</everyai-session>\n\nfix it'},
           ],
         },
       });
@@ -378,30 +301,18 @@ void main() {
     test('an ACP agent without a skill route is shown the text it was sent, skills list included', () async {
       final dir = Directory.systemTemp.createTempSync('briefing');
       addTearDown(() => dir.deleteSync(recursive: true));
-      final skills = Directory('${dir.path}/skills/demo')
-        ..createSync(recursive: true);
-      File('${skills.path}/SKILL.md').writeAsStringSync(
-        '---\nname: demo\ndescription: Does a demo\n---\nBody\n',
-      );
+      final skills = Directory('${dir.path}/skills/demo')..createSync(recursive: true);
+      File('${skills.path}/SKILL.md').writeAsStringSync('---\nname: demo\ndescription: Does a demo\n---\nBody\n');
       final b = DriverBriefing(
         mcpUrl: 'http://127.0.0.1:1/mcp',
         mcpToken: 'tok',
         skillDir: '${dir.path}/skills',
         sessionSkill: 'SESSION TEXT',
       );
-      final shown = await AcpDriver(
-        id: 'gemini',
-        label: 'Gemini',
-        command: 'gemini',
-      ).briefingText(b);
+      final shown = await AcpDriver(id: 'gemini', label: 'Gemini', command: 'gemini').briefingText(b);
       final sent = recipes
           .gemini(
-            (
-              mcpUrl: Uri.parse(b.mcpUrl),
-              mcpToken: 'tok',
-              skillDir: b.skillDir!,
-              sessionText: 'SESSION TEXT',
-            ),
+            (mcpUrl: Uri.parse(b.mcpUrl), mcpToken: 'tok', skillDir: b.skillDir!, sessionText: 'SESSION TEXT'),
             skills: [(name: 'demo', description: 'Does a demo')],
           )
           .firstPrompt;
@@ -411,12 +322,7 @@ void main() {
   });
 
   test('a harness plan keeps Plan mode on offer and stays whole in the handoff text', () {
-    final plan = actionEvent(
-      id: 'p',
-      toolName: 'ExitPlanMode',
-      kind: 'ProposedPlanAction',
-      args: {'body': 'x' * 3000},
-    );
+    final plan = actionEvent(id: 'p', toolName: 'ExitPlanMode', kind: 'ProposedPlanAction', args: {'body': 'x' * 3000});
     final items = _fold([plan]);
     final proposal = items.whereType<PlanProposal>().single;
     expect(proposal.shown, isTrue);

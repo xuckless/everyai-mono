@@ -4,7 +4,7 @@ import 'dart:async';
 
 import '../domain/agent_mode.dart' show askUserQuestionTool, presentPlanTool, securityAlertTool;
 import '../domain/phases.dart' show bugCheckTool;
-import 'host_checks.dart' show checkTool, diffStatsTool;
+import 'host_checks.dart' show checkTool, diagnosticsTool, diffStatsTool;
 import 'host_report.dart' show reportIssueTool;
 import 'host_screen.dart' show screenshotTool;
 import 'host_server_stub.dart' if (dart.library.io) 'host_server_io.dart' as impl;
@@ -110,7 +110,7 @@ List<Map<String, Object?>> get hostToolSpecs => impl.hostToolSpecs;
 /// forks, starts a workflow or asks the user (the lead does that), and the
 /// security alert, which every agent has. No memory:
 /// they read it in their instructions, and the lead decides what is kept.
-const workflowHostTools = {bugCheckTool, checkTool, diffStatsTool, reportIssueTool, securityAlertTool};
+const workflowHostTools = {bugCheckTool, checkTool, diffStatsTool, diagnosticsTool, reportIssueTool, securityAlertTool};
 
 /// The calls that wait for the user, so they get [createHostServer]'s
 /// `heldLimit` (a screenshot of another app's window asks first).

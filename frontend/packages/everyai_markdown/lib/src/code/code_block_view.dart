@@ -145,9 +145,10 @@ class _CodeBlockViewState extends State<CodeBlockView> {
       ),
     );
 
-    final code = Text.rich(_highlighted(style), softWrap: _wrap);
+    final wrap = _wrap || StillLayout.of(context);
+    final code = Text.rich(_highlighted(style), softWrap: wrap);
     const padding = EdgeInsets.fromLTRB(16, 12, 16, 14);
-    final body = _wrap
+    final body = wrap
         ? Padding(padding: padding, child: code)
         : HorizontalScroller(padding: padding, thumbColor: foreground.withValues(alpha: 0.25), child: code);
 

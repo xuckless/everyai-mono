@@ -16,6 +16,10 @@ enum AgentMode {
   /// Reads and plans only, then waits for "Start building".
   plan('Plan', 'Read the code and propose a plan first'),
 
+  /// The lead's own reviewer approves (Claude Code's auto mode, Codex's auto review); what it passes back asks the
+  /// user. The EveryAI harness has no reviewer of its own, so there it runs as [fullAuto].
+  auto('Auto', "The agent's own reviewer approves; on EveryAI it runs like Full auto"),
+
   /// Nothing waits (the worktree keeps the main checkout safe), but the
   /// safety floor and deny rules still hold.
   fullAuto('Full auto', 'Runs commands and edits without asking'),
@@ -28,6 +32,10 @@ enum AgentMode {
   final String label;
   final String description;
 
+  /// Whether nothing waits for the user in this mode on the EveryAI harness (Full auto, and Auto, which runs as it
+  /// there); the floor and deny rules still hold. Bypass is apart: it checks nothing.
+  bool get runsFreely => this == fullAuto || this == auto;
+
   /// The agent-server confirmation policy: every mode, Full auto included,
   /// has the server confirm every action, and the app's permission policy
   /// (`permissions.dart`) answers. That keeps the safety floor and the
@@ -39,7 +47,7 @@ enum AgentMode {
   bool autoApproves(ActionCall call) {
     final readOnly = isReadOnly(call);
     return switch (this) {
-      fullAuto || bypass => true,
+      fullAuto || auto || bypass => true,
       autoEdit => readOnly || isFileEdit(call) || _isClientTool(call),
       plan => readOnly || _isClientTool(call),
       ask => readOnly || _isClientTool(call),
@@ -79,6 +87,8 @@ enum AgentMode {
     'ScriptAction' => true,
     // The project memory: a harness-owned notes file under .everyai/.
     'MemoryAction' => true,
+    // Language servers' findings on files in the project; nothing changes.
+    'DiagnosticsAction' => true,
     // is_input sends keys to a running process.
     'TerminalAction' => call.action['is_input'] != true && isReadOnlyShell(call.str('command')),
     _ => false,
@@ -99,6 +109,7 @@ enum AgentMode {
     autoEdit => 'Mode: Auto-edit. Edits apply at once; other commands wait for approval. Use your tools.',
     plan => 'Mode: Plan. Read-only: do not edit files or change anything. Explore, then call present_plan and stop.',
     fullAuto => 'Mode: Full auto. Everything runs without approval. Use your tools and finish the task.',
+    auto => 'Mode: Auto. Everything runs without approval. Use your tools and finish the task.',
     bypass => 'Mode: Bypass permissions. EveryAI approves everything and checks nothing.',
   };
 
@@ -122,6 +133,10 @@ enum AgentMode {
       'Mode: Full auto. Every command and edit runs without approval. Do the task end to end: read the code, '
           'make the change, run the tests or build, and fix what fails. Restrictions from earlier mode notes no '
           'longer apply.',
+    auto =>
+      'Mode: Auto. Every command and edit runs without approval. Do the task end to end: read the code, '
+          'make the change, run the tests or build, and fix what fails. Restrictions from earlier mode notes no '
+          'longer apply.',
     bypass =>
       'Mode: Bypass permissions. EveryAI approves every command and edit, inside or outside the project, and '
           'checks nothing. Restrictions from earlier mode notes no longer apply.',
@@ -141,6 +156,7 @@ enum AgentMode {
           'status/log/diff/show); do not edit files or run anything that changes the workspace. Put what you find '
           'in your final report.',
     fullAuto => 'Mode: Full auto. Commands and edits run without approval. Use your tools and finish the task.',
+    auto => 'Mode: Auto. Commands and edits run without approval. Use your tools and finish the task.',
     bypass => 'Mode: Bypass permissions. EveryAI approves every command and edit and checks nothing.',
   };
 }
@@ -301,6 +317,7 @@ List<Map<String, Object?>> clientToolSpecs({bool held = false}) => [
   checkForksSpec,
   answerForkSpec,
   stopForkSpec,
+  messageForkSpec,
   securityAlertSpec,
 ];
 

@@ -50,7 +50,7 @@ String floorAdviceSubject(ActionCall call) {
     return (accept: false, reason: floorAdvice(call, d.why));
   }
   // Full auto never asks: after the advice, a floor hit is refused.
-  if (mode == AgentMode.fullAuto) return (accept: false, reason: policyDenial([(call, d)]));
+  if (mode.runsFreely) return (accept: false, reason: policyDenial([(call, d)]));
   return null;
 }
 
