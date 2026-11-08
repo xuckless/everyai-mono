@@ -335,6 +335,38 @@ void main() {
     expect(await _git(repo, ['for-each-ref', 'refs/everyai/']), isEmpty);
   });
 
+  test(
+    'orphaned forks: held ones are skipped, empty ones carry no work, changes and commits count as unsaved',
+    () async {
+      final forks = '${tmp.path}/forks';
+      final empty = (await GitService.forkCopy(repo, worktreesDir: forks, slug: 'empty'))!;
+      final edited = (await GitService.forkCopy(repo, worktreesDir: forks, slug: 'edited'))!;
+      final committed = (await GitService.forkCopy(repo, worktreesDir: forks, slug: 'committed'))!;
+      final held = (await GitService.forkCopy(repo, worktreesDir: forks, slug: 'held'))!;
+      File('${edited.root}/lib/new.txt').writeAsStringSync('work\n');
+      File('${committed.root}/lib/c.txt').writeAsStringSync('c\n');
+      await _git(committed.root, ['add', '-A']);
+      await _git(committed.root, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'mine']);
+      // A borrowed dependency link isn't work.
+      Directory('${tmp.path}/deps').createSync();
+      Link('${empty.root}/node_modules').createSync('${tmp.path}/deps');
+
+      final found = {
+        for (final o in await GitService.orphanForks(forks, {held.root})) o.path.split('/').last: o,
+      };
+      expect(found.keys.toSet(), {'empty', 'edited', 'committed'});
+      expect(found['empty']!.unsaved, isFalse);
+      expect(found['edited']!.unsaved, isTrue);
+      expect(found['committed']!.unsaved, isTrue);
+      expect(File(found['empty']!.repoRoot).resolveSymbolicLinksSync(), Directory(repo).resolveSymbolicLinksSync());
+
+      await GitService.removeOrphanFork(found['empty']!);
+      expect(Directory(empty.root).existsSync(), isFalse);
+      expect(await _git(repo, ['worktree', 'list']), isNot(contains('/empty')));
+      expect(Directory('${tmp.path}/deps').existsSync(), isTrue, reason: 'the link goes, not what it points at');
+    },
+  );
+
   test('unified diffs parse into files and hunks', () {
     final files = parseUnifiedDiff(
       'diff --git a/x.txt b/x.txt\nindex 1..2 100644\n--- a/x.txt\n+++ b/x.txt\n@@ -1,2 +1,2 @@\n-a\n+b\n c\n'

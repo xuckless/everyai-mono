@@ -52,3 +52,6 @@ Future<LaneLanding> landWithCommits(
   required String message,
   String? newBranch,
 }) async => _unsupported();
+
+Future<List<OrphanFork>> orphanForks(String forksDir, Set<String> held) async => const [];
+Future<void> removeOrphanFork(OrphanFork o) async {}

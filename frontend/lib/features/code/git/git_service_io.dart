@@ -735,6 +735,46 @@ Future<ForkMerge> mergeFork(ForkCopy copy, {required String slug, bool merge = t
   return (merged: merged, conflicts: conflicts, ref: ref);
 }
 
+/// The fork worktrees in [forksDir] that no session holds ([held]: their roots), each with its repository ('' when
+/// git can't tell any more) and whether it has work of its own: uncommitted changes (the borrowed dependency links
+/// aside) or commits past its base.
+Future<List<OrphanFork>> orphanForks(String forksDir, Set<String> held) async {
+  final dir = Directory(forksDir);
+  if (!dir.existsSync()) return const [];
+  final out = <OrphanFork>[];
+  for (final d in dir.listSync().whereType<Directory>()) {
+    if (held.contains(d.path)) continue;
+    final common = await _git(d.path, ['rev-parse', '--path-format=absolute', '--git-common-dir'], check: false);
+    if (common.exitCode != 0) {
+      out.add((path: d.path, repoRoot: '', unsaved: false));
+      continue;
+    }
+    final repo = File('${common.stdout}'.trim()).parent.path;
+    final status = await _git(d.path, ['status', '--porcelain', '--untracked-files=normal'], check: false);
+    final changes = [
+      for (final line in const LineSplitter().convert('${status.stdout}'))
+        if (line.length > 3 && !_borrowedLink(d.path, line.substring(3).trim().replaceAll(RegExp(r'/$'), ''))) line,
+    ];
+    final subject = await _git(d.path, ['log', '-1', '--format=%s'], check: false);
+    final committed = subject.exitCode == 0 && '${subject.stdout}'.trim() != 'EveryAI fork base';
+    out.add((path: d.path, repoRoot: repo, unsaved: changes.isNotEmpty || committed));
+  }
+  return out;
+}
+
+bool _borrowedLink(String root, String path) =>
+    _borrowed.contains(path.split('/').last) && FileSystemEntity.isLinkSync('$root/$path');
+
+/// Deletes an orphaned fork worktree: git forgets it, then its folder goes.
+Future<void> removeOrphanFork(OrphanFork o) async {
+  if (o.repoRoot.isNotEmpty) {
+    await _git(o.repoRoot, ['worktree', 'remove', '--force', o.path], check: false);
+    await _git(o.repoRoot, ['worktree', 'prune'], check: false);
+  }
+  final d = Directory(o.path);
+  if (d.existsSync()) await d.delete(recursive: true);
+}
+
 // --------------------------------------------------------- landing lanes
 
 /// The fork's own last commit for what it left uncommitted (see [mergeFork]): not one of the lane's commits.

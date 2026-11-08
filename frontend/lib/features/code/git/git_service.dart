@@ -150,6 +150,12 @@ abstract final class GitService {
   /// The subject of the session branch's newest commit.
   static Future<String> headSubject(SessionWorktree w) => impl.headSubject(w);
 
+  /// The fork worktrees in [forksDir] no session holds ([held]: the roots of those that do).
+  static Future<List<OrphanFork>> orphanForks(String forksDir, Set<String> held) => impl.orphanForks(forksDir, held);
+
+  /// Deletes an orphaned fork worktree.
+  static Future<void> removeOrphanFork(OrphanFork o) => impl.removeOrphanFork(o);
+
   static Future<void> push(SessionWorktree w) => impl.push(w);
 
   /// Opens a pull request with `gh`; returns its URL.
