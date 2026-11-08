@@ -19,7 +19,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FRONTEND="$ROOT/frontend"
 DEV="$ROOT/.dev"
-API="${EVERYAI_API:-https://everyai.136-108-68-64.sslip.io:8443}"
+API="${EVERYAI_API:-https://api.everyai.dev}"
 mkdir -p "$DEV"
 
 say() { printf '\033[1;35m▸\033[0m %s\n' "$*"; }
