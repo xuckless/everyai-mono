@@ -2260,6 +2260,15 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   @visibleForTesting
   static Duration liveAfter = const Duration(milliseconds: 1500);
 
+  /// What Stop ends a session's leftover processes with (a test sees the tags).
+  @visibleForTesting
+  static Future<List<int>> Function({required String tag, required String workingDir, required bool ownsDir})
+  killProcesses = killSessionProcesses;
+
+  /// The longest one step of a workflow run's shutdown may take (see [WorkflowEngine.stepTimeout]).
+  @visibleForTesting
+  static Duration workflowStepTimeout = const Duration(seconds: 30);
+
   /// What earlier leads did, oldest first (a session that switched harness).
   List<LeadSegment> _timeline = const [];
 
@@ -3159,9 +3168,13 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     _held = null;
     // Only a run this Pause paused natively goes on (a parked one runs, one still in its step drops the request);
     // a run the user stopped earlier stays stopped.
+    // A turn that ended on its own meanwhile (finished, failed) is not run again: that would call the model with
+    // nothing new to do.
     if (_pausedNatively) {
       _pausedNatively = false;
-      if (_session case final s?) await s.resume();
+      final t = state.transcript;
+      final runOn = t.status == ExecutionStatus.paused || t.running || t.pending.isNotEmpty || t.held.isNotEmpty;
+      if (_session case final s? when runOn) await s.resume();
     }
     _answered = '';
     _autoRespond(state.transcript);
@@ -4207,7 +4220,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     await Future.wait([
       pauseAfterStep(),
       for (final e in _workflows.values) e.pause(),
-      for (final r in _forks.background)
+      for (final r in _forks.live)
         if (r.childId case final c? when r.state.working && ref.exists(codeSessionProvider(c)))
           ref.read(codeSessionProvider(c).notifier).pauseAfterStep(),
     ]);
@@ -4216,11 +4229,20 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   Future<void> resumeAll() async {
     await Future.wait([
       for (final e in _workflows.values) e.resume(),
-      for (final r in _forks.background)
-        if (r.childId case final c? when ref.exists(codeSessionProvider(c)))
+      // Every fork still held, also one whose turn ended during the Pause (it reported, but holds until Resume).
+      for (final r in _forks.all)
+        if (r.childId case final c?
+            when ref.exists(codeSessionProvider(c)) && ref.read(codeSessionProvider(c)).hold != StepHold.none)
           ref.read(codeSessionProvider(c).notifier).resumeAfterPause(),
     ]);
     await resumeAfterPause();
+  }
+
+  /// A fork that started while this session holds (Pause all) holds too.
+  void _holdIfPaused(String childId) {
+    if (state.hold != StepHold.none && ref.exists(codeSessionProvider(childId))) {
+      unawaited(ref.read(codeSessionProvider(childId).notifier).pauseAfterStep());
+    }
   }
 
   /// Stops the background forks; their reports don't go to the next lead.
@@ -5173,13 +5195,25 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     await Future.wait([
       ?_session?.interrupt(),
       if (info != null && killsOwnProcesses(info))
-        killSessionProcesses(
+        killProcesses(
           tag: info.id,
           workingDir: info.workingDir,
           ownsDir: ownsWorkingDir(info, parent: ref.read(codeSessionsProvider.notifier).byId(info.parentId ?? '')),
         ),
       // The host's process walk can't see inside an environment.
       if (info != null && killsOwnProcesses(info) && info.environment != HostEnv.instance.id) _endInside(info),
+      // Forks carry their own process tag: what those that no longer run left behind (a server, a watcher) ends
+      // with this Stop, as when they shared this session's tag. Forks still at work keep theirs (Stop all ends them).
+      if (info != null && killsOwnProcesses(info))
+        for (final r in _forks.all)
+          if (!r.state.live)
+            if (r.childId case final c?)
+              if (ref.read(codeSessionsProvider.notifier).byId(c) case final child? when child.ownProcesses)
+                killProcesses(
+                  tag: child.id,
+                  workingDir: child.workingDir,
+                  ownsDir: ownsWorkingDir(child, parent: info),
+                ),
     ]);
   }
 
@@ -5264,6 +5298,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         _deliver();
       }
       _watch(callId, child.id);
+      _holdIfPaused(child.id);
     } on Object catch (e) {
       if (ref.mounted && fork.state is ForkSpawning) {
         final report = SubagentReport(SubagentStatus.notStarted, "The subagent couldn't start: $e");
@@ -5565,6 +5600,10 @@ final class CodeSessionController extends Notifier<CodeSessionState>
 
   /// Runs whose lead step ran (the lead has the result, or Stop all kept it quiet): only their journal is retired.
   final _leadTold = <String>{};
+
+  /// Runs whose workflow step ran while their lead step was still going (past its cutoff): that step retires the
+  /// journal once it has told the lead.
+  final _shutDownBeforeLead = <String>{};
 
   /// Runs resumed from a journal this launch, until their lead step.
   final _resumedRuns = <String>{};
@@ -6092,6 +6131,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
             }
         }
       },
+      stepTimeout: workflowStepTimeout,
     );
     if (startError != null) {
       await engine.end(WorkflowOutcome.failed, startError);
@@ -6141,7 +6181,13 @@ final class CodeSessionController extends Notifier<CodeSessionState>
           save: dir == null || noLocalFolder(dir) ? null : (json) => saveSpill(dir, 'workflow-$runId.json', json),
         );
         _toLead(message, runId: runId);
-        _leadTold.add(runId);
+        // This step ran past its cutoff and the workflow step is done: the journal goes now, or the next launch
+        // would tell the lead again.
+        if (_shutDownBeforeLead.remove(runId)) {
+          await retireJournalFile(journalPath);
+        } else {
+          _leadTold.add(runId);
+        }
       case ShutdownStep.workflow:
         _startTrees.remove(runId);
         _quietRuns.remove(runId);
@@ -6149,7 +6195,11 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         _runWorkflowIds.remove(runId);
         // Its journal is done with once the lead's message is queued (the only copy of the result then). If the
         // session closed before that, it stays: the next launch resumes into this shutdown and tells the lead.
-        if (_leadTold.remove(runId)) await retireJournalFile(journalPath);
+        if (_leadTold.remove(runId)) {
+          await retireJournalFile(journalPath);
+        } else {
+          _shutDownBeforeLead.add(runId);
+        }
         if (!ref.mounted) return;
         // Its agents no longer wait on anyone.
         for (final callId in [..._workflowAgentsWaiting]) {
@@ -6393,6 +6443,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       if (batch != null) _forkBatches[callId] = batch;
       _syncSideWork();
       _watch(callId, child.id);
+      _holdIfPaused(child.id);
       return (
         text:
             'Started fork ${child.id} ("$title") on $label${model.isEmpty ? '' : ', $model'}'
@@ -6605,6 +6656,11 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (_activeForks.isNotEmpty) {
       return 'Error: ${_activeForks.length} of your forks still run (${_activeForks.keys.join(', ')}). Wait for '
           'their reports or stop them with stop_fork, then call end_workflow again.';
+    }
+    // A workflow run (or Bug fix's card) the lead started is Max's work too.
+    if (_slotNow is! SlotFree) {
+      return 'Error: a workflow run you started is still going (or Bug fix waits for the user). Wait for its '
+          '<workflow-result>, then call end_workflow again.';
     }
     // Told as it happens: no "Max off" note goes with the next message.
     sessions.update(info.copyWith(clearWorkflow: true, clearToldWorkflow: true));
@@ -7294,7 +7350,9 @@ final class CodeUsage extends AsyncNotifier<UsageTotals> {
       _later?.cancel();
     });
     _loadReports();
+    final was = _backend;
     _backend = await _fetch();
+    if (_backend != was) _saveReports();
     return _total;
   }
 
@@ -7304,6 +7362,7 @@ final class CodeUsage extends AsyncNotifier<UsageTotals> {
     try {
       final j = jsonDecode(raw) as Map<String, Object?>;
       _reported = UsageTotals.fromJson(j['totals'] as Map<String, Object?>? ?? const {});
+      if (j['backend'] case final Map<String, Object?> b) _backend = UsageTotals.fromJson(b);
       _reportIds.addAll([...?(j['ids'] as List<Object?>?)?.whereType<String>()]);
       if (j['by_harness'] case final Map<String, Object?> by) {
         for (final MapEntry(:key, :value) in by.entries) {
@@ -7338,12 +7397,18 @@ final class CodeUsage extends AsyncNotifier<UsageTotals> {
     _reported = next;
     final harness = ref.read(codeSessionsProvider.notifier).byId(sessionId)?.harness ?? everyaiHarnessName;
     _byHarness[harness] = add(_byHarness[harness] ?? UsageTotals.zero);
+    _saveReports();
+    state = AsyncData(_total);
+  }
+
+  void _saveReports() {
     ref.read(preferencesProvider)[_reportsKey] = jsonEncode({
       'totals': _reported.toJson(),
+      // The ledger's last reading: a session now on an outside lead shows it without asking the backend.
+      if (!_backend.isEmpty) 'backend': _backend.toJson(),
       'ids': [..._reportIds],
       'by_harness': {for (final MapEntry(:key, :value) in _byHarness.entries) key: value.toJson()},
     });
-    state = AsyncData(_total);
   }
 
   /// The session moved to another lead: its context starts empty, so the
@@ -7356,6 +7421,9 @@ final class CodeUsage extends AsyncNotifier<UsageTotals> {
   Future<UsageTotals> _fetch() async {
     final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
     if (info == null || isDemoPath(info.workingDir)) return UsageTotals.zero;
+    // EveryAI asks its backend nothing for a session it doesn't lead (no-spend): the ledger can only have changed
+    // while EveryAI led, and its last reading is kept.
+    if (isOutsideLead(info.harness, info.workingDir)) return _backend;
     final json = await ref
         .read(apiClientProvider)
         .getJson('v1/usage/session/$sessionId', authenticated: !ref.read(appConfigProvider).devSkipAuth);
@@ -7391,7 +7459,9 @@ final class CodeUsage extends AsyncNotifier<UsageTotals> {
     if (!ref.mounted || !next.hasValue) return;
     // A new call on the ledger is the new lead's (EveryAI) first reading.
     if (next.requireValue.calls != _backend.calls) _freshLead = false;
+    final changed = next.requireValue != _backend;
     _backend = next.requireValue;
+    if (changed) _saveReports();
     state = AsyncData(_total);
   }
 }

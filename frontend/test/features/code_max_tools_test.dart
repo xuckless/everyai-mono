@@ -23,6 +23,7 @@ import 'package:every_ai/features/code/drivers/driver_registry.dart';
 import 'package:every_ai/features/code/drivers/lead_skills.dart';
 import 'package:every_ai/features/code/gateway_key.dart';
 import 'package:every_ai/features/code/harness/events.dart';
+import 'package:every_ai/features/code/harness/session_processes.dart' show killSessionProcesses;
 import 'package:every_ai/features/code/host/host.dart';
 import 'package:every_ai/features/code/host/host_max_tools.dart';
 import 'package:every_ai/features/code/host/host_providers.dart';
@@ -491,6 +492,59 @@ void main() {
     await pumpEventQueue();
     expect(container.read(codeSessionProvider(l.info.id)).hold, StepHold.none);
     expect(l.session.sent.last, contains('Next: the footer'));
+  });
+
+  test('a fork whose turn ended during Pause all reports, and Resume all lets it go too', () async {
+    final l = await lead();
+    final c = container.read(codeSessionProvider(l.info.id).notifier);
+    final f = await fork(l.info.id);
+    f.session.add(stateEvent('r1', ExecutionStatus.running));
+    await pumpEventQueue();
+    final paused = c.pauseAll();
+    await pumpEventQueue();
+    expect(container.read(codeSessionProvider(f.info.id)).hold, StepHold.pausing);
+    // Its step was its last: the turn ends, so it holds, and its report is in.
+    finish(f.session, 'Added the page.');
+    await paused;
+    final forks = c.forks;
+    expect(forks.byChild(f.info.id)!.state, isA<ForkReported>());
+    expect(container.read(codeSessionProvider(f.info.id)).hold, StepHold.paused);
+    await c.resumeAll();
+    await pumpEventQueue();
+    expect(container.read(codeSessionProvider(f.info.id)).hold, StepHold.none, reason: 'not held after Resume');
+    expect(notices(l.session), hasLength(1));
+    expect(forks.refused, isEmpty);
+  });
+
+  test('a fork started while the lead is paused holds too', () async {
+    final l = await lead();
+    final c = container.read(codeSessionProvider(l.info.id).notifier);
+    await c.pauseAll();
+    final f = await fork(l.info.id);
+    await pumpEventQueue();
+    expect(container.read(codeSessionProvider(f.info.id)).hold, isNot(StepHold.none));
+    await c.resumeAll();
+    await pumpEventQueue();
+    expect(container.read(codeSessionProvider(f.info.id)).hold, StepHold.none);
+  });
+
+  test("the lead's Stop ends what a fork that reported left running (it has its own process tag)", () async {
+    final killed = <String>[];
+    CodeSessionController.killProcesses = ({required tag, required workingDir, required ownsDir}) async {
+      killed.add(tag);
+      return const [];
+    };
+    addTearDown(() => CodeSessionController.killProcesses = killSessionProcesses);
+    final l = await lead();
+    final done = await fork(l.info.id);
+    final busy = await fork(l.info.id, const {'task': 'Write the docs'});
+    busy.session.add(stateEvent('r1', ExecutionStatus.running));
+    finish(done.session, 'Started the dev server.');
+    await pumpEventQueue();
+    expect(notices(l.session), hasLength(1));
+    await container.read(codeSessionProvider(l.info.id).notifier).stop();
+    // Its own, and the reported fork's; a fork still at work keeps its processes (Stop all ends those).
+    expect(killed, unorderedEquals([l.info.id, done.info.id]));
   });
 
   test('a busy lead gets fork reports only once its turn ends', () async {

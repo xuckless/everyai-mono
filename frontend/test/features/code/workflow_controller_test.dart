@@ -27,7 +27,9 @@ import 'package:every_ai/features/code/workflows/workflow_engine.dart';
 import 'package:every_ai/features/code/workflows/workflow_estimate.dart';
 import 'package:every_ai/features/code/workflows/workflow_proposal.dart';
 import 'package:every_ai/features/code/workflows/workflow_landing.dart';
+import 'package:every_ai/features/code/domain/subagents.dart' show endWorkflowTool;
 import 'package:every_ai/features/code/workflows/workflow_library.dart' show loadBundledWorkflows;
+import 'package:every_ai/features/code/workflows/workflow_notes.dart' show maxWorkflowId;
 import 'package:every_ai/features/code/workflows/workflow_picker.dart' show WorkflowPick;
 import 'package:every_ai/features/code/workflows/workflow_runs.dart';
 import 'package:every_ai/features/models/models_providers.dart';
@@ -1108,6 +1110,70 @@ void main() {
     }
     expect(lead.sent.skip(before).where((m) => m.contains('<workflow-result')), isEmpty);
     expect(File(path).existsSync(), isFalse);
+  });
+
+  test('a resumed run whose lead step outlasts its cutoff tells the lead once and retires its journal', () async {
+    final c = await open();
+    final id = c.sessionId;
+    final dir = Directory('${tmp.path}/data/workflows/$id')..createSync(recursive: true);
+    final path = '${dir.path}/r-slow.jsonl';
+    File(path).writeAsStringSync(
+      [
+        jsonEncode({'t': 'start', 'name': 'demo', 'source': 'src', 'args': const <String, Object?>{}, 'at': 0}),
+        jsonEncode({'t': 'stop', 'outcome': 'stopped', 'why': 'Stopped by the user.'}),
+      ].join('\n'),
+    );
+    // The lead's history arrives after the lead step's cutoff: the workflow step runs first.
+    CodeSessionController.workflowStepTimeout = const Duration(milliseconds: 50);
+    CodeSessionController.liveAfter = const Duration(milliseconds: 400);
+    addTearDown(() {
+      CodeSessionController.workflowStepTimeout = const Duration(seconds: 30);
+      CodeSessionController.liveAfter = const Duration(milliseconds: 1500);
+    });
+    container.invalidate(codeSessionProvider(id));
+    final before = lead.sent.length;
+    await container.read(workflowResumeProvider.future);
+    for (var i = 0; i < 200 && !lead.sent.skip(before).any((m) => m.contains('<workflow-result')); i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(lead.sent.skip(before).where((m) => m.contains('status="stopped"')), hasLength(1));
+    for (var i = 0; i < 50 && File(path).existsSync(); i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    // Left on disk, the next launch would resume into this shutdown and tell the lead a second time.
+    expect(File(path).existsSync(), isFalse);
+  });
+
+  test('end_workflow waits for a workflow run the Max lead started', () async {
+    final c = await open();
+    final sessions = container.read(codeSessionsProvider.notifier);
+    sessions.update(sessions.byId(c.sessionId)!.copyWith(workflow: maxWorkflowId));
+    HostCall end() => HostCall(
+      id: 'h2',
+      sessionId: '',
+      name: endWorkflowTool,
+      args: const {'outcome': 'done'},
+      ended: Completer<HostEnd>().future,
+    );
+    await c.runWorkflow('demo', 'source');
+    final early = await c.call(end());
+    expect(early.isError, isTrue);
+    expect(early.text, contains('workflow run'));
+    expect(sessions.byId(c.sessionId)!.workflow, maxWorkflowId);
+    bridge.finish({'ok': true});
+    await whenValue(
+      container,
+      workflowRunsProvider(c.sessionId),
+      (List<WorkflowRun> r) => r.isNotEmpty && r.single.state is RunEnded,
+    );
+    // The shutdown's last step (the journal retired, then the slot freed) follows the card's end.
+    var ended = await c.call(end());
+    for (var i = 0; i < 500 && ended.isError; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      ended = await c.call(end());
+    }
+    expect(ended.text, startsWith('Max is off'));
+    expect(sessions.byId(c.sessionId)!.workflow, isNull);
   });
 
   test('a run the app quit in the middle of carries on when the session opens again', () async {
