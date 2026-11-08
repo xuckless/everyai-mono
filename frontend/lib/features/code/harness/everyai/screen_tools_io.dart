@@ -186,6 +186,25 @@ Future<ToolOutput> runBrowser(
           );
         }
         await b.switchTab(all[i - 1].id);
+        // That tab waits on a dialog: it runs no script until it is answered.
+        if (b.dialog.value case final d?) {
+          return ToolOutput(
+            browserErrorText('', 'Switched to tab $i. ${dialogWaitingText(d)}', b.takeLog()),
+            isError: true,
+          );
+        }
+        // Another tab's dialog holds up the pages opened from it (they share a renderer): this one may not answer.
+        if (b.dialogElsewhere case final other?) {
+          return ToolOutput(
+            browserErrorText(
+              '',
+              'Switched to tab $i. Tab ${other.tab} waits on a dialog, and pages opened from one another wait with '
+                  'it: switch to tab ${other.tab} and answer it first. ${tabsText(b.tabs.value, b.activeTab)}',
+              b.takeLog(),
+            ),
+            isError: true,
+          );
+        }
         // A pop-up may be on any site: judge it before the model reads it.
         final here = await b.evaluate('location.href');
         if (here is String) {
@@ -379,6 +398,10 @@ String? evalRefusal(String script, String pageUrl) {
   }
   return null;
 }
+
+/// Why the browser may not open [target] at all, from the agent or from the page (the Preview's "Open link in new
+/// tab"): [_openRefusal] and the look-alike check of [browserTarget].
+String? browserOpenRefusal(String target) => _openRefusal(target) ?? browserTarget(target).refusal;
 
 /// Why the browser may not open [target]: a file in one of the user's credential stores (the browser would show
 /// it), or a site that takes uploads. Checked here, so the outside leads' host browser has the same guard.

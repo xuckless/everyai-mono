@@ -34,6 +34,7 @@ import '../../shells/shell_registry.dart';
 import 'browser_overlays.dart';
 import 'browser_sign_ins.dart';
 import 'preview_apps.dart';
+import '../../../../core/ui/image_decode.dart';
 
 /// The page sizes the Preview offers (CSS pixels); phones and tablets get a device frame.
 enum PreviewSize {
@@ -346,8 +347,9 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     }
     _decoding = true;
     try {
-      final codec = await ui.instantiateImageCodec(Uint8List.fromList(f.jpeg));
-      final frame = await codec.getNextFrame();
+      final frame = (
+        image: await decodeFirstFrame(f.jpeg is Uint8List ? f.jpeg as Uint8List : Uint8List.fromList(f.jpeg)),
+      );
       if (!mounted) {
         frame.image.dispose();
         return;

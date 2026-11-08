@@ -257,6 +257,10 @@ String stripBranding(String message) {
 /// A fork's own copy of its parent's folder: a detached worktree at [root],
 /// made from a snapshot ([base]) of the parent's working tree, uncommitted
 /// and untracked files included. [path] is the parent's folder inside it.
+/// A fork worktree no session holds any more (the app quit mid-run, or its session went): where it is, its
+/// repository ('' when git no longer knows it), and whether it holds work of its own.
+typedef OrphanFork = ({String path, String repoRoot, bool unsaved});
+
 @immutable
 final class ForkCopy {
   const ForkCopy({

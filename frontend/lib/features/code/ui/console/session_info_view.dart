@@ -99,8 +99,9 @@ List<String> usageLines({
   if (budget == null)
     'No spending cap'
   else
-    'Cap ${formatMicros((budget * 1e6).round())} · '
-        '${((budgetFill(totals.chargedMicros, budget) ?? 0) * 100).round()}% spent',
+    // The plan report's limit shape, so the usage card draws it as a bar.
+    'Spending cap (${formatMicros((budget * 1e6).round())}): '
+        '${((budgetFill(totals.chargedMicros, budget) ?? 0) * 100).round()}% used',
   if (limit != null)
     'Limit reached${limit.resetsAt == null ? '' : ' · resets ${_clock(limit.resetsAt!.toLocal(), now ?? DateTime.now())}'}'
   else if (plan != null && plan.windows.isNotEmpty)

@@ -57,7 +57,23 @@ final class ChartSpec {
     this.annotations = const [],
     this.referenceLines = const [],
     this.otherThreshold = 0.03,
+    this.colors = const [],
   });
+
+  /// The model's series or slice colours (ARGB), used in order before the palette; empty for the palette.
+  final List<int> colors;
+
+  /// Colour [i] of the series or slices.
+  int colorAt(int i) => colors.isNotEmpty ? colors[i % colors.length] : chartPalette[i % chartPalette.length];
+
+  /// Whether the unit is a word ("households", "ms") rather than a symbol ("%", "\$").
+  bool get wordUnit => unit.isNotEmpty && unit != '%' && !const {r'$', '€', '£', '¥'}.contains(unit);
+
+  /// The value axis's name: the y label, else a word unit (which the ticks leave out).
+  String get valueAxisName => yLabel.isNotEmpty ? yLabel : (wordUnit ? unit : '');
+
+  /// An axis tick: the number with a symbol unit, without a word unit (named once on the axis).
+  String tickLabel(double v) => wordUnit ? formatNumber(v) : format(v);
 
   final ChartType type;
   final List<ChartSeries> series;
@@ -249,6 +265,11 @@ final class ChartSpec {
       caption: _str(j['caption']),
       source: _str(j['source']),
       unit: _str(j['unit']),
+      colors: [
+        for (final c in _list(j['colors']))
+          if (c is String && RegExp(r'^#?[0-9a-fA-F]{6}$').hasMatch(c.trim()))
+            0xFF000000 | int.parse(c.trim().replaceFirst('#', ''), radix: 16),
+      ],
       xLabel: _str(j['x_label']),
       yLabel: _str(j['y_label']),
       stacked: j['stacked'] == true,

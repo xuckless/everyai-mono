@@ -11,6 +11,7 @@ final class LocalRoute {
     required this.baseUrl,
     required this.name,
     this.apiKey,
+    this.kind = '',
     this.contextTokens = 0,
     this.tools = false,
     this.vision = false,
@@ -22,6 +23,9 @@ final class LocalRoute {
   /// The model's name on its server (the id without `local/`).
   final String name;
   final String? apiKey;
+
+  /// The server's kind (`ollama`, `lmstudio`, `fm`, …): how the bundled server loads, unloads and talks to it.
+  final String kind;
   final int contextTokens;
   final bool tools;
   final bool vision;
@@ -36,6 +40,7 @@ final class LocalRoute {
   Map<String, String> get headers => {
     'X-Local-Base-Url': baseUrl,
     'X-Local-Api-Key': ?apiKey,
+    if (kind.isNotEmpty) 'X-Local-Kind': kind,
     'X-Local-Caps': [if (tools) 'tools', if (vision) 'vision', if (reasoning) 'reasoning'].join(','),
     if (contextTokens > 0) 'X-Local-Context': '$contextTokens',
   };
@@ -45,6 +50,7 @@ final class LocalRoute {
     'X-Local-Aux-Model': '$prefix$name',
     'X-Local-Aux-Base-Url': baseUrl,
     'X-Local-Aux-Api-Key': ?apiKey,
+    if (kind.isNotEmpty) 'X-Local-Aux-Kind': kind,
   };
 }
 
@@ -61,4 +67,8 @@ final class LocalRoutes {
   static LocalRoute? aux;
 
   static LocalRoute? of(String modelId) => current[modelId];
+
+  /// Called before the Code harness calls a local model (it goes to the model's server directly): the app tells
+  /// the bundled server, which tracks what EveryAI loaded. Set by the app; null in tests.
+  static void Function(LocalRoute route)? onUse;
 }

@@ -12,6 +12,7 @@ import 'axe_install.dart';
 import 'device_screen.dart';
 import 'frames.dart';
 import 'live_session.dart';
+import '../../../core/process/child_processes.dart';
 
 /// A simulator `xcrun simctl` knows.
 final class SimDevice {
@@ -548,6 +549,7 @@ final class IosSimulator implements DeviceScreen {
             '--scale',
             '$scale',
           ]);
+          ChildProcesses.track(p!.pid, label: 'Simulator stream ($udid)', executable: exe, exited: p!.exitCode);
           unawaited(p!.stderr.drain<void>());
           await p!.stdout.transform(MjpegFrames()).pipe(out);
         } on Object catch (e) {

@@ -38,7 +38,15 @@ enum ConsoleTier {
 /// shown for now only: a child session's chat over the view, a file the Diff should scroll to, a jump to Running work.
 @immutable
 final class ConsolePanel {
-  const ConsolePanel({this.view, this.width, this.child, this.focus, this.focusSeq = 0, this.runningSeq = 0});
+  const ConsolePanel({
+    this.view,
+    this.width,
+    this.child,
+    this.focus,
+    this.focusSeq = 0,
+    this.runningSeq = 0,
+    this.diffFork,
+  });
 
   final ConsoleView? view;
 
@@ -56,6 +64,9 @@ final class ConsolePanel {
   /// Changes when Session info should scroll to Running work (the ⋯ menu's Background tasks).
   final int runningSeq;
 
+  /// The fork whose own changes the Diff shows, by session id; null shows the session's.
+  final String? diffFork;
+
   bool get open => view != null;
 
   ConsolePanel _with({
@@ -65,6 +76,7 @@ final class ConsolePanel {
     String? focus,
     int? focusSeq,
     int? runningSeq,
+    String? Function()? diffFork,
   }) => ConsolePanel(
     view: view,
     width: width ?? this.width,
@@ -72,6 +84,7 @@ final class ConsolePanel {
     focus: focus ?? this.focus,
     focusSeq: focusSeq ?? this.focusSeq,
     runningSeq: runningSeq ?? this.runningSeq,
+    diffFork: diffFork == null ? this.diffFork : diffFork(),
   );
 }
 
@@ -111,11 +124,20 @@ final class ConsolePanels extends Notifier<ConsolePanel> {
     _save();
   }
 
-  /// Opens the Diff scrolled to [path].
+  /// Opens the Diff scrolled to [path] (the session's own changes).
   void showDiff(String path) {
-    state = state._with(view: ConsoleView.diff, focus: path, focusSeq: state.focusSeq + 1);
+    state = state._with(view: ConsoleView.diff, focus: path, focusSeq: state.focusSeq + 1, diffFork: () => null);
     _save();
   }
+
+  /// Opens the Diff on fork [childId]'s own changes (a fork row's Changes).
+  void showForkDiff(String childId) {
+    state = state._with(view: ConsoleView.diff, diffFork: () => childId);
+    _save();
+  }
+
+  /// Picks whose changes the Diff shows: the session's (null) or a fork's.
+  void pickDiff(String? childId) => state = state._with(view: state.view, child: state.child, diffFork: () => childId);
 
   /// The [ConsolePanel.runningSeq] Session info last scrolled for; kept here, since the view is often built fresh
   /// by the very request.

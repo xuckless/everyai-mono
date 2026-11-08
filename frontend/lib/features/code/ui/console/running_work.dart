@@ -11,6 +11,7 @@ import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/every_icons.dart';
 import '../../code_providers.dart';
 import '../subagent_banner.dart';
+import '../../domain/subagents.dart' show forkMessageFromUser;
 import '../../domain/code_session.dart';
 import '../../harness/harness.dart' show BackgroundTask;
 import '../../workflows/workflow_engine.dart' show WorkflowAgentStatus, WorkflowStatus;
@@ -88,9 +89,16 @@ class _RunningWorkState extends ConsumerState<RunningWork> {
   }
 
   Future<void> _steer(CodeSessionInfo child) async {
-    final text = await showAdaptivePrompt(context, title: 'Message ${child.title}', confirmLabel: 'Send');
+    final text = await showAdaptivePrompt(
+      context,
+      title: 'Message ${child.title}',
+      placeholder: 'It reads this after its current step and carries on',
+      confirmLabel: 'Send',
+    );
     if (text == null || text.trim().isEmpty) return;
-    await ref.read(codeSessionProvider(child.id).notifier).steer(text.trim());
+    await ref
+        .read(codeSessionProvider(child.id).notifier)
+        .tellWhileRunning(forkMessageFromUser(text.trim()), fromUser: true);
   }
 
   @override
@@ -122,6 +130,7 @@ class _RunningWorkState extends ConsumerState<RunningWork> {
       child: child,
       onOpen: () => panel.openChild(child.id),
       onSteer: () => _steer(child),
+      onChanges: child.forkCopy == null ? null : () => panel.showForkDiff(child.id),
       onStop: () => ref.read(codeSessionProvider(child.id).notifier).stop(),
     );
 
@@ -306,12 +315,22 @@ class _Line extends StatelessWidget {
 }
 
 class _ChildRow extends ConsumerWidget {
-  const _ChildRow({super.key, required this.child, required this.onOpen, required this.onSteer, required this.onStop});
+  const _ChildRow({
+    super.key,
+    required this.child,
+    required this.onOpen,
+    required this.onSteer,
+    required this.onStop,
+    this.onChanges,
+  });
 
   final CodeSessionInfo child;
   final VoidCallback onOpen;
   final VoidCallback onSteer;
   final VoidCallback onStop;
+
+  /// Opens the Diff on its own changes; null when it has no worktree of its own (any more).
+  final VoidCallback? onChanges;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -330,8 +349,10 @@ class _ChildRow extends ConsumerWidget {
             title: child.title,
             subtitle: '${status.label} · ${_elapsed(child.createdAt)}',
             trailing: [
+              if (onChanges != null)
+                AdaptiveButton(label: 'Changes', emphasis: ButtonEmphasis.plain, onPressed: onChanges),
               if (working) ...[
-                AdaptiveButton(label: 'Steer', emphasis: ButtonEmphasis.plain, onPressed: onSteer),
+                AdaptiveButton(label: 'Message', emphasis: ButtonEmphasis.plain, onPressed: onSteer),
                 AdaptiveButton(label: 'Stop', emphasis: ButtonEmphasis.plain, onPressed: onStop),
               ],
             ],

@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../chat/chat_providers.dart';
 import '../../chat/data/chat_repository.dart';
 import '../domain/artifact.dart';
+import '../domain/figures.dart';
+import '../domain/slide_spec.dart';
 
 /// One artifact on the Artifacts page, with the chat it lives in.
 @immutable
@@ -43,3 +45,31 @@ final artifactLibraryProvider = StreamProvider.autoDispose<List<LibraryArtifact>
   final repo = ref.watch(chatRepositoryProvider);
   return repo.watchArtifactConversations().asyncMap((ids) => loadArtifactLibrary(repo, ids));
 });
+
+/// A figure in the library (an SVG, chart or diagram with an id), and the documents and decks of its chat that
+/// show it.
+typedef LibraryFigure = ({LibraryArtifact item, List<String> usedIn});
+
+/// The figures among [all], newest chats first as [all] is, each with where it is used.
+List<LibraryFigure> figuresInLibrary(List<LibraryArtifact> all) {
+  final byChat = <String, List<LibraryArtifact>>{};
+  for (final a in all) {
+    (byChat[a.conversationId] ??= []).add(a);
+  }
+  return [
+    for (final a in all)
+      if (const {VisualKind.svg, VisualKind.chart, VisualKind.diagram}.contains(a.artifact.latest.kind) &&
+          a.artifact.latest.str('id').isNotEmpty)
+        (
+          item: a,
+          usedIn: [
+            for (final other in byChat[a.conversationId]!)
+              if ((other.artifact.latest.kind == VisualKind.document &&
+                      figureRefsIn(other.artifact.latest.str('content')).contains(a.artifact.id)) ||
+                  (other.artifact.latest.kind == VisualKind.slides &&
+                      pictureRefsOf(deckOf(other.artifact.latest)).contains(a.artifact.id)))
+                other.artifact.title,
+          ],
+        ),
+  ];
+}

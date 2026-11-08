@@ -16,12 +16,15 @@ import 'domain/fm.dart';
 import 'domain/hardware.dart';
 import 'domain/local_server.dart';
 import 'domain/packs.dart';
+import 'domain/server_lifecycle.dart';
+import 'local_model_bridge.dart' show localDetectionProvider;
 
 export 'data/ollama_pull.dart' show DownloadPhase, DownloadState;
 export 'domain/fm.dart' show FmState, FmStatus, fmLicenceCommand;
 export 'domain/hardware.dart' show HardwareSpec, HostOs, Gpu;
 export 'domain/local_server.dart' show LocalModel, LocalServer, LocalServerKind, ManualServer;
 export 'domain/packs.dart' show Catalogue, Pack, PackFit, PackModel, PackRole;
+export 'domain/server_lifecycle.dart';
 
 /// HTTP to local servers; tests override it.
 final localHttpProvider = Provider<LocalHttp>((ref) => const RealLocalHttp());
@@ -30,7 +33,7 @@ final localHttpProvider = Provider<LocalHttp>((ref) => const RealLocalHttp());
 /// end with the container.
 final localSystemProvider = Provider<LocalSystem>((ref) {
   final system = createLocalSystem();
-  ref.onDispose(() => unawaited(system.stopStarted()));
+  ref.onDispose(() => unawaited(system.stopAllOwned()));
   return system;
 });
 
@@ -70,7 +73,7 @@ final class ManualServers extends Notifier<List<ManualServer>> {
 
   /// Adds a server at [baseUrl] (normalised to its `/v1` root); [apiKey] goes to the keychain. Returns it, or null
   /// when the URL isn't http(s).
-  Future<ManualServer?> add({required String baseUrl, String label = '', String? apiKey}) async {
+  Future<ManualServer?> add({required String baseUrl, String label = '', String? apiKey, String? startCommand}) async {
     final url = normaliseBaseUrl(baseUrl);
     if (url == null) return null;
     var n = 1;
@@ -85,6 +88,7 @@ final class ManualServers extends Notifier<List<ManualServer>> {
       label: label.trim().isEmpty ? Uri.parse(url).authority : label.trim(),
       baseUrl: url,
       hasKey: key.isNotEmpty,
+      startCommand: startCommand?.trim().isEmpty ?? true ? null : startCommand!.trim(),
     );
     try {
       if (key.isNotEmpty) await ref.read(secretStoreProvider).write(server.keyStoreName, key);
@@ -122,21 +126,30 @@ final fmStatusProvider = FutureProvider<FmStatus>((ref) => ref.watch(localSystem
 /// Where `ollama` is installed (null: it isn't).
 final ollamaPathProvider = FutureProvider<String?>((ref) => ref.watch(localSystemProvider).ollamaPath());
 
-/// Every local server: the ones answering on their usual ports, Apple's `fm` (started by us when it's ready),
-/// Ollama when installed but not running (`running: false`, with Start), and the user's own. A rescan is
-/// `ref.invalidate(localServersProvider)` or [LocalServers.refresh].
+/// Where LM Studio's `lms` is (null: it isn't installed).
+final lmsPathProvider = FutureProvider<String?>((ref) => ref.watch(localSystemProvider).lmsPath());
+
+/// The port of the `fm serve` EveryAI started this run, null while there's none.
+final fmPortProvider = NotifierProvider<FmPort, int?>(FmPort.new);
+
+final class FmPort extends Notifier<int?> {
+  @override
+  int? build() => null;
+  void set(int? port) => state = port;
+}
+
+/// Every local server: the ones answering on their usual ports, Apple's `fm serve` (on the port EveryAI started it
+/// on), Ollama and LM Studio when installed but not running (`running: false`), and the user's own. A scan only
+/// looks: starting and stopping are [serverLifecyclesProvider]'s. A rescan is [LocalServers.refresh].
 final localServersProvider = AsyncNotifierProvider<LocalServers, List<LocalServer>>(LocalServers.new);
 
 final class LocalServers extends AsyncNotifier<List<LocalServer>> {
-  /// The port of the `fm serve` we started, kept across rescans so it starts once per run.
-  static int? _fmPort;
-
   LocalHttp get _http => ref.read(localHttpProvider);
-  LocalSystem get _system => ref.read(localSystemProvider);
 
   @override
   Future<List<LocalServer>> build() async {
     final manual = ref.watch(manualServersProvider);
+    final fmPort = ref.watch(fmPortProvider);
     final found = await scanLocalPorts(_http);
     final out = [
       for (final s in found)
@@ -144,16 +157,16 @@ final class LocalServers extends AsyncNotifier<List<LocalServer>> {
     ];
     final fm = await ref.watch(fmStatusProvider.future);
     if (fm.state == FmState.ready) {
-      final port = await _ensureFm();
+      final up = fmPort != null && ((await _http.get(Uri.parse('http://127.0.0.1:$fmPort/health')))?.ok ?? false);
       out.insert(
         0,
         LocalServer(
           id: 'fm',
           kind: LocalServerKind.fm,
           label: LocalServerKind.fm.label,
-          baseUrl: 'http://127.0.0.1:${port ?? 0}/v1',
-          running: port != null,
-          problem: port == null ? "Apple's model server didn't start" : null,
+          baseUrl: 'http://127.0.0.1:${fmPort ?? 0}/v1',
+          running: up,
+          problem: up ? null : 'Not running',
         ),
       );
     }
@@ -169,6 +182,18 @@ final class LocalServers extends AsyncNotifier<List<LocalServer>> {
         ),
       );
     }
+    if (!out.any((s) => s.kind == LocalServerKind.lmstudio) && await ref.watch(lmsPathProvider.future) != null) {
+      out.add(
+        const LocalServer(
+          id: 'lmstudio',
+          kind: LocalServerKind.lmstudio,
+          label: 'LM Studio',
+          baseUrl: 'http://127.0.0.1:1234/v1',
+          running: false,
+          problem: 'Installed, not running',
+        ),
+      );
+    }
     final store = ref.read(secretStoreProvider);
     for (final m in manual) {
       final key = m.hasKey ? await store.read(m.keyStoreName) : null;
@@ -179,6 +204,7 @@ final class LocalServers extends AsyncNotifier<List<LocalServer>> {
         baseUrl: m.baseUrl,
         apiKey: key,
         manual: true,
+        startCommand: m.startCommand,
       );
       final answer = await _http.get(
         Uri.parse('${m.baseUrl}/models'),
@@ -189,41 +215,289 @@ final class LocalServers extends AsyncNotifier<List<LocalServer>> {
     return out;
   }
 
-  Future<int?> _ensureFm() async {
-    if (_fmPort case final p?) {
-      if ((await _http.get(Uri.parse('http://127.0.0.1:$p/health')))?.ok ?? false) return p;
-    }
-    final port = await _system.startFm();
-    if (port == null) return null;
-    for (var i = 0; i < 40; i++) {
-      if ((await _http.get(Uri.parse('http://127.0.0.1:$port/health')))?.ok ?? false) return _fmPort = port;
-      await Future<void>.delayed(const Duration(milliseconds: 250));
-    }
-    return null;
-  }
-
-  /// Scans again (after an install, a licence agreement or a server started by hand).
+  /// Scans again (after an install, a licence agreement, a start or a stop).
   Future<void> refresh() async {
     ref.invalidate(fmStatusProvider);
     ref.invalidate(ollamaPathProvider);
+    ref.invalidate(lmsPathProvider);
     ref.invalidateSelf();
     await future;
   }
+}
 
-  /// Starts Ollama when it's installed but not running, then rescans once it answers.
-  Future<bool> startOllama() async {
-    final path = await ref.read(ollamaPathProvider.future);
-    if (path == null || !await _system.startOllama(path)) return false;
-    for (var i = 0; i < 40; i++) {
-      if ((await _http.get(defaultOllamaRoot.replace(path: '/api/version')))?.ok ?? false) break;
-      await Future<void>.delayed(const Duration(milliseconds: 250));
+/// Each server's phase ([ServerPhase], one state machine per server id; see [nextPhase]), and the Start / Stop
+/// actions. Scans feed it `seenUp` / `seenDown`; an action runs one at a time per server and ends in its own event.
+final serverLifecyclesProvider = NotifierProvider<ServerLifecycles, Map<String, ServerPhase>>(ServerLifecycles.new);
+
+final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
+  /// Apple's server starts by itself (it's the default chat model) unless the user stopped it (prefs).
+  static const fmAutostartKey = 'models.fm.autostart';
+
+  LocalSystem get _system => ref.read(localSystemProvider);
+  LocalHttp get _http => ref.read(localHttpProvider);
+
+  final _actions = <String, Future<String?>>{};
+
+  /// LM Studio's server isn't our child process: whether EveryAI started it with `lms server start`.
+  var _lmsOurs = false;
+
+  /// Apple's server was started (or tried) by itself once this run.
+  var _fmTried = false;
+
+  @override
+  Map<String, ServerPhase> build() {
+    // Desktops only, and tests that opt in: nothing here probes this computer otherwise.
+    if (!ref.watch(localDetectionProvider)) return const {};
+    ref.listen(localServersProvider, (_, next) {
+      // A rescan in flight still carries the old list: only a finished scan counts.
+      if (next case AsyncData(:final value)) _observe(value);
+    });
+    // A scan that finished before this existed: seen right after build (state can't change inside it).
+    if (ref.read(localServersProvider).value case final servers?) {
+      Future.microtask(() {
+        if (ref.mounted) _observe(servers);
+      });
     }
-    await refresh();
+    return const {};
+  }
+
+  /// The phase of [server]: its machine's, else what the scan says.
+  ServerPhase phaseOf(LocalServer server) =>
+      state[server.id] ?? (server.running ? ServerRunning(_ownerOf(server.id)) : const ServerStopped());
+
+  ServerOwner _ownerOf(String id) =>
+      _system.owns(id) || (id == 'lmstudio' && _lmsOurs) ? ServerOwner.everyai : ServerOwner.outside;
+
+  void _observe(List<LocalServer> servers) {
+    for (final s in servers) {
+      _apply(s.id, s.running ? SeenUp(_ownerOf(s.id)) : const SeenDown());
+    }
+    // A server the scan no longer finds at all (one started elsewhere, now gone).
+    for (final id in state.keys.toList()) {
+      if (!servers.any((s) => s.id == id)) _apply(id, const SeenDown());
+    }
+    final fm = servers.where((s) => s.id == 'fm').firstOrNull;
+    if (fm != null && !fm.running && !_fmTried && ref.read(preferencesProvider)[fmAutostartKey] != '0') {
+      _fmTried = true;
+      unawaited(start(fm));
+    }
+  }
+
+  bool _apply(String id, ServerEvent e) {
+    final from = state[id] ?? const ServerStopped();
+    final to = nextPhase(from, e);
+    if (to == null) return false;
+    if (to != from || !state.containsKey(id)) state = {...state, id: to};
     return true;
   }
 
-  /// Forgets the `fm serve` port (tests).
-  static void resetForTest() => _fmPort = null;
+  /// Starts [server]: null when it runs, else why not. A start already running for it is joined.
+  Future<String?> start(LocalServer server) {
+    if (_actions[server.id] case final running?) return running;
+    late final Future<String?> f;
+    // Only its own entry: a stop asked meanwhile replaced it. (A block body: `=> _actions.remove(...)` would return
+    // this very future, and whenComplete would wait on itself.)
+    f = _start(server).whenComplete(() {
+      if (identical(_actions[server.id], f)) _actions.remove(server.id);
+    });
+    return _actions[server.id] = f;
+  }
+
+  /// Stops [server] (whoever started it): null when it stopped, else why not.
+  Future<String?> stop(LocalServer server) {
+    final running = _actions[server.id];
+    // A stop asked while a start runs: the start's own outcome is dropped (Starting → Stopping).
+    if (running != null && state[server.id] is! ServerStarting) return running;
+    late final Future<String?> f;
+    f = _stop(server).whenComplete(() {
+      if (identical(_actions[server.id], f)) _actions.remove(server.id);
+    });
+    return _actions[server.id] = f;
+  }
+
+  /// Whether EveryAI can start [server] at all.
+  static bool canStart(LocalServer s) =>
+      s.kind == LocalServerKind.ollama ||
+      s.kind == LocalServerKind.fm ||
+      s.kind == LocalServerKind.lmstudio ||
+      (s.manual && (s.startCommand ?? '').trim().isNotEmpty);
+
+  Future<String?> _start(LocalServer server) async {
+    if (!_apply(server.id, const StartAsked())) return 'It is busy.';
+    final reason = await _launch(server);
+    if (reason != null) {
+      _apply(server.id, StartFailed(reason));
+      return reason;
+    }
+    await ref.read(localServersProvider.notifier).refresh();
+    return null;
+  }
+
+  /// Whether the start of [id] was called off by a stop (it is no longer Starting).
+  bool _calledOff(String id) => !ref.mounted || state[id] is! ServerStarting;
+
+  /// Launches [server] and waits until it answers; null when it does, or when a stop called it off (whatever it
+  /// launched by then is stopped).
+  Future<String?> _launch(LocalServer server) async {
+    final logDir = await ref.read(localSystemProvider).logDir();
+    if (_calledOff(server.id)) return null;
+    LaunchedServer? launched;
+    switch (server.kind) {
+      case LocalServerKind.ollama:
+        final path = await ref.read(ollamaPathProvider.future);
+        if (path == null) return "Ollama isn't installed.";
+        if (_calledOff(server.id)) return null;
+        final port = Uri.parse(server.baseUrl).port;
+        launched = await _system.launch(
+          server.id,
+          path,
+          const ['serve'],
+          env: {'OLLAMA_HOST': '127.0.0.1:$port'},
+          logPath: logDir == null ? null : '$logDir/ollama.log',
+        );
+      case LocalServerKind.fm:
+        final port = await _system.freePort();
+        if (port == null) return 'No free port for it.';
+        if (_calledOff(server.id)) return null;
+        launched = await _system.launch(server.id, fmExecutable, [
+          'serve',
+          '--host',
+          '127.0.0.1',
+          '--port',
+          '$port',
+        ], logPath: logDir == null ? null : '$logDir/fm.log');
+        if (launched != null) {
+          ref.read(fmPortProvider.notifier).set(port);
+          ref.read(preferencesProvider)[fmAutostartKey] = null;
+        }
+      case LocalServerKind.lmstudio:
+        final lms = await ref.read(lmsPathProvider.future);
+        if (lms == null) return "LM Studio's `lms` command isn't installed.";
+        if (_calledOff(server.id)) return null;
+        final port = Uri.parse(server.baseUrl).port;
+        final r = await _system.run(lms, ['server', 'start', '--port', '$port']);
+        if (r == null || r.code != 0) return "LM Studio didn't start its server: ${r?.out.trim() ?? 'lms failed'}";
+        _lmsOurs = true;
+        if (_calledOff(server.id)) {
+          await _system.run(lms, const ['server', 'stop']);
+          _lmsOurs = false;
+          return null;
+        }
+      case _ when server.manual && (server.startCommand ?? '').trim().isNotEmpty:
+        launched = await _system.launch(
+          server.id,
+          server.startCommand!.trim(),
+          const [],
+          shell: true,
+          logPath: logDir == null ? null : '$logDir/${server.id.replaceAll(':', '-')}.log',
+        );
+      case _:
+        return "EveryAI can't start ${server.label}: start it the way you usually do.";
+    }
+    if (server.kind != LocalServerKind.lmstudio && launched == null) {
+      return _system.launchProblem ?? "Couldn't start it.";
+    }
+    // A stop that came while it launched found nothing of ours to stop: this start ends it.
+    if (launched != null && _calledOff(server.id)) {
+      await _system.stopOwned(server.id, grace: const Duration(seconds: 2));
+      return null;
+    }
+    // Ready when it answers; an early exit ends the wait with the reason.
+    int? exitCode;
+    if (launched != null) {
+      unawaited(
+        launched.exited.then((code) {
+          exitCode = code;
+          // A server that ends later (crash, killed elsewhere) is seen down at once.
+          if (ref.mounted) {
+            _apply(server.id, const SeenDown());
+            if (server.kind == LocalServerKind.fm) ref.read(fmPortProvider.notifier).set(null);
+          }
+        }),
+      );
+    }
+    final port = server.kind == LocalServerKind.fm ? ref.read(fmPortProvider) : Uri.parse(server.baseUrl).port;
+    final until = DateTime.now().add(const Duration(seconds: 30));
+    while (DateTime.now().isBefore(until)) {
+      if (exitCode != null) return 'It stopped right after starting (exit $exitCode). See its log in $logDir.';
+      if (_calledOff(server.id)) {
+        // Called off by a stop: what this start launched ends too (the stop may have missed it).
+        if (launched != null) await _system.stopOwned(server.id, grace: const Duration(seconds: 2));
+        return null;
+      }
+      if (await _answers(server, port)) {
+        _apply(server.id, const Started(ServerOwner.everyai));
+        return null;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
+    await _system.stopOwned(server.id, grace: const Duration(seconds: 2));
+    return "It didn't answer within 30 seconds.";
+  }
+
+  Future<bool> _answers(LocalServer server, int? port) async {
+    if (port == null || port == 0) return false;
+    final path = switch (server.kind) {
+      LocalServerKind.ollama => '/api/version',
+      LocalServerKind.fm => '/health',
+      _ => '${Uri.parse(server.baseUrl).path}/models',
+    };
+    final uri = Uri.parse(server.baseUrl).replace(port: port, path: path);
+    return (await _http.get(uri, timeout: const Duration(seconds: 2)))?.ok ?? false;
+  }
+
+  Future<String?> _stop(LocalServer server) async {
+    final wasStarting = state[server.id] is ServerStarting;
+    if (!_apply(server.id, const StopAsked())) return 'It is not running.';
+    String? reason;
+    if (_system.owns(server.id)) {
+      reason = await _system.stopOwned(server.id);
+    } else if (wasStarting && server.kind != LocalServerKind.lmstudio) {
+      // Nothing launched yet: the start sees it was called off and launches nothing (or ends what it just
+      // launched). What listens on the port isn't the start's, so it is left alone.
+      reason = null;
+    } else if (server.kind == LocalServerKind.lmstudio && await ref.read(lmsPathProvider.future) != null) {
+      final r = await _system.run((await ref.read(lmsPathProvider.future))!, const ['server', 'stop']);
+      reason = r == null || r.code != 0 ? "LM Studio didn't stop its server: ${r?.out.trim() ?? 'lms failed'}" : null;
+      if (reason == null) _lmsOurs = false;
+    } else {
+      final port = Uri.parse(server.baseUrl).port;
+      reason = port <= 0 ? 'It has no port.' : await _system.stopListener(port);
+    }
+    if (reason == null) {
+      final port = server.kind == LocalServerKind.fm ? ref.read(fmPortProvider) : Uri.parse(server.baseUrl).port;
+      final until = DateTime.now().add(const Duration(seconds: 5));
+      while (await _answers(server, port)) {
+        if (DateTime.now().isAfter(until)) {
+          reason = 'It still answers.';
+          break;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+    }
+    if (reason != null) {
+      _apply(server.id, StopFailed(reason));
+      return reason;
+    }
+    _apply(server.id, const StopDone());
+    if (server.kind == LocalServerKind.fm) {
+      ref.read(fmPortProvider.notifier).set(null);
+      // The user stopped Apple's server: it no longer starts by itself.
+      ref.read(preferencesProvider)[fmAutostartKey] = '0';
+    }
+    await ref.read(localServersProvider.notifier).refresh();
+    return null;
+  }
+
+  /// Quit: every server EveryAI started ends (servers the user started are left running).
+  Future<void> stopOwned() async {
+    await _system.stopAllOwned();
+    if (_lmsOurs) {
+      final lms = await ref.read(lmsPathProvider.future);
+      if (lms != null) await _system.run(lms, const ['server', 'stop']);
+      _lmsOurs = false;
+    }
+  }
 }
 
 /// The server with [id] among the running ones.

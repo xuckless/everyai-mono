@@ -12,6 +12,7 @@ import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/anchored_popover.dart';
 import '../../../../core/ui/every_icons.dart';
 import '../../harness/everyai/browser_io.dart';
+import '../../harness/everyai/screen_tools_io.dart' show browserOpenRefusal;
 
 // The Preview browser's own chrome for people: tabs, the page's dialogs, find, the right-click menu and downloads.
 
@@ -296,7 +297,13 @@ List<PageMenuItem> pageMenuItems(HeadlessBrowser b, PageContext at, {required vo
     if (at.editable)
       (label: 'Select all', onSelected: () => unawaited(b.userCommand('selectAll').catchError((Object _) {}))),
     if (at.link case final link?) ...[
-      (label: 'Open link in new tab', onSelected: () => unawaited(b.openTab(link).catchError((Object _) {}))),
+      // The page picks the address: the same guard as the agent's open (credential files, look-alike sites).
+      (
+        label: 'Open link in new tab',
+        onSelected: browserOpenRefusal(link) != null
+            ? null
+            : () => unawaited(b.openTab(link).catchError((Object _) {})),
+      ),
       (label: 'Copy link address', onSelected: () => unawaited(copy(link))),
     ],
     if (at.image case final image?) (label: 'Copy image address', onSelected: () => unawaited(copy(image))),

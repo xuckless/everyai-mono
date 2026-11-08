@@ -12,10 +12,49 @@ import '../../live/key_map.dart';
 import '../../live/login_wall.dart';
 import '../../live/live_session.dart';
 import '../../live/page_snapshot.dart';
-import 'shell_io.dart' show killTree;
+import '../../../../core/process/child_processes.dart';
+
+/// Where a profile's Chrome is.
+///
+/// ```
+///   closed ──use──▶ launching ──up──▶ up ──stop / idle──▶ stopping ──gone──▶ closed
+///     │  ▲             │ fail / stop ▲                                  ▲
+///     │  └─────────────┘ (a launch that lands after a stop is ended)     │
+///     └──signIn──▶ signingIn ──window closed────────────────────────────┘
+/// ```
+sealed class ChromeHostState {
+  const ChromeHostState();
+}
+
+final class ChromeClosed extends ChromeHostState {
+  const ChromeClosed();
+}
+
+final class ChromeLaunching extends ChromeHostState {
+  const ChromeLaunching(this.generation, this.ready);
+  final int generation;
+  final Future<Uri> ready;
+}
+
+final class ChromeUp extends ChromeHostState {
+  const ChromeUp(this.generation, this.process, this.endpoint);
+  final int generation;
+  final Process process;
+  final Uri endpoint;
+}
+
+final class ChromeStopping extends ChromeHostState {
+  const ChromeStopping(this.done);
+  final Future<void> done;
+}
+
+final class ChromeSigningIn extends ChromeHostState {
+  const ChromeSigningIn(this.done);
+  final Future<void> done;
+}
 
 /// One Chrome per profile folder (Chrome locks a profile, so sessions of one project share the process and get a
-/// page each). Started on first use, stopped a little after its last page closes.
+/// page each). Started on first use, stopped a little after its last page closes, and at quit ([stopAll]).
 final class ChromeHost {
   ChromeHost._(this.profileDir, this.executable);
 
@@ -25,47 +64,78 @@ final class ChromeHost {
   static ChromeHost of(String profileDir, {String? executable}) =>
       _hosts.putIfAbsent(profileDir, () => ChromeHost._(profileDir, executable));
 
+  /// Stops every profile's Chrome (the app quits).
+  static Future<void> stopAll() => Future.wait([for (final h in _hosts.values.toList()) h.stop()]);
+
   final String profileDir;
   final String? executable;
-  Process? _process;
-  Uri? _endpoint;
-  Future<Uri>? _starting;
+  ChromeHostState _state = const ChromeClosed();
+
+  /// Bumped by every launch and stop: a launch that finishes under another generation was stopped meanwhile.
+  var _generation = 0;
   var _pages = 0;
   Timer? _idle;
 
-  /// Set while the profile is open in a plain window for the user to sign in (see [signIn]).
-  Future<void>? _signingIn;
+  ChromeHostState get state => _state;
 
-  bool get running => _endpoint != null;
+  bool get running => _state is ChromeUp;
 
   /// The browser-level DevTools address, starting Chrome when needed.
   Future<Uri> endpoint({required int width, required int height}) async {
-    if (_signingIn case final s?) await s;
-    if (_endpoint case final e?) return e;
-    return _starting ??= _launch(width, height).whenComplete(() => _starting = null);
+    while (true) {
+      switch (_state) {
+        case ChromeUp(:final endpoint):
+          return endpoint;
+        case ChromeLaunching(:final ready):
+          return ready;
+        case ChromeStopping(:final done) || ChromeSigningIn(:final done):
+          await done;
+        case ChromeClosed():
+          final generation = ++_generation;
+          final ready = Completer<Uri>();
+          // The state first: a launch that fails at once settles it back to closed.
+          _state = ChromeLaunching(generation, ready.future);
+          unawaited(_launch(generation, width, height).then(ready.complete, onError: ready.completeError));
+          return ready.future;
+      }
+    }
   }
 
-  Future<Uri> _launch(int width, int height) async {
+  /// Chrome's flags: headless, our own profile, nothing that phones home or touches the user's Keychain.
+  static List<String> launchArgs(String profileDir, int width, int height) => [
+    '--headless=new',
+    '--remote-debugging-port=0',
+    '--user-data-dir=$profileDir',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-extensions',
+    '--disable-background-networking',
+    '--disable-breakpad',
+    '--disable-crash-reporter',
+    // Never the user's Keychain or keyring.
+    '--use-mock-keychain',
+    '--password-store=basic',
+    '--hide-scrollbars',
+    '--mute-audio',
+    '--window-size=$width,$height',
+    'about:blank',
+  ];
+
+  Future<Uri> _launch(int generation, int width, int height) async {
     final exe = executable ?? HeadlessBrowser.find();
-    if (exe == null) throw const BrowserError(noBrowserMessage);
+    if (exe == null) {
+      _settle(generation, const ChromeClosed());
+      throw const BrowserError(noBrowserMessage);
+    }
     Directory(profileDir).createSync(recursive: true);
-    final process = await Process.start(exe, [
-      '--headless=new',
-      '--remote-debugging-port=0',
-      '--user-data-dir=$profileDir',
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-extensions',
-      '--disable-background-networking',
-      // Never the user's Keychain or keyring.
-      '--use-mock-keychain',
-      '--password-store=basic',
-      '--hide-scrollbars',
-      '--mute-audio',
-      '--window-size=$width,$height',
-      'about:blank',
-    ]);
-    _process = process;
+    final Process process;
+    try {
+      process = await Process.start(exe, launchArgs(profileDir, width, height));
+    } on Object catch (e) {
+      _settle(generation, const ChromeClosed());
+      throw BrowserError('The browser did not start: $e');
+    }
+    ChildProcesses.track(process.pid, label: 'Chrome ($profileDir)', executable: exe, exited: process.exitCode);
     unawaited(process.stdout.drain<void>());
     // Chrome says where its DevTools endpoint is on stderr.
     final endpoint = Completer<Uri>();
@@ -75,19 +145,33 @@ final class ChromeHost {
     }, onError: (Object _) {});
     unawaited(
       process.exitCode.then((_) {
-        // Not killed later: its pid may be another program's by then.
-        if (identical(_process, process)) {
-          _process = null;
-          _endpoint = null;
-        }
+        if (_state case ChromeUp(process: final p) when identical(p, process)) _state = const ChromeClosed();
         if (!endpoint.isCompleted) endpoint.completeError(const BrowserError('The browser exited at start.'));
       }),
     );
-    final e = await endpoint.future.timeout(
-      const Duration(seconds: 20),
-      onTimeout: () => throw const BrowserError('The browser did not start within 20 s.'),
-    );
-    return _endpoint = e;
+    final Uri e;
+    try {
+      e = await endpoint.future.timeout(
+        const Duration(seconds: 20),
+        onTimeout: () => throw const BrowserError('The browser did not start within 20 s.'),
+      );
+    } on Object {
+      await ChildProcesses.stop(process.pid);
+      _settle(generation, const ChromeClosed());
+      rethrow;
+    }
+    // Stopped while it started: this Chrome isn't wanted any more.
+    if (generation != _generation) {
+      await ChildProcesses.stop(process.pid);
+      throw const BrowserError('The browser was stopped while it started.');
+    }
+    _state = ChromeUp(generation, process, e);
+    return e;
+  }
+
+  /// Moves to [next] when [generation] is still the current one.
+  void _settle(int generation, ChromeHostState next) {
+    if (generation == _generation) _state = next;
   }
 
   void _opened() {
@@ -102,12 +186,31 @@ final class ChromeHost {
     _idle = Timer(const Duration(seconds: 30), () => unawaited(stop()));
   }
 
-  Future<void> stop() async {
+  /// Ends Chrome (a launch under way is ended when it lands); a stop under way is joined.
+  Future<void> stop() {
     _idle?.cancel();
-    final p = _process;
-    _process = null;
-    _endpoint = null;
-    if (p != null) await killTree(p.pid);
+    switch (_state) {
+      case ChromeStopping(:final done) || ChromeSigningIn(:final done):
+        return done;
+      case ChromeClosed():
+        return Future.value();
+      case ChromeLaunching(:final ready):
+        // The launch that lands is ended by its generation check; until then the old Chrome holds the profile, so
+        // a new start waits for it.
+        _generation++;
+        final done = ready.then<void>((_) {}, onError: (Object _) {}).whenComplete(() {
+          if (_state is ChromeStopping) _state = const ChromeClosed();
+        });
+        _state = ChromeStopping(done);
+        return done;
+      case ChromeUp(:final process):
+        _generation++;
+        final done = ChildProcesses.stop(process.pid).whenComplete(() {
+          if (_state is ChromeStopping) _state = const ChromeClosed();
+        });
+        _state = ChromeStopping(done);
+        return done;
+    }
   }
 
   /// Opens the profile in a plain Chrome window at [url], without the automation flags (sites such as Google
@@ -119,7 +222,7 @@ final class ChromeHost {
     await stop();
     Directory(profileDir).createSync(recursive: true);
     final done = Completer<void>();
-    _signingIn = done.future;
+    _state = ChromeSigningIn(done.future);
     try {
       final p = await Process.start(exe, [
         '--user-data-dir=$profileDir',
@@ -130,17 +233,18 @@ final class ChromeHost {
         '--new-window',
         url,
       ]);
+      ChildProcesses.track(p.pid, label: 'Chrome sign-in ($profileDir)', executable: exe, exited: p.exitCode);
       unawaited(p.stdout.drain<void>());
       unawaited(p.stderr.drain<void>());
       await p.exitCode;
     } finally {
-      _signingIn = null;
+      _state = const ChromeClosed();
       done.complete();
     }
   }
 
   /// Whether the profile is open for sign-in now.
-  bool get signingIn => _signingIn != null;
+  bool get signingIn => _state is ChromeSigningIn;
 
   /// Deletes the profile (sign-ins, cookies, storage): "Clear" in the project menu.
   Future<void> clear() async {
@@ -447,7 +551,7 @@ final class HeadlessBrowser {
     final dir = downloadDir;
     if (dir != null) Directory(dir).createSync(recursive: true);
     await Future.wait([
-      _enablePage(),
+      _enablePage().then((_) => _learnFrames()),
       _sendOn(_browserSocket, 'Target.setDiscoverTargets', {'discover': true}),
       _sendOn(_browserSocket, 'Browser.setDownloadBehavior', {
         'behavior': dir == null ? 'deny' : 'allow',
@@ -691,6 +795,43 @@ final class HeadlessBrowser {
     unawaited(_send('Runtime.evaluate', {'expression': _contextTrackerJs}).then((_) {}, onError: (Object _) {}));
   }
 
+  /// Frames inside the session's tabs (a tab's main frame has the tab's id): a download one of them starts is ours.
+  final _ownFrames = <String>{};
+
+  bool _ownsFrame(String id) => _ownFrames.contains(id) || _tabList.any((t) => t.id == id);
+
+  /// Adds the frames already in the active page (Page.frameAttached tells only of new ones).
+  Future<void> _learnFrames() async {
+    try {
+      final tree = await _send('Page.getFrameTree');
+      void walk(Object? node) {
+        if (node is! Map<String, Object?>) return;
+        final f = node['frame'];
+        if (f is Map<String, Object?> && f['id'] != null) _ownFrames.add('${f['id']}');
+        for (final c in (node['childFrames'] as List<Object?>?) ?? const []) {
+          walk(c);
+        }
+      }
+
+      walk(tree['frameTree']);
+    } on Object {
+      // A page showing a dialog may not answer; its new frames still arrive as events.
+    }
+  }
+
+  /// Tabs switched away from while they showed a dialog: their socket (the only one the page still answers) and
+  /// the dialog.
+  final _parked = <String, ({WebSocket socket, PageDialog dialog})>{};
+
+  /// The dialog another tab of the session waits on, with its tab's number (from 1), or null.
+  ({int tab, PageDialog dialog})? get dialogElsewhere {
+    for (final (i, t) in _tabList.indexed) {
+      final p = t.id == _targetId ? null : _parked[t.id];
+      if (p != null) return (tab: i + 1, dialog: p.dialog);
+    }
+    return null;
+  }
+
   /// Which socket each call in flight went out on.
   final _callSockets = <int, WebSocket>{};
 
@@ -715,6 +856,7 @@ final class HeadlessBrowser {
   /// session takes over; with none left the browser counts as closed.
   void _pageGone(WebSocket socket) {
     _settleCallsOn(socket);
+    _parked.removeWhere((_, p) => identical(p.socket, socket));
     if (!identical(_socket, socket) || _closing) return;
     final gone = _targetId;
     _tabList.removeWhere((t) => t.id == gone);
@@ -748,7 +890,11 @@ final class HeadlessBrowser {
       final e = _endpointUri;
       if (e == null || _closing || !_tabList.any((t) => t.id == id)) return;
       if (id == _targetId && _socket != null) return;
-      await _switchTo(id, e);
+      // Bounded, so a page that never answers can't hold up every call after it (they all wait for the switch).
+      await _switchTo(id, e).timeout(
+        const Duration(seconds: 20),
+        onTimeout: () => throw const BrowserError('Switching tabs took longer than 20 s.'),
+      );
     }();
     _switching = done;
     unawaited(
@@ -761,11 +907,29 @@ final class HeadlessBrowser {
 
   Future<void> _switchTo(String id, Uri e) async {
     final old = _socket;
+    final oldId = _targetId;
+    final shown = dialog.value;
     _socket = null;
     _targetId = id;
     dialog.value = null;
     fileChooser.value = null;
-    if (old != null) unawaited(_retire(old));
+    if (old != null) {
+      // A page waiting on a dialog answers nothing on a new socket (Chrome doesn't tell a new one of the dialog
+      // either): its socket is kept, and coming back to the tab takes it up again.
+      if (shown != null && oldId != null) {
+        _parked[oldId] = (socket: old, dialog: shown);
+      } else {
+        unawaited(_retire(old));
+      }
+    }
+    if (_parked.remove(id) case final p?) {
+      _socket = p.socket;
+      dialog.value = p.dialog;
+      await _sendOn(_browserSocket, 'Target.activateTarget', {'targetId': id});
+      frames.moved();
+      _publishTabs();
+      return;
+    }
     final socket = await WebSocket.connect('ws://${e.host}:${e.port}/devtools/page/$id');
     if (_closing || _browserSocket == null) {
       await socket.close();
@@ -778,7 +942,16 @@ final class HeadlessBrowser {
       onError: (Object _) => _pageGone(socket),
     );
     _frameSessions.clear();
-    await _enablePage();
+    // Pages opened from one another share a renderer: one waiting on a dialog holds up the others too. Bounded, so
+    // the switch still ends (the calls stay in flight and land once the dialog is answered).
+    try {
+      await _enablePage().timeout(const Duration(seconds: 5));
+    } on TimeoutException {
+      _log.add("The tab doesn't answer yet${_parked.isEmpty ? '' : ': another tab waits on a dialog'}.");
+      _publishTabs();
+      return;
+    }
+    await _learnFrames();
     await _viewport();
     await _sendOn(_browserSocket, 'Target.activateTarget', {'targetId': id});
     frames.moved();
@@ -809,9 +982,11 @@ final class HeadlessBrowser {
 
   /// Answers the page's dialog: OK ([accept]) or Cancel, with [text] for a prompt.
   Future<void> answerDialog({required bool accept, String? text}) async {
-    if (dialog.value == null) return;
-    dialog.value = null;
+    final shown = dialog.value;
+    if (shown == null) return;
     await _send('Page.handleJavaScriptDialog', {'accept': accept, 'promptText': ?text});
+    // Chrome's javascriptDialogClosed clears it too; a newer dialog that came meanwhile stays.
+    if (identical(dialog.value, shown)) dialog.value = null;
   }
 
   /// Gives the page's file picker (or the file input at [selector] or [ref]) the files at [paths].
@@ -1038,9 +1213,15 @@ final class HeadlessBrowser {
       case 'Page.fileChooserOpened' when msg['sessionId'] == null:
         final node = (params['backendNodeId'] as num?)?.toInt();
         if (node != null) fileChooser.value = (backendNodeId: node, multiple: params['mode'] == 'selectMultiple');
+      case 'Page.frameAttached':
+        _ownFrames.add('${params['frameId']}');
       case 'Target.attachedToTarget':
         final t = params['targetInfo'] as Map<String, Object?>? ?? const {};
-        if (t['type'] == 'iframe') _frameSessions['${t['targetId']}'] = '${params['sessionId']}';
+        if (t['type'] == 'iframe') {
+          _frameSessions['${t['targetId']}'] = '${params['sessionId']}';
+          // A frame of another site is a target of its own, with the frame's id.
+          _ownFrames.add('${t['targetId']}');
+        }
       case 'Target.detachedFromTarget':
         _frameSessions.removeWhere((_, s) => s == params['sessionId']);
     }
@@ -1075,8 +1256,9 @@ final class HeadlessBrowser {
         final r = p['response'] as Map<String, Object?>? ?? const {};
         final status = (r['status'] as num?)?.toInt() ?? 0;
         if (status >= 400) line = 'HTTP $status: ${r['url']}';
-      // Downloads of other sessions' pages in the same Chrome are theirs.
-      case 'Browser.downloadWillBegin' when !_tabList.any((t) => t.id == p['frameId']):
+      // Downloads of other sessions' pages in the same Chrome are theirs. (Where downloads go is set for the whole
+      // Chrome, so all of a project's sessions share it until each has a browser context of its own.)
+      case 'Browser.downloadWillBegin' when !_ownsFrame('${p['frameId']}'):
         return;
       case 'Browser.downloadProgress' when !_downloads.containsKey('${p['guid']}'):
         return;
@@ -1150,6 +1332,11 @@ final class HeadlessBrowser {
     }
     _downloads.clear();
     _frameSessions.clear();
+    _ownFrames.clear();
+    for (final p in _parked.values) {
+      unawaited(p.socket.close());
+    }
+    _parked.clear();
     for (final c in _calls.values) {
       if (!c.isCompleted) c.completeError(const BrowserError('The browser closed.'));
     }
@@ -1687,8 +1874,13 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
   Future<void> _castStart() async {
     await _send('Page.startScreencast', {'format': 'jpeg', 'quality': 72, 'maxWidth': width, 'maxHeight': height});
     // Chrome sends frames on changes only: a still page would show nothing until it moves. One picture now.
+    // A page waiting on a dialog paints nothing and runs no script: the picture would wait out the call's timeout.
+    if (dialog.value != null) return;
     final shot = await _send('Page.captureScreenshot', {'format': 'jpeg', 'quality': 72});
-    final scroll = await evaluate('scrollY');
+    // Straight to the page, not through [evaluate]: that waits for a tab switch in flight, and a switch casts
+    // through here (it would wait for itself).
+    final r = await _send('Runtime.evaluate', {'expression': 'scrollY', 'returnByValue': true});
+    final scroll = (r['result'] as Map<String, Object?>?)?['value'];
     _screencast.add((
       jpeg: base64Decode(shot['data']! as String),
       width: width,

@@ -7,6 +7,7 @@ import 'dart:io';
 import '../harness/everyai/script_io.dart' show findDeno;
 import 'workflow_bridge.dart';
 import 'workflow_prelude.dart';
+import '../../../core/process/child_processes.dart';
 
 // The Deno process and its line protocol, as ScriptRunner.run runs them
 // (same flags, no permissions, an empty environment, one shared cache). TODO: make ScriptRunner use this bridge once run_script's own
@@ -32,6 +33,7 @@ Future<WorkflowBridge> startWorkflowBridge({
     // `workflows/cache`, next to the session folders.
     environment: {'DENO_DIR': '${runDir.parent.parent.path}/cache', 'DENO_NO_UPDATE_CHECK': '1', 'NO_COLOR': '1'},
   );
+  ChildProcesses.track(process.pid, label: 'Workflow (${runDir.path})', executable: deno, exited: process.exitCode);
   return _DenoBridge(process, runDir);
 }
 

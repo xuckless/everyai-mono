@@ -43,6 +43,8 @@ const _mcpTimeoutMs = '330000';
 String permissionModeFor(AgentMode mode) => switch (mode) {
   AgentMode.plan => 'plan',
   AgentMode.autoEdit => 'acceptEdits',
+  // Claude's own reviewer (where the model has it: see the session's `permissionMode`).
+  AgentMode.auto => 'auto',
   // Bypass too: our hook allows every call, so nothing reaches Claude's own prompts.
   AgentMode.ask || AgentMode.fullAuto || AgentMode.bypass => 'default',
 };
@@ -76,8 +78,9 @@ List<NativeMode> claudeModes({required bool autoMode}) => [
     const NativeMode(
       id: 'auto',
       label: 'Auto mode',
-      description: "Works without asking; EveryAI's safety check still runs before each call",
-      policy: AgentMode.fullAuto,
+      description:
+          "Claude's own reviewer approves calls and asks you about the rest; EveryAI's safety floor runs first",
+      policy: AgentMode.auto,
     ),
 ];
 
@@ -360,6 +363,16 @@ const _internalTools = {
     ),
     'NotebookEdit' => (kind: 'FileEditorAction', args: {'command': 'edit', 'path': s('notebook_path')}),
     'Read' => (kind: 'ReadFileAction', args: {'path': s('file_path')}),
+    // A subagent or fork Claude Code runs itself: a subagent card.
+    'Task' || 'Agent' => (
+      kind: 'TaskAction',
+      args: {
+        'description': s('description'),
+        'prompt': s('prompt'),
+        'agent': s('subagent_type'),
+        if (input['run_in_background'] == true) 'background': true,
+      },
+    ),
     'Grep' => (kind: 'GrepAction', args: {'pattern': s('pattern'), 'path': s('path')}),
     'Glob' => (kind: 'GlobAction', args: {'pattern': s('pattern'), 'path': s('path')}),
     // Not the EveryAI harness's web tools (which go through the backend's
@@ -417,6 +430,23 @@ StreamDelta _delta({String content = '', String reasoning = ''}) =>
     HarnessEvent.decode({'kind': 'StreamingDeltaEvent', 'content': content, 'reasoning_content': reasoning})
         as StreamDelta;
 
+/// A background subagent's card when its process ended before it reported.
+const orphanedSubagent = 'Stopped: Claude Code closed before this subagent reported.';
+
+/// Results that close the subagent cards in [history] still waiting for a
+/// report (their process is gone), with [why].
+List<ToolResult> unfinishedSubagents(List<HarnessEvent> history, String why) {
+  final done = {
+    for (final e in history)
+      if (e is ToolResult) e.actionId,
+  };
+  return [
+    for (final e in history)
+      if (e is ActionCall && e.actionKind == 'TaskAction' && !done.contains(e.id))
+        resultEvent(id: 'r:${e.id}:closed', actionId: e.id, toolName: e.toolName, text: why, isError: true),
+  ];
+}
+
 /// Turns the CLI's stdout lines (not the control messages) into events. It
 /// remembers what the lines need across a session: tool names by call id,
 /// the calls we refused, and where the credentials come from.
@@ -430,6 +460,40 @@ final class ClaudeDecoder {
 
   final _tools = <String, String>{};
   var _n = 0;
+
+  /// Claude Code's subagent tasks, by task id: the `Agent`/`Task` call that
+  /// started each (a later SendMessage that resumes it reports under the same id).
+  final _tasks = <String, String>{};
+
+  /// `Agent`/`Task` calls running in the background: their tool result is only
+  /// the launch notice, so the card waits for the task's `task_notification`.
+  final _background = <String>{};
+
+  /// Background calls whose report came before their launch notice: the notice
+  /// then doesn't mark them as working again.
+  final _reported = <String>{};
+
+  /// Background subagents still working.
+  bool get hasBackground => _background.isNotEmpty;
+
+  /// Closes the cards of background subagents that will never report (the
+  /// process they ran in ended).
+  List<HarnessEvent> orphaned(String why) {
+    final out = [
+      for (final callId in _background)
+        resultEvent(
+          id: 'r:$callId:${++_n}',
+          actionId: callId,
+          toolName: _tools[callId] ?? 'Agent',
+          text: why,
+          isError: true,
+        ),
+    ];
+    _background.clear();
+    return out;
+  }
+
+  bool _isTask(String callId) => _tools[callId] == 'Agent' || _tools[callId] == 'Task';
 
   /// Set by an API-error line that says the plan or key ran out; the turn's
   /// failed `result` then becomes a usage limit.
@@ -446,6 +510,14 @@ final class ClaudeDecoder {
   }
 
   List<HarnessEvent> decode(Map<String, Object?> line) => switch (line['type']) {
+    // A subagent's own traffic (its words, calls and results) stays on its card;
+    // only results of its calls the user was shown (asked to approve) come through.
+    'assistant' || 'stream_event' when line['parent_tool_use_id'] != null => const [],
+    'user' when line['parent_tool_use_id'] != null => [
+      for (final b in _blocks(line))
+        if (b case {'type': 'tool_result', 'tool_use_id': final String callId} when knows(callId))
+          _toolResult(callId, b),
+    ],
     'system' => _system(line),
     'stream_event' => _stream(line),
     'assistant' => _assistant(line),
@@ -458,8 +530,53 @@ final class ClaudeDecoder {
   String _id(Map<String, Object?> line) => line['uuid'] as String? ?? 'claude-${++_n}';
 
   List<HarnessEvent> _system(Map<String, Object?> line) {
-    if (line['subtype'] == 'init') apiKeySource = line['apiKeySource'] as String?;
+    switch (line['subtype']) {
+      case 'init':
+        apiKeySource = line['apiKeySource'] as String?;
+      case 'task_started':
+        final taskId = line['task_id'] as String?;
+        var callId = line['tool_use_id'];
+        // A SendMessage that resumes a task reports under its own call: the card is the task's first call.
+        if (callId is! String || !_isTask(callId)) callId = taskId == null ? null : _tasks[taskId];
+        if (callId is! String) break;
+        _tasks[taskId ?? callId] = callId;
+        if (line['is_backgrounded'] == true) _background.add(callId);
+      case 'task_updated':
+        final callId = _tasks[line['task_id']];
+        if (callId != null && (line['patch'] as Map<String, Object?>?)?['is_backgrounded'] == true) {
+          _background.add(callId);
+        }
+      case 'task_notification':
+        final callId = _tasks[line['task_id']];
+        if (callId == null) break;
+        if (!_background.remove(callId)) _reported.add(callId);
+        return [_taskReport(callId, line)];
+    }
     return const [];
+  }
+
+  /// A subagent task's end, as its card's result (a later one, after a
+  /// resume, replaces it).
+  ToolResult _taskReport(String callId, Map<String, Object?> line) {
+    final status = line['status'];
+    final report = line['handback_report'];
+    final text = switch (report) {
+      {'text': final String t} when t.trim().isNotEmpty => [
+        if (report['warning'] case final String w when w.trim().isNotEmpty) w.trim(),
+        t.trim(),
+      ].join('\n\n'),
+      _ => switch (line['summary']) {
+        final String s when s.trim().isNotEmpty => s.trim(),
+        _ => status == 'completed' ? 'Done.' : (status == 'failed' ? 'Failed.' : 'Stopped.'),
+      },
+    };
+    return resultEvent(
+      id: 'r:$callId:${++_n}',
+      actionId: callId,
+      toolName: _tools[callId] ?? 'Agent',
+      text: text,
+      isError: status != 'completed',
+    );
   }
 
   List<HarnessEvent> _stream(Map<String, Object?> line) {
@@ -475,10 +592,10 @@ final class ClaudeDecoder {
   }
 
   List<HarnessEvent> _assistant(Map<String, Object?> line) {
-    // Only the main thread's last frame before the result counts: a
-    // subagent's error frame (parent_tool_use_id set) doesn't end the turn,
-    // and a frame Claude Code recovered from is followed by a normal one.
-    if (line['parent_tool_use_id'] == null) _limit = line['is_api_error_message'] == true ? _limitOf(line) : null;
+    // Only the main thread's last frame before the result counts (subagent
+    // frames don't get here), and a frame Claude Code recovered from is
+    // followed by a normal one.
+    _limit = line['is_api_error_message'] == true ? _limitOf(line) : null;
     final blocks = _blocks(line);
     final id = _id(line);
     final out = <HarnessEvent>[];
@@ -499,8 +616,20 @@ final class ClaudeDecoder {
   List<HarnessEvent> _user(Map<String, Object?> line) => [
     // Text from the "user" is our own message echoed or Claude's interruption note.
     for (final b in _blocks(line))
-      if (b case {'type': 'tool_result', 'tool_use_id': final String callId}) _toolResult(callId, b),
+      if (b case {'type': 'tool_result', 'tool_use_id': final String callId} when !_launched(callId, b))
+        _toolResult(callId, b),
   ];
+
+  /// Whether [b] is only the launch notice of a background subagent (its card
+  /// waits for the task's report instead).
+  bool _launched(String callId, Map<String, Object?> b) {
+    if (!_isTask(callId) || refused.containsKey(callId) || b['is_error'] == true) return false;
+    if (_background.contains(callId)) return true;
+    if (!_text(b['content']).trimLeft().startsWith('Async agent launched')) return false;
+    if (_reported.remove(callId)) return true;
+    _background.add(callId);
+    return true;
+  }
 
   HarnessEvent _toolResult(String callId, Map<String, Object?> b) {
     final name = _tools[callId] ?? '';

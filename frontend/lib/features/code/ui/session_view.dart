@@ -347,6 +347,9 @@ class CodeSessionScreen extends ConsumerWidget {
                                                   key: ValueKey(brief.id),
                                                   aside: brief,
                                                   onDismiss: ref.read(morningBriefProvider.notifier).dismiss,
+                                                  maxBodyHeight: area.maxHeight.isFinite
+                                                      ? (area.maxHeight * 0.7 - 240).clamp(72.0, 280.0)
+                                                      : null,
                                                 ),
                                               ),
                                             if (state.goal case final goal?)
@@ -369,6 +372,15 @@ class CodeSessionScreen extends ConsumerWidget {
                                                           ?.contextLength ??
                                                       0,
                                                   modelName: ref.watch(modelCatalogProvider)[ModelId(info.model)]?.name,
+                                                  // The strip above the composer is at most 70% of the window and
+                                                  // scrolls from the composer up: a taller card would push its own
+                                                  // header (and Dismiss) out of reach.
+                                                  maxBodyHeight: area.maxHeight.isFinite
+                                                      ? (area.maxHeight * 0.7 - 240).clamp(
+                                                          72.0,
+                                                          aside.kind == AsideKind.cost ? 420.0 : 280.0,
+                                                        )
+                                                      : null,
                                                   // The cap and plan limit lines; the calls line is the breakdown above.
                                                   limitLines: aside.kind != AsideKind.cost
                                                       ? const []
@@ -378,7 +390,10 @@ class CodeSessionScreen extends ConsumerWidget {
                                                               UsageTotals.zero,
                                                           budget: ref.watch(codeSettingsProvider).budgets[sessionId],
                                                           limit: controller.limitPick?.limit,
-                                                          plan: ref.watch(codePlanLimitsProvider(sessionId)),
+                                                          // The lead's own report draws its windows itself.
+                                                          plan: aside.answer.isEmpty
+                                                              ? ref.watch(codePlanLimitsProvider(sessionId))
+                                                              : null,
                                                           // The lead's own report (below) says what it knows of the plan.
                                                           outsideLabel:
                                                               isOutsideLead(info.harness, info.workingDir) &&
@@ -414,6 +429,12 @@ class CodeSessionScreen extends ConsumerWidget {
                                               onSend: (text, files) => controller.sendTyped(text, files: files),
                                               onSteer: (text, files) => controller.steer(text, files: files),
                                               onStop: controller.stop,
+                                              onEscape: () {
+                                                final open = ref.read(codeSessionProvider(sessionId)).asides;
+                                                if (open.isEmpty) return false;
+                                                controller.dismissAside(open.last.id);
+                                                return true;
+                                              },
                                               queued: [for (final q in state.queued) q.text],
                                               onUnqueue: controller.unqueue,
                                               onSendQueuedNow: controller.sendQueuedNow,

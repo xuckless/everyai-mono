@@ -13,6 +13,8 @@ import '../harness/session_processes.dart' show registerDriverRoot, sessionEnvVa
 import 'driver.dart';
 import 'detection/cli_scan.dart' show findCli;
 import 'driver_process.dart';
+import 'json_rpc.dart' show EndsInput;
+import '../../../core/process/child_processes.dart';
 
 Future<DriverProcess> spawnDriver({
   required String executable,
@@ -32,6 +34,8 @@ Future<DriverProcess> spawnDriver({
     environment: {...shell.env, ...env, sessionEnvVar: sessionTag},
   );
   registerDriverRoot(sessionTag, process.pid);
+  // Only for the watchdog (a crash or Force Quit): a normal quit closes drivers through closeAllDriverProcesses.
+  ChildProcesses.track(process.pid, label: 'Driver $executable', executable: executable, exited: process.exitCode);
   return _Process(process, sessionTag, File(logPath).openWrite(mode: FileMode.append));
 }
 
@@ -114,6 +118,7 @@ Future<DriverProcess> spawnDriverTty({
     rethrow;
   }
   registerDriverRoot(sessionTag, program.pid);
+  ChildProcesses.track(program.pid, label: 'Driver $executable', executable: executable, exited: program.exitCode);
   return _TtyProcess(program, sessionTag, logPath, logStart, input, output);
 }
 
@@ -284,7 +289,7 @@ final class _TtyProcess implements DriverProcess {
   }
 }
 
-final class _Process implements DriverProcess {
+final class _Process implements DriverProcess, EndsInput {
   _Process(this._process, this._tag, this._log) {
     _process.stderr.transform(const Utf8Decoder(allowMalformed: true)).listen((s) {
       _log.write(s);
@@ -333,6 +338,11 @@ final class _Process implements DriverProcess {
   @override
   void send(String line) {
     if (!_closed && !_exited) _process.stdin.writeln(line);
+  }
+
+  @override
+  void endInput() {
+    if (!_closed && !_exited) unawaited(_process.stdin.close().catchError((Object _) {}));
   }
 
   @override

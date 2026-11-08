@@ -360,8 +360,8 @@ final class SseTransport implements ChatTransport {
 abstract interface class ToolResults {
   /// Sends [result] (a string, or any JSON) for [callId]; [isError] says the
   /// app could not run the tool and [result] tells why. False when no turn
-  /// waits for the call any more (it timed out or finished).
-  Future<bool> resolve(String callId, Object? result, {bool isError = false});
+  /// waits for the call any more (it timed out or finished). [images] (PNG data URLs) go to the model with it.
+  Future<bool> resolve(String callId, Object? result, {bool isError = false, List<String> images = const []});
 }
 
 /// `POST /v1/chat/tool_result {call_id, result, is_error}`.
@@ -372,12 +372,13 @@ final class HttpToolResults implements ToolResults {
   final bool authenticated;
 
   @override
-  Future<bool> resolve(String callId, Object? result, {bool isError = false}) async {
+  Future<bool> resolve(String callId, Object? result, {bool isError = false, List<String> images = const []}) async {
     try {
       await _api.postJson('v1/chat/tool_result', {
         'call_id': callId,
         'result': result,
         'is_error': isError,
+        if (images.isNotEmpty) 'images': images,
       }, authenticated: authenticated);
       return true;
     } on HttpStatusError catch (e) {
@@ -416,7 +417,7 @@ Map<String, String> toolOutputsByMessage(List<Message> history) {
       }
       final visual = Visual.fromPart(call);
       if (visual == null) continue;
-      if (artifactTools.contains(call.toolName)) {
+      if (isArtifactCall(call)) {
         final id = visual.str('id').isEmpty ? visual.callId : visual.str('id');
         if (latest[call.callId ?? visual.callId] case final artifact?) {
           final v = artifact.latest;
@@ -545,9 +546,9 @@ final class SplitToolResults implements ToolResults {
   final Future<ToolResults?> Function() local;
 
   @override
-  Future<bool> resolve(String callId, Object? result, {bool isError = false}) async {
+  Future<bool> resolve(String callId, Object? result, {bool isError = false, List<String> images = const []}) async {
     final l = await local();
-    if (l != null && await l.resolve(callId, result, isError: isError)) return true;
-    return remote.resolve(callId, result, isError: isError);
+    if (l != null && await l.resolve(callId, result, isError: isError, images: images)) return true;
+    return remote.resolve(callId, result, isError: isError, images: images);
   }
 }

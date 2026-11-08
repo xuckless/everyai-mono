@@ -127,13 +127,16 @@ Future<List<LocalModel>> listServerModels(LocalHttp http, LocalServer server) as
       if (data is! List) return const [];
       return [
         for (final m in data.whereType<Map<String, Object?>>())
-          if (m['id'] is String)
+          // Private Cloud Compute (`pcc`) answers only to Terminal.app ("not available in this context").
+          if (m['id'] case final String id when id != 'pcc')
             LocalModel(
-              name: m['id'] as String,
+              name: id,
               serverId: server.id,
               contextTokens: _contextOf(m) ?? fmAssumedContext,
               contextGuessed: _contextOf(m) == null,
-              tools: true,
+              // `fm serve` refuses JSON schemas with type lists or anyOf (most of our tools have them), and our
+              // tool list alone would fill its window: Apple's model gives plain answers.
+              tools: false,
             ),
       ];
     case LocalServerKind.jan || LocalServerKind.vllm || LocalServerKind.mlx || LocalServerKind.custom:

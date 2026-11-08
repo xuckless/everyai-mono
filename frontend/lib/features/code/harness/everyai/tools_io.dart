@@ -1,5 +1,8 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import '../../domain/notebook.dart';
+import 'lsp_io.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -50,6 +53,8 @@ abstract final class ToolNames {
   static const app = appToolName;
   static const runScript = 'run_script';
   static const memory = 'memory';
+  static const diagnostics = 'diagnostics';
+  static const notebookEdit = 'notebook_edit';
 }
 
 /// The tools a small local model gets (the EveryAI harness's light profile).
@@ -85,6 +90,8 @@ const actionKinds = {
   ToolNames.app: 'AppAction',
   ToolNames.runScript: 'ScriptAction',
   ToolNames.memory: 'MemoryAction',
+  ToolNames.diagnostics: 'DiagnosticsAction',
+  ToolNames.notebookEdit: 'EditAction',
 };
 
 Map<String, Object?> _fn(String name, String description, Map<String, Object?> properties, List<String> required) => {
@@ -290,6 +297,42 @@ final _specs = [
       'context': {'type': 'integer', 'description': 'Lines of context around each match (content mode)'},
     },
     ['pattern'],
+  ),
+  // Prompt reason: a notebook is JSON, so edit and write had to rewrite its markup (and broke it, or left stale
+  // outputs); this edits one cell by id and keeps the file valid. read shows notebooks as cells with their ids.
+  _fn(
+    ToolNames.notebookEdit,
+    'Change a Jupyter notebook (.ipynb) one cell at a time, keeping the file valid: replace a cell\'s source, '
+    'insert a new cell after one (or first, with no cell_id), or delete one. Read the notebook first: read shows '
+    'its cells with their ids. A code cell you change loses its old outputs; nothing is run.',
+    {
+      'file_path': {'type': 'string'},
+      'edit_mode': {
+        'type': 'string',
+        'enum': ['replace', 'insert', 'delete'],
+      },
+      'cell_id': {'type': 'string', 'description': 'The cell to change, or the one to insert after'},
+      'cell_type': {
+        'type': 'string',
+        'enum': ['code', 'markdown'],
+        'description': 'For insert (default code), or to change a replaced cell\'s kind',
+      },
+      'new_source': {'type': 'string', 'description': 'The cell\'s whole new source (replace and insert)'},
+    },
+    ['file_path', 'edit_mode'],
+  ),
+  // Prompt reason: language servers find type and syntax errors in seconds, where a build or test run takes far
+  // longer; an edit's result only says when it added errors, so the model needs a way to read them.
+  _fn(
+    ToolNames.diagnostics,
+    "Errors and warnings from the project's language servers (TypeScript/JavaScript, Python, Dart, Go, Rust, "
+    'C/C++) for one file, or for every file you read or changed in this session when path is left out. Faster '
+    'than a build for type and syntax errors; an edit that adds errors says so. A server starts on first use, '
+    'which can take a few seconds.',
+    {
+      'path': {'type': 'string', 'description': 'The file to check; leave out for every file checked so far'},
+    },
+    [],
   ),
   _fn(
     ToolNames.glob,
@@ -515,7 +558,7 @@ Map<String, Object?> actionFor(String tool, Map<String, Object?> args, String ro
   String abs(String key) => resolvePath(root, args[key] as String? ?? '');
   return switch (tool) {
     ToolNames.bash => {'kind': kind, ...args, 'is_input': false},
-    ToolNames.read || ToolNames.write || ToolNames.edit => {
+    ToolNames.read || ToolNames.write || ToolNames.edit || ToolNames.notebookEdit => {
       'kind': kind,
       ...args,
       'path': abs('file_path'),
@@ -618,9 +661,13 @@ final class ToolRunner {
     this.pushTargets,
     this.loadLoginEnv = false,
     this.packages,
+    this.lsp,
   }) : scrubber = scrubber ?? Scrubber.forProject(root, extra: [gateway.apiKey]);
 
   final String root;
+
+  /// The session's language servers (diagnostics, and the hint after edits); null: none.
+  final LspHub? lsp;
 
   /// Folders outside [root] whose files are the user's own (the session's
   /// skills, see [skillFolders]): read doesn't mark them as outside text.
@@ -739,8 +786,9 @@ final class ToolRunner {
         } else if (dropSiteIn(text) case final site?) {
           why = '$site is a site that takes uploads';
         }
-      case ToolNames.write || ToolNames.edit || ToolNames.applyPatch:
-        final text = '${args['content'] ?? ''}${args['new_string'] ?? ''}${args['patch'] ?? ''}';
+      case ToolNames.write || ToolNames.edit || ToolNames.applyPatch || ToolNames.notebookEdit:
+        final text =
+            '${args['content'] ?? ''}${args['new_string'] ?? ''}${args['patch'] ?? ''}${args['new_source'] ?? ''}';
         if (text.contains(Scrubber.hiddenMark)) return _hiddenMarkRefusal;
     }
     return why == null ? null : guardRefusal(why);
@@ -766,7 +814,7 @@ final class ToolRunner {
       case ToolNames.read || ToolNames.grep || ToolNames.glob:
         final path = resolvePath(root, (args['file_path'] ?? args['path'] ?? '') as String);
         if (secretPath(path)) return 'Error: research jobs may not read secrets or credentials ($path).';
-      case ToolNames.write || ToolNames.edit:
+      case ToolNames.write || ToolNames.edit || ToolNames.notebookEdit:
         final path = resolvePath(root, args['file_path'] as String? ?? '');
         if (!path.startsWith('$researchDir/')) {
           return 'Error: research jobs write only their notes, under $researchDir/.';
@@ -845,10 +893,12 @@ final class ToolRunner {
         ToolNames.killShell => await _killShell(args),
         ToolNames.monitor => await _monitor(args, cancel),
         ToolNames.bashInput => await _bashInput(args),
-        ToolNames.read => _readFile(args),
-        ToolNames.write => _writeFile(args),
-        ToolNames.edit => _editFile(args),
-        ToolNames.applyPatch => _applyPatch(args),
+        ToolNames.read => _warmed(args, _readFile(args)),
+        ToolNames.write => await _withHint(tool, args, _writeFile),
+        ToolNames.edit => await _withHint(tool, args, _editFile),
+        ToolNames.applyPatch => await _withHint(tool, args, _applyPatch),
+        ToolNames.diagnostics => await _diagnostics(args),
+        ToolNames.notebookEdit => _notebookEdit(args),
         ToolNames.grep => await _grep(args),
         ToolNames.glob => await _glob(args),
         ToolNames.todo => const ToolOutput('Todos updated. Keep working through them.'),
@@ -872,6 +922,72 @@ final class ToolRunner {
     } on Object catch (e) {
       return ToolOutput('Error: $e', isError: true);
     }
+  }
+
+  /// A file read is opened in its language server in the background, so a later edit has findings to compare with.
+  ToolOutput _warmed(Map<String, Object?> args, ToolOutput out) {
+    if (args['file_path'] case final String p when !out.isError) lsp?.warm(resolvePath(root, p));
+    return out;
+  }
+
+  /// Runs an edit tool, then adds one line when it left a file with more errors than before (see
+  /// [editDiagnosticsHint]). Files no server knew before the edit are compared with their old text, when the result
+  /// has it; a server that doesn't answer in a few seconds (one still starting) adds nothing.
+  Future<ToolOutput> _withHint(
+    String tool,
+    Map<String, Object?> args,
+    ToolOutput Function(Map<String, Object?>) edit,
+  ) async {
+    final hub = lsp;
+    final paths = hub == null
+        ? const <String>[]
+        : [
+            for (final p
+                in tool == ToolNames.applyPatch
+                    ? patchTargets(args['patch'] as String? ?? '')
+                    : [args['file_path'] as String? ?? ''])
+              if (p.isNotEmpty && hub.handles(p)) resolvePath(root, p),
+          ].take(3).toList();
+    final before = {for (final p in paths) p: await hub!.knownErrors(p)};
+    final out = edit(args);
+    if (out.isError || paths.isEmpty) return out;
+    const wait = Duration(seconds: 3);
+    final hints = <String>[];
+    for (final p in paths) {
+      var was = before[p];
+      if (was == null) {
+        // No baseline from the server: the old text, when the result has it (a new file had none). Without one, or
+        // when the server didn't answer for it, the file's existing errors would read as added: no hint.
+        final old = out.observation['path'] == p
+            ? out.observation['old_content']
+            : [
+                for (final f in out.observation['files'] as List<Object?>? ?? const [])
+                  if (f is Map && f['path'] == p) f['old_content'],
+              ].firstOrNull;
+        if (old is! String) continue;
+        if (old.isEmpty) {
+          was = 0;
+        } else {
+          final found = await hub!.check(p, text: old, timeout: wait);
+          if (found == null) continue;
+          was = lspErrors(found);
+        }
+      }
+      final now = await hub!.check(p, timeout: wait);
+      if (now == null) continue;
+      if (editDiagnosticsHint(_relative(p), was, lspErrors(now)) case final h?) hints.add(h);
+    }
+    return hints.isEmpty
+        ? out
+        : ToolOutput('${out.text}\n${hints.join('\n')}', observation: out.observation, images: out.images);
+  }
+
+  Future<ToolOutput> _diagnostics(Map<String, Object?> args) async {
+    final hub = lsp;
+    if (hub == null) return const ToolOutput('Error: no language servers in this session.', isError: true);
+    final path = args['path'] as String? ?? '';
+    final a = await diagnosticsAnswer(hub, root, path.trim().isEmpty ? '' : resolvePath(root, path));
+    return ToolOutput(a.text, isError: a.isError);
   }
 
   Future<ToolOutput> _browse(Map<String, Object?> args) async {
@@ -1184,6 +1300,16 @@ final class ToolRunner {
     final text = utf8.decode(bytes, allowMalformed: true);
     // A secret file in the project (.env.local, a key): its values may not leave later, and are hidden from now on.
     if (secretPath(path)) scrubber.remember(Scrubber.dotEnvLines(text));
+    // A notebook reads as its cells (ids, sources, saved outputs), not its JSON; notebook_edit changes it by cell id.
+    if (isNotebookPath(path) && args['offset'] == null && parseNotebook(text) != null) {
+      _read[path] = file.lastModifiedSync();
+      final name = 'read-${DateTime.now().millisecondsSinceEpoch}';
+      final cells = notebookForModel(text);
+      return ToolOutput(
+        outsideProject(root, path, own: ownFolders) ? fitUntrusted(cells, path, name) : _fit(cells, name),
+        observation: {'path': path},
+      );
+    }
     final lines = const LineSplitter().convert(text);
     final offset = ((args['offset'] as num?)?.toInt() ?? 1).clamp(1, lines.length + 1);
     final limit = ((args['limit'] as num?)?.toInt() ?? 2000).clamp(1, 2000);
@@ -1227,6 +1353,45 @@ final class ToolRunner {
     }
     if (end < lines.length) out.writeln('\n[${lines.length - end} more lines; read on with offset ${end + 1}.]');
     return ToolOutput(_fit(out.toString(), name), observation: {'path': path});
+  }
+
+  ToolOutput _notebookEdit(Map<String, Object?> args) {
+    final path = resolvePath(root, args['file_path'] as String? ?? '');
+    final file = File(path);
+    if (!isNotebookPath(path)) return ToolOutput('Error: $path is not a notebook (.ipynb). Use edit.', isError: true);
+    if (!file.existsSync()) return ToolOutput('Error: $path does not exist.', isError: true);
+    if (_staleRead(path) case final problem?) return ToolOutput(problem, isError: true);
+    final before = file.readAsStringSync();
+    final mode = args['edit_mode'] as String? ?? '';
+    final r = editNotebook(
+      before,
+      mode: mode,
+      cellId: args['cell_id'] as String?,
+      cellType: args['cell_type'] as String?,
+      source: args['new_source'] as String?,
+    );
+    if (r.error case final e?) return ToolOutput('Error: $e', isError: true);
+    file.writeAsStringSync(r.text!);
+    // Ids by position move when cells come or go: the next edit needs a fresh read (the stale-read check asks).
+    final shifted = mode != 'replace' && notebookIdsArePositions(before);
+    if (shifted) {
+      _read.remove(path);
+    } else {
+      _read[path] = file.lastModifiedSync();
+    }
+    final what = switch (mode) {
+      'replace' => 'Replaced cell ${r.cellId}',
+      'insert' => 'Inserted cell ${r.cellId}',
+      _ => 'Deleted cell ${args['cell_id']}',
+    };
+    final note = shifted
+        ? ' This notebook has no cell ids, so cells are named by position and the later ones moved: read it again '
+              'before the next edit.'
+        : '';
+    return ToolOutput(
+      '$what in $path.$note',
+      observation: {'path': path, 'old_content': before, 'new_content': r.text},
+    );
   }
 
   String? _staleRead(String path) {

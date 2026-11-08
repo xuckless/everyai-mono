@@ -93,6 +93,8 @@ abstract final class LiveBrowsers {
     _bySession.clear();
     // Jars and saved logins first (close() saves the jar), then the pages, then Chrome.
     await Future.wait([for (final b in all) _writeBack(b).then((_) => b.close()).then((_) => b.host.stop())]);
+    // Profiles opened outside a session's page (sign-in, an agent's own browser) too.
+    await ChromeHost.stopAll();
   }
 }
 

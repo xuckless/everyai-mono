@@ -757,7 +757,13 @@ typedef KillRunner = Future<ProcessResult> Function(String executable, List<Stri
 ///
 /// Only for a process that is still running: Windows soon gives a dead
 /// process's pid to another one, and `/T` would end that one's tree.
-Future<void> killTree(int pid, {bool? windows, KillRunner run = Process.run}) async {
+/// [termWait] is how long TERM has before KILL.
+Future<void> killTree(
+  int pid, {
+  bool? windows,
+  KillRunner run = Process.run,
+  Duration termWait = const Duration(milliseconds: 600),
+}) async {
   if (windows ?? Platform.isWindows) {
     // By its full path, so a taskkill.exe in the project can't stand in.
     final root = Platform.environment['SystemRoot'] ?? r'C:\Windows';
@@ -776,11 +782,15 @@ Future<void> killTree(int pid, {bool? windows, KillRunner run = Process.run}) as
   for (final p in all.reversed) {
     Process.killPid(p, ProcessSignal.sigterm);
   }
-  await Future<void>.delayed(const Duration(milliseconds: 600));
+  await Future<void>.delayed(termWait);
   for (final p in all.reversed) {
     Process.killPid(p, ProcessSignal.sigkill);
   }
 }
+
+/// [root]'s descendants now (children first found, then theirs), for a caller that must end them after [root]
+/// itself exits (then they belong to init and no walk from [root] finds them).
+Future<List<int>> descendantsOf(int root) => _descendants(root);
 
 Future<List<int>> _descendants(int root) async {
   // On Windows only processes() asks (killTree has taskkill there): the desktop helper lists parents.

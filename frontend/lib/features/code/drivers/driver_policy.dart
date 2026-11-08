@@ -90,6 +90,7 @@ const hostToolNames = {
   ...maxHostTools,
   'check',
   'diff_stats',
+  'diagnostics',
   'goal_check',
   'run_script',
   ...screenHostTools,
@@ -98,7 +99,7 @@ const hostToolNames = {
 /// The host tools the policy lets run without asking: they only show the
 /// user a card (a question, a plan, a security alert), read and write the
 /// project's notes, or read the session
-/// (diff_stats, goal_check, run_script's sandboxed reads). bug_check and
+/// (diff_stats, diagnostics, goal_check, run_script's sandboxed reads). bug_check and
 /// check run a command, so they go through the mode like any other. The
 /// screen tools gate themselves: another app's window asks, and app_run's
 /// command is confirmed on a card and meets the floor.
@@ -111,6 +112,7 @@ const trustedHostTools = {
   reportIssueTool,
   ...maxHostTools,
   'diff_stats',
+  'diagnostics',
   'goal_check',
   'run_script',
   ...screenHostTools,

@@ -24,6 +24,7 @@ export 'host_checks_stub.dart' if (dart.library.io) 'host_checks_io.dart' show r
 
 const checkTool = 'check';
 const diffStatsTool = 'diff_stats';
+const diagnosticsTool = 'diagnostics';
 const goalCheckTool = 'goal_check';
 
 /// What a workflow script reads of an agent's bug_check: `{available:
@@ -183,6 +184,24 @@ const diffStatsSpec = <String, Object?>{
   'annotations': {'readOnlyHint': true, 'destructiveHint': false},
 };
 
+/// Prompt reason: the same language-server findings the EveryAI harness has, for outside leads, whose own editors
+/// may have none headless.
+const hostDiagnosticsSpec = <String, Object?>{
+  'name': diagnosticsTool,
+  'description':
+      "Errors and warnings from the project's language servers (TypeScript/JavaScript, Python, Dart, Go, Rust, "
+      'C/C++) for one file, or for every file checked so far when path is left out. Faster than a build for type '
+      'and syntax errors. A server starts on first use, which can take a few seconds.',
+  'inputSchema': {
+    'type': 'object',
+    'properties': {
+      'path': {'type': 'string', 'description': 'The file to check (relative to the session folder)'},
+    },
+    'additionalProperties': false,
+  },
+  'annotations': {'readOnlyHint': true, 'destructiveHint': false},
+};
+
 const goalCheckSpec = <String, Object?>{
   'name': goalCheckTool,
   'description':
@@ -203,6 +222,7 @@ const checkToolInfos = <HostToolInfo>[
   ),
   (name: checkTool, when: 'you changed code: it runs only the tests that cover the changed files.'),
   (name: diffStatsTool, when: 'you need what this session changed so far, file by file, without the whole diff.'),
+  (name: diagnosticsTool, when: 'you changed code: type and syntax errors from the language servers, before a build.'),
   (
     name: goalCheckTool,
     when:
@@ -268,6 +288,8 @@ Future<HostResult> hostCheckTool(HostCall call, HostCheckContext c) async {
       // No worktree of its own: the uncommitted changes in the folder it works in.
       if (w == null) return impl.hostDiffStatsHere(c, call.ended);
       return hostDiffStats(w, await GitService.changes(w));
+    case diagnosticsTool:
+      return impl.hostDiagnostics(c, call.args['path'] is String ? call.args['path']! as String : '');
     case goalCheckTool:
       return hostGoalCheck(c.goal);
     case runScriptTool:
@@ -314,7 +336,7 @@ Future<HostResult> hostCheckTool(HostCall call, HostCheckContext c) async {
 }
 
 /// The tools [hostCheckTool] answers.
-const checkToolNames = {bugCheckTool, checkTool, diffStatsTool, goalCheckTool, runScriptTool};
+const checkToolNames = {bugCheckTool, checkTool, diffStatsTool, diagnosticsTool, goalCheckTool, runScriptTool};
 
 /// diff_stats' answer for [changes] since [w]'s base commit.
 HostResult hostDiffStats(SessionWorktree? w, List<FileChange>? changes) {

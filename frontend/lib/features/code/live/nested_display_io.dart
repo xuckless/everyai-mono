@@ -4,6 +4,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import '../../../core/process/child_processes.dart';
+
 /// On Linux, each session's own headless X display (Xvfb): the apps its commands start open there, the Preview and
 /// the `app` tool see and drive them, and input there never touches the user's pointer or keyboard (no consent
 /// needed). Without Xvfb, or with EVERYAI_NESTED_DISPLAY=0, apps open on the user's display as usual.
@@ -55,6 +57,7 @@ abstract final class NestedDisplays {
   static Future<_Nested?> _start(String tag) async {
     try {
       final p = await Process.start(_xvfb!, ['-displayfd', '1', '-screen', '0', '1440x900x24', '-nolisten', 'tcp']);
+      ChildProcesses.track(p.pid, label: 'Xvfb ($tag)', executable: _xvfb!, exited: p.exitCode);
       unawaited(p.stderr.drain<void>());
       final line = await p.stdout
           .transform(utf8.decoder)

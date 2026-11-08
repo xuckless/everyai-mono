@@ -23,7 +23,10 @@ import '../core/theme/every_theme.dart';
 import '../core/ui/adaptive.dart' show AdaptiveButton, AdaptiveProgress, GlassSurface, GlassLevel, showAdaptiveToast;
 import '../features/code/automations/schedule_providers.dart' show scheduleRunnerProvider;
 import '../features/code/code_providers.dart' show driverShutdownProvider;
-import '../features/local_models/local_model_bridge.dart' show localRoutesProvider, localShutdownProvider;
+import '../features/code/forks/orphan_forks.dart' show orphanForksProvider;
+import '../features/local_models/local_models_providers.dart' show serverLifecyclesProvider;
+import '../features/local_models/local_model_bridge.dart'
+    show localRoutesProvider, localShutdownProvider, localUseTrackerProvider;
 import '../features/code/drivers/driver_registry.dart' show driverStatusesProvider;
 import '../features/code/ui/real_input_consent.dart' show connectRealInput;
 import '../features/history/ui/sidebar.dart';
@@ -152,6 +155,8 @@ class _AppShellState extends ConsumerState<AppShell> {
       // Which coding CLIs are installed: the last check at once, a new one in
       // the background, and again when the app comes back after a while.
       if (mounted && Host.isDesktop) ref.read(driverStatusesProvider);
+      // Fork worktrees no session holds: the empty ones go now, the ones with work wait in Settings → Code.
+      if (mounted && Host.isDesktop) ref.read(orphanForksProvider);
       // Updates: one check per launch (the controller waits a moment, and does nothing on dev or store installs).
       if (mounted && Host.isDesktop) ref.read(updateProvider);
       // After an update: this build's notes, once (never over the entry screen).
@@ -200,6 +205,9 @@ class _AppShellState extends ConsumerState<AppShell> {
       ref.listen(localShutdownProvider, (_, _) {});
       // Keeps LocalRoutes.current filled for the Code harness, which reads it per call.
       ref.listen(localRoutesProvider, (_, _) {});
+      ref.listen(localUseTrackerProvider, (_, _) {});
+      // Server phases (and Apple's server starting by itself) live as long as the app.
+      ref.listen(serverLifecyclesProvider, (_, _) {});
       // Scheduled tasks start their sessions while the app is open.
       ref.listen(scheduleRunnerProvider, (_, _) {});
       ref.listen(remoteHostingProvider.select((s) => s.link.pending.length), (before, now) {

@@ -73,6 +73,12 @@ StateChange stateEvent(String id, ExecutionStatus status) => HarnessEvent.decode
   'value': status.wire,
 }) as StateChange;
 
+/// The lead's own reviewer (Claude Code's auto mode) passed [callIds] back after the app let them through to it:
+/// they wait for the user now, whatever the mode would answer.
+StateChange escalatedEvent(String id, List<String> callIds) =>
+    HarnessEvent.decode({'kind': 'ConversationStateUpdateEvent', 'id': id, 'key': escalatedCallsKey, 'value': callIds})
+        as StateChange;
+
 /// The driver let [callIds] run: they aren't the user's to answer any more,
 /// though their results are still to come (a subagent, a long command).
 StateChange approvedEvent(String id, List<String> callIds) =>

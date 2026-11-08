@@ -5,6 +5,8 @@ import 'package:every_ai/features/code/harness/everyai/llm.dart';
 import 'package:every_ai/features/code/harness/everyai/screen_tools_io.dart';
 import 'package:every_ai/features/code/harness/everyai/shell_io.dart';
 import 'package:every_ai/features/code/harness/everyai/tools_io.dart';
+import 'package:every_ai/features/code/ui/panes/browser_overlays.dart';
+import 'package:flutter/foundation.dart' show VoidCallback;
 import 'package:flutter_test/flutter_test.dart';
 
 /// Tabs, dialogs, file pickers, downloads, the right-click menu and find (real headless Chrome).
@@ -22,6 +24,9 @@ void main() {
       final page = switch (r.uri.path) {
         '/popup' => '<title>Sign in</title><button id="done" onclick="window.close()">Done</button>',
         '/file.txt' => null,
+        '/alerting' => '<title>Alerting</title><script>setTimeout(() => alert("Hold on"), 50)</script>',
+        '/framed' => '<title>Framed</title><iframe id="f" src="/inner"></iframe>',
+        '/inner' => '<a id="dl" href="/file.txt" download>Get</a>',
         _ =>
           '<title>Home</title><p id="p">Find the needle and another needle.</p>'
               '<a id="pop" href="#" onclick="window.open(\'/popup\', \'auth\', \'width=500,height=600\'); return false">'
@@ -40,7 +45,8 @@ void main() {
     });
   });
   tearDown(() async {
-    await browser.close();
+    // Bounded, so a hung browser still gets its Chrome stopped.
+    await browser.close().timeout(const Duration(seconds: 10), onTimeout: () {});
     await browser.host.stop();
     await server.close(force: true);
     tmp.deleteSync(recursive: true);
@@ -151,6 +157,93 @@ void main() {
     skip: skip,
     timeout: const Timeout(Duration(minutes: 1)),
   );
+
+  ToolRunner runnerFor() => ToolRunner(
+    root: tmp.path,
+    shell: SessionShell(root: tmp.path, sessionTag: 't', scratchDir: '${tmp.path}/.sh'),
+    gateway: GatewayClient(baseUrl: 'http://127.0.0.1:9/v1', apiKey: ''),
+    sessionTag: 't',
+    vision: false,
+    browser: browser,
+  );
+
+  test(
+    'tab switches while the Preview casts never wait on themselves',
+    () async {
+      final sub = browser.screencast.listen((f) => browser.ackFrame(f.session));
+      addTearDown(sub.cancel);
+      await browser.open(home());
+      final first = browser.activeTab!;
+      await browser.startScreencast();
+      final sw = Stopwatch()..start();
+      await browser.click(selector: '#newtab').timeout(const Duration(seconds: 8));
+      await until(() => browser.tabs.value.length == 2 && browser.activeTab != first);
+      expect(await browser.evaluate('document.title').timeout(const Duration(seconds: 8)), 'Sign in');
+      await browser.switchTab(first).timeout(const Duration(seconds: 8));
+      expect(await browser.evaluate('document.title').timeout(const Duration(seconds: 8)), 'Home');
+      expect(sw.elapsed, lessThan(const Duration(seconds: 10)));
+      await browser.stopScreencast();
+    },
+    skip: skip,
+    timeout: const Timeout(Duration(minutes: 1)),
+  );
+
+  test(
+    'switching to a tab that shows a dialog says so at once',
+    () async {
+      final sub = browser.screencast.listen((f) => browser.ackFrame(f.session));
+      addTearDown(sub.cancel);
+      final runner = runnerFor();
+      await runner.run('browser', {'action': 'open', 'url': home()});
+      await browser.startScreencast();
+      await browser.evaluate('window.open("/alerting", "_blank"); 1');
+      await until(() => browser.tabs.value.length == 2 && browser.dialog.value != null);
+      // The opener shares the pop-up's renderer: it waits too, and the switch says why instead of hanging.
+      final away = await runner.run('browser', {'action': 'tab', 'index': 1});
+      expect(away.text, contains('Tab 2 waits on a dialog'));
+      expect(browser.dialog.value, isNull);
+      final sw = Stopwatch()..start();
+      final out = await runner.run('browser', {'action': 'tab', 'index': 2});
+      expect(sw.elapsed, lessThan(const Duration(seconds: 10)));
+      expect(out.text, contains('Switched to tab 2'));
+      expect(out.text, contains('shows an alert: "Hold on"'));
+      expect(browser.dialog.value?.message, 'Hold on');
+      await browser.answerDialog(accept: true).timeout(const Duration(seconds: 8));
+      expect(browser.dialog.value, isNull);
+      expect(await browser.evaluate('document.title').timeout(const Duration(seconds: 8)), 'Alerting');
+      await browser.stopScreencast();
+    },
+    skip: skip,
+    timeout: const Timeout(Duration(minutes: 1)),
+  );
+
+  test(
+    'a download started inside a frame of the page is listed',
+    () async {
+      browser.downloadDir = '${tmp.path}/downloads';
+      await browser.open('${home()}framed');
+      await until(() => browser.page.value.title == 'Framed');
+      await browser.evaluate(
+        'new Promise(r => { const f = document.getElementById("f"); '
+        'const go = () => { f.contentDocument.getElementById("dl").click(); r(1); }; '
+        'f.contentDocument && f.contentDocument.getElementById("dl") ? go() : f.onload = go; })',
+      );
+      await until(() => browser.downloads.value.any((d) => d.state == 'completed'));
+      expect(browser.downloads.value.map((d) => (d.name, d.state)), [('file.txt', 'completed')]);
+    },
+    skip: skip,
+    timeout: const Timeout(Duration(minutes: 1)),
+  );
+
+  test("the page's links open in a new tab only past the browser tool's guard", () {
+    final home = Platform.environment['HOME'] ?? '/Users/someone';
+    PageContext link(String url) =>
+        (prevented: false, link: url, image: null, editable: false, selection: '', description: '<a>');
+    VoidCallback? newTab(String url) =>
+        pageMenuItems(browser, link(url), ask: (_) {}).firstWhere((i) => i.label == 'Open link in new tab').onSelected;
+    expect(newTab('http://localhost:3000/docs'), isNotNull);
+    expect(newTab(Uri.file('$home/.ssh/id_ed25519').toString()), isNull);
+  });
 
   test('uploads: local pages and project files only, never secrets', () {
     final root = tmp.path;
