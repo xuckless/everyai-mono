@@ -11,9 +11,6 @@ import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/layout.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../agents/ui/agents_settings_screen.dart';
-import '../../auth/auth_providers.dart';
-import '../../auth/domain/auth_state.dart';
-import '../../auth/profile.dart';
 import '../../billing/ui/billing_screen.dart';
 import '../../code/automations/ui/scheduled_tasks_body.dart';
 import '../../code/code_settings_providers.dart' show SettingsScope;
@@ -35,7 +32,7 @@ import '../../updates/ui/update_banner.dart';
 import '../../updates/ui/whats_new_dialog.dart';
 import '../../updates/whats_new_providers.dart';
 import '../../../core/config/version.dart';
-import 'account_menu.dart';
+import 'account_section.dart';
 import 'api_keys_section.dart';
 import 'notices_screen.dart';
 import 'settings_modal.dart';
@@ -140,80 +137,6 @@ class GeneralSection extends ConsumerWidget {
   }
 }
 
-/// Preferences → Account: who is signed in, and signing out.
-class AccountSection extends ConsumerWidget {
-  const AccountSection({super.key});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final theme = EveryTheme.of(context);
-    final auth = ref.watch(authProvider);
-    final profile = ref.watch(profileProvider).value;
-    final (name, plan) = accountSummary(auth, profile);
-    return KitGroupedList(
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(4, 0, 4, 18),
-          child: WrapRow(
-            lead: Row(
-              children: [
-                AccountAvatar(name: name, size: 44),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(name, style: theme.type.headline.tint(theme.text)),
-                      Text(
-                        [
-                          if (profile != null && profile.email.isNotEmpty) profile.email,
-                          plan.isEmpty ? 'Not signed in' : plan,
-                        ].join(' · '),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.type.caption.tint(theme.textSubtle),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            actions: [
-              KitButton(
-                key: const ValueKey('settings.account.plan'),
-                label: 'Manage plan',
-                style: KitButtonStyle.soft,
-                onPressed: () => showSettings(context, section: SettingsSection.billing),
-              ),
-            ],
-          ),
-        ),
-        SettingsAnchor(
-          section: SettingsSection.account,
-          id: 'sign-out',
-          child: switch (auth) {
-            Bypassed() => const AdaptiveListTile(
-              title: Text('Signed out (development mode)'),
-              subtitle: Text('Sign-in is skipped while DEV_SKIP_AUTH is on.'),
-            ),
-            SignedIn() => AdaptiveListTile(
-              title: const Text('Log out of this device'),
-              subtitle: const Text('Chats stay on this device.'),
-              trailing: AdaptiveButton(
-                key: const ValueKey('settings.sign-out'),
-                label: 'Log out',
-                emphasis: ButtonEmphasis.destructive,
-                onPressed: () => confirmSignOut(context, ref),
-              ),
-            ),
-            _ => const SizedBox.shrink(),
-          },
-        ),
-      ],
-    );
-  }
-}
-
 /// Preferences → Models: My models, and a way to the shop.
 class ModelsSection extends ConsumerWidget {
   const ModelsSection({super.key});
@@ -272,11 +195,11 @@ class DeveloperSection extends ConsumerWidget {
     final config = ref.watch(appConfigProvider);
     return KitGroupedList(
       children: [
-        if (!config.devSkipAuth)
+        if (!config.devTools)
           AdaptiveListTile(
             title: const Text('Nothing to set here'),
             subtitle: Text(
-              'Developer switches show in development builds (DEV_SKIP_AUTH).',
+              'Developer switches show in debug builds (DEV_TOOLS).',
               style: theme.type.body.tint(theme.textMuted),
             ),
           )

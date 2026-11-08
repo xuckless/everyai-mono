@@ -162,5 +162,5 @@ final class DecideClient {
 
 final decideClientProvider = Provider<DecideClient>((ref) {
   // With dev auth the backend serves anonymous requests as its dev user.
-  return DecideClient(ref.watch(apiClientProvider), authenticated: !ref.watch(appConfigProvider).devSkipAuth);
+  return DecideClient(ref.watch(apiClientProvider), authenticated: true);
 });

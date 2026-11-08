@@ -3,6 +3,7 @@
 const std = @import("std");
 const anole = @import("anole");
 const app_main = @import("app");
+const kit = @import("test_kit.zig");
 const openrouter = app_main.openrouter;
 const config = app_main.config;
 
@@ -12,6 +13,7 @@ const Server = anole.Server(app_main.App);
 const Env = struct {
     state: app_main.App,
     fake: openrouter.Fake,
+    mails: app_main.mail.Fake,
     server: Server,
     t: anole.testing.Client(Server),
 
@@ -20,9 +22,11 @@ const Env = struct {
         self.server.deinit();
         self.state.limiter.deinit();
         self.state.global_limiter.deinit();
+        self.state.egress.deinit();
         self.state.relay.deinit();
         self.state.catalog.deinit();
         self.fake.deinit();
+        self.mails.deinit();
     }
 };
 
@@ -41,6 +45,8 @@ fn start(env: *Env, dev_auth: bool) !void {
         .upstream = env.fake.upstream(),
         .catalog = .init(alloc),
     };
+    env.mails = .{ .gpa = alloc };
+    env.state.mailer = env.mails.mailer();
     env.server = try Server.init(alloc, .{ .executors = .exact(2) }, &env.state);
     env.state.db = try env.server.sqlite(":memory:");
     var arena: std.heap.ArenaAllocator = .init(alloc);
@@ -59,13 +65,10 @@ const Status = struct { status: []const u8 };
 const HostList = []const struct { id: []const u8, online: bool, devices: []const struct { id: []const u8, name: []const u8 } };
 
 fn signUp(env: *Env, a: std.mem.Allocator, email: []const u8) ![]const u8 {
-    var res = try env.t.post("/v1/auth/signup", .{ .json = .{ .name = "Ada", .email = email, .password = "correct horse" } });
-    defer res.deinit();
-    try res.expectStatus(.created);
-    return std.fmt.allocPrint(a, "Bearer {s}", .{(try res.json(Tokens)).access_token});
+    return kit.signIn(&env.t, &env.mails, a, email);
 }
 
-test "remote: pairing is single use, same account only, and needs the host's approval" {
+test "remote: pairing is single use, the host's token is its identity, and needs the host's approval" {
     var env: Env = undefined;
     try start(&env, false);
     defer env.deinit();
@@ -81,10 +84,7 @@ test "remote: pairing is single use, same account only, and needs the host's app
     const host = try made.json(NewHost);
     try std.testing.expect(std.mem.startsWith(u8, host.host_token, "rh_"));
 
-    // Someone else's host cannot hand out codes, and neither can the account without the host's own token.
-    var stranger = try env.t.post("/v1/remote/pair", .{ .headers = &.{ .{ "Authorization", bob }, .{ "X-Remote-Host-Token", host.host_token } }, .json = .{ .host_id = host.id } });
-    defer stranger.deinit();
-    try stranger.expectStatus(.unauthorized);
+    // The account alone can't hand out codes: only the host's own token can.
     var tokenless = try env.t.post("/v1/remote/pair", .{ .headers = &.{.{ "Authorization", ada }}, .json = .{ .host_id = host.id } });
     defer tokenless.deinit();
     try tokenless.expectStatus(.unauthorized);
@@ -102,8 +102,8 @@ test "remote: pairing is single use, same account only, and needs the host's app
     try std.testing.expectEqual(@as(usize, 9), code.code.len);
     try std.testing.expectEqual(@as(u8, '-'), code.code[4]);
 
-    // Another account's redeem looks like a wrong code.
-    var other = try env.t.post("/v1/remote/pair/redeem", .{ .headers = &.{.{ "Authorization", bob }}, .json = .{ .code = code.code, .device_name = "Bob's phone", .public_key = "Ym9i" } });
+    // A wrong code finds nothing.
+    var other = try env.t.post("/v1/remote/pair/redeem", .{ .json = .{ .code = "ZZZZ-ZZZZ", .device_name = "Bob's phone", .public_key = "Ym9i" } });
     defer other.deinit();
     try other.expectStatus(.not_found);
 
@@ -122,7 +122,11 @@ test "remote: pairing is single use, same account only, and needs the host's app
     try again.expectStatus(.not_found);
 
     const status_path = try std.fmt.allocPrint(a, "/v1/remote/pair/{s}", .{redeemed.id});
-    var pending = try env.t.get(status_path, .{ .headers = &.{.{ "Authorization", ada }} });
+    // Only the redeeming device (its token) or the host reads the status.
+    var nosy = try env.t.get(status_path, .{ .headers = &.{.{ "Authorization", ada }} });
+    defer nosy.deinit();
+    try nosy.expectStatus(.not_found);
+    var pending = try env.t.get(status_path, .{ .headers = &.{.{ "X-Remote-Device-Token", redeemed.device_token }} });
     defer pending.deinit();
     try std.testing.expectEqualStrings("pending", (try pending.json(Status)).status);
 
@@ -132,9 +136,9 @@ test "remote: pairing is single use, same account only, and needs the host's app
     var self_approve = try env.t.post(approve_path, .{ .headers = &.{.{ "Authorization", ada }} });
     defer self_approve.deinit();
     try self_approve.expectStatus(.unauthorized);
-    var wrong_owner = try env.t.post(approve_path, .{ .headers = &.{ .{ "Authorization", bob }, .{ "X-Remote-Host-Token", host.host_token } } });
-    defer wrong_owner.deinit();
-    try wrong_owner.expectStatus(.unauthorized);
+    var wrong_host = try env.t.post(approve_path, .{ .headers = &.{.{ "X-Remote-Host-Token", other_host.host_token }} });
+    defer wrong_host.deinit();
+    try wrong_host.expectStatus(.not_found);
 
     var ok = try env.t.post(approve_path, .{ .headers = &.{ .{ "Authorization", ada }, .{ "X-Remote-Host-Token", host.host_token } } });
     defer ok.deinit();
@@ -144,7 +148,7 @@ test "remote: pairing is single use, same account only, and needs the host's app
     defer twice.deinit();
     try twice.expectStatus(.not_found);
 
-    var approved = try env.t.get(status_path, .{ .headers = &.{.{ "Authorization", ada }} });
+    var approved = try env.t.get(status_path, .{ .headers = &.{.{ "X-Remote-Host-Token", host.host_token }} });
     defer approved.deinit();
     try std.testing.expectEqualStrings("approved", (try approved.json(Status)).status);
 
@@ -184,7 +188,7 @@ test "remote: pairing is single use, same account only, and needs the host's app
     const dev_path = try std.fmt.allocPrint(a, "/v1/remote/devices/{s}", .{redeemed.device_id});
     var gone = try env.t.delete(dev_path, .{ .headers = &.{.{ "Authorization", bob }} });
     defer gone.deinit();
-    try gone.expectStatus(.not_found);
+    try gone.expectStatus(.unauthorized);
     // The account alone can't: the host's or the device's own token has to come with it.
     var tokenless_unpair = try env.t.delete(dev_path, .{ .headers = &.{.{ "Authorization", ada }} });
     defer tokenless_unpair.deinit();
@@ -262,18 +266,11 @@ test "remote: the relay carries opaque frames between host and client, and unpai
             // A wrong device token is refused before the upgrade.
             try std.testing.expectError(error.WebSocketUpgradeFailed, client.connectWebSocket(try std.fmt.allocPrint(ar, "ws://127.0.0.1:{d}/v1/remote/client/{s}?token=rd_nope", .{ port, host_id }), .{}));
 
-            // The device token alone is not enough: the caller's account JWT has to match too.
-            const secret = st.cfg.jwt_secret.?.expose();
-            const other = try app_main.auth.accessToken(ar, io, secret, "someone-else");
-            const mine = try app_main.auth.accessToken(ar, io, secret, "dev-user");
+            // The device token is the device's identity (an account is optional).
             const base = try std.fmt.allocPrint(ar, "ws://127.0.0.1:{d}/v1/remote/client/{s}?token={s}", .{ port, host_id, dev.device_token });
-            try std.testing.expectError(error.WebSocketUpgradeFailed, client.connectWebSocket(try std.fmt.allocPrint(ar, "{s}&user_token={s}", .{ base, other }), .{}));
-            try std.testing.expectError(error.WebSocketUpgradeFailed, client.connectWebSocket(try std.fmt.allocPrint(ar, "{s}&user_token=garbage", .{base}), .{}));
-            const host_url = try std.fmt.allocPrint(ar, "ws://127.0.0.1:{d}/v1/remote/host?token={s}&user_token={s}", .{ port, host_token, other });
-            try std.testing.expectError(error.WebSocketUpgradeFailed, client.connectWebSocket(host_url, .{}));
 
-            // The client, with its token and its account's JWT in the query.
-            var c = try client.connectWebSocket(try std.fmt.allocPrint(ar, "{s}&user_token={s}", .{ base, mine }), .{});
+            // The client, with its token in the query.
+            var c = try client.connectWebSocket(base, .{});
             defer c.deinit();
             const chello = try expectNotice(&c, ar, "hello");
             try std.testing.expect(chello.object.get("host_online").?.bool);
@@ -326,4 +323,185 @@ test "remote: the relay carries opaque frames between host and client, and unpai
     var checking = try env.server.io().concurrent(Check.run, .{ &env.server, &env.state, a, host.id, host.host_token, device });
     try env.server.listen("127.0.0.1:0");
     try checking.await(env.server.io());
+}
+
+test "remote: no account needed; a host is claimed by signing in, limited per network, and pruned when idle" {
+    var env: Env = undefined;
+    try start(&env, false);
+    defer env.deinit();
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = a };
+
+    // Signed out: a host, a code, a redeem, the device's status, an approval.
+    var made = try env.t.post("/v1/remote/hosts", .{ .json = .{ .name = "Studio Mac", .public_key = "aG9zdA" } });
+    defer made.deinit();
+    try made.expectStatus(.created);
+    const host = try made.json(NewHost);
+    try std.testing.expectEqualStrings("anonymous", try env.state.db.one([]const u8, &c, "SELECT user_id FROM remote_hosts WHERE id = ?", .{host.id}));
+    var p = try env.t.post("/v1/remote/pair", .{ .headers = &.{.{ "X-Remote-Host-Token", host.host_token }}, .json = .{ .host_id = host.id } });
+    defer p.deinit();
+    try p.expectStatus(.created);
+    var r = try env.t.post("/v1/remote/pair/redeem", .{ .json = .{ .code = (try p.json(Code)).code, .device_name = "Phone", .public_key = "cGhvbmU" } });
+    defer r.deinit();
+    try r.expectStatus(.ok);
+    const device = try r.json(Redeemed);
+    var st = try env.t.get(try std.fmt.allocPrint(a, "/v1/remote/pair/{s}", .{device.id}), .{ .headers = &.{.{ "X-Remote-Device-Token", device.device_token }} });
+    defer st.deinit();
+    try std.testing.expectEqualStrings("pending", (try st.json(Status)).status);
+    var ok = try env.t.post(try std.fmt.allocPrint(a, "/v1/remote/pair/{s}/approve", .{device.id}), .{ .headers = &.{.{ "X-Remote-Host-Token", host.host_token }} });
+    defer ok.deinit();
+    try ok.expectStatus(.ok);
+
+    // Listing needs an account; claiming needs the account and the host's token.
+    var list = try env.t.get("/v1/remote/hosts", .{});
+    defer list.deinit();
+    try list.expectStatus(.unauthorized);
+    const ada = try signUp(&env, a, "ada@example.com");
+    const bob = try signUp(&env, a, "bob@example.com");
+    const claim_path = try std.fmt.allocPrint(a, "/v1/remote/hosts/{s}/claim", .{host.id});
+    var tokenless = try env.t.post(claim_path, .{ .headers = &.{.{ "Authorization", ada }} });
+    defer tokenless.deinit();
+    try tokenless.expectStatus(.unauthorized);
+    var claimed = try env.t.post(claim_path, .{ .headers = &.{ .{ "Authorization", ada }, .{ "X-Remote-Host-Token", host.host_token } } });
+    defer claimed.deinit();
+    try claimed.expectStatus(.ok);
+    var again = try env.t.post(claim_path, .{ .headers = &.{ .{ "Authorization", ada }, .{ "X-Remote-Host-Token", host.host_token } } });
+    defer again.deinit();
+    try again.expectStatus(.ok);
+    var taken = try env.t.post(claim_path, .{ .headers = &.{ .{ "Authorization", bob }, .{ "X-Remote-Host-Token", host.host_token } } });
+    defer taken.deinit();
+    try taken.expectStatus(.conflict);
+    var mine = try env.t.get("/v1/remote/hosts", .{ .headers = &.{.{ "Authorization", ada }} });
+    defer mine.deinit();
+    const hosts = try mine.json(HostList);
+    try std.testing.expectEqual(@as(usize, 1), hosts.len);
+    try std.testing.expectEqual(@as(usize, 1), hosts[0].devices.len);
+
+    // The reserved owner can't be signed into.
+    var reserved = try env.t.post("/v1/auth/magic", .{ .json = .{ .email = "anonymous@everyai.invalid" } });
+    defer reserved.deinit();
+    try std.testing.expectEqual(anole.http.Status.unprocessable_entity, reserved.status);
+
+    // Anonymous hosts per network per hour (the claimed one doesn't count).
+    for (0..@intCast(env.state.cfg.anon_hosts_per_hour)) |_| {
+        var more = try env.t.post("/v1/remote/hosts", .{ .json = .{ .name = "x", .public_key = "eA" } });
+        defer more.deinit();
+        try more.expectStatus(.created);
+    }
+    var over = try env.t.post("/v1/remote/hosts", .{ .json = .{ .name = "x", .public_key = "eA" } });
+    defer over.deinit();
+    try over.expectStatus(.too_many_requests);
+
+    // Idle anonymous hosts go; the claimed one stays.
+    _ = try env.state.db.exec(&c, "UPDATE remote_hosts SET created_at = 0, last_seen_at = NULL", .{});
+    try app_main.remote.prune(&env.state, &c);
+    try std.testing.expectEqual(@as(i64, 1), try env.state.db.one(i64, &c, "SELECT COUNT(*) FROM remote_hosts", .{}));
+    try std.testing.expectEqual(@as(i64, 1), try env.state.db.one(i64, &c, "SELECT COUNT(*) FROM remote_devices", .{}));
+}
+
+test "remote: pairings left undecided don't use up a host's devices, and prune spares live hosts" {
+    var env: Env = undefined;
+    try start(&env, false);
+    defer env.deinit();
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = a };
+    env.state.cfg.devices_per_host = 1;
+
+    var made = try env.t.post("/v1/remote/hosts", .{ .json = .{ .name = "Mac", .public_key = "aG9zdA" } });
+    defer made.deinit();
+    const host = try made.json(NewHost);
+    for (0..2) |_| {
+        var p = try env.t.post("/v1/remote/pair", .{ .headers = &.{.{ "X-Remote-Host-Token", host.host_token }}, .json = .{ .host_id = host.id } });
+        defer p.deinit();
+        var r = try env.t.post("/v1/remote/pair/redeem", .{ .json = .{ .code = (try p.json(Code)).code, .device_name = "Phone", .public_key = "cGhvbmU" } });
+        defer r.deinit();
+        try r.expectStatus(.ok);
+        // Nobody approves it; its window passes.
+        _ = try env.state.db.exec(&c, "UPDATE remote_devices SET created_at = created_at - 3600", .{});
+        _ = try env.state.db.exec(&c, "UPDATE remote_pairings SET decide_by = decide_by - 3600", .{});
+    }
+
+    // An idle anonymous host stays while it is online, or while its devices connect.
+    _ = try env.state.db.exec(&c, "UPDATE remote_hosts SET created_at = 0, last_seen_at = 1", .{});
+    try env.state.relay.hosts.put(std.heap.smp_allocator, try std.heap.smp_allocator.dupe(u8, host.id), 1);
+    try app_main.remote.prune(&env.state, &c);
+    try std.testing.expectEqual(@as(i64, 1), try env.state.db.one(i64, &c, "SELECT COUNT(*) FROM remote_hosts", .{}));
+    env.state.relay.revokeHost(env.server.io(), host.id);
+    _ = try env.state.db.exec(&c, "UPDATE remote_devices SET last_seen_at = ?", .{std.Io.Clock.real.now(env.server.io()).toSeconds()});
+    try app_main.remote.prune(&env.state, &c);
+    try std.testing.expectEqual(@as(i64, 1), try env.state.db.one(i64, &c, "SELECT COUNT(*) FROM remote_hosts", .{}));
+    // Unapproved devices go a day after their window.
+    _ = try env.state.db.exec(&c, "UPDATE remote_devices SET created_at = 0, last_seen_at = NULL", .{});
+    try app_main.remote.prune(&env.state, &c);
+    try std.testing.expectEqual(@as(i64, 0), try env.state.db.one(i64, &c, "SELECT COUNT(*) FROM remote_hosts", .{}));
+}
+
+test "remote: egress gate queues sockets past the limit and closes one over its quota" {
+    var env: Env = undefined;
+    try start(&env, false);
+    defer env.deinit();
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var made = try env.t.post("/v1/remote/hosts", .{ .json = .{ .name = "Mac", .public_key = "aG9zdA" } });
+    defer made.deinit();
+    const host = try made.json(NewHost);
+    var p = try env.t.post("/v1/remote/pair", .{ .headers = &.{.{ "X-Remote-Host-Token", host.host_token }}, .json = .{ .host_id = host.id } });
+    defer p.deinit();
+    var r = try env.t.post("/v1/remote/pair/redeem", .{ .json = .{ .code = (try p.json(Code)).code, .device_name = "Phone", .public_key = "cGhvbmU" } });
+    defer r.deinit();
+    const device = try r.json(Redeemed);
+    var ok = try env.t.post(try std.fmt.allocPrint(a, "/v1/remote/pair/{s}/approve", .{device.id}), .{ .headers = &.{.{ "X-Remote-Host-Token", host.host_token }} });
+    defer ok.deinit();
+    try ok.expectStatus(.ok);
+
+    // One socket at a time, and an anonymous host may relay 16 bytes a day.
+    env.state.egress.cfg.max_live = 1;
+    env.state.egress_quotas.host.daily_bytes = 16;
+
+    const Check = struct {
+        fn run(srv: *Server, st: *app_main.App, ar: std.mem.Allocator, host_id: []const u8, host_token: []const u8, dev: Redeemed) !void {
+            defer srv.stop();
+            try srv.waitReady();
+            const io = srv.io();
+            const port = srv.addresses()[0].ip.getPort();
+            var client = anole.client(io).http;
+            var h = try client.connectWebSocket(try std.fmt.allocPrint(ar, "ws://127.0.0.1:{d}/v1/remote/host?token={s}", .{ port, host_token }), .{});
+            defer h.deinit();
+            _ = try expectNotice(&h, ar, "hello");
+
+            // The client waits its turn behind the host.
+            var c = try client.connectWebSocket(try std.fmt.allocPrint(ar, "ws://127.0.0.1:{d}/v1/remote/client/{s}?token={s}", .{ port, host_id, dev.device_token }), .{});
+            defer c.deinit();
+            const queued = try expectNotice(&c, ar, "queued");
+            try std.testing.expectEqual(@as(i64, 1), queued.object.get("position").?.integer);
+
+            // A slot opens: it's admitted. Then 20 bytes are over its 16.
+            st.egress.cfg.max_live = 2;
+            _ = try expectNotice(&c, ar, "hello");
+            try c.send(.binary, "0123456789abcdef");
+            var up = try h.receive();
+            while (up.type == .text) up = try h.receive(); // client_open first
+            try std.testing.expect(up.type == .binary);
+            try c.send(.binary, "more");
+            const budget = try expectNotice(&c, ar, "budget");
+            try std.testing.expect(budget.object.get("resets_at").?.integer > 0);
+            const end = try c.receive();
+            try std.testing.expect(end.type == .close);
+            try h.close(.normal, "");
+            _ = h.receive() catch {};
+        }
+    };
+    var checking = try env.server.io().concurrent(Check.run, .{ &env.server, &env.state, a, host.id, host.host_token, device });
+    try env.server.listen("127.0.0.1:0");
+    try checking.await(env.server.io());
+
+    // The bytes reached the ledger.
+    var c: anole.db.Ctx = .{ .io = env.server.io(), .arena = a };
+    try std.testing.expect(try env.state.db.one(i64, &c, "SELECT COALESCE(SUM(bytes), 0) FROM egress_usage WHERE period LIKE 'd%'", .{}) >= 16);
 }

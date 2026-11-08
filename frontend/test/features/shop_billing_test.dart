@@ -1,3 +1,4 @@
+import 'package:every_ai/core/config/billing_flag.dart';
 import 'package:every_ai/app/shell.dart';
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/db/app_database.dart';
@@ -41,6 +42,10 @@ class _Catalog extends CatalogController {
 }
 
 void main() {
+  // Written for metered credits; the parked default has billing_parked_test.dart.
+  setUp(() => BillingFlag.enabled = true);
+  tearDown(() => BillingFlag.enabled = false);
+
   Future<ProviderContainer> pump(WidgetTester tester, Map<String, String> keys) async {
     tester.view.physicalSize = const Size(1200, 1600);
     tester.view.devicePixelRatio = 1;

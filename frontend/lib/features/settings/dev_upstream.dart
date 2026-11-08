@@ -37,7 +37,7 @@ final devUpstreamProvider = AsyncNotifierProvider.autoDispose<DevUpstreamControl
 
 final class DevUpstreamController extends AsyncNotifier<DevUpstream> {
   ApiClient get _api => ref.read(apiClientProvider);
-  bool get _authenticated => !ref.read(appConfigProvider).devSkipAuth;
+  bool get _authenticated => true;
 
   @override
   Future<DevUpstream> build() async =>

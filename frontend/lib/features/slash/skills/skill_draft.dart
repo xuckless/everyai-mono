@@ -61,7 +61,7 @@ final class SkillDrafter {
 }
 
 final skillDrafterProvider = Provider<SkillDrafter>(
-  (ref) => SkillDrafter(ref.watch(apiClientProvider), authenticated: !ref.watch(appConfigProvider).devSkipAuth),
+  (ref) => SkillDrafter(ref.watch(apiClientProvider), authenticated: true),
 );
 
 /// Where a finished skill goes: through the strict import check into the

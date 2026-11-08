@@ -19,16 +19,17 @@ Anole comes from its release tag (url + hash in `build.zig.zon`).
 
 | Area | Endpoints | Source |
 | --- | --- | --- |
-| Auth | `POST /v1/auth/signup\|login\|google\|refresh\|logout`, `DELETE /v1/auth/account`, `GET /v1/me` | `auth.zig` |
+| Auth | Magic link: `POST /v1/auth/magic {email, device_name?}` → 202 `{request_id, request_secret, expires_at}` (mails a link and a 6-digit code), `POST /v1/auth/magic/poll\|code`, the link page `GET /auth/l/:token` (+ `POST …/approve\|deny`, same origin only); `POST /v1/auth/refresh\|logout\|logout_all\|email`, `GET /v1/auth/sign_ins`, `DELETE /v1/auth/account`, `GET /v1/me`. Mail via Resend (`RESEND_API_KEY`, `MAIL_FROM`, `MAIL_DAILY_CAP`); without a key development logs it, production answers 503 | `auth.zig`, `magic.zig`, `mail.zig` |
 | Gateway keys | `POST/GET /v1/keys`, `DELETE /v1/keys/:id` (`sk-eai-…`) | `auth.zig` |
 | Models | `GET /v1/models` (OpenRouter catalog, hourly, marked-up prices), `GET /v1/models/defaults` | `models.zig` |
 | Chat | `POST /v1/chat/stream` (SSE), `POST /v1/chat/tool_result` | `chat.zig`, `tools.zig`, `tool_wait.zig` |
 | Gateway | `POST /v1/chat/completions` (OpenAI-compatible, streaming) | `gateway.zig` |
 | Images | `POST /v1/images` `{prompt, model?, engine?: raster\|vector, n?, quality?, output_format?, input_references?}` returns `{mime, data, images}` (OpenRouter `/images`) | `images.zig` |
 | Figure polish | `POST /v1/figures/polish` `{svg, png_base64, brief?, session?}`: a vision model (`AUX_POLISH_MODEL`, Haiku 5.5) looks at the render, lists defects and revises the SVG once; the revision must pass the `render_svg` checks. Returns `{svg, defects, changed, kept_original, model, charged_micros}`; 402 preflight, capped by `POLISH_MAX_MICROS` (50000) | `polish.zig` |
-| Decide | `POST /v1/aux/decide` `{job?, text, instructions?, questions: [{id, kind: bool\|choice\|score, prompt, choices?}]}` (1-64 questions, 2-64 choices, text up to 200K characters, else 413): a cheap model (`AUX_DECIDE_MODEL`, else the utility model) answers under a strict JSON schema. Returns `{answers: [{id, value}], model, charged_micros}`; `value` is a bool, one of the choices, a number 0-1, or `"unsure"` (also for anything the model got wrong). JWT or `sk-eai-` key, metered as kind `decide` under `X-EveryAI-Session`; 402 preflight, 502 when the upstream fails | `decide.zig` |
-| Billing | `GET /v1/plans`, `GET /v1/billing`, `GET /v1/usage`, `POST /v1/billing/checkout`, `POST /v1/billing/webhook` | `billing.zig` |
-| Remote hosts | `POST/GET /v1/remote/hosts`, `DELETE /v1/remote/hosts/:id`, `DELETE /v1/remote/devices/:id`, `POST /v1/remote/pair`, `POST /v1/remote/pair/redeem`, `GET /v1/remote/pair/:id`, `POST /v1/remote/pair/:id/approve\|deny`; WebSockets `/v1/remote/host` and `/v1/remote/client/:host_id` relay end-to-end encrypted frames (contract in the `remote.zig` header) | `remote.zig` |
+| Decide | `POST /v1/aux/decide` `{job?, text, instructions?, questions: [{id, kind: bool\|choice\|score, prompt, choices?}]}` (1-64 questions, 2-64 choices, text up to 200K characters, else 413): a cheap model (`AUX_DECIDE_MODEL`, else the utility model) answers under a strict JSON schema. Returns `{answers: [{id, value}], model, charged_micros}`; `value` is a bool, one of the choices, a number 0-1, or `"unsure"` (also for anything the model got wrong). JWT or `sk-eai-` key, metered as kind `decide` under `X-EveryAI-Session`; 402 preflight (billing on only), 502 when the upstream fails | `decide.zig` |
+| Usage | `GET /v1/usage`, `GET /v1/usage/session/:id` | `billing.zig` |
+| Billing (parked, `BILLING_ENABLED=true` only) | `GET /v1/plans`, `GET /v1/billing`, `POST /v1/billing/checkout`, `POST /v1/billing/webhook` | `billing.zig` |
+| Remote hosts | No account needed (tokens are the identity); `POST /v1/remote/hosts/:id/claim` adds a host to an account; relay egress gated by `egress.zig` (queue, quotas, pacing). `POST/GET /v1/remote/hosts`, `DELETE /v1/remote/hosts/:id`, `DELETE /v1/remote/devices/:id`, `POST /v1/remote/pair`, `POST /v1/remote/pair/redeem`, `GET /v1/remote/pair/:id`, `POST /v1/remote/pair/:id/approve\|deny`; WebSockets `/v1/remote/host` and `/v1/remote/client/:host_id` relay end-to-end encrypted frames (contract in the `remote.zig` header) | `remote.zig` |
 | Webhooks | `POST/GET /v1/hooks`, `DELETE /v1/hooks/:id` (JWT; `{name, host_id}` returns `{id, name, host_id, url, secret}`, the `whk_` secret shown once; 10 per account). `POST /v1/hooks/:id` (public, 30/min per hook, 1 MiB): a signed delivery is queued for the hook's host and relayed to it as a `webhook` notice (not end-to-end encrypted; see "Webhooks" below) | `hooks.zig` |
 
 ## Chat stream
@@ -175,8 +176,16 @@ Cached and cache-write tokens are recorded per call in `usage_events`.
 
 ## Billing (parked)
 
-Not used by the dev build (BYOK only); kept for later.
+Off unless `BILLING_ENABLED=true`; the code is kept for later. With it off:
+`/v1/plans`, `/v1/billing`, `/v1/billing/checkout` and the webhook are 404,
+prices show at cost (no markup), no call is ever refused for credit (no 402
+`out_of_credits`), and `usage_events` still record every call (Settings →
+Usage, `/v1/usage/session/:id` and the Code spend cap read them, with
+`charged_micros` 0). A server that holds its own model key with billing off
+would give it to anyone, so production refuses to start unless
+`SERVER_KEY_UNMETERED=true`.
 
+With billing on:
 
 - Amounts are integer micro-dollars; the charge is `ceil(cost × MARKUP)`.
 - A charge is debited from the plan's monthly included usage first, then from the wallet.
@@ -186,7 +195,7 @@ Not used by the dev build (BYOK only); kept for later.
 - Without `STRIPE_SECRET_KEY`, checkout is mocked: it credits or switches the
   plan immediately.
 - With `DEV_AUTH=true`, credential-less requests act as a seeded `dev-user`
-  (pro plan, $20 wallet).
+  (pro plan, and a $20 wallet when the server has a key).
 
 ## Deployment
 

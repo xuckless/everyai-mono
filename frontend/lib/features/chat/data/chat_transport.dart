@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
+import '../../../core/local_backend/local_gateway.dart';
 import '../../../core/net/api_client.dart';
 import '../../../core/net/api_error.dart';
 import '../../artifacts/domain/artifact.dart';
@@ -511,8 +512,8 @@ String? memoryCallNote(ToolCallPart call) {
 bool runsLocally(ChatRequest request) => request.model.id.value.startsWith('local/') || request.providerKeys.isNotEmpty;
 
 /// Sends local-model and own-key turns to the bundled server ([local]) and
-/// the rest to the deployed one ([remote]). Without a bundled server, own-key
-/// turns go to [remote] as before and local models fail with [localProblem].
+/// the rest to the deployed one ([remote]). Without a bundled server both
+/// fail with [localProblem]: own keys never reach the deployed server.
 final class SplitTransport implements ChatTransport {
   const SplitTransport({required this.remote, required this.local, required this.localProblem});
 
@@ -532,7 +533,8 @@ final class SplitTransport implements ChatTransport {
     } else if (request.model.id.value.startsWith('local/')) {
       throw ProtocolError(localProblem() ?? "Local models need the app's built-in server, which isn't running.");
     } else {
-      yield* remote.send(request, cancel: cancel);
+      // Own keys never go to the hosted server (it refuses them anyway).
+      throw ProtocolError(localProblem() ?? LocalGateway.missing);
     }
   }
 }

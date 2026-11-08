@@ -170,7 +170,7 @@ fn polish(app: *App, req: *anole.Request, res: *anole.Response) !void {
     if (png.len == 0) return req.invalid("png_base64", "polish.png_empty", "must hold the rendered figure");
 
     const model = routing.modelFor(app.cfg, .polish);
-    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
+    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.priceMarkup());
     const aux = try app.aux(req);
     if (aux.unavailable) return res.fail(.service_unavailable, "Polish needs an API key or a local side-job model.");
     const model_free = app.catalog.facts(req.io, model).free;
@@ -179,13 +179,13 @@ fn polish(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const text = try userText(req.arena, svg, body.brief);
     const prompt_tokens = tokensOf(instructions) + tokensOf(text) + prompt_overhead_tokens + image_tokens;
     const prices: ?models.Prices = if (model_free) null else app.catalog.pricesOf(req.io, model);
-    const plan = budget(prices, app.cfg.markup, prompt_tokens, tokensOf(svg), app.cfg.polish_max_micros) orelse
+    const plan = budget(prices, app.cfg.priceMarkup(), prompt_tokens, tokensOf(svg), app.cfg.polish_max_micros) orelse
         return res.fail(.unprocessable_entity, "This figure is too large to polish within the cost limit.");
     billing.preflight(app, req, who.user_id, free) catch |err| switch (err) {
         error.PaymentRequired => return outOfCredits(res),
         else => return err,
     };
-    if (!free and plan.estimate_micros > 0 and try billing.available(app, req, who.user_id) < plan.estimate_micros) return outOfCredits(res);
+    if (!free and app.cfg.billing_enabled and plan.estimate_micros > 0 and try billing.available(app, req, who.user_id) < plan.estimate_micros) return outOfCredits(res);
 
     const image_url = try std.mem.concat(req.arena, u8, &.{ "data:image/png;base64,", png });
     const req_body = try std.json.Stringify.valueAlloc(req.arena, .{

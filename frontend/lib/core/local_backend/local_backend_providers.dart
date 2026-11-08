@@ -42,6 +42,7 @@ final class LocalApi {
       baseUrl: info.baseUrl,
       client: createPlatformHttpClient(userAgent: 'EveryAI/0.1'),
       defaultHeaders: {LocalBackendInfo.tokenHeader: info.token},
+      acceptsProviderKeys: true,
       waitForServer: true,
     );
   }

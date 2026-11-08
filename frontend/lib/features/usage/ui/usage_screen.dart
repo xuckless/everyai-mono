@@ -2,6 +2,7 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/config/billing_flag.dart';
 import '../../../core/motion/motion.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
@@ -44,7 +45,8 @@ class _UsageBodyState extends ConsumerState<UsageBody> {
     final query = (range: _range, by: _by);
     final stats = ref.watch(usageStatsProvider(query));
     final providers = ref.watch(usageStatsProvider((range: _range, by: UsageGroupBy.provider)));
-    final billing = ref.watch(billingProvider);
+    // Credits are parked unless BillingFlag: no plan card, and no /v1/billing call.
+    final billing = BillingFlag.enabled ? ref.watch(billingProvider) : null;
     final catalog = ref.watch(modelCatalogProvider);
 
     String label(String key) => switch (_by) {
@@ -84,7 +86,7 @@ class _UsageBodyState extends ConsumerState<UsageBody> {
               tooltip: 'Refresh',
               onPressed: () {
                 ref.invalidate(usageStatsProvider);
-                ref.invalidate(billingProvider);
+                if (BillingFlag.enabled) ref.invalidate(billingProvider);
               },
             ),
           ],

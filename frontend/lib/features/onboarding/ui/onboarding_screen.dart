@@ -632,7 +632,7 @@ class _KeysState extends ConsumerState<_Keys> {
         LayoutBuilder(
           builder: (context, box) => KitSegmented<ByokProvider>(
             width: box.maxWidth,
-            values: byokProviders,
+            values: [for (final p in byokProviders) if (p.connected) p],
             selected: _provider,
             label: (p) => p.name,
             // The key being checked is saved under the provider it was checked for.

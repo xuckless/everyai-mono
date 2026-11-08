@@ -29,6 +29,7 @@ const Env = struct {
         self.state.catalog.deinit();
         self.state.limiter.deinit();
         self.state.global_limiter.deinit();
+        self.state.egress.deinit();
         self.fake.deinit();
     }
 };
@@ -112,9 +113,10 @@ test "usage: day and week aggregates by model, kind and provider with cache savi
     try std.testing.expectEqualStrings("anthropic/claude-haiku-5.5", m.buckets[1].key);
     try std.testing.expectEqual(@as(i64, 2), m.buckets[1].calls);
     try std.testing.expectEqual(@as(i64, 500), m.buckets[1].charged_micros);
-    // 1M cached tokens at $0.90/M saved, marked up 1.15.
-    try std.testing.expectEqual(@as(i64, 1_035_000), m.buckets[0].saved_micros);
-    try std.testing.expectEqual(@as(i64, 1_035_000), m.total.saved_micros);
+    // 1M cached tokens at $0.90/M saved, at cost (billing parked: no markup).
+    // At cost: billing is parked, so no markup (1_035_000 with it).
+    try std.testing.expectEqual(@as(i64, 900_000), m.buckets[0].saved_micros);
+    try std.testing.expectEqual(@as(i64, 900_000), m.total.saved_micros);
     try std.testing.expectEqual(@as(i64, 1010), m.total.charged_micros);
     try std.testing.expectEqual(@as(i64, 4), m.total.calls);
     try std.testing.expectEqualStrings("anthropic/claude-haiku-5.5", m.keys[0].key);

@@ -138,7 +138,7 @@ fn mimeOf(format: ?[]const u8, b64: []const u8) []const u8 {
 /// (not billed by OpenRouter) are `error.UpstreamFailed` with the message in
 /// `err_message` when given.
 pub fn generate(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]const u8, o: Options, err_message: ?*[]const u8) ![]const Image {
-    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
+    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.priceMarkup());
     const aux = try app.aux(req);
     // Images come from OpenRouter only; a local route can't make them.
     if (aux.unavailable or aux.local) {
@@ -148,7 +148,7 @@ pub fn generate(app: *App, req: *anole.Request, who: auth.Identity, session: ?[]
     const free = app.catalog.facts(req.io, o.model).free or aux.byok;
     try billing.preflight(app, req, who.user_id, free);
     // Images are billed after the fact, so a request must fit what is left.
-    if (!free and try billing.available(app, req, who.user_id) < worstCaseMicros(o, app.cfg.markup)) return error.PaymentRequired;
+    if (!free and app.cfg.billing_enabled and try billing.available(app, req, who.user_id) < worstCaseMicros(o, app.cfg.priceMarkup())) return error.PaymentRequired;
     const body = try requestBody(req.arena, o);
     const s = try aux.up.post(openrouter.ctxOf(req), "/images", body, &.{});
     defer s.close();

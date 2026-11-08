@@ -107,7 +107,7 @@ jobs:
           cache: true
       - name: Defines
         run: |
-          printf '{"API_BASE_URL":"%s","DEV_SKIP_AUTH":true,"SSE_ENABLED":true,"GOOGLE_SERVER_CLIENT_ID":""}\n' \
+          printf '{"API_BASE_URL":"%s","SSE_ENABLED":true}\n' \
             "$EVERYAI_API" > "$RUNNER_TEMP/defines.json"
       - run: flutter pub get
       - run: flutter build windows --release --dart-define-from-file="$RUNNER_TEMP/defines.json"
@@ -164,7 +164,7 @@ jobs:
       - name: Build
         working-directory: frontend
         run: |
-          printf '{"API_BASE_URL":"%s","DEV_SKIP_AUTH":true,"SSE_ENABLED":true,"GOOGLE_SERVER_CLIENT_ID":""}\n' \
+          printf '{"API_BASE_URL":"%s","SSE_ENABLED":true}\n' \
             "$EVERYAI_API" > "$RUNNER_TEMP/defines.json"
           flutter pub get
           flutter build linux --release --dart-define-from-file="$RUNNER_TEMP/defines.json"

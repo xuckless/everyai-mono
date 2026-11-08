@@ -39,8 +39,17 @@ pub const Config = struct {
     /// Where `anthropic/*` models go until the switch is used: "openrouter" or "anthropic".
     anthropic_upstream: []const u8 = "openrouter",
 
-    /// Price multiplier on upstream cost for every paid request.
+    /// Price multiplier on upstream cost for every paid request (only with
+    /// billing on; see `priceMarkup`).
     markup: f64 = 1.15,
+    /// Credits, plans, wallet and Stripe. Parked: off by default, the
+    /// plan/billing/checkout/webhook routes are 404, nothing is charged and
+    /// prices show at cost. Usage is still recorded.
+    billing_enabled: bool = false,
+    /// With billing off, the server's own model key would be free to anyone
+    /// who can reach it. Production refuses to start with one unless this
+    /// says that is intended (a self-hosted, trusted server).
+    server_key_unmetered: bool = false,
     /// Model used when a request names none.
     default_model: []const u8 = "anthropic/claude-haiku-5.5",
     /// Research mode always runs on this model.
@@ -85,15 +94,58 @@ pub const Config = struct {
     gateway_cache_ttl: []const u8 = "1h",
 
     /// Prototype convenience: requests without credentials act as the seeded
-    /// dev user (the app's DEV_SKIP_AUTH mode). Off in production builds.
+    /// dev user (local development only). Off in production builds.
     dev_auth: bool = true,
     /// Acknowledges that DEV_AUTH is open to the network when `host` is not
     /// loopback; without it `main` refuses to start (see `lanExposure`).
     dev_auth_lan: bool = false,
 
-    /// Google OAuth client ids whose ID tokens we accept (comma separated:
-    /// android, ios, web/desktop).
-    google_client_ids: []const []const u8 = &.{},
+    /// Sign-in mail (magic.zig) through Resend's HTTPS API. Without a key,
+    /// development logs the message; production answers 503.
+    resend_api_key: ?anole.Secret = null,
+    mail_from: []const u8 = "EveryAI <noreply@everyai.dev>",
+    /// Sends a day, under Resend's free 100: past it sign-in answers 503.
+    mail_daily_cap: i64 = 90,
+
+    /// Tests and a developer's own hosted run only: take `X-Provider-Key-*`
+    /// on a server that isn't the app's local one. Off, such a request is a
+    /// 400 `keys_not_accepted`; production refuses to start with it on.
+    accept_provider_keys: bool = false,
+    /// Development only, for `frontend/tool/byok_live_check.dart`: route calls
+    /// to providers.json entries still marked `saved`, so their path can be
+    /// checked live before one is flipped to `connected`. Without it such a
+    /// key is never used and the check would run on another route.
+    route_saved_providers: bool = false,
+
+    /// Vault sync (vault.zig), dev only until reviewed: the /v1/vault routes
+    /// exist only with this on, and production refuses to start with it.
+    vault_sync_dev: bool = false,
+
+    /// Relay egress (egress.zig). The server's send rate and month, sockets
+    /// at once (more wait in one queue), and per-subject limits: an
+    /// anonymous host, and an account (its claimed hosts together).
+    egress_rate_mbps: u64 = 40,
+    /// The month is sized to GCP's Always Free egress (1 GB a month from
+    /// North America, Premium tier only; about $0.12/GB past it, checked
+    /// 2026-11-08 from secondary sources): 768 MB for the relay leaves room for
+    /// the API itself. Raise it once a budget allows.
+    egress_monthly_mb: u64 = 768,
+    /// Log a warning once the month's relay bytes pass this many MB (0 = 80%
+    /// of EGRESS_MONTHLY_MB).
+    egress_warn_mb: u64 = 0,
+    relay_max_live: u32 = 500,
+    relay_per_subject_live: u32 = 16,
+    relay_host_daily_mb: u64 = 32,
+    relay_host_monthly_mb: u64 = 128,
+    relay_account_daily_mb: u64 = 64,
+    relay_account_monthly_mb: u64 = 256,
+    /// Anonymous hosts: new ones per network per hour, live ones per
+    /// network, devices per host, and days without a connection before one
+    /// is removed (claimed hosts never expire).
+    anon_hosts_per_hour: i64 = 5,
+    anon_hosts_per_network: i64 = 20,
+    devices_per_host: i64 = 10,
+    anon_host_idle_days: i64 = 30,
 
     /// Stripe test mode. Without a key, checkout credits immediately (mock).
     stripe_secret_key: ?anole.Secret = null,
@@ -109,6 +161,18 @@ pub const Config = struct {
     local_parent_pid: ?i64 = null,
 
     pub const production = .{ .dev_auth = false };
+
+    /// The markup applied to prices and charges: 1.0 with billing parked.
+    pub fn priceMarkup(cfg: Config) f64 {
+        return if (cfg.billing_enabled) cfg.markup else 1.0;
+    }
+
+    /// True when the server holds its own model key while nothing is
+    /// billed and nobody acknowledged that (`SERVER_KEY_UNMETERED=true`).
+    pub fn unmeteredServerKey(cfg: Config) bool {
+        const has_key = cfg.openrouter_api_key != null or cfg.anthropic_api_key != null;
+        return has_key and !cfg.billing_enabled and !cfg.local_mode and !cfg.server_key_unmetered;
+    }
 };
 
 /// Whether `host` only accepts connections from this machine.
@@ -123,6 +187,42 @@ pub fn lanExposure(cfg: Config) bool {
     return cfg.dev_auth and !cfg.dev_auth_lan and !isLoopback(cfg.host);
 }
 
+/// True when dev auth is on in a production process that isn't the app's
+/// own local server (which runs as production with dev auth on loopback,
+/// behind its launch token).
+pub fn devAuthInProduction(cfg: Config, environment: anole.env.Environment) bool {
+    return cfg.dev_auth and !cfg.local_mode and environment != .development;
+}
+
+/// Why a development-only switch can't be on in this run, or null.
+pub fn devOnlyProblem(cfg: Config, development: bool) ?[]const u8 {
+    if (development) return null;
+    if (cfg.route_saved_providers) return "ROUTE_SAVED_PROVIDERS sends calls to providers not checked live; it is for development";
+    return null;
+}
+
+test "routing to saved providers is for development only" {
+    var c: Config = .{ .jwt_secret = .init("x") };
+    try std.testing.expect(devOnlyProblem(c, false) == null);
+    c.route_saved_providers = true;
+    try std.testing.expect(devOnlyProblem(c, true) == null);
+    try std.testing.expect(devOnlyProblem(c, false) != null);
+}
+
+test "billing parked: prices at cost, an unmetered server key needs acknowledging" {
+    var c: Config = .{ .jwt_secret = .init("x") };
+    try std.testing.expectEqual(@as(f64, 1.0), c.priceMarkup());
+    try std.testing.expect(!c.unmeteredServerKey());
+    c.openrouter_api_key = .init("x");
+    try std.testing.expect(c.unmeteredServerKey());
+    c.server_key_unmetered = true;
+    try std.testing.expect(!c.unmeteredServerKey());
+    c.server_key_unmetered = false;
+    c.billing_enabled = true;
+    try std.testing.expect(!c.unmeteredServerKey());
+    try std.testing.expectEqual(@as(f64, 1.15), c.priceMarkup());
+}
+
 test "dev auth on a non-loopback host needs DEV_AUTH_LAN" {
     const base: Config = .{ .jwt_secret = .init("x"), .openrouter_api_key = .init("x") };
     try std.testing.expect(!lanExposure(base));
@@ -135,4 +235,15 @@ test "dev auth on a non-loopback host needs DEV_AUTH_LAN" {
     lan.dev_auth = false;
     try std.testing.expect(!lanExposure(lan));
     try std.testing.expect(isLoopback("127.0.0.1") and isLoopback("localhost") and !isLoopback("192.168.1.5"));
+}
+
+test "production refuses dev auth, except the app's local server" {
+    var c: Config = .{ .jwt_secret = .init("x"), .dev_auth = true };
+    try std.testing.expect(!devAuthInProduction(c, .development));
+    try std.testing.expect(devAuthInProduction(c, .production));
+    c.local_mode = true;
+    try std.testing.expect(!devAuthInProduction(c, .production));
+    c.local_mode = false;
+    c.dev_auth = false;
+    try std.testing.expect(!devAuthInProduction(c, .production));
 }

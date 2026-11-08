@@ -1,3 +1,5 @@
+import '../../../../core/config/billing_flag.dart';
+
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
@@ -815,12 +817,14 @@ class _NoticeViewState extends State<NoticeView> {
               ],
               // Out of credits: the two ways on, then Retry (or a new message) resumes.
               if (item.error && isOutOfCredits(item.message)) ...[
-                const SizedBox(width: 8),
-                AdaptiveButton(
-                  label: 'Top up',
-                  emphasis: ButtonEmphasis.secondary,
-                  onPressed: () => showSettings(context, section: SettingsSection.billing),
-                ),
+                if (BillingFlag.enabled) ...[
+                  const SizedBox(width: 8),
+                  AdaptiveButton(
+                    label: 'Top up',
+                    emphasis: ButtonEmphasis.secondary,
+                    onPressed: () => showSettings(context, section: SettingsSection.billing),
+                  ),
+                ],
                 const SizedBox(width: 6),
                 AdaptiveButton(
                   label: 'Use my own key',

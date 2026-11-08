@@ -5,7 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/net/api_error.dart';
 import '../../../core/providers.dart';
-import '../../billing/billing_providers.dart';
+import '../../../core/format/money.dart';
 import '../../chat/chat_providers.dart';
 import '../artifact_providers.dart';
 import '../domain/artifact.dart';
@@ -121,7 +121,7 @@ final class FigurePolisher extends Notifier<bool> {
     state = true;
     try {
       final api = ref.read(apiClientProvider);
-      final authenticated = !ref.read(appConfigProvider).devSkipAuth;
+      final authenticated = true;
       final result = await polishFigure(
         svg: svgOf(v),
         rasterize: _reviewRaster,

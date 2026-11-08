@@ -105,7 +105,7 @@ pub fn available(app: *App, ctx: anytype, user_id: []const u8) !i64 {
 /// 402 before a paid call when nothing is left. Free models always pass.
 pub fn preflight(app: *App, ctx: anytype, user_id: []const u8, model_is_free: bool) !void {
     // The app's sidecar (local.zig) charges nothing.
-    if (model_is_free or app.cfg.local_mode) return;
+    if (model_is_free or app.cfg.local_mode or !app.cfg.billing_enabled) return;
     if (try available(app, ctx, user_id) <= 0) return error.PaymentRequired;
 }
 
@@ -120,7 +120,7 @@ pub const Usage = struct {
     cost_usd: f64 = 0,
     session: ?[]const u8 = null,
     api_key_id: ?[]const u8 = null,
-    /// Who served the call: "openrouter" or "anthropic".
+    /// Who served the call: "openrouter", "anthropic", "local" or a byok.zig provider id.
     provider: []const u8 = "openrouter",
     /// Ran on the user's own key (byok.zig): recorded at cost, never charged.
     byok: bool = false,
@@ -141,19 +141,33 @@ pub fn ownKeyCost(c: Charge, byok: bool) i64 {
 /// the same quota.
 pub fn charge(app: *App, ctx: anytype, user_id: []const u8, u: Usage) !Charge {
     const Run = struct {
-        fn run(tx: *anole.sqlite.Tx, c: @TypeOf(ctx), user: []const u8, call: Usage, markup: f64) !Charge {
-            return chargeIn(tx, c, user, call, markup);
+        fn run(tx: *anole.sqlite.Tx, c: @TypeOf(ctx), user: []const u8, call: Usage, markup: f64, bill: bool) !Charge {
+            return chargeIn(tx, c, user, call, markup, bill);
         }
     };
     var call = u;
     // The sidecar records usage but never charges (local models, own keys).
     if (app.cfg.local_mode) call.byok = true;
-    return app.db.transaction(ctx, .{ .retries = 3 }, Run.run, .{ ctx, user_id, call, app.cfg.markup });
+    // Direct providers (openai_compat.zig) report tokens but no cost: price
+    // the call from the catalog, so the meter and spend caps see it.
+    if (call.cost_usd == 0 and call.byok and !std.mem.eql(u8, call.provider, "local") and !std.mem.eql(u8, call.provider, "openrouter"))
+        if (app.catalog.pricesOf(ctx.io, call.model)) |p| {
+            call.cost_usd = p.cost(.{
+                .input = @max(0, call.prompt_tokens - call.cached_tokens - call.cache_write_tokens),
+                .cache_read = call.cached_tokens,
+                .cache_write_5m = call.cache_write_tokens,
+                .cache_write_1h = 0,
+                .output = call.completion_tokens,
+            });
+        };
+    // With billing parked (BILLING_ENABLED=false) usage is still recorded
+    // (meters and spend caps read it), but nothing is charged.
+    return app.db.transaction(ctx, .{ .retries = 3 }, Run.run, .{ ctx, user_id, call, app.cfg.priceMarkup(), app.cfg.billing_enabled });
 }
 
-fn chargeIn(db: anytype, ctx: anytype, user_id: []const u8, u: Usage, markup: f64) !Charge {
+fn chargeIn(db: anytype, ctx: anytype, user_id: []const u8, u: Usage, markup: f64, bill: bool) !Charge {
     const cost = util.usdToMicros(u.cost_usd);
-    const charged = if (u.byok) 0 else util.applyMarkup(cost, markup);
+    const charged = if (u.byok or !bill) 0 else util.applyMarkup(cost, markup);
     var from_quota: i64 = 0;
     var from_wallet: i64 = 0;
     if (charged > 0) {
@@ -167,15 +181,16 @@ fn chargeIn(db: anytype, ctx: anytype, user_id: []const u8, u: Usage, markup: f6
         \\INSERT INTO usage_events (user_id, api_key_id, session, kind, model, prompt_tokens, completion_tokens,
         \\  cached_tokens, cache_write_tokens, cost_micros, charged_micros, from_quota_micros, from_wallet_micros, created_at, provider)
         \\VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    , .{ user_id, u.api_key_id, u.session, u.kind, u.model, u.prompt_tokens, u.completion_tokens, u.cached_tokens, u.cache_write_tokens, cost, charged, from_quota, from_wallet, util.now(ctx.io), providerLabel(u) });
+    , .{ user_id, u.api_key_id, u.session, u.kind, u.model, u.prompt_tokens, u.completion_tokens, u.cached_tokens, u.cache_write_tokens, cost, charged, from_quota, from_wallet, util.now(ctx.io), try providerLabel(ctx.arena, u) });
     return .{ .cost_micros = cost, .charged_micros = charged, .from_quota = from_quota, .from_wallet = from_wallet };
 }
 
-/// usage_events.provider: "openrouter" | "anthropic", with "-byok" on the user's key.
-fn providerLabel(u: Usage) []const u8 {
+/// usage_events.provider: "openrouter" | "anthropic" | "local", or the
+/// provider with "-byok" on the user's key ("openai-byok").
+fn providerLabel(arena: std.mem.Allocator, u: Usage) ![]const u8 {
     if (std.mem.eql(u8, u.provider, "local")) return "local";
     if (!u.byok) return u.provider;
-    return if (std.mem.eql(u8, u.provider, "anthropic")) "anthropic-byok" else "openrouter-byok";
+    return std.fmt.allocPrint(arena, "{s}-byok", .{u.provider});
 }
 
 // ------------------------------------------------------------------ routes
@@ -220,7 +235,7 @@ fn summary(app: *App, req: *anole.Request) !struct {
         .included_micros = p.included_micros,
         .used_micros = p.used_micros,
         .wallet_micros = try walletBalance(app, req, who.user_id),
-        .markup = app.cfg.markup,
+        .markup = app.cfg.priceMarkup(),
         .month_tokens = tokens.t,
         .month_cached_tokens = tokens.c,
         .recent = try app.db.all(UsageRow, req, "SELECT " ++ usage_columns ++ " FROM usage_events WHERE user_id = ? ORDER BY id DESC LIMIT 50", .{who.user_id}),
@@ -258,7 +273,7 @@ fn usage(app: *App, req: *anole.Request, res: *anole.Response, in: anole.In(.{ .
     if (q.group.len == 0) {
         return res.json(try app.db.all(UsageRow, req, "SELECT " ++ usage_columns ++ " FROM usage_events WHERE user_id = ? AND created_at BETWEEN ? AND ? ORDER BY id DESC LIMIT ?", .{ who.user_id, q.from, q.to, q.limit }));
     }
-    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
+    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.priceMarkup());
     try res.json(try aggregate(app, req, who.user_id, q));
 }
 
@@ -325,7 +340,7 @@ fn aggregate(app: *App, req: *anole.Request, user_id: []const u8, q: UsageQuery)
         var saved: i64 = 0;
         if (r.cached_tokens > 0) if (app.catalog.pricesOf(req.io, r.model)) |p| {
             const per = p.base.prompt - p.base.cache_read;
-            if (per > 0) saved = @intFromFloat(@round(per * @as(f64, @floatFromInt(r.cached_tokens)) * 1_000_000.0 * app.cfg.markup));
+            if (per > 0) saved = @intFromFloat(@round(per * @as(f64, @floatFromInt(r.cached_tokens)) * 1_000_000.0 * app.cfg.priceMarkup()));
         };
         const one: Bucket = .{
             .start = bucketStart(r.created_at, week, q.tz_offset),
@@ -531,11 +546,16 @@ fn listPlans(_: *App, _: *anole.Request) []const Plan {
 }
 
 pub fn routes(app: *anole.Server(App), state: *App) void {
-    app.get("/v1/plans", listPlans);
     const user = app.group("/v1", .{auth.Authenticate{ .app = state }});
-    user.get("/billing", summary);
+    // Usage stays on with billing parked: Settings → Usage and the Code
+    // spend cap read it.
     user.get("/usage", usage);
     user.get("/usage/session/:id", sessionUsage);
+    // Plans, billing, checkout and the webhook only exist with
+    // BILLING_ENABLED=true (otherwise 404).
+    if (!state.cfg.billing_enabled) return;
+    app.get("/v1/plans", listPlans);
+    user.get("/billing", summary);
     user.post("/billing/checkout", checkout);
     if (state.cfg.stripe_webhook_secret) |secret| {
         // The middleware keeps the slice: it must outlive this function.

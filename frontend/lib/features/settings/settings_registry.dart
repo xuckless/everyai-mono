@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/config/billing_flag.dart';
 import '../../core/platform/platform_kind.dart';
 import '../../core/preferences.dart';
 import '../../core/ui/every_icons.dart';
@@ -45,7 +46,8 @@ enum SettingsSection {
   /// Shown on desktop hosts only (the Code workspace runs there).
   final bool desktopOnly;
 
-  bool get available => !desktopOnly || Host.isDesktop;
+  /// Billing only exists with [BillingFlag.enabled] (credits are parked).
+  bool get available => (!desktopOnly || Host.isDesktop) && (this != billing || BillingFlag.enabled);
 
   static SettingsSection? parse(Object? v) => values.where((s) => s.name == v).firstOrNull;
 }
@@ -235,7 +237,7 @@ SettingsTarget? settingsTargetForLocation(Uri uri) {
   if (!path.startsWith('/settings/')) return null;
   final rest = path.substring('/settings/'.length);
   final section = switch (rest) {
-    'billing' => SettingsSection.billing,
+    'billing' => BillingFlag.enabled ? SettingsSection.billing : SettingsSection.account,
     'usage' => SettingsSection.usage,
     'memory' => SettingsSection.memory,
     'commands' => SettingsSection.commands,

@@ -3,21 +3,37 @@
 //! relays their WebSocket frames. The frames are end-to-end encrypted by the
 //! endpoints; the backend routes them by channel and never parses a payload.
 //!
-//! REST (user token, `Authorization: Bearer <access JWT>`):
+//! An account is optional (owner, 2026-11-08): the `rh_`/`rd_` tokens are
+//! the identity, anchored by the endpoints' keys exchanged at pairing (the
+//! QR carries the host's fingerprint). A host made without an account
+//! belongs to the reserved `anonymous` user until an account claims it
+//! (`POST /v1/remote/hosts/:id/claim`, JWT + host token); idle anonymous
+//! hosts expire after ANON_HOST_IDLE_DAYS. A host's lifecycle:
+//!
+//!   anonymous ──claim──► claimed            (either) ──DELETE──► revoked
+//!   anonymous ──idle N days──► expired
+//!
+//! Egress (egress.zig): each relay socket is admitted by the gate (one FIFO
+//! queue when full, `queued {position}` notices), every relayed byte is
+//! counted against the host (anonymous) or its account (claimed), paced to
+//! the server's rate, and past a quota the socket gets `budget {resets_at}`
+//! and closes 4008.
+//!
+//! REST (an access JWT is optional unless marked):
 //!
 //!   POST   /v1/remote/hosts               {name, platform?, public_key} -> 201 {id, name, platform, public_key, host_token}
-//!   GET    /v1/remote/hosts               [{id, name, platform, public_key, online, created_at, last_seen_at, devices: [...]}]
+//!   GET    /v1/remote/hosts               (JWT) the account's claimed hosts: [{id, name, platform, public_key, online, created_at, last_seen_at, devices: [...]}]
+//!   POST   /v1/remote/hosts/:id/claim     (JWT + X-Remote-Host-Token) adds the host and its devices to the account; 409 when another account has it
 //!   DELETE /v1/remote/hosts/:id           (+ X-Remote-Host-Token) revokes the host, its devices and live sockets
 //!   DELETE /v1/remote/devices/:id         (+ X-Remote-Host-Token or X-Remote-Device-Token) unpairs one device
 //!   POST   /v1/remote/pair                (+ X-Remote-Host-Token) {host_id} -> 201 {id, code, host_id, expires_at}
 //!   POST   /v1/remote/pair/redeem         {code, device_name, public_key} -> {id, status, device_id, device_token, decide_by, host}
-//!   GET    /v1/remote/pair/:id            {id, status, host_id, device_id}
+//!   GET    /v1/remote/pair/:id            (+ X-Remote-Device-Token of the redeeming device, or the host's token) {id, status, host_id, device_id}
 //!   POST   /v1/remote/pair/:id/approve    (+ X-Remote-Host-Token) -> {id, status}
 //!   POST   /v1/remote/pair/:id/deny       (+ X-Remote-Host-Token) -> {id, status}
 //!
-//! WebSockets (token in `Authorization: Bearer` or `?token=`, plus the
-//! account's access JWT in `X-User-Token` or `?user_token=`; the host or
-//! device must belong to that account):
+//! WebSockets (the host's or device's token in `Authorization: Bearer` or
+//! `?token=`; nothing else):
 //!
 //!   GET /v1/remote/host                   the host, with its `rh_` token
 //!   GET /v1/remote/client/:host_id        a paired device, with its `rd_` token
@@ -29,8 +45,10 @@
 //! `client_open {channel, device_id, device_name, public_key}`,
 //! `client_close {channel}`, `pair_request {pairing_id, device}`,
 //! `webhook {delivery_id, hook_id, hook_name, received_at, headers, body_b64}`,
-//! `replaced`, `revoked`. Notices to a client: `hello {channel,
-//! host_online}`, `host_online`, `host_offline`, `closed`, `revoked`. The
+//! `replaced`, `revoked`, `queued {position}`, `budget {resets_at}`. Notices
+//! to a client: `hello {channel, host_online}`, `host_online`,
+//! `host_offline`, `closed`, `revoked`, `queued {position}`,
+//! `budget {resets_at}`. The
 //! host may send `{"type":"close_channel","channel":N}` to drop a client and
 //! `{"type":"webhook_ack","delivery_id":"…"}` once it took a webhook.
 //!
@@ -43,7 +61,12 @@ const App = @import("main.zig").App;
 const auth = @import("auth.zig");
 const util = @import("util.zig");
 const hooks = @import("hooks.zig");
+const egress = @import("egress.zig");
+const magic = @import("magic.zig");
 const websocket = anole.websocket;
+
+/// The owner of hosts, devices and pairings made without an account.
+pub const anonymous_user = "anonymous";
 
 pub const host_token_prefix = "rh_";
 pub const device_token_prefix = "rd_";
@@ -238,6 +261,12 @@ pub fn normalizeCode(buf: *[code_len]u8, typed: []const u8) ?[]const u8 {
 
 const HostRow = struct { id: []const u8, user_id: []const u8, name: []const u8 };
 
+/// Whom a host's relayed bytes count against: its account once claimed,
+/// else the host itself.
+pub fn subjectOf(user_id: []const u8, host_id: []const u8) egress.Subject {
+    return if (std.mem.eql(u8, user_id, anonymous_user)) .{ .kind = .host, .id = host_id } else .{ .kind = .account, .id = user_id };
+}
+
 pub const DeviceInfo = struct {
     id: []const u8,
     host_id: []const u8,
@@ -277,11 +306,24 @@ fn createHost(app: *App, req: *anole.Request, in: anole.In(.{ .body = NewHost })
     public_key: []const u8,
     host_token: []const u8,
 }) {
-    const who = try auth.identity(req);
+    const owner = if (auth.optionalIdentity(req)) |who| who.user_id else anonymous_user;
+    var ip_buf: [64]u8 = undefined;
+    const network = magic.ipPrefix(req, &ip_buf);
+    const now = util.now(req.io);
+    if (std.mem.eql(u8, owner, anonymous_user)) {
+        try prune(app, req);
+        // Anyone can make one: limited per network, by the hour and in all.
+        const made = try app.db.one(struct { hour: i64, live: i64 }, req,
+            \\SELECT COALESCE(SUM(created_at > ?), 0) AS hour, COUNT(*) AS live
+            \\FROM remote_hosts WHERE created_ip = ? AND user_id = ?
+        , .{ now - 3600, network, anonymous_user });
+        if (made.hour >= app.cfg.anon_hosts_per_hour or made.live >= app.cfg.anon_hosts_per_network) return error.TooManyRequests;
+    }
     const id = try util.uuid(req.arena, req.io);
     const token = try util.randomToken(req.arena, req.io, host_token_prefix);
-    _ = try app.db.exec(req, "INSERT INTO remote_hosts (id, user_id, name, platform, public_key, token_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", .{
-        id, who.user_id, in.body.name, in.body.platform, in.body.public_key, try util.sha256Hex(req.arena, token), util.now(req.io),
+    _ = try app.db.exec(req, "INSERT INTO remote_hosts (id, user_id, name, platform, public_key, token_hash, created_at, created_ip, claimed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", .{
+        id,  owner,   in.body.name,                                              in.body.platform, in.body.public_key, try util.sha256Hex(req.arena, token),
+        now, network, if (std.mem.eql(u8, owner, anonymous_user)) null else now,
     });
     // The only time the token is shown.
     return .{ .value = .{ .id = id, .name = in.body.name, .platform = in.body.platform, .public_key = in.body.public_key, .host_token = token } };
@@ -313,24 +355,23 @@ fn listHosts(app: *App, req: *anole.Request) ![]const HostInfo {
 /// Only the host itself (its `X-Remote-Host-Token`) removes it: an account
 /// can be shared (the dev user), and the token is the desktop's alone.
 fn deleteHost(app: *App, req: *anole.Request, in: anole.In(.{ .path = struct { id: []const u8 } })) !void {
-    const host = try hostNamed(app, req, in.path.id);
+    const host = try tokenHostNamed(app, req, in.path.id);
     // Its devices and pairings go with it (ON DELETE CASCADE; Anole's SQLite
     // turns foreign keys on).
-    if (try app.db.exec(req, "DELETE FROM remote_hosts WHERE id = ? AND user_id = ?", .{ host.id, host.user_id }) == 0) return error.NotFound;
+    if (try app.db.exec(req, "DELETE FROM remote_hosts WHERE id = ?", .{host.id}) == 0) return error.NotFound;
     app.relay.revokeHost(req.io, host.id);
 }
 
 /// The device's host (`X-Remote-Host-Token`) or the device itself
 /// (`X-Remote-Device-Token`) unpairs it.
 fn deleteDevice(app: *App, req: *anole.Request, in: anole.In(.{ .path = struct { id: []const u8 } })) !void {
-    const who = try auth.identity(req);
-    const device = try app.db.optional(struct { host_id: []const u8, token_hash: []const u8 }, req, "SELECT host_id, token_hash FROM remote_devices WHERE id = ? AND user_id = ?", .{ in.path.id, who.user_id }) orelse return error.NotFound;
+    const device = try app.db.optional(struct { host_id: []const u8, token_hash: []const u8 }, req, "SELECT host_id, token_hash FROM remote_devices WHERE id = ?", .{in.path.id}) orelse return error.NotFound;
     if (req.headers.get("X-Remote-Device-Token")) |token| {
         if (!std.mem.eql(u8, try util.sha256Hex(req.arena, token), device.token_hash)) return error.Unauthorized;
     } else {
-        _ = try hostNamed(app, req, device.host_id);
+        _ = try tokenHostNamed(app, req, device.host_id);
     }
-    if (try app.db.exec(req, "DELETE FROM remote_devices WHERE id = ? AND user_id = ?", .{ in.path.id, who.user_id }) == 0) return error.NotFound;
+    if (try app.db.exec(req, "DELETE FROM remote_devices WHERE id = ?", .{in.path.id}) == 0) return error.NotFound;
     app.relay.revokeDevice(req.io, in.path.id);
 }
 
@@ -342,7 +383,7 @@ fn pair(app: *App, req: *anole.Request, in: anole.In(.{ .body = struct { host_id
 }) {
     // Only the desktop mints codes for itself: on a shared account (the dev
     // user) anyone could otherwise send it pair requests.
-    const host = try hostNamed(app, req, in.body.host_id);
+    const host = try tokenHostNamed(app, req, in.body.host_id);
     const code = try newCode(req.io);
     const id = try util.uuid(req.arena, req.io);
     const now = util.now(req.io);
@@ -364,8 +405,10 @@ const Redeem = struct {
     };
 };
 
-/// A device with the same account claims a code. The code is spent at once;
-/// the device waits for the host to approve it.
+/// A device redeems a code, with or without an account: the code (shown on
+/// the host's screen) and the host's approval decide. The code is spent at
+/// once; the device waits for the host to approve it. The device belongs to
+/// the host's owner (anonymous until the host is claimed).
 fn redeem(app: *App, req: *anole.Request, in: anole.In(.{ .body = Redeem })) !struct {
     id: []const u8,
     status: []const u8 = "pending",
@@ -374,22 +417,27 @@ fn redeem(app: *App, req: *anole.Request, in: anole.In(.{ .body = Redeem })) !st
     decide_by: i64,
     host: struct { id: []const u8, name: []const u8, platform: []const u8, public_key: []const u8 },
 } {
-    const who = try auth.identity(req);
     var buf: [code_len]u8 = undefined;
-    // Wrong, spent, expired and other accounts' codes all look the same.
+    // Wrong, spent and expired codes all look the same.
     const code = normalizeCode(&buf, in.body.code) orelse return error.NotFound;
     const now = util.now(req.io);
+    const digest = try util.sha256Hex(req.arena, code);
+    const target = try app.db.optional([]const u8, req, "SELECT host_id FROM remote_pairings WHERE code_hash = ? AND status = 'open' AND expires_at > ?", .{ digest, now }) orelse return error.NotFound;
+    // A host holds at most DEVICES_PER_HOST devices (paired or waiting). One
+    // whose approval window passed can never be approved: it doesn't count
+    // (prune removes it later).
+    if (try app.db.one(i64, req, "SELECT COUNT(*) FROM remote_devices WHERE host_id = ? AND (approved = 1 OR created_at > ?)", .{ target, now - decide_ttl_seconds }) >= app.cfg.devices_per_host) return error.Conflict;
     const claimed = try app.db.optional(struct { id: []const u8, host_id: []const u8 }, req,
         \\UPDATE remote_pairings SET status = 'pending'
-        \\WHERE code_hash = ? AND user_id = ? AND status = 'open' AND expires_at > ?
+        \\WHERE code_hash = ? AND status = 'open' AND expires_at > ?
         \\RETURNING id, host_id
-    , .{ try util.sha256Hex(req.arena, code), who.user_id, now }) orelse return error.NotFound;
-    const host = try app.db.one(struct { id: []const u8, name: []const u8, platform: []const u8, public_key: []const u8 }, req, "SELECT id, name, platform, public_key FROM remote_hosts WHERE id = ?", .{claimed.host_id});
+    , .{ digest, now }) orelse return error.NotFound;
+    const host = try app.db.one(struct { id: []const u8, user_id: []const u8, name: []const u8, platform: []const u8, public_key: []const u8 }, req, "SELECT id, user_id, name, platform, public_key FROM remote_hosts WHERE id = ?", .{claimed.host_id});
 
     const device_id = try util.uuid(req.arena, req.io);
     const token = try util.randomToken(req.arena, req.io, device_token_prefix);
     _ = try app.db.exec(req, "INSERT INTO remote_devices (id, user_id, host_id, name, public_key, token_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", .{
-        device_id, who.user_id, host.id, in.body.device_name, in.body.public_key, try util.sha256Hex(req.arena, token), now,
+        device_id, host.user_id, host.id, in.body.device_name, in.body.public_key, try util.sha256Hex(req.arena, token), now,
     });
     const decide_by = now + decide_ttl_seconds;
     _ = try app.db.exec(req, "UPDATE remote_pairings SET device_id = ?, decide_by = ? WHERE id = ?", .{ device_id, decide_by, claimed.id });
@@ -416,12 +464,50 @@ fn pairStatus(app: *App, req: *anole.Request, in: anole.In(.{ .path = struct { i
     host_id: []const u8,
     device_id: ?[]const u8,
 } {
-    const who = try auth.identity(req);
-    const p = try app.db.optional(struct { status: []const u8, host_id: []const u8, device_id: ?[]const u8, expires_at: i64, decide_by: ?i64 }, req, "SELECT status, host_id, device_id, expires_at, decide_by FROM remote_pairings WHERE id = ? AND user_id = ?", .{ in.path.id, who.user_id }) orelse return error.NotFound;
+    const p = try app.db.optional(struct { status: []const u8, host_id: []const u8, device_id: ?[]const u8, expires_at: i64, decide_by: ?i64 }, req, "SELECT status, host_id, device_id, expires_at, decide_by FROM remote_pairings WHERE id = ?", .{in.path.id}) orelse return error.NotFound;
+    // The device that redeemed it (its token), or the host.
+    if (req.headers.get("X-Remote-Device-Token")) |token| {
+        const device_id = p.device_id orelse return error.NotFound;
+        const ok = try app.db.optional(i64, req, "SELECT 1 FROM remote_devices WHERE id = ? AND token_hash = ?", .{ device_id, try util.sha256Hex(req.arena, token) });
+        if (ok == null) return error.NotFound;
+    } else {
+        _ = tokenHostNamed(app, req, p.host_id) catch return error.NotFound;
+    }
     return .{ .id = in.path.id, .status = effectiveStatus(p.status, p.expires_at, p.decide_by, util.now(req.io)), .host_id = p.host_id, .device_id = p.device_id };
 }
 
-/// The host behind `X-Remote-Host-Token`, which must belong to the caller.
+/// The host behind `X-Remote-Host-Token`: the token alone is the host's
+/// identity (an account is optional).
+pub fn tokenHost(app: *App, req: *anole.Request) !HostRow {
+    const token = req.headers.get("X-Remote-Host-Token") orelse return error.Unauthorized;
+    return try app.db.optional(HostRow, req, "SELECT id, user_id, name FROM remote_hosts WHERE token_hash = ?", .{try util.sha256Hex(req.arena, token)}) orelse error.Unauthorized;
+}
+
+/// [tokenHost], which must be `host_id`: another host's token finds nothing.
+pub fn tokenHostNamed(app: *App, req: *anole.Request, host_id: []const u8) !HostRow {
+    const host = try tokenHost(app, req);
+    if (!std.mem.eql(u8, host.id, host_id)) return error.NotFound;
+    return host;
+}
+
+/// `POST /v1/remote/hosts/:id/claim` (signed in, + X-Remote-Host-Token):
+/// the host, its devices and pairings join the account; claimed hosts never
+/// expire and count against the account's relay quota. Claiming again is a
+/// no-op; another account's host is a 409.
+fn claimHost(app: *App, req: *anole.Request, in: anole.In(.{ .path = struct { id: []const u8 } })) !struct { id: []const u8, claimed: bool } {
+    const who = try auth.identity(req);
+    const host = try tokenHostNamed(app, req, in.path.id);
+    if (std.mem.eql(u8, host.user_id, who.user_id)) return .{ .id = host.id, .claimed = true };
+    if (!std.mem.eql(u8, host.user_id, anonymous_user)) return error.Conflict;
+    const now = util.now(req.io);
+    if (try app.db.exec(req, "UPDATE remote_hosts SET user_id = ?, claimed_at = ? WHERE id = ? AND user_id = ?", .{ who.user_id, now, host.id, anonymous_user }) == 0) return error.Conflict;
+    _ = try app.db.exec(req, "UPDATE remote_devices SET user_id = ? WHERE host_id = ?", .{ who.user_id, host.id });
+    _ = try app.db.exec(req, "UPDATE remote_pairings SET user_id = ? WHERE host_id = ?", .{ who.user_id, host.id });
+    return .{ .id = host.id, .claimed = true };
+}
+
+/// The host behind `X-Remote-Host-Token`, which must belong to the caller
+/// (webhooks, which need an account).
 pub fn callingHost(app: *App, req: *anole.Request) !HostRow {
     const who = try auth.identity(req);
     const token = req.headers.get("X-Remote-Host-Token") orelse return error.Unauthorized;
@@ -440,7 +526,7 @@ pub fn hostNamed(app: *App, req: *anole.Request, host_id: []const u8) !HostRow {
 const Decision = struct { id: []const u8, status: []const u8 };
 
 fn decide(app: *App, req: *anole.Request, id: []const u8, approve: bool) !Decision {
-    const host = try callingHost(app, req);
+    const host = try tokenHost(app, req);
     const now = util.now(req.io);
     const device_id = try app.db.optional(?[]const u8, req,
         \\UPDATE remote_pairings SET status = ?, decided_at = ?
@@ -464,6 +550,132 @@ fn denyPairing(app: *App, req: *anole.Request, in: anole.In(.{ .path = struct { 
     return decide(app, req, in.path.id, false);
 }
 
+/// Anonymous hosts nobody connected for ANON_HOST_IDLE_DAYS go (their
+/// devices and pairings with them); claimed ones stay, and so does one that
+/// is online now (its `last_seen_at` is from when it connected) or whose
+/// devices connected meanwhile. Devices never approved go a day after their
+/// approval window closed. Egress rows older than two months go too. Runs
+/// at start and whenever a host is made.
+pub fn prune(app: *App, ctx: anytype) !void {
+    const now = util.now(ctx.io);
+    const cutoff = now - app.cfg.anon_host_idle_days * 86_400;
+    const idle = try app.db.all([]const u8, ctx,
+        \\SELECT h.id FROM remote_hosts h
+        \\WHERE h.user_id = ? AND COALESCE(h.last_seen_at, h.created_at) < ?
+        \\AND NOT EXISTS (SELECT 1 FROM remote_devices d WHERE d.host_id = h.id AND d.last_seen_at >= ?)
+    , .{ anonymous_user, cutoff, cutoff });
+    for (idle) |id| {
+        if (app.relay.online(ctx.io, id)) continue;
+        _ = try app.db.exec(ctx, "DELETE FROM remote_hosts WHERE id = ? AND user_id = ?", .{ id, anonymous_user });
+    }
+    _ = try app.db.exec(ctx, "DELETE FROM remote_devices WHERE approved = 0 AND created_at < ?", .{now - decide_ttl_seconds - 86_400});
+    const p = egress.Periods.of(now);
+    _ = try app.db.exec(ctx, "DELETE FROM egress_usage WHERE (period LIKE 'd%' AND CAST(substr(period, 2) AS INTEGER) < ?) OR (period LIKE 'm%' AND CAST(substr(period, 2) AS INTEGER) < ?)", .{ p.day - 62, p.month - 2 });
+}
+
+// ------------------------------------------------------------------ egress
+
+const mib: u64 = 1 << 20;
+
+/// The gate and its config limits, with this day's and month's bytes read
+/// back from `egress_usage` (run once, in `prepare`).
+pub fn setUpEgress(app: *App, ctx: anytype) !void {
+    const c = app.cfg;
+    app.egress_quotas = .{
+        .host = .{ .daily_bytes = c.relay_host_daily_mb * mib, .monthly_bytes = c.relay_host_monthly_mb * mib },
+        .account = .{ .daily_bytes = c.relay_account_daily_mb * mib, .monthly_bytes = c.relay_account_monthly_mb * mib },
+    };
+    app.egress = egress.Gate.init(app.gpa, .{
+        .rate_bytes_per_s = c.egress_rate_mbps * 1_000_000 / 8,
+        .monthly_bytes = c.egress_monthly_mb * mib,
+        .warn_share = if (c.egress_warn_mb > 0 and c.egress_monthly_mb > 0) @as(f64, @floatFromInt(c.egress_warn_mb)) / @as(f64, @floatFromInt(c.egress_monthly_mb)) else 0.8,
+        .max_live = c.relay_max_live,
+        .per_subject_live = c.relay_per_subject_live,
+    }, app.egress_quotas.source());
+    const now = util.now(ctx.io);
+    const p = egress.Periods.of(now);
+    const day = try std.fmt.allocPrint(ctx.arena, "d{d}", .{p.day});
+    const month = try std.fmt.allocPrint(ctx.arena, "m{d}", .{p.month});
+    const rows = try app.db.all(egress.Gate.Row, ctx, "SELECT subject, period, bytes FROM egress_usage WHERE period IN (?, ?)", .{ day, month });
+    try app.egress.load(ctx.io, rows, now);
+}
+
+/// Adds the bytes counted since the last flush to `egress_usage`.
+pub fn flushEgress(app: *App, ctx: anytype) !void {
+    const rows = try app.egress.drain(ctx.io, ctx.arena, util.now(ctx.io));
+    for (rows) |r| _ = try app.db.exec(ctx,
+        \\INSERT INTO egress_usage (subject, period, bytes) VALUES (?, ?, ?)
+        \\ON CONFLICT(subject, period) DO UPDATE SET bytes = bytes + excluded.bytes
+    , .{ r.subject, r.period, r.bytes });
+}
+
+/// How long a socket may wait in the queue before it is told to retry.
+const max_queue_wait_s = 15 * 60;
+/// How often a waiting socket hears its place again.
+const queue_retell_s = 10;
+
+/// Waits for the gate to admit this socket, telling it its place in line.
+/// False when it was refused (and closed): over quota or its share used.
+fn admitSocket(app: *App, ws: *websocket.Socket, req: *anole.Request, subject: egress.Subject, ticket: *egress.Gate.Ticket) !bool {
+    const io = req.io;
+    const started = util.now(io);
+    var told: u32 = 0;
+    var told_at: i64 = 0;
+    while (true) {
+        switch (try app.egress.admit(io, subject, ticket, util.now(io))) {
+            .admitted => return true,
+            .queued => |position| {
+                // Told again now and then even when the line doesn't move: a
+                // peer that left fails the send, and its place (which counts
+                // against its host's share) is given up at once.
+                if (position != told or util.now(io) - told_at >= queue_retell_s) {
+                    told = position;
+                    told_at = util.now(io);
+                    try ws.send(.text, try std.fmt.allocPrint(req.arena, "{{\"type\":\"queued\",\"position\":{d}}}", .{position}));
+                }
+                if (util.now(io) - started >= max_queue_wait_s) {
+                    ws.close(@fromBackingInt(1013), "relay busy") catch {};
+                    return false;
+                }
+                try io.sleep(.fromSeconds(1), .awake);
+            },
+            .subject_full => {
+                ws.close(.policy_violation, "too many relay connections for this host or account") catch {};
+                return false;
+            },
+            .over_quota => {
+                try sendBudget(app, ws, req, subject);
+                return false;
+            },
+        }
+    }
+}
+
+fn sendBudget(app: *App, ws: *websocket.Socket, req: *anole.Request, subject: egress.Subject) !void {
+    const resets = app.egress.resetsAt(req.io, subject, util.now(req.io));
+    ws.send(.text, try std.fmt.allocPrint(req.arena, "{{\"type\":\"budget\",\"resets_at\":{d}}}", .{resets})) catch {};
+    ws.close(@fromBackingInt(@intCast(egress.close_over_quota)), "relay limit reached") catch {};
+}
+
+/// Counts `n` relayed bytes and waits out the server's rate. False when a
+/// quota is spent (the socket was told and closed).
+fn spendRelay(app: *App, ws: *websocket.Socket, req: *anole.Request, subject: egress.Subject, n: usize) !bool {
+    const io = req.io;
+    switch (try app.egress.spend(io, subject, n, std.Io.Clock.real.now(io).nanoseconds)) {
+        .ok => {},
+        .wait_ns => |ns| try io.sleep(.fromNanoseconds(@intCast(ns)), .awake),
+        .over_quota => {
+            try sendBudget(app, ws, req, subject);
+            return false;
+        },
+    }
+    if (app.egress.flushDue(io, util.now(io))) {
+        var ctx: anole.db.Ctx = .{ .io = io, .arena = req.arena };
+        flushEgress(app, &ctx) catch |err| req.log().warn("egress flush failed", .{ .err = @errorName(err) });
+    }
+    return true;
+}
+
 // ------------------------------------------------------------------ WebSockets
 
 /// `Authorization: Bearer <token>`, else `?token=` (browsers cannot set
@@ -475,25 +687,22 @@ fn socketToken(req: *anole.Request) ?[]const u8 {
     return req.query.get("token");
 }
 
-/// The account a relay socket claims to act for: its access JWT in
-/// `X-User-Token` (or `?user_token=` for browsers). Without one, the dev user
-/// when `dev_auth` is on. The host or device must belong to this account.
-fn socketUser(app: *App, req: *anole.Request) ?[]const u8 {
-    const token = req.headers.get("X-User-Token") orelse req.query.get("user_token") orelse
-        return if (app.cfg.dev_auth) auth.dev_user_id else null;
-    return auth.userOfToken(app, req, token);
-}
-
 fn hostSocket(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const token = socketToken(req) orelse return res.fail(.unauthorized, "host token required");
     if (!std.mem.startsWith(u8, token, host_token_prefix)) return res.fail(.unauthorized, "host token required");
     const host = try app.db.optional(HostRow, req, "SELECT id, user_id, name FROM remote_hosts WHERE token_hash = ?", .{try util.sha256Hex(req.arena, token)}) orelse
         return res.fail(.unauthorized, "unknown host token");
-    const user = socketUser(app, req) orelse return res.fail(.unauthorized, "sign in required");
-    if (!std.mem.eql(u8, user, host.user_id)) return res.fail(.forbidden, "this host belongs to another account");
     var ws = (try websocket.upgrade(req, res, upgrade_options)) orelse return res.fail(.upgrade_required, "this endpoint speaks WebSocket");
     defer ws.deinit();
-    serveHost(app, &ws, req, host) catch |err| {
+    const subject = subjectOf(host.user_id, host.id);
+    var ticket: egress.Gate.Ticket = .{ .id = 0 };
+    defer {
+        app.egress.leave(req.io, &ticket);
+        var ctx: anole.db.Ctx = .{ .io = req.io, .arena = req.arena };
+        flushEgress(app, &ctx) catch {};
+    }
+    if (!try admitSocket(app, &ws, req, subject, &ticket)) return;
+    serveHost(app, &ws, req, host, subject) catch |err| {
         if (err == error.Canceled) return err;
         req.log().warn("remote host socket failed", .{ .host = host.id, .err = @errorName(err) });
         if (!ws.isClosed()) ws.close(.internal_error, "") catch {};
@@ -502,7 +711,7 @@ fn hostSocket(app: *App, req: *anole.Request, res: *anole.Response) !void {
     if (!ws.isClosed()) ws.close(.normal, "") catch {};
 }
 
-fn serveHost(app: *App, ws: *websocket.Socket, req: *anole.Request, host: HostRow) !void {
+fn serveHost(app: *App, ws: *websocket.Socket, req: *anole.Request, host: HostRow, subject: egress.Subject) !void {
     const relay = &app.relay;
     const io = req.io;
     var room_buf: [96]u8 = undefined;
@@ -594,7 +803,10 @@ fn serveHost(app: *App, ws: *websocket.Socket, req: *anole.Request, host: HostRo
                 const routed = if (relay.channels.get(frame.channel)) |c| std.mem.eql(u8, c.host_id, host.id) else false;
                 relay.mutex.unlock(io);
                 if (!live) return ws.close(@fromBackingInt(@intCast(close_replaced)), "replaced or revoked");
-                if (routed) relay.toClient(frame.channel, .binary, frame.payload);
+                if (routed) {
+                    if (!try spendRelay(app, ws, req, subject, frame.payload.len)) return;
+                    relay.toClient(frame.channel, .binary, frame.payload);
+                }
             },
             .text => {
                 const now = util.now(io);
@@ -634,15 +846,22 @@ fn clientSocket(app: *App, req: *anole.Request, res: *anole.Response) !void {
     const host_id = req.param("host_id") orelse return res.fail(.not_found, "no such host");
     const token = socketToken(req) orelse return res.fail(.unauthorized, "device token required");
     if (!std.mem.startsWith(u8, token, device_token_prefix)) return res.fail(.unauthorized, "device token required");
-    const device = try app.db.optional(DeviceRow, req, "SELECT id, user_id, host_id, name, public_key, approved FROM remote_devices WHERE token_hash = ? AND host_id = ?", .{
+    const device = try app.db.optional(DeviceRow, req, "SELECT d.id, h.user_id, d.host_id, d.name, d.public_key, d.approved FROM remote_devices d JOIN remote_hosts h ON h.id = d.host_id WHERE d.token_hash = ? AND d.host_id = ?", .{
         try util.sha256Hex(req.arena, token), host_id,
     }) orelse return res.fail(.unauthorized, "this device is not paired with that host");
-    const user = socketUser(app, req) orelse return res.fail(.unauthorized, "sign in required");
-    if (!std.mem.eql(u8, user, device.user_id)) return res.fail(.forbidden, "this device belongs to another account");
     if (device.approved == 0) return res.fail(.forbidden, "waiting for the host to approve this device");
     var ws = (try websocket.upgrade(req, res, upgrade_options)) orelse return res.fail(.upgrade_required, "this endpoint speaks WebSocket");
     defer ws.deinit();
-    serveClient(app, &ws, req, device) catch |err| {
+    // The device's frames count against its host's owner, like the host's.
+    const subject = subjectOf(device.user_id, device.host_id);
+    var ticket: egress.Gate.Ticket = .{ .id = 0 };
+    defer {
+        app.egress.leave(req.io, &ticket);
+        var ctx: anole.db.Ctx = .{ .io = req.io, .arena = req.arena };
+        flushEgress(app, &ctx) catch {};
+    }
+    if (!try admitSocket(app, &ws, req, subject, &ticket)) return;
+    serveClient(app, &ws, req, device, subject) catch |err| {
         if (err == error.Canceled) return err;
         req.log().warn("remote client socket failed", .{ .device = device.id, .err = @errorName(err) });
         if (!ws.isClosed()) ws.close(.internal_error, "") catch {};
@@ -651,7 +870,7 @@ fn clientSocket(app: *App, req: *anole.Request, res: *anole.Response) !void {
     if (!ws.isClosed()) ws.close(.normal, "") catch {};
 }
 
-fn serveClient(app: *App, ws: *websocket.Socket, req: *anole.Request, device: DeviceRow) !void {
+fn serveClient(app: *App, ws: *websocket.Socket, req: *anole.Request, device: DeviceRow, subject: egress.Subject) !void {
     const relay = &app.relay;
     const io = req.io;
     var room_buf: [16]u8 = undefined;
@@ -708,6 +927,7 @@ fn serveClient(app: *App, ws: *websocket.Socket, req: *anole.Request, device: De
         if (!still) return ws.close(@fromBackingInt(@intCast(close_revoked)), "unpaired");
         // The host is away: the client was told (`host_offline`).
         const g = gen orelse continue;
+        if (!try spendRelay(app, ws, req, subject, msg.data.len)) return;
         frame.clearRetainingCapacity();
         try frame.ensureTotalCapacity(Relay.gpa, channel_len + msg.data.len);
         var prefix: [channel_len]u8 = undefined;
@@ -728,13 +948,16 @@ fn byUser(req: *anole.Request, buf: []u8) []const u8 {
 }
 
 pub fn routes(app: *anole.Server(App), state: *App) void {
-    const v1 = app.group("/v1/remote", .{auth.Authenticate{ .app = state }});
+    // Signed in or not: the host and device tokens are the identity.
+    const v1 = app.group("/v1/remote", .{auth.Authenticate{ .app = state, .optional = true }});
     v1.post("/hosts", createHost);
-    v1.get("/hosts", listHosts);
     v1.delete("/hosts/:id", deleteHost);
     v1.delete("/devices/:id", deleteDevice);
+    const account = app.group("/v1/remote", .{auth.Authenticate{ .app = state }});
+    account.get("/hosts", listHosts);
+    account.post("/hosts/:id/claim", claimHost);
     // Codes are guessable only by brute force; cap the attempts per account
-    // (after Authenticate, so the key is a verified user).
+    // or, signed out, per address.
     const guarded = v1.group("", .{anole.ratelimit.Middleware.init(state.limiter.limiter(), .{ .limit = 10, .window = .fromSeconds(60), .key = byUser, .on_error = .deny })});
     guarded.post("/pair", pair);
     guarded.post("/pair/redeem", redeem);

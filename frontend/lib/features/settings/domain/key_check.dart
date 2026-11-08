@@ -18,25 +18,33 @@ final keyCheckProvider = Provider<Future<KeyCheck> Function(ByokProvider provide
 /// Asks the provider whether [key] works, with a free read-only call. The
 /// key goes only to that provider.
 Future<KeyCheck> checkProviderKey(ByokProvider provider, String key, {http.Client? client}) async {
+  // No authenticated read-only call (NVIDIA and SambaNova list their models
+  // to anyone): a 200 there would say any key works.
+  if (provider.checkUrl.isEmpty) {
+    return (valid: null, message: "${provider.name} keys can't be checked from here yet. The key is saved.");
+  }
   final c = client ?? http.Client();
   try {
-    final res = await switch (provider.id) {
-      'openrouter' => c.get(Uri.parse('https://openrouter.ai/api/v1/key'), headers: {'Authorization': 'Bearer $key'}),
-      'anthropic' => c.get(
-        Uri.parse('https://api.anthropic.com/v1/models?limit=1'),
-        headers: {
-          'x-api-key': key,
-          'anthropic-version': '2026-10-21',
-          // Browsers need the opt-in; the key is the user's own.
-          if (kIsWeb) 'anthropic-dangerous-direct-browser-access': 'true',
-        },
-      ),
-      _ => throw ArgumentError('No check for ${provider.id}'),
-    }.timeout(const Duration(seconds: 15));
+    final res = await c
+        .get(
+          Uri.parse(provider.checkUrl),
+          headers: switch (provider.auth) {
+            ProviderAuth.anthropic => {
+              'x-api-key': key,
+              'anthropic-version': '2026-10-21',
+              // Browsers need the opt-in; the key is the user's own.
+              if (kIsWeb) 'anthropic-dangerous-direct-browser-access': 'true',
+            },
+            ProviderAuth.bearer => {'Authorization': 'Bearer $key'},
+          },
+        )
+        .timeout(const Duration(seconds: 15));
     return switch (res.statusCode) {
       // Rate limited still means the key was accepted.
       200 || 429 => (valid: true, message: '${provider.name} key works'),
-      401 || 403 => (valid: false, message: '${provider.name} rejected this key.'),
+      // Google AI Studio and xAI answer a bad key with 400 (a check call has
+      // no parameters to get wrong).
+      400 || 401 || 403 => (valid: false, message: '${provider.name} rejected this key.'),
       final s => (valid: null, message: '${provider.name} answered $s. Try again in a moment.'),
     };
   } on TimeoutException {

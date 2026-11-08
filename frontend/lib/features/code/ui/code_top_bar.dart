@@ -5,7 +5,7 @@ import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/anchored_popover.dart';
 import '../../../core/ui/every_icons.dart';
-import '../../billing/billing_providers.dart' show formatMicros;
+import '../../../core/format/money.dart';
 import '../../models/domain/model_catalog.dart';
 import '../../models/models_providers.dart';
 import '../../skills/skills_providers.dart' show installedSkillsProvider, skillSettingsProvider;

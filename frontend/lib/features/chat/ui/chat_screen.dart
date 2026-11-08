@@ -1,3 +1,4 @@
+import '../../../core/config/billing_flag.dart';
 import '../../../core/ui/brand.dart';
 
 import 'package:flutter/widgets.dart';
@@ -162,6 +163,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   retryable: error.retryable,
                   onRetry: controller.retry,
                   action: switch (error) {
+                    // Parked billing: a 402 is the user's own key running dry.
+                    HttpStatusError(outOfCredits: true) when !BillingFlag.enabled => (
+                      label: 'API keys',
+                      onPressed: () => showSettings(context, section: SettingsSection.apiKeys),
+                    ),
                     HttpStatusError(outOfCredits: true) => (
                       label: 'Top up',
                       onPressed: () => showSettings(context, section: SettingsSection.billing, anchor: 'wallet'),

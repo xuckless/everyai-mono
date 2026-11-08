@@ -21,7 +21,7 @@ enum ServerStatus {
 
 /// Supplies bearer tokens for authenticated requests. Implemented by the auth feature.
 abstract interface class AccessTokenSource {
-  /// The current access token, or null when signed out or bypassed.
+  /// The current access token, or null when signed out.
   Future<String?> accessToken();
 
   /// Called once after a 401. Returns a fresh token, or null if the session is gone.
@@ -38,6 +38,7 @@ final class ApiClient {
     this.waitForServer = false,
     this.wakeBackoff = const Duration(milliseconds: 500),
     this.defaultHeaders = const {},
+    this.acceptsProviderKeys = false,
   }) : _client = client, // ignore: prefer_initializing_formals
        _tokens = tokens; // ignore: prefer_initializing_formals
 
@@ -46,6 +47,14 @@ final class ApiClient {
   /// Sent with every request, under the call's own headers (the bundled
   /// server's `X-EveryAI-Local` token).
   final Map<String, String> defaultHeaders;
+
+  /// Only the bundled server's client takes the user's provider keys
+  /// (`X-Provider-Key-*`). Every other client drops them, so a key can never
+  /// reach the hosted server (which refuses them too).
+  final bool acceptsProviderKeys;
+
+  /// Whether [name] is a user's provider key header.
+  static bool isProviderKeyHeader(String name) => name.toLowerCase().startsWith('x-provider-key-');
   final http.Client _client;
   final AccessTokenSource? _tokens;
 
@@ -123,8 +132,9 @@ final class ApiClient {
     String path, {
     bool authenticated = false,
     Duration timeout = jsonTimeout,
+    Map<String, String> headers = const {},
   }) async {
-    final res = await _send('GET', path, authenticated: authenticated, timeout: timeout);
+    final res = await _send('GET', path, authenticated: authenticated, timeout: timeout, headers: headers);
     return _decodeObject(await _readBody(res));
   }
 
@@ -179,6 +189,8 @@ final class ApiClient {
   }
 
   static Map<String, Object?> _decodeObject(Uint8List bytes) {
+    // 204 No Content (logout and other void routes): nothing to decode.
+    if (bytes.isEmpty) return const {};
     try {
       final decoded = jsonDecode(utf8.decode(bytes));
       if (decoded is Map<String, Object?>) return decoded;
@@ -245,16 +257,33 @@ final class ApiClient {
     if (waitForServer) await awaitOnline();
     final request = http.AbortableRequest(method, resolve(path), abortTrigger: cancel)
       ..headers.addAll(defaultHeaders)
-      ..headers.addAll(headers);
+      ..headers.addAll(
+        acceptsProviderKeys
+            ? headers
+            : {
+                for (final e in headers.entries)
+                  if (!isProviderKeyHeader(e.key)) e.key: e.value,
+              },
+      );
+    assert(
+      acceptsProviderKeys || !headers.keys.any(isProviderKeyHeader),
+      'A provider key was about to go to $baseUrl; keys go to the bundled server only.',
+    );
     if (json != null) {
       request
         ..headers['Content-Type'] = 'application/json; charset=utf-8'
         ..bodyBytes = utf8.encode(jsonEncode(json));
     }
+    // An account is optional: a signed-out request goes without a token, and
+    // the server decides (most routes work anonymously; account routes 401).
+    var signedIn = false;
     if (authenticated) {
       final token = isRetry ? await _tokens?.refreshAccessToken() : await _tokens?.accessToken();
-      if (token == null) throw const UnauthorizedError();
-      request.headers['Authorization'] = 'Bearer $token';
+      if (token == null && isRetry) throw const UnauthorizedError();
+      if (token != null) {
+        request.headers['Authorization'] = 'Bearer $token';
+        signedIn = true;
+      }
     }
 
     final http.StreamedResponse res;
@@ -270,7 +299,8 @@ final class ApiClient {
       throw NetworkError(e.message);
     }
 
-    if (res.statusCode == 401 && authenticated && !isRetry) {
+    // A 401 on a signed-in call: the access token expired; refresh once.
+    if (res.statusCode == 401 && signedIn && !isRetry) {
       await res.stream.drain<void>();
       return _send(
         method,
@@ -298,8 +328,12 @@ final class ApiClient {
     }
     final status = res.statusCode;
     if (status ~/ 100 == 2) return bytes;
-    if (status == 401) throw const UnauthorizedError();
     final detail = _detail(bytes);
+    // A 401 with a reason of its own (a wrong sign-in code) keeps it; a bare
+    // one means the session is gone.
+    if (status == 401) {
+      throw detail?.code == null ? const UnauthorizedError() : UnauthorizedError(detail!.message, detail.code);
+    }
     throw HttpStatusError(status, detail?.message ?? 'Request failed ($status).', code: detail?.code);
   }
 

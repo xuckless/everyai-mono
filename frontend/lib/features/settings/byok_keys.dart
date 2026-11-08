@@ -2,10 +2,14 @@ import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/local_backend/local_backend_providers.dart' show localBackendProvider;
+import '../../core/local_backend/local_gateway.dart';
 import '../../core/preferences.dart';
 import '../code/gateway_key.dart' show SecretStore, secretStoreProvider;
 import '../models/domain/model_catalog.dart';
 import 'domain/byok_providers.dart';
+import 'domain/key_check.dart';
+import 'domain/provider_key_state.dart';
 
 /// The user's own provider keys, kept in the system keychain (secure storage
 /// elsewhere) under `byok.<provider id>`, never on our servers. The state is
@@ -79,6 +83,7 @@ final modelBillingProvider = Provider<ModelBilling>((ref) {
     choices: ref.watch(modelBillersProvider),
   );
   ModelBilling.current = billing;
+  LocalGateway.resolve ??= () => ref.read(localBackendProvider).ensureStarted();
   return billing;
 });
 
@@ -100,5 +105,83 @@ final class ByokUltraCap extends Notifier<double> {
     if (usd <= 0) return;
     ref.read(preferencesProvider)[_key] = usd.toString();
     state = usd;
+  }
+}
+
+/// Each provider's key state (`ProviderKeyState`): keys, the last checks
+/// (Preferences `byok.checks`: id → {tail, valid, at}) and checks under way.
+final providerKeyStatesProvider = NotifierProvider<ProviderKeyStates, Map<String, ProviderKeyState>>(
+  ProviderKeyStates.new,
+);
+
+final class ProviderKeyStates extends Notifier<Map<String, ProviderKeyState>> {
+  static const _key = 'byok.checks';
+
+  /// Providers with a check running, and the generation of each (a check
+  /// that answers after a newer one started is dropped).
+  final _checking = <String, int>{};
+  var _gen = 0;
+
+  @override
+  Map<String, ProviderKeyState> build() {
+    final keys = ref.watch(byokKeysProvider).value ?? const <String, String>{};
+    final checks = _checks(ref.watch(preferencesProvider)[_key]);
+    return {
+      for (final p in byokProviders)
+        p.id: providerKeyState(p, key: keys[p.id], check: checks[p.id], checking: _checking.containsKey(p.id)),
+    };
+  }
+
+  static Map<String, KeyCheckRecord> _checks(String? raw) {
+    if (raw == null) return const {};
+    try {
+      final v = jsonDecode(raw);
+      if (v is! Map) return const {};
+      return {
+        for (final e in v.entries)
+          if (e.value case {'tail': final String tail, 'at': final num at})
+            '${e.key}': (
+              tail: tail,
+              valid: (e.value as Map)['valid'] as bool?,
+              at: DateTime.fromMillisecondsSinceEpoch(at.toInt()),
+            ),
+      };
+    } on FormatException {
+      return const {};
+    }
+  }
+
+  /// Checks [providerId]'s saved key with the provider (device → provider)
+  /// and keeps the answer. Returns what to tell the user.
+  Future<String?> check(String providerId) async {
+    final provider = ByokProvider.byId(providerId);
+    final key = ref.read(byokKeysProvider).value?[providerId];
+    if (provider == null || key == null) return null;
+    final gen = ++_gen;
+    _checking[providerId] = gen;
+    ref.invalidateSelf();
+    KeyCheck result;
+    try {
+      result = await ref.read(keyCheckProvider)(provider, key);
+    } on Object catch (e) {
+      result = (valid: null, message: "Couldn't check the key: $e");
+    }
+    if (!ref.mounted || _checking[providerId] != gen) return null;
+    _checking.remove(providerId);
+    final prefs = ref.read(preferencesProvider);
+    final all = {
+      for (final e in _checks(prefs[_key]).entries)
+        e.key: {'tail': e.value.tail, 'valid': e.value.valid, 'at': e.value.at.millisecondsSinceEpoch},
+    };
+    all[providerId] = {
+      'tail': ByokKeys.lastFour(key),
+      'valid': result.valid,
+      'at': DateTime.now().millisecondsSinceEpoch,
+    };
+    prefs[_key] = jsonEncode(all);
+    ref.invalidateSelf();
+    return !provider.connected && result.valid == true
+        ? '${provider.name} key works. EveryAI will run models on it once this provider is connected.'
+        : result.message;
   }
 }

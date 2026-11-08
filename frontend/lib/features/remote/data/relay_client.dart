@@ -10,9 +10,25 @@ import '../domain/remote_protocol.dart';
 /// Opens a relay socket with its `rh_`/`rd_` token (see `relay_socket.dart`).
 typedef RelayConnector = Future<WebSocket> Function(Uri url, String token);
 
+/// Where a device's link stands:
+///
+/// ```text
+///  connecting ──queued notice──► queued(position) ──hello──► hostOffline | ready
+///      │  ▲                                                     │
+///      │  └──────────── socket dropped (backoff) ◄──────────────┤
+///      └──budget notice──► overBudget(resetsAt) ──resetsAt──► connecting
+///  any ──revoked / keys differ──► revoked | keyMismatch   (final)
+/// ```
 enum RemoteLinkStatus {
   /// Reaching the relay, or the encrypted handshake is running.
   connecting,
+
+  /// The relay is full; this device waits in line ([RemoteClient.queuePosition]).
+  queued,
+
+  /// The relay's limit for this host (or its account) is spent until
+  /// [RemoteClient.budgetResetsAt]; it reconnects then by itself.
+  overBudget,
 
   /// The relay is up but the host isn't connected to it.
   hostOffline,
@@ -28,6 +44,8 @@ enum RemoteLinkStatus {
 
   String get label => switch (this) {
     connecting => 'Connecting',
+    queued => 'Waiting for the relay',
+    overBudget => 'Relay limit reached',
     hostOffline => 'Host offline',
     ready => 'Connected',
     revoked => 'Unpaired',
@@ -114,10 +132,19 @@ final class RemoteClient {
   final _statusController = StreamController<RemoteLinkStatus>.broadcast();
 
   RemoteLinkStatus get status => _status;
+
+  /// The place in the relay's line while [status] is [RemoteLinkStatus.queued] (1 = next).
+  int? get queuePosition => _status == RemoteLinkStatus.queued ? _queuePosition : null;
+  int? _queuePosition;
+
+  /// When the relay's limit resets, while [status] is [RemoteLinkStatus.overBudget].
+  DateTime? get budgetResetsAt => _status == RemoteLinkStatus.overBudget ? _budgetResetsAt : null;
+  DateTime? _budgetResetsAt;
   Stream<RemoteLinkStatus> get statusChanges => _statusController.stream;
 
-  void _setStatus(RemoteLinkStatus s) {
-    if (_status == s) return;
+  /// [force] reports an unchanged status again (a new place in the queue).
+  void _setStatus(RemoteLinkStatus s, {bool force = false}) {
+    if (_status == s && !force) return;
     _status = s;
     // Callers waiting for the link fail at once when it can't come back by itself.
     if ((s == RemoteLinkStatus.revoked || s == RemoteLinkStatus.keyMismatch) && !_ready.isCompleted) {
@@ -176,6 +203,11 @@ final class RemoteClient {
       _setStatus(RemoteLinkStatus.revoked);
       return;
     }
+    // 4008: over the relay's limit; back when it resets (told by `budget`).
+    if (code == 4008 || _status == RemoteLinkStatus.overBudget) {
+      _waitForBudget();
+      return;
+    }
     if (_status != RemoteLinkStatus.revoked && _status != RemoteLinkStatus.keyMismatch) _scheduleReconnect();
   }
 
@@ -185,6 +217,19 @@ final class RemoteClient {
     final delay = Duration(milliseconds: 500 * (1 << _retries.clamp(0, 5)));
     _retries++;
     _retry = Timer(delay, () => unawaited(_connect()));
+  }
+
+  void _waitForBudget() {
+    if (_closed) return;
+    final resets = _budgetResetsAt ?? DateTime.now().add(const Duration(hours: 1));
+    _setStatus(RemoteLinkStatus.overBudget);
+    _retry?.cancel();
+    var wait = resets.difference(DateTime.now());
+    if (wait < const Duration(minutes: 1)) wait = const Duration(minutes: 1);
+    _retry = Timer(wait, () {
+      _retries = 0;
+      unawaited(_connect());
+    });
   }
 
   void _notice(String text) {
@@ -217,6 +262,15 @@ final class RemoteClient {
         _forgetHandshakes();
         _dropChannel(const RemoteUnavailable('This device was unpaired.'));
         _setStatus(RemoteLinkStatus.revoked);
+      case 'queued':
+        _queuePosition = (n['position'] as num?)?.toInt();
+        _setStatus(RemoteLinkStatus.queued, force: true);
+      case 'budget':
+        final at = (n['resets_at'] as num?)?.toInt();
+        _budgetResetsAt = at == null ? null : DateTime.fromMillisecondsSinceEpoch(at * 1000);
+        _forgetHandshakes();
+        _dropChannel(const RemoteUnavailable("The relay's limit for this host is used up for now."));
+        _setStatus(RemoteLinkStatus.overBudget);
     }
   }
 

@@ -1,115 +1,273 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:google_sign_in/google_sign_in.dart';
 
 import '../../core/net/api_client.dart';
 import '../../core/net/api_error.dart';
 import '../../core/providers.dart';
 import '../code/gateway_key.dart';
-import '../remote/remote_providers.dart' show pairedHostsProvider, remoteHostingProvider;
+import '../remote/remote_providers.dart' show thisDeviceName;
+import 'data/magic_api.dart';
 import 'data/token_store.dart';
 import 'domain/auth_state.dart';
 
 final authProvider = NotifierProvider<AuthController, AuthState>(AuthController.new);
 
-final class AuthController extends Notifier<AuthState> {
+/// The magic-link endpoints; tests answer without a server.
+final magicApiProvider = Provider<MagicApi>((ref) => HttpMagicApi(ref.watch(apiClientProvider)));
+
+/// How often a waiting sign-in asks whether the link was pressed.
+final magicPollIntervalProvider = Provider<Duration>((_) => const Duration(seconds: 2));
+
+/// The name the sign-in email and page show ("Sign in EveryAI on Mac?").
+final signInDeviceNameProvider = Provider<String>((_) => thisDeviceName());
+
+/// `base` so tests can stand in a fake (`authProvider.overrideWith`).
+base class AuthController extends Notifier<AuthState> {
   TokenStore get _tokens => ref.read(tokenStoreProvider);
   ApiClient get _api => ref.read(apiClientProvider);
+  MagicApi get _magic => ref.read(magicApiProvider);
+
+  /// Bumped by every new flow and by cancel: late answers of an older one
+  /// are dropped.
+  int _gen = 0;
+  Timer? _poller;
+  bool _polling = false;
 
   @override
   AuthState build() {
-    if (ref.watch(appConfigProvider).devSkipAuth) return const Bypassed();
+    ref.onDispose(_stopPolling);
+    // The server refused the refresh token (revoked on another device,
+    // expired): the tokens are gone, so this device is signed out too.
+    final ended = _tokens.sessionEnded.listen((_) => unawaited(_sessionEnded()));
+    ref.onDispose(ended.cancel);
     unawaited(_restore());
     return const Restoring();
   }
 
   Future<void> _restore() async {
-    final token = await _tokens.refreshAccessToken();
-    if (!ref.mounted) return;
-    state = token == null ? const SignedOut() : const SignedIn();
+    var signedIn = false;
+    try {
+      // A refresh that didn't go through (the server waking up, offline)
+      // keeps the stored token: the session is still this device's, and
+      // its calls carry it. Only a refused token (cleared) is signed out.
+      signedIn = await _tokens.refreshAccessToken() != null || await _tokens.readRefreshToken() != null;
+    } on Object {
+      // No keychain (a test, a locked keyring): signed out, which the app
+      // handles like any other state.
+      signedIn = false;
+    }
+    if (!ref.mounted || state is! Restoring) return;
+    state = signedIn ? const SignedIn() : const SignedOut();
   }
 
-  Future<void> signIn({required String email, required String password}) => _authenticate(
-    AuthMethod.password,
-    () => _api.postJson('v1/auth/login', {'email': email.trim(), 'password': password}),
-  );
-
-  Future<void> signUp({required String name, required String email, required String password}) => _authenticate(
-    AuthMethod.signUp,
-    () => _api.postJson('v1/auth/signup', {'name': name.trim(), 'email': email.trim(), 'password': password}),
-  );
-
-  /// The backend accepts Google ID tokens minted for its iOS, Android or web
-  /// client IDs. Desktop has no native Google flow yet.
-  static bool get googleSupported =>
-      !kIsWeb && (defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.android);
-
-  Future<void> signInWithGoogle() => _authenticate(AuthMethod.google, () async {
-    final google = GoogleSignIn.instance;
-    await google.initialize(serverClientId: _nonEmpty(ref.read(appConfigProvider).googleServerClientId));
-    final account = await google.authenticate();
-    final idToken = account.authentication.idToken;
-    if (idToken == null) throw const ProtocolError('Google did not return an ID token.');
-    return _api.postJson('v1/auth/google', {'token': idToken});
-  });
-
-  Future<void> signOut() async {
-    // Remote hosting and pairings belong to this account too. They go
-    // first, while the backend still takes this account's calls.
-    await _leaveRemote();
-    final refresh = await _tokens.readRefreshToken();
-    if (refresh != null) {
-      unawaited(_api.postJson('v1/auth/logout', {'refresh_token': refresh}).then((_) {}, onError: (_) {}));
+  Future<void> _sessionEnded() async {
+    if (state is! SignedIn) return;
+    await _forgetGatewayKey();
+    if (ref.mounted && state is SignedIn) {
+      state = const SignedOut(error: 'You were signed out (the session ended). Sign in again for account features.');
     }
-    await _tokens.clear();
-    // The Code gateway key belongs to this account; the next user mints their own.
+  }
+
+  /// The Code gateway key belongs to the account it was minted for; the
+  /// next one mints its own.
+  Future<void> _forgetGatewayKey() async {
     try {
       await ref.read(gatewayKeysProvider).clear();
     } on Object {
       // No keychain (or no preferences in a test): nothing was kept.
     }
-    if (ref.read(appConfigProvider).devSkipAuth) return;
+  }
+
+  MagicFlow? get _flow => switch (state) {
+    SigningIn(:final flow) => flow,
+    _ => null,
+  };
+
+  void _setFlow(MagicFlow flow) {
+    if (!ref.mounted) return;
+    state = SigningIn(flow);
+    final waiting = flow is Waiting || flow is Verifying;
+    if (waiting) {
+      _startPolling();
+    } else {
+      _stopPolling();
+    }
+  }
+
+  /// Opens the email step (Settings → Account, the account menu).
+  void startSignIn({String email = ''}) {
+    // While restoring, a stored session may still turn out to be valid.
+    if (state is SignedIn || state is SigningOut || state is Restoring) return;
+    _setFlow(EnterEmail(++_gen, email: email));
+  }
+
+  /// Back to signed out; any answer still on its way is ignored.
+  void cancelSignIn() {
+    if (state is! SigningIn) return;
+    _gen++;
+    _stopPolling();
     state = const SignedOut();
   }
 
-  /// Stops hosting and drops this device's pairings: the next account to
-  /// sign in here must not drive this computer for the old one's devices,
-  /// nor reach the old account's hosts.
-  Future<void> _leaveRemote() async {
+  /// Sends the email with the link and code.
+  Future<void> ask(String email) async {
+    final address = email.trim();
+    // Signed in (or about to know): a stray send must not start a second session.
+    if (state is SignedIn || state is SigningOut || state is Restoring) return;
+    if (_flow case Requesting()) return;
+    final gen = ++_gen;
+    _setFlow(Requesting(gen, address));
     try {
-      await ref.read(remoteHostingProvider.notifier).signedOut();
-    } on Object {
-      // No keychain (a test): nothing was kept.
-    }
-    try {
-      await ref.read(pairedHostsProvider.notifier).signedOut();
-    } on Object {
-      // Likewise.
-    }
-  }
-
-  Future<void> _authenticate(AuthMethod method, Future<Map<String, Object?>> Function() call) async {
-    if (state is Authenticating) return;
-    state = Authenticating(method);
-    try {
-      final json = await call();
-      if (json case {'access_token': final String access, 'refresh_token': final String refresh}) {
-        await _tokens.save(accessToken: access, refreshToken: refresh);
-        if (ref.mounted) state = const SignedIn();
-      } else {
-        throw const ProtocolError('Unexpected sign-in response.');
-      }
+      final asked = await _magic.ask(address, deviceName: ref.read(signInDeviceNameProvider));
+      if (gen != _gen) return;
+      _setFlow(
+        Waiting(
+          gen,
+          email: address,
+          requestId: asked.requestId,
+          secret: asked.secret,
+          sentAt: DateTime.now(),
+          expiresAt: asked.expiresAt,
+        ),
+      );
     } on ApiError catch (e) {
-      if (ref.mounted) state = SignedOut(error: e is UnauthorizedError ? 'Wrong email or password.' : e.message);
-    } on GoogleSignInException catch (e) {
-      if (!ref.mounted) return;
-      state = e.code == GoogleSignInExceptionCode.canceled
-          ? const SignedOut()
-          : SignedOut(error: e.description ?? 'Google sign-in failed.');
+      if (gen == _gen) _setFlow(EnterEmail(gen, email: address, error: e.message));
     }
   }
 
-  static String? _nonEmpty(String s) => s.isEmpty ? null : s;
+  /// Checks a typed code; one at a time.
+  Future<void> enterCode(String code) async {
+    final Waiting waiting;
+    switch (_flow) {
+      case final Waiting w:
+        waiting = w;
+      default:
+        return;
+    }
+    final gen = waiting.gen;
+    _setFlow(Verifying(waiting.withError(null)));
+    try {
+      final answer = await _magic.code(waiting.requestId, waiting.secret, code.trim());
+      if (gen != _gen) return;
+      await _settle(gen, answer, waiting, fromCode: true);
+    } on WrongCode catch (e) {
+      if (gen != _gen || _flow is! Verifying) return;
+      _setFlow(
+        e.dead
+            ? Expired(gen, email: waiting.email, reason: 'Too many wrong codes. Ask for a new email.')
+            : waiting.withError("That code isn't right."),
+      );
+    } on ApiError catch (e) {
+      if (gen == _gen && _flow is Verifying) _setFlow(waiting.withError(e.message));
+    }
+  }
+
+  /// The link was pressed or the deep link came back: ask now instead of
+  /// at the next tick.
+  Future<void> pollNow() => _pollOnce();
+
+  void _startPolling() {
+    _poller ??= Timer.periodic(ref.read(magicPollIntervalProvider), (_) => unawaited(_pollOnce()));
+  }
+
+  void _stopPolling() {
+    _poller?.cancel();
+    _poller = null;
+  }
+
+  Future<void> _pollOnce() async {
+    final waiting = switch (_flow) {
+      final Waiting w => w,
+      Verifying(:final waiting) => waiting,
+      _ => null,
+    };
+    if (waiting == null || _polling) return;
+    _polling = true;
+    try {
+      final answer = await _magic.poll(waiting.requestId, waiting.secret);
+      if (waiting.gen != _gen) return;
+      await _settle(waiting.gen, answer, waiting);
+    } on ApiError {
+      // Offline for a moment: the next tick asks again.
+    } finally {
+      _polling = false;
+    }
+  }
+
+  /// Applies a poll or code answer: signed in with tokens, or the request
+  /// ended, or still waiting.
+  ///
+  /// [fromCode]: the answer to a typed code. A poll that is still pending
+  /// while a code is being checked leaves Verifying alone, so the code's
+  /// own answer (a wrong code) still shows.
+  Future<void> _settle(int gen, MagicAnswer answer, Waiting waiting, {bool fromCode = false}) async {
+    if (answer case (accessToken: final String access, refreshToken: final String refresh, status: _)) {
+      _stopPolling();
+      _gen++;
+      try {
+        await _tokens.save(accessToken: access, refreshToken: refresh);
+      } on Object {
+        // The keychain refused the session: don't spin on a sign-in that
+        // can't be kept.
+        await _tokens.clear().catchError((Object _) {});
+        if (ref.mounted) state = const SignedOut(error: "The sign-in couldn't be saved to this device's keychain.");
+        return;
+      }
+      // A key minted while signed out isn't this account's.
+      await _forgetGatewayKey();
+      if (ref.mounted) state = const SignedIn();
+      return;
+    }
+    final reason = switch (answer.status) {
+      'expired' => 'This email has expired. Ask for a new one.',
+      'denied' => 'Sign-in was refused from the email ("Not me").',
+      'dead' => 'Too many wrong codes. Ask for a new email.',
+      // Redeemed by another poll of ours that already won: nothing to do.
+      _ => null,
+    };
+    if (reason != null) {
+      _setFlow(Expired(gen, email: waiting.email, reason: reason));
+    } else if (fromCode && _flow is Verifying) {
+      _setFlow(waiting);
+    }
+  }
+
+  Future<void>? _signingOut;
+
+  /// Ends the account session on this device. Remote pairings stay: they
+  /// work without an account (owner, 2026-11-08), and unpairing is its own
+  /// action in Settings → Remote.
+  Future<void> signOut() => _signingOut ??= _signOut().whenComplete(() => _signingOut = null);
+
+  Future<void> _signOut() async {
+    if (state is! SignedIn) return;
+    state = const SigningOut();
+    try {
+      // A refresh on its way rotates the token: revoke the one it leaves.
+      await _tokens.settled();
+      final refresh = await _tokens.readRefreshToken();
+      if (refresh != null) {
+        unawaited(_api.postJson('v1/auth/logout', {'refresh_token': refresh}).then((_) {}, onError: (_) {}));
+      }
+    } on Object {
+      // No keychain to read: nothing to revoke from here.
+    }
+    try {
+      await _tokens.clear();
+    } on Object {
+      // The keychain refused the delete; the access token is gone anyway.
+    }
+    // The Code gateway key belongs to this account; the next user mints their own.
+    await _forgetGatewayKey();
+    if (ref.mounted) state = const SignedOut();
+  }
+
+  /// Every device of this account signs out (refresh tokens revoked on the
+  /// server), this one included.
+  Future<void> signOutEverywhere() async {
+    if (state is! SignedIn) return;
+    await _api.postJson('v1/auth/logout_all', const {}, authenticated: true);
+    await signOut();
+  }
 }

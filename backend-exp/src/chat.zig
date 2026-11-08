@@ -389,7 +389,7 @@ fn stream(app: *App, req: *anole.Request, res: *anole.Response) !void {
     for (body.messages) |m| if (m.content != .string and m.content != .array)
         return req.invalid("messages", "chat.content_shape", "content must be a string or an array of parts");
 
-    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
+    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.priceMarkup());
     // The Auto model: the decider picks the mode, rich answers and the
     // model, and the turn runs as if the app had sent them.
     var picked: ?auto.Pick = null;

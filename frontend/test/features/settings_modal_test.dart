@@ -1,3 +1,4 @@
+import 'package:every_ai/core/config/billing_flag.dart';
 import 'package:drift/native.dart';
 import 'package:every_ai/core/db/app_database.dart';
 import 'package:every_ai/core/platform/platform_kind.dart';
@@ -54,6 +55,10 @@ Future<ProviderContainer> _pump(WidgetTester tester, Size size) async {
 }
 
 void main() {
+  // Written for metered credits; the parked default has billing_parked_test.dart.
+  setUp(() => BillingFlag.enabled = true);
+  tearDown(() => BillingFlag.enabled = false);
+
   group('settings search', () {
     test('finds rows by title, keyword and section, every word', () {
       expect(searchSettings('dark').map((e) => e.anchor), contains('theme'));

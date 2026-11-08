@@ -13,6 +13,35 @@ void main() {
   group('credentialPath and credentialsUnder', () {
     test('stores are named, public keys and project files are not', () {
       expect(credentialPath('$home/.ssh/id_ed25519', home: home), 'your SSH keys');
+      // The EveryAI vault is never readable by tools, on any OS.
+      for (final dir in [
+        'Library/Application Support/dev.alidirect.everyai/vault/vault.json',
+        '.local/share/dev.alidirect.everyai/vault/items/a.json',
+        'AppData/Roaming/AliDirect/EveryAI/vault',
+      ]) {
+        expect(credentialPath('$home/$dir', home: home), 'your EveryAI vault', reason: dir);
+      }
+      expect(credentialPath('$home/projects/vault/notes.md', home: home), isNull);
+      // A search through the app data folder reads the vault in it.
+      for (final dir in [
+        'Library/Application Support/dev.alidirect.everyai',
+        '.local/share',
+        'AppData/Roaming/alidirect.dev',
+      ]) {
+        expect(credentialsUnder('$home/$dir', home: home), 'your EveryAI vault', reason: dir);
+      }
+      // macOS keeps it under a folder with a space, which a quoted or escaped path keeps whole.
+      for (final cmd in [
+        'cat "\$HOME/Library/Application Support/dev.alidirect.everyai/vault/vault.json"',
+        r'cat ~/Library/Application\ Support/dev.alidirect.everyai/vault/manifest.json',
+        'grep -r token "$home/Library/Application Support/dev.alidirect.everyai"',
+      ]) {
+        expect(secretSourceReason(cmd, home: home), isNotNull, reason: cmd);
+      }
+      expect(
+        secretSourceReason('ls "\$HOME/Library/Application Support/dev.alidirect.everyai/vault"', home: home),
+        isNull,
+      );
       expect(credentialPath('$home/.ssh/id_ed25519.pub', home: home), isNull);
       expect(credentialPath('$home/.ssh/known_hosts', home: home), isNull);
       expect(credentialPath('$home/.aws/credentials', home: home), 'your AWS credentials');

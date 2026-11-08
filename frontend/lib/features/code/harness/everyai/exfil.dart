@@ -37,8 +37,23 @@ String? credentialPath(String path, {required String home}) {
   for (final (dir, what) in _stores) {
     if (under(dir)) return what;
   }
+  // The app's own vault (features/vault/), wherever the OS keeps app data.
+  if (_vaultDir.hasMatch(rel)) return 'your EveryAI vault';
   return null;
 }
+
+/// `<app data>/vault` on every OS: macOS `Library/Application Support/dev.alidirect.everyai`, Linux
+/// `.local/share/dev.alidirect.everyai`, Windows `AppData/Roaming/<company>/EveryAI`.
+final _vaultDir = RegExp(r'(^|/)(dev\.alidirect\.everyai|EveryAI|every_ai)/vault(/|$)', caseSensitive: false);
+
+/// Where the vault folder is under home on each OS (path_provider's app
+/// support folder + `vault`), for [credentialsUnder]: a search through any
+/// folder above it reads it.
+const _vaultHomes = [
+  'Library/Application Support/dev.alidirect.everyai/vault',
+  '.local/share/dev.alidirect.everyai/vault',
+  'AppData/Roaming/alidirect.dev/EveryAI/vault',
+];
 
 const _stores = [
   ('.aws', 'your AWS credentials'),
@@ -103,7 +118,11 @@ String? credentialsUnder(String path, {required String home}) {
   final h = _trimSlash(home);
   if (p.isEmpty || h == p || h.startsWith('$p/')) return 'your credential stores';
   if (!p.startsWith('$h/')) return null;
-  for (final (dir, what) in [('.ssh', 'your SSH keys'), ..._stores]) {
+  for (final (dir, what) in [
+    ('.ssh', 'your SSH keys'),
+    ..._stores,
+    for (final v in _vaultHomes) (v, 'your EveryAI vault'),
+  ]) {
     if ('$h/$dir'.startsWith('$p/')) return what;
   }
   return null;
@@ -159,7 +178,11 @@ String? secretSourceReason(String command, {required String home, String? cwd}) 
     for (final a in args) {
       if (a.startsWith('-') || a.contains('://')) continue;
       final abs = _absolute(a, dir, home);
-      if (!_mentionStart.hasMatch(a)) {
+      // Mentions starting at ~ or / are counted from the text too, but that
+      // scan stops at a space: a quoted or escaped path with one (macOS
+      // `Application Support`, where the vault and browser data live) is
+      // only seen whole here.
+      if (!_mentionStart.hasMatch(a) || a.contains(RegExp(r'\s'))) {
         if (credentialPath(abs, home: home) case final what?) return 'the command reads $what';
       }
       if (searches) {

@@ -13,7 +13,7 @@ import '../../../core/ui/anchored_popover.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../../core/ui/segmented.dart';
 import '../../../core/ui/selection.dart';
-import '../../billing/billing_providers.dart' show formatMicros;
+import '../../../core/format/money.dart';
 import '../../models/domain/model_catalog.dart';
 import '../../models/models_providers.dart';
 import '../../settings/settings_registry.dart';

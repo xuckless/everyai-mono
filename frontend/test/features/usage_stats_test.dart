@@ -1,3 +1,4 @@
+import 'package:every_ai/core/config/billing_flag.dart';
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/theme/every_theme.dart';
 import 'package:every_ai/features/billing/billing_providers.dart';
@@ -29,6 +30,10 @@ class _Billing extends BillingController {
 int _s(DateTime d) => d.millisecondsSinceEpoch ~/ 1000;
 
 void main() {
+  // Written for metered credits; the parked default has billing_parked_test.dart.
+  setUp(() => BillingFlag.enabled = true);
+  tearDown(() => BillingFlag.enabled = false);
+
   final now = DateTime(2026, 10, 30, 15); // a Friday
 
   test('bucketStarts: days end today; weeks start on Monday', () {
@@ -148,5 +153,33 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Code'), findsWidgets);
     expect(find.text('By kind'), findsOneWidget);
+  });
+  testWidgets('with billing parked, Usage shows no plan card and never asks for billing', (tester) async {
+    BillingFlag.enabled = false;
+    tester.view.physicalSize = const Size(1000, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    var billingAsked = false;
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          modelCatalogProvider.overrideWith(_Catalog.new),
+          billingProvider.overrideWith(() {
+            billingAsked = true;
+            return _Billing();
+          }),
+          usageStatsProvider.overrideWith((ref, q) async => UsageAggregate.fromJson(const {})),
+        ],
+        child: m.MaterialApp(
+          home: EveryThemeScope(
+            theme: EveryTheme.resolve(DesignLanguage.material, Brightness.light),
+            child: m.Material(child: UsageBody()),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(billingAsked, isFalse);
+    expect(find.textContaining('Pro plan'), findsNothing);
   });
 }

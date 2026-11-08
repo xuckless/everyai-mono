@@ -27,7 +27,10 @@ final class TimeoutError extends ApiError {
 
 /// Access token missing, expired or rejected.
 final class UnauthorizedError extends ApiError {
-  const UnauthorizedError([super.message = 'Your session has expired. Sign in again.']);
+  const UnauthorizedError([super.message = 'Your session has expired. Sign in again.', this.code]);
+
+  /// The server's reason when it gave one (`magic_wrong_code`, `magic_dead`).
+  final String? code;
   @override
   bool get retryable => false;
 }

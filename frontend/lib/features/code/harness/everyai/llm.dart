@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import '../../../models/domain/local_routes.dart';
 import '../../../models/domain/model_catalog.dart' show ModelId;
 import '../../../settings/domain/byok_providers.dart' show ModelBilling;
+import '../../../../core/local_backend/local_gateway.dart';
 
 /// What a tool call being written has streamed so far (the gateway's
 /// progress notes, or the call's own deltas).
@@ -281,15 +282,33 @@ final class GatewayClient {
 
   static Uri _completionsAt(String base) => Uri.parse('${base.replaceAll(RegExp(r'/$'), '')}/chat/completions');
 
-  /// With [model], the user's own key when that model bills to one
-  /// (`ModelBilling`): read per call, so forks and model switches follow it.
-  Map<String, String> _headers(String sessionTag, String? effort, {String? model}) => {
+  /// Headers for a call to the hosted gateway (no provider key ever goes there).
+  Map<String, String> _headers(String sessionTag, String? effort) => {
     'Authorization': 'Bearer $apiKey',
     'Content-Type': 'application/json',
     'X-EveryAI-Session': sessionTag,
     'X-EveryAI-Effort': ?effort,
-    if (model != null) ...ModelBilling.current.headersFor(ModelId(model)),
   };
+
+  /// Where a call to [model] goes: the hosted gateway, or, when the model
+  /// bills to the user's own key (`ModelBilling`, read per call so forks and
+  /// model switches follow it), the bundled server with that key
+  /// ([LocalGateway]). Throws when that server isn't there.
+  Future<({Uri url, Map<String, String> headers})> _target(String sessionTag, String? effort, String? model) async {
+    final keys = model == null ? const <String, String>{} : ModelBilling.current.headersFor(ModelId(model));
+    if (keys.isEmpty) return (url: _url, headers: _headers(sessionTag, effort));
+    final info = await LocalGateway.resolve?.call();
+    if (info == null) throw const LlmError(LocalGateway.missing);
+    return (
+      url: LocalGateway.completions(info),
+      headers: {
+        'Content-Type': 'application/json',
+        'X-EveryAI-Session': sessionTag,
+        'X-EveryAI-Effort': ?effort,
+        ...LocalGateway.headers(info, keys),
+      },
+    );
+  }
 
   /// Streams one reply. [onText] and [onReasoning] get the deltas as they
   /// arrive; [cancel] completes to abandon the call.
@@ -316,11 +335,11 @@ final class GatewayClient {
     }
     // The app records that EveryAI loaded it, so it is unloaded at quit.
     if (local != null) LocalRoutes.onUse?.call(local);
-    final req = http.Request('POST', local == null ? _url : _completionsAt(local.baseUrl))
+    final target = local == null ? await _target(sessionTag, effort, model) : null;
+    final req = http.Request('POST', target?.url ?? _completionsAt(local!.baseUrl))
       ..headers.addAll(
-        local == null
-            ? _headers(sessionTag, effort, model: model)
-            : {'Content-Type': 'application/json', if (local.apiKey case final k?) 'Authorization': 'Bearer $k'},
+        target?.headers ??
+            {'Content-Type': 'application/json', if (local!.apiKey case final k?) 'Authorization': 'Bearer $k'},
       )
       ..body = jsonEncode({
         'model': local?.name ?? model,
@@ -666,13 +685,10 @@ final class GatewayClient {
     Future<void>? cancel,
   }) {
     Future<Map<String, Object?>> once() async {
+      final target = await _target(sessionTag, null, body['model'] as String?);
       final http.Response res;
       try {
-        res = await _http.post(
-          _url,
-          headers: _headers(sessionTag, null, model: body['model'] as String?),
-          body: jsonEncode(body),
-        );
+        res = await _http.post(target.url, headers: target.headers, body: jsonEncode(body));
       } on http.ClientException catch (e) {
         throw LlmError('Could not reach the model: ${e.message}', retryable: true);
       }

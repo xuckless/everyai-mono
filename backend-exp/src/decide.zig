@@ -321,7 +321,7 @@ fn decideRoute(app: *App, req: *anole.Request, res: *anole.Response) !void {
     if (in.instructions.len > max_instructions) return res.fail(.unprocessable_entity, "instructions are too long (8000 characters at most)");
     if (in.job.len > 32) return res.fail(.unprocessable_entity, "job is a short label (32 characters at most)");
     if (problem(in.questions)) |p| return res.fail(.unprocessable_entity, p);
-    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.markup);
+    app.catalog.ensureFresh(app.upstream, req.io, app.cfg.priceMarkup());
     const aux = try app.aux(req);
     const outcome = decide(app, req, who.user_id, aux, in.questions, in.text, .{
         .job = in.job,

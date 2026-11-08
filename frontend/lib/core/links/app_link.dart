@@ -14,6 +14,13 @@ final class PromptLink extends AppLink {
   final String? projectId;
 }
 
+/// `everyai://auth`: the sign-in page's "back to EveryAI" link. It carries
+/// nothing (no token, no secret); it only brings the app forward, which then
+/// asks the server whether the waiting sign-in went through.
+final class SignInLink extends AppLink {
+  const SignInLink();
+}
+
 /// A prompt link whose text is over [maxPromptLinkBytes].
 final class OversizedLink extends AppLink {
   const OversizedLink();
@@ -25,6 +32,7 @@ const maxPromptLinkBytes = 32 * 1024;
 
 /// Reads [uri] as a prompt link; null for anything else (other schemes and hosts, no text).
 AppLink? parseAppLink(Uri uri) {
+  if (uri.scheme == 'everyai' && uri.host == 'auth') return const SignInLink();
   if (uri.scheme != 'everyai' || uri.host != 'prompt') return null;
   final Map<String, String> query;
   try {

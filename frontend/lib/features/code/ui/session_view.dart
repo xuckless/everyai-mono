@@ -1,3 +1,5 @@
+import '../../../core/config/billing_flag.dart';
+
 import 'dart:async';
 
 import 'package:flutter/widgets.dart';
@@ -543,7 +545,7 @@ class CodeSessionScreen extends ConsumerWidget {
             subtitle: isOutsideLead(info.id, session.workingDir)
                 ? '${model.isEmpty ? 'Default model' : model} · on your plan'
                 : '${catalog[ModelId(model)]?.name ?? model.split('/').last} · '
-                      '${ref.read(modelBillingProvider).ownKey(ModelId(model)) ? 'your own key' : 'credits'}',
+                      '${ref.read(modelBillingProvider).ownKey(ModelId(model)) ? 'your own key' : (BillingFlag.enabled ? 'credits' : 'no key')}',
             blocked: blocked,
           ),
     ];

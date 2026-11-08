@@ -1,4 +1,4 @@
-//! Accounts and credentials: email/password (Argon2id), Google ID tokens,
+//! Accounts and credentials (sign-in itself is by magic link, magic.zig),
 //! short-lived HS256 access tokens with rotating opaque refresh tokens, and
 //! gateway API keys for OpenAI-compatible clients (OpenHands).
 const std = @import("std");
@@ -33,6 +33,9 @@ pub fn identity(req: *anole.Request) !Identity {
 pub const Authenticate = struct {
     app: *App,
     keys: bool = false,
+    /// No credentials is fine (the handler reads `optionalIdentity`); bad
+    /// ones are still refused. Remote control works without an account.
+    optional: bool = false,
 
     /// What /docs shows for the routes behind it.
     pub const openapi: anole.openapi.MiddlewareDoc = .{
@@ -73,6 +76,7 @@ pub const Authenticate = struct {
             try req.setLocal("identity", Identity{ .user_id = dev_user_id });
             return next.call();
         }
+        if (self.optional) return next.call();
         return challenge(res, "sign in required");
     }
 };
@@ -81,6 +85,12 @@ pub const Authenticate = struct {
 fn challenge(res: *anole.Response, message: []const u8) !void {
     try res.header("WWW-Authenticate", "Bearer realm=\"everyai\"");
     return res.fail(.unauthorized, message);
+}
+
+/// The signed-in caller, or null on a route behind `Authenticate{.optional}`
+/// called without credentials.
+pub fn optionalIdentity(req: *anole.Request) ?Identity {
+    return req.local(Identity, "identity");
 }
 
 /// The account behind an access JWT, or null when it is invalid or expired.
@@ -132,7 +142,7 @@ pub fn accessToken(arena: std.mem.Allocator, io: std.Io, secret: []const u8, use
     }, secret);
 }
 
-fn issue(app: *App, req: *anole.Request, user: User) !Tokens {
+pub fn issue(app: *App, req: *anole.Request, user: User) !Tokens {
     const refresh_token = try util.randomToken(req.arena, req.io, "rt_");
     _ = try app.db.exec(req, "INSERT INTO refresh_tokens (token_hash, user_id, expires_at) VALUES (?, ?, ?)", .{
         try util.sha256Hex(req.arena, refresh_token), user.id, util.now(req.io) + refresh_ttl_seconds,
@@ -148,118 +158,18 @@ pub fn loadUser(app: *App, req: *anole.Request, id: []const u8) !User {
     return app.db.one(User, req, "SELECT id, name, email, plan FROM users WHERE id = ?", .{id});
 }
 
-/// Creates a user and its first quota period. `password_hash` / `google_sub` may be null.
-fn createUser(app: *App, req: *anole.Request, name: []const u8, email: []const u8, password_hash: ?[]const u8, google_sub: ?[]const u8) !User {
+/// Creates a user (and, with billing on, its first quota period).
+/// `password_hash` / `google_sub` stay null: sign-in is by magic link.
+pub fn createUser(app: *App, req: *anole.Request, name: []const u8, email: []const u8, password_hash: ?[]const u8, google_sub: ?[]const u8) !User {
     const id = try util.uuid(req.arena, req.io);
     _ = try app.db.exec(req, "INSERT INTO users (id, name, email, password_hash, google_sub, created_at) VALUES (?, ?, ?, ?, ?, ?)", .{
         id, name, email, password_hash, google_sub, util.now(req.io),
     });
-    try billing.startPeriod(app, req, id, "free");
+    if (app.cfg.billing_enabled) try billing.startPeriod(app, req, id, "free");
     return loadUser(app, req, id);
 }
 
 // ------------------------------------------------------------------ routes
-
-const SignUp = struct {
-    name: []const u8,
-    email: []const u8,
-    password: []const u8,
-
-    pub const field_rules = .{
-        .name = .{ anole.validate.trim, anole.validate.notBlank, anole.validate.maxLength(100) },
-        .email = .{ anole.validate.trim, anole.validate.email },
-        .password = .{anole.validate.minLength(8)},
-    };
-};
-
-fn signUp(app: *App, req: *anole.Request, in: anole.In(.{ .body = SignUp })) !anole.Created(Tokens) {
-    var buf: [128]u8 = undefined;
-    const hash = try anole.auth.password.hash(app.gpa, req.io, in.body.password, &buf);
-    // A duplicate email breaks UNIQUE: 409.
-    const user = try createUser(app, req, in.body.name, in.body.email, hash, null);
-    return .{ .value = try issue(app, req, user) };
-}
-
-fn logIn(app: *App, req: *anole.Request, in: anole.In(.{ .body = struct { email: []const u8, password: []const u8 } })) !Tokens {
-    const row = try app.db.optional(struct { id: []const u8, password_hash: ?[]const u8 }, req, "SELECT id, password_hash FROM users WHERE email = ?", .{in.body.email});
-    // An unknown address (or a Google-only account) costs the same hash as a
-    // wrong password, so timing doesn't tell which emails have accounts.
-    const stored = (if (row) |r| r.password_hash else null) orelse {
-        _ = anole.auth.password.verify(app.gpa, req.io, try decoyHash(app, req.io), in.body.password);
-        return error.Unauthorized;
-    };
-    if (!anole.auth.password.verify(app.gpa, req.io, stored, in.body.password)) return error.Unauthorized;
-    return issue(app, req, try loadUser(app, req, row.?.id));
-}
-
-/// A real Argon2id hash of nothing anyone knows, made once, to verify
-/// against when there is no account (Auth: dummy hash for unknown users).
-fn decoyHash(app: *App, io: std.Io) ![]const u8 {
-    app.decoy.mutex.lockUncancelable(io);
-    defer app.decoy.mutex.unlock(io);
-    if (app.decoy.len == 0) {
-        var secret: [32]u8 = undefined;
-        try io.randomSecure(&secret);
-        const hash = try anole.auth.password.hash(app.gpa, io, &secret, &app.decoy.buf);
-        app.decoy.len = hash.len;
-    }
-    return app.decoy.buf[0..app.decoy.len];
-}
-
-/// Signs in (or up) with a Google ID token from the native Google Sign-In SDKs.
-/// Accounts are keyed on Google's subject. An email is trusted only when
-/// Google marks it verified, and never links an existing account: a password
-/// account with the same address stays the password owner's.
-fn google(app: *App, req: *anole.Request, in: anole.In(.{ .body = struct { token: ?[]const u8 = null, id_token: ?[]const u8 = null } })) !Tokens {
-    const keyring = app.google_keys orelse return error.NotImplemented;
-    // The app sends `token`; `id_token` is the older name.
-    const token = in.body.token orelse in.body.id_token orelse return error.BadRequest;
-    const verified = for (app.cfg.google_client_ids) |client_id| {
-        if (keyring.verify(req.arena, token, .{
-            .issuer = "https://accounts.google.com",
-            .audience = client_id,
-        })) |v| break v else |_| continue;
-    } else return error.Unauthorized;
-
-    const sub = verified.string("sub") orelse return error.Unauthorized;
-    const email = verified.string("email") orelse "";
-    const by_sub = try app.db.optional([]const u8, req, "SELECT id FROM users WHERE google_sub = ?", .{sub});
-    const email_taken = by_sub == null and email.len > 0 and
-        try app.db.optional([]const u8, req, "SELECT id FROM users WHERE email = ?", .{email}) != null;
-    return switch (googleAccount(by_sub != null, emailVerified(verified) and email.len > 0, email_taken)) {
-        .sign_in => issue(app, req, try loadUser(app, req, by_sub.?)),
-        .create => issue(app, req, try createUser(app, req, verified.string("name") orelse email, email, null, sub)),
-        .unverified => error.Unauthorized,
-        .taken => error.Conflict,
-    };
-}
-
-/// What a verified Google token does: sign in the account with its subject,
-/// or make one for a verified email no account has. A matching email alone
-/// never signs into an existing account.
-fn googleAccount(has_subject: bool, email_verified: bool, email_taken: bool) enum { sign_in, create, unverified, taken } {
-    if (has_subject) return .sign_in;
-    if (!email_verified) return .unverified;
-    if (email_taken) return .taken;
-    return .create;
-}
-
-test "google sign-in never links an account by email" {
-    try std.testing.expectEqual(.sign_in, googleAccount(true, false, false));
-    try std.testing.expectEqual(.taken, googleAccount(false, true, true));
-    try std.testing.expectEqual(.unverified, googleAccount(false, false, false));
-    try std.testing.expectEqual(.create, googleAccount(false, true, false));
-}
-
-/// Google sends `email_verified` as a boolean (older tokens: the string "true").
-fn emailVerified(v: anole.auth.Verified) bool {
-    const claim = v.claims.get("email_verified") orelse return false;
-    return switch (claim) {
-        .bool => |b| b,
-        .string => |str| std.mem.eql(u8, str, "true"),
-        else => false,
-    };
-}
 
 /// Rotates: the presented refresh token is revoked and a new pair issued.
 fn refresh(app: *App, req: *anole.Request, in: anole.In(.{ .body = struct { refresh_token: []const u8 } })) !Tokens {
@@ -309,12 +219,10 @@ fn deleteKey(app: *App, req: *anole.Request, in: anole.In(.{ .path = struct { id
 }
 
 pub fn routes(app: *anole.Server(App), state: *App) void {
-    // Sign-in by address: an unlimited burst is a password-guessing attack, so
-    // a full bucket refuses (deny, even if the limiter fails).
+    // Per address: a full bucket refuses (deny, even if the limiter fails).
+    // Sign-in itself is by magic link (magic.zig); signup, login and Google
+    // sign-in are gone (404).
     const public = app.group("/v1/auth", .{anole.ratelimit.Middleware.init(state.limiter.limiter(), .{ .limit = 10, .window = .fromSeconds(60), .on_error = .deny })});
-    public.post("/signup", signUp);
-    public.post("/login", logIn);
-    public.post("/google", google);
     public.post("/refresh", refresh);
     public.post("/logout", logOut);
 
@@ -332,6 +240,7 @@ pub fn seedDevUser(app: *App, ctx: anytype) !void {
     const exists = try app.db.optional([]const u8, ctx, "SELECT id FROM users WHERE id = ?", .{dev_user_id});
     if (exists != null) return;
     _ = try app.db.exec(ctx, "INSERT INTO users (id, name, email, plan, created_at) VALUES (?, 'Developer', 'dev@everyai.local', 'pro', ?)", .{ dev_user_id, util.now(ctx.io) });
+    if (!app.cfg.billing_enabled) return;
     try billing.startPeriod(app, ctx, dev_user_id, "pro");
     // Credits only spend on the server's own key; without one, users run on theirs.
     if (app.cfg.openrouter_api_key != null) try billing.credit(app, ctx, dev_user_id, 20_000_000, .grant, "dev seed");

@@ -6,7 +6,6 @@ import 'package:uuid/uuid.dart';
 import '../features/artifacts/ui/artifacts_screen.dart';
 import '../features/auth/auth_providers.dart';
 import '../features/auth/domain/auth_state.dart';
-import '../features/auth/ui/sign_in_screen.dart';
 import '../features/chat/ui/chat_screen.dart';
 import '../features/code/board/board_screen.dart';
 import '../features/code/ui/code_home.dart';
@@ -16,7 +15,6 @@ import '../features/history/ui/projects_screen.dart';
 import '../features/models/ui/models_screen.dart';
 import '../features/settings/appearance.dart';
 import '../features/settings/settings_registry.dart';
-import '../core/platform/window_caption.dart';
 import '../core/platform/platform_kind.dart';
 import '../features/remote/ui/remote_code.dart';
 import 'shell.dart';
@@ -117,27 +115,23 @@ final routerProvider = Provider<GoRouter>((ref) {
     redirect: (context, state) {
       final path = state.uri.path;
       final onAuthPage = path == Routes.signIn || path == Routes.signUp;
+      // An account is optional: nothing redirects to sign-in. The sign-in
+      // pages leave once signed in.
       switch (auth.value) {
         case Restoring():
           return null;
-        case SignedOut() || Authenticating():
-          return onAuthPage ? null : Routes.signIn;
-        case SignedIn() || Bypassed():
-          if (onAuthPage) return Routes.newChat;
+        case SignedIn() when onAuthPage:
+          return Routes.newChat;
+        case _:
           if (path == '/' || path == Routes.newChat) return Routes.chat(const Uuid().v7());
           return null;
       }
     },
     routes: [
       GoRoute(path: '/', redirect: (_, _) => Routes.newChat),
-      GoRoute(
-        path: Routes.signIn,
-        builder: (_, _) => const WithWindowCaption(child: SignInScreen(mode: AuthMode.signIn)),
-      ),
-      GoRoute(
-        path: Routes.signUp,
-        builder: (_, _) => const WithWindowCaption(child: SignInScreen(mode: AuthMode.signUp)),
-      ),
+      // Sign-in lives in Settings → Account (magic link); the old pages open it.
+      GoRoute(path: Routes.signIn, redirect: (_, _) => _openSettings(ref, Uri.parse('${Routes.settings}/account'))),
+      GoRoute(path: Routes.signUp, redirect: (_, _) => _openSettings(ref, Uri.parse('${Routes.settings}/account'))),
       // Settings is a modal now: its old pages stay where the user was and
       // open the modal at the matching section.
       GoRoute(path: Routes.settings, redirect: (_, state) => _openSettings(ref, state.uri)),

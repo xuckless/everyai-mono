@@ -93,12 +93,27 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
 
 ## /v1 contract (backend-exp ⇄ app)
 - **Auth:**
-  - `POST /v1/auth/signup|login` takes `{name?, email, password}` and returns
-    `{access_token, refresh_token, token_type, expires_in, user{id,name,email,plan}}`.
-  - `/v1/auth/refresh` takes `{refresh_token}` and returns the same shape. The
-    refresh token **rotates** (save the new one; reusing the old one is a 401).
-  - `/v1/auth/google` takes `{token}`; `/v1/auth/logout`;
-    `DELETE /v1/auth/account`; `GET /v1/me`.
+  - An account is **optional** (2026-11-08): the app works signed out; requests
+    carry a token only when signed in. Sign-in is **magic link only**
+    (`backend-exp/src/magic.zig`; signup/login/google are 404).
+  - `POST /v1/auth/magic {email, device_name?}` → 202 `{request_id,
+    request_secret, expires_at, code_length}`; the server mails a link and a
+    6-digit code (Resend). Same answer for every address; 10/min per network,
+    3 per 15 min and 10 a day per address, `MAIL_DAILY_CAP` (90) overall
+    (503 `mail_busy`); no mailer → 503 `mail_unavailable`.
+  - The asking device polls `POST /v1/auth/magic/poll {request_id,
+    request_secret}` → `{status: pending|approved|redeemed|expired|dead|denied,
+    tokens?}` (tokens once), or types the code: `POST /v1/auth/magic/code
+    {request_id, request_secret, code}` → the same; 401 `{attempts_left}`, 410
+    when expired/used/dead (5 wrong codes).
+  - The link opens `GET /auth/l/:token` ("Sign in EveryAI on <device>?"); a GET
+    changes nothing; `POST /auth/l/:token/approve|deny` needs Origin/Referer =
+    `PUBLIC_URL`. Approving signs in the **asking** device (by its poll).
+  - Tokens: `{access_token, refresh_token, token_type, expires_in,
+    user{id,name,email,plan}}`. `/v1/auth/refresh {refresh_token}` rotates
+    (reusing the old one is a 401). `/v1/auth/logout`, `POST
+    /v1/auth/logout_all`, `POST /v1/auth/email {email}` (link to the new
+    address), `GET /v1/auth/sign_ins`, `DELETE /v1/auth/account`, `GET /v1/me`.
 - **Models:**
   - `GET /v1/models` returns `{object:"list", data:[{id, name, provider,
     blurb, context_length, input_modalities, output_modalities,
@@ -120,7 +135,7 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
     cached_tokens, cache_write_tokens, charged_micros}`: one per upstream call
     (follow-ups count toward cost, not context)
   - `followups {questions}`, `done {}`, `error {message, retryable, status?}`
-  - **402** `{message, code:"out_of_credits"}` before the stream starts.
+  - **402** `{message, code:"out_of_credits"}` before the stream starts (billing on only).
   - **Client-executed tools:** the request may carry `client_tools:[names]`
     (UI tools the app runs itself; server tools are never handed over). Such a
     call comes as `tool_wait {id, name, arguments}` instead of `tool`, and the
@@ -147,42 +162,74 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   completion_tokens, cached_tokens, cache_write_tokens, charged_micros,
   last_prompt_tokens, last_completion_tokens}` for a chat conversation or a Code
   session (the composer meter). `usage_events.provider` is openrouter|anthropic.
+- **BYOK (2026-11-08):** providers live in `backend-exp/src/providers.json` (byok.zig embeds it; the app's
+  `settings/domain/byok_providers.dart` is generated from it and `test/features/byok_table_test.dart` fails on drift).
+  A key goes out as its provider's `X-Provider-Key-<Id>` header **to the app's bundled server only**: the hosted
+  server answers 400 `keys_not_accepted` to any `X-Provider-Key-*` (`byok.Refuse`; `ACCEPT_PROVIDER_KEYS` is for
+  tests and development, production refuses to start with it), the hosted `ApiClient` drops them (assert),
+  `SplitTransport`, the titler, Code's `GatewayClient` and the summarizer never fall back (`LocalGateway`). Routing
+  (`Keys.pick`): Anthropic native for `anthropic/*`, then a `connected` direct provider covering the vendor slug
+  (`openai_compat.zig`: our body rewritten for a plain endpoint, the provider's own model id), then OpenRouter.
+  Direct providers report no cost, so `billing.charge` prices them from the catalog; usage rows say
+  `<id>-byok`. Only OpenRouter and Anthropic are `connected`; the rest are `saved` ("Saved · not connected yet",
+  never offered) until the owner runs `frontend/tool/byok_live_check.dart` and flips them. Key states:
+  `ProviderKeyState` (prefs `byok.checks`).
 - **Dev (DEV_AUTH only):** `GET/PUT /v1/dev/upstream` `{anthropic:
   "openrouter"|"anthropic", keys:{openrouter, anthropic}}`: where `anthropic/*`
   chat and gateway calls go (persisted in the `settings` table). Search,
   Research, follow-ups and images always use OpenRouter.
-- **Billing:** `GET /v1/plans`, `GET /v1/billing` (plan, quota, wallet,
-  recent usage, cached tokens), `GET /v1/usage`, `POST /v1/billing/checkout`
+- **Usage:** `GET /v1/usage` (always on).
+- **Billing (parked, 2026-11-08):** off unless `BILLING_ENABLED=true` (backend)
+  and `--dart-define=BILLING_ENABLED=true` (app, `BillingFlag`). Off: the routes
+  below are 404, prices are at cost, nothing is charged or refused for credit,
+  and the app shows no credits, plans, wallet or Top up. Don't wire it back
+  without the owner. On: `GET /v1/plans`, `GET /v1/billing` (plan, quota,
+  wallet, recent usage, cached tokens), `POST /v1/billing/checkout`
   (`{kind: topup|subscription, amount_cents?, plan?}` returns `{url, mock}`),
   `POST /v1/billing/webhook`.
-- **Remote hosts** (`backend-exp/src/remote.zig`, migration 003). A host is a
-  desktop running the sidecar; clients are the same account's other devices.
+- **Remote hosts** (`backend-exp/src/remote.zig`, migrations 003 and 006). A host is a
+  desktop running the sidecar; clients are devices paired with it.
   The backend relays WebSocket frames and never parses a payload. The
   endpoints do the E2E encryption with the public keys exchanged at pairing.
+  - **No account needed** (2026-11-08): the `rh_`/`rd_` tokens are the identity, and a JWT is optional everywhere
+    except the account list. A host made signed out belongs to the reserved user `anonymous` (its address is
+    `.invalid`; magic sign-in refuses it). `POST /v1/remote/hosts/:id/claim` (JWT + `X-Remote-Host-Token`) moves it,
+    its devices and pairings to the account (again = 200, another account's = 409); the app claims on every sign-in
+    (`HostClaim`). Anonymous hosts: `ANON_HOSTS_PER_HOUR` (5) and `ANON_HOSTS_PER_NETWORK` (20) per /24 or /48
+    (429), removed after `ANON_HOST_IDLE_DAYS` (30) without a connection. `DEVICES_PER_HOST` (10, 409).
+  - **Egress** (`src/egress.zig`): every relay socket is admitted by one gate: `RELAY_MAX_LIVE` (500) sockets at
+    once, more wait in one FIFO queue (notice `queued {position}`, close 1013 after 15 min), `RELAY_PER_SUBJECT_LIVE`
+    (16) per subject (1008). Relayed bytes count against the host (anonymous) or its account (claimed) per UTC day
+    and month (`RELAY_HOST_DAILY_MB`/`_MONTHLY_MB` 32/128, `RELAY_ACCOUNT_…` 64/256) and the server's month
+    (`EGRESS_MONTHLY_MB` 768, sized to GCP's 1 GB free egress; a warning at 80%), paced to `EGRESS_RATE_MBPS` (40). Over a quota: `budget
+    {resets_at}`, close 4008; the app shows Relay limit reached and reconnects at the reset. Ledger table
+    `egress_usage(subject, period d<day>|m<month>, bytes)`, flushed hourly and on socket close, read back at start.
+    `QuotaSource` is a vtable (config tiers today; a plans table later) so metering can become a product.
   - `POST /v1/remote/hosts {name, platform?, public_key}` returns 201
     `{id, name, platform, public_key, host_token}`. The `rh_` token is shown
-    once. `GET /v1/remote/hosts` returns `[{id, name, platform, public_key,
+    once. `GET /v1/remote/hosts` (signed in) returns the account's claimed hosts: `[{id, name, platform, public_key,
     online, created_at, last_seen_at, devices:[{id, host_id, name, public_key,
     created_at, last_seen_at}]}]` (approved devices only).
     `DELETE /v1/remote/hosts/:id` and `DELETE /v1/remote/devices/:id` revoke
     at once: live sockets get `revoked` and their next frame closes them (4003
     for a client, 4001 for a host).
-  - Pairing, all with the user's JWT:
+  - Pairing (no JWT needed):
     - The host asks `POST /v1/remote/pair {host_id}` and gets 201 `{id, code
       "ABCD-EFGH", host_id, expires_at}`: 8 symbols, no I/O/0/1, 5 min, single
       use. The app shows the code as text plus a QR.
     - The client sends `POST /v1/remote/pair/redeem {code, device_name,
       public_key}` (case, dashes and spaces are ignored). It gets `{id,
       status:"pending", device_id, device_token (rd_, shown once), decide_by,
-      host:{id, name, platform, public_key}}`. A wrong, spent, expired or other
-      account's code is a 404.
+      host:{id, name, platform, public_key}}`. A wrong, spent or expired code is a
+      404. The device belongs to the host's owner.
     - The host gets a `pair_request` notice and decides with
       `POST /v1/remote/pair/:id/approve|deny`, which also needs the header
       `X-Remote-Host-Token: rh_…` (so a client cannot approve itself). It has
       10 min.
-    - The client polls `GET /v1/remote/pair/:id` for `{status:
-      open|pending|approved|denied|expired}`.
-  - Sockets take their own token in `Authorization: Bearer` or `?token=`:
+    - The client polls `GET /v1/remote/pair/:id` with `X-Remote-Device-Token` (or the host with its token) for
+      `{status: open|pending|approved|denied|expired}`.
+  - Sockets take their own token in `Authorization: Bearer` or `?token=`, nothing else (the earlier account-JWT
+    check is gone with accounts being optional):
     - `WS /v1/remote/host` (rh_). A reconnect replaces the old socket, which
       gets `replaced`.
     - `WS /v1/remote/client/:host_id` (rd_, approved only; otherwise 401/403
@@ -196,10 +243,11 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
       device_name, public_key}], pending_pairings:[…]}`, `client_open
       {channel, device_id, device_name, public_key}`, `client_close
       {channel}`, `pair_request {pairing_id, decide_by, device:{id, name,
-      public_key}}`, `replaced`, `revoked`. The host may send
+      public_key}}`, `replaced`, `revoked`, `queued {position}`, `budget {resets_at}`. The host may send
       `{"type":"close_channel","channel":N}`.
     - Notices to a client: `hello {channel, host_online}`, `host_online`,
-      `host_offline` (frames sent meanwhile are dropped), `closed`, `revoked`.
+      `host_offline` (frames sent meanwhile are dropped), `closed`, `revoked`, `queued {position}`,
+      `budget {resets_at}`.
   - **App side** (`frontend/lib/features/remote/`): binary payloads are E2E
     frames (`domain/remote_crypto.dart`): `01|v|eph_c` init, `02|v|eph_h|tag`
     accept, `03|counter(8)|ct|tag` data (ChaCha20-Poly1305, per-direction
@@ -265,7 +313,7 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
 - **Models:** a Shop window (the full OpenRouter catalog) plus **My models**
   (a local list seeded with the featured defaults: Haiku/Sonnet/Opus 5.5,
   GPT-6.1 Sol/Terra, GPT-5.4 mini, and 2 free Chinese models).
-- **Billing:**
+- **Billing** (parked behind `BILLING_ENABLED` since 2026-11-08; BYOK only):
   - plans Free/Pro/Max plus prepaid top-ups, all at cost ×1.15
   - zero-cost models are free on every plan
   - Stripe test mode, mocked until keys arrive
@@ -1216,6 +1264,17 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   notification goes out. Drift check at each phase end: the EveryAI lead makes one decide call (job `drift`; only a
   clear no pauses), and an outside lead gets a `<workflow-checkpoint>` and answers with off_track. Off track pauses
   the run (`PauseReason.offTrack`; Adjust / Go on). Not live-tested.
+
+- **Accounts optional, magic link, BYOK local-only, relay egress, vault dev (2026-11-08; branch `accounts`, plan
+  `~/.claude/plans/accounts.md`).** Billing parked behind `BILLING_ENABLED`/`BillingFlag`; signed out is a normal
+  state (no forced sign-in, `DEV_SKIP_AUTH` gone); sign-in is magic link only (`magic.zig`, `mail.zig` Resend,
+  `features/auth/` `MagicFlow`); remote control works without an account (tokens are the identity, `anonymous`
+  owner, claim on sign-in: `HostClaim`) and the relay is metered and queued (`egress.zig`); BYOK from
+  `providers.json` with keys reaching only the bundled server (`byok.Refuse`, `LocalGateway`); hosting runbook,
+  swapfile, Cloudflare Tunnel option and `tool/relay_check.dart` (none run against the VM); vault V0–V2 dev only
+  (`docs/vault/`, `features/vault/`, `vault.zig`). Contracts above. Not live-tested beyond a local relay check:
+  no real mail sent, no provider checked live, nothing deployed. Known flakes under full-suite load:
+  `code_lead_switch_test`, `workflow_controller_test` (pass alone).
 
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.

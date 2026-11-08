@@ -10,6 +10,8 @@ const std = @import("std");
 const anole = @import("anole");
 pub const config = @import("config.zig");
 pub const migrations = @import("migrations.zig");
+pub const magic = @import("magic.zig");
+pub const mail = @import("mail.zig");
 pub const auth = @import("auth.zig");
 pub const billing = @import("billing.zig");
 pub const models = @import("models.zig");
@@ -27,8 +29,11 @@ pub const devtools = @import("devtools.zig");
 pub const safe_fetch = @import("net/safe_fetch.zig");
 pub const tool_wait = @import("tool_wait.zig");
 pub const remote = @import("remote.zig");
+pub const egress = @import("egress.zig");
 pub const hooks = @import("hooks.zig");
 pub const byok = @import("byok.zig");
+pub const openai_compat = @import("openai_compat.zig");
+pub const vault = @import("vault.zig");
 pub const decide = @import("decide.zig");
 pub const local = @import("local.zig");
 pub const local_models = @import("local_models.zig");
@@ -45,7 +50,9 @@ pub const App = struct {
     cfg: config.Config,
     db: *anole.sqlite.Client,
     jwt_keys: [1]anole.auth.Key,
-    google_keys: ?*anole.auth.Keyring = null,
+    /// Sign-in mail (magic.zig): Resend, the dev console log, or a test
+    /// fake; null in production without RESEND_API_KEY (sign-in answers 503).
+    mailer: ?mail.Mailer = null,
     stripe_secrets: [1][]const u8 = .{""},
     /// OpenRouter: every model call goes here unless `route` says otherwise.
     /// Tests swap in a fake.
@@ -76,13 +83,14 @@ pub const App = struct {
     web: ?*const safe_fetch.Fetcher = null,
     /// Live remote-host and client sockets (remote.zig).
     relay: remote.Relay = .{},
+    /// Relay egress: quotas, pacing, the queue (egress.zig); set up in `routes`.
+    egress: egress.Gate = undefined,
+    egress_quotas: egress.StaticQuotas = undefined,
     /// Request buckets for the rate-limited routes (auth, pairing); set up in `routes`.
     limiter: anole.ratelimit.MemoryLimiter = undefined,
     /// The API-wide limit's buckets, apart from `limiter`'s: a bucket is per key, so
     /// sharing one table would let the large policy refill the auth and pairing ones.
     global_limiter: anole.ratelimit.MemoryLimiter = undefined,
-    /// The decoy password hash for sign-ins to unknown addresses (auth.zig).
-    decoy: struct { mutex: std.Io.Mutex = .init, buf: [128]u8 = undefined, len: usize = 0 } = .{},
     /// Earlier web_search results per user and chat (web.zig).
     searches: @import("web.zig").SearchCache = .{},
 
@@ -118,18 +126,26 @@ pub const App = struct {
             const server = local.serverOf(req, .chat) orelse return error.NoLocalServer;
             return self.onLocal(req, server, model);
         }
-        const keys = byok.Keys.of(req);
-        if (native_ok and byok.isAnthropic(model)) if (keys.anthropic) |k| {
+        const pick = byok.Keys.of(req).pick(model, native_ok) orelse return self.route(model, native_ok);
+        const p = pick.provider;
+        if (p.covers == .all) return self.onOpenRouterKey(req, pick.key);
+        if (p.auth == .anthropic) {
             const adapter = try req.arena.create(anthropic.Adapter);
             adapter.* = .{ .inner = self.keyed_transport orelse inner: {
                 const client = try req.arena.create(openrouter.Client);
-                client.* = .{ .base_url = self.cfg.anthropic_base_url, .api_key = k, .auth = .anthropic };
+                client.* = .{ .base_url = self.cfg.anthropic_base_url, .api_key = pick.key, .auth = .anthropic };
                 break :inner client.upstream();
             }, .catalog = &self.catalog };
             return .{ .up = adapter.upstream(), .provider = "anthropic", .byok = true };
-        };
-        if (keys.openrouter) |k| return self.onOpenRouterKey(req, k);
-        return self.route(model, native_ok);
+        }
+        // A direct OpenAI-compatible provider (openai_compat.zig).
+        const adapter = try req.arena.create(openai_compat.Adapter);
+        adapter.* = .{ .provider = p, .model = model, .inner = self.keyed_transport orelse inner: {
+            const client = try req.arena.create(openrouter.Client);
+            client.* = .{ .base_url = p.base_url, .api_key = pick.key };
+            break :inner client.upstream();
+        } };
+        return .{ .up = adapter.upstream(), .provider = p.id, .byok = true };
     }
 
     /// Whether a call nobody's key covers has nowhere to go: no server
@@ -142,7 +158,7 @@ pub const App = struct {
     /// Side calls (follow-ups, titles, researchers, search, images) use
     /// OpenRouter models: on the user's OpenRouter key when there is one.
     pub fn aux(self: *App, req: *anole.Request) !Route {
-        if (byok.Keys.of(req).openrouter) |k| return self.onOpenRouterKey(req, k);
+        if (byok.Keys.of(req).get("openrouter")) |k| return self.onOpenRouterKey(req, k);
         if (self.cfg.openrouter_api_key == null and self.cfg.local_mode) {
             // No OpenRouter anywhere: the app's local side-job model, else nothing.
             const engine = local.engineOf(req);
@@ -207,11 +223,14 @@ pub fn routes(app: *anole.Server(App), state: *App) !void {
     }));
     // Local mode (the app's sidecar): every route but the probes needs the launch token.
     if (state.cfg.local_mode) app.use(local.Guard{ .token = if (state.cfg.local_token) |t| t.expose() else "" });
+    // Provider keys reach only the app's bundled server (byok.zig).
+    if (!state.cfg.local_mode and !state.cfg.accept_provider_keys) app.use(byok.Refuse{});
     // /readyz waits for the model catalog: without it chat can't price or route.
     try app.health(.{}).addCheck("catalog", catalogLoaded, state);
     app.openapi(.{ .info = .{ .title = "EveryAI API", .version = "0.1.0-dev-nonsigned" } });
     app.get("/v1/ping", ping);
     auth.routes(app, state);
+    magic.routes(app, state);
     billing.routes(app, state);
     models.routes(app, state);
     chat.routes(app, state);
@@ -224,16 +243,20 @@ pub fn routes(app: *anole.Server(App), state: *App) !void {
     agents.routes(app, state);
     remote.routes(app, state);
     hooks.routes(app, state);
+    vault.routes(app, state);
     local_models.routes(app, state);
 }
 
 /// Schema and seed data; run before serving.
 pub fn prepare(state: *App, ctx: anytype) !void {
+    try byok.load();
     _ = try anole.db.migrate(state.db, ctx, &migrations.all);
     const saved = try state.db.optional([]const u8, ctx, "SELECT value FROM settings WHERE key = 'upstream.anthropic'", .{});
     state.native_anthropic.store(std.mem.eql(u8, saved orelse state.cfg.anthropic_upstream, "anthropic"), .monotonic);
     if (state.cfg.dev_auth) try auth.seedDevUser(state, ctx);
     try pruneExpired(state, ctx);
+    // The relay's egress gate, with this day's and month's bytes read back.
+    try remote.setUpEgress(state, ctx);
 }
 
 /// Drops refresh tokens, pairing codes and webhook deliveries nobody can use
@@ -244,18 +267,28 @@ fn pruneExpired(state: *App, ctx: anytype) !void {
     // A decided pairing stays a day for its status poll.
     _ = try state.db.exec(ctx, "DELETE FROM remote_pairings WHERE expires_at < ? AND (decide_by IS NULL OR decide_by < ?)", .{ now - 86_400, now - 86_400 });
     try hooks.prune(state, ctx);
+    try magic.prune(state, ctx);
+    try remote.prune(state, ctx);
 }
+
+/// Paths the access log leaves out: the probes, and the magic-link page,
+/// whose path is the sign-in token itself (magic.zig keeps only its hash).
+pub const access_log_exclude = anole.observe.probe_paths ++ [_][]const u8{"/auth/l/*"};
 
 pub fn main(init: std.process.Init) !void {
     // Development reads backend-exp/.env, then the monorepo's root .env; a
     // production process reads the real environment only (Config: a dev .env
     // copied into an image must not supply a production secret).
     const env_files: []const []const u8 = if (anole.env.environment() == .development) &.{ ".env", "../.env" } else &.{};
-    const cfg = try anole.config.load(config.Config, init, .{ .env_files = env_files });
+    var cfg = try anole.config.load(config.Config, init, .{ .env_files = env_files });
 
     if (local.startProblem(cfg)) |problem| {
         std.log.err("refusing to start: {s}", .{problem});
         return error.BadLocalMode;
+    }
+    if (config.devAuthInProduction(cfg, anole.env.environment())) {
+        std.log.err("refusing to start: DEV_AUTH=true hands the dev account to every caller; it is for development (and the app's local server) only", .{});
+        return error.DevAuthInProduction;
     }
     if (config.lanExposure(cfg)) {
         std.log.err("refusing to start: HOST={s} is reachable from the network and DEV_AUTH=true lets anyone there use the dev account. " ++
@@ -277,7 +310,30 @@ pub fn main(init: std.process.Init) !void {
         std.log.info("JWT_SECRET not set: using a random one for this run", .{});
         break :blk &jwt_hex;
     };
-    if (cfg.openrouter_api_key == null) std.log.info("OPENROUTER_API_KEY not set: model calls run on the keys users add in the app", .{});
+    if (cfg.unmeteredServerKey()) {
+        if (anole.env.environment() != .development) {
+            std.log.err("refusing to start: a server model key with billing off is free to everyone; set SERVER_KEY_UNMETERED=true if that is intended", .{});
+            return error.UnmeteredServerKey;
+        }
+        std.log.warn("billing is off: calls on the server's own model key are free to every user", .{});
+    }
+    if (cfg.vault_sync_dev and anole.env.environment() != .development) {
+        std.log.err("refusing to start: VAULT_SYNC_DEV is for development until the vault has had an external review", .{});
+        return error.VaultSyncNotReviewed;
+    }
+    if (cfg.accept_provider_keys and !cfg.local_mode and anole.env.environment() != .development) {
+        std.log.err("refusing to start: ACCEPT_PROVIDER_KEYS sends users' keys through this hosted server; they belong to the app's local one", .{});
+        return error.ProviderKeysOnHostedServer;
+    }
+    if (config.devOnlyProblem(cfg, anole.env.environment() == .development)) |problem| {
+        std.log.err("refusing to start: {s}", .{problem});
+        return error.DevOnlySetting;
+    }
+    if (cfg.route_saved_providers) {
+        byok.allow_saved = true;
+        std.log.warn("ROUTE_SAVED_PROVIDERS: keys of providers not yet connected are used (live checks only)", .{});
+    }
+    if (cfg.openrouter_api_key == null) std.log.info("OPENROUTER_API_KEY not set: calls run on the app's local server with the user's keys, or on local models", .{});
 
     var state: App = .{
         .gpa = init.gpa,
@@ -293,6 +349,13 @@ pub fn main(init: std.process.Init) !void {
     // After the server (defers run last first): rooms outlive their sockets.
     defer state.relay.deinit();
 
+    // Empty counts as unset (a compose override that turns TLS off, e.g. behind a tunnel).
+    if (cfg.tls_cert_path) |p| if (p.len == 0) {
+        cfg.tls_cert_path = null;
+    };
+    if (cfg.tls_key_path) |p| if (p.len == 0) {
+        cfg.tls_key_path = null;
+    };
     if ((cfg.tls_cert_path == null) != (cfg.tls_key_path == null)) {
         std.log.err("refusing to start: set both TLS_CERT_PATH and TLS_KEY_PATH, or neither", .{});
         return error.HalfTlsConfig;
@@ -337,15 +400,17 @@ pub fn main(init: std.process.Init) !void {
     const web: safe_fetch.Fetcher = .{ .http = &web_client };
     state.web = &web;
 
-    if (cfg.google_client_ids.len > 0) {
-        const keyring = try init.arena.allocator().create(anole.auth.Keyring);
-        keyring.* = anole.auth.Keyring.init(init.gpa, io, app.client(), anole.auth.oidc.Provider.google.jwks_uri);
-        state.google_keys = keyring;
-    }
-    defer if (state.google_keys) |k| k.deinit();
+    var resend: mail.Resend = .{ .api_key = if (cfg.resend_api_key) |k| k.expose() else "", .from = cfg.mail_from };
+    var console_mail: mail.Log = .{};
+    if (cfg.resend_api_key != null) {
+        state.mailer = resend.mailer();
+    } else if (anole.env.environment() == .development) {
+        state.mailer = console_mail.mailer();
+        std.log.info("RESEND_API_KEY not set: sign-in emails are written to this console", .{});
+    } else std.log.warn("RESEND_API_KEY not set: sign-in is unavailable", .{});
 
     app.use(anole.middleware.RequestId.init(.{}));
-    app.use(anole.observe.AccessLog.init(.{ .exclude = &anole.observe.probe_paths }));
+    app.use(anole.observe.AccessLog.init(.{ .exclude = &access_log_exclude }));
     app.use(anole.middleware.Cors.init(.{}));
 
     const dir = std.fs.path.dirname(cfg.database_path) orelse ".";
@@ -357,13 +422,15 @@ pub fn main(init: std.process.Init) !void {
     try prepare(&state, &setup);
     // The catalog before the first request, so none waits for it (the first
     // stale one later refreshes; a failure here leaves that to it).
-    state.catalog.refresh(state.upstream, io, cfg.markup) catch |err| std.log.warn("model catalog not loaded at start: {t}", .{err});
+    state.catalog.refresh(state.upstream, io, cfg.priceMarkup()) catch |err| std.log.warn("model catalog not loaded at start: {t}", .{err});
 
+    defer state.egress.deinit();
     try routes(&app, &state);
     defer state.limiter.deinit();
     defer state.global_limiter.deinit();
-    std.log.info("EveryAI backend-exp on :{d} (dev_auth={}, markup={d:.2}, stripe={s}, claude via {s})", .{
-        cfg.port, cfg.dev_auth, cfg.markup, if (cfg.stripe_secret_key == null) "mock" else "test", state.route("anthropic/", true).provider,
+    std.log.info("EveryAI backend-exp on :{d} (dev_auth={}, billing={s}, claude via {s})", .{
+        cfg.port,                                                                                          cfg.dev_auth,
+        if (!cfg.billing_enabled) "off" else if (cfg.stripe_secret_key == null) "mock" else "stripe test", state.route("anthropic/", true).provider,
     });
     const Stop = struct {
         fn stop(ptr: *anyopaque) void {
@@ -391,6 +458,11 @@ pub fn main(init: std.process.Init) !void {
 
 test {
     _ = util;
+    _ = vault;
+    _ = openai_compat;
+    _ = egress;
+    _ = magic;
+    _ = mail;
     _ = tools;
     _ = chat;
     _ = gateway;
@@ -417,4 +489,10 @@ test {
     _ = @import("web.zig");
     _ = @import("tool_check.zig");
     _ = @import("modes.zig");
+}
+
+test "the access log never records a magic-link token" {
+    var found = false;
+    for (access_log_exclude) |p| found = found or std.mem.eql(u8, p, "/auth/l/*");
+    try std.testing.expect(found);
 }

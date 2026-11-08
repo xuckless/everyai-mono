@@ -231,6 +231,6 @@ String usagePath(UsageQuery q, DateTime now) {
 
 final usageStatsProvider = FutureProvider.autoDispose.family<UsageAggregate, UsageQuery>((ref, q) async {
   final api = ref.read(apiClientProvider);
-  final json = await api.getJson(usagePath(q, DateTime.now()), authenticated: !ref.read(appConfigProvider).devSkipAuth);
+  final json = await api.getJson(usagePath(q, DateTime.now()), authenticated: true);
   return UsageAggregate.fromJson(json);
 });

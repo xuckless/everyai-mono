@@ -9,7 +9,7 @@ import '../../../core/ui/anchored_popover.dart';
 import '../../../core/ui/every_icons.dart';
 import '../../../core/ui/segmented.dart';
 import '../../models/domain/model_catalog.dart';
-import '../../billing/billing_providers.dart' show formatMicros;
+import '../../../core/format/money.dart';
 import '../../models/models_providers.dart';
 import '../agent_models.dart';
 import '../code_providers.dart' show driverModelsProvider;
