@@ -15,7 +15,8 @@ const _maxOutput = 2 * 1024 * 1024;
 bool get svgScriptAvailable => findDeno() != null;
 
 /// The prelude: the vetted libraries as globals, then the model's program. Deno runs it with no permissions at
-/// all (no files, network, environment or subprocesses); local imports of these files are the only loading.
+/// all (no files, network, environment or subprocesses), and the import map keeps module loading inside the run's
+/// folder.
 const _prelude = '''
 import * as d3 from "./d3-shape.js";
 import rough from "./rough.js";
@@ -36,6 +37,14 @@ Future<SvgScriptRun> runSvgScript(String code) async {
     await File('${dir.path}/rough.js').writeAsString(await rootBundle.loadString('assets/svg_script/rough.js'));
     await File('${dir.path}/prelude.ts').writeAsString(_prelude);
     await File('${dir.path}/program.ts').writeAsString(code);
+    // Deno loads local modules whatever the permissions (also with --deny-read and through import() or eval), so the
+    // import map sends every file URL outside this folder to a remote address, which --no-remote refuses.
+    final own = Uri.directory(dir.resolveSymbolicLinksSync()).toString();
+    await File('${dir.path}/imports.json').writeAsString(
+      jsonEncode({
+        'imports': {'file:///': 'https://blocked.invalid/', '/': 'https://blocked.invalid/', own: own},
+      }),
+    );
     final process = await Process.start(
       deno,
       [
@@ -47,6 +56,7 @@ Future<SvgScriptRun> runSvgScript(String code) async {
         '--no-npm',
         '--quiet',
         '--v8-flags=--max-old-space-size=256',
+        '--import-map=imports.json',
         'prelude.ts',
       ],
       workingDirectory: dir.path,
@@ -71,7 +81,8 @@ Future<SvgScriptRun> runSvgScript(String code) async {
     );
     await Future.wait([stdoutDone, stderrDone]).timeout(const Duration(seconds: 2), onTimeout: () => const []);
     final text = out.toString();
-    final svg = RegExp(r'<svg[\s\S]*</svg>').allMatches(text).lastOrNull?.group(0);
+    // Only the last <svg> printed counts.
+    final svg = RegExp(r'<svg[\s\S]*?</svg>').allMatches(text).lastOrNull?.group(0);
     final printed = svg == null ? text : text.replaceFirst(svg, '[the SVG]');
     final error = code0 == -1
         ? 'it ran past ${_timeout.inSeconds} s and was stopped.'

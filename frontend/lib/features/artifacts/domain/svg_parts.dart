@@ -45,12 +45,17 @@ List<SvgPart> svgParts(String svg) {
     var s = shift;
     var k = scale;
     if (e.getAttribute('transform') case final t?) {
-      final translate = RegExp(r'translate\(\s*([-\d.e]+)[\s,]*([-\d.e]*)\s*\)').firstMatch(t);
-      final sc = RegExp(r'scale\(\s*([-\d.e]+)').firstMatch(t);
-      if (translate != null) {
-        s += Offset(double.parse(translate.group(1)!), double.tryParse(translate.group(2) ?? '') ?? 0) * k;
+      // Numbers as SVG writes them: `translate(-10-5)` is two numbers (minified SVG has no separator).
+      final number = RegExp(r'[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?');
+      List<double> args(String name) {
+        final inside = RegExp('$name\\(([^)]*)\\)').firstMatch(t)?.group(1) ?? '';
+        return [for (final m in number.allMatches(inside)) ?double.tryParse(m.group(0)!)];
       }
-      if (sc != null) k *= double.parse(sc.group(1)!);
+
+      final translate = args('translate');
+      final sc = args('scale');
+      if (translate.isNotEmpty) s += Offset(translate[0], translate.length > 1 ? translate[1] : 0) * k;
+      if (sc.isNotEmpty) k *= sc[0];
     }
     final id = e.getAttribute('id');
     final named = (id != null && id.isNotEmpty) ? id : inherited;

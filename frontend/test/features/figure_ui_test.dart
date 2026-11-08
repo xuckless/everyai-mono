@@ -36,6 +36,13 @@ void main() {
     });
 
     test('bad markup has no parts', () => expect(svgParts('<svg'), isEmpty));
+
+    test('minified transforms (no separator between numbers) place parts instead of throwing', () {
+      const svg =
+          '<svg viewBox="0 0 100 100"><g transform="translate(-10-5)scale(2)"><rect id="box" x="10" y="10" width="10" height="10"/></g></svg>';
+      final box = svgParts(svg).singleWhere((p) => p.id == 'box').box;
+      expect(box, const Rect.fromLTWH(10, 15, 20, 20));
+    });
   });
 
   group('look outcome', () {

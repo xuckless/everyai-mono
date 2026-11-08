@@ -727,7 +727,7 @@ const Artifacts = struct {
         if (!std.mem.eql(u8, tool, "edit_artifact")) return null;
         var content = self.map.get(id) orelse return .{
             .applied = 0,
-            .message = try std.fmt.allocPrint(arena, "Error: there is no artifact \"{s}\" in this chat. Use create_artifact.", .{id}),
+            .message = try std.fmt.allocPrint(arena, "Error: there is no artifact \"{s}\" in this chat. Use create_artifact (an svg_script figure made in this turn can't be edited yet: run svg_script again with the same id and the changed program).", .{id}),
         };
         const edits = if (args == .object) args.object.get("edits") else null;
         const list = if (edits) |e| (if (e == .array) e.array.items else &.{}) else &.{};
