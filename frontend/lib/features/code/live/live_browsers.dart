@@ -1,6 +1,9 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
 import 'dart:async';
+
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
@@ -85,6 +88,11 @@ abstract final class LiveBrowsers {
 
   /// Session [liveId]'s browser if it has one.
   static HeadlessBrowser? of(String liveId) => _bySession[liveId];
+
+  /// A browser for session [liveId] without starting Chrome (tests); null takes it away.
+  @visibleForTesting
+  static void debugSet(String liveId, HeadlessBrowser? b) =>
+      b == null ? _bySession.remove(liveId) : _bySession[liveId] = b;
 
   /// Closes session [liveId]'s page: the session was removed, so its jar goes too (its saved logins get their
   /// refreshed sign-ins first). A session that was never opened this run has only its jar file.
