@@ -10,6 +10,7 @@ import '../models/domain/local_routes.dart';
 
 import 'package:uuid/uuid.dart';
 
+import '../../core/api/decide_client.dart';
 import '../../core/process/child_processes.dart';
 import 'live/browser_jar.dart' show SealedStore;
 import 'live/android_device_io.dart' show AndroidDevices;
@@ -6055,7 +6056,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         runs.put(run);
         // Paused past its estimate: the user decides, so the session needs them (cleared with the run's waits).
         _workflowChildWaiting('wf-$runId-decision', switch (run.state) {
-          RunPausing(reason: PauseReason.overEstimate) || RunPaused(reason: PauseReason.overEstimate) => true,
+          RunPausing(:final reason) || RunPaused(:final reason) => reason != PauseReason.user,
           // Stalled and the lead did nothing: the user decides too.
           RunStalled(stage: StallStage.userTold) => true,
           _ => false,
@@ -6068,6 +6069,9 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       },
       windowLabel: planWindowName,
       stallAfter: workflowStallAfter,
+      onPhaseEnd: (run, phase, results) {
+        if (ref.mounted) unawaited(_checkDrift(runId, run.name, journal.start?['args'], phase, results));
+      },
       onStall: (run, stage, agents) {
         if (!ref.mounted) return;
         switch (stage) {
@@ -6542,11 +6546,49 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       case 'ignore':
         engine.ignoreStall();
         return 'Noted: the run counts as making progress, and the stall clock starts over.';
+      case 'off_track':
+        if (engine.state is! RunRunning && engine.state is! RunStalled) {
+          return 'The run is not running (${engine.state.name}), so nothing was paused.';
+        }
+        final why = str('text').isEmpty ? 'the lead found the work off its task.' : str('text');
+        engine.offTrack(why.endsWith('.') ? why : '$why.');
+        return 'Paused. The user decides on its card; tell them why in one line.';
       case 'stop':
         engine.stop('Stopped by the agent that ran it.');
         return 'Stopping the run. Its result arrives as a <workflow-result>.';
     }
-    return 'Error: action is one of list, inspect, message, restart, ignore, stop.';
+    return 'Error: action is one of list, inspect, message, restart, ignore, stop, off_track.';
+  }
+
+  /// The drift check at the end of [phase] of run [runId] (owner, 2026-11-08). An EveryAI lead: one decider call,
+  /// and only a clear "off track" pauses the run (unsure, or a failed call, goes on). An outside lead (EveryAI spends
+  /// nothing there): the lead is asked to compare, and answers with workflow_agents off_track only when it is.
+  Future<void> _checkDrift(String runId, String name, Object? args, String phase, List<PhaseResult> results) async {
+    final text = driftText(name, args, phase, results);
+    if (_onOutsideLead) {
+      _notifyLead(workflowDriftAsk(name, phase, text), kind: 'workflow-checkpoint', id: runId);
+      return;
+    }
+    String? apiKey;
+    try {
+      apiKey = await ref.read(gatewayKeysProvider).key();
+    } on Object {
+      apiKey = null;
+    }
+    if (!ref.mounted) return;
+    const q = DecideQuestion.yesNo('on_track', driftQuestionPrompt);
+    final result = await ref
+        .read(decideClientProvider)
+        .decide(
+          job: 'drift',
+          text: text,
+          instructions: driftInstructions,
+          questions: const [q],
+          apiKey: apiKey,
+          session: sessionId,
+        );
+    if (!ref.mounted || result['on_track'].asBool != false) return;
+    _workflows[runId]?.offTrack('the check after the $phase phase found its work off the task.');
   }
 
   /// The lead says the Max task is over (end_workflow): the session goes back to no workflow. Its own forks must

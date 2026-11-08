@@ -114,6 +114,33 @@ void main() {
 }
 
 void _rowsAndDecision() {
+  testWidgets('off track: the card says so and offers Adjust and Go on', (tester) async {
+    var resumed = 0;
+    await tester.pumpWidget(
+      _card(
+        WorkflowCard(
+          run: const WorkflowRun(
+            runId: 'r',
+            name: 'Ultra',
+            state: RunPaused('Build', PauseReason.offTrack),
+            phases: ['Build'],
+            rows: [
+              (kind: RowKind.drift, phase: 'Build', text: 'Off track: billing, not login. Paused until you decide.'),
+            ],
+          ),
+          onStop: () {},
+          onResume: () => resumed++,
+          onContinue: () {},
+          onAdjust: () {},
+        ),
+      ),
+    );
+    expect(find.text('Off track'), findsOneWidget);
+    expect(find.byKey(const ValueKey('workflow.continue.r')), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('workflow.goon.r')));
+    expect(resumed, 1);
+  });
+
   testWidgets('report rows sit under their phase; past the estimate the card asks Continue or Adjust', (tester) async {
     var continued = 0, adjusted = 0, resumed = 0;
     await tester.pumpWidget(

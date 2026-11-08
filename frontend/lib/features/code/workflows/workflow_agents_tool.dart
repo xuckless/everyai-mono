@@ -4,6 +4,8 @@
 // look at the agents, message one, restart one (the same agent, a new turn that keeps its context), stop the run, or
 // say the run is fine (ignore). The user hears only when the lead does nothing about the stall for another period.
 
+import 'dart:convert';
+
 import 'workflow_engine.dart' show StalledAgent;
 import 'workflow_summary.dart' show workflowDuration;
 
@@ -19,17 +21,22 @@ const workflowAgentsSpec = <String, Object?>{
       '"inspect" (one agent\'s status and latest steps), "message" (tell one agent something; it reads it after its '
       'current step), "restart" (stop its current turn and have it go on in a new one, keeping its context: for an '
       'agent stuck on a hung command or a loop), "ignore" (the run is fine, e.g. a long test that prints nothing; the '
-      'stall clock starts over) and "stop" (stop the whole run; its result arrives as usual). The user is told about '
-      'a stall only if you do nothing about it. Returns at once.',
+      'stall clock starts over), "stop" (stop the whole run; its result arrives as usual) and "off_track" (a '
+      '<workflow-checkpoint> asked you to compare a phase with the task and it went off it: the run pauses and the '
+      'user decides; put why in text). The user is told about a stall only if you do nothing about it. Returns at '
+      'once.',
   'parameters': {
     'type': 'object',
     'properties': {
       'action': {
         'type': 'string',
-        'enum': ['list', 'inspect', 'message', 'restart', 'ignore', 'stop'],
+        'enum': ['list', 'inspect', 'message', 'restart', 'ignore', 'stop', 'off_track'],
       },
       'agent': {'type': 'string', 'description': 'The agent\'s key or id from "list" (inspect, message, restart)'},
-      'text': {'type': 'string', 'description': 'The message (message), or what to do differently (restart)'},
+      'text': {
+        'type': 'string',
+        'description': 'The message (message), what to do differently (restart), or why it is off track (off_track)',
+      },
     },
     'required': ['action'],
   },
@@ -51,3 +58,31 @@ String workflowStalledNote(String name, Duration after, List<StalledAgent> agent
       'agent, stop the run, or ignore it when the work is just slow. If you do nothing, the user is told in '
       '${workflowDuration(after)}.</workflow-stalled>';
 }
+
+String _cut(String s, int max) => s.length <= max ? s : '${s.substring(0, max)}…';
+
+/// What the drift check reads at a phase's end: the run's arguments and what the phase's agents answered.
+String driftText(String name, Object? args, String phase, List<({String label, String text})> results) => [
+  'Workflow: $name',
+  'Its task (the arguments the user started it with):\n${_cut(args == null ? '' : jsonEncode(args), 4000)}',
+  'The phase that just ended: $phase',
+  for (final r in results.take(12)) '--- ${r.label} answered:\n${_cut(r.text, 1500)}',
+].join('\n\n');
+
+/// Prompt reason: a run that wandered off its task (agents fixing other things, rewriting what wasn't asked) ran to
+/// the end before anyone noticed; the owner wants a check at each phase's end that only pauses when sure.
+const driftInstructions =
+    'You check one phase of a multi-agent workflow against the task it was started for. Answer false only when the '
+    "agents' answers clearly work on something other than the task, or plainly undo or ignore what it asks. Slow "
+    'progress, partial results, failures and reasonable steps toward the task are on track.';
+
+/// The question the decider answers (true: on track).
+const driftQuestionPrompt = 'Is the work of this phase still on track for the task?';
+
+/// The outside lead's drift check (it costs EveryAI nothing): the same question, answered with workflow_agents only
+/// when the run is off track.
+String workflowDriftAsk(String name, String phase, String text) =>
+    '<workflow-checkpoint name="${name.replaceAll('"', "'")}">The $phase phase of the $name run ended. Compare what '
+    'its agents answered with the task. Only if they clearly work on something else or undo what it asks, call '
+    '`$workflowAgentsTool` with {"action": "off_track", "text": "<one sentence: why>"}: the run pauses and the user '
+    "decides. Otherwise do nothing and don't reply about it.\n\n$text</workflow-checkpoint>";

@@ -308,6 +308,43 @@ void main() {
       await run;
     });
 
+    test("a phase's end hands its agents' answers to the drift check; offTrack pauses for the user", () async {
+      final ended = <(String, List<String>)>[];
+      final decisions = <String>[];
+      final e = WorkflowEngine(
+        runId: 'r1',
+        name: 'test',
+        bridge: bridge,
+        launcher: launcher,
+        journal: WorkflowJournal.fresh((l) async => lines.add(l)),
+        timer: FakeTimers().call,
+        onPhaseEnd: (run, phase, results) => ended.add((phase, [for (final r in results) r.text])),
+        onDecision: (run, text) => decisions.add(text),
+      );
+      final run = e.run();
+      bridge.note('phase', {'title': 'Research'});
+      expect(await bridge.agent('a'), 'ok:a');
+      expect(await bridge.agent('b'), 'ok:b');
+      bridge.note('phase', {'title': 'Research'});
+      await pumpEventQueue();
+      expect(ended, isEmpty, reason: 'the same phase again is no end');
+      bridge.note('phase', {'title': 'Build'});
+      await pumpEventQueue();
+      expect(ended.single.$1, 'Research');
+      expect(ended.single.$2, ['ok:a', 'ok:b']);
+      e.offTrack('it works on something else.');
+      await pumpEventQueue();
+      expect(e.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.offTrack));
+      expect(decisions.single, 'Off track: it works on something else. Paused until you decide.');
+      e.offTrack('again');
+      expect(decisions, hasLength(1), reason: 'a held run is not paused twice');
+      await e.resume();
+      expect(e.state, const RunRunning('Build'));
+      bridge.finish(null);
+      await run;
+      expect(e.refused, isEmpty);
+    });
+
     group('stalls', () {
       late DateTime clock;
       late List<(StallStage, List<String>)> told;

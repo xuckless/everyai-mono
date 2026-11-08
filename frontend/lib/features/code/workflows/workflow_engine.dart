@@ -260,7 +260,13 @@ enum RowKind {
 
   /// Past the estimate: the run paused for the user's decision.
   over,
+
+  /// A phase's drift check found the work off its task: paused for the user's decision.
+  drift,
 }
+
+/// What one agent of a phase answered, for the drift check.
+typedef PhaseResult = ({String label, String text});
 
 /// Appended to a schema'd agent's prompt.
 String schemaInstruction(Map<String, Object?> schema) =>
@@ -298,6 +304,7 @@ final class WorkflowEngine {
     this.onDecision,
     this.windowLabel,
     this.onStall,
+    this.onPhaseEnd,
     this.stallAfter = const Duration(minutes: 7),
     this.stallCheckEvery = const Duration(minutes: 1),
     this.stepTimeout = const Duration(seconds: 30),
@@ -351,6 +358,13 @@ final class WorkflowEngine {
   /// The run stalled ([stage]: the lead is told first, the user when the lead did nothing about it), with the live
   /// agents and how long each has shown nothing.
   final void Function(WorkflowRun run, StallStage stage, List<StalledAgent> agents)? onStall;
+
+  /// A phase ended and the next began (not the run's end): the host checks for drift (see [offTrack]) with what
+  /// the phase's agents answered.
+  final void Function(WorkflowRun run, String phase, List<PhaseResult> results)? onPhaseEnd;
+
+  /// Each finished agent's answer by its key (text, or its JSON), for the drift check.
+  final _answers = <String, String>{};
 
   /// No progress from any live agent for this long is a stall (owner, 2026-11-08: 7 minutes); the lead has as long
   /// again before the user hears.
@@ -461,6 +475,16 @@ final class WorkflowEngine {
       _row(RowKind.mark, e.text, mark: e.id);
     }
     _emit();
+  }
+
+  /// The drift check found the run off its task ([why], for the card and the lead): it pauses for the user's
+  /// decision. Once per phase at most; a run already held or ending isn't touched.
+  void offTrack(String why) {
+    if (_state is! RunRunning && _state is! RunStalled) return;
+    final text = 'Off track: $why Paused until you decide.';
+    _row(RowKind.drift, text);
+    unawaited(pause(reason: PauseReason.offTrack));
+    onDecision?.call(snapshot, text);
   }
 
   /// Continue past the estimate: the ceiling goes up by half and the run resumes.
@@ -729,6 +753,14 @@ final class WorkflowEngine {
           if (next != _phase) {
             _phaseReport(_phase);
             _phaseAt = _clock();
+            final ended = _phase;
+            if (ended.isNotEmpty && onPhaseEnd != null) {
+              final results = [
+                for (final v in _agents.values)
+                  if (v.phase == ended && _answers[v.key] != null) (label: v.label, text: _answers[v.key]!),
+              ];
+              if (results.isNotEmpty) onPhaseEnd!(snapshot, ended, results);
+            }
           }
           _phase = next;
           if (!_phases.contains(_phase)) _phases.add(_phase);
@@ -1090,6 +1122,7 @@ final class WorkflowEngine {
       }
       if (problem != null) throw Exception(problem);
       await journal.write({'t': 'agent', 'key': call.key, 'ok': true, 'value': value, 'spent': ?_spent[call.key]});
+      _answers[call.key] = value is String ? value : jsonEncode(value);
       _view(call.key, (v) => v.copyWith(status: WorkflowAgentStatus.done));
       _reply(id, result: value);
     } on Object catch (e) {

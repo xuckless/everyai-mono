@@ -244,6 +244,108 @@ void main() {
     await pumpEventQueue();
   });
 
+  group('the drift check', () {
+    HostCall agents(Map<String, Object?> args) =>
+        HostCall(id: 'wa', sessionId: '', name: workflowAgentsTool, args: args, ended: Completer<HostEnd>().future);
+
+    /// A run whose Research phase ends with one agent's answer.
+    Future<(CodeSessionController, String)> phaseEnded({String harness = 'test'}) async {
+      final c = await open(harness: harness);
+      final runId = await c.runWorkflow('demo', 'source', args: {'task': 'Fix the login bug'});
+      bridge.note('phase', {'title': 'Research'});
+      final reply = bridge.agent('Look', {'harness': 'fake2', 'label': 'Scout'});
+      final kid = await child();
+      await whenValue(container, codeSessionProvider(kid.id).select((s) => s.connected), (bool b) => b);
+      answer(drivers['fake2']!.latest!, 'Rewrote the billing page instead');
+      await reply;
+      bridge.note('phase', {'title': 'Build'});
+      await pumpEventQueue();
+      return (c, runId);
+    }
+
+    test('an outside lead is asked to compare, and its off_track pauses the run for the user', () async {
+      final (c, runId) = await phaseEnded();
+      for (var i = 0; i < 50 && !lead.sent.any((m) => m.contains('<workflow-checkpoint')); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      final ask = lead.sent.singleWhere((m) => m.contains('<workflow-checkpoint'));
+      expect(ask, contains('The Research phase of the demo run ended'));
+      expect(ask, contains('Fix the login bug'));
+      expect(ask, contains('Scout answered:\nRewrote the billing page instead'));
+      expect(api.where((p) => p.contains('decide')), isEmpty, reason: 'EveryAI spends nothing on an outside lead');
+      final r = await c.call(agents({'action': 'off_track', 'text': 'It works on billing, not the login bug'}));
+      expect(r.text, startsWith('Paused'));
+      final engine = c.workflowEngineOf(runId)!;
+      await pumpEventQueue();
+      expect(engine.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.offTrack));
+      expect(
+        engine.snapshot.rows.last.text,
+        'Off track: It works on billing, not the login bug. Paused until you decide.',
+      );
+      expect(container.read(codeSessionProvider(c.sessionId)).status, SessionStatus.needsInput);
+      await c.resumeWorkflow(runId);
+      expect(engine.state, isA<RunRunning>());
+      bridge.finish(null);
+      await pumpEventQueue();
+    });
+
+    test('an EveryAI lead asks the decider once; only a clear no pauses', () async {
+      drivers['everyai'] = FakeLeadDriver('everyai', session: lead);
+      container.dispose();
+      container = makeContainer();
+      var onTrack = false;
+      final asked = <Map<String, Object?>>[];
+      backend = (req) async {
+        if (!req.url.path.endsWith('v1/aux/decide')) return http.Response('no', 599);
+        asked.add(jsonDecode(req.body) as Map<String, Object?>);
+        return http.Response(
+          jsonEncode({
+            'answers': [
+              {'id': 'on_track', 'value': onTrack},
+            ],
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      };
+      final (c, runId) = await phaseEnded(harness: 'everyai');
+      final engine = c.workflowEngineOf(runId)!;
+      for (var i = 0; i < 50 && engine.state is! RunPaused; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      expect(asked.single['job'], 'drift');
+      expect(asked.single['text'], contains('Rewrote the billing page instead'));
+      expect(engine.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.offTrack));
+      expect(lead.sent.where((m) => m.contains('<workflow-checkpoint')).single, contains('paused'));
+      await c.resumeWorkflow(runId);
+      // The next phase is on track: it goes on.
+      onTrack = true;
+      final scout = drivers['fake2']!.latest;
+      final reply = bridge.agent('Build', {'harness': 'fake2', 'label': 'Builder'});
+      for (var i = 0; i < 100 && identical(drivers['fake2']!.latest, scout); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      final builder = drivers['fake2']!.latest!;
+      await whenValue(
+        container,
+        codeSessionsProvider,
+        (List<CodeSessionInfo> all) => all.any((s) => s.title == 'Builder'),
+      );
+      await pumpEventQueue();
+      answer(builder, 'Fixed the login bug');
+      await reply;
+      bridge.note('phase', {'title': 'Check'});
+      for (var i = 0; i < 50 && asked.length < 2; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      await pumpEventQueue();
+      expect(asked, hasLength(2));
+      expect(engine.state, isA<RunRunning>());
+      bridge.finish(null);
+      await pumpEventQueue();
+    });
+  });
+
   HostCall runCall(Map<String, Object?> args) =>
       HostCall(id: 'h1', sessionId: '', name: runWorkflowTool, args: args, ended: Completer<HostEnd>().future);
 

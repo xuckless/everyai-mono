@@ -140,9 +140,10 @@ class WorkflowCard extends StatelessWidget {
   final VoidCallback? onContinue;
   final VoidCallback? onAdjust;
 
-  bool get _overEstimate => switch (run.state) {
-    RunPausing(reason: PauseReason.overEstimate) || RunPaused(reason: PauseReason.overEstimate) => true,
-    _ => false,
+  /// Why the run holds for the user's decision (past the estimate, off track); null: it doesn't.
+  PauseReason? get _decision => switch (run.state) {
+    RunPausing(:final reason) || RunPaused(:final reason) when reason != PauseReason.user => reason,
+    _ => null,
   };
 
   /// Closes a finished run's card (done, failed, capped or stopped); a running one has Stop instead.
@@ -183,7 +184,8 @@ class WorkflowCard extends StatelessWidget {
               ),
               Text(
                 switch (run.state) {
-                  RunPausing() || RunPaused() when _overEstimate => 'Past its estimate',
+                  RunPausing() || RunPaused() when _decision == PauseReason.overEstimate => 'Past its estimate',
+                  RunPausing() || RunPaused() when _decision == PauseReason.offTrack => 'Off track',
                   RunPausing() => 'Pausing',
                   RunPaused() => 'Paused',
                   RunStalled(stage: StallStage.leadTold) => 'Stalled · the lead is looking',
@@ -203,7 +205,7 @@ class WorkflowCard extends StatelessWidget {
                   onPressed: onPause,
                 ),
               ],
-              if ((run.state is RunPausing || run.state is RunPaused) && !_overEstimate && onResume != null) ...[
+              if ((run.state is RunPausing || run.state is RunPaused) && _decision == null && onResume != null) ...[
                 const SizedBox(width: 8),
                 AdaptiveButton(
                   key: ValueKey('workflow.resume.${run.runId}'),
@@ -253,7 +255,7 @@ class WorkflowCard extends StatelessWidget {
                   style: theme.type.caption.tint(switch (r.kind) {
                     RowKind.phase => theme.textMuted,
                     RowKind.mark => theme.text,
-                    RowKind.over => theme.warning,
+                    RowKind.over || RowKind.drift => theme.warning,
                   }),
                 ),
               ),
@@ -264,7 +266,7 @@ class WorkflowCard extends StatelessWidget {
               padding: const EdgeInsets.only(top: 2),
               child: Text(r.text, style: theme.type.caption.tint(theme.textMuted)),
             ),
-          if (_overEstimate && (onContinue != null || onAdjust != null))
+          if (_decision case final why? when onContinue != null || onAdjust != null || onResume != null)
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Row(
@@ -278,12 +280,14 @@ class WorkflowCard extends StatelessWidget {
                       onPressed: onAdjust,
                     ),
                   const SizedBox(width: 6),
-                  if (onContinue != null)
+                  if (why == PauseReason.overEstimate && onContinue != null)
                     AdaptiveButton(
                       key: ValueKey('workflow.continue.${run.runId}'),
                       label: 'Continue (+50%)',
                       onPressed: onContinue,
-                    ),
+                    )
+                  else if (why == PauseReason.offTrack && onResume != null)
+                    AdaptiveButton(key: ValueKey('workflow.goon.${run.runId}'), label: 'Go on', onPressed: onResume),
                 ],
               ),
             ),

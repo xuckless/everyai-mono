@@ -6,7 +6,7 @@ import 'package:flutter/foundation.dart';
 //
 //   starting ──script up──▶ running(phase) ──phase()──▶ running(next phase)
 //      │                       │  ▲
-//      │                       │  └──Resume── pausing / paused ◀──Pause / past the estimate── running (each agent
+//      │                       │  └──Resume── pausing / paused ◀──Pause / past the estimate / off track── running (each agent
 //      │                       │              pausing ──every agent holds──▶ paused     ends its step, then holds;
 //      │                       │                                                         new agents wait)
 //      │                       ├──7 min with no progress from any agent──▶ stalled(lead told) ──7 more min and the
@@ -115,6 +115,9 @@ enum PauseReason {
 
   /// It spent past the estimate the user approved: they decide (Continue, Stop, Adjust).
   overEstimate,
+
+  /// A phase's drift check found the work off its task: the user decides (Resume, Stop, Adjust).
+  offTrack,
 }
 
 /// Pause: each live agent ends its step and holds; agent() calls wait to start.
