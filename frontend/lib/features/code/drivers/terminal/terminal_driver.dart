@@ -74,7 +74,7 @@ final class TerminalDriver implements HarnessDriver {
       id: spec.sessionTag,
       label: label,
       pty: pty,
-      sessionTag: spec.sessionTag,
+      sessionTag: spec.procTag,
       briefing: skillDir == null ? null : () => readText(briefingRootOf(skillDir)),
       settle: settle ?? TerminalSession.defaultSettle,
     );

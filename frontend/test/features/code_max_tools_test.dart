@@ -382,6 +382,42 @@ void main() {
     expect(n.result, contains('Halfway there.'));
   });
 
+  test("a stopped fork's late events are no follow-up: it stays reported and holds no slot", () async {
+    final l = await lead();
+    final f = await fork(l.info.id);
+    f.session
+      ..add(stateEvent('r1', ExecutionStatus.running))
+      ..add(agentMessageEvent('m1', 'Halfway there.'));
+    await pumpEventQueue();
+    await hostCall(l.info.id, stopForkTool, {'fork_id': f.info.id});
+    await pumpEventQueue();
+    // The stopped turn's last events arrive after its report.
+    f.session
+      ..add(stateEvent('r2', ExecutionStatus.running))
+      ..add(agentMessageEvent('m2', 'late'))
+      ..add(stateEvent('f2', ExecutionStatus.finished));
+    await pumpEventQueue();
+    final forks = container.read(codeSessionProvider(l.info.id).notifier).forks;
+    expect(forks.byChild(f.info.id)!.state, isA<ForkReported>());
+    expect(forks.live, isEmpty);
+    expect(notices(l.session), hasLength(1));
+    expect(forks.refused, isEmpty);
+  });
+
+  test("a fork's report waits while the lead is paused, and goes on Resume", () async {
+    final l = await lead();
+    final c = container.read(codeSessionProvider(l.info.id).notifier);
+    final f = await fork(l.info.id);
+    await c.pauseAfterStep();
+    expect(container.read(codeSessionProvider(l.info.id)).hold, StepHold.paused);
+    finish(f.session, 'Added the page.');
+    await pumpEventQueue();
+    expect(notices(l.session), isEmpty);
+    await c.resumeAfterPause();
+    await pumpEventQueue();
+    expect(notices(l.session), hasLength(1));
+  });
+
   test("end_workflow waits for the lead's forks: refused while one runs, Max off once it has stopped", () async {
     final l = await lead();
     final sessions = container.read(codeSessionsProvider.notifier);

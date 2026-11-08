@@ -218,6 +218,22 @@ void main() {
       expect(e.refused, isEmpty);
     });
 
+    test('an agent that finishes starting during a pause holds too', () async {
+      final e = traced(<Object>[], via: bridge);
+      final starting = Completer<void>();
+      launcher.startGate = (call) => starting.future;
+      final run = e.run();
+      unawaited(bridge.agent('a').catchError((Object _) => null));
+      await pumpEventQueue();
+      await e.pause();
+      starting.complete();
+      await pumpEventQueue();
+      expect(launcher.paused, [launcher.started.single.childId]);
+      e.stop('Stopped by the user.');
+      await run;
+      expect(e.refused, isEmpty);
+    });
+
     test('a stop while paused refuses the waiting calls and shuts down', () async {
       final trace = <Object>[];
       final e = traced(trace, via: bridge);

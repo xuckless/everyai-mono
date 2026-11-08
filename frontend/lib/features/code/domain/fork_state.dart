@@ -192,6 +192,9 @@ final class ForkRecord {
   /// Reports it gave (a follow-up after the first says so).
   var reports = 0;
 
+  /// Its child's transcript length at its last report: it works again only when something new comes after.
+  var itemsAtReport = 0;
+
   /// The status of its last report, for check_forks.
   SubagentStatus? get reportedAs => switch (state) {
     ForkReported(:final status) => status,

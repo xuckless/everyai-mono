@@ -744,6 +744,8 @@ final class WorkflowEngine {
       // Stopped while it was being set up (a reattached child): no watch starts.
       if (_capProblem() case final why? when !_state.acceptsAgents) throw WorkflowCapped(why);
       _live.add(childId);
+      // Paused while it started: it holds too.
+      if (_state is RunPausing || _state is RunPaused) unawaited(launcher.pause(childId).catchError((Object _) {}));
       _view(call.key, (v) => v.copyWith(status: WorkflowAgentStatus.running));
       var r = await launcher.watch(childId, reattached: reattached);
       var sends = 1;

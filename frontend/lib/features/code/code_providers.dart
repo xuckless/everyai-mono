@@ -3097,10 +3097,14 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   Future<void> pauseAfterStep({Duration within = const Duration(minutes: 2)}) async {
     if (state.hold == StepHold.none) {
       state = state.copyWith(hold: StepHold.pausing);
-      if (_session case final s? when _driver.info.id == everyaiHarnessName && _busy) await s.pause();
+      if (_session case final s? when _driver.info.id == everyaiHarnessName && _busy) {
+        _pausedNatively = true;
+        await s.pause();
+      }
       _settleHold();
     }
-    if (state.hold == StepHold.paused) return;
+    // Resumed or stopped meanwhile: nothing to wait for.
+    if (state.hold != StepHold.pausing) return;
     _held ??= Completer<void>();
     await _held!.future.timeout(within, onTimeout: () {});
   }
@@ -3111,15 +3115,20 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     state = state.copyWith(hold: StepHold.none);
     _held?.complete();
     _held = null;
-    // Only a run the harness itself paused between its steps goes on; an idle one waits for its next message.
-    if (_session case final s?
-        when _driver.info.id == everyaiHarnessName && state.transcript.status == ExecutionStatus.paused) {
-      await s.resume();
+    // Only a run this Pause paused natively goes on (a parked one runs, one still in its step drops the request);
+    // a run the user stopped earlier stays stopped.
+    if (_pausedNatively) {
+      _pausedNatively = false;
+      if (_session case final s?) await s.resume();
     }
     _answered = '';
     _autoRespond(state.transcript);
+    _sendForkNotices();
     _sendQueued();
   }
+
+  /// The EveryAI harness was asked to pause between its steps by this Pause.
+  bool _pausedNatively = false;
 
   /// Completes when a Pause holds.
   Completer<void>? _held;
@@ -4535,7 +4544,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
                   mode: state.mode,
                   model: pick.model,
                   effort: pick.effort,
-                  sessionTag: info.billingTag,
+                  // The new CLI's processes carry the session's process tag (a fork's own).
+                  sessionTag: info.processTag,
                 ),
               );
           if (imported != null) {
@@ -5121,6 +5131,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   Future<void> stop() async {
     _doomOpen = false;
     // A Pause ends with the stop.
+    _pausedNatively = false;
     if (state.hold != StepHold.none) {
       state = state.copyWith(hold: StepHold.none);
       _held?.complete();
@@ -5212,7 +5223,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       // A held call runs its subagent while the server waits for the result.
       if (_holds && !t.held.any((c) => c.id == id)) continue;
       if (sessions.subagentFor(sessionId, id) case final child?) {
-        _forks.started(id, child.id, title: child.title);
+        // Its call is still open: the report answers it.
+        _forks.started(id, child.id, title: child.title, delivery: ForkDelivery.call);
         _watch(id, child.id);
       } else if (_forks.live.length >= maxConcurrentSubagents) {
         _ready(
@@ -5255,9 +5267,19 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       _watch(callId, child.id);
     } on Object catch (e) {
       if (ref.mounted && fork.state is ForkSpawning) {
-        // Not started: the call gets that as its report, and the fork is dropped.
-        fork.delivery = ForkDelivery.call;
-        _ready(callId, SubagentReport(SubagentStatus.notStarted, "The subagent couldn't start: $e"));
+        final report = SubagentReport(SubagentStatus.notStarted, "The subagent couldn't start: $e");
+        if (retry && fork.childId != null) {
+          // A retry on the lead's model: its call was answered, so the lead hears it as a notification.
+          final kid = fork.childId!;
+          _calls.remove(callId);
+          _forks.to(callId, ForkDropped(report.text));
+          _syncSideWork();
+          _notifyLead(taskNotification(kid, fork.title, report), id: kid);
+        } else {
+          // Not started: the call gets that as its report, and the fork is dropped.
+          fork.delivery = ForkDelivery.call;
+          _ready(callId, report);
+        }
       }
     }
   }
@@ -5283,7 +5305,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (fork.state is ForkReported) {
       // It works again after its report (a message to it, a background task of its own): followed as running, and
       // its next report goes to the lead as a follow-up.
-      if (outcome == null && child.transcript.running) {
+      if (outcome == null && child.transcript.running && child.transcript.items.length > fork.itemsAtReport) {
         _forks.to(callId, const ForkRunning(followUp: true));
         _syncSideWork();
       }
@@ -5468,11 +5490,22 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     _calls.remove(callId);
     if (_fellBack.remove(callId) case final note?) report = SubagentReport(report.status, '$note\n\n${report.text}');
     final fork = _forks.of(callId);
+    // Dropped while it merged (Stop all): nothing more goes to the lead.
+    if (fork != null && fork.state is ForkDropped) {
+      _childSubs.remove(callId)?.close();
+      return;
+    }
     if (fork != null && fork.childId != null && fork.delivery == ForkDelivery.notification) {
       final followUp = fork.reports > 0;
       final kid = fork.childId!;
       _forks.to(callId, ForkReported(report.status));
-      // Still followed, in case it works again (see [_onSubagent]).
+      // Still followed, in case it works again (see [_onSubagent]), unless it was stopped: a stopped turn's late
+      // events aren't new work.
+      if (report.status == SubagentStatus.stopped) {
+        _childSubs.remove(callId)?.close();
+      } else if (ref.exists(codeSessionProvider(kid))) {
+        fork.itemsAtReport = ref.read(codeSessionProvider(kid)).transcript.items.length;
+      }
       _syncNeedsInput();
       _syncSideWork();
       // While the agent works this joins its next step; when idle it wakes it.
@@ -6176,7 +6209,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// outside lead gets it when its turn ends. While the run is stopped on a
   /// security alert it waits for the user's reply on either.
   void _notifyLead(String text, {String kind = 'fork-report', String id = 'fork'}) {
-    if (!_onOutsideLead && !_securityHold) {
+    // Paused: it waits with the other notices for Resume.
+    if (!_onOutsideLead && !_securityHold && state.hold == StepHold.none) {
       // Not beside the checks: it goes when they end, with their report ([_flushLeadNotes]).
       if (_holdsNotes) {
         _leadNotes.add(text);
@@ -6216,6 +6250,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         session == null ||
         _securityHold ||
         _holdsNotes ||
+        state.hold != StepHold.none ||
         t.running ||
         t.pending.isNotEmpty ||
         state.queued.isNotEmpty) {
@@ -6432,7 +6467,10 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       case stopForkTool:
         if (!_activeForks.containsKey(forkId)) return _noSuchFork(forkId);
         final title = sessions.byId(forkId)?.title ?? forkId;
-        _forks.to(_activeForks[forkId]!, const ForkStopping());
+        // A fork already merging (or stopping) goes on to its report.
+        if (_forks.of(_activeForks[forkId]!) case final r? when r.state.working) {
+          _forks.to(r.callId, const ForkStopping());
+        }
         await ref.read(codeSessionProvider(forkId).notifier).stop();
         return 'Stopped "$title". What it did so far arrives as its report.';
       case endWorkflowTool:
@@ -6573,7 +6611,9 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     // The forks whose calls are open (background forks run on; Stop all ends those).
     final stopping = [
       for (final id in open)
-        if (_forks.of(id) case final r? when r.state.live && r.delivery == ForkDelivery.call) r,
+        if (_forks.of(id) case final r?
+            when r.state.live && (r.delivery == ForkDelivery.call || r.state is ForkSpawning))
+          r,
     ];
     final children = [for (final r in stopping) ?r.childId];
     for (final r in stopping) {

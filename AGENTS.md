@@ -1186,7 +1186,20 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   down. `AgentLauncher.release` ends a child's turn, tagged processes, app runs, browser, helpers, Preview page and
   devices through its own controller (its session stays open); every workflow agent has `ownTag` now. The user's Stop
   tells the lead (status "stopped"); Stop all stays quiet. `workflowResumeProvider` resumes runs at app start (shell).
-  Max ends with the `end_workflow` tool (client tool + host tool; refused while forks run). Not live-tested.
+  Max ends with the `end_workflow` tool (client tool + host tool; refused while forks run). Not live-tested.- **Workflow rework, phase 2 (2026-11-08; branch `feat/fork-states`, on phase 1).** Forks: one `ForkBook`
+  (`code/domain/fork_state.dart`) replaces the controller's fork maps and sets: a `ForkRecord` per call with a sealed
+  `ForkState` (spawning, running(followUp), waitingOnLead(ask), waitingOnUser, pausing, paused, stopping, merging,
+  reported, dropped), `forkEdge`, and a checked `to()` that records refused moves (asserts in debug). Questions carry an
+  `AskRoute` (to the lead, answered by the lead via answer_fork, answered by the user first). A reported background
+  fork stays followed: if it works again its next report goes as a follow-up task notification (description says
+  so). Process tags: `SessionSpec.processTag` (`procTag`) is `EVERYAI_SESSION` for shells and CLIs, apart from the
+  billing tag; forks have `CodeSessionInfo.ownProcesses`, so stop_fork ends only their processes. Pause: `StepHold`
+  (none, pausing, paused) on every session (`pauseAfterStep`/`resumeAfterPause`; EveryAI pauses between steps, other
+  leads have their next call held unanswered or hold at the turn's end; messages queue, approval cards hide,
+  `SessionStatus.paused`); `pauseAll`/`resumeAll` cover the lead, background forks and workflow runs
+  (`RunPausing`/`RunPaused`; `agent()` calls wait, a stop refuses them). UI: Pause all in the Stop-all menu,
+  `PausedBar` with Resume above the composer, Pause/Resume on workflow cards. Not live-tested.
+
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),
