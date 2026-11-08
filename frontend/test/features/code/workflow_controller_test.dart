@@ -18,6 +18,7 @@ import 'package:every_ai/features/code/drivers/driver_registry.dart';
 import 'package:every_ai/features/code/git/git_service.dart';
 import 'package:every_ai/features/code/gateway_key.dart';
 import 'package:every_ai/features/code/harness/events.dart';
+import 'package:every_ai/features/code/workflows/workflow_agents_tool.dart';
 import 'package:every_ai/features/code/harness/harness.dart' show NativeMode;
 import 'package:every_ai/features/code/host/host.dart';
 import 'package:every_ai/features/code/host/host_prompts.dart';
@@ -204,6 +205,43 @@ void main() {
     final dir = '${tmp.path}/data/workflows/${c.sessionId}';
     expect(File('$dir/$runId.done.jsonl').existsSync(), isTrue);
     expect(File('$dir/$runId.jsonl').existsSync(), isFalse);
+  });
+
+  test('a stalled run: the lead hears first and acts with workflow_agents; then the user', () async {
+    CodeSessionController.workflowStallAfter = Duration.zero;
+    addTearDown(() => CodeSessionController.workflowStallAfter = const Duration(minutes: 7));
+    final c = await open();
+    final runId = await c.runWorkflow('demo', 'source', args: {'n': 1});
+    final reply = bridge.agent('Fix the bug', {'harness': 'fake2', 'label': 'Fixer'});
+    final kid = await child();
+    await whenValue(container, codeSessionProvider(kid.id).select((s) => s.connected), (bool b) => b);
+    HostCall agents(Map<String, Object?> args) =>
+        HostCall(id: 'wa', sessionId: '', name: workflowAgentsTool, args: args, ended: Completer<HostEnd>().future);
+    final list = await c.call(agents({'action': 'list'}));
+    expect(list.text, contains('Fixer (agent '));
+    final key = RegExp(r'agent (\S+),').firstMatch(list.text)![1]!;
+    final engine = c.workflowEngineOf(runId)!;
+    engine.checkStall();
+    expect(engine.state, isA<RunStalled>());
+    for (var i = 0; i < 50 && !lead.sent.any((m) => m.contains('<workflow-stalled')); i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    expect(lead.sent.where((m) => m.contains('<workflow-stalled')).single, contains('- Fixer (agent $key)'));
+    expect((await c.call(agents({'action': 'inspect', 'agent': key}))).text, contains('Fixer (agent $key, id'));
+    expect((await c.call(agents({'action': 'inspect', 'agent': 'nope'}))).text, contains('No live agent "nope"'));
+    expect((await c.call(agents({'action': 'ignore'}))).text, startsWith('Noted'));
+    expect(engine.state, isA<RunRunning>());
+    // Stalled again, and the lead does nothing: the user decides (the session needs them).
+    engine
+      ..checkStall()
+      ..checkStall();
+    expect(engine.state, const RunStalled('', StallStage.userTold));
+    await pumpEventQueue();
+    expect(container.read(codeSessionProvider(c.sessionId)).status, SessionStatus.needsInput);
+    answer(drivers['fake2']!.latest!, 'Fixed it');
+    expect(await reply, 'Fixed it');
+    bridge.finish(null);
+    await pumpEventQueue();
   });
 
   HostCall runCall(Map<String, Object?> args) =>
@@ -1260,6 +1298,10 @@ void main() {
       final id = card(c)!.id;
       await pumpEventQueue();
       final saved = File('${tmp.path}/data/workflows/${c.sessionId}/proposal.jsonl');
+      // Written in the background: a loaded machine may take a moment.
+      for (var i = 0; i < 100 && !saved.existsSync(); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
       expect(saved.existsSync(), isTrue);
       container.dispose();
       container = makeContainer();

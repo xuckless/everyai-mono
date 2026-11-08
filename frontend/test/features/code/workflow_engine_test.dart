@@ -308,6 +308,121 @@ void main() {
       await run;
     });
 
+    group('stalls', () {
+      late DateTime clock;
+      late List<(StallStage, List<String>)> told;
+      late WorkflowEngine e;
+      late Completer<void> hold;
+
+      setUp(() {
+        clock = DateTime(2026, 11, 8, 12);
+        told = [];
+        hold = Completer<void>();
+        launcher.gate = (call) => hold.future;
+        e = WorkflowEngine(
+          runId: 'r1',
+          name: 'test',
+          bridge: bridge,
+          launcher: launcher,
+          journal: WorkflowJournal.fresh((l) async => lines.add(l)),
+          timer: FakeTimers().call,
+          now: () => clock,
+          onStall: (run, stage, agents) => told.add((stage, [for (final a in agents) a.key])),
+        );
+      });
+
+      Future<String> started() async {
+        await pumpEventQueue();
+        return launcher.started.last.childId;
+      }
+
+      test('7 quiet minutes tell the lead; 7 more with nothing from it tell the user; progress clears it', () async {
+        final run = e.run();
+        final reply = bridge.agent('a');
+        final child = await started();
+        launcher.activity[child] = clock;
+        clock = clock.add(const Duration(minutes: 6));
+        e.checkStall();
+        expect(e.state, isA<RunRunning>());
+        clock = clock.add(const Duration(minutes: 1));
+        e.checkStall();
+        expect(e.state, const RunStalled());
+        expect(told.single.$1, StallStage.leadTold);
+        expect(told.single.$2, hasLength(1));
+        // The lead looked after 3 minutes: the user's clock starts from there.
+        clock = clock.add(const Duration(minutes: 3));
+        e.leadActed();
+        clock = clock.add(const Duration(minutes: 5));
+        e.checkStall();
+        expect(e.state, const RunStalled());
+        clock = clock.add(const Duration(minutes: 2));
+        e.checkStall();
+        expect(e.state, const RunStalled('', StallStage.userTold));
+        expect(told.last.$1, StallStage.userTold);
+        // The agent printed something: running again.
+        launcher.activity[child] = clock;
+        clock = clock.add(const Duration(seconds: 30));
+        e.checkStall();
+        expect(e.state, isA<RunRunning>());
+        hold.complete();
+        await reply;
+        bridge.finish(null);
+        await run;
+        expect(e.refused, isEmpty);
+      });
+
+      test("the lead's ignore starts the clock over; a paused run never stalls; actions reach the agent", () async {
+        final run = e.run();
+        final reply = bridge.agent('a');
+        final child = await started();
+        launcher.activity[child] = clock;
+        clock = clock.add(const Duration(minutes: 8));
+        e.checkStall();
+        expect(e.state, const RunStalled());
+        e.ignoreStall();
+        expect(e.state, isA<RunRunning>());
+        clock = clock.add(const Duration(minutes: 6));
+        e.checkStall();
+        expect(e.state, isA<RunRunning>(), reason: 'counted from the ignore');
+        expect(await e.messageAgent('a', 'hi'), isFalse, reason: 'key is the call key, not the prompt');
+        final key = launcher.started.last.key;
+        expect(await e.messageAgent(key, 'hi'), isTrue);
+        expect(await e.restartAgent(child, 'note'), isTrue);
+        expect(launcher.messages.single, (child, 'hi'));
+        expect(launcher.restarted.single, (child, 'note'));
+        await e.pause();
+        clock = clock.add(const Duration(hours: 3));
+        e.checkStall();
+        expect(e.state, isA<RunPaused>());
+        await e.resume();
+        e.checkStall();
+        expect(e.state, isA<RunRunning>(), reason: 'held time is not a stall');
+        hold.complete();
+        await reply;
+        bridge.finish(null);
+        await run;
+        expect(e.refused, isEmpty);
+      });
+
+      test('a stalled run still stops, and nothing stalls without a live agent', () async {
+        final run = e.run();
+        clock = clock.add(const Duration(hours: 1));
+        e.checkStall();
+        expect(e.state, isA<RunRunning>(), reason: 'the script is between agents');
+        final reply = bridge.agent('a');
+        final child = await started();
+        launcher.activity[child] = clock;
+        clock = clock.add(const Duration(minutes: 7));
+        e.checkStall();
+        expect(e.state, isA<RunStalled>());
+        e.stop();
+        await expectLater(reply, throwsA(anything));
+        await run;
+        expect(e.state, const RunEnded(WorkflowOutcome.stopped));
+        expect(e.refused, isEmpty);
+      });
+    });
+
     test('a stop while paused refuses the waiting calls and shuts down', () async {
       final trace = <Object>[];
       final e = traced(trace, via: bridge);
@@ -919,11 +1034,11 @@ void main() {
       await run;
     });
 
-    test('no wall-time cap: no timer is set, however long it runs', () async {
+    test('no wall-time cap: the only timer is the stall check', () async {
       final timers = FakeTimers();
       final run = engine(timers: timers).run();
       await pumpEventQueue();
-      expect(timers.durations, isEmpty);
+      expect(timers.durations, [const Duration(minutes: 1)]);
       bridge.finish(null);
       await run;
     });
@@ -1016,7 +1131,7 @@ void main() {
         timer: timers.call,
         now: () => DateTime.fromMillisecondsSinceEpoch(0).add(const Duration(minutes: 90)),
       ).run();
-      expect(timers.durations, isEmpty, reason: 'no wall-time cap');
+      expect(timers.durations, [const Duration(minutes: 1)], reason: 'no wall-time cap, only the stall check');
       expect(await bridge.agent('a'), 'ok:a');
       // 2 started and 120 spent before the restart: one more agent fits, then the agent cap.
       expect(await bridge.agent('c'), 'ok:c');
@@ -1133,4 +1248,10 @@ final class _HangingRelease implements AgentLauncher {
   Future<void> pause(String childId) => _inner.pause(childId);
   @override
   Future<void> resume(String childId) => _inner.resume(childId);
+  @override
+  DateTime? lastActivity(String childId) => _inner.lastActivity(childId);
+  @override
+  Future<void> restart(String childId, String note) => _inner.restart(childId, note);
+  @override
+  Future<bool> message(String childId, String text) => _inner.message(childId, text);
 }

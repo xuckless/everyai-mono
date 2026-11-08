@@ -4,6 +4,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import '../domain/plan_batches.dart';
 import '../harness/events.dart' show PlanWindow;
@@ -117,6 +118,16 @@ abstract interface class AgentLauncher {
 
   /// Resume after [pause].
   Future<void> resume(String childId);
+
+  /// When [childId] last showed progress (an event of its session, or output of a shell it runs); null: unknown.
+  DateTime? lastActivity(String childId);
+
+  /// The lead's restart of a stalled agent: its current turn stops, and it is told ([note]) to go on with its task
+  /// in a new turn, keeping its context. The agent() call it serves keeps waiting for that new turn.
+  Future<void> restart(String childId, String note);
+
+  /// The lead's message to [childId] while it works (after its current step). False when it couldn't be sent.
+  Future<bool> message(String childId, String text);
 
   /// The run is over: what [childId] left running ends (its turn, shells, monitors, browsers, app runs, language
   /// and MCP servers, devices). Its transcript and worktree stay for the user. Called once per child, in the
@@ -234,6 +245,9 @@ final class WorkflowRun {
   final List<RunRow> rows;
 }
 
+/// A live agent of a stalled run, for the lead's notice.
+typedef StalledAgent = ({String key, String label, String childId, Duration? idle});
+
 /// One report row on a run's card.
 typedef RunRow = ({RowKind kind, String phase, String text});
 
@@ -283,6 +297,9 @@ final class WorkflowEngine {
     this.onShutdown,
     this.onDecision,
     this.windowLabel,
+    this.onStall,
+    this.stallAfter = const Duration(minutes: 7),
+    this.stallCheckEvery = const Duration(minutes: 1),
     this.stepTimeout = const Duration(seconds: 30),
     Timer Function(Duration, void Function()) timer = Timer.new,
     DateTime Function() now = DateTime.now,
@@ -331,6 +348,24 @@ final class WorkflowEngine {
   /// A plan window's name for people, for the guard's rows.
   final String Function(PlanWindow w)? windowLabel;
 
+  /// The run stalled ([stage]: the lead is told first, the user when the lead did nothing about it), with the live
+  /// agents and how long each has shown nothing.
+  final void Function(WorkflowRun run, StallStage stage, List<StalledAgent> agents)? onStall;
+
+  /// No progress from any live agent for this long is a stall (owner, 2026-11-08: 7 minutes); the lead has as long
+  /// again before the user hears.
+  final Duration stallAfter;
+  final Duration stallCheckEvery;
+
+  Timer? _stallTimer;
+
+  /// When the stall clock last started over: the run's start, a stall the lead ignored.
+  DateTime? _stallBase;
+
+  /// When the current stall was reported to the lead, and when the lead last acted on it.
+  DateTime? _stalledAt;
+  DateTime? _leadActedAt;
+
   late final GuardMarks _marks;
   final _rows = <RunRow>[];
 
@@ -339,7 +374,6 @@ final class WorkflowEngine {
 
   /// The longest one shutdown step may take before the next one runs anyway.
   final Duration stepTimeout;
-  // ignore: unused_field, the stall check's timer (next step).
   final Timer Function(Duration, void Function()) _timerOf;
   final DateTime Function() _clock;
 
@@ -412,7 +446,7 @@ final class WorkflowEngine {
           _emit();
         case GuardOver(:final text):
           // Once per crossing: while it holds (or the user's own Pause holds it) nothing more is asked.
-          if (_state is! RunRunning) continue;
+          if (_state is! RunRunning && _state is! RunStalled) continue;
           _row(RowKind.over, text);
           unawaited(pause(reason: PauseReason.overEstimate));
           onDecision?.call(snapshot, text);
@@ -435,6 +469,109 @@ final class WorkflowEngine {
       _marks.raise(spentMicros: _spentMicros);
       unawaited(journal.write({'t': 'raise'}));
       await resume();
+    }
+  }
+
+  void _armStall() {
+    _stallTimer?.cancel();
+    if (!_state.live || _state is RunShuttingDown || _state is RunStopping) return;
+    _stallTimer = _timerOf(stallCheckEvery, () {
+      checkStall();
+      _armStall();
+    });
+  }
+
+  /// The newest progress of the live agents (or the clock's restart, whichever is later).
+  DateTime? _lastProgress() {
+    DateTime? latest = _stallBase;
+    for (final id in _live) {
+      final at = launcher.lastActivity(id);
+      if (at != null && (latest == null || at.isAfter(latest))) latest = at;
+    }
+    return latest;
+  }
+
+  /// One stall check (the timer runs it each [stallCheckEvery]): see the diagram in workflow_state.dart. Only a run
+  /// that waits on live agents can stall; a paused one holds on purpose.
+  @visibleForTesting
+  void checkStall() {
+    final now = _clock();
+    final last = _lastProgress();
+    if (last == null) return;
+    switch (_state) {
+      case RunRunning(:final phase) when _live.isNotEmpty && now.difference(last) >= stallAfter:
+        _stalledAt = now;
+        _leadActedAt = null;
+        _to(RunStalled(phase));
+        onStall?.call(snapshot, StallStage.leadTold, _stalledAgents(now));
+      case RunStalled(:final phase) when _live.isEmpty || last.isAfter(_stalledAt!):
+        // Progress (or nothing left to wait on): it runs again.
+        _stallBase = now;
+        _to(RunRunning(phase));
+      case RunStalled(:final phase, stage: StallStage.leadTold)
+          when now.difference(_leadActedAt ?? _stalledAt!) >= stallAfter:
+        _to(RunStalled(phase, StallStage.userTold));
+        onStall?.call(snapshot, StallStage.userTold, _stalledAgents(now));
+      default:
+        break;
+    }
+  }
+
+  List<StalledAgent> _stalledAgents(DateTime now) => [
+    for (final v in _agents.values)
+      if (v.childId case final id? when _live.contains(id))
+        (
+          key: v.key,
+          label: v.label,
+          childId: id,
+          idle: switch (launcher.lastActivity(id)) {
+            final at? => now.difference(at),
+            null => null,
+          },
+        ),
+  ];
+
+  /// The lead did something about the stall (any workflow_agents action): the user's clock starts over.
+  void leadActed() {
+    if (_state is RunStalled) _leadActedAt = _clock();
+  }
+
+  /// A live agent by its key or child id.
+  WorkflowAgentView? liveAgent(String keyOrChild) => _agents.values
+      .where((v) => (v.key == keyOrChild || v.childId == keyOrChild) && v.childId != null && _live.contains(v.childId))
+      .firstOrNull;
+
+  /// The live agents (with a child session), for the lead's list.
+  List<WorkflowAgentView> get liveAgents => [
+    for (final v in _agents.values)
+      if (v.childId case final id? when _live.contains(id)) v,
+  ];
+
+  /// When [childId] last showed progress (see [AgentLauncher.lastActivity]).
+  DateTime? activityOf(String childId) => launcher.lastActivity(childId);
+
+  /// The lead's message to a live agent ([keyOrChild]): it reads it after its current step.
+  Future<bool> messageAgent(String keyOrChild, String text) async {
+    final v = liveAgent(keyOrChild);
+    if (v == null) return false;
+    leadActed();
+    return launcher.message(v.childId!, text);
+  }
+
+  /// The lead's restart of a live agent: the same agent, a new turn with its context kept.
+  Future<bool> restartAgent(String keyOrChild, String note) async {
+    final v = liveAgent(keyOrChild);
+    if (v == null) return false;
+    leadActed();
+    await launcher.restart(v.childId!, note);
+    return true;
+  }
+
+  /// The lead's ignore: the run counts as running, and the stall clock starts over.
+  void ignoreStall() {
+    if (_state case RunStalled(:final phase)) {
+      _stallBase = _clock();
+      _to(RunRunning(phase));
     }
   }
 
@@ -487,7 +624,7 @@ final class WorkflowEngine {
   /// Pause: every live agent ends its step and holds, and agent() calls wait to start, until [resume]. [reason]:
   /// the user's own, or past the estimate (the card asks then).
   Future<void> pause({PauseReason reason = PauseReason.user}) async {
-    if (_state case RunRunning(:final phase)) {
+    if (_state case RunRunning(:final phase) || RunStalled(:final phase)) {
       _to(RunPausing(phase, reason));
       await Future.wait([
         for (final id in [..._live]) launcher.pause(id).catchError((Object _) {}),
@@ -504,6 +641,8 @@ final class WorkflowEngine {
     };
     if (phase == null) return;
     _to(RunRunning(phase));
+    // Held time isn't a stall.
+    _stallBase = _clock();
     _unpaused?.complete();
     _unpaused = null;
     await Future.wait([
@@ -521,7 +660,14 @@ final class WorkflowEngine {
   }
 
   void _halt(WorkflowOutcome outcome, String why, {bool quiet = false}) {
-    if (_state is! RunStarting && _state is! RunRunning && _state is! RunPausing && _state is! RunPaused) return;
+    if (_state is! RunStarting &&
+        _state is! RunRunning &&
+        _state is! RunStalled &&
+        _state is! RunPausing &&
+        _state is! RunPaused) {
+      return;
+    }
+    _stallTimer?.cancel();
     _error = why;
     _to(RunStopping(outcome, why));
     // Calls waiting out a pause go on to their refusal.
@@ -569,6 +715,8 @@ final class WorkflowEngine {
     _phaseAt = _clock();
     // A resumed run still past its estimate holds again until the user decides.
     _checkSpend();
+    _stallBase = _clock();
+    _armStall();
     await for (final req in bridge.requests) {
       final args = (req['args'] as Map?)?.cast<String, Object?>() ?? const {};
       switch (req['fn']) {
@@ -586,7 +734,9 @@ final class WorkflowEngine {
           if (!_phases.contains(_phase)) _phases.add(_phase);
           if (!journal.phases.contains(_phase)) unawaited(journal.write({'t': 'phase', 'title': _phase}));
           switch (_state) {
-            case RunRunning():
+            // A new phase is progress: a stalled run runs again.
+            case RunRunning() || RunStalled():
+              _stallBase = _clock();
               _to(RunRunning(_phase));
             case RunPausing(:final reason):
               _to(RunPausing(_phase, reason));
@@ -608,6 +758,7 @@ final class WorkflowEngine {
       }
     }
     final code = await bridge.exit;
+    _stallTimer?.cancel();
     await output.cancel();
     if (_state.live && _state is! RunShuttingDown) _phaseReport(_phase);
     if (_state is RunDetached) return snapshot;
@@ -625,7 +776,7 @@ final class WorkflowEngine {
   /// the shutdown with [outcome].
   Future<WorkflowRun> end(WorkflowOutcome outcome, String why) {
     if (why.isNotEmpty) _error ??= why;
-    if (_state is RunStarting || _state is RunRunning) _to(RunStopping(outcome, why));
+    if (_state is RunStarting || _state is RunRunning || _state is RunStalled) _to(RunStopping(outcome, why));
     return _shutdown(outcome);
   }
 

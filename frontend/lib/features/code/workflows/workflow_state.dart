@@ -9,6 +9,10 @@ import 'package:flutter/foundation.dart';
 //      │                       │  └──Resume── pausing / paused ◀──Pause / past the estimate── running (each agent
 //      │                       │              pausing ──every agent holds──▶ paused     ends its step, then holds;
 //      │                       │                                                         new agents wait)
+//      │                       ├──7 min with no progress from any agent──▶ stalled(lead told) ──7 more min and the
+//      │                       │      ▲ progress, or the lead's ignore ◀──┘      lead did nothing──▶ stalled(user told)
+//      │                       │      └────────────────────────────────── progress, ignore ◀────────────┘
+//      │                       │   (stalled takes the same Pause, Stop and end edges as running)
 //      │                       ├──Stop / a cap (also while paused)──▶ stopping(outcome) ──script gone──▶ ┐
 //      │                       └──the script ended (done() or not)───────────────────────────────────────────▶ ├─▶ shuttingDown(step 1…N)
 //      ├──Stop─────────────────────────────────────────▶ stopping(outcome)                                      │
@@ -26,7 +30,16 @@ import 'package:flutter/foundation.dart';
 enum WorkflowOutcome { done, failed, capped, stopped }
 
 /// What a run in some state is waiting on: what the card says and what a stall check reads.
-enum RunWaitsOn { nothing, script, agents, shutdown }
+enum RunWaitsOn { nothing, script, agents, lead, user, shutdown }
+
+/// Who heard about a stall so far.
+enum StallStage {
+  /// The lead was told; it may inspect, message, restart, cancel or ignore the agents.
+  leadTold,
+
+  /// The lead did nothing about it for another stall period: the user is told.
+  userTold,
+}
 
 /// The steps every run's end goes through, in this order.
 enum ShutdownStep {
@@ -130,6 +143,24 @@ final class RunPaused extends RunState {
   String get name => 'paused';
 }
 
+/// No agent of the run made progress for the stall period (owner, 2026-11-08: 7 minutes). Agents still work and new
+/// ones start; only who was told changes.
+final class RunStalled extends RunState {
+  const RunStalled([this.phase = '', this.stage = StallStage.leadTold]);
+  final String phase;
+  final StallStage stage;
+  @override
+  RunWaitsOn get waitsOn => stage == StallStage.leadTold ? RunWaitsOn.lead : RunWaitsOn.user;
+  @override
+  bool get acceptsAgents => true;
+  @override
+  String get name => 'stalled(${stage.name})';
+  @override
+  bool operator ==(Object other) => other is RunStalled && other.phase == phase && other.stage == stage;
+  @override
+  int get hashCode => Object.hash(phase, stage);
+}
+
 /// Stopped by the user or a cap: no new agents, and the script is being killed.
 final class RunStopping extends RunState {
   const RunStopping(this.outcome, this.why);
@@ -192,6 +223,11 @@ bool runEdge(RunState from, RunState to) => switch ((from, to)) {
   (RunRunning(), RunRunning() || RunStopping() || RunDetached()) => true,
   (RunRunning(), RunShuttingDown(step: ShutdownStep.script)) => true,
   (RunRunning(), RunPausing()) => true,
+  (RunRunning(), RunStalled(stage: StallStage.leadTold)) => true,
+  (RunStalled(stage: StallStage.leadTold), RunStalled(stage: StallStage.userTold)) => true,
+  // phase() while stalled: the phase moves on; it was progress, so the run is running again (see the engine).
+  (RunStalled(), RunRunning() || RunPausing() || RunStopping() || RunDetached()) => true,
+  (RunStalled(), RunShuttingDown(step: ShutdownStep.script)) => true,
   // phase() while paused: the phase moves on, the hold stays.
   (RunPausing(), RunPausing()) || (RunPaused(), RunPaused()) => true,
   (RunPausing(), RunPaused() || RunRunning() || RunStopping() || RunDetached()) => true,

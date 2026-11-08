@@ -122,7 +122,9 @@ import 'workflows/workflow_bridge.dart'
 import 'domain/session_work.dart';
 import 'workflows/workflow_engine.dart';
 import 'ui/console/session_info_view.dart' show planWindowName;
+import 'workflows/workflow_agents_tool.dart';
 import 'workflows/workflow_estimate.dart';
+import 'workflows/workflow_summary.dart' show workflowDuration;
 import 'workflows/workflow_proposal.dart';
 import 'workflows/workflow_journal.dart';
 import 'workflows/workflow_landing.dart';
@@ -349,6 +351,12 @@ const _baseToolInfos = <HostToolInfo>[
     when:
         'the task fits one of the workflows listed under "Workflows": it starts them in the app and returns at once; '
         'the result comes later as a message.',
+  ),
+  (
+    name: workflowAgentsTool,
+    when:
+        'a <workflow-stalled> note says your workflow run made no progress: inspect its agents, then message or '
+        'restart a stuck one, stop the run, or ignore the stall when the work is just slow.',
   ),
   (
     name: reportIssueTool,
@@ -2387,6 +2395,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         return hostFit(dir, 'host-${DateTime.now().millisecondsSinceEpoch}-$name', await hostCheckTool(call, context));
       case runWorkflowTool:
         return _runWorkflowCall(call.args);
+      case workflowAgentsTool:
+        return (text: await _workflowAgentsCall(call.args), isError: false);
       case final name when screenHostTools.contains(name):
         final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
         if (info == null) return (text: 'Error: this session is closed.', isError: true);
@@ -2818,7 +2828,22 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     }
   }
 
+  /// When this session last showed progress: its newest event (deltas too) or message.
+  DateTime _activityAt = DateTime.now();
+
+  /// The newest of [_activityAt] and the output of the shells it runs (a long test prints without events).
+  DateTime get lastActivity {
+    var at = _activityAt;
+    final tag = ref.read(codeSessionsProvider.notifier).byId(sessionId)?.processTag ?? sessionId;
+    for (final e in ShellRegistry.instance.of(tag)) {
+      final o = e.lastOutputAt;
+      if (e.running && o != null && o.isAfter(at)) at = o;
+    }
+    return at;
+  }
+
   void _onEvent(HarnessEvent event) {
+    if (event is! ConnectionChange) _activityAt = DateTime.now();
     if (event is ConnectionChange) {
       // Events only flow once attached: a drop is a reconnect, not a first connect.
       if (state.link != SessionLink.broken) {
@@ -6031,6 +6056,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         // Paused past its estimate: the user decides, so the session needs them (cleared with the run's waits).
         _workflowChildWaiting('wf-$runId-decision', switch (run.state) {
           RunPausing(reason: PauseReason.overEstimate) || RunPaused(reason: PauseReason.overEstimate) => true,
+          // Stalled and the lead did nothing: the user decides too.
+          RunStalled(stage: StallStage.userTold) => true,
           _ => false,
         });
       },
@@ -6040,6 +6067,27 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         if (ref.mounted) _notifyLead(workflowDecisionNote(run.name, text), kind: 'workflow-checkpoint', id: run.runId);
       },
       windowLabel: planWindowName,
+      stallAfter: workflowStallAfter,
+      onStall: (run, stage, agents) {
+        if (!ref.mounted) return;
+        switch (stage) {
+          case StallStage.leadTold:
+            _notifyLead(
+              workflowStalledNote(run.name, workflowStallAfter, agents),
+              kind: 'workflow-stalled',
+              id: run.runId,
+            );
+          case StallStage.userTold:
+            final title = ref.read(codeSessionsProvider.notifier).byId(sessionId)?.title ?? 'A session';
+            if (!ref.read(appFocusedProvider)()) {
+              unawaited(
+                ref
+                    .read(systemNotifierProvider)
+                    .show('Workflow stalled', '$title: the ${run.name} run has made no progress for a while.'),
+              );
+            }
+        }
+      },
     );
     if (startError != null) {
       await engine.end(WorkflowOutcome.failed, startError);
@@ -6361,7 +6409,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (session == null || !_live) return;
     for (final call in state.transcript.held) {
       // run_workflow too: the EveryAI lead's own (outside leads reach it through the host).
-      final ours = forkTools.contains(call.toolName) || call.toolName == runWorkflowTool;
+      final ours =
+          forkTools.contains(call.toolName) || call.toolName == runWorkflowTool || call.toolName == workflowAgentsTool;
       if (!ours || !_forkToolsDone.add(call.id)) continue;
       unawaited(() async {
         final String out;
@@ -6392,6 +6441,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     switch (name) {
       case runWorkflowTool:
         return (await _runWorkflowCall(args)).text;
+      case workflowAgentsTool:
+        return _workflowAgentsCall(args);
       case checkForksTool:
         // Reports and questions held for the end of an outside lead's turn come with the answer instead.
         // A tool result, not a user message: no notice wrapper (the briefing names this result as EveryAI's own).
@@ -6439,6 +6490,63 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         return _endMax();
     }
     return 'Error: unknown tool $name.';
+  }
+
+  /// No progress from a run's agents for this long is a stall (owner, 2026-11-08); tests shorten it.
+  @visibleForTesting
+  static Duration workflowStallAfter = const Duration(minutes: 7);
+
+  /// A running workflow's engine, for tests.
+  @visibleForTesting
+  WorkflowEngine? workflowEngineOf(String runId) => _workflows[runId];
+
+  /// The lead's workflow_agents call (see workflow_agents_tool.dart) on this session's running workflow.
+  Future<String> _workflowAgentsCall(Map<String, Object?> args) async {
+    String str(String key) => args[key] is String ? (args[key]! as String).trim() : '';
+    final engine = _workflows.values.where((e) => e.state.live).firstOrNull;
+    if (engine == null) return 'No workflow is running in this session.';
+    final key = str('agent');
+    String noAgent() => key.isEmpty
+        ? 'Error: name the agent (its key from "list").'
+        : 'No live agent "$key" in this run; "list" shows them.';
+    final now = DateTime.now();
+    switch (str('action')) {
+      case 'list':
+        engine.leadActed();
+        final agents = engine.liveAgents;
+        if (agents.isEmpty) return 'No agent of the ${engine.snapshot.name} run is working now.';
+        return [
+          'The ${engine.snapshot.name} run (${engine.state.name}):',
+          for (final v in agents)
+            '- ${v.label} (agent ${v.key}, phase ${v.phase.isEmpty ? '-' : v.phase}, ${v.harness}): last progress '
+                '${switch (engine.activityOf(v.childId!)) {
+                  final at? => '${workflowDuration(now.difference(at))} ago',
+                  null => 'unknown',
+                }}',
+        ].join('\n');
+      case 'inspect':
+        final v = engine.liveAgent(key);
+        if (v == null) return noAgent();
+        engine.leadActed();
+        return _forkStatus(v.childId!).replaceFirst('fork_id ', 'agent ${v.key}, id ');
+      case 'message':
+        if (str('text').isEmpty) return 'Error: the message is empty.';
+        if (engine.liveAgent(key) == null) return noAgent();
+        return await engine.messageAgent(key, str('text'))
+            ? 'Sent. The agent reads it after its current step.'
+            : 'Not sent: that agent has stopped or its budget is spent.';
+      case 'restart':
+        if (engine.liveAgent(key) == null) return noAgent();
+        await engine.restartAgent(key, workflowRestartNote(str('text')));
+        return 'Restarted: its turn was stopped and it goes on in a new one, with its context.';
+      case 'ignore':
+        engine.ignoreStall();
+        return 'Noted: the run counts as making progress, and the stall clock starts over.';
+      case 'stop':
+        engine.stop('Stopped by the agent that ran it.');
+        return 'Stopping the run. Its result arrives as a <workflow-result>.';
+    }
+    return 'Error: action is one of list, inspect, message, restart, ignore, stop.';
   }
 
   /// The lead says the Max task is over (end_workflow): the session goes back to no workflow. Its own forks must
@@ -7661,6 +7769,11 @@ final class _WorkflowLauncher implements AgentLauncher {
     var ending = false;
     final sub = _ref.listen(codeSessionProvider(childId), (_, next) {
       if (done.isCompleted || ending) return;
+      // A restart's stopped turn: the turn after it is the one this waits for.
+      if (_restarting.contains(childId)) {
+        busy = true;
+        return;
+      }
       _waiting(callId, next.status == SessionStatus.needsInput);
       final outcome = subagentOutcome(next.transcript, error: next.failure);
       if (outcome == null) {
@@ -7743,6 +7856,39 @@ final class _WorkflowLauncher implements AgentLauncher {
     await LiveBrowsers.release(childId);
     NestedDisplays.stop(childId);
     await AppSources.release(childId);
+  }
+
+  @override
+  DateTime? lastActivity(String childId) =>
+      _ref.exists(codeSessionProvider(childId)) ? _ref.read(codeSessionProvider(childId).notifier).lastActivity : null;
+
+  /// Children being restarted: the stopped turn's end isn't the end the engine waits for.
+  final _restarting = <String>{};
+
+  @override
+  Future<void> restart(String childId, String note) async {
+    if (!_ref.exists(codeSessionProvider(childId)) || _stopped.contains(childId)) return;
+    final c = _ref.read(codeSessionProvider(childId).notifier);
+    _restarting.add(childId);
+    try {
+      await c._stopAndSettle();
+      // The new turn: watched as the same agent() call's.
+      await c.send(note);
+      final end = DateTime.now().add(const Duration(seconds: 10));
+      while (_ref.exists(codeSessionProvider(childId)) &&
+          !_ref.read(codeSessionProvider(childId)).transcript.running &&
+          DateTime.now().isBefore(end)) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+    } finally {
+      _restarting.remove(childId);
+    }
+  }
+
+  @override
+  Future<bool> message(String childId, String text) async {
+    if (!_ref.exists(codeSessionProvider(childId))) return false;
+    return _ref.read(codeSessionProvider(childId).notifier).tellWhileRunning(forkMessageFromLead(text));
   }
 
   @override

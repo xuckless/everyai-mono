@@ -181,13 +181,20 @@ class WorkflowCard extends StatelessWidget {
                   style: theme.type.callout.semibold.tint(theme.text),
                 ),
               ),
-              Text(switch (run.state) {
-                RunPausing() || RunPaused() when _overEstimate => 'Past its estimate',
-                RunPausing() => 'Pausing',
-                RunPaused() => 'Paused',
-                _ => workflowStatusText(run.status),
-              }, style: theme.type.caption.tint(_statusColor(theme, run.status))),
-              if (run.state is RunRunning && onPause != null) ...[
+              Text(
+                switch (run.state) {
+                  RunPausing() || RunPaused() when _overEstimate => 'Past its estimate',
+                  RunPausing() => 'Pausing',
+                  RunPaused() => 'Paused',
+                  RunStalled(stage: StallStage.leadTold) => 'Stalled · the lead is looking',
+                  RunStalled() => 'Stalled',
+                  _ => workflowStatusText(run.status),
+                },
+                style: theme.type.caption.tint(
+                  run.state is RunStalled ? theme.warning : _statusColor(theme, run.status),
+                ),
+              ),
+              if ((run.state is RunRunning || run.state is RunStalled) && onPause != null) ...[
                 const SizedBox(width: 8),
                 AdaptiveButton(
                   key: ValueKey('workflow.pause.${run.runId}'),
