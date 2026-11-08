@@ -9,6 +9,7 @@ import '../../../../core/ui/every_icons.dart';
 import '../../../../core/ui/syntax_spans.dart';
 import '../../code_providers.dart';
 import '../../domain/code_session.dart';
+import '../../domain/git_requests.dart';
 import '../../git/git_service.dart';
 import '../../panes/panes_providers.dart';
 import '../console/console_state.dart';
@@ -72,16 +73,13 @@ class _DiffPaneState extends ConsumerState<DiffPane> {
     }
   }
 
-  Future<void> _commit() async {
-    final message = await showAdaptivePrompt(
-      context,
-      title: 'Commit message',
-      confirmLabel: 'Commit',
-      initialValue: widget.session.title,
-    );
-    if (message == null || message.trim().isEmpty) return;
-    await _run(() async => await _git.commit(message.trim()) ? 'Committed' : 'Nothing to commit');
+  /// Commit and Create PR are requests to the agent, like the console's git button.
+  Future<void> _ask(String request, String toast) async {
+    final sent = await ref.read(codeSessionProvider(widget.session.id).notifier).send(request);
+    if (sent && mounted) showAdaptiveToast(context, toast);
   }
+
+  Future<void> _commit() => _ask(commitRequest, 'Asked the agent to commit');
 
   Future<void> _merge() async {
     if (_busy) return;
@@ -98,16 +96,10 @@ class _DiffPaneState extends ConsumerState<DiffPane> {
     return 'Pushed ${w.branch}';
   });
 
-  Future<void> _pr() async {
-    final title = await showAdaptivePrompt(
-      context,
-      title: 'Pull request title',
-      confirmLabel: 'Create',
-      initialValue: widget.session.title,
-    );
-    if (title == null || title.trim().isEmpty) return;
-    await _run(() async => 'Opened ${await _git.createPr(title: title.trim(), body: '')}');
-  }
+  Future<void> _pr() => _ask(
+    prRequest(widget.session.worktree?.baseBranch ?? 'the base branch'),
+    'Asked the agent to open a pull request',
+  );
 
   Future<void> _discard() async {
     final ok = await showAdaptiveConfirm(

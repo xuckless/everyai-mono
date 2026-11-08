@@ -13,6 +13,13 @@ final class GitError implements Exception {
   String toString() => message;
 }
 
+/// A fast-forward merge found the base branch moved on since the session branch was prepared.
+final class BaseMoved implements Exception {
+  const BaseMoved();
+  @override
+  String toString() => 'The base branch moved on since this branch was prepared.';
+}
+
 /// Session worktrees and what the app does with them, on top of the `git`
 /// and `gh` command-line tools. See `git_service_io.dart`.
 abstract final class GitService {
@@ -136,9 +143,12 @@ abstract final class GitService {
 
   static Future<({int ahead, int behind})> aheadBehind(SessionWorktree w) => impl.aheadBehind(w);
 
-  /// Commits pending work, then squashes the session branch onto the base
-  /// branch in the main checkout. Returns the new commit.
-  static Future<String> squashMerge(SessionWorktree w, String message) => impl.squashMerge(w, message);
+  /// Fast-forwards the base branch in the main checkout to the session branch's one commit; [BaseMoved] when the
+  /// base has moved on since.
+  static Future<String> fastForwardMerge(SessionWorktree w) => impl.fastForwardMerge(w);
+
+  /// The subject of the session branch's newest commit.
+  static Future<String> headSubject(SessionWorktree w) => impl.headSubject(w);
 
   static Future<void> push(SessionWorktree w) => impl.push(w);
 

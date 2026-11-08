@@ -7,7 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'git_env.dart';
 import 'git_guard.dart';
 import 'git_models.dart';
-import 'git_service.dart' show GitError;
+import 'git_service.dart' show BaseMoved, GitError;
 
 export 'repo_check_io.dart' show checkRepo;
 
@@ -527,7 +527,10 @@ Future<({int ahead, int behind})> aheadBehind(SessionWorktree w) async {
   return (ahead: ahead, behind: behind);
 }
 
-Future<String> squashMerge(SessionWorktree w, String message) async {
+/// Fast-forwards the base branch in the main checkout to the session branch, which must be one commit on top of
+/// it ([GitService.mergeReady]). Returns the merged commit. Nothing merges when the base moved (not a fast
+/// forward): [BaseMoved].
+Future<String> fastForwardMerge(SessionWorktree w) async {
   final dirty = await _out(w.repoRoot, ['status', '--porcelain', '--untracked-files=no']);
   if (dirty.isNotEmpty) {
     throw const GitError('Your main checkout has uncommitted changes. Commit or stash them, then merge again.');
@@ -536,13 +539,13 @@ Future<String> squashMerge(SessionWorktree w, String message) async {
   if (current != w.baseBranch) {
     throw GitError('Your main checkout is on $current. Switch it to ${w.baseBranch} to merge this session.');
   }
-  await commitAll(w, message);
-  await _git(w.repoRoot, ['merge', '--squash', '-q', w.branch]);
-  final staged = await _git(w.repoRoot, ['diff', '--cached', '--quiet'], check: false);
-  if (staged.exitCode == 0) throw const GitError('There is nothing to merge: the session made no changes.');
-  await _git(w.repoRoot, ['commit', '-q', '-m', stripBranding(message)]);
+  final res = await _git(w.repoRoot, ['merge', '--ff-only', '-q', w.branch], check: false);
+  if (res.exitCode != 0) throw const BaseMoved();
   return _out(w.repoRoot, ['rev-parse', 'HEAD']);
 }
+
+/// The subject of the session branch's newest commit.
+Future<String> headSubject(SessionWorktree w) => _out(w.path, ['log', '-1', '--format=%s']);
 
 /// Pushes the session branch. Not to a folder on this computer: git runs that repository's own hooks (and a
 /// `receivepack` the repository sets) here, with none of EveryAI's flags.

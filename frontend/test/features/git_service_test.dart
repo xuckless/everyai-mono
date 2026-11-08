@@ -308,19 +308,21 @@ void main() {
     expect(File('${w.path}/made.txt').readAsStringSync(), 'new\n');
   });
 
-  test('squash merge lands one commit on the base branch, then the session is removed', () async {
+  test('merge fast-forwards the base branch to the prepared commit, then the session is removed', () async {
     final w = await start();
     File('${w.path}/lib/new.txt').writeAsStringSync('feature\n');
-    expect(await GitService.commitAll(w, 'wip'), isTrue);
     File('${w.path}/README.md').writeAsStringSync('# App\n\nDocs.\n');
+    expect(await GitService.commitAll(w, 'feat: add new'), isTrue);
     expect((await GitService.aheadBehind(w)).ahead, 1);
+    expect(await GitService.headSubject(w), 'feat: add new');
 
     // A dirty main checkout is refused.
     File('$repo/README.md').writeAsStringSync('dirty\n');
-    await expectLater(GitService.squashMerge(w, 'feat: add new'), throwsA(isA<GitError>()));
+    await expectLater(GitService.fastForwardMerge(w), throwsA(isA<GitError>()));
     await _git(repo, ['checkout', '--', 'README.md']);
 
-    final sha = await GitService.squashMerge(w, 'feat: add new');
+    final sha = await GitService.fastForwardMerge(w);
+    expect(sha, await GitService.headCommit(w));
     expect(await _git(repo, ['log', '-1', '--format=%H %s']), '$sha feat: add new');
     expect(await _git(repo, ['rev-list', '--count', 'HEAD']), '2');
     expect(File('$repo/lib/new.txt').readAsStringSync(), 'feature\n');
@@ -714,11 +716,12 @@ void main() {
       await GitService.revertHunk(w, readme, 0);
       expect(File('${w.path}/README.md').readAsStringSync(), '# App\n');
 
-      // The main checkout moved on at the other end of the file: git's own text merge joins them.
+      // The main checkout moved on: nothing merges there (the agent rebases in its worktree instead).
       File('$repo/lib/a.txt').writeAsStringSync('ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n');
       await safe(repo, ['commit', '-q', '-am', 'Shout one']);
-      await GitService.squashMerge(w, 'Merge the session');
-      expect(File('$repo/lib/a.txt').readAsStringSync(), 'ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nTEN\n');
+      await expectLater(GitService.fastForwardMerge(w), throwsA(isA<BaseMoved>()));
+      expect(await safe(repo, ['status', '--porcelain', '--untracked-files=no']), isEmpty);
+      expect(File('$repo/lib/a.txt').readAsStringSync(), startsWith('ONE\n'));
 
       File('${w.path}/lib/b.txt').writeAsStringSync('bee\n');
       expect(await GitService.commitOnNewBranch(w, 'everyai/bee', 'Bee'), isNotNull);

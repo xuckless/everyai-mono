@@ -6946,9 +6946,9 @@ base class CodeGit extends AsyncNotifier<GitSnapshot> {
     return done;
   }
 
-  /// Squashes the session onto its base branch in the main checkout.
-  Future<String> squashMerge(String message) async {
-    final sha = await GitService.squashMerge(_w, message);
+  /// Fast-forwards the base branch in the main checkout to the session's one prepared commit.
+  Future<String> fastForwardMerge() async {
+    final sha = await GitService.fastForwardMerge(_w);
     if (_info case final i? when i.prNumber != null) {
       ref.read(codeSessionsProvider.notifier).update(i.copyWith(clearPr: true));
     }
