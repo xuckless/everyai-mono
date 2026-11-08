@@ -13,6 +13,7 @@ import '../../settings/settings_registry.dart';
 import '../../settings/ui/settings_modal.dart';
 import '../data/server_probe.dart' show testServer;
 import '../domain/local_server.dart' show normaliseBaseUrl;
+import '../local_model_bridge.dart' show localModelStatesProvider, ModelLoad;
 import '../local_models_providers.dart';
 import 'local_setup_terminal.dart';
 
@@ -283,7 +284,7 @@ class _PackAction extends ConsumerWidget {
       return AdaptiveButton(
         key: const ValueKey('local.start-ollama'),
         label: 'Start Ollama',
-        onPressed: () => ref.read(localServersProvider.notifier).startOllama(),
+        onPressed: () => startServer(context, ref, ollama!),
       );
     }
     if (missing.isEmpty) {
@@ -421,9 +422,12 @@ class FmRow extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final servers = ref.watch(localServersProvider).value ?? const <LocalServer>[];
     final server = servers.where((s) => s.kind == LocalServerKind.fm).firstOrNull;
+    final phase = server == null ? null : ref.watch(serverLifecyclesProvider.notifier).phaseOf(server);
+    ref.watch(serverLifecyclesProvider);
     final (dot, line) = switch (status.state) {
-      FmState.ready when server?.running ?? false => (DotStatus.done, 'Ready · free and private, on this Mac'),
-      FmState.ready => (DotStatus.waiting, server?.problem ?? 'Starting…'),
+      FmState.ready when phase is ServerRunning => (DotStatus.done, 'Ready · free and private, on this Mac'),
+      FmState.ready when phase != null => (_dotOf(phase), _phaseLine(phase)),
+      FmState.ready => (DotStatus.waiting, 'Starting…'),
       FmState.needsLicence => (DotStatus.idle, "Agree to Apple's terms once to use it"),
       FmState.unsupported => (DotStatus.failed, "This Mac can't run Apple Intelligence"),
       FmState.missing => (DotStatus.idle, 'Not on this Mac'),
@@ -439,8 +443,78 @@ class FmRow extends ConsumerWidget {
               label: 'Set up',
               onPressed: () => openFmLicence(context, ref),
             )
+          : status.state == FmState.ready && server != null
+          ? ServerControls(server: server)
           : null,
     );
+  }
+}
+
+DotStatus _dotOf(ServerPhase p) => switch (p) {
+  ServerRunning() => DotStatus.done,
+  ServerStarting() || ServerStopping() => DotStatus.running,
+  ServerFailed() => DotStatus.failed,
+  ServerStopped() => DotStatus.idle,
+};
+
+String _phaseLine(ServerPhase p) => switch (p) {
+  ServerRunning(owner: ServerOwner.everyai) => 'Running · started by EveryAI',
+  ServerRunning(owner: ServerOwner.outside) => 'Running · started outside EveryAI',
+  ServerStarting() => 'Starting…',
+  ServerStopping() => 'Stopping…',
+  ServerFailed(:final reason) => reason,
+  ServerStopped() => 'Stopped',
+};
+
+/// Starts [server], saying why when it can't.
+Future<void> startServer(BuildContext context, WidgetRef ref, LocalServer server) async {
+  final problem = await ref.read(serverLifecyclesProvider.notifier).start(server);
+  if (problem != null && context.mounted) showAdaptiveToast(context, "Couldn't start ${server.label}: $problem");
+}
+
+/// Stops [server]; one EveryAI didn't start is stopped only after the user confirms.
+Future<void> stopServer(BuildContext context, WidgetRef ref, LocalServer server) async {
+  final lifecycles = ref.read(serverLifecyclesProvider.notifier);
+  if (lifecycles.phaseOf(server) case ServerRunning(owner: ServerOwner.outside)) {
+    final ok = await showAdaptiveConfirm(
+      context,
+      title: 'Stop ${server.label}?',
+      message: 'It was started outside EveryAI. Apps using it lose it too.',
+      confirmLabel: 'Stop',
+      destructive: true,
+    );
+    if (!ok) return;
+  }
+  final problem = await lifecycles.stop(server);
+  if (problem != null && context.mounted) showAdaptiveToast(context, "Couldn't stop ${server.label}: $problem");
+}
+
+/// Start or Stop for a server, by its phase: off (busy) while either runs.
+class ServerControls extends ConsumerWidget {
+  const ServerControls({super.key, required this.server});
+  final LocalServer server;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    ref.watch(serverLifecyclesProvider);
+    final phase = ref.read(serverLifecyclesProvider.notifier).phaseOf(server);
+    return switch (phase) {
+      ServerRunning() || ServerStopping() => AdaptiveButton(
+        key: ValueKey('local.server.${server.id}.stop'),
+        label: 'Stop',
+        emphasis: ButtonEmphasis.secondary,
+        busy: phase is ServerStopping,
+        onPressed: phase is ServerStopping ? null : () => stopServer(context, ref, server),
+      ),
+      ServerStopped() || ServerFailed() || ServerStarting() when ServerLifecycles.canStart(server) => AdaptiveButton(
+        key: ValueKey('local.server.${server.id}.start'),
+        label: phase is ServerFailed ? 'Try again' : 'Start',
+        emphasis: ButtonEmphasis.secondary,
+        busy: phase is ServerStarting,
+        onPressed: phase is ServerStarting ? null : () => startServer(context, ref, server),
+      ),
+      _ => const SizedBox.shrink(),
+    };
   }
 }
 
@@ -451,28 +525,32 @@ class _ServerRow extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final s = server;
-    final canStart = s.kind == LocalServerKind.ollama && !s.running && !s.manual;
+    ref.watch(serverLifecyclesProvider);
+    final phase = ref.read(serverLifecyclesProvider.notifier).phaseOf(s);
+    final where = Uri.parse(s.baseUrl).authority;
     return AdaptiveListTile(
       key: ValueKey('local.server.${s.id}'),
-      leading: StatusDot(s.running ? DotStatus.done : DotStatus.idle),
+      leading: StatusDot(_dotOf(phase)),
       title: Text(s.label),
-      subtitle: Text(s.problem ?? Uri.parse(s.baseUrl).authority),
-      trailing: canStart
-          ? AdaptiveButton(
-              key: ValueKey('local.server.${s.id}.start'),
-              label: 'Start',
-              emphasis: ButtonEmphasis.secondary,
-              onPressed: () => ref.read(localServersProvider.notifier).startOllama(),
-            )
-          : s.manual
-          ? AdaptiveIconButton(
+      subtitle: Text(
+        phase is ServerStopped && s.problem != null ? '${s.problem} · $where' : '${_phaseLine(phase)} · $where',
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ServerControls(server: s),
+          if (s.manual) ...[
+            const SizedBox(width: 6),
+            AdaptiveIconButton(
               key: ValueKey('local.server.${s.id}.remove'),
               icon: EveryIcon.close,
               tooltip: 'Remove',
               size: 14,
-              onPressed: () => ref.read(manualServersProvider.notifier).remove(s.id),
-            )
-          : null,
+              onPressed: phase.busy ? null : () => ref.read(manualServersProvider.notifier).remove(s.id),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
@@ -494,12 +572,45 @@ class _ModelRow extends ConsumerWidget {
       if (abilities.isNotEmpty) abilities.join(', '),
     ];
     final deletable = server?.kind == LocalServerKind.ollama;
+    final load = server == null
+        ? null
+        : ref.watch(localModelStatesProvider.select((s) => s.value?['${server.baseUrl}|${m.name}']));
+    final controllable = server != null && server.running && _loadable(server.kind);
+    final loadState = load?.state ?? ModelLoad.unloaded;
+    final loadLine = switch (loadState) {
+      _ when !controllable => null,
+      ModelLoad.loaded => load!.ours ? 'Loaded by EveryAI' : 'Loaded',
+      ModelLoad.loading => 'Loading…',
+      ModelLoad.unloading => 'Unloading…',
+      ModelLoad.failed => load?.reason ?? 'Failed',
+      ModelLoad.unloaded => 'Not loaded',
+    };
     return AdaptiveListTile(
       key: ValueKey('local.model.${m.id}'),
       title: Text(m.name),
-      subtitle: Text(facts.join(' · ')),
-      trailing: deletable
-          ? AdaptiveIconButton(
+      subtitle: Text([?loadLine, ...facts].join(' · ')),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (controllable)
+            AdaptiveButton(
+              key: ValueKey('local.model.${m.id}.${loadState == ModelLoad.loaded ? 'unload' : 'load'}'),
+              label: loadState == ModelLoad.loaded || loadState == ModelLoad.unloading ? 'Unload' : 'Load',
+              emphasis: ButtonEmphasis.secondary,
+              busy: loadState.busy,
+              onPressed: loadState.busy
+                  ? null
+                  : () async {
+                      final states = ref.read(localModelStatesProvider.notifier);
+                      final problem = loadState == ModelLoad.loaded
+                          ? await states.unload(server, m.name)
+                          : await states.load(server, m.name);
+                      if (problem != null && context.mounted) showAdaptiveToast(context, problem);
+                    },
+            ),
+          if (deletable) ...[
+            const SizedBox(width: 6),
+            AdaptiveIconButton(
               key: ValueKey('local.model.${m.id}.delete'),
               icon: EveryIcon.delete,
               tooltip: 'Delete from this computer',
@@ -516,11 +627,16 @@ class _ModelRow extends ConsumerWidget {
                 final problem = await ref.read(downloadsProvider.notifier).delete(m.name);
                 if (problem != null && context.mounted) showAdaptiveToast(context, "Couldn't delete it: $problem");
               },
-            )
-          : null,
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
+
+/// The servers EveryAI can load and unload models on; the others keep their models loaded themselves.
+bool _loadable(LocalServerKind k) => k == LocalServerKind.ollama || k == LocalServerKind.lmstudio;
 
 /// Adds a server by URL: base URL, an optional name and key; Test asks it for its models first.
 Future<void> showAddServerDialog(BuildContext context) =>
@@ -564,6 +680,7 @@ class _AddServerDialogState extends ConsumerState<_AddServerDialog> {
   final _url = TextEditingController();
   final _label = TextEditingController();
   final _key = TextEditingController();
+  final _command = TextEditingController();
   _ServerTest? _check;
   var _adding = false;
   late String _lastUrl;
@@ -587,6 +704,7 @@ class _AddServerDialogState extends ConsumerState<_AddServerDialog> {
     _url.dispose();
     _label.dispose();
     _key.dispose();
+    _command.dispose();
     super.dispose();
   }
 
@@ -623,7 +741,7 @@ class _AddServerDialogState extends ConsumerState<_AddServerDialog> {
     try {
       final added = await ref
           .read(manualServersProvider.notifier)
-          .add(baseUrl: _url.text, label: _label.text, apiKey: _key.text);
+          .add(baseUrl: _url.text, label: _label.text, apiKey: _key.text, startCommand: _command.text);
       if (!mounted) return;
       if (added == null) {
         setState(() => _check = const _Problem('Enter an http or https URL'));
@@ -659,6 +777,12 @@ class _AddServerDialogState extends ConsumerState<_AddServerDialog> {
             controller: _key,
             placeholder: 'API key (optional)',
             obscureText: true,
+          ),
+          const SizedBox(height: 8),
+          AdaptiveTextField(
+            key: const ValueKey('local.add.command'),
+            controller: _command,
+            placeholder: 'Start command (optional), e.g. llama-server -m model.gguf --port 8080',
           ),
           if (switch (_check) {
                 _Answered(:final models) => ('It answered with $models model${models == 1 ? '' : 's'}', theme.success),

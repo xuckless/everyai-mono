@@ -76,23 +76,87 @@ final class FakeLocalSystem implements LocalSystem {
   int? fmPort;
   var ollamaStarts = 0;
   var stops = 0;
+  String? lms;
+
+  /// Launched servers by id, with the completer that ends each (a test "exits" it).
+  final launched = <String, Completer<int>>{};
+  final launches = <String>[];
+  final ran = <String>[];
+  final stoppedPorts = <int>[];
+
+  /// What [stopListener] answers (null: it stopped).
+  String? listenerStopProblem;
+
+  /// Called on each launch (a test makes the server answer).
+  void Function(String id, List<String> args)? onLaunch;
 
   @override
   Future<HardwareSpec> hardware() async => spec;
+
+  /// While set, [logDir] (a start's first step) waits for it: a test stops a start mid-way.
+  Completer<void>? logDirGate;
+
   @override
   Future<String?> ollamaPath() async => ollama;
-  @override
-  Future<bool> startOllama(String path) async {
-    ollamaStarts++;
-    return true;
-  }
 
+  @override
+  Future<String?> lmsPath() async => lms;
   @override
   Future<FmStatus> fmStatus() async => fm;
   @override
-  Future<int?> startFm() async => fmPort;
+  Future<({int code, String out})?> run(String exe, List<String> args) async {
+    ran.add([exe, ...args].join(' '));
+    return (code: 0, out: '');
+  }
+
   @override
-  Future<void> stopStarted() async => stops++;
+  Future<LaunchedServer?> launch(
+    String id,
+    String exe,
+    List<String> args, {
+    Map<String, String> env = const {},
+    bool shell = false,
+    String? logPath,
+  }) async {
+    if (id == 'ollama') ollamaStarts++;
+    launches.add(id);
+    final c = launched[id] = Completer<int>();
+    onLaunch?.call(id, args);
+    return LaunchedServer(pid: 1000 + launches.length, exited: c.future);
+  }
+
+  @override
+  String? get launchProblem => null;
+  @override
+  bool owns(String id) => launched[id] != null && !launched[id]!.isCompleted;
+  @override
+  Future<String?> stopOwned(String id, {Duration grace = const Duration(seconds: 5)}) async {
+    final c = launched.remove(id);
+    if (c != null && !c.isCompleted) c.complete(0);
+    return null;
+  }
+
+  @override
+  Future<String?> stopListener(int port, {Duration grace = const Duration(seconds: 5)}) async {
+    stoppedPorts.add(port);
+    return listenerStopProblem;
+  }
+
+  @override
+  Future<int?> freePort() async => fmPort;
+  @override
+  Future<void> stopAllOwned() async {
+    stops++;
+    for (final id in launched.keys.toList()) {
+      await stopOwned(id);
+    }
+  }
+
+  @override
+  Future<String?> logDir() async {
+    await logDirGate?.future;
+    return null;
+  }
 }
 
 LocalReply json(String body, [int status = 200]) => LocalReply(status, body);

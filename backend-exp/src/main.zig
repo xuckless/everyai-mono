@@ -31,6 +31,7 @@ pub const hooks = @import("hooks.zig");
 pub const byok = @import("byok.zig");
 pub const decide = @import("decide.zig");
 pub const local = @import("local.zig");
+pub const local_models = @import("local_models.zig");
 
 pub const std_options = anole.std_options;
 
@@ -59,6 +60,12 @@ pub const App = struct {
     /// Tests: the transport for local-model calls (local.zig), instead of a
     /// client on the server the app named.
     local_transport: ?openrouter.Upstream = null,
+    /// Local mode: which local models are in memory and who loaded them.
+    local_models: local_models.Registry = .{},
+    /// Tests: the load/unload/list calls to local servers, without the network.
+    local_control: ?local_models.Control = null,
+    /// Ends `run` (set in `main`): `POST /v1/local/shutdown` and the parent watcher.
+    stop_server: ?local_models.Stopper = null,
     /// Tests: keyless and keyed web searches answered without the network.
     search_fake: ?local.SearchFake = null,
     catalog: models.Catalog,
@@ -158,6 +165,7 @@ pub const App = struct {
         const rw = try req.arena.create(local.Rewrite);
         rw.* = .{
             .model = model,
+            .kind = server.kind,
             .inner = self.local_transport orelse inner: {
                 const client = try req.arena.create(openrouter.Client);
                 // A local server usually wants no key; the client needs one to send anything.
@@ -216,6 +224,7 @@ pub fn routes(app: *anole.Server(App), state: *App) !void {
     agents.routes(app, state);
     remote.routes(app, state);
     hooks.routes(app, state);
+    local_models.routes(app, state);
 }
 
 /// Schema and seed data; run before serving.
@@ -280,6 +289,7 @@ pub fn main(init: std.process.Init) !void {
     };
     defer state.catalog.deinit();
     defer state.searches.deinit(init.gpa);
+    defer state.local_models.deinit(init.gpa);
     // After the server (defers run last first): rooms outlive their sockets.
     defer state.relay.deinit();
 
@@ -355,7 +365,28 @@ pub fn main(init: std.process.Init) !void {
     std.log.info("EveryAI backend-exp on :{d} (dev_auth={}, markup={d:.2}, stripe={s}, claude via {s})", .{
         cfg.port, cfg.dev_auth, cfg.markup, if (cfg.stripe_secret_key == null) "mock" else "test", state.route("anthropic/", true).provider,
     });
-    try app.run();
+    const Stop = struct {
+        fn stop(ptr: *anyopaque) void {
+            const server: *anole.Server(App) = @ptrCast(@alignCast(ptr));
+            server.stop();
+        }
+    };
+    state.stop_server = .{ .ptr = &app, .stop = Stop.stop };
+    // The app that started this sidecar: when it is gone, unload its models and end.
+    var watcher = if (cfg.local_mode and cfg.local_parent_pid != null)
+        try io.concurrent(local_models.watchParent, .{ &state, io, cfg.local_parent_pid.? })
+    else
+        null;
+    defer if (watcher) |*w| w.cancel(io) catch {};
+    const ran = app.run();
+    // Ended some other way than the shutdown route (a signal, the drain): what
+    // EveryAI loaded is unloaded all the same, 3 s per model at most.
+    if (cfg.local_mode) {
+        var arena: std.heap.ArenaAllocator = .init(init.gpa);
+        defer arena.deinit();
+        _ = local_models.unloadAllOurs(&state, io, arena.allocator(), 3);
+    }
+    return ran;
 }
 
 test {
@@ -374,6 +405,7 @@ test {
     _ = byok;
     _ = decide;
     _ = local;
+    _ = local_models;
     // Modules the app reaches only through others: listed so their tests run too.
     _ = @import("auth.zig");
     _ = @import("config.zig");

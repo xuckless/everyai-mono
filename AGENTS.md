@@ -1123,6 +1123,20 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   `~/.local/share/everyai` with menu entry, icons, `everyai://` handler and `~/.local/bin/everyai`; SHA256SUMS GPG-checked
   when gpg is there; `--uninstall`), `install.ps1` (winget from the Store, else the Store page) and `/latest/version`.
   Packages come from GitHub Releases, so releases need no step here.
+- **Local servers: explicit states, load/unload, quit cleanup (2026-11-07; branch `local-servers-states`, plan
+  `~/.claude/plans/local-servers.md`).** App: `local_models/domain/server_lifecycle.dart` (`ServerPhase` Stopped /
+  Starting / Running(owner everyai|outside) / Stopping / Failed, `nextPhase` table; scans feed seenUp/seenDown and
+  never interrupt an action), `ServerLifecycles` (one in-flight action per server; Ollama `serve` with `OLLAMA_HOST`,
+  `fm serve` on a free port (autostarts unless the user stopped it: prefs `models.fm.autostart`), LM Studio `lms
+  server start|stop`, a manual server's `start_command`; outside servers stop via `LocalSystem.stopListener`
+  (lsof/netstat, Ollama.app quit through osascript, SIGTERM then SIGKILL)). Bundled server: `BackendPhase` with a
+  final `Closed` (a request during quit used to start a fresh sidecar that outlived the app), `LOCAL_PARENT_PID`.
+  Quit (`localShutdownProvider`): `POST /v1/local/shutdown` (unload_ours, exit), then `stopOwned`. Model states:
+  backend `local_models.zig` (unloaded/loading/loaded/unloading/failed, `ours`), routes `/v1/local/models[...]`,
+  app `LocalModelStates`; the Code harness reports its direct calls through `LocalRoutes.onUse`. Apple's model: no
+  tools, `pcc` hidden, fm bodies stripped server-side (`X-Local-Kind`); small local models (≤16K window or no tools)
+  get `tools.light_system_prompt` and no tool definitions (the full prompt alone is ~7K tokens; checked live on fm). `selectModel` saves the default model.
+  Gotcha found: `_m[id] ??= f().whenComplete(() => _m.remove(id))` awaits itself forever; use a block body.
 - **Preview browser for people, phase 1 (2026-11-07; branch `feat/browser-ui`, plan `~/.claude/plans/browser-hitl.md`).**
   Keys: `code/live/key_map.dart` (physical key → DOM code + Windows VK from a US table; '.' was sent as Delete's 46,
   '@' as F17), AltGr types on Windows/Linux, `press` takes combos ("Shift+Tab", "Control+a"). The picture froze while

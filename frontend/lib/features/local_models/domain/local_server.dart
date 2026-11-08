@@ -33,6 +33,7 @@ final class LocalServer {
     this.running = true,
     this.manual = false,
     this.problem,
+    this.startCommand,
   });
 
   /// `ollama`, `fm`, `lmstudio`, ... for a found one (one per kind); `custom:<n>` for a manual one.
@@ -49,6 +50,9 @@ final class LocalServer {
   /// Why it can't be used now, in plain words; null when it can.
   final String? problem;
 
+  /// A manual server's own start command (run through the shell), when the user gave one.
+  final String? startCommand;
+
   LocalServer copyWith({bool? running, String? problem, String? apiKey, bool clearProblem = false}) => LocalServer(
     id: id,
     kind: kind,
@@ -58,6 +62,7 @@ final class LocalServer {
     running: running ?? this.running,
     manual: manual,
     problem: clearProblem ? null : problem ?? this.problem,
+    startCommand: startCommand,
   );
 
   @override
@@ -70,10 +75,11 @@ final class LocalServer {
       other.apiKey == apiKey &&
       other.running == running &&
       other.manual == manual &&
-      other.problem == problem;
+      other.problem == problem &&
+      other.startCommand == startCommand;
 
   @override
-  int get hashCode => Object.hash(id, kind, label, baseUrl, apiKey, running, manual, problem);
+  int get hashCode => Object.hash(id, kind, label, baseUrl, apiKey, running, manual, problem, startCommand);
 }
 
 /// A model one local server serves. [id] is `local/<name>`, the id the app and the bundled backend use; [name] is
@@ -138,12 +144,21 @@ final class LocalModel {
 /// under [keyStoreName]).
 @immutable
 final class ManualServer {
-  const ManualServer({required this.id, required this.label, required this.baseUrl, this.hasKey = false});
+  const ManualServer({
+    required this.id,
+    required this.label,
+    required this.baseUrl,
+    this.hasKey = false,
+    this.startCommand,
+  });
 
   final String id;
   final String label;
   final String baseUrl;
   final bool hasKey;
+
+  /// How EveryAI starts it (a shell command line), when the user gave one; else it only stops it.
+  final String? startCommand;
 
   String get keyStoreName => 'local_server.$id';
 
@@ -152,9 +167,16 @@ final class ManualServer {
     label: j['label'] as String? ?? '',
     baseUrl: j['base_url']! as String,
     hasKey: j['has_key'] == true,
+    startCommand: j['start_command'] as String?,
   );
 
-  Map<String, Object?> toJson() => {'id': id, 'label': label, 'base_url': baseUrl, if (hasKey) 'has_key': true};
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'label': label,
+    'base_url': baseUrl,
+    if (hasKey) 'has_key': true,
+    if (startCommand case final c? when c.trim().isNotEmpty) 'start_command': c.trim(),
+  };
 }
 
 /// [raw] as an OpenAI-compatible root: trimmed, no trailing slash, `/v1` added when the URL has no path. Null when it

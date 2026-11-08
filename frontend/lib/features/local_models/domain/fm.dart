@@ -52,3 +52,6 @@ bool parseFmUnsupported(String out) {
 }
 
 String stripAnsi(String s) => s.replaceAll(RegExp(r'\x1B\[[0-9;]*[A-Za-z]'), '');
+
+/// Apple's `fm` command (macOS 27).
+const fmExecutable = '/usr/bin/fm';

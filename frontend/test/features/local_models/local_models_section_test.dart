@@ -5,6 +5,9 @@ import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/core/theme/every_theme.dart';
 import 'package:every_ai/features/code/gateway_key.dart';
 import 'package:every_ai/features/local_models/data/local_http.dart';
+import 'package:every_ai/core/local_backend/local_backend.dart';
+import 'package:every_ai/core/local_backend/local_backend_providers.dart';
+import 'package:every_ai/features/local_models/local_model_bridge.dart' show localDetectionProvider;
 import 'package:every_ai/features/local_models/local_models_providers.dart';
 import 'package:every_ai/features/local_models/ui/local_models_section.dart';
 import 'package:flutter/widgets.dart';
@@ -39,6 +42,8 @@ Widget _app(List<Override> overrides, {Preferences? prefs}) => ProviderScope(
     preferencesProvider.overrideWithValue(prefs ?? Preferences.inMemory()),
     bundledCatalogueProvider.overrideWith((ref) async => File('assets/local_models.json').readAsStringSync()),
     secretStoreProvider.overrideWithValue(_MemoryStore()),
+    localDetectionProvider.overrideWithValue(true),
+    localBackendProvider.overrideWithValue(_NoBackend()),
     ...overrides,
   ],
   child: m.MaterialApp(
@@ -48,9 +53,22 @@ Widget _app(List<Override> overrides, {Preferences? prefs}) => ProviderScope(
   ),
 );
 
-void main() {
-  setUp(LocalServers.resetForTest);
+final class _NoBackend implements LocalBackend {
+  @override
+  Future<LocalBackendInfo?> ensureStarted() async => null;
+  @override
+  BackendPhase get phase => const BackendUnavailable('test');
+  @override
+  String? get problem => 'test';
+  @override
+  bool get running => false;
+  @override
+  Future<void> stop() async {}
+  @override
+  Future<void> close({Duration unloadWithin = const Duration(seconds: 4)}) async {}
+}
 
+void main() {
   Future<void> big(WidgetTester tester) async {
     tester.view.physicalSize = const Size(1000, 2400);
     tester.view.devicePixelRatio = 1;
@@ -96,16 +114,28 @@ void main() {
   testWidgets('Ollama installed but stopped: Start; missing: Set up Ollama', (tester) async {
     await big(tester);
     final system = FakeLocalSystem(ollama: '/opt/homebrew/bin/ollama');
+    final http = FakeLocalHttp();
+    // Once launched, it answers.
+    system.onLaunch = (id, _) => http.replies.addAll(_ollamaRunning());
     await tester.pumpWidget(
-      _app([localHttpProvider.overrideWithValue(FakeLocalHttp()), localSystemProvider.overrideWithValue(system)]),
+      _app([localHttpProvider.overrideWithValue(http), localSystemProvider.overrideWithValue(system)]),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Installed, not running'), findsOneWidget);
+    expect(find.text('Installed, not running · 127.0.0.1:11434'), findsOneWidget);
     expect(find.text('Start Ollama'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('local.server.ollama.start')));
     await tester.pump(const Duration(seconds: 11));
     await tester.pumpAndSettle();
     expect(system.ollamaStarts, 1);
+    expect(find.text('Running · started by EveryAI · 127.0.0.1:11434'), findsOneWidget);
+
+    // Stop ends the process EveryAI started; nothing answers any more.
+    http.replies.clear();
+    await tester.tap(find.byKey(const ValueKey('local.server.ollama.stop')));
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpAndSettle();
+    expect(system.owns('ollama'), isFalse);
+    expect(find.byKey(const ValueKey('local.server.ollama.start')), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
     await tester.pumpWidget(

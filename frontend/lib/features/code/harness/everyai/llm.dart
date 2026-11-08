@@ -314,6 +314,8 @@ final class GatewayClient {
         retryable: true,
       );
     }
+    // The app records that EveryAI loaded it, so it is unloaded at quit.
+    if (local != null) LocalRoutes.onUse?.call(local);
     final req = http.Request('POST', local == null ? _url : _completionsAt(local.baseUrl))
       ..headers.addAll(
         local == null
