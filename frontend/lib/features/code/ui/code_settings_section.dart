@@ -1061,14 +1061,8 @@ class PermissionsEditor extends ConsumerWidget {
 
 /// The "+ Add rule" steps: what it matches, the pattern, allow or deny.
 /// Returns the rule in `PermissionRules` syntax, or null when cancelled.
-Future<({String text, bool allow})?> showRuleBuilder(BuildContext context) => showGeneralDialog(
-  context: context,
-  useRootNavigator: true,
-  barrierDismissible: true,
-  barrierLabel: 'Cancel',
-  barrierColor: const Color(0x33000000),
-  pageBuilder: (_, _, _) => const _RuleBuilder(),
-);
+Future<({String text, bool allow})?> showRuleBuilder(BuildContext context) =>
+    showKitDialog(context, builder: (_) => const _RuleBuilder());
 
 class _RuleBuilder extends StatefulWidget {
   const _RuleBuilder();

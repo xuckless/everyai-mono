@@ -1,5 +1,3 @@
-import '../../../core/config/billing_flag.dart';
-
 import 'dart:async';
 
 import 'package:flutter/widgets.dart';
@@ -7,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../app/router.dart';
+import '../../../core/config/billing_flag.dart';
 import '../../../core/motion/motion.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';

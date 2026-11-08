@@ -134,7 +134,8 @@ class AccountSection extends ConsumerWidget {
       confirmLabel: 'Log out all',
       destructive: true,
     );
-    if (ok) await ref.read(authProvider.notifier).signOutEverywhere();
+    // The section may have closed while the dialog was up.
+    if (ok && context.mounted) await ref.read(authProvider.notifier).signOutEverywhere();
   }
 }
 
@@ -170,6 +171,10 @@ class _EmailRowState extends ConsumerState<_EmailRow> {
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final change = ref.watch(emailChangeProvider);
+    // A new link request starts with an empty code field (not the last request's digits).
+    ref.listen(emailChangeProvider, (prev, next) {
+      if (next is EmailAwaitingLink && prev is! EmailAwaitingLink) _code.clear();
+    });
     final email = ref.watch(profileProvider).value?.email ?? '';
     final controller = ref.read(emailChangeProvider.notifier);
     return switch (change) {
