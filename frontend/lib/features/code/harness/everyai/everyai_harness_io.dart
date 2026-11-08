@@ -16,7 +16,7 @@ import '../../domain/mcp_tool_check.dart' show McpToolsReport;
 import '../../domain/bug_check.dart';
 import '../../domain/permissions.dart' show cancelledLead;
 import '../../domain/shell_readonly.dart';
-import '../../domain/transcript.dart' show PlanProposal, planApprovedReason;
+import '../../domain/transcript.dart' show PlanProposal, planApprovedMessage, planApprovedReason;
 import '../../domain/subagents.dart' show forkingTaskSpec, subagentRules, taskTool;
 import '../../settings/agent_prompt.dart' show forHeldClientTools;
 import '../events.dart';
@@ -401,9 +401,12 @@ final class EveryAISession
   void _planApproved(LlmToolCall call) {
     final args = call.args;
     if (args == null) return;
-    _approvedPlan = PlanProposal(
+    final plan = PlanProposal(
       ActionCall(id: '', raw: const {}, toolName: presentPlanTool, toolCallId: call.id, action: args),
     ).markdown;
+    // Approved on the card and then by message too: saved once.
+    if (plan == _approvedPlan) return;
+    _approvedPlan = plan;
     _saveState();
     // Kept with the project (git-excluded), so later sessions can pick the work up.
     try {
@@ -411,6 +414,19 @@ final class EveryAISession
     } on FileSystemException {
       // The plan still lives in the session's state.
     }
+  }
+
+  /// The newest `present_plan` call in the conversation, or null.
+  LlmToolCall? _lastPresentedPlan() {
+    for (final m in _messages.reversed) {
+      if (m['role'] != 'assistant') continue;
+      for (final c in (m['tool_calls'] as List<Object?>? ?? const []).reversed) {
+        if (c case {'id': final String id, 'function': {'name': presentPlanTool, 'arguments': final String args}}) {
+          return LlmToolCall(id: id, name: presentPlanTool, arguments: args);
+        }
+      }
+    }
+    return null;
   }
 
   /// The re-injected parts of a continuation message.
@@ -570,8 +586,8 @@ final class EveryAISession
   /// the token, so it keeps its tools' shape when reopened without one.
   late bool _hosted = _spec.briefing != null;
 
-  /// The model family the session was started for: its tools and rules
-  /// (fixed for the session, so the cached prefix holds after a model switch).
+  /// The model family the session runs as: its tools and rules. A model switch changes it only when the new model
+  /// is another family's ([switchLlm]), so switching within a vendor keeps the cached prefix.
   late ModelFamily family = familyOf(_spec.model);
 
   /// The model's window: the session's, or what its local server reports.
@@ -849,6 +865,11 @@ final class EveryAISession
   Future<void> send(String text, {bool run = true, List<String> images = const []}) async {
     // The user spoke: a repeated call may be what they asked for.
     _lastCall = null;
+    // A plan approved by message (the card wasn't held: after a restart, or a plan the run didn't wait on) is
+    // remembered like one approved on the card, so compaction carries it.
+    if (splitModeNote(text).$2.contains(planApprovedMessage)) {
+      if (_lastPresentedPlan() case final call?) _planApproved(call);
+    }
     final eid = _newId();
     final content = <Map<String, Object?>>[
       {'type': 'text', 'text': text},
@@ -959,6 +980,17 @@ final class EveryAISession
       loadLoginEnv: true,
       packages: _packages,
     )..bypass = _spec.mode == AgentMode.bypass;
+    // Another vendor's model gets its own family's tools and rules (GPT's apply_patch, say). That rebuilds the
+    // system prompt, which a vendor switch breaks the cache of anyway; within a family nothing changes, so the cached
+    // prefix holds. A fork keeps its parent's prefix whatever it runs on.
+    final next = familyOf(_spec.model);
+    if (next != family && !isFork) {
+      family = next;
+      if (_messages.firstOrNull case {'role': 'system'}) {
+        _messages[0] = {'role': 'system', 'content': await _systemPrompt()};
+        _rewriteMessages();
+      }
+    }
     _writeSpec();
   }
 

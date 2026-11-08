@@ -13,7 +13,8 @@ import 'package:every_ai/features/code/harness/everyai/llm.dart';
 import 'package:every_ai/features/code/harness/everyai/prompt_io.dart';
 import 'package:every_ai/features/code/harness/everyai/shell_io.dart';
 import 'package:every_ai/features/code/domain/bug_check.dart' show bugReviewSystem;
-import 'package:every_ai/features/code/domain/transcript.dart' show isOutOfCredits, planApprovedReason;
+import 'package:every_ai/features/code/domain/transcript.dart'
+    show isOutOfCredits, planApprovedMessage, planApprovedReason;
 import 'package:every_ai/features/code/drivers/usage_limit.dart';
 import 'package:every_ai/features/code/harness/everyai/scrub.dart';
 import 'package:every_ai/features/code/harness/everyai/tools_io.dart';
@@ -532,6 +533,68 @@ void main() {
     expect(system, contains('<MODEL-NOTES>'));
     expect(system.indexOf('<HARNESS>'), lessThan(system.indexOf('<MODEL-NOTES>')));
     expect(events.whereType<ActionCall>().last.actionKind, 'ApplyPatchAction');
+  });
+
+  test('a model switch keeps the family within a vendor and takes the new one across vendors', () async {
+    gateway
+      ..reply(text: 'one')
+      ..reply(text: 'two')
+      ..reply(text: 'three');
+    final session = await harness.start(spec('hello'));
+    await drive(session);
+    List<Object?> names(Map<String, Object?> r) => [
+      for (final t in r['tools']! as List) ((t as Map)['function'] as Map)['name'],
+    ];
+    String system(Map<String, Object?> r) => ((r['messages']! as List).first as Map)['content']! as String;
+    final first = gateway.requests.last;
+
+    SessionSpec on(String model) => SessionSpec(
+      workingDir: work,
+      model: model,
+      mode: AgentMode.fullAuto,
+      llmBaseUrl: gateway.baseUrl,
+      llmApiKey: 'sk-test',
+      sessionTag: 'tag-1',
+    );
+    // drive() replays the history, so wait for each new request instead.
+    Future<void> turn(String text, int requests) async {
+      await session.send(text);
+      for (var i = 0; i < 500 && gateway.requests.length < requests; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    }
+
+    await session.switchLlm(on('anthropic/claude-opus-5.5'));
+    await turn('again', 2);
+    expect(system(gateway.requests.last), system(first), reason: 'same family: the cached prefix holds');
+    expect(names(gateway.requests.last), names(first));
+
+    await session.switchLlm(on('openai/gpt-6.1'));
+    await turn('and again', 3);
+    expect(gateway.requests.last['model'], 'openai/gpt-6.1');
+    expect(names(gateway.requests.last), allOf(contains('apply_patch'), isNot(contains('edit'))));
+    expect(system(gateway.requests.last), isNot(system(first)));
+  });
+
+  test('a plan approved by a chat message is kept for compaction, like one approved on its card', () async {
+    gateway
+      ..reply(
+        calls: [
+          ('present_plan', {'title': 'Add a greeting', 'summary': 'Print hello.'}),
+        ],
+      )
+      ..reply(text: 'Waiting for your go.')
+      ..reply(text: 'Building it.');
+    final session = await harness.start(spec('add a greeting'));
+    // The card is answered with something other than an approval, so the run ends with no plan approved.
+    await drive(session, answer: (c) => c.toolName == 'present_plan' ? 'Let me think about it.' : null);
+    final dir = '${tmp.path}/data/everyai-sessions/${session.id}';
+    Map<String, Object?> state() => jsonDecode(File('$dir/state.json').readAsStringSync()) as Map<String, Object?>;
+    expect(state()['approved_plan'] ?? '', isEmpty);
+    final run = drive(session);
+    await session.send(planApprovedMessage);
+    await run;
+    expect(state()['approved_plan'], startsWith('# Add a greeting'));
   });
 
   test('a message sent right after a stop (Option-Enter) runs instead of being dropped', () async {
