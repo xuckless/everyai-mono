@@ -386,6 +386,9 @@ final _specs = [
     },
     ['query'],
   ),
+  // Prompt reason (press): combinations now work (Shift+Tab, Control+a), and the model only knew of single keys.
+  // Prompt reason (tabs, tab, dialog, upload): pop-ups and new tabs, page dialogs and file pickers used to hang or
+  // be lost; the model needs the actions and to know a pop-up becomes the active tab.
   _fn(
     ToolNames.browser,
     'Use a web page the way the user would, in the browser the user sees live in the Preview tab (a profile of this '
@@ -393,10 +396,16 @@ final _specs = [
     '(http://localhost:PORT with the dev server in the background, or file:///path/index.html), act on it, then '
     'look.\n'
     '- action: open {url} · snapshot · click {ref, or selector, or x and y with frame; count 2 = double-click} · '
-    'type {text, ref? or selector?, submit?} · press {key: Enter, Tab, Escape, ArrowUp…, or one character} · '
+    'type {text, ref? or selector?, submit?} · press {key: Enter, Tab, Escape, ArrowUp…, one character, or a '
+    'combination such as Shift+Tab or Control+a} · '
     'scroll {dy} · wait {selector? ms?} · screenshot {full_page?} · zoom {x, y, width, height, frame?} · '
     'back · forward · reload · eval {script: a JS expression; its JSON value comes back} · console · '
-    'resize {width, height} · close.\n'
+    'resize {width, height} · tabs · tab {index} · dialog {accept, text?} · upload {files, ref? or selector?} · '
+    'close.\n'
+    '- A pop-up or a link to a new tab opens as a new tab and becomes the active one (a sign-in pop-up that closes '
+    'itself hands back to the page that opened it); tabs lists them. While the page shows a dialog (alert, confirm, '
+    'prompt, leave page?) it waits: answer it with dialog. upload gives an open file picker (or a file input) files '
+    'of the project, on local pages only.\n'
     '- open and snapshot return the element list: one line per button, link, field and heading, as '
     '`[ref_3] button "Sign in"`. Click and type by ref: exact, and far cheaper than a picture. Refs hold until the '
     'next list.\n'
@@ -430,6 +439,10 @@ final _specs = [
           'reload',
           'console',
           'resize',
+          'tabs',
+          'tab',
+          'dialog',
+          'upload',
           'close',
         ],
       },
@@ -443,6 +456,13 @@ final _specs = [
       'text': {'type': 'string'},
       'submit': {'type': 'boolean'},
       'key': {'type': 'string'},
+      'index': {'type': 'integer', 'description': 'tab: the tab number tabs shows'},
+      'accept': {'type': 'boolean', 'description': 'dialog: OK (true) or Cancel (false)'},
+      'files': {
+        'type': 'array',
+        'items': {'type': 'string'},
+        'description': 'upload: file paths in the project',
+      },
       'dy': {'type': 'number'},
       'ms': {'type': 'integer'},
       'script': {'type': 'string'},

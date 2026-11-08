@@ -1123,6 +1123,19 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   `~/.local/share/everyai` with menu entry, icons, `everyai://` handler and `~/.local/bin/everyai`; SHA256SUMS GPG-checked
   when gpg is there; `--uninstall`), `install.ps1` (winget from the Store, else the Store page) and `/latest/version`.
   Packages come from GitHub Releases, so releases need no step here.
+- **Preview browser for people, phase 1 (2026-11-07; branch `feat/browser-ui`, plan `~/.claude/plans/browser-hitl.md`).**
+  Keys: `code/live/key_map.dart` (physical key → DOM code + Windows VK from a US table; '.' was sent as Delete's 46,
+  '@' as F17), AltGr types on Windows/Linux, `press` takes combos ("Shift+Tab", "Control+a"). The picture froze while
+  the address changed: pages of one Chrome shared a window and only the front tab paints, so each session's page gets
+  its own window (`newWindow`), and the Preview restarts a stale screencast after 1.5 s. Tabs: pop-ups and
+  target=_blank join the session as tabs (`switchTab`, runs one at a time; input waits for it), a self-closing pop-up
+  hands back; calls to a closed tab fail with `TabClosedError` (never an empty "allowed"). Page dialogs (`dialog`,
+  `answerDialog`; in-flight calls end with how to answer), file pickers (`setFiles`; the system picker when the user
+  clicked, the agent's `upload` only to local pages with project files), downloads list, right-click menu
+  (`contextAt`, "Ask the agent about this" fills the composer), ⌘F find, ⌘L/⌘R/⌘[/⌘]. Agent actions tabs, tab,
+  dialog, upload (`screen_tools_io.dart`). UI pieces in `ui/panes/browser_overlays.dart`. Tests on a real headless
+  Chrome: `browser_keys_test`, `browser_cast_test`, `browser_features_test`, `preview_clipboard_test`,
+  `preview_browser_ui_test`. Open: copy/paste failing in the running app wasn't reproduced (tests pass).
 - **Harness gaps (2026-11-07; branch `feat/harness-gaps`; owner answers in `~/.claude/plans/harness-gaps.md`).**
   Git buttons are prompts (`domain/git_requests.dart`): Commit, Create PR and Merge locally send a user turn to the
   session's agent (queued while busy; `/commit` and `/pr` keep their drafts). Merge locally: the agent rebases and
