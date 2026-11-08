@@ -117,6 +117,9 @@ pub const Config = struct {
     /// anonymous host, and an account (its claimed hosts together).
     egress_rate_mbps: u64 = 40,
     egress_monthly_gb: u64 = 100,
+    /// Log a warning once the month's relay bytes pass this many GB (0 = 80%
+    /// of EGRESS_MONTHLY_GB).
+    egress_warn_gb: u64 = 0,
     relay_max_live: u32 = 500,
     relay_per_subject_live: u32 = 16,
     relay_host_daily_mb: u64 = 512,

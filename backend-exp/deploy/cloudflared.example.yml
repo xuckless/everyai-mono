@@ -1,0 +1,16 @@
+# The tunnel's ingress, configured on Cloudflare's side for a token-run tunnel
+# (Zero Trust → Networks → Tunnels → <tunnel> → Public hostname), recorded here:
+#
+#   hostname: api.everyai.dev
+#   service:  http://backend:8080        # the compose service name
+#
+# A locally managed tunnel would use this file instead:
+tunnel: everyai-api
+ingress:
+  - hostname: api.everyai.dev
+    service: http://backend:8080
+    originRequest:
+      # Relay sockets stay open for hours; nothing in between should cut them.
+      keepAliveTimeout: 2m
+      noHappyEyeballs: true
+  - service: http_status:404

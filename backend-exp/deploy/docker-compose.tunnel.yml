@@ -1,0 +1,23 @@
+# Optional: serve the API through a Cloudflare Tunnel instead of Anole's own TLS
+# on :8443 (no open port, no certificate on the VM). Use with
+#   docker compose -f docker-compose.yml -f docker-compose.tunnel.yml up -d
+# TUNNEL_TOKEN comes from the named tunnel (cloudflared.example.yml) and goes in
+# /opt/everyai/secrets.env next to the other secrets. Check the relay through
+# it with frontend/tool/relay_check.dart (WebSockets pass through tunnels).
+services:
+  backend:
+    ports: !reset []
+    environment:
+      PUBLIC_URL: https://${HOSTNAME}
+      TLS_CERT_PATH: ""
+      TLS_KEY_PATH: ""
+      PORT: "8080"
+      HOST: 0.0.0.0
+  tunnel:
+    image: cloudflare/cloudflared:2025.4.0
+    container_name: everyai-tunnel
+    restart: always
+    command: tunnel --no-autoupdate run
+    env_file: [/opt/everyai/secrets.env]
+    depends_on: [backend]
+    mem_limit: 64m

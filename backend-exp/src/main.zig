@@ -274,7 +274,7 @@ pub fn main(init: std.process.Init) !void {
     // production process reads the real environment only (Config: a dev .env
     // copied into an image must not supply a production secret).
     const env_files: []const []const u8 = if (anole.env.environment() == .development) &.{ ".env", "../.env" } else &.{};
-    const cfg = try anole.config.load(config.Config, init, .{ .env_files = env_files });
+    var cfg = try anole.config.load(config.Config, init, .{ .env_files = env_files });
 
     if (local.startProblem(cfg)) |problem| {
         std.log.err("refusing to start: {s}", .{problem});
@@ -327,6 +327,13 @@ pub fn main(init: std.process.Init) !void {
     // After the server (defers run last first): rooms outlive their sockets.
     defer state.relay.deinit();
 
+    // Empty counts as unset (a compose override that turns TLS off, e.g. behind a tunnel).
+    if (cfg.tls_cert_path) |p| if (p.len == 0) {
+        cfg.tls_cert_path = null;
+    };
+    if (cfg.tls_key_path) |p| if (p.len == 0) {
+        cfg.tls_key_path = null;
+    };
     if ((cfg.tls_cert_path == null) != (cfg.tls_key_path == null)) {
         std.log.err("refusing to start: set both TLS_CERT_PATH and TLS_KEY_PATH, or neither", .{});
         return error.HalfTlsConfig;
