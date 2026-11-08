@@ -1084,7 +1084,7 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
     session's; input there needs no consent or guards (`--nested`). Without Xvfb: the user's display, pid/exe
     ownership, consent and guards as on macOS. Stopped on session remove and at quit. Verified in an Ubuntu 22.04
     container (`tool/desktop_helpers/check_linux.sh`: Tk app, clicks, typing "Hello Wörld €", Enter, wheel, guard);
-    the Dart side wasn't run on Linux.
+    the Dart side wasn't run on Linux then; the owner checked Linux desktop control working end to end on 2026-11-08.
 - **Real-project testing (2026-11-06).** Outside agents drove the owner's projects through the MCP rig (copies or
   read-only runs; no project files touched): pixl-playroom (Electron, 6/10 → 8/10 after the browser fixes in
   3387f20), tranzit (Expo; its dev build isn't installed and can't be built here because its gitignored
@@ -1283,11 +1283,17 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   `keys_not_accepted`, `relay_check.dart` 4/4. Left on the VM from the direct setup: ttt's Caddy block for the sslip
   name, the `everyai-cert-reload` timer and the `everyai-api` firewall rule (owner's call to remove).
 
+- **0.1.0-alpha.7 (2026-11-08; branch `release/0.1.0-alpha.7`).** Release of PRs #45–#75: no account needed, email-link
+  sign-in, remote control without an account, keys local only, per-session browser sign-ins, Auto mode, Pause all, the
+  workflow estimate card, figures by id, local server states, one-line installs. Copy follows the owner's marketing plan
+  (`marketing-plan.md`, local): no pricing, nothing about the vault, desktop control "macOS and Linux today, Windows
+  next", Ultra/Max not pushed. README pitch and badge, CHANGELOG section, `releaseNotes` entry (8 items).
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),
    a handoff, a resume and a workflow; local models on a real Ollama; the `app` tool on real projects; a real pass
-   on Windows and Linux machines (desktop windows there are 3–4/10). `TODO-multi-harness.md` "Still open",
+   on Windows (desktop windows there are compile-checked only; Linux desktop control was checked working by the owner,
+   2026-11-08). `TODO-multi-harness.md` "Still open",
    `TODO-toolbuild.md`.
 2. **Tool buildout follow-ups** (`TODO-toolbuild.md`; PR #26 lists them by value): outside-agent re-runs, speed of
    desktop/Android actions, iOS refs, Preview pop-out, Annotate, device frames.

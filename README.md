@@ -5,7 +5,7 @@
 <br/>
 
 **Every coding agent, one workspace.**<br/>
-<sub>Bring Claude Code, Codex, OpenCode, Antigravity and more, or our own agent, or all of them at once. EveryAI adds the workflows, checks and orchestration on top. Your keys, your subscriptions, and models on your own computer.</sub>
+<sub>Claude Code, Codex, OpenCode and more, or our own agent, with eyes and hands: the agent sees and uses what it builds in your browser, the iOS Simulator, the Android emulator and your desktop apps. Your keys, your subscriptions, models on your own computer, and no account needed.</sub>
 
 <br/><br/>
 
@@ -14,7 +14,7 @@
 <a href="https://github.com/xuckless/everyai-mono/releases/latest"><img alt="Linux" src="https://img.shields.io/badge/Linux-download-FCC624?style=for-the-badge&logo=linux&logoColor=black"/></a>
 <a href="https://app.everyai.dev"><img alt="Web" src="https://img.shields.io/badge/Web-open-7C5CFF?style=for-the-badge&logo=googlechrome&logoColor=white"/></a>
 <br/>
-<a href="https://github.com/xuckless/everyai-mono/releases"><img alt="alpha 0.1.0-alpha.6, signed" src="https://img.shields.io/badge/alpha-0.1.0--alpha.6%20·%20signed-FF6B9A?style=flat-square"/></a>
+<a href="https://github.com/xuckless/everyai-mono/releases"><img alt="alpha 0.1.0-alpha.7, signed" src="https://img.shields.io/badge/alpha-0.1.0--alpha.7%20·%20signed-FF6B9A?style=flat-square"/></a>
 <br/><br/>
 
 <img src="docs/readme/console.webp" alt="A finished Code session: answered questions, a subagent that wrote the tests, and Session info in the right panel" width="92%"/>
@@ -42,7 +42,7 @@ flowchart LR
     end
     subgraph WS["EveryAI workspace"]
         UI["One native UI<br/>their commands, modes and words"]
-        WF["Workflows<br/>Ultra · Max · Bug fix · Security review"]
+        WF["Workflows<br/>Bug fix · Security review · more"]
         TL["Checks · rewind · MCP tools<br/>skills · memory"]
         LV["Live Preview · app tool<br/>web · iOS · Android · desktop"]
         OR["Handoff · resume<br/>Lead Mode (soon)"]
@@ -60,7 +60,7 @@ flowchart LR
 <td width="50%" valign="top"><img src="docs/readme/picker.webp" alt="Picking the agent for a session"/><br/>🔀 <b>Pick the agent per session</b><br/><sub>Claude Code, Codex, OpenCode or our own harness, on the plan you already pay for.</sub></td>
 </tr>
 <tr>
-<td valign="top"><img src="docs/readme/workflows.webp" alt="The workflow picker"/><br/>✨ <b>Superpowers for every agent</b><br/><sub>Max, Ultra, Bug fix and Security review workflows, plus test checks, checkpoints and rewind, for Claude Code and Codex too.</sub></td>
+<td valign="top"><img src="docs/readme/workflows.webp" alt="The workflow picker"/><br/>✨ <b>Superpowers for every agent</b><br/><sub>Bug fix and Security review workflows, test checks, checkpoints and rewind, for Claude Code and Codex too.</sub></td>
 <td valign="top"><img src="docs/readme/board.webp" alt="The Board: sessions from several agents in Needs you, Running and Done"/><br/>🗂️ <b>Every session on one Board</b><br/><sub>Sessions from every agent in Needs you, Running and Done. Approve, deny and answer right on the card.</sub></td>
 </tr>
 <tr>
@@ -71,11 +71,11 @@ flowchart LR
 
 - 🧭 **Watch the work:** each turn folds into one box, the answer stays in view, and forks and subagents show up live beside the chat.
 - 💻 **Models on your computer:** Ollama, LM Studio, llama.cpp, Jan, vLLM, MLX and Apple's on-device model, found automatically, with one-click packs sized to your machine. Local and own-key chats run on a server inside the app.
-- 👀 **See what you build:** a live Preview that you and the agent share, with a take-over button, and an `app` tool that lets any agent see and operate web pages, Flutter and React Native apps, the iOS Simulator, the Android emulator and desktop windows.
+- 👀 **See what you build:** a live Preview that you and the agent share, with a take-over button, and an `app` tool that lets any agent see and operate web pages, Flutter and React Native apps, the iOS Simulator, the Android emulator and desktop windows (macOS and Linux today, Windows next).
 - 🧵 **Every process in a terminal:** click a shell, dev server or Docker container to see its whole log and type into it.
 - ⏪ **Pick up where you left off:** open a folder and resume any earlier session from any agent, with its full history.
 - 🔁 **Never stop on a limit:** when a plan runs out, another agent carries on and finishes the cut-off turn.
-- 📱 **Code from anywhere:** pair a phone, tablet or [the web app](https://app.everyai.dev) with your computer and drive its sessions live.
+- 📱 **Code from anywhere:** pair a phone, tablet or [the web app](https://app.everyai.dev) with your computer by QR code and drive its sessions live. No account needed; the relay only passes end-to-end encrypted frames.
 - 🤝 **One team** <sup>soon</sup>: Lead Mode, where EveryAI hands work to the other agents, each in its own worktree.
 
 ## ✦ Also in the box: Chat

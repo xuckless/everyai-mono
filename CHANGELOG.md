@@ -3,11 +3,51 @@
 EveryAI is in alpha. Signed releases start at `0.1.0-alpha.1`; the earlier unsigned dev build was
 `0.1.0-dev-nonsigned`. Earlier changes are listed by date and pull request.
 
-## Unreleased
+## 0.1.0-alpha.7 (2026-11-08): no account needed, and a browser you can sign in to
 
+### No account needed
+- **Signed out is a normal state.** Chat, Code, local models and your own keys work without an account; nothing
+  asks you to sign in.
+- **Sign in by email link** when you want one: a link that signs in the device that asked, or a 6-digit code.
+  Passwords and Google sign-in are gone.
+- **Remote control without an account.** Pair a phone, tablet or the web app by QR code; the pairing is the
+  identity. Signing in later moves your computer and its devices to your account. The relay only passes
+  end-to-end encrypted frames; when it is busy a device waits in line, and it says so when a limit is reached.
+- **Your keys stay on your computer.** Own keys go only to the server inside the app, never to EveryAI's hosted
+  server, which refuses them. OpenRouter and Anthropic are connected today; other providers can be saved and
+  are checked before they're offered.
 - **No credits or plans.** EveryAI runs on your own keys, your subscriptions and local models. Billing, plans,
-  the wallet and top-ups are gone from the app (the code is parked behind `BILLING_ENABLED`). Usage and spend caps
-  stay.
+  the wallet and top-ups are gone from the app. Usage and spend caps stay.
+- The dev server moved to `https://api.everyai.dev`.
+
+### A browser you can sign in to
+- **Each Code session has its own sign-ins** in the Preview browser: its cookies and site storage are kept
+  (sealed, with the key in your keychain) and restored next time. Save a login for a project or for every project.
+- **Login wall:** when the agent reaches a sign-in page, it waits and offers Take control, Use saved login, Sign in
+  in a window, or Skip.
+- **A browser for people too:** tabs and pop-ups, page dialogs, file pickers, downloads, a right-click menu with
+  "Ask the agent about this", Find, and the usual shortcuts. Keys type what you press, AltGr included.
+- A dialog in one tab no longer stalls actions on another tab of the same site for 30 s.
+
+### Agents
+- **Auto mode** on every lead that supports one: Full auto on the EveryAI harness, Claude Code's own auto mode
+  behind EveryAI's checks, Codex's auto reviewer.
+- **Git buttons ask the agent:** Commit, Create PR and Merge locally send the session's agent a request (queued
+  while it works).
+- **Language servers:** a `diagnostics` tool, and a hint when an edit adds errors. **Notebooks:** cells are read and
+  edited by id.
+- **Pause all** next to Stop all: the lead, its forks and its workflows pause between steps, and Resume picks up.
+- **Workflows ask first:** a run starts from a card with its estimate (Start, Adjust, Cancel), pauses past it, tells
+  the lead when an agent stalls, and checks it is still on track at each phase.
+- `/usage` works on every lead, with plan limits as bars.
+- Claude Code: a message sent while Claude wakes for a background report waits its turn, and Stop then stops it.
+
+### Figures and slides in Chat
+- **Figures by id:** SVGs, charts and diagrams are versioned and can be edited, checked by eye (`look`), and placed
+  in documents and slides. Slides take free layouts, and PowerPoint gets real shapes and text.
+- Point at a part of a figure to ask about it; edit its colours and text by hand.
+
+### Local models
 - **Local servers you can start and stop.** Settings → Local models shows each server's state (Starting, Running
   and who started it, Stopping, Stopped, or why it failed) with Start and Stop: Ollama, LM Studio (`lms`), Apple's
   model, and a server added by URL with its own start command. A server started outside EveryAI can be stopped
@@ -18,6 +58,17 @@ EveryAI is in alpha. Signed releases start at `0.1.0-alpha.1`; the earlier unsig
 - **Apple's model works.** It answers without tools (its server refuses most of our tool schemas, and its window
   is small); Private Cloud Compute is no longer offered (Apple allows it only in Terminal).
 - **New chats start on the model you last picked.** Apple's model is the default only until you pick one.
+
+### Install
+- **One-line installs** from `get.everyai.dev`: `curl -fsSL https://get.everyai.dev/install.sh | sh` on macOS and
+  Linux (signature and checksum checked), and `irm https://get.everyai.dev/install.ps1 | iex` on Windows (the
+  Microsoft Store through winget).
+
+### A steadier app
+- The macOS menu bar is mounted once; the "menu delegate" error in debug builds is gone, and the server banner no
+  longer rebuilds the page.
+- Language servers, MCP servers and headless Chrome processes don't outlive their session or the app; pictures no
+  longer pile up in memory over a long session.
 
 ## 0.1.0-alpha.6 (2026-11-07): the lead stays free, and a steadier app
 

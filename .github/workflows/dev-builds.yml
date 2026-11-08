@@ -18,7 +18,7 @@ permissions:
 
 env:
   FLUTTER_VERSION: 3.47.9
-  VERSION: 0.1.0-alpha.6-unsigned
+  VERSION: 0.1.0-alpha.7-unsigned
   API_BASE_URL: ${{ inputs.api || 'https://api.everyai.dev' }}
 
 jobs:
