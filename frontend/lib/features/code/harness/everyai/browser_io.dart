@@ -660,11 +660,7 @@ final class HeadlessBrowser {
 
   /// A local storage change Chrome reported (DOMStorage events), into the jar: only for the tabs' own origins.
   void _storageChanged(String method, Map<String, Object?> p) {
-    final id = p['storageId'] as Map<String, Object?>? ?? const {};
-    if (id['isLocalStorage'] != true) return;
-    // Newer Chrome names the storage key (`https://site/`, maybe with a partition after '^'), older the origin.
-    final raw = '${id['securityOrigin'] ?? id['storageKey'] ?? ''}'.split('^').first;
-    final origin = webOrigin(raw);
+    final origin = storageEventOrigin(p['storageId'] as Map<String, Object?>? ?? const {});
     if (origin == null || !_topOrigins.contains(origin)) return;
     final items = {...?_jar.storage[origin]};
     switch (method) {
@@ -955,9 +951,12 @@ final class HeadlessBrowser {
     final here = _targetId;
     if (here == null) return null;
     final group = _groupOf(here);
+    final hereUrl = _tabList.where((t) => t.id == here).firstOrNull?.url ?? page.value.url;
     for (final (i, t) in _tabList.indexed) {
       if (t.id == here) continue;
-      if (_parked[t.id] case final p? when _groupOf(t.id) == group) return (tab: i + 1, dialog: p.dialog);
+      if (_parked[t.id] case final p? when _groupOf(t.id) == group && maySharePageProcess(hereUrl, t.url)) {
+        return (tab: i + 1, dialog: p.dialog);
+      }
     }
     return null;
   }
@@ -2332,6 +2331,35 @@ class BrowserError implements Exception {
 }
 
 /// [url]'s origin when it is a web page (http or https), else null (file:, about:, data:).
+/// The origin a DOMStorage event's [storageId] is the first-party local storage of, or null: session storage, and
+/// storage partitioned under another top-level site (a key with a '^' part: a frame embedded in another site, even
+/// one in the page's own renderer), are not that origin's own.
+@visibleForTesting
+String? storageEventOrigin(Map<String, Object?> storageId) {
+  if (storageId['isLocalStorage'] != true) return null;
+  final key = storageId['storageKey'];
+  if (key is String && key.contains('^')) return null;
+  return webOrigin('${storageId['securityOrigin'] ?? key ?? ''}');
+}
+
+/// Whether pages at [a] and [b] (in one browsing group) may run in one renderer: Chrome isolates sites, so pages of
+/// different sites never do. Errs towards yes: a page with no web address (about:blank inherits its opener's), and
+/// hosts whose last two labels match (a superset of one registrable domain).
+@visibleForTesting
+bool maySharePageProcess(String a, String b) {
+  String? site(String url) {
+    final u = Uri.tryParse(url);
+    if (u == null || (u.scheme != 'http' && u.scheme != 'https') || u.host.isEmpty) return null;
+    final host = u.host.toLowerCase();
+    if (InternetAddress.tryParse(host) != null || !host.contains('.')) return host;
+    final labels = host.split('.');
+    return labels.sublist(labels.length - 2).join('.');
+  }
+
+  final x = site(a), y = site(b);
+  return x == null || y == null || x == y;
+}
+
 String? webOrigin(String url) {
   final u = Uri.tryParse(url);
   return u != null && (u.scheme == 'http' || u.scheme == 'https') && u.host.isNotEmpty ? u.origin : null;

@@ -282,6 +282,35 @@ void main() {
     timeout: const Timeout(Duration(minutes: 1)),
   );
 
+  test("storage events count for an origin's own local storage only, not a partition under another site", () {
+    expect(storageEventOrigin({'securityOrigin': 'https://a.test', 'isLocalStorage': true}), 'https://a.test');
+    expect(storageEventOrigin({'storageKey': 'https://a.test/', 'isLocalStorage': true}), 'https://a.test');
+    expect(
+      storageEventOrigin({'securityOrigin': 'https://a.test', 'storageKey': 'https://a.test/', 'isLocalStorage': true}),
+      'https://a.test',
+    );
+    // a.test framed inside b.test (or a.test inside b.test inside a.test): its storage is b.test's partition.
+    expect(
+      storageEventOrigin({
+        'securityOrigin': 'https://a.test',
+        'storageKey': 'https://a.test/^0https://b.test',
+        'isLocalStorage': true,
+      }),
+      isNull,
+    );
+    expect(storageEventOrigin({'storageKey': 'https://a.test/^31', 'isLocalStorage': true}), isNull);
+    expect(storageEventOrigin({'securityOrigin': 'https://a.test', 'isLocalStorage': false}), isNull);
+  });
+
+  test('tabs of different sites never share a renderer, so a dialog in one holds up only same-site tabs', () {
+    expect(maySharePageProcess('https://app.example.com/a', 'https://example.com/b'), isTrue);
+    expect(maySharePageProcess('http://127.0.0.1:8080/', 'http://127.0.0.1:9090/x'), isTrue);
+    expect(maySharePageProcess('https://app.test/', 'about:blank'), isTrue);
+    expect(maySharePageProcess('https://app.test/', ''), isTrue);
+    expect(maySharePageProcess('https://app.test/', 'https://accounts.google.com/o/oauth2'), isFalse);
+    expect(maySharePageProcess('http://localhost:3000/', 'http://127.0.0.1:3000/'), isFalse);
+  });
+
   test("the page's links open in a new tab only past the browser tool's guard", () {
     final home = Platform.environment['HOME'] ?? '/Users/someone';
     PageContext link(String url) =>
