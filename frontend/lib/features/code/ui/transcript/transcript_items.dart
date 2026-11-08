@@ -1,10 +1,10 @@
-import '../../../../core/config/billing_flag.dart';
-
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
+import '../../../../core/config/billing_flag.dart';
+import '../../../../core/motion/motion.dart';
 import '../../../../core/security/untrusted.dart' show withoutUntrustedTags;
 import '../../../../core/theme/every_theme.dart';
 
@@ -709,12 +709,12 @@ class PlanView extends StatelessWidget {
                         Text(
                           // The harness's own wording of what it is doing, while it does it.
                           t.status == 'in_progress' && t.active.isNotEmpty ? t.active : t.title,
-                          style: theme.type.callout.copyWith(
-                            color: t.status == 'done' ? theme.textMuted : theme.text,
-                            decoration: t.status == 'done' ? TextDecoration.lineThrough : null,
-                            decorationColor: theme.textMuted,
-                            fontWeight: t.status == 'in_progress' ? FontWeight.w600 : FontWeight.w400,
-                          ),
+                          style: (t.status == 'in_progress' ? theme.type.callout.semibold : theme.type.callout)
+                              .copyWith(
+                                color: t.status == 'done' ? theme.textMuted : theme.text,
+                                decoration: t.status == 'done' ? TextDecoration.lineThrough : null,
+                                decorationColor: theme.textMuted,
+                              ),
                         ),
                         if (t.notes.isNotEmpty) Text(t.notes, style: theme.type.caption.tint(theme.textMuted)),
                       ],
@@ -745,7 +745,7 @@ class _TaskMark extends StatelessWidget {
         width: 14,
         height: 14,
         decoration: BoxDecoration(color: theme.success, shape: BoxShape.circle),
-        child: Center(child: AdaptiveIcon(EveryIcon.check, size: 10, color: const Color(0xFFFFFFFF))),
+        child: Center(child: AdaptiveIcon(EveryIcon.check, size: 10, color: theme.onPrimary)),
       ),
       'in_progress' => Container(
         width: 14,
@@ -1034,7 +1034,8 @@ class _DisclosureState extends State<_Disclosure> {
                           const SizedBox(width: 4),
                           AnimatedRotation(
                             turns: _isOpen ? 0.25 : 0,
-                            duration: const Duration(milliseconds: 120),
+                            duration: Motion.reduced(context) ? Duration.zero : Motion.swap,
+                            curve: Motion.easeInOut,
                             child: AdaptiveIcon(EveryIcon.chevronRight, size: 11, color: theme.textMuted),
                           ),
                         ],

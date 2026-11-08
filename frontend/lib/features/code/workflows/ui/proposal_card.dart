@@ -52,13 +52,9 @@ class _ProposalCardState extends State<ProposalCard> {
     final e = p.estimate;
     final line = estimateLine(e);
     final busy = _answer == _Answer.answering;
-    return Container(
+    return KitCard(
       key: ValueKey('workflow-proposal.${p.id}'),
-      decoration: BoxDecoration(
-        color: theme.surfaceRaised,
-        border: Border.all(color: theme.border),
-        borderRadius: BorderRadius.circular(EveryTheme.cardRadius),
-      ),
+      color: theme.surfaceRaised,
       padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

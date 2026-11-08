@@ -23,13 +23,10 @@ class PausedBar extends StatelessWidget {
     return Padding(
       key: const ValueKey('paused-bar'),
       padding: const EdgeInsets.only(bottom: 6),
-      child: Container(
+      child: KitCard(
         padding: const EdgeInsets.fromLTRB(12, 2, 4, 2),
-        decoration: BoxDecoration(
-          color: theme.overlay,
-          border: Border.all(color: theme.border),
-          borderRadius: BorderRadius.circular(10),
-        ),
+        color: theme.overlay,
+        radius: 10,
         child: Row(
           children: [
             AdaptiveIcon(EveryIcon.pause, size: 13, color: theme.textMuted),

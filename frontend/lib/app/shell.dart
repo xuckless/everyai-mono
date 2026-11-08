@@ -37,6 +37,7 @@ import '../features/remote/remote_providers.dart' show remoteHostingProvider;
 import '../features/settings/byok_keys.dart' show modelBillingProvider;
 import '../features/settings/settings_registry.dart';
 import '../features/settings/ui/settings_modal.dart';
+import 'app_menu.dart';
 import 'router.dart';
 
 /// Lets pages toggle the sidebar and know whether it is showing.
@@ -148,6 +149,22 @@ class _AppShellState extends ConsumerState<AppShell> {
   @override
   void initState() {
     super.initState();
+    // The menu's items act on this shell once the entry screen is done (greyed out before, as during sign-in).
+    ref.listenManual(onboardingAcceptedProvider, (_, accepted) {
+      if (accepted) {
+        AppMenuActions.instance.lend(
+          this,
+          ShellMenuActions(
+            openSettings: _openSettings,
+            newChat: () => _navigate(Routes.newChat),
+            toggleSidebar: () => _toggle(WindowSize.of(context) == WindowSize.compact),
+            openModels: () => _navigate(Routes.models),
+          ),
+        );
+      } else {
+        AppMenuActions.instance.release(this);
+      }
+    }, fireImmediately: true);
     if (!kIsWeb) {
       // Also delivers the link the app was started with.
       _links = AppLinks().uriLinkStream.listen(_onLink, onError: (Object _) {});
@@ -178,6 +195,7 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   @override
   void dispose() {
+    AppMenuActions.instance.release(this);
     _lifecycle?.dispose();
     unawaited(_links?.cancel());
     super.dispose();
@@ -271,69 +289,7 @@ class _AppShellState extends ConsumerState<AppShell> {
       child: Focus(autofocus: true, child: body),
     );
 
-    if (Host.isApple && defaultTargetPlatform == TargetPlatform.macOS) {
-      body = PlatformMenuBar(
-        menus: [
-          PlatformMenu(
-            label: 'EveryAI',
-            menus: [
-              const PlatformMenuItemGroup(
-                members: [PlatformProvidedMenuItem(type: PlatformProvidedMenuItemType.about)],
-              ),
-              PlatformMenuItemGroup(
-                members: [
-                  PlatformMenuItem(
-                    label: 'Settings…',
-                    shortcut: shortcut(LogicalKeyboardKey.comma),
-                    onSelected: _openSettings,
-                  ),
-                ],
-              ),
-              const PlatformMenuItemGroup(
-                members: [
-                  PlatformProvidedMenuItem(type: PlatformProvidedMenuItemType.hide),
-                  PlatformProvidedMenuItem(type: PlatformProvidedMenuItemType.quit),
-                ],
-              ),
-            ],
-          ),
-          PlatformMenu(
-            label: 'File',
-            menus: [
-              PlatformMenuItem(
-                label: 'New Chat',
-                shortcut: shortcut(LogicalKeyboardKey.keyN),
-                onSelected: () => _navigate(Routes.newChat),
-              ),
-            ],
-          ),
-          PlatformMenu(
-            label: 'View',
-            menus: [
-              PlatformMenuItem(
-                label: 'Toggle Sidebar',
-                shortcut: shortcut(LogicalKeyboardKey.keyS, shift: true),
-                onSelected: () => _toggle(compact),
-              ),
-              PlatformMenuItem(
-                label: 'Models',
-                shortcut: shortcut(LogicalKeyboardKey.keyM, shift: true),
-                onSelected: () => _navigate(Routes.models),
-              ),
-              const PlatformProvidedMenuItem(type: PlatformProvidedMenuItemType.toggleFullScreen),
-            ],
-          ),
-          const PlatformMenu(
-            label: 'Window',
-            menus: [
-              PlatformProvidedMenuItem(type: PlatformProvidedMenuItemType.minimizeWindow),
-              PlatformProvidedMenuItem(type: PlatformProvidedMenuItemType.zoomWindow),
-            ],
-          ),
-        ],
-        child: body,
-      );
-    }
+    // The macOS menu bar is the app root's (app_menu.dart); this shell only lends it its actions (initState).
 
     // A deployed backend may still be starting: say so instead of failing quietly.
     // The Stack is always there: wrapping the page only while the banner shows would rebuild the whole page

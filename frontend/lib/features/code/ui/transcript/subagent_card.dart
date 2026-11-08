@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../../app/router.dart';
+import '../../../../core/motion/motion.dart';
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/brand.dart';
@@ -151,7 +152,8 @@ class _FoldState extends State<_Fold> {
                 children: [
                   AnimatedRotation(
                     turns: _open ? 0 : -0.25,
-                    duration: const Duration(milliseconds: 150),
+                    duration: Motion.reduced(context) ? Duration.zero : Motion.swap,
+                    curve: Motion.easeInOut,
                     child: AdaptiveIcon(EveryIcon.chevronDown, size: 12, color: theme.textMuted),
                   ),
                   const SizedBox(width: 4),

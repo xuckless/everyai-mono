@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../core/motion/motion.dart';
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/every_icons.dart';
@@ -134,7 +135,12 @@ class _SessionInfoViewState extends ConsumerState<SessionInfoView> {
     if (ref.read(consolePanelProvider(id).notifier).takeRunningJump()) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         final target = _running.currentContext;
-        if (target != null) Scrollable.ensureVisible(target, duration: const Duration(milliseconds: 200));
+        if (target == null) return;
+        Scrollable.ensureVisible(
+          target,
+          duration: Motion.reduced(target) ? Duration.zero : Motion.move,
+          curve: Motion.easeInOut,
+        );
       });
     }
     final controller = ref.read(codeSessionProvider(id).notifier);

@@ -175,8 +175,10 @@ class _ConsolePanelViewState extends ConsumerState<ConsolePanelView> {
             child: Stack(
               fit: StackFit.expand,
               children: [
+                // Keyed: the Preview keeps its element (and its browser page) whichever view sits beside it.
                 if (_previewBuilt || view == ConsoleView.preview)
                   Offstage(
+                    key: const ValueKey('console.preview'),
                     offstage: view != ConsoleView.preview,
                     child: TickerMode(
                       enabled: view == ConsoleView.preview,

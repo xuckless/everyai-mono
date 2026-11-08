@@ -44,9 +44,9 @@ class _WebhooksPartState extends ConsumerState<WebhooksPart> {
 
   /// A hook just created: its secret is shown this once.
   ({String name, String url, String secret})? _revealed;
-  String? _error;
-  bool _busy = false;
-  bool _enabling = false;
+  _HookWork _work = const _HookIdle();
+
+  bool get _idle => _work is _HookIdle;
 
   /// Bumped by each refresh and each local change to the list: an older refresh that answers late is dropped, so it
   /// can't bring back a hook deleted meanwhile.
@@ -71,11 +71,8 @@ class _WebhooksPartState extends ConsumerState<WebhooksPart> {
 
   Future<void> _create(WebhookAutomation draft) async {
     final host = ref.read(remoteHostingProvider).host;
-    if (host == null) return;
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
+    if (host == null || !_idle) return;
+    setState(() => _work = const _HookCreating());
     try {
       final made = await ref
           .read(remoteApiProvider)
@@ -98,18 +95,29 @@ class _WebhooksPartState extends ConsumerState<WebhooksPart> {
           );
       if (!mounted) return;
       setState(() {
+        _work = const _HookIdle();
         _editing = null;
         _revealed = (name: draft.name, url: made.hook.url, secret: made.secret);
       });
       await _refresh();
     } on Object catch (e) {
-      if (mounted) setState(() => _error = "Couldn't create the webhook: ${_message(e)}");
-    } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() => _work = _HookIdle("Couldn't create the webhook: ${_message(e)}"));
+    }
+  }
+
+  Future<void> _enableHosting() async {
+    if (!_idle) return;
+    setState(() => _work = const _HookEnabling());
+    try {
+      await ref.read(remoteHostingProvider.notifier).enable();
+      if (mounted) setState(() => _work = const _HookIdle());
+    } on Object catch (e) {
+      if (mounted) setState(() => _work = _HookIdle("Couldn't turn hosting on: ${_message(e)}"));
     }
   }
 
   Future<void> _delete(String hookId, String name) async {
+    if (!_idle) return;
     final ok = await showAdaptiveConfirm(
       context,
       title: 'Delete "$name"?',
@@ -117,8 +125,8 @@ class _WebhooksPartState extends ConsumerState<WebhooksPart> {
       confirmLabel: 'Delete',
       destructive: true,
     );
-    if (!ok || !mounted) return;
-    setState(() => _error = null);
+    if (!ok || !mounted || !_idle) return;
+    setState(() => _work = _HookDeleting(hookId));
     try {
       // Without a host here its hooks went with it on the server; only its own token deletes one.
       final host = ref.read(remoteHostingProvider).host;
@@ -126,13 +134,18 @@ class _WebhooksPartState extends ConsumerState<WebhooksPart> {
     } on Object catch (e) {
       // Already gone on the server is fine; otherwise the local entry stays so it can be tried again.
       if (e is! HttpStatusError || e.statusCode != 404) {
-        if (mounted) setState(() => _error = "Couldn't delete the webhook: ${_message(e)}");
+        if (mounted) setState(() => _work = _HookIdle("Couldn't delete the webhook: ${_message(e)}"));
         return;
       }
     }
     ref.read(webhookAutomationsProvider.notifier).remove(hookId);
     _listGen++;
-    if (mounted) setState(() => _server = _server?.where((h) => h.id != hookId).toList());
+    if (mounted) {
+      setState(() {
+        _work = const _HookIdle();
+        _server = _server?.where((h) => h.id != hookId).toList();
+      });
+    }
   }
 
   @override
@@ -229,22 +242,8 @@ class _WebhooksPartState extends ConsumerState<WebhooksPart> {
             ),
             trailing: AdaptiveButton(
               label: 'Turn on hosting',
-              busy: _enabling,
-              onPressed: _enabling
-                  ? null
-                  : () async {
-                      setState(() {
-                        _enabling = true;
-                        _error = null;
-                      });
-                      try {
-                        await ref.read(remoteHostingProvider.notifier).enable();
-                      } on Object catch (e) {
-                        if (mounted) setState(() => _error = "Couldn't turn hosting on: ${_message(e)}");
-                      } finally {
-                        if (mounted) setState(() => _enabling = false);
-                      }
-                    },
+              busy: _work is _HookEnabling,
+              onPressed: _idle ? _enableHosting : null,
             ),
           ),
         ] else ...[
@@ -256,7 +255,7 @@ class _WebhooksPartState extends ConsumerState<WebhooksPart> {
               _WebhookForm(
                 key: ValueKey('hook-${a.hookId}'),
                 initial: a,
-                busy: _busy,
+                busy: _work is _HookCreating,
                 onCancel: () => setState(() => _editing = null),
                 onSave: (x) {
                   ref.read(webhookAutomationsProvider.notifier).put(x);
@@ -275,14 +274,18 @@ class _WebhooksPartState extends ConsumerState<WebhooksPart> {
               trailing: AdaptiveButton(
                 label: 'Delete',
                 emphasis: ButtonEmphasis.secondary,
-                onPressed: () => _delete(h.id, h.name),
+                busy: switch (_work) {
+                  _HookDeleting(:final hookId) => hookId == h.id,
+                  _ => false,
+                },
+                onPressed: _idle ? () => _delete(h.id, h.name) : null,
               ),
             ),
           if (editing != null && editing.hookId.isEmpty)
             _WebhookForm(
               key: const ValueKey('hook-new'),
               initial: editing,
-              busy: _busy,
+              busy: _work is _HookCreating,
               onCancel: () => setState(() => _editing = null),
               onSave: _create,
             ),
@@ -310,10 +313,10 @@ class _WebhooksPartState extends ConsumerState<WebhooksPart> {
               ),
             ),
         ],
-        if (_error case final e?)
+        if (_work case _HookIdle(:final failure?))
           Padding(
             padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
-            child: Text(e, style: theme.type.caption.tint(theme.danger)),
+            child: Text(failure, style: theme.type.caption.tint(theme.danger)),
           ),
       ],
     );
@@ -555,4 +558,33 @@ class _WebhookFormState extends ConsumerState<_WebhookForm> {
       ),
     );
   }
+}
+
+/// What the webhooks section is doing: one action at a time, and how the last one failed (shown until the next).
+///
+///   idle(failure?) ──Create──▶ creating ──made──▶ idle / ──failed──▶ idle(why)
+///                  ──Turn on hosting──▶ enabling ──on──▶ idle / ──failed──▶ idle(why)
+///                  ──Delete, confirmed──▶ deleting(hook) ──gone──▶ idle / ──failed──▶ idle(why)
+///
+/// Every action starts only from idle, so a second click while one runs does nothing.
+sealed class _HookWork {
+  const _HookWork();
+}
+
+final class _HookIdle extends _HookWork {
+  const _HookIdle([this.failure]);
+  final String? failure;
+}
+
+final class _HookCreating extends _HookWork {
+  const _HookCreating();
+}
+
+final class _HookEnabling extends _HookWork {
+  const _HookEnabling();
+}
+
+final class _HookDeleting extends _HookWork {
+  const _HookDeleting(this.hookId);
+  final String hookId;
 }

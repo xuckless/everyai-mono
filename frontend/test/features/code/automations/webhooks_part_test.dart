@@ -37,12 +37,19 @@ final class _Hooks {
   final hooks = <Map<String, Object?>>[];
   final calls = <String>[];
 
+  /// The next create answers 500, once.
+  var failCreate = false;
+
   Future<http.Response> handle(http.Request r) async {
     calls.add('${r.method} ${r.url.path}');
     // Only the host's own token adds or deletes its hooks (registering the host itself needs none yet).
     final registering = r.method == 'POST' && r.url.path == '/v1/remote/hosts';
     if (r.method != 'GET' && !registering && r.headers['X-Remote-Host-Token'] != 'rh_t') {
       return http.Response('{}', 401);
+    }
+    if (r.method == 'POST' && r.url.path == '/v1/hooks' && failCreate) {
+      failCreate = false;
+      return http.Response(jsonEncode({'message': 'server down'}), 500);
     }
     if (r.method == 'POST' && r.url.path == '/v1/hooks') {
       final body = jsonDecode(r.body) as Map<String, Object?>;
@@ -173,6 +180,30 @@ void main() {
     await tester.pumpAndSettle();
     expect(api.calls, contains('DELETE /v1/hooks/hook-1'));
     expect(container.read(webhookAutomationsProvider), isEmpty);
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('a failed create says why until the next action, and the next try clears it', (tester) async {
+    final api = _Hooks()..failCreate = true;
+    await _pump(tester, hosting: true, api: api);
+    await tester.tap(find.text('Add webhook'));
+    await tester.pumpAndSettle();
+    final fields = find.byType(EditableText);
+    await tester.enterText(fields.at(0), 'New issues');
+    await tester.enterText(fields.at(3), 'Triage it');
+    await tester.pump();
+    Future<void> create() async {
+      await tester.tap(find.widgetWithText(AdaptiveButton, 'Create'));
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+      await tester.pumpAndSettle();
+    }
+
+    await create();
+    expect(find.textContaining("Couldn't create the webhook"), findsOneWidget);
+    expect(api.hooks, isEmpty);
+    await create();
+    expect(find.textContaining("Couldn't create the webhook"), findsNothing);
+    expect(find.text('whk_shown-once'), findsOneWidget);
     debugDefaultTargetPlatformOverride = null;
   });
 }

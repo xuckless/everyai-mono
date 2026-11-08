@@ -1007,7 +1007,7 @@ class _TerminalButtonState extends State<_TerminalButton> {
           behavior: HitTestBehavior.opaque,
           onTap: widget.onPressed,
           child: AnimatedContainer(
-            duration: Motion.reduced(context) ? Duration.zero : const Duration(milliseconds: 140),
+            duration: Motion.reduced(context) ? Duration.zero : Motion.press,
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
             decoration: BoxDecoration(
               color: theme.accent.withValues(alpha: fill),

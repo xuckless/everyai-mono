@@ -1,9 +1,8 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
-import '../../../../core/config/billing_flag.dart';
-
 import 'package:flutter/widgets.dart';
 
+import '../../../../core/config/billing_flag.dart';
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/anchored_popover.dart' show PopoverRow;
