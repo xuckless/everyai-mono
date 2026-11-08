@@ -466,6 +466,10 @@ final class ClaudeDecoder {
   /// the launch notice, so the card waits for the task's `task_notification`.
   final _background = <String>{};
 
+  /// Background calls whose report came before their launch notice: the notice
+  /// then doesn't mark them as working again.
+  final _reported = <String>{};
+
   /// Background subagents still working.
   bool get hasBackground => _background.isNotEmpty;
 
@@ -527,9 +531,12 @@ final class ClaudeDecoder {
       case 'init':
         apiKeySource = line['apiKeySource'] as String?;
       case 'task_started':
-        final callId = line['tool_use_id'];
-        if (callId is! String || !_isTask(callId)) break;
-        _tasks[line['task_id'] as String? ?? callId] = callId;
+        final taskId = line['task_id'] as String?;
+        var callId = line['tool_use_id'];
+        // A SendMessage that resumes a task reports under its own call: the card is the task's first call.
+        if (callId is! String || !_isTask(callId)) callId = taskId == null ? null : _tasks[taskId];
+        if (callId is! String) break;
+        _tasks[taskId ?? callId] = callId;
         if (line['is_backgrounded'] == true) _background.add(callId);
       case 'task_updated':
         final callId = _tasks[line['task_id']];
@@ -539,7 +546,7 @@ final class ClaudeDecoder {
       case 'task_notification':
         final callId = _tasks[line['task_id']];
         if (callId == null) break;
-        _background.remove(callId);
+        if (!_background.remove(callId)) _reported.add(callId);
         return [_taskReport(callId, line)];
     }
     return const [];
@@ -616,6 +623,7 @@ final class ClaudeDecoder {
     if (!_isTask(callId) || refused.containsKey(callId) || b['is_error'] == true) return false;
     if (_background.contains(callId)) return true;
     if (!_text(b['content']).trimLeft().startsWith('Async agent launched')) return false;
+    if (_reported.remove(callId)) return true;
     _background.add(callId);
     return true;
   }

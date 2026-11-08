@@ -791,7 +791,8 @@ final class ClaudeSession
     final restart = effort != _meta.effort;
     await _save(_meta.withLlm(model: spec.model, effort: effort));
     if (restart && _channel != null) {
-      if (!_running) return _drop();
+      // Background subagents live in this process: the restart waits for them too.
+      if (!_running && !_decoder.hasBackground) return _drop();
       _respawn = true;
       return;
     }

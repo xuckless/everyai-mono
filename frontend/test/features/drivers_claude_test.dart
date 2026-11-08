@@ -595,6 +595,32 @@ void main() {
       expect(d.hasBackground, isFalse);
     });
 
+    test('a task resumed by SendMessage counts as working until it reports again', () {
+      final d = ClaudeDecoder();
+      d.decode(_msg(_use('t1', 'Agent', _explore)));
+      d.decode(_taskStarted('t1'));
+      d.decode(_launched('t1'));
+      d.decode(_notified('t1'));
+      expect(d.hasBackground, isFalse);
+      d.decode(_msg(_use('s1', 'SendMessage', {'to': 'a1', 'message': 'Go on.'})));
+      d.decode({..._taskStarted('t1'), 'tool_use_id': 's1'});
+      expect(d.hasBackground, isTrue);
+      final again = d.decode(_notified('t1', report: {'text': 'More found.'})).single as ToolResult;
+      expect((again.actionId, again.text), ('t1', 'More found.'));
+      expect(d.hasBackground, isFalse);
+    });
+
+    test("a report that comes before the launch notice isn't undone by the notice", () {
+      final d = ClaudeDecoder();
+      d.decode(_msg(_use('t1', 'Agent', _explore)));
+      d.decode(_taskStarted('t1', background: false));
+      final report = d.decode(_notified('t1', report: {'text': 'Quick.'})).single as ToolResult;
+      expect(report.text, 'Quick.');
+      expect(d.decode(_launched('t1')), isEmpty);
+      expect(d.hasBackground, isFalse);
+      expect(d.orphaned(orphanedSubagent), isEmpty);
+    });
+
     test('a session wakes when a background subagent reports, and its card gets the report', () async {
       final channel = ReplayChannel(
         _script([
