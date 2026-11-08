@@ -102,14 +102,6 @@ Map<String, Object?>? cookieParam(Map<String, Object?> cookie, {DateTime? now}) 
   };
 }
 
-/// A script run at the start of every document: for the origins in [storage], fills local storage the first time a
-/// page of the origin loads. Only into an empty storage: once a site has its own (a refreshed token, a sign-out that
-/// left its other keys), nothing is written over it.
-String storageSeedJs(Map<String, Map<String, String>> storage) =>
-    '(() => { try { const seeds = ${jsonEncode(storage)}; const items = seeds[location.origin]; '
-    'if (!items || localStorage.length > 0) return; '
-    'for (const [k, v] of Object.entries(items)) localStorage.setItem(k, v); } catch (_) {} })();';
-
 /// The page's own origin and its local storage, read by the app (not the agent) to keep the session's jar.
 const storageReadJs =
     '(() => { try { if (!/^https?:/.test(location.protocol)) return null; '
@@ -134,14 +126,19 @@ class SealedStore {
   static const _keyName = 'browser.sealed_key';
   static Future<SecretKey>? _keyFuture;
 
-  static Future<SecretKey> _keychainKey() => _keyFuture ??= () async {
-    final have = await _storage.read(key: _keyName);
-    if (have != null) return SecretKey(base64Decode(have));
-    final r = Random.secure();
-    final bytes = List<int>.generate(32, (_) => r.nextInt(256));
-    await _storage.write(key: _keyName, value: base64Encode(bytes));
-    return SecretKey(bytes);
-  }();
+  static Future<SecretKey> _keychainKey() => _keyFuture ??=
+      () async {
+        final have = await _storage.read(key: _keyName);
+        if (have != null) return SecretKey(base64Decode(have));
+        final r = Random.secure();
+        final bytes = List<int>.generate(32, (_) => r.nextInt(256));
+        await _storage.write(key: _keyName, value: base64Encode(bytes));
+        return SecretKey(bytes);
+      }().catchError((Object e) {
+        // A refused keychain prompt: asked again next time, not for the rest of the run.
+        _keyFuture = null;
+        throw e;
+      });
 
   static final _aes = AesGcm.with256bits();
 
@@ -171,6 +168,9 @@ class SealedStore {
       return null;
     }
   }
+
+  /// Whether [name] has a file (one [read] may still fail to open).
+  bool exists(String name) => _file(name).existsSync();
 
   Future<void> delete(String name) async {
     final f = _file(name);
@@ -239,12 +239,25 @@ class SavedLogins {
     return _one = SavedLogins(store);
   }
 
+  /// The list's file is there but doesn't open (another keychain): nothing is saved over it.
+  var unreadable = false;
+
   Future<void> load() => _loading ??= () async {
     final j = await store.read('logins');
+    if (j == null && store.exists('logins')) unreadable = true;
     logins.value = [for (final l in (j is List ? j : const [])) ?_loginFrom(l)];
   }();
 
-  Future<void> _saveIndex() => store.write('logins', [for (final l in logins.value) _loginJson(l)]);
+  Future<void> _saveIndex() async {
+    if (unreadable) {
+      throw StateError(
+        "The saved logins can't be opened with this computer's keychain, so nothing was saved over them.",
+      );
+    }
+    await _writeIndex();
+  }
+
+  Future<void> _writeIndex() => store.write('logins', [for (final l in logins.value) _loginJson(l)]);
 
   /// The logins session of project [projectId] may use for [site] (null: every site), the project's first.
   List<SavedLogin> usable(String? projectId, {String? site}) => [
@@ -255,6 +268,7 @@ class SavedLogins {
   /// Saves [data] as [site]'s login for [scope]: over the one already there for that site and scope.
   Future<SavedLogin> save(String site, JarData data, {required LoginScope scope, String? projectId}) async {
     await load();
+    if (unreadable) await _saveIndex();
     final old = logins.value
         .where((l) => l.site == site && l.scope == scope && (scope == LoginScope.global || l.projectId == projectId))
         .firstOrNull;

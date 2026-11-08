@@ -22,17 +22,40 @@ import '../console/console_state.dart';
 /// Opens a real Chrome window at [url] on the project's profile for the user to sign in (sites such as Google refuse
 /// a browser driven over DevTools), waits until they close it, then carries that site's sign-in into the session.
 /// The headless browser restarts meanwhile: the page comes back where it was.
+///
+/// The window stops the project's Chrome, so every session of the project saves its jar first and gets its page
+/// back afterwards. What comes over is every site whose sign-in the window changed (an OAuth sign-in sets the
+/// provider's cookies and the app's), not only the one the window opened at.
 Future<void> signInInWindow(HeadlessBrowser b, String url) async {
   final here = b.page.value.url;
   final target = url.isEmpty || url == 'about:blank' ? 'https://accounts.google.com' : url;
+  final siblings = [
+    for (final o in LiveBrowsers.all)
+      if (o.profileDir == b.profileDir && o.running) (browser: o, url: o.page.value.url),
+  ];
+  await Future.wait([for (final o in siblings) o.browser.saveJar().catchError((Object _) {})]);
+  final before = b.jarHome == null ? null : await b.profileSignIns().catchError((Object _) => emptyJar);
   await b.close();
   await b.host.signIn(target);
-  if (b.jarHome != null) {
-    final site = siteOf(Uri.tryParse(target)?.host ?? '');
-    if (site.isNotEmpty) await b.applyJar(await b.profileSignIns(site: site));
+  if (before != null) {
+    final after = await b.profileSignIns();
+    String key(Map<String, Object?> c) => '${c['name']}|${c['domain']}|${c['path']}|${c['value']}';
+    final old = {for (final c in before.cookies) key(c)};
+    final changed = {
+      for (final c in after.cookies)
+        if (!old.contains(key(c))) siteOf('${c['domain'] ?? ''}'),
+    }..add(siteOf(Uri.tryParse(target)?.host ?? ''));
+    for (final site in changed) {
+      if (site.isNotEmpty) await b.applyJar(jarForSite(after, site));
+    }
   }
   final back = here.isEmpty || here == 'about:blank' ? target : here;
   await b.userOpen(back);
+  // The other sessions' pages went with Chrome: they come back where they were.
+  for (final o in siblings) {
+    if (identical(o.browser, b) || o.url.isEmpty || o.url == 'about:blank') continue;
+    unawaited(o.browser.userOpen(o.url).catchError((Object _) {}));
+  }
 }
 
 /// The saved logins, once the app's store is known (null in tests without one).
@@ -379,7 +402,9 @@ class _UseSavedLoginState extends State<_UseSavedLogin> {
         if (!mounted || s == null) return;
         setState(() {
           _store = s;
-          _login = s.usable(widget.projectId, site: widget.site).where((l) => !l.expired).firstOrNull;
+          // Expired ones too, last: the wall that marked it may be wrong, and trying costs a reload.
+          final all = s.usable(widget.projectId, site: widget.site);
+          _login = all.where((l) => !l.expired).firstOrNull ?? all.firstOrNull;
         });
       }, onError: (Object _) {}),
     );
@@ -390,7 +415,7 @@ class _UseSavedLoginState extends State<_UseSavedLogin> {
     final l = _login, s = _store;
     if (l == null || s == null) return const SizedBox.shrink();
     return AdaptiveButton(
-      label: 'Use saved login',
+      label: l.expired ? 'Try saved login' : 'Use saved login',
       emphasis: ButtonEmphasis.secondary,
       onPressed: () {
         _using ??= () async {

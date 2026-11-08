@@ -134,10 +134,8 @@ const _authHosts = {
   'auth.openai.com': 'openai.com',
 };
 
-final _authPath = RegExp(
-  r'/(log-?in|sign-?in|signin|sign_in|sso|session|sessions|auth|authorize|oauth2?|users/sign_in)(/|$|\?|\.)',
-  caseSensitive: false,
-);
+// Only paths that are a sign-in page: not /auth, /oauth2 or /sessions, which are as often docs or an API.
+final _authPath = RegExp(r'/(log-?in|sign-?in|sign_in|sso|users/sign_in)(/|$|\.)', caseSensitive: false);
 
 /// The site a sign-in page at [url] is for ("github.com"), or null when it isn't one: a page with a visible
 /// [password] field, a sign-in service (Google, Microsoft, Apple, Auth0, Okta…), or a sign-in path (/login,
@@ -161,12 +159,47 @@ String siteOf(String host) {
   final h = host.toLowerCase().replaceFirst(RegExp(r'^\.'), '');
   if (RegExp(r'^[\d.]+$').hasMatch(h) || h.contains(':') || !h.contains('.')) return h;
   final parts = h.split('.');
+  // Hosts where each name is someone else's app (x.github.io, my-app.vercel.app): the name is the site.
+  for (final shared in _sharedHosts) {
+    if (h.endsWith('.$shared')) {
+      final n = shared.split('.').length + 1;
+      return parts.length <= n ? h : parts.sublist(parts.length - n).join('.');
+    }
+  }
   if (parts.length <= 2) return h;
   final second = parts[parts.length - 2];
   final countryPair =
       parts.last.length == 2 && const {'co', 'com', 'org', 'net', 'ac', 'gov', 'edu', 'ne', 'or'}.contains(second);
   return parts.sublist(parts.length - (countryPair ? 3 : 2)).join('.');
 }
+
+const _sharedHosts = [
+  'github.io',
+  'gitlab.io',
+  'vercel.app',
+  'netlify.app',
+  'pages.dev',
+  'workers.dev',
+  'herokuapp.com',
+  'web.app',
+  'firebaseapp.com',
+  'appspot.com',
+  'azurewebsites.net',
+  'azurestaticapps.net',
+  'cloudfront.net',
+  'onrender.com',
+  'fly.dev',
+  'railway.app',
+  'replit.app',
+  'glitch.me',
+  'ngrok.io',
+  'ngrok-free.app',
+  'trycloudflare.com',
+  'blogspot.com',
+  'myshopify.com',
+  's3.amazonaws.com',
+  'supabase.co',
+];
 
 /// Tests: a local page stands in for a site.
 @visibleForTesting

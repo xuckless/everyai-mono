@@ -39,6 +39,7 @@ abstract final class LiveBrowsers {
   }
 
   /// A site asks [b]'s session to sign in again although it started from a saved login for it: that login expired.
+  /// (The card still offers it: a wall can be wrong.)
   static void _watchExpiry(HeadlessBrowser b, Future<SealedStore> Function() store) {
     b.loginWall.state.addListener(() {
       if (b.loginWall.state.value case WallWaiting(:final site)) {
@@ -63,6 +64,9 @@ abstract final class LiveBrowsers {
       // Kept as saved.
     }
   }
+
+  /// Every session's browser this run.
+  static Iterable<HeadlessBrowser> get all => _bySession.values;
 
   /// Session [liveId]'s browser if it has one.
   static HeadlessBrowser? of(String liveId) => _bySession[liveId];

@@ -79,6 +79,15 @@ void main() {
       // A sign-out takes the site out of the jar and the browser.
       await again.clearJar(site: 'localhost');
       expect(await who(again), 'nobody');
+      // And stays signed out: nothing writes the token back.
+      await again.reload();
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      expect(await again.evaluate('localStorage.getItem("token")'), isNull);
+      await again.close();
+      open.remove(again);
+      final third = session('a');
+      await third.open(url('/'));
+      expect(await third.evaluate('localStorage.getItem("token")'), isNull);
     },
     skip: skip,
     timeout: const Timeout(Duration(minutes: 1)),

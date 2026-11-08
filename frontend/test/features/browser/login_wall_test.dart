@@ -14,6 +14,11 @@ void main() {
     expect(loginWallSite('https://acme.okta.com/app', password: false), 'acme.okta.com');
     expect(loginWallSite('https://example.com/users/sign_in', password: false), 'example.com');
     expect(loginWallSite('https://example.com/docs/authentication', password: false), isNull);
+    // Docs and APIs under /auth, /oauth2 or /sessions are no sign-in page.
+    expect(loginWallSite('https://supabase.com/docs/guides/auth', password: false), isNull);
+    expect(loginWallSite('https://developers.google.com/identity/protocols/oauth2', password: false), isNull);
+    expect(loginWallSite('https://conf.example/sessions', password: false), isNull);
+    expect(loginWallSite('https://example.com/sso/start', password: false), 'example.com');
     expect(loginWallSite('https://example.com/', password: false), isNull);
     expect(loginWallSite('http://localhost:3000/login', password: true), isNull);
     expect(loginWallSite('http://127.0.0.1:3000/login', password: true), isNull);
@@ -21,6 +26,10 @@ void main() {
     expect(siteOf('www.bbc.co.uk'), 'bbc.co.uk');
     expect(siteOf('.github.com'), 'github.com');
     expect(siteOf('10.0.0.2'), '10.0.0.2');
+    // Shared hosts: each app is its own site.
+    expect(siteOf('alice.github.io'), 'alice.github.io');
+    expect(siteOf('www.my-app.vercel.app'), 'my-app.vercel.app');
+    expect(siteOf('vercel.app'), 'vercel.app');
   });
 
   test(
@@ -91,12 +100,6 @@ void main() {
     ));
     expect(merged.cookies.firstWhere((c) => c['name'] == 'c')['value'], 'new');
     expect(merged.storage['https://example.com'], {'u': 'y', 'v': 'z'});
-    expect(
-      storageSeedJs({
-        'https://a.com': {'k': 'v'},
-      }),
-      contains('localStorage.length > 0'),
-    );
   });
 
   test('sealed files open only with their key; saved logins by scope, expiry and write-back', () async {

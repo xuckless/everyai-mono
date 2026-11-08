@@ -206,9 +206,21 @@ final class HeadlessBrowser {
   /// The session's browser context in Chrome, while running with a [jarHome].
   String? _contextId;
 
-  /// The jar as last read or captured; [_jarLoaded] once read from disk this run.
+  /// The jar as last read or captured; [_jarLoad] reads it from disk once a run.
   JarData _jar = emptyJar;
+  Future<void>? _jarLoad;
   var _jarLoaded = false;
+
+  /// The jar file is there but doesn't open (another keychain: a debug and a release build): it is never written
+  /// over.
+  var _jarUnreadable = false;
+
+  /// Origins whose stored local storage still waits to go into the context: written into a page of the origin when
+  /// it first loads (only there: no page gets another origin's storage), which then reloads.
+  final _restore = <String>{};
+
+  /// A jar write in flight (forgetJar waits for it, so a deleted jar can't come back).
+  Future<void>? _writing;
 
   /// Saved logins this session started from, by site: their refreshed sign-ins are written back.
   final usedLogins = <String, String>{};
@@ -402,6 +414,10 @@ final class HeadlessBrowser {
         final ctx = await _sendOn(browser, 'Target.createBrowserContext', {'disposeOnDetach': true});
         _contextId = ctx['browserContextId'] as String?;
         await _loadJar();
+        // A fresh context: every origin's storage waits for its first page.
+        _restore
+          ..clear()
+          ..addAll(_jar.storage.keys);
         final cookies = [for (final c in _jar.cookies) ?cookieParam(c)];
         if (cookies.isNotEmpty) {
           await _sendOn(browser, 'Storage.setCookies', {'cookies': cookies, 'browserContextId': _contextId});
@@ -449,18 +465,46 @@ final class HeadlessBrowser {
 
   // ----------------------------------------------------------------------------------- the session's cookie jar
 
-  Future<void> _loadJar() async {
-    final home = jarHome;
-    if (home == null || _jarLoaded) return;
-    _jarLoaded = true;
+  /// Reads the jar once; concurrent callers share the read.
+  Future<void> _loadJar() {
+    if (jarHome == null) return Future.value();
+    return _jarLoad ??= _readJar();
+  }
+
+  Future<void> _readJar() async {
+    final home = jarHome!;
     try {
-      final j = await (await home.store()).read(home.name);
-      _jar = jarFromJson(j);
+      final store = await home.store();
+      final j = await store.read(home.name);
+      if (j == null && store.exists(home.name)) _jarUnreadable = true;
+      _jar = jarMerged(jarFromJson(j), _jar);
       if (j is Map && j['logins'] is Map) {
         usedLogins.addAll({for (final e in (j['logins'] as Map).entries) '${e.key}': '${e.value}'});
       }
     } on Object {
       // No keychain (a test without one), or no jar yet: a clean start.
+    }
+    _jarLoaded = true;
+  }
+
+  /// Writes origin [origin]'s stored local storage into the page now on it, then reloads so the site starts
+  /// signed in.
+  Future<void> _restoreOrigin(String origin) async {
+    final items = _jar.storage[origin];
+    if (items == null || items.isEmpty) return;
+    try {
+      await _send('DOMStorage.enable');
+      for (final e in items.entries) {
+        await _send('DOMStorage.setDOMStorageItem', {
+          'storageId': {'securityOrigin': origin, 'isLocalStorage': true},
+          'key': e.key,
+          'value': e.value,
+        });
+      }
+      await _send('Page.reload');
+    } on Object {
+      // The page left already: it comes back on the origin's next page.
+      _restore.add(origin);
     }
   }
 
@@ -518,12 +562,19 @@ final class HeadlessBrowser {
 
   Future<void> _writeJar() async {
     final home = jarHome;
-    if (home == null || _forget || !_jarLoaded) return;
-    try {
-      await (await home.store()).write(home.name, {...jarToJson(_jar), 'logins': usedLogins});
-    } on Object {
-      // No keychain: the jar lives for this run only.
-    }
+    if (home == null || _forget || !_jarLoaded || _jarUnreadable) return;
+    final prev = _writing;
+    final w = _writing = () async {
+      if (prev != null) await prev;
+      if (_forget) return;
+      try {
+        await (await home.store()).write(home.name, {...jarToJson(_jar), 'logins': usedLogins});
+      } on Object {
+        // No keychain: the jar lives for this run only.
+      }
+    }();
+    await w;
+    if (identical(_writing, w)) _writing = null;
   }
 
   /// Saves the jar now (captured first while running).
@@ -535,8 +586,10 @@ final class HeadlessBrowser {
   /// The session was removed: its jar is deleted, and nothing is saved when the browser closes.
   Future<void> forgetJar() async {
     _forget = true;
+    _jarTimer?.cancel();
     final home = jarHome;
     if (home == null) return;
+    if (_writing case final w?) await w;
     try {
       await (await home.store()).delete(home.name);
     } on Object {
@@ -556,19 +609,14 @@ final class HeadlessBrowser {
       if (cookies.isNotEmpty) {
         await _sendOn(_browserSocket, 'Storage.setCookies', {'cookies': cookies, 'browserContextId': ?_contextId});
       }
-      if (data.storage.isNotEmpty) {
-        await _send('Page.addScriptToEvaluateOnNewDocument', {'source': storageSeedJs(data.storage)});
-        final here = Uri.tryParse(page.value.url);
-        final origin = here == null || !here.hasAuthority ? null : here.origin;
-        if (data.storage[origin] case final items?) {
-          await _send('Runtime.evaluate', {
-            'expression':
-                '(() => { const items = ${jsonEncode(items)}; '
-                'for (const [k, v] of Object.entries(items)) localStorage.setItem(k, v); })()',
-          });
-        }
+      // Storage goes into each origin's own page: the one on it now, the others when they first load.
+      _restore.addAll(data.storage.keys);
+      final origin = webOrigin(page.value.url);
+      if (origin != null && _restore.remove(origin)) {
+        await _restoreOrigin(origin);
+      } else if (data.cookies.isNotEmpty) {
+        await reload();
       }
-      if (data.cookies.isNotEmpty || data.storage.isNotEmpty) await reload();
     }
     await _writeJar();
   }
@@ -583,7 +631,12 @@ final class HeadlessBrowser {
         await _sendOn(_browserSocket, 'Storage.clearCookies', {'browserContextId': _contextId});
       } else {
         for (final c in gone) {
-          await _send('Network.deleteCookies', {'name': c['name'], 'domain': c['domain'], 'path': c['path']});
+          await _send('Network.deleteCookies', {
+            'name': c['name'],
+            'domain': c['domain'],
+            'path': c['path'],
+            if (c['partitionKey'] case final Map<String, Object?> k) 'partitionKey': k,
+          });
         }
       }
       final here = Uri.tryParse(page.value.url);
@@ -594,6 +647,7 @@ final class HeadlessBrowser {
       }
     }
     _jar = site == null ? emptyJar : jarWithoutSite(_jar, site);
+    _restore.removeWhere((o) => site == null || siteOf(Uri.tryParse(o)?.host ?? '') == site);
     if (site == null) {
       usedLogins.clear();
     } else {
@@ -632,8 +686,6 @@ final class HeadlessBrowser {
       _send('Target.setAutoAttach', {'autoAttach': true, 'waitForDebuggerOnStart': false, 'flatten': true}),
       _send('Page.setInterceptFileChooserDialog', {'enabled': true}),
       _send('Page.addScriptToEvaluateOnNewDocument', {'source': _contextTrackerJs}),
-      if (_jar.storage.isNotEmpty)
-        _send('Page.addScriptToEvaluateOnNewDocument', {'source': storageSeedJs(_jar.storage)}),
     ]);
     // Not waited for: a page that shows a dialog runs no script until it is answered.
     unawaited(_send('Runtime.evaluate', {'expression': _contextTrackerJs}).then((_) {}, onError: (Object _) {}));
@@ -916,11 +968,16 @@ final class HeadlessBrowser {
         if (f['parentId'] == null) {
           frames.moved();
           unawaited(_refreshPage(url: f['url'] as String?));
+          // The first page of an origin with stored storage: it gets its own storage, then reloads.
+          final origin = webOrigin('${f['url'] ?? ''}');
+          if (origin != null && _restore.remove(origin)) unawaited(_restoreOrigin(origin));
         }
       case 'Page.navigatedWithinDocument':
         frames.moved();
         unawaited(_refreshPage(url: params['url'] as String?));
       case 'Page.frameStartedLoading':
+        // The page is about to go: what it stored last (a token an OAuth callback wrote before it redirected).
+        if (jarHome != null && params['frameId'] == _targetId) unawaited(_readStorage());
         page.value = (
           url: page.value.url,
           title: page.value.title,
@@ -1901,6 +1958,12 @@ class BrowserError implements Exception {
   final bool fromPage;
   @override
   String toString() => message;
+}
+
+/// [url]'s origin when it is a web page (http or https), else null (file:, about:, data:).
+String? webOrigin(String url) {
+  final u = Uri.tryParse(url);
+  return u != null && (u.scheme == 'http' || u.scheme == 'https') && u.host.isNotEmpty ? u.origin : null;
 }
 
 /// The tab a call went to closed before it answered (a pop-up that closed itself on the click).
