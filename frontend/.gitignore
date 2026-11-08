@@ -1,3 +1,6 @@
 /.deno/
 /.tools/
 /.local-backend/
+
+# Swift Package Manager lock files: Flutter regenerates (or drops) them on every build.
+**/xcshareddata/swiftpm/Package.resolved
