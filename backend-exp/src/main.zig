@@ -378,7 +378,15 @@ pub fn main(init: std.process.Init) !void {
     else
         null;
     defer if (watcher) |*w| w.cancel(io) catch {};
-    try app.run();
+    const ran = app.run();
+    // Ended some other way than the shutdown route (a signal, the drain): what
+    // EveryAI loaded is unloaded all the same, 3 s per model at most.
+    if (cfg.local_mode) {
+        var arena: std.heap.ArenaAllocator = .init(init.gpa);
+        defer arena.deinit();
+        _ = local_models.unloadAllOurs(&state, io, arena.allocator(), 3);
+    }
+    return ran;
 }
 
 test {

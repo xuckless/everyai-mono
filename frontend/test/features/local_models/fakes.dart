@@ -92,8 +92,13 @@ final class FakeLocalSystem implements LocalSystem {
 
   @override
   Future<HardwareSpec> hardware() async => spec;
+
+  /// While set, [logDir] (a start's first step) waits for it: a test stops a start mid-way.
+  Completer<void>? logDirGate;
+
   @override
   Future<String?> ollamaPath() async => ollama;
+
   @override
   Future<String?> lmsPath() async => lms;
   @override
@@ -148,7 +153,10 @@ final class FakeLocalSystem implements LocalSystem {
   }
 
   @override
-  Future<String?> logDir() async => null;
+  Future<String?> logDir() async {
+    await logDirGate?.future;
+    return null;
+  }
 }
 
 LocalReply json(String body, [int status = 200]) => LocalReply(status, body);

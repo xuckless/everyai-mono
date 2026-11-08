@@ -2,7 +2,11 @@ import 'package:every_ai/core/local_backend/local_backend.dart';
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/features/local_models/data/local_http.dart';
 import 'package:every_ai/features/code/gateway_key.dart';
-import 'package:every_ai/features/local_models/local_model_bridge.dart' show localDetectionProvider;
+
+import 'dart:async';
+
+import 'package:every_ai/features/local_models/data/local_system_io.dart' show shellStartCommand;
+import 'package:every_ai/features/local_models/local_model_bridge.dart' show localDetectionProvider, localShutdown;
 import 'package:every_ai/features/local_models/local_models_providers.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -166,6 +170,46 @@ void main() {
       expect(system.owns('fm'), isFalse);
     });
 
+    test('a Stop before a start launched anything launches nothing and leaves the port alone', () async {
+      final system = FakeLocalSystem(ollama: '/usr/bin/ollama');
+      final (c, _, http, _) = await setUpContainer(system: system);
+      system.logDirGate = Completer<void>();
+      final ollama = c.read(localServersProvider).value!.single;
+      final lifecycles = c.read(serverLifecyclesProvider.notifier);
+      final starting = lifecycles.start(ollama);
+      await pumpEventQueue();
+      expect(c.read(serverLifecyclesProvider)['ollama'], const ServerStarting());
+      final stopping = lifecycles.stop(ollama);
+      system.logDirGate!.complete();
+      expect(await stopping, isNull);
+      await starting;
+      expect(system.launches, isEmpty);
+      expect(system.stoppedPorts, isEmpty);
+      expect(c.read(serverLifecyclesProvider)['ollama'], const ServerStopped());
+
+      // The start's end didn't drop the stop's entry, and a new start runs.
+      system.logDirGate = null;
+      system.onLaunch = (_, _) => http.replies['GET 127.0.0.1:11434/api/version'] = json('{"version":"1"}');
+      expect(await lifecycles.start(ollama), isNull);
+      expect(system.launches, ['ollama']);
+    });
+
+    test('a Stop while the server comes up ends what the start launched', () async {
+      final system = FakeLocalSystem(ollama: '/usr/bin/ollama');
+      final (c, _, _, _) = await setUpContainer(system: system);
+      final ollama = c.read(localServersProvider).value!.single;
+      final lifecycles = c.read(serverLifecyclesProvider.notifier);
+      final starting = lifecycles.start(ollama);
+      // Launched, but it never answers.
+      while (system.launches.isEmpty) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      expect(await lifecycles.stop(ollama), isNull);
+      await starting;
+      expect(system.owns('ollama'), isFalse);
+      expect(c.read(serverLifecyclesProvider)['ollama'], const ServerStopped());
+    });
+
     test('quit stops only what EveryAI started', () async {
       final system = FakeLocalSystem(ollama: '/usr/bin/ollama');
       final (c, _, http, _) = await setUpContainer(system: system);
@@ -175,6 +219,37 @@ void main() {
       await c.read(serverLifecyclesProvider.notifier).stopOwned();
       expect(system.owns('ollama'), isFalse);
       expect(system.stoppedPorts, isEmpty);
+    });
+  });
+
+  group('quit', () {
+    test('a bundled server that hangs still lets the model servers stop', () async {
+      var stopped = false;
+      await localShutdown(
+        closeBackend: () => Completer<void>().future,
+        stopServers: () async => stopped = true,
+        closeWithin: const Duration(milliseconds: 50),
+      );
+      expect(stopped, isTrue);
+    });
+
+    test('a bundled server that fails still lets the model servers stop', () async {
+      var stopped = false;
+      await localShutdown(closeBackend: () async => throw StateError('gone'), stopServers: () async => stopped = true);
+      expect(stopped, isTrue);
+    });
+  });
+
+  group('shellStartCommand', () {
+    test('a single command is exec-ed so the server takes the shell pid', () {
+      expect(shellStartCommand('llama-server -m /m.gguf --port 8080'), 'exec llama-server -m /m.gguf --port 8080');
+      expect(shellStartCommand('exec foo'), 'exec foo');
+    });
+
+    test('shell syntax is left alone', () {
+      for (final c in ['cd /x && ./serve', 'a; b', 'a | b', 'a &', 'PORT=1 serve', r'serve $(cat p)', 'export A=1']) {
+        expect(shellStartCommand(c), c);
+      }
     });
   });
 }

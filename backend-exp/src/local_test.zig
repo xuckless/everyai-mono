@@ -303,19 +303,21 @@ test "load and unload on Ollama: states, ours, and unload_ours at quit" {
     defer res.deinit();
     try res.expectStatus(.ok);
     try std.testing.expect(hasText(res.body, "\"state\":\"loaded\"") and hasText(res.body, "\"ours\":true"));
-    try std.testing.expectEqualStrings("http://127.0.0.1:11434/api/generate {\"model\":\"qwen3:8b\",\"keep_alive\":\"30m\",\"stream\":false}", Servers.call(0));
+    // The server is asked first whether it holds it already, then told to load it.
+    try std.testing.expectEqualStrings("http://127.0.0.1:11434/api/ps ", Servers.call(0));
+    try std.testing.expectEqualStrings("http://127.0.0.1:11434/api/generate {\"model\":\"qwen3:8b\",\"keep_alive\":\"30m\",\"stream\":false}", Servers.call(1));
 
     // Loading it again calls nothing.
     var again = try env.t.post("/v1/local/models/load", .{ .headers = &auth_only, .json = target });
     defer again.deinit();
     try again.expectStatus(.ok);
-    try std.testing.expectEqual(@as(usize, 1), Servers.n);
+    try std.testing.expectEqual(@as(usize, 2), Servers.n);
 
     var ours = try env.t.post("/v1/local/models/unload_ours", .{ .headers = &auth_only });
     defer ours.deinit();
     try ours.expectStatus(.ok);
     try std.testing.expectEqualStrings("{\"unloaded\":[\"qwen3:8b\"],\"failed\":[]}", ours.body);
-    try std.testing.expect(hasText(Servers.call(1), "\"keep_alive\":0"));
+    try std.testing.expect(hasText(Servers.call(2), "\"keep_alive\":0"));
 
     // A failed unload keeps the reason and shows as failed.
     var load2 = try env.t.post("/v1/local/models/load", .{ .headers = &auth_only, .json = target });
@@ -327,6 +329,37 @@ test "load and unload on Ollama: states, ours, and unload_ours at quit" {
     try std.testing.expect(hasText(bad.body, "\"code\":\"unload_failed\"") and hasText(bad.body, "out of memory") and hasText(bad.body, "\"state\":\"failed\""));
 }
 
+test "a model the user loaded is seen, not claimed: Load and a chat turn leave it out of unload_ours" {
+    var env: Env = undefined;
+    try start(&env, &.{answer}, true);
+    defer env.deinit();
+    Servers.ollama_loaded[0] = "qwen3:8b";
+    Servers.ollama_n = 1;
+    const target = .{ .kind = "ollama", .base_url = "http://127.0.0.1:11434/v1", .name = "qwen3:8b" };
+    var res = try env.t.post("/v1/local/models/load", .{ .headers = &auth_only, .json = target });
+    defer res.deinit();
+    try res.expectStatus(.ok);
+    try std.testing.expect(hasText(res.body, "\"state\":\"loaded\"") and hasText(res.body, "\"ours\":false"));
+    // Only the check: no load call.
+    try std.testing.expectEqual(@as(usize, 1), Servers.n);
+
+    // A chat turn on another model the user holds: not claimed either.
+    Servers.ollama_loaded[1] = "llama3.2:3b";
+    Servers.ollama_n = 2;
+    const headers = on_server ++ [_][2][]const u8{.{ local_models.kind_header, "ollama" }};
+    var chat = try env.t.post("/v1/chat/stream", .{
+        .headers = &headers,
+        .json = .{ .model = "local/llama3.2:3b", .messages = .{.{ .role = "user", .content = "hi" }}, .tools_enabled = false },
+    });
+    defer chat.deinit();
+    try chat.expectStatus(.ok);
+
+    var ours = try env.t.post("/v1/local/models/unload_ours", .{ .headers = &auth_only });
+    defer ours.deinit();
+    try std.testing.expectEqualStrings("{\"unloaded\":[],\"failed\":[]}", ours.body);
+    for (0..Servers.n) |i| try std.testing.expect(!hasText(Servers.call(i), "/api/generate"));
+}
+
 test "LM Studio: load/unload calls, and the list reconciles with what each server holds" {
     var env: Env = undefined;
     try start(&env, &.{answer}, true);
@@ -334,11 +367,12 @@ test "LM Studio: load/unload calls, and the list reconciles with what each serve
     var res = try env.t.post("/v1/local/models/load", .{ .headers = &auth_only, .json = .{ .kind = "lmstudio", .base_url = "http://127.0.0.1:1234/v1", .name = "gemma" } });
     defer res.deinit();
     try res.expectStatus(.ok);
-    try std.testing.expectEqualStrings("http://127.0.0.1:1234/api/v1/models/load {\"model\":\"gemma\"}", Servers.call(0));
+    try std.testing.expectEqualStrings("http://127.0.0.1:1234/api/v0/models ", Servers.call(0));
+    try std.testing.expectEqualStrings("http://127.0.0.1:1234/api/v1/models/load {\"model\":\"gemma\"}", Servers.call(1));
     var un = try env.t.post("/v1/local/models/unload", .{ .headers = &auth_only, .json = .{ .kind = "lmstudio", .base_url = "http://127.0.0.1:1234/v1", .name = "gemma" } });
     defer un.deinit();
     try un.expectStatus(.ok);
-    try std.testing.expectEqualStrings("http://127.0.0.1:1234/api/v1/models/unload {\"instance_id\":\"gemma\"}", Servers.call(1));
+    try std.testing.expectEqualStrings("http://127.0.0.1:1234/api/v1/models/unload {\"instance_id\":\"gemma\"}", Servers.call(2));
 
     // Ollama, named in the query, holds a model nobody here loaded.
     Servers.ollama_loaded[0] = "llama3.2:3b";

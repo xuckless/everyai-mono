@@ -227,21 +227,22 @@ final class IoLocalBackend implements LocalBackend {
         final req = await client.postUrl(info.baseUrl.resolve('v1/local/shutdown'));
         req.headers.set(LocalBackendInfo.tokenHeader, info.token);
         await (await req.close().timeout(unloadWithin)).drain<void>();
-        await p.exitCode.timeout(unloadWithin, onTimeout: () => -1);
+        // Replied: it is on its way out.
+        await p.exitCode.timeout(const Duration(milliseconds: 500), onTimeout: () => -1);
       } on Object {
         // An older server without the route, or it hung: it is ended below.
       } finally {
         client.close(force: true);
       }
     }
-    await _end(p);
+    await _end(p, grace: const Duration(seconds: 1));
   }
 
-  /// SIGTERM, then SIGKILL after 2 s.
-  Future<void> _end(Process p) async {
+  /// SIGTERM, then SIGKILL after [grace].
+  Future<void> _end(Process p, {Duration grace = const Duration(seconds: 2)}) async {
     p.kill();
     await p.exitCode.timeout(
-      const Duration(seconds: 2),
+      grace,
       onTimeout: () {
         p.kill(ProcessSignal.sigkill);
         return -1;

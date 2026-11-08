@@ -292,11 +292,16 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
   }
 
   /// Starts [server]: null when it runs, else why not. A start already running for it is joined.
-  Future<String?> start(LocalServer server) =>
-      // A block body: `=> _actions.remove(...)` would return this very future, and whenComplete would wait on itself.
-      _actions[server.id] ??= _start(server).whenComplete(() {
-        _actions.remove(server.id);
-      });
+  Future<String?> start(LocalServer server) {
+    if (_actions[server.id] case final running?) return running;
+    late final Future<String?> f;
+    // Only its own entry: a stop asked meanwhile replaced it. (A block body: `=> _actions.remove(...)` would return
+    // this very future, and whenComplete would wait on itself.)
+    f = _start(server).whenComplete(() {
+      if (identical(_actions[server.id], f)) _actions.remove(server.id);
+    });
+    return _actions[server.id] = f;
+  }
 
   /// Stops [server] (whoever started it): null when it stopped, else why not.
   Future<String?> stop(LocalServer server) {
@@ -328,14 +333,20 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
     return null;
   }
 
-  /// Launches [server] and waits until it answers; null when it does.
+  /// Whether the start of [id] was called off by a stop (it is no longer Starting).
+  bool _calledOff(String id) => !ref.mounted || state[id] is! ServerStarting;
+
+  /// Launches [server] and waits until it answers; null when it does, or when a stop called it off (whatever it
+  /// launched by then is stopped).
   Future<String?> _launch(LocalServer server) async {
     final logDir = await ref.read(localSystemProvider).logDir();
+    if (_calledOff(server.id)) return null;
     LaunchedServer? launched;
     switch (server.kind) {
       case LocalServerKind.ollama:
         final path = await ref.read(ollamaPathProvider.future);
         if (path == null) return "Ollama isn't installed.";
+        if (_calledOff(server.id)) return null;
         final port = Uri.parse(server.baseUrl).port;
         launched = await _system.launch(
           server.id,
@@ -347,6 +358,7 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
       case LocalServerKind.fm:
         final port = await _system.freePort();
         if (port == null) return 'No free port for it.';
+        if (_calledOff(server.id)) return null;
         launched = await _system.launch(server.id, fmExecutable, [
           'serve',
           '--host',
@@ -361,10 +373,16 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
       case LocalServerKind.lmstudio:
         final lms = await ref.read(lmsPathProvider.future);
         if (lms == null) return "LM Studio's `lms` command isn't installed.";
+        if (_calledOff(server.id)) return null;
         final port = Uri.parse(server.baseUrl).port;
         final r = await _system.run(lms, ['server', 'start', '--port', '$port']);
         if (r == null || r.code != 0) return "LM Studio didn't start its server: ${r?.out.trim() ?? 'lms failed'}";
         _lmsOurs = true;
+        if (_calledOff(server.id)) {
+          await _system.run(lms, const ['server', 'stop']);
+          _lmsOurs = false;
+          return null;
+        }
       case _ when server.manual && (server.startCommand ?? '').trim().isNotEmpty:
         launched = await _system.launch(
           server.id,
@@ -378,6 +396,11 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
     }
     if (server.kind != LocalServerKind.lmstudio && launched == null) {
       return _system.launchProblem ?? "Couldn't start it.";
+    }
+    // A stop that came while it launched found nothing of ours to stop: this start ends it.
+    if (launched != null && _calledOff(server.id)) {
+      await _system.stopOwned(server.id, grace: const Duration(seconds: 2));
+      return null;
     }
     // Ready when it answers; an early exit ends the wait with the reason.
     int? exitCode;
@@ -397,7 +420,11 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
     final until = DateTime.now().add(const Duration(seconds: 30));
     while (DateTime.now().isBefore(until)) {
       if (exitCode != null) return 'It stopped right after starting (exit $exitCode). See its log in $logDir.';
-      if (state[server.id] is! ServerStarting) return null; // Called off by a stop.
+      if (_calledOff(server.id)) {
+        // Called off by a stop: what this start launched ends too (the stop may have missed it).
+        if (launched != null) await _system.stopOwned(server.id, grace: const Duration(seconds: 2));
+        return null;
+      }
       if (await _answers(server, port)) {
         _apply(server.id, const Started(ServerOwner.everyai));
         return null;
@@ -420,10 +447,15 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
   }
 
   Future<String?> _stop(LocalServer server) async {
+    final wasStarting = state[server.id] is ServerStarting;
     if (!_apply(server.id, const StopAsked())) return 'It is not running.';
     String? reason;
     if (_system.owns(server.id)) {
       reason = await _system.stopOwned(server.id);
+    } else if (wasStarting && server.kind != LocalServerKind.lmstudio) {
+      // Nothing launched yet: the start sees it was called off and launches nothing (or ends what it just
+      // launched). What listens on the port isn't the start's, so it is left alone.
+      reason = null;
     } else if (server.kind == LocalServerKind.lmstudio && await ref.read(lmsPathProvider.future) != null) {
       final r = await _system.run((await ref.read(lmsPathProvider.future))!, const ['server', 'stop']);
       reason = r == null || r.code != 0 ? "LM Studio didn't stop its server: ${r?.out.trim() ?? 'lms failed'}" : null;

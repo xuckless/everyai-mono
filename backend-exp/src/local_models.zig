@@ -128,6 +128,8 @@ const Entry = struct {
     ours: bool = false,
     reason: ?[]u8 = null,
     since: i64 = 0,
+    /// Chat turns running on it now: an unload waits for them (409 `busy`).
+    turns: u32 = 0,
 };
 
 /// Every model the bundled server has seen, by `base_url|name`. Owns its
@@ -184,12 +186,18 @@ pub const Registry = struct {
         return to;
     }
 
-    pub const Begun = enum { started, already, busy };
+    pub const Begun = enum { started, already, busy, in_use };
 
     /// Starts loading or unloading `m` in one step under the lock: `already`
     /// when it is there (loaded / unloaded), `busy` while another load or
-    /// unload of it runs, else `started` (the state is now loading/unloading).
+    /// unload of it runs, `in_use` for an unload while chat turns run on it
+    /// (unless `wait_for_turns` is false, at quit), else `started` (the state
+    /// is now loading/unloading).
     pub fn begin(self: *Registry, io: std.Io, gpa: std.mem.Allocator, m: Model, dir: Direction) !Begun {
+        return self.beginWith(io, gpa, m, dir, true);
+    }
+
+    pub fn beginWith(self: *Registry, io: std.Io, gpa: std.mem.Allocator, m: Model, dir: Direction, wait_for_turns: bool) !Begun {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         const e = try self.entryLocked(gpa, m);
@@ -199,6 +207,7 @@ pub const Registry = struct {
         };
         if (e.state == settled) return .already;
         if (e.state == .loading or e.state == .unloading) return .busy;
+        if (dir == .unload and wait_for_turns and e.turns > 0) return .in_use;
         e.state = next(e.state, event).?;
         e.since = util.now(io);
         if (m.api_key.len > 0 and !std.mem.eql(u8, m.api_key, e.api_key)) {
@@ -206,6 +215,34 @@ pub const Registry = struct {
             e.api_key = try gpa.dupe(u8, m.api_key);
         }
         return .started;
+    }
+
+    /// A load or unload that [begin] started ended in an error of ours (out of
+    /// memory) before its outcome was applied: it is `failed`, never left
+    /// loading/unloading. Allocates nothing.
+    pub fn abort(self: *Registry, io: std.Io, gpa: std.mem.Allocator, base_url: []const u8, name: []const u8) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        const e = self.entryOf(base_url, name) orelse return;
+        if (e.state != .loading and e.state != .unloading) return;
+        if (e.reason) |r| gpa.free(r);
+        e.reason = null;
+        e.state = .failed;
+        e.since = util.now(io);
+    }
+
+    /// A chat turn on `m` starts (`delta` 1) or ends (-1); added when new.
+    pub fn countTurn(self: *Registry, io: std.Io, gpa: std.mem.Allocator, m: Model, delta: i2) !void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        const e = if (delta > 0) try self.entryLocked(gpa, m) else self.entryOf(m.base_url, m.name) orelse return;
+        if (delta > 0) e.turns += 1 else e.turns -|= 1;
+    }
+
+    fn entryOf(self: *Registry, base_url: []const u8, name: []const u8) ?*Entry {
+        var buf: [1024]u8 = undefined;
+        const key = std.fmt.bufPrint(&buf, "{s}|{s}", .{ base_url, name }) catch return null;
+        return self.entries.getPtr(key);
     }
 
     /// The state of `m` now (unloaded when unknown).
@@ -539,18 +576,28 @@ fn change(app: *App, req: *anole.Request, res: *anole.Response, m: Registry.Mode
         res.status = .conflict;
         return res.json(.{ .message = "This server doesn't let EveryAI load or unload its models.", .code = "unsupported" });
     }
+    // Loaded already by the user (or another app): seen, not claimed, so quit leaves it in memory.
+    if (dir == .load) try seenIfLoaded(app, req.io, req.arena, m);
     switch (try reg.begin(req.io, app.gpa, m, dir)) {
         .already => {},
         .busy => {
             res.status = .conflict;
             return res.json(.{ .message = "This model is being loaded or unloaded already.", .code = "busy", .model = try reg.info(req.io, req.arena, m.base_url, m.name) });
         },
-        .started => if (try call(req.io, req.arena, controlOf(app), m, dir)) |why| {
-            _ = try reg.apply(req.io, app.gpa, m, if (dir == .load) .load_failed else .unload_failed, why);
-            res.status = .bad_gateway;
-            return res.json(.{ .message = why, .code = if (dir == .load) "load_failed" else "unload_failed", .model = try reg.info(req.io, req.arena, m.base_url, m.name) });
-        } else {
-            _ = try reg.apply(req.io, app.gpa, m, if (dir == .load) .loaded else .unloaded, null);
+        .in_use => {
+            res.status = .conflict;
+            return res.json(.{ .message = "A chat is using this model right now. Unload it once the reply is done.", .code = "busy", .model = try reg.info(req.io, req.arena, m.base_url, m.name) });
+        },
+        .started => {
+            // An error of ours (out of memory) never leaves it loading/unloading.
+            errdefer reg.abort(req.io, app.gpa, m.base_url, m.name);
+            if (try call(req.io, req.arena, controlOf(app), m, dir)) |why| {
+                _ = try reg.apply(req.io, app.gpa, m, if (dir == .load) .load_failed else .unload_failed, why);
+                res.status = .bad_gateway;
+                return res.json(.{ .message = why, .code = if (dir == .load) "load_failed" else "unload_failed", .model = try reg.info(req.io, req.arena, m.base_url, m.name) });
+            } else {
+                _ = try reg.apply(req.io, app.gpa, m, if (dir == .load) .loaded else .unloaded, null);
+            }
         },
     }
     try res.json(.{ .model = try reg.info(req.io, req.arena, m.base_url, m.name) });
@@ -583,14 +630,15 @@ pub fn unloadAllOurs(app: *App, io: std.Io, arena: std.mem.Allocator, timeout_s:
     const list = reg.ours(io, arena) catch return .{ .unloaded = &.{}, .failed = &.{} };
     for (list) |m| {
         if (!m.kind.controllable()) continue;
-        const begun = reg.begin(io, app.gpa, m, .unload) catch continue;
+        // At quit a turn still running doesn't keep its model in memory.
+        const begun = reg.beginWith(io, app.gpa, m, .unload, false) catch continue;
         if (begun != .started) continue;
         const why = callWithin(io, arena, controlOf(app), m, .unload, timeout_s) catch "out of memory";
         if (why) |w| {
-            _ = reg.apply(io, app.gpa, m, .unload_failed, w) catch {};
+            _ = reg.apply(io, app.gpa, m, .unload_failed, w) catch reg.abort(io, app.gpa, m.base_url, m.name);
             failed.append(arena, .{ .name = m.name, .reason = w }) catch {};
         } else {
-            _ = reg.apply(io, app.gpa, m, .unloaded, null) catch {};
+            _ = reg.apply(io, app.gpa, m, .unloaded, null) catch reg.abort(io, app.gpa, m.base_url, m.name);
             unloaded.append(arena, m.name) catch {};
         }
     }
@@ -648,8 +696,29 @@ pub fn watchParent(app: *App, io: std.Io, parent: i64) std.Io.Cancelable!void {
 
 // ------------------------------------------------------------------ chat turns
 
-/// A chat turn on `m` starts: loading, unless it is in memory already.
+/// When `m` isn't loaded as far as the registry knows, asks its server: a
+/// model it already holds is `seen_loaded` (not ours), so a load or turn of
+/// ours doesn't claim the user's model and unload it at quit.
+fn seenIfLoaded(app: *App, io: std.Io, arena: std.mem.Allocator, m: Registry.Model) !void {
+    if (!m.kind.controllable()) return;
+    switch (app.local_models.stateOf(io, m.base_url, m.name)) {
+        .unloaded, .failed => {},
+        .loaded, .loading, .unloading => return,
+    }
+    const held = loadedOn(io, arena, controlOf(app), m) orelse return;
+    for (held) |name| if (std.mem.eql(u8, name, m.name)) {
+        _ = try app.local_models.apply(io, app.gpa, m, .seen_loaded, null);
+        return;
+    };
+}
+
+/// A chat turn on `m` starts: counted (an unload waits for it), and loading,
+/// unless it is in memory already. Call [turnEnded] after, whatever this said.
 pub fn turnStarts(app: *App, io: std.Io, m: Registry.Model) bool {
+    app.local_models.countTurn(io, app.gpa, m, 1) catch {};
+    var arena: std.heap.ArenaAllocator = .init(app.gpa);
+    defer arena.deinit();
+    seenIfLoaded(app, io, arena.allocator(), m) catch {};
     if (app.local_models.stateOf(io, m.base_url, m.name) == .loaded) return false;
     const to = app.local_models.apply(io, app.gpa, m, .load, null) catch return false;
     return to == .loading;
@@ -658,6 +727,7 @@ pub fn turnStarts(app: *App, io: std.Io, m: Registry.Model) bool {
 /// The turn on `m` ended: it ran (the model is in memory), or failed with
 /// `reason`. `loading` is what [turnStarts] said.
 pub fn turnEnded(app: *App, io: std.Io, m: Registry.Model, loading: bool, reason: ?[]const u8) void {
+    app.local_models.countTurn(io, app.gpa, m, -1) catch {};
     const event: Event = if (reason == null) .loaded else if (loading) .load_failed else return;
     _ = app.local_models.apply(io, app.gpa, m, event, reason) catch {};
 }
@@ -721,6 +791,46 @@ test "registry: ours follows our loads, failures keep their reason, illegal even
     try std.testing.expectEqual(@as(usize, 0), (try reg.ours(io, a)).len);
     try std.testing.expectEqual(@as(usize, 2), (try reg.snapshot(io, a)).len);
     try std.testing.expectEqual(@as(usize, 1), (try reg.servers(io, a)).len);
+}
+
+test "registry: an unload waits for running turns (not at quit), and an aborted load is failed, not loading" {
+    const gpa = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var reg: Registry = .{};
+    defer reg.deinit(gpa);
+    const m: Registry.Model = .{ .kind = .ollama, .base_url = "http://127.0.0.1:11434/v1", .name = "qwen3:8b" };
+
+    try reg.countTurn(io, gpa, m, 1);
+    _ = try reg.apply(io, gpa, m, .load, null);
+    _ = try reg.apply(io, gpa, m, .loaded, null);
+    try std.testing.expectEqual(Registry.Begun.in_use, try reg.begin(io, gpa, m, .unload));
+    try std.testing.expectEqual(State.loaded, reg.stateOf(io, m.base_url, m.name));
+    try reg.countTurn(io, gpa, m, -1);
+    // Extra ends never go below zero.
+    try reg.countTurn(io, gpa, m, -1);
+    try std.testing.expectEqual(Registry.Begun.started, try reg.begin(io, gpa, m, .unload));
+    _ = try reg.apply(io, gpa, m, .unloaded, null);
+
+    // At quit a running turn doesn't hold it.
+    try reg.countTurn(io, gpa, m, 1);
+    _ = try reg.apply(io, gpa, m, .load, null);
+    _ = try reg.apply(io, gpa, m, .loaded, null);
+    try std.testing.expectEqual(Registry.Begun.started, try reg.beginWith(io, gpa, m, .unload, false));
+    reg.abort(io, gpa, m.base_url, m.name);
+    try std.testing.expectEqual(State.failed, reg.stateOf(io, m.base_url, m.name));
+
+    // A load that errors after begin is failed, and can be tried again.
+    try std.testing.expectEqual(Registry.Begun.started, try reg.begin(io, gpa, m, .load));
+    try std.testing.expectEqual(State.loading, reg.stateOf(io, m.base_url, m.name));
+    reg.abort(io, gpa, m.base_url, m.name);
+    try std.testing.expectEqual(State.failed, reg.stateOf(io, m.base_url, m.name));
+    try std.testing.expectEqual(Registry.Begun.started, try reg.begin(io, gpa, m, .load));
+    // Abort only touches a load/unload under way.
+    _ = try reg.apply(io, gpa, m, .loaded, null);
+    reg.abort(io, gpa, m.base_url, m.name);
+    try std.testing.expectEqual(State.loaded, reg.stateOf(io, m.base_url, m.name));
 }
 
 test "serversInQuery reads repeated server= params, loopback only" {

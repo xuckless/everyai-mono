@@ -26,6 +26,10 @@ final class IoLocalSystem implements LocalSystem {
 
   /// Server processes EveryAI launched, by server id.
   final _owned = <String, Process>{};
+
+  /// Ids launched through the shell (a user's start command): the server may be the shell's child, so a stop ends
+  /// the whole tree while the shell still runs.
+  final _viaShell = <String>{};
   String? _launchProblem;
 
   @override
@@ -124,13 +128,22 @@ final class IoLocalSystem implements LocalSystem {
       p = shell
           ? (Platform.isWindows
                 ? await Process.start('cmd.exe', ['/c', exe], environment: {...env, 'EVERYAI_LOCAL_SERVER': id})
-                : await Process.start('/bin/sh', ['-c', exe], environment: {...env, 'EVERYAI_LOCAL_SERVER': id}))
+                : await Process.start(
+                    '/bin/sh',
+                    ['-c', shellStartCommand(exe)],
+                    environment: {...env, 'EVERYAI_LOCAL_SERVER': id},
+                  ))
           : await Process.start(exe, args, environment: {...env, 'EVERYAI_LOCAL_SERVER': id});
     } on Object catch (e) {
       _launchProblem = "Couldn't start it: $e";
       return null;
     }
     _owned[id] = p;
+    if (shell) {
+      _viaShell.add(id);
+    } else {
+      _viaShell.remove(id);
+    }
     IOSink? log;
     if (logPath != null) {
       try {
@@ -158,6 +171,13 @@ final class IoLocalSystem implements LocalSystem {
   Future<String?> stopOwned(String id, {Duration grace = const Duration(seconds: 5)}) async {
     final p = _owned[id];
     if (p == null) return null;
+    if (_viaShell.contains(id)) {
+      // A shell (or cmd.exe) with the server below it: signalling the shell alone would orphan the server. The tree
+      // is listed while the shell still runs (its pid is still its own), then ended: TERM, KILL a moment later.
+      await killTree(p.pid, termWait: grace > const Duration(seconds: 2) ? const Duration(seconds: 2) : grace);
+      final code = await p.exitCode.timeout(const Duration(seconds: 2), onTimeout: () => -999);
+      return code == -999 ? "It didn't stop (pid ${p.pid})." : null;
+    }
     Process.killPid(p.pid, ProcessSignal.sigterm);
     final code = await p.exitCode.timeout(grace, onTimeout: () => -999);
     if (code != -999) return null;
@@ -259,6 +279,19 @@ int? parseNetstatListener(String out, int port) {
     if (cols[1].endsWith(':$port')) return int.tryParse(cols[4]);
   }
   return null;
+}
+
+/// A user's start command as `/bin/sh -c` runs it: a single command is `exec`ed, so the server takes the shell's
+/// pid and a stop reaches it directly. Commands with shell syntax stay as they are (a stop ends the shell's tree).
+String shellStartCommand(String command) {
+  final c = command.trim();
+  if (c.startsWith('exec ')) return c;
+  // Anything that needs the shell to keep running (lists, pipes, background jobs, subshells, redirections into
+  // compound commands, assignments) is left alone.
+  if (RegExp(r'[;&|()`\n]|\$\(').hasMatch(c)) return c;
+  if (RegExp(r'^[A-Za-z_][A-Za-z0-9_]*=').hasMatch(c)) return c;
+  if (RegExp(r'^(cd|export|source|\.|if|for|while|case|until)\b').hasMatch(c)) return c;
+  return 'exec $c';
 }
 
 /// Where Ollama keeps models: `OLLAMA_MODELS`, else `~/.ollama/models` (or the home when that isn't there yet).
