@@ -178,7 +178,8 @@ final class EveryAISession
         PerCallApprovals,
         HasContextParts,
         ReportsMcpTools,
-        StopsMcpServers {
+        StopsMcpServers,
+        TakesMessagesMidRun {
   EveryAISession._(this.id, this._spec, this._dir, http.Client? client)
     : _gateway = GatewayClient(baseUrl: _spec.llmBaseUrl, apiKey: _spec.llmApiKey, client: client),
       _shell = SessionShell(
@@ -883,6 +884,10 @@ final class EveryAISession
   }
 
   // ------------------------------------------------------------------- API
+
+  /// A message into the running turn: read before the next model call, after the current tool call (see [send]).
+  @override
+  Future<void> tellMidRun(String text, {List<String> images = const []}) => send(text, images: images);
 
   @override
   Future<void> send(String text, {bool run = true, List<String> images = const []}) async {

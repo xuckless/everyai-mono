@@ -315,6 +315,7 @@ List<Map<String, Object?>> clientToolSpecs({bool held = false}) => [
   checkForksSpec,
   answerForkSpec,
   stopForkSpec,
+  messageForkSpec,
   securityAlertSpec,
 ];
 

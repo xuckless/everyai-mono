@@ -332,6 +332,13 @@ abstract interface class SteersRuns {
   Future<void> steer(String text, {List<String> images = const []});
 }
 
+/// A session that reads a message sent while its turn runs after its current tool call, without stopping (the
+/// EveryAI harness). Unlike [SteersRuns] it isn't the user's ⌥Enter, which interrupts it; message_fork and a fork
+/// row's Message use it.
+abstract interface class TakesMessagesMidRun {
+  Future<void> tellMidRun(String text, {List<String> images = const []});
+}
+
 /// One of a harness's own `/` commands, as the harness lists it.
 final class NativeCommand {
   const NativeCommand({required this.name, this.description = '', this.argsHint});

@@ -11,6 +11,7 @@ import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/every_icons.dart';
 import '../../code_providers.dart';
 import '../subagent_banner.dart';
+import '../../domain/subagents.dart' show forkMessageFromUser;
 import '../../domain/code_session.dart';
 import '../../harness/harness.dart' show BackgroundTask;
 import '../../workflows/workflow_engine.dart' show WorkflowAgentStatus, WorkflowStatus;
@@ -88,9 +89,14 @@ class _RunningWorkState extends ConsumerState<RunningWork> {
   }
 
   Future<void> _steer(CodeSessionInfo child) async {
-    final text = await showAdaptivePrompt(context, title: 'Message ${child.title}', confirmLabel: 'Send');
+    final text = await showAdaptivePrompt(
+      context,
+      title: 'Message ${child.title}',
+      placeholder: 'It reads this after its current step and carries on',
+      confirmLabel: 'Send',
+    );
     if (text == null || text.trim().isEmpty) return;
-    await ref.read(codeSessionProvider(child.id).notifier).steer(text.trim());
+    await ref.read(codeSessionProvider(child.id).notifier).tellWhileRunning(forkMessageFromUser(text.trim()));
   }
 
   @override
@@ -331,7 +337,7 @@ class _ChildRow extends ConsumerWidget {
             subtitle: '${status.label} · ${_elapsed(child.createdAt)}',
             trailing: [
               if (working) ...[
-                AdaptiveButton(label: 'Steer', emphasis: ButtonEmphasis.plain, onPressed: onSteer),
+                AdaptiveButton(label: 'Message', emphasis: ButtonEmphasis.plain, onPressed: onSteer),
                 AdaptiveButton(label: 'Stop', emphasis: ButtonEmphasis.plain, onPressed: onStop),
               ],
             ],

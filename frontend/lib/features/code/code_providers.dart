@@ -3827,6 +3827,31 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (out != null) await _steerOut(out);
   }
 
+  /// Gives [text] to the running turn after its current step, without stopping it (the orchestrator's message_fork,
+  /// a fork row's Message). A lead that can't take a message mid-run, or a turn that isn't running, gets it as the
+  /// next message (queued while busy). False when nothing went out or was queued.
+  Future<bool> tellWhileRunning(String text) async {
+    if (!_withinBudget()) return false;
+    final out = await _outgoing(text, const []);
+    if (out == null) return false;
+    final session = _session;
+    final t = state.transcript;
+    if (t.running && t.pending.isEmpty && !_switching && !_rewinding) {
+      final mid = switch (session) {
+        final TakesMessagesMidRun s => s.tellMidRun,
+        final SteersRuns s when _driver.caps.contains(DriverCap.steer) => s.steer,
+        _ => null,
+      };
+      if (mid != null) {
+        _releaseHostCards();
+        _touchHost();
+        await mid(_noted(out.text), images: out.images);
+        return true;
+      }
+    }
+    return _sendOut(out);
+  }
+
   /// Sends queued message [index] now, interrupting the agent (the queue's "Send now").
   Future<void> sendQueuedNow(int index) async {
     if (index < 0 || index >= state.queued.length || !_withinBudget()) return;
@@ -6089,6 +6114,15 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         return ok
             ? 'Sent. The fork carries on; its report arrives as a <task-notification>.'
             : 'That fork has no open question now (it may have been answered in its own view).';
+      case messageForkTool:
+        if (!_activeForks.containsKey(forkId)) return _noSuchFork(forkId);
+        if (str('message').trim().isEmpty) return 'Error: the message is empty.';
+        final sent = await ref
+            .read(codeSessionProvider(forkId).notifier)
+            .tellWhileRunning(forkMessageFromLead(str('message').trim()));
+        return sent
+            ? 'Sent. The fork reads it after its current step and carries on.'
+            : 'Not sent: that fork has stopped or its budget is spent. check_forks shows where it stands.';
       case stopForkTool:
         if (!_activeForks.containsKey(forkId)) return _noSuchFork(forkId);
         final title = sessions.byId(forkId)?.title ?? forkId;

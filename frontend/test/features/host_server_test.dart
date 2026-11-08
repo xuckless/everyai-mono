@@ -157,6 +157,7 @@ void main() {
         'check_forks',
         'answer_fork',
         'stop_fork',
+        'message_fork',
         'bug_check',
         'check',
         'diff_stats',
