@@ -208,14 +208,19 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     _syncCasting();
   }
 
+  /// Whether the Preview tab shows (TickerMode is off while it is hidden; it stays built once shown). Read only here,
+  /// where inherited widgets may be read: [_visible] runs from initState and from page, timer and lifecycle
+  /// callbacks, which may come before the first build or while the pane is deactivated (moved in the console).
+  var _tabShown = false;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // TickerMode is off while the Preview tab is hidden (it stays built once shown).
+    _tabShown = TickerMode.valuesOf(context).enabled;
     _syncCasting();
   }
 
-  bool get _visible => mounted && TickerMode.valuesOf(context).enabled && _appVisible;
+  bool get _visible => mounted && _tabShown && _appVisible;
 
   Future<String> _profile() async {
     final info = widget.session;

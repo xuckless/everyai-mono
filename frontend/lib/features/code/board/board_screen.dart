@@ -332,7 +332,7 @@ class _DividerState extends State<_Divider> {
           width: _Divider.hit,
           child: Center(
             child: AnimatedContainer(
-              duration: const Duration(milliseconds: 140),
+              duration: Motion.press,
               width: active ? 2 : 1,
               color: active ? theme.accent.withValues(alpha: 0.6) : theme.border,
             ),
@@ -492,7 +492,7 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                 top: -8,
                 right: -8,
                 child: AnimatedOpacity(
-                  duration: const Duration(milliseconds: 140),
+                  duration: Motion.press,
                   opacity: s.hovered || Host.isMobile ? 1 : 0,
                   child: KitIconButton(
                     key: ValueKey('board.dismiss.${info.id}'),
