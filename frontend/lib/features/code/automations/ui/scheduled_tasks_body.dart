@@ -14,6 +14,7 @@ import '../../drivers/driver_registry.dart' show driverRegistryProvider;
 import '../schedule.dart';
 import '../schedule_providers.dart';
 import 'webhooks_part.dart';
+import '../unattended.dart';
 
 const _months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -355,7 +356,7 @@ class _TaskFormState extends ConsumerState<_TaskForm> {
             Padding(
               padding: const EdgeInsets.only(top: 6),
               child: Text(
-                '${_mode.label} runs commands and edits with nobody watching. The safety floor and your deny rules still apply.',
+                '${_mode.label} runs commands and edits with nobody watching. ${unattendedChecks(_mode, _harness)}',
                 style: theme.type.caption.tint(theme.warning),
               ),
             ),
