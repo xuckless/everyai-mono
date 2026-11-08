@@ -14,6 +14,7 @@ import 'package:every_ai/features/code/domain/code_session.dart';
 import 'package:every_ai/features/code/domain/notice.dart';
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/domain/subagents.dart';
+import 'package:every_ai/features/code/workflows/workflow_notes.dart' show maxWorkflowId;
 import 'package:every_ai/features/code/drivers/acp/acp_mapping.dart' show agentMessageEvent, userMessageEvent;
 import 'package:every_ai/features/code/drivers/driver.dart';
 import 'package:every_ai/features/code/drivers/driver_events.dart';
@@ -378,6 +379,22 @@ void main() {
     final n = parseTaskNotification(notices(l.session).single)!;
     expect(n.status, SubagentStatus.stopped);
     expect(n.result, contains('Halfway there.'));
+  });
+
+  test("end_workflow waits for the lead's forks: refused while one runs, Max off once it has stopped", () async {
+    final l = await lead();
+    final sessions = container.read(codeSessionsProvider.notifier);
+    sessions.update(sessions.byId(l.info.id)!.copyWith(workflow: maxWorkflowId));
+    final f = await fork(l.info.id);
+    final early = await hostCall(l.info.id, endWorkflowTool, {'outcome': 'done'});
+    expect(early.isError, isTrue);
+    expect(early.text, contains(f.info.id));
+    expect(sessions.byId(l.info.id)!.workflow, maxWorkflowId);
+    await hostCall(l.info.id, stopForkTool, {'fork_id': f.info.id});
+    await pumpEventQueue();
+    final ended = await hostCall(l.info.id, endWorkflowTool, {'outcome': 'done'});
+    expect(ended.text, startsWith('Max is off'));
+    expect(sessions.byId(l.info.id)!.workflow, isNull);
   });
 
   test('a busy lead gets fork reports only once its turn ends', () async {

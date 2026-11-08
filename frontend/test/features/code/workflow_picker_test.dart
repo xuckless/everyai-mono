@@ -31,6 +31,7 @@ import 'package:every_ai/features/usage/usage_totals.dart';
 import 'package:flutter/services.dart' show Uint8List;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:every_ai/features/code/domain/subagents.dart' show endWorkflowTool;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -396,6 +397,20 @@ void main() {
       await c.send('Now plain');
       expect(lead.sent.last, contains(maxWorkflowNote(on: false)));
       expect(started, isEmpty);
+    });
+
+    test('the lead ends Max with end_workflow: back to no workflow, with no off note after it', () async {
+      final (c, info) = await open();
+      c.pickWorkflow(const WorkflowPick.max());
+      await c.send('Build a game');
+      expect(await c.forkTool(endWorkflowTool, {'outcome': 'done'}), startsWith('Max is off'));
+      final now = container.read(codeSessionsProvider.notifier).byId(info.id)!;
+      expect(now.workflow, isNull);
+      expect(c.workflowPick, isNull);
+      await c.send('A small fix now');
+      expect(lead.sent.last, isNot(contains('<everyai-workflow')));
+      // Not on: nothing to end.
+      expect(await c.forkTool(endWorkflowTool, {'outcome': 'done'}), contains('not on'));
     });
 
     test('Max picked on the home page is on from the first message', () async {

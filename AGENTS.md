@@ -1176,6 +1176,17 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   hint on edits that add errors, servers from PATH or pinned npm installs (`assets/lsp/`, `npm ci --ignore-scripts`);
   nothing from the repo runs. Notebooks: `read` shows cells, `notebook_edit` by cell id, read-only cell view in the
   Files tab. Not live-tested; no widget test of the fork Diff picker.
+- **Workflow rework, phase 1 (2026-11-08; branch `feat/workflow-states`; plan `~/.claude/plans/workflow-state-machines.md`).**
+  Owner: every lifecycle a model touches is an explicit state machine; every workflow ends the same way and returns
+  the session to no workflow. `workflows/workflow_state.dart`: `RunState` (starting → running(phase) → stopping →
+  shuttingDown(step) → ended(outcome); detached when the session closes mid-run) with `runEdge`/`runTransition`
+  (refused edges assert and land in `WorkflowEngine.refused`), `ShutdownStep` (script, agents, children, journal,
+  lead, workflow; each cut off after `stepTimeout`, 30 s) and the host's `RunSlot` (free, reserved, askingBug,
+  running). `WorkflowRun.state`; `status` is derived. Journal line `{t:"stop"}`: a resume of a stopping run only shuts
+  down. `AgentLauncher.release` ends a child's turn, tagged processes, app runs, browser, helpers, Preview page and
+  devices through its own controller (its session stays open); every workflow agent has `ownTag` now. The user's Stop
+  tells the lead (status "stopped"); Stop all stays quiet. `workflowResumeProvider` resumes runs at app start (shell).
+  Max ends with the `end_workflow` tool (client tool + host tool; refused while forks run). Not live-tested.
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),

@@ -27,7 +27,9 @@ import 'package:every_ai/features/code/host/host_providers.dart';
 import 'package:every_ai/features/code/workflows/bug_report.dart';
 import 'package:every_ai/features/code/workflows/workflow_engine.dart';
 import 'package:every_ai/features/code/workflows/workflow_landing.dart';
+import 'package:every_ai/features/code/domain/subagents.dart' show endWorkflowTool;
 import 'package:every_ai/features/code/workflows/workflow_library.dart' show loadBundledWorkflows;
+import 'package:every_ai/features/code/workflows/workflow_notes.dart' show maxWorkflowId;
 import 'package:every_ai/features/code/workflows/workflow_picker.dart' show WorkflowPick, workflowStartNote;
 import 'package:every_ai/features/code/workflows/workflow_runs.dart';
 import 'package:every_ai/features/models/models_providers.dart';
@@ -66,6 +68,7 @@ void main() {
   late Map<String, UsageTotals> usage;
   late Preferences prefs;
   Map<String, Object?>? startedArgs;
+  var bridgeStarts = 0;
   String? startedSource;
   late FakeHost host;
 
@@ -100,6 +103,7 @@ void main() {
       codeSideModelProvider.overrideWithValue((messages) async => ''),
       gatewayKeysProvider.overrideWith((ref) => GatewayKeys(store: _NoStore(), mint: () async => 'sk-eai-test')),
       workflowBridgeProvider.overrideWithValue(({required dir, required source, required args}) async {
+        bridgeStarts++;
         startedArgs = args;
         startedSource = source;
         return bridge;
@@ -122,6 +126,7 @@ void main() {
     prefs = await Preferences.load(db);
     host = FakeHost();
     startedArgs = null;
+    bridgeStarts = 0;
     api = [];
     backend = (req) async => http.Response('no network in this test', 599);
     prefs['code.projects'] = jsonEncode([CodeProject(id: 'p1', name: 'P', path: project.path).toJson()]);
@@ -566,7 +571,7 @@ void main() {
   });
 
   group('landing', () {
-    const run = WorkflowRun(runId: 'abcdef123', name: 'Bug fix', status: WorkflowStatus.done);
+    const run = WorkflowRun(runId: 'abcdef123', name: 'Bug fix', state: RunEnded(WorkflowOutcome.done));
 
     /// A session in a git repository with a file the workflow left uncommitted.
     Future<(CodeSessionController, String)> dirty() async {
@@ -810,6 +815,188 @@ void main() {
     }
     expect(c.runningWork.workflows, isEmpty);
     expect(lead.sent.skip(before).where((m) => m.contains('<workflow-result')), isEmpty);
+  });
+
+  test("the user's Stop shuts the run down: its agent is released, the lead hears, and a new run may start", () async {
+    final c = await open();
+    final runId = await c.runWorkflow('demo', 'source');
+    final reply = bridge.agent('Look around', {'harness': 'fake2'});
+    final info = await child();
+    drivers['fake2']!.latest!.add(stateEvent('s-r', ExecutionStatus.running));
+    await pumpEventQueue();
+    final before = lead.sent.length;
+    final agentStopped = expectLater(reply, throwsA(anything));
+    c.stopWorkflow(runId);
+    await agentStopped;
+    final runs = await whenValue(
+      container,
+      workflowRunsProvider(c.sessionId),
+      (List<WorkflowRun> r) => r.single.state is RunEnded,
+    );
+    expect(runs.single.status, WorkflowStatus.stopped);
+    // The child was stopped through its controller (its own processes with it), and stays open to read.
+    expect(drivers['fake2']!.latest!.interrupts, greaterThan(0));
+    expect(container.read(codeSessionsProvider).firstWhere((s) => s.id == info.id).ownTag, isTrue);
+    for (var i = 0; i < 100 && !lead.sent.skip(before).any((m) => m.contains('<workflow-result')); i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    final told = lead.sent.skip(before).firstWhere((m) => m.contains('<workflow-result'));
+    expect(told, contains('status="stopped"'));
+    expect(told, contains('Stopped by the user.'));
+    // The journal is retired, and the slot is free: the next run starts.
+    expect(File('${tmp.path}/data/workflows/${c.sessionId}/$runId.jsonl').existsSync(), isFalse);
+    bridge = FakeBridge();
+    final next = await c.runWorkflow('demo', 'source');
+    expect(next, isNot(runId));
+    expect(info.id, isNotEmpty);
+  });
+
+  test('at app start a run left stopping is finished without its session being opened', () async {
+    final c = await open();
+    final id = c.sessionId;
+    // A run the app quit while it was stopping: started, an agent spawned, the stop journalled, no end.
+    final dir = Directory('${tmp.path}/data/workflows/$id')..createSync(recursive: true);
+    final path = '${dir.path}/r-left.jsonl';
+    File(path).writeAsStringSync(
+      [
+        jsonEncode({'t': 'start', 'name': 'demo', 'source': 'src', 'args': const <String, Object?>{}, 'at': 0}),
+        jsonEncode({'t': 'stop', 'outcome': 'stopped', 'why': 'Stopped by the user.'}),
+      ].join('\n'),
+    );
+    // The app's next start: no controller yet (nobody opened the session).
+    container.invalidate(codeSessionProvider(id));
+    final before = lead.sent.length;
+    final opened = await container.read(workflowResumeProvider.future);
+    expect(opened, [id]);
+    final runs = await whenValue(
+      container,
+      workflowRunsProvider(id),
+      (List<WorkflowRun> r) => r.any((x) => x.runId == 'r-left' && x.state is RunEnded),
+    );
+    expect(runs.firstWhere((x) => x.runId == 'r-left').status, WorkflowStatus.stopped);
+    expect(File(path).existsSync(), isFalse);
+    // No script ran for it.
+    expect(bridge.killed, isFalse);
+    for (var i = 0; i < 100 && !lead.sent.skip(before).any((m) => m.contains('<workflow-result')); i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(lead.sent.skip(before).where((m) => m.contains('status="stopped"')), hasLength(1));
+  });
+
+  test('a run Stop all ended, resumed at app start, still wakes no lead', () async {
+    final c = await open();
+    final id = c.sessionId;
+    final dir = Directory('${tmp.path}/data/workflows/$id')..createSync(recursive: true);
+    final path = '${dir.path}/r-quiet.jsonl';
+    File(path).writeAsStringSync(
+      [
+        jsonEncode({'t': 'start', 'name': 'demo', 'source': 'src', 'args': const <String, Object?>{}, 'at': 0}),
+        jsonEncode({'t': 'stop', 'outcome': 'stopped', 'why': 'Stopped.', 'quiet': true}),
+      ].join('\n'),
+    );
+    container.invalidate(codeSessionProvider(id));
+    final before = lead.sent.length;
+    await container.read(workflowResumeProvider.future);
+    await whenValue(
+      container,
+      workflowRunsProvider(id),
+      (List<WorkflowRun> r) => r.any((x) => x.runId == 'r-quiet' && x.state is RunEnded),
+    );
+    for (var i = 0; i < 20; i++) {
+      await pumpEventQueue();
+    }
+    expect(lead.sent.skip(before).where((m) => m.contains('<workflow-result')), isEmpty);
+    expect(File(path).existsSync(), isFalse);
+  });
+
+  test('a resumed run whose lead step outlasts its cutoff tells the lead once and retires its journal', () async {
+    final c = await open();
+    final id = c.sessionId;
+    final dir = Directory('${tmp.path}/data/workflows/$id')..createSync(recursive: true);
+    final path = '${dir.path}/r-slow.jsonl';
+    File(path).writeAsStringSync(
+      [
+        jsonEncode({'t': 'start', 'name': 'demo', 'source': 'src', 'args': const <String, Object?>{}, 'at': 0}),
+        jsonEncode({'t': 'stop', 'outcome': 'stopped', 'why': 'Stopped by the user.'}),
+      ].join('\n'),
+    );
+    // The lead's history arrives after the lead step's cutoff: the workflow step runs first.
+    CodeSessionController.workflowStepTimeout = const Duration(milliseconds: 50);
+    CodeSessionController.liveAfter = const Duration(milliseconds: 400);
+    addTearDown(() {
+      CodeSessionController.workflowStepTimeout = const Duration(seconds: 30);
+      CodeSessionController.liveAfter = const Duration(milliseconds: 1500);
+    });
+    container.invalidate(codeSessionProvider(id));
+    final before = lead.sent.length;
+    await container.read(workflowResumeProvider.future);
+    for (var i = 0; i < 200 && !lead.sent.skip(before).any((m) => m.contains('<workflow-result')); i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(lead.sent.skip(before).where((m) => m.contains('status="stopped"')), hasLength(1));
+    for (var i = 0; i < 50 && File(path).existsSync(); i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    // Left on disk, the next launch would resume into this shutdown and tell the lead a second time.
+    expect(File(path).existsSync(), isFalse);
+  });
+
+  test('a picked workflow whose slot a run_workflow call took meanwhile starts no second run', () async {
+    final c = await open();
+    final entry = (await loadBundledWorkflows()).firstWhere((w) => w.id == 'security_review');
+    c.pickWorkflow(WorkflowPick.script(entry));
+    // The start note is on its way to the lead when the lead's run_workflow call starts a run.
+    lead.sendGate = Completer<void>();
+    final typed = c.sendTyped('Review the branch');
+    for (var i = 0; i < 500 && !lead.sent.any((m) => m.contains('Review the branch')); i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    final r = await c.call(
+      runCall({
+        'id': 'security_review',
+        'args': {'base': 'main'},
+      }),
+    );
+    expect(r.text, startsWith('Started Security review'));
+    lead.sendGate!.complete();
+    lead.sendGate = null;
+    expect(await typed, isTrue);
+    await pumpEventQueue();
+    expect(bridgeStarts, 1);
+    final notices = container.read(codeSessionProvider(c.sessionId)).transcript.items.whereType<NoticeItem>();
+    expect(notices.last.message, contains('already running'));
+  });
+
+  test('end_workflow waits for a workflow run the Max lead started', () async {
+    final c = await open();
+    final sessions = container.read(codeSessionsProvider.notifier);
+    sessions.update(sessions.byId(c.sessionId)!.copyWith(workflow: maxWorkflowId));
+    HostCall end() => HostCall(
+      id: 'h2',
+      sessionId: '',
+      name: endWorkflowTool,
+      args: const {'outcome': 'done'},
+      ended: Completer<HostEnd>().future,
+    );
+    await c.runWorkflow('demo', 'source');
+    final early = await c.call(end());
+    expect(early.isError, isTrue);
+    expect(early.text, contains('workflow run'));
+    expect(sessions.byId(c.sessionId)!.workflow, maxWorkflowId);
+    bridge.finish({'ok': true});
+    await whenValue(
+      container,
+      workflowRunsProvider(c.sessionId),
+      (List<WorkflowRun> r) => r.isNotEmpty && r.single.state is RunEnded,
+    );
+    // The shutdown's last step (the journal retired, then the slot freed) follows the card's end.
+    var ended = await c.call(end());
+    for (var i = 0; i < 500 && ended.isError; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      ended = await c.call(end());
+    }
+    expect(ended.text, startsWith('Max is off'));
+    expect(sessions.byId(c.sessionId)!.workflow, isNull);
   });
 
   test('a run the app quit in the middle of carries on when the session opens again', () async {
@@ -1152,8 +1339,9 @@ void main() {
       container = makeContainer();
       container.listen(codeSessionProvider(id), (_, _) {});
       bool told() => lead.sent.any((m) => m.contains('state="failed"'));
-      for (var i = 0; i < 100 && !told(); i++) {
-        await pumpEventQueue();
+      // Real file reads and the reattach come first: a count of event-queue pumps runs out under load.
+      for (var i = 0; i < 500 && !told(); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
       }
       expect(lead.sent.lastWhere((m) => m.contains('state="failed"')), contains('closed before the user answered'));
       expect(saved.existsSync(), isFalse);

@@ -6,7 +6,7 @@ WorkflowRun _run(Object? result, {String name = 'Bug fix', int micros = 0, Durat
     WorkflowRun(
       runId: 'r',
       name: name,
-      status: WorkflowStatus.done,
+      state: const RunEnded(WorkflowOutcome.done),
       started: 3,
       spentMicros: micros,
       took: took,

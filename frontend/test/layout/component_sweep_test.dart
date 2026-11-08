@@ -113,7 +113,7 @@ final components = <String, Widget Function()>{
     run: WorkflowRun(
       runId: 'r',
       name: 'Ultra $word',
-      status: WorkflowStatus.done,
+      state: const RunEnded(WorkflowOutcome.done),
       phases: ['Research $word', 'Implement'],
       agents: [
         WorkflowAgentView(key: 'a', label: 'research:$word', phase: 'Research $word'),

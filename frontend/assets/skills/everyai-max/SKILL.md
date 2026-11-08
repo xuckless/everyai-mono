@@ -8,7 +8,7 @@ compatibility: Code sessions only (a shell, git and the EveryAI coding tools).
 
 This is an approach, not a script. Take the steps in order when the task needs them, skip what it doesn't need, and keep a small task small.
 
-The tools named here (`fork`, `check_forks`, `answer_fork`, `present_plan`, `ask_user_question`) come from the `everyai` MCP server. Only on the EveryAI harness itself, which has no such server, is `fork` its `run_subagent` tool, which always runs in the background (and `worktree` on is `isolation: "worktree"`).
+The tools named here (`fork`, `check_forks`, `answer_fork`, `present_plan`, `ask_user_question`, `end_workflow`) come from the `everyai` MCP server. Only on the EveryAI harness itself, which has no such server, is `fork` its `run_subagent` tool, which always runs in the background (and `worktree` on is `isolation: "worktree"`).
 
 ## 1. Research
 - Read enough to know which parts of the code the task touches, how they fit, and how the project builds and tests.
@@ -39,3 +39,8 @@ The tools named here (`fork`, `check_forks`, `answer_fork`, `present_plan`, `ask
 - Read each report and its merge note. Fix any conflict a merge left.
 - Run the project's full test suite once, here, with its build or linter, unless the plan says otherwise. Fix what fails.
 - Finish with a short report: what changed, where, and what you checked. Say plainly what is left or didn't work.
+
+## 6. End
+- Max is for this one task. Once you have reported, check that no fork still runs (`check_forks`), and stop any you don't need.
+- Then call `end_workflow` with how it went (`done`, `partly_done` or `abandoned`). The session goes back to working without a workflow; the user turns Max on again for the next big task.
+- Also end it when the user says the task is over or asks for something unrelated.

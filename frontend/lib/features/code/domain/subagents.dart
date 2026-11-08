@@ -422,7 +422,34 @@ const checkForksTool = 'check_forks';
 const answerForkTool = 'answer_fork';
 const stopForkTool = 'stop_fork';
 const messageForkTool = 'message_fork';
-const forkTools = {checkForksTool, answerForkTool, stopForkTool, messageForkTool};
+
+/// Ends the Max workflow once its task is done: the session goes back to no workflow.
+const endWorkflowTool = 'end_workflow';
+
+/// The Max tools the session's controller answers (as client tools on the EveryAI harness, host tools elsewhere).
+const forkTools = {checkForksTool, answerForkTool, stopForkTool, messageForkTool, endWorkflowTool};
+
+/// Prompt reason: Max stayed on after its task ("for this task and the ones after it"), so the session never went
+/// back to no workflow and the next, unrelated task ran Max's research, questions and forks too. The owner wants
+/// every workflow to end by itself; nothing in the app can tell when a Max task is done, so the lead says so.
+const endWorkflowSpec = <String, Object?>{
+  'name': endWorkflowTool,
+  'description':
+      'End the Max workflow: call it once the Max task is done, after you verified the work and gave the user your '
+      'short report. The session goes back to working without a workflow (the user can turn Max on again). It is '
+      'refused while forks still run: wait for their reports or stop them first. Returns at once.',
+  'parameters': {
+    'type': 'object',
+    'properties': {
+      'outcome': {
+        'type': 'string',
+        'enum': ['done', 'partly_done', 'abandoned'],
+        'description': 'How the task ended',
+      },
+    },
+    'required': ['outcome'],
+  },
+};
 
 const checkForksSpec = <String, Object?>{
   'name': checkForksTool,

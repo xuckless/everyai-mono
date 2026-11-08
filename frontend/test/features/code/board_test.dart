@@ -162,7 +162,7 @@ void main() {
     expect(inColumn('running', 'Session c'), findsOneWidget);
     c
         .read(workflowRunsProvider('c').notifier)
-        .put(const WorkflowRun(runId: 'r1', name: 'x', status: WorkflowStatus.done));
+        .put(const WorkflowRun(runId: 'r1', name: 'x', state: RunEnded(WorkflowOutcome.done)));
     await tester.pumpAndSettle();
     expect(inColumn('done', 'Session c'), findsOneWidget);
 
