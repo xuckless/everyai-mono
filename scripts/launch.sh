@@ -77,8 +77,7 @@ DEFINES="$DEV/defines-launch.json"
 cat >"$DEFINES" <<EOF
 {
   "API_BASE_URL": "$API",
-  "SSE_ENABLED": true,
-  "GOOGLE_SERVER_CLIENT_ID": ""
+  "SSE_ENABLED": true
 }
 EOF
 say "Backend: $API"

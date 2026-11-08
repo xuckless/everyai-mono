@@ -19,7 +19,7 @@ Anole comes from its release tag (url + hash in `build.zig.zon`).
 
 | Area | Endpoints | Source |
 | --- | --- | --- |
-| Auth | `POST /v1/auth/signup\|login\|google\|refresh\|logout`, `DELETE /v1/auth/account`, `GET /v1/me` | `auth.zig` |
+| Auth | Magic link: `POST /v1/auth/magic {email, device_name?}` → 202 `{request_id, request_secret, expires_at}` (mails a link and a 6-digit code), `POST /v1/auth/magic/poll\|code`, the link page `GET /auth/l/:token` (+ `POST …/approve\|deny`, same origin only); `POST /v1/auth/refresh\|logout\|logout_all\|email`, `GET /v1/auth/sign_ins`, `DELETE /v1/auth/account`, `GET /v1/me`. Mail via Resend (`RESEND_API_KEY`, `MAIL_FROM`, `MAIL_DAILY_CAP`); without a key development logs it, production answers 503 | `auth.zig`, `magic.zig`, `mail.zig` |
 | Gateway keys | `POST/GET /v1/keys`, `DELETE /v1/keys/:id` (`sk-eai-…`) | `auth.zig` |
 | Models | `GET /v1/models` (OpenRouter catalog, hourly, marked-up prices), `GET /v1/models/defaults` | `models.zig` |
 | Chat | `POST /v1/chat/stream` (SSE), `POST /v1/chat/tool_result` | `chat.zig`, `tools.zig`, `tool_wait.zig` |

@@ -21,7 +21,7 @@ import 'settings_modal.dart';
   SignedIn() when profile != null => (profile.displayName, profile.planLabel.isEmpty ? 'Signed in' : profile.planLabel),
   SignedIn() => ('Account', 'Signed in'),
   Restoring() => ('Account', ''),
-  SignedOut() || Authenticating() || SigningOut() => ('Guest', 'Not signed in'),
+  SignedOut() || SigningIn() || SigningOut() => ('Guest', 'Not signed in'),
 };
 
 /// Asks, then signs out. Chats stay on this device.
@@ -237,7 +237,10 @@ class AccountMenu extends ConsumerWidget {
               key: const ValueKey('account.sign-in'),
               title: 'Sign in',
               leading: icon(EveryIcon.person),
-              onTap: () => open(SettingsSection.account),
+              onTap: () {
+                ref.read(authProvider.notifier).startSignIn();
+                open(SettingsSection.account);
+              },
             ),
         ],
       ),

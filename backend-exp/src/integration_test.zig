@@ -3,6 +3,7 @@
 const std = @import("std");
 const anole = @import("anole");
 const app_main = @import("app");
+const kit = @import("test_kit.zig");
 const openrouter = app_main.openrouter;
 const config = @import("app").config;
 
@@ -12,6 +13,7 @@ const Server = anole.Server(app_main.App);
 const Env = struct {
     state: app_main.App,
     fake: openrouter.Fake,
+    mails: app_main.mail.Fake,
     /// Anthropic's API (raw Messages replies), behind the real adapter.
     anth: openrouter.Fake,
     adapter: app_main.anthropic.Adapter,
@@ -26,6 +28,7 @@ const Env = struct {
         self.state.catalog.deinit();
         self.state.searches.deinit(self.state.gpa);
         self.fake.deinit();
+        self.mails.deinit();
         self.anth.deinit();
     }
 };
@@ -61,6 +64,8 @@ fn startWith(env: *Env, responses: []const []const u8, dev_auth: bool, extra: Ex
     };
     env.adapter = .{ .inner = env.anth.upstream(), .catalog = &env.state.catalog };
     env.state.anthropic = env.adapter.upstream();
+    env.mails = .{ .gpa = alloc };
+    env.state.mailer = env.mails.mailer();
     env.server = try Server.init(alloc, .{ .executors = .exact(2), .limits = .{ .body_max = app_main.body_max } }, &env.state);
     env.state.db = try env.server.sqlite(":memory:");
     var arena: std.heap.ArenaAllocator = .init(alloc);
@@ -99,7 +104,7 @@ test "migrations run once" {
     try std.testing.expectEqual(@as(usize, 0), try anole.db.migrate(env.state.db, &c, &migrations.all));
 }
 
-test "auth: signup, login, refresh rotation, me, 401 without dev auth" {
+test "auth: magic link by code makes the account, refresh rotates, me; the old sign-in routes are gone" {
     var env: Env = undefined;
     try start(&env, &.{""}, false);
     defer env.deinit();
@@ -111,23 +116,49 @@ test "auth: signup, login, refresh rotation, me, 401 without dev auth" {
     defer anon.deinit();
     try anon.expectStatus(.unauthorized);
 
-    var up = try env.t.post("/v1/auth/signup", .{ .json = .{ .name = "Ada", .email = "ada@example.com", .password = "correct horse" } });
-    defer up.deinit();
-    try up.expectStatus(.created);
-    const tokens = try up.json(Tokens);
-    try std.testing.expectEqualStrings("free", tokens.user.plan);
+    for ([_][]const u8{ "/v1/auth/signup", "/v1/auth/login", "/v1/auth/google" }) |path| {
+        var gone = try env.t.post(path, .{ .json = .{ .email = "ada@example.com", .password = "correct horse" } });
+        defer gone.deinit();
+        try gone.expectStatus(.not_found);
+    }
 
-    var dup = try env.t.post("/v1/auth/signup", .{ .json = .{ .name = "Ada", .email = "ADA@example.com", .password = "correct horse" } });
-    defer dup.deinit();
-    try dup.expectStatus(.conflict);
+    var asked = try env.t.post("/v1/auth/magic", .{ .json = .{ .email = "Ada@Example.com", .device_name = "Ada's Mac" } });
+    defer asked.deinit();
+    try asked.expectStatus(.accepted);
+    const req = try asked.json(kit.Asked);
+    const m = env.mails.last().?;
+    try std.testing.expectEqualStrings("Ada@Example.com", m.to);
+    try std.testing.expect(std.mem.indexOf(u8, m.text, "Ada's Mac") != null);
+    try std.testing.expect(std.mem.indexOf(u8, m.html, "Ada&#39;s Mac") != null);
+    try std.testing.expectEqualStrings(req.request_id, m.idempotency_key);
 
-    var bad = try env.t.post("/v1/auth/login", .{ .json = .{ .email = "ada@example.com", .password = "wrong password" } });
-    defer bad.deinit();
-    try bad.expectStatus(.unauthorized);
+    // A wrong secret looks like no request at all.
+    var stranger = try env.t.post("/v1/auth/magic/poll", .{ .json = .{ .request_id = req.request_id, .request_secret = "ms_wrong" } });
+    defer stranger.deinit();
+    try stranger.expectStatus(.not_found);
+    var pending = try env.t.post("/v1/auth/magic/poll", .{ .json = .{ .request_id = req.request_id, .request_secret = req.request_secret } });
+    defer pending.deinit();
+    try std.testing.expectEqualStrings("pending", (try pending.json(kit.Signed)).status);
 
-    var me = try env.t.get("/v1/me", .{ .headers = &.{.{ "Authorization", try bearer(a, tokens.access_token) }} });
+    var done = try env.t.post("/v1/auth/magic/code", .{ .json = .{ .request_id = req.request_id, .request_secret = req.request_secret, .code = kit.codeIn(m) } });
+    defer done.deinit();
+    try done.expectStatus(.ok);
+    const tokens = (try done.json(kit.Signed)).tokens.?;
+    try std.testing.expectEqualStrings("Ada@Example.com", tokens.user.email);
+
+    // Single use: the same code again is gone.
+    var again = try env.t.post("/v1/auth/magic/code", .{ .json = .{ .request_id = req.request_id, .request_secret = req.request_secret, .code = kit.codeIn(m) } });
+    defer again.deinit();
+    try again.expectStatus(.gone);
+
+    // The same address (any case) signs in to the same account.
+    const second = try kit.signIn(&env.t, &env.mails, a, "ada@example.com");
+    var me = try env.t.get("/v1/me", .{ .headers = &.{.{ "Authorization", second }} });
     defer me.deinit();
     try me.expectStatus(.ok);
+    const who = try me.json(struct { id: []const u8, name: []const u8, email: []const u8 });
+    try std.testing.expectEqualStrings(tokens.user.id, who.id);
+    try std.testing.expectEqualStrings("Ada", who.name);
 
     var r1 = try env.t.post("/v1/auth/refresh", .{ .json = .{ .refresh_token = tokens.refresh_token } });
     defer r1.deinit();
@@ -135,6 +166,161 @@ test "auth: signup, login, refresh rotation, me, 401 without dev auth" {
     var r2 = try env.t.post("/v1/auth/refresh", .{ .json = .{ .refresh_token = tokens.refresh_token } });
     defer r2.deinit();
     try r2.expectStatus(.unauthorized); // rotated: the old one is spent
+}
+
+test "magic link: a GET changes nothing, the button needs our origin, approval signs in the asking device, Not me refuses" {
+    var env: Env = undefined;
+    try start(&env, &.{""}, false);
+    defer env.deinit();
+    const origin = env.state.cfg.public_url;
+
+    var asked = try env.t.post("/v1/auth/magic", .{ .json = .{ .email = "grace@example.com", .device_name = "<script>Grace</script>" } });
+    defer asked.deinit();
+    const req = try asked.json(kit.Asked);
+    const token = kit.tokenIn(env.mails.last().?);
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const path = try std.fmt.allocPrint(a, "/auth/l/{s}", .{token});
+
+    for (0..3) |_| {
+        var view = try env.t.get(path, .{});
+        defer view.deinit();
+        try view.expectStatus(.ok);
+        const html = view.body;
+        try std.testing.expect(std.mem.indexOf(u8, html, "&lt;script&gt;Grace") != null);
+        try std.testing.expect(std.mem.indexOf(u8, html, "<script>") == null);
+        try std.testing.expect(view.header("Content-Security-Policy") != null);
+    }
+    var still = try env.t.post("/v1/auth/magic/poll", .{ .json = .{ .request_id = req.request_id, .request_secret = req.request_secret } });
+    defer still.deinit();
+    try std.testing.expectEqualStrings("pending", (try still.json(kit.Signed)).status);
+
+    const approve = try std.fmt.allocPrint(a, "{s}/approve", .{path});
+    var no_origin = try env.t.post(approve, .{});
+    defer no_origin.deinit();
+    try no_origin.expectStatus(.forbidden);
+    var other_site = try env.t.post(approve, .{ .headers = &.{.{ "Origin", "https://evil.example" }} });
+    defer other_site.deinit();
+    try other_site.expectStatus(.forbidden);
+
+    var pressed = try env.t.post(approve, .{ .headers = &.{.{ "Origin", origin }} });
+    defer pressed.deinit();
+    try pressed.expectStatus(.ok);
+    try std.testing.expect(std.mem.indexOf(u8, pressed.body, "signed in") != null);
+
+    var won = try env.t.post("/v1/auth/magic/poll", .{ .json = .{ .request_id = req.request_id, .request_secret = req.request_secret } });
+    defer won.deinit();
+    const signed = try won.json(kit.Signed);
+    try std.testing.expectEqualStrings("redeemed", signed.status);
+    try std.testing.expect(signed.tokens != null);
+    // Only one poll gets the tokens.
+    var late = try env.t.post("/v1/auth/magic/poll", .{ .json = .{ .request_id = req.request_id, .request_secret = req.request_secret } });
+    defer late.deinit();
+    try std.testing.expect((try late.json(kit.Signed)).tokens == null);
+
+    // Not me: refused, and the code no longer works either.
+    var asked2 = try env.t.post("/v1/auth/magic", .{ .json = .{ .email = "grace@example.com" } });
+    defer asked2.deinit();
+    const req2 = try asked2.json(kit.Asked);
+    const m2 = env.mails.last().?;
+    const deny = try std.fmt.allocPrint(a, "/auth/l/{s}/deny", .{kit.tokenIn(m2)});
+    var denied = try env.t.post(deny, .{ .headers = &.{.{ "Referer", try std.fmt.allocPrint(a, "{s}/auth/l/x", .{origin}) }} });
+    defer denied.deinit();
+    try denied.expectStatus(.ok);
+    var after = try env.t.post("/v1/auth/magic/code", .{ .json = .{ .request_id = req2.request_id, .request_secret = req2.request_secret, .code = kit.codeIn(m2) } });
+    defer after.deinit();
+    try after.expectStatus(.gone);
+}
+
+test "magic link: wrong codes end the request, per-address limits, the daily mail cap, no mailer" {
+    var env: Env = undefined;
+    try start(&env, &.{""}, false);
+    defer env.deinit();
+
+    var asked = try env.t.post("/v1/auth/magic", .{ .json = .{ .email = "lin@example.com" } });
+    defer asked.deinit();
+    const req = try asked.json(kit.Asked);
+    const right = kit.codeIn(env.mails.last().?);
+    const wrong: []const u8 = if (right[0] == '0') "111111" else "000000";
+    for (0..5) |i| {
+        var bad = try env.t.post("/v1/auth/magic/code", .{ .json = .{ .request_id = req.request_id, .request_secret = req.request_secret, .code = wrong } });
+        defer bad.deinit();
+        try bad.expectStatus(.unauthorized);
+        const body = try bad.json(struct { code: []const u8, attempts_left: i64 });
+        try std.testing.expectEqual(@as(i64, @intCast(4 - i)), body.attempts_left);
+    }
+    var too_late = try env.t.post("/v1/auth/magic/code", .{ .json = .{ .request_id = req.request_id, .request_secret = req.request_secret, .code = right } });
+    defer too_late.deinit();
+    try too_late.expectStatus(.gone);
+
+    // Three in 15 minutes per address (one used above).
+    for (0..2) |_| {
+        var ok = try env.t.post("/v1/auth/magic", .{ .json = .{ .email = "lin@example.com" } });
+        defer ok.deinit();
+        try ok.expectStatus(.accepted);
+    }
+    var waited = try env.t.post("/v1/auth/magic", .{ .json = .{ .email = "LIN@example.com" } });
+    defer waited.deinit();
+    try waited.expectStatus(.too_many_requests);
+
+    // The day's budget across all addresses.
+    env.state.cfg.mail_daily_cap = 3;
+    var busy = try env.t.post("/v1/auth/magic", .{ .json = .{ .email = "kai@example.com" } });
+    defer busy.deinit();
+    try busy.expectStatus(.service_unavailable);
+    try std.testing.expectEqualStrings("mail_busy", (try busy.json(struct { code: []const u8 })).code);
+
+    env.state.mailer = null;
+    var none = try env.t.post("/v1/auth/magic", .{ .json = .{ .email = "kai@example.com" } });
+    defer none.deinit();
+    try none.expectStatus(.service_unavailable);
+    try std.testing.expectEqualStrings("mail_unavailable", (try none.json(struct { code: []const u8 })).code);
+}
+
+test "account: sign-in history, log out everywhere, change email by link" {
+    var env: Env = undefined;
+    try start(&env, &.{""}, false);
+    defer env.deinit();
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const ada = try kit.signIn(&env.t, &env.mails, a, "ada@example.com");
+
+    var history = try env.t.get("/v1/auth/sign_ins", .{ .headers = &.{.{ "Authorization", ada }} });
+    defer history.deinit();
+    const rows = try history.json([]const struct { device_name: []const u8, method: []const u8, ip_prefix: []const u8 });
+    try std.testing.expectEqual(@as(usize, 1), rows.len);
+    try std.testing.expectEqualStrings("Test", rows[0].device_name);
+    try std.testing.expectEqualStrings("code", rows[0].method);
+
+    // Taken addresses are refused; a free one moves the account on redeem.
+    _ = try kit.signIn(&env.t, &env.mails, a, "bob@example.com");
+    var taken = try env.t.post("/v1/auth/email", .{ .headers = &.{.{ "Authorization", ada }}, .json = .{ .email = "bob@example.com" } });
+    defer taken.deinit();
+    try taken.expectStatus(.conflict);
+    var change = try env.t.post("/v1/auth/email", .{ .headers = &.{.{ "Authorization", ada }}, .json = .{ .email = "ada@new.example" } });
+    defer change.deinit();
+    try change.expectStatus(.accepted);
+    const req = try change.json(kit.Asked);
+    var moved = try env.t.post("/v1/auth/magic/code", .{ .json = .{ .request_id = req.request_id, .request_secret = req.request_secret, .code = kit.codeIn(env.mails.last().?) } });
+    defer moved.deinit();
+    try moved.expectStatus(.ok);
+    try std.testing.expectEqualStrings("ada@new.example", (try moved.json(kit.Signed)).tokens.?.user.email);
+
+    var asked = try env.t.post("/v1/auth/magic", .{ .json = .{ .email = "ada@new.example" } });
+    defer asked.deinit();
+    const r = try asked.json(kit.Asked);
+    var signed = try env.t.post("/v1/auth/magic/code", .{ .json = .{ .request_id = r.request_id, .request_secret = r.request_secret, .code = kit.codeIn(env.mails.last().?) } });
+    defer signed.deinit();
+    const refresh_token = (try signed.json(kit.Signed)).tokens.?.refresh_token;
+
+    var all = try env.t.post("/v1/auth/logout_all", .{ .headers = &.{.{ "Authorization", ada }} });
+    defer all.deinit();
+    try all.expectStatus(.no_content);
+    var refused = try env.t.post("/v1/auth/refresh", .{ .json = .{ .refresh_token = refresh_token } });
+    defer refused.deinit();
+    try refused.expectStatus(.unauthorized);
 }
 
 test "models: shop excludes batch variants, marks free and default, applies markup" {
@@ -1847,16 +2033,18 @@ test "billing: Stripe events of any shape are acknowledged, and a top-up credits
     try std.testing.expectEqual(@as(i64, 5_000_000), try env.state.db.one(i64, &c, "SELECT amount_micros FROM wallet_ledger WHERE ref = 'cs_1'", .{}));
 }
 
-test "auth: unknown addresses fail like wrong passwords, a burst is limited, 401s carry a challenge" {
+test "auth: a burst of sign-in asks is limited per address, 401s carry a challenge" {
     var env: Env = undefined;
     try start(&env, &.{""}, false);
     defer env.deinit();
-    for (0..10) |_| {
-        var res = try env.t.post("/v1/auth/login", .{ .json = .{ .email = "nobody@example.com", .password = "whatever-123" } });
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    for (0..10) |i| {
+        var res = try env.t.post("/v1/auth/magic", .{ .json = .{ .email = try std.fmt.allocPrint(arena.allocator(), "user{d}@example.com", .{i}) } });
         defer res.deinit();
-        try res.expectStatus(.unauthorized);
+        try res.expectStatus(.accepted);
     }
-    var limited = try env.t.post("/v1/auth/login", .{ .json = .{ .email = "nobody@example.com", .password = "whatever-123" } });
+    var limited = try env.t.post("/v1/auth/magic", .{ .json = .{ .email = "one-more@example.com" } });
     defer limited.deinit();
     try limited.expectStatus(.too_many_requests);
 

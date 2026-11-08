@@ -53,7 +53,7 @@ jobs:
           cache: true
       - name: Defines
         run: |
-          printf '{"API_BASE_URL":"%s","SSE_ENABLED":true,"GOOGLE_SERVER_CLIENT_ID":""}\n' \
+          printf '{"API_BASE_URL":"%s","SSE_ENABLED":true}\n' \
             "$API_BASE_URL" > "$RUNNER_TEMP/defines.json"
       - run: flutter pub get
       - run: flutter build ${{ matrix.platform }} --release --dart-define-from-file="$RUNNER_TEMP/defines.json"

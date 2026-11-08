@@ -93,12 +93,27 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
 
 ## /v1 contract (backend-exp ⇄ app)
 - **Auth:**
-  - `POST /v1/auth/signup|login` takes `{name?, email, password}` and returns
-    `{access_token, refresh_token, token_type, expires_in, user{id,name,email,plan}}`.
-  - `/v1/auth/refresh` takes `{refresh_token}` and returns the same shape. The
-    refresh token **rotates** (save the new one; reusing the old one is a 401).
-  - `/v1/auth/google` takes `{token}`; `/v1/auth/logout`;
-    `DELETE /v1/auth/account`; `GET /v1/me`.
+  - An account is **optional** (2026-11-08): the app works signed out; requests
+    carry a token only when signed in. Sign-in is **magic link only**
+    (`backend-exp/src/magic.zig`; signup/login/google are 404).
+  - `POST /v1/auth/magic {email, device_name?}` → 202 `{request_id,
+    request_secret, expires_at, code_length}`; the server mails a link and a
+    6-digit code (Resend). Same answer for every address; 10/min per network,
+    3 per 15 min and 10 a day per address, `MAIL_DAILY_CAP` (90) overall
+    (503 `mail_busy`); no mailer → 503 `mail_unavailable`.
+  - The asking device polls `POST /v1/auth/magic/poll {request_id,
+    request_secret}` → `{status: pending|approved|redeemed|expired|dead|denied,
+    tokens?}` (tokens once), or types the code: `POST /v1/auth/magic/code
+    {request_id, request_secret, code}` → the same; 401 `{attempts_left}`, 410
+    when expired/used/dead (5 wrong codes).
+  - The link opens `GET /auth/l/:token` ("Sign in EveryAI on <device>?"); a GET
+    changes nothing; `POST /auth/l/:token/approve|deny` needs Origin/Referer =
+    `PUBLIC_URL`. Approving signs in the **asking** device (by its poll).
+  - Tokens: `{access_token, refresh_token, token_type, expires_in,
+    user{id,name,email,plan}}`. `/v1/auth/refresh {refresh_token}` rotates
+    (reusing the old one is a 401). `/v1/auth/logout`, `POST
+    /v1/auth/logout_all`, `POST /v1/auth/email {email}` (link to the new
+    address), `GET /v1/auth/sign_ins`, `DELETE /v1/auth/account`, `GET /v1/me`.
 - **Models:**
   - `GET /v1/models` returns `{object:"list", data:[{id, name, provider,
     blurb, context_length, input_modalities, output_modalities,

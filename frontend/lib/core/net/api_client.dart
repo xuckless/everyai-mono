@@ -179,6 +179,8 @@ final class ApiClient {
   }
 
   static Map<String, Object?> _decodeObject(Uint8List bytes) {
+    // 204 No Content (logout and other void routes): nothing to decode.
+    if (bytes.isEmpty) return const {};
     try {
       final decoded = jsonDecode(utf8.decode(bytes));
       if (decoded is Map<String, Object?>) return decoded;
@@ -305,8 +307,12 @@ final class ApiClient {
     }
     final status = res.statusCode;
     if (status ~/ 100 == 2) return bytes;
-    if (status == 401) throw const UnauthorizedError();
     final detail = _detail(bytes);
+    // A 401 with a reason of its own (a wrong sign-in code) keeps it; a bare
+    // one means the session is gone.
+    if (status == 401) {
+      throw detail?.code == null ? const UnauthorizedError() : UnauthorizedError(detail!.message, detail.code);
+    }
     throw HttpStatusError(status, detail?.message ?? 'Request failed ($status).', code: detail?.code);
   }
 

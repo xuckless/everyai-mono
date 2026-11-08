@@ -8,6 +8,8 @@ services:
     container_name: everyai-backend
     restart: always
     ports: ["8443:8443"]
+    # JWT_SECRET and RESEND_API_KEY (deploy/set-secrets.sh writes it once).
+    env_file: [/opt/everyai/secrets.env]
     environment:
       PUBLIC_URL: https://${HOSTNAME}:8443
       TLS_CERT_PATH: /certs/${HOSTNAME}.crt

@@ -4,6 +4,7 @@
 const std = @import("std");
 const anole = @import("anole");
 const app_main = @import("app");
+const kit = @import("test_kit.zig");
 const openrouter = app_main.openrouter;
 const config = app_main.config;
 
@@ -14,6 +15,7 @@ const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
 const Env = struct {
     state: app_main.App,
     fake: openrouter.Fake,
+    mails: app_main.mail.Fake,
     server: Server,
     t: anole.testing.Client(Server),
 
@@ -25,6 +27,7 @@ const Env = struct {
         self.state.relay.deinit();
         self.state.catalog.deinit();
         self.fake.deinit();
+        self.mails.deinit();
     }
 
     fn count(self: *Env, a: std.mem.Allocator, sql: []const u8) !i64 {
@@ -49,6 +52,8 @@ fn start(env: *Env, dev_auth: bool) !void {
         .upstream = env.fake.upstream(),
         .catalog = .init(alloc),
     };
+    env.mails = .{ .gpa = alloc };
+    env.state.mailer = env.mails.mailer();
     env.server = try Server.init(alloc, .{ .executors = .exact(2) }, &env.state);
     env.state.db = try env.server.sqlite(":memory:");
     var arena: std.heap.ArenaAllocator = .init(alloc);
@@ -66,10 +71,7 @@ const Accepted = struct { delivery_id: []const u8 };
 const Duplicate = struct { ok: bool, duplicate: bool = false };
 
 fn signUp(env: *Env, a: std.mem.Allocator, email: []const u8) ![]const u8 {
-    var res = try env.t.post("/v1/auth/signup", .{ .json = .{ .name = "Ada", .email = email, .password = "correct horse" } });
-    defer res.deinit();
-    try res.expectStatus(.created);
-    return std.fmt.allocPrint(a, "Bearer {s}", .{(try res.json(Tokens)).access_token});
+    return kit.signIn(&env.t, &env.mails, a, email);
 }
 
 fn hostFor(env: *Env, a: std.mem.Allocator, auth_header: ?[]const u8) !NewHost {

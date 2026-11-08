@@ -1,18 +1,24 @@
+import 'magic_flow.dart';
+
+export 'magic_flow.dart';
+
 /// The account lifecycle. An account is optional: the app works fully
 /// signed out, and signing in only adds account features.
 ///
 /// ```text
-///  Restoring ──token ok──────────────► SignedIn
-///      │                                │  ▲
-///      └──none/invalid──► SignedOut     │  │ success
-///                          │   ▲        │  │
-///                    submit│   │failure │  │
-///                          ▼   │        │  │
-///                       Authenticating ─┼──┘
-///                                       │ signOut
-///                                       ▼
-///                                   SigningOut ──► SignedOut
+///  Restoring ──token ok──────────────────────► SignedIn
+///      │                                        │  ▲
+///      └──none/invalid──► SignedOut             │  │ redeemed
+///                          │   ▲                │  │
+///               startSignIn│   │cancel          │  │
+///                          ▼   │                │  │
+///                       SigningIn(MagicFlow) ───┼──┘
+///                                               │ signOut
+///                                               ▼
+///                                           SigningOut ──► SignedOut
 /// ```
+///
+/// Inside SigningIn the steps are a [MagicFlow] of their own.
 sealed class AuthState {
   const AuthState();
 
@@ -29,11 +35,9 @@ final class SignedOut extends AuthState {
   final String? error;
 }
 
-enum AuthMethod { password, signUp, google }
-
-final class Authenticating extends AuthState {
-  const Authenticating(this.method);
-  final AuthMethod method;
+final class SigningIn extends AuthState {
+  const SigningIn(this.flow);
+  final MagicFlow flow;
 }
 
 final class SignedIn extends AuthState {

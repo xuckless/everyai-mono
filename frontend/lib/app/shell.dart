@@ -17,6 +17,7 @@ import '../core/platform/platform_kind.dart';
 import '../core/net/api_client.dart' show ServerStatus;
 import '../core/preferences.dart';
 import '../core/providers.dart' show apiClientProvider, serverStatusProvider;
+import '../features/auth/auth_providers.dart';
 import '../features/updates/update_providers.dart' show updateProvider;
 import '../features/updates/ui/whats_new_dialog.dart' show showWhatsNewOnce;
 import '../core/theme/every_theme.dart';
@@ -135,6 +136,8 @@ class _AppShellState extends ConsumerState<AppShell> {
             context.go(to);
           }
         });
+      case SignInLink():
+        unawaited(ref.read(authProvider.notifier).pollNow());
       case OversizedLink():
         showAdaptiveToast(context, 'That link\'s text is too long.');
       case null:

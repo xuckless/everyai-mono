@@ -10,6 +10,8 @@ const std = @import("std");
 const anole = @import("anole");
 pub const config = @import("config.zig");
 pub const migrations = @import("migrations.zig");
+pub const magic = @import("magic.zig");
+pub const mail = @import("mail.zig");
 pub const auth = @import("auth.zig");
 pub const billing = @import("billing.zig");
 pub const models = @import("models.zig");
@@ -45,7 +47,9 @@ pub const App = struct {
     cfg: config.Config,
     db: *anole.sqlite.Client,
     jwt_keys: [1]anole.auth.Key,
-    google_keys: ?*anole.auth.Keyring = null,
+    /// Sign-in mail (magic.zig): Resend, the dev console log, or a test
+    /// fake; null in production without RESEND_API_KEY (sign-in answers 503).
+    mailer: ?mail.Mailer = null,
     stripe_secrets: [1][]const u8 = .{""},
     /// OpenRouter: every model call goes here unless `route` says otherwise.
     /// Tests swap in a fake.
@@ -81,8 +85,6 @@ pub const App = struct {
     /// The API-wide limit's buckets, apart from `limiter`'s: a bucket is per key, so
     /// sharing one table would let the large policy refill the auth and pairing ones.
     global_limiter: anole.ratelimit.MemoryLimiter = undefined,
-    /// The decoy password hash for sign-ins to unknown addresses (auth.zig).
-    decoy: struct { mutex: std.Io.Mutex = .init, buf: [128]u8 = undefined, len: usize = 0 } = .{},
     /// Earlier web_search results per user and chat (web.zig).
     searches: @import("web.zig").SearchCache = .{},
 
@@ -212,6 +214,7 @@ pub fn routes(app: *anole.Server(App), state: *App) !void {
     app.openapi(.{ .info = .{ .title = "EveryAI API", .version = "0.1.0-dev-nonsigned" } });
     app.get("/v1/ping", ping);
     auth.routes(app, state);
+    magic.routes(app, state);
     billing.routes(app, state);
     models.routes(app, state);
     chat.routes(app, state);
@@ -244,6 +247,7 @@ fn pruneExpired(state: *App, ctx: anytype) !void {
     // A decided pairing stays a day for its status poll.
     _ = try state.db.exec(ctx, "DELETE FROM remote_pairings WHERE expires_at < ? AND (decide_by IS NULL OR decide_by < ?)", .{ now - 86_400, now - 86_400 });
     try hooks.prune(state, ctx);
+    try magic.prune(state, ctx);
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -344,12 +348,14 @@ pub fn main(init: std.process.Init) !void {
     const web: safe_fetch.Fetcher = .{ .http = &web_client };
     state.web = &web;
 
-    if (cfg.google_client_ids.len > 0) {
-        const keyring = try init.arena.allocator().create(anole.auth.Keyring);
-        keyring.* = anole.auth.Keyring.init(init.gpa, io, app.client(), anole.auth.oidc.Provider.google.jwks_uri);
-        state.google_keys = keyring;
-    }
-    defer if (state.google_keys) |k| k.deinit();
+    var resend: mail.Resend = .{ .api_key = if (cfg.resend_api_key) |k| k.expose() else "", .from = cfg.mail_from };
+    var console_mail: mail.Log = .{};
+    if (cfg.resend_api_key != null) {
+        state.mailer = resend.mailer();
+    } else if (anole.env.environment() == .development) {
+        state.mailer = console_mail.mailer();
+        std.log.info("RESEND_API_KEY not set: sign-in emails are written to this console", .{});
+    } else std.log.warn("RESEND_API_KEY not set: sign-in is unavailable", .{});
 
     app.use(anole.middleware.RequestId.init(.{}));
     app.use(anole.observe.AccessLog.init(.{ .exclude = &anole.observe.probe_paths }));
@@ -399,6 +405,8 @@ pub fn main(init: std.process.Init) !void {
 
 test {
     _ = util;
+    _ = magic;
+    _ = mail;
     _ = tools;
     _ = chat;
     _ = gateway;

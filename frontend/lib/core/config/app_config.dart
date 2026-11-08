@@ -7,12 +7,7 @@ import 'package:flutter/foundation.dart';
 /// compiled into the app binary. Provider API keys stay on the backend.
 @immutable
 final class AppConfig {
-  const AppConfig({
-    required this.apiBaseUrl,
-    required this.devTools,
-    required this.sseEnabled,
-    required this.googleServerClientId,
-  });
+  const AppConfig({required this.apiBaseUrl, required this.devTools, required this.sseEnabled});
 
   factory AppConfig.fromEnvironment() {
     const url = String.fromEnvironment('API_BASE_URL');
@@ -20,7 +15,6 @@ final class AppConfig {
       apiBaseUrl: Uri.parse(url.isEmpty ? _defaultBaseUrl() : url),
       devTools: const bool.fromEnvironment('DEV_TOOLS', defaultValue: kDebugMode),
       sseEnabled: const bool.fromEnvironment('SSE_ENABLED', defaultValue: true),
-      googleServerClientId: const String.fromEnvironment('GOOGLE_SERVER_CLIENT_ID'),
     );
   }
 
@@ -33,9 +27,6 @@ final class AppConfig {
 
   /// Stream chat over SSE (`/v1/chat/stream`). Off only for debugging.
   final bool sseEnabled;
-
-  /// OAuth web client ID that Google Sign-In uses to mint ID tokens for the backend.
-  final String googleServerClientId;
 
   /// The Android emulator reaches the host machine at 10.0.2.2, not localhost.
   static String _defaultBaseUrl() =>

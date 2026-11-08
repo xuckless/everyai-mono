@@ -100,9 +100,12 @@ pub const Config = struct {
     /// loopback; without it `main` refuses to start (see `lanExposure`).
     dev_auth_lan: bool = false,
 
-    /// Google OAuth client ids whose ID tokens we accept (comma separated:
-    /// android, ios, web/desktop).
-    google_client_ids: []const []const u8 = &.{},
+    /// Sign-in mail (magic.zig) through Resend's HTTPS API. Without a key,
+    /// development logs the message; production answers 503.
+    resend_api_key: ?anole.Secret = null,
+    mail_from: []const u8 = "EveryAI <noreply@everyai.dev>",
+    /// Sends a day, under Resend's free 100: past it sign-in answers 503.
+    mail_daily_cap: i64 = 90,
 
     /// Stripe test mode. Without a key, checkout credits immediately (mock).
     stripe_secret_key: ?anole.Secret = null,

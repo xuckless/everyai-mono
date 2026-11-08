@@ -19,6 +19,8 @@ cp "$out/bin/everyai-backend-exp" "$here/Dockerfile" "$here/docker-compose.yml" 
 printf 'HOSTNAME=%s\n' "$host" >"$out/.env"
 
 ssh_vm() { gcloud compute ssh "$vm" --zone "$zone" --project "$project" --command "$1"; }
+# Production config needs its secrets on the VM first (set-secrets.sh).
+ssh_vm 'test -s /opt/everyai/secrets.env' || { echo "no /opt/everyai/secrets.env on the VM: run deploy/set-secrets.sh first" >&2; exit 1; }
 ssh_vm 'rm -rf /tmp/everyai-build && mkdir -p /tmp/everyai-build'
 gcloud compute scp --zone "$zone" --project "$project" \
   "$out/everyai-backend-exp" "$out/Dockerfile" "$out/docker-compose.yml" "$out/.env" \
