@@ -5,7 +5,8 @@ import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/preferences.dart';
-import '../code_providers.dart' show codeSessionsProvider;
+import '../code_providers.dart' show codeSessionProvider, codeSessionsProvider;
+import '../domain/permissions.dart' show ApprovalScope;
 import '../domain/code_session.dart';
 import '../drivers/driver_registry.dart' show driverRegistryProvider;
 import '../harness/harness.dart' show ReadsRecentEvents;
@@ -334,6 +335,12 @@ final class BoardMarks extends Notifier<BoardMarkSet> {
         if (e.value case FinishedSeen(:final seenAt)) e.key: seenAt.millisecondsSinceEpoch,
     });
   }
+
+  /// Puts back the marks of [marks] (Undo of a clear): they return as they were, not as fresh finishes.
+  void restore(Map<String, SeenState> marks) {
+    if (marks.isEmpty) return;
+    _set(state.era, {...state.marks, ...marks});
+  }
 }
 
 /// How long a finished session stays in Done, and how many stay at most; older ones clear by themselves.
@@ -409,3 +416,56 @@ final boardRecentTranscriptProvider = FutureProvider.autoDispose.family<Transcri
     return null;
   }
 });
+
+/// The Board's side inspector width in points; Preferences `code.board.inspector`.
+final boardInspectorWidthProvider = NotifierProvider<BoardInspectorWidth, double>(BoardInspectorWidth.new);
+
+final class BoardInspectorWidth extends Notifier<double> {
+  static const key = 'code.board.inspector';
+  static const initial = 440.0;
+  static const min = 340.0;
+  static const max = 760.0;
+
+  @override
+  double build() => (double.tryParse(ref.read(preferencesProvider)[key] ?? '') ?? initial).clamp(min, max);
+
+  void set(double width) {
+    state = width.clamp(min, max);
+    ref.read(preferencesProvider)[key] = state.toStringAsFixed(0);
+  }
+
+  void reset() => set(initial);
+}
+
+/// Approves or denies calls [callIds] of session [sessionId] from the Board, on the session's own controller.
+typedef BoardDecide = Future<void> Function(String sessionId, {required bool approve, required List<String> callIds});
+
+/// How the Board answers approvals (cards, keys, Approve all); tests listen in here.
+final boardDecideProvider = Provider<BoardDecide>(
+  (ref) =>
+      (sessionId, {required approve, required callIds}) => approve
+      ? ref.read(codeSessionProvider(sessionId).notifier).approve(ApprovalScope.once, callIds)
+      : ref.read(codeSessionProvider(sessionId).notifier).deny(null, callIds),
+);
+
+/// Sessions with an approve or deny from the Board in flight: one answer at a time each, whichever way it was asked
+/// (a/d, the card's buttons, Approve all).
+final boardDecidingProvider = Provider<Set<String>>((ref) => <String>{});
+
+/// [decide] for [sessionId] unless an answer for it is already in flight; false when it was skipped. A harness that
+/// answers whole batches would otherwise get a second answer landing on a newer batch nobody saw.
+Future<bool> decideOnce(
+  Set<String> deciding,
+  BoardDecide decide,
+  String sessionId, {
+  required bool approve,
+  required List<String> callIds,
+}) async {
+  if (!deciding.add(sessionId)) return false;
+  try {
+    await decide(sessionId, approve: approve, callIds: callIds);
+    return true;
+  } finally {
+    deciding.remove(sessionId);
+  }
+}

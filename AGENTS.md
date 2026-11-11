@@ -1003,6 +1003,31 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   progress (`BoardProgress.last`); Nudge joins after the current step (`tellWhileRunning`); Compact shows only when it
   can work. Starting, paused and waiting forks count as work. Opening a session changes its seen mark only once it
   has connected (`seenUpdate`). Seen marks of deleted sessions are pruned; `boardProgressProvider` is autoDispose.
+- **Board v2, phase 2 (2026-11-11; branch `board-v2/phase2`, on top of `board-v2/phase1`).** A click on a card (or
+  Enter) opens `board/board_inspector.dart` `BoardInspectorPane` beside the columns: header (logo, title, model,
+  status, Open, ×), the family tree (`BoardWork`), the session's `TranscriptList`, its `SessionApprovalCard` and a
+  `CodeComposer` on its own controller (send/queue/steer/stop, slash commands; Esc closes). Looking there marks the
+  session seen. Width resizable from its edge (Preferences `code.board.inspector`, `BoardInspectorWidth`, 340–760,
+  double-click resets); a window without 520pt left for the columns gets it over the Board with a Back control. The
+  Board keeps one widget structure open or not, so cards keep their state. `board/board_triage.dart` (pure, with
+  diagrams): `BoardSelection`, `BoardInspector`, `DoneSweep`, `ClearUndo`, `BulkApprove`; `boardKeyOf` (j/k and arrows,
+  Enter, ⌘Enter full session, a/d, A approve all, x clear, n next needing you, / filter, ? keys, Esc, ⌘Z undo; Board
+  keys only while the Board itself has focus, so typing never fires them), `stepSelection`, `nextNeedingYou`,
+  `keepSelection` (a card that leaves hands the selection on), `matchesBoardFilter` (title, project, harness, branch),
+  `sweptCards`, `bulkApprovePlan`. Approve all (Needs-you header, ⇧A) approves every waiting call on the shown cards;
+  flagged calls (`approvalFlags`: floor and dangerous) are listed in one confirm first (owner: risky ones may be
+  included after one confirm); questions are never bulk-answered; failures go in a toast. Clearing (×, x, Clear, a
+  mouse sweep across Done cards) shows "Cleared n · Undo" for 6 s (⌘Z too). Pause / Stop all were already on cards
+  (phase 1's `StopAllButton`). Not seen in the running app.
+  Review fixes: a click-open hands the keys to the inspector's composer (`CodeComposer.takeFocus`), so a typed reply
+  never fires Board keys; Enter keeps them on the Board. While the inspector is open, j/k/n carry it along and a/d/x act
+  on the session it shows; covering the Board it leaves the hidden cards alone. The sweep reads raw pointer events
+  (`Listener`) and starts only on a second Done card (`SweepPressed`), so clicks stay clicks. a/d and Approve leave calls
+  decided one by one alone (`undecidedCalls`); answers go through `boardDecideProvider` (tests listen there), one per
+  session at a time; held keys repeat only j/k. Approve all always confirms across sessions, lists what flagged calls
+  run (`bulkCallLine`), sends only the counted calls (`bulkTargets`; a whole-batch harness whose batch changed is left
+  for the user). Undo restores when cleared cards had finished (`BoardDoneSince.restore`). The inspector edge stops
+  before the columns get too narrow; its pane keeps a GlobalKey per session and the Board keeps unsent replies.
 - **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
   `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
   `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,
