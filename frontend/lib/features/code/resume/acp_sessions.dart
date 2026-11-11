@@ -26,6 +26,9 @@ import 'resume_files.dart' as files;
 
 /// Gemini CLI's chats for a folder.
 final class GeminiPastSessions implements PastSessionSource {
+  @override
+  bool get deletes => true;
+
   GeminiPastSessions({Future<Map<String, String>> Function()? env, this.home}) : _env = env ?? files.resumeEnv;
 
   final Future<Map<String, String>> Function() _env;
@@ -222,6 +225,9 @@ String _resultText(Map<String, Object?> call) {
 /// An ACP agent that lists its own sessions (`session/list`). [open] starts the agent in a folder and returns a
 /// connected peer (the integration wires it to the ACP launcher); it is closed after listing.
 final class AcpListedSessions implements PastSessionSource {
+  @override
+  bool get deletes => false;
+
   AcpListedSessions({required this.harness, required this.open, this.pages = 5});
 
   @override

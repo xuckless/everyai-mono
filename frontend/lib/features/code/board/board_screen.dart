@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/gestures.dart' show DragStartBehavior, PointerDeviceKind, kPrimaryMouseButton;
 import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:flutter/services.dart';
@@ -196,19 +197,20 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
   }
 
   void _openFull(String id) {
-    ref.read(boardSeenProvider.notifier).see(id);
+    ref.read(boardMarksProvider.notifier).apply(id, Looked(DateTime.now()));
     context.go(Routes.codeSession(id));
   }
 
   /// Clears [ids] off the Board, with Undo for a few seconds.
   void _clear(List<String> ids) {
-    if (ids.isEmpty) return;
-    // When each had finished, so Undo brings them back as they were.
-    final known = ref.read(boardDoneSinceProvider) ?? const <String, int>{};
+    // Nothing is cleared from a guess: until the statuses are in, a card may only look finished.
+    if (ids.isEmpty || ref.read(codeStatusesLoadProvider) is! StatusesLoaded) return;
+    // When each had finished and whether it was seen, so Undo brings them back as they were.
+    final known = ref.read(boardMarksProvider).marks;
     final since = {for (final id in ids) id: ?known[id]};
     ref.read(boardDismissedProvider.notifier).dismiss(ids);
     final gen = ++_undoGeneration;
-    setState(() => _undo = Undoable(ids, gen, doneSince: since));
+    setState(() => _undo = Undoable(ids, gen, marks: since));
     _undoTimer?.cancel();
     _undoTimer = Timer(const Duration(seconds: 6), () {
       if (!mounted) return;
@@ -217,8 +219,8 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
   }
 
   void _undoClear() {
-    if (_undo case Undoable(:final ids, :final doneSince)) {
-      ref.read(boardDoneSinceProvider.notifier).restore(doneSince);
+    if (_undo case Undoable(:final ids, :final marks)) {
+      ref.read(boardMarksProvider.notifier).restore(marks);
       ref.read(boardDismissedProvider.notifier).restore(ids);
       setState(() => _undo = const NothingToUndo());
     }
@@ -449,21 +451,26 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     final sessions = ref.watch(codeSessionsProvider);
     final all = boardSessions(sessions, ref.watch(boardDetachedProvider));
     final statuses = ref.watch(codeStatusesProvider);
+    final load = ref.watch(codeStatusesLoadProvider);
+    // Until the first poll has answered, a session without a live controller has no status (not "idle", which
+    // would read as Done): it stays off the Board, and nothing is recorded or cleared from it.
+    final settled = load is StatusesLoaded;
     // A session's own status: live once its controller has connected, else the polled one.
-    SessionStatus ownOf(CodeSessionInfo s) {
+    SessionStatus? ownOf(CodeSessionInfo s) {
       final live = ref.exists(codeSessionProvider(s.id))
           ? ref.watch(codeSessionProvider(s.id).select((st) => st.connected || st.failure != null ? st.status : null))
           : null;
-      return live ?? statuses[s.id] ?? SessionStatus.idle;
+      return live ?? statuses[s.id] ?? (load is StatusesLoading ? null : SessionStatus.idle);
     }
 
     final childrenOf = childrenByParent(sessions);
+    bool isOpen(CodeSessionInfo c) => ref.exists(codeSessionProvider(c.id));
+    SessionStatus polledOf(CodeSessionInfo c) => ownOf(c) ?? SessionStatus.idle;
 
-    // Waiting sessions are opened, so their card can answer for them.
+    // Waiting sessions are opened, so their card can answer for them: the Board's own, and the forks and
+    // subagents under them (their wait shows on the lead's card, which sits under Needs you meanwhile).
     void openIfWaiting(CodeSessionInfo s) {
-      if (statuses[s.id] == SessionStatus.needsInput &&
-          !isDemoPath(s.workingDir) &&
-          !ref.exists(codeSessionProvider(s.id))) {
+      if (statuses[s.id] == SessionStatus.needsInput && !isDemoPath(s.workingDir) && !isOpen(s)) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) ref.read(codeSessionProvider(s.id));
         });
@@ -472,7 +479,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
 
     // What each session runs besides its lead's turn.
     BoardWorkCount workOf(CodeSessionInfo s) => (
-      forks: runningDescendants(s.id, childrenOf, ownOf),
+      forks: runningDescendants(s.id, childrenOf, polledOf, isOpen: isOpen),
       subagents: ref.exists(codeSessionProvider(s.id))
           ? ref.watch(codeSessionProvider(s.id).select((st) => outsideSubagents(st.transcript).length))
           : 0,
@@ -484,22 +491,33 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     final waitsOnChild = <String, bool>{};
     for (final s in all) {
       openIfWaiting(s);
-      // Until an opened session has connected, the polled status stands (no flicker to Done and back).
-      own[s.id] = ownOf(s);
+      for (final c in closedWaiting(s.id, childrenOf, polledOf, isOpen)) {
+        openIfWaiting(c);
+      }
+      // Until an opened session has connected, the polled status stands (no flicker to Done and back); before the
+      // first poll has answered it has no status at all, and stays off the Board.
+      final o = ownOf(s);
+      if (o == null) continue;
+      own[s.id] = o;
       work[s.id] = workOf(s);
+      // A child waiting on the user: an open one shows it; a closed one's polled wait counts too (it opens next).
       waitsOnChild[s.id] = (childrenOf[s.id] ?? const <CodeSessionInfo>[]).any(
-        (c) => childWaitsOnUser(ref, s.id, c.id) != null,
+        (c) => childWaitsOnUser(ref, s.id, c.id) != null || (!isOpen(c) && ownOf(c) == SessionStatus.needsInput),
       );
     }
+    final known = [
+      for (final s in all)
+        if (own.containsKey(s.id)) s,
+    ];
     // The session's status as the rest of the app reads it (Running while its work runs), for its recent events.
     final status = {
-      for (final s in all)
+      for (final s in known)
         s.id: boardStatus(own[s.id]!, workRunning: hasBoardWork(work[s.id]!), childWaits: waitsOnChild[s.id]!),
     };
     // The phase without "seen", which needs when it finished (below).
     BoardPhase phaseOf(String id, {bool seen = false}) =>
         boardPhase(own[id]!, work: work[id]!, childWaits: waitsOnChild[id]!, seen: seen);
-    final columnOf = {for (final s in all) s.id: phaseOf(s.id).column};
+    final columnOf = {for (final s in known) s.id: phaseOf(s.id).column};
 
     // A cleared session that runs again comes back.
     final back = [
@@ -509,40 +527,55 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     if (back.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => ref.read(boardDismissedProvider.notifier).restore(back));
     }
+    // What each Done card's marks would be once the Board has seen it there (the marks' state machine, run ahead).
     // Old finishes clear by themselves ([staleDone]): Done keeps the last two days, at most [boardDoneKeep].
-    final known = ref.watch(boardDoneSinceProvider);
-    final doneSince = <String, DateTime>{
-      for (final s in all)
+    final marks = ref.watch(boardMarksProvider);
+    final now = DateTime.now();
+    final projected = <String, SeenState>{
+      for (final s in known)
         if (columnOf[s.id] == BoardColumn.done && !dismissed.contains(s.id))
-          s.id: switch (known?[s.id]) {
-            final ms? => DateTime.fromMillisecondsSinceEpoch(ms),
-            // Before the Board first recorded anything, from when it started; since then, from now.
-            null => known == null ? s.createdAt : DateTime.now(),
-          },
+          s.id: seenTransition(marks.of(s.id), Finished(marks.finishedAt(s.createdAt, now))),
     };
-    final stale = staleDone(doneSince, now: DateTime.now());
-    final seenAt = ref.watch(boardSeenProvider);
-    final phase = {for (final s in all) s.id: phaseOf(s.id, seen: seenSince(seenAt[s.id], doneSince[s.id]))};
-    // Sessions running again lose their seen mark, so their next finish shows as new; deleted sessions lose theirs too.
-    final ids = {for (final s in sessions) s.id};
+    DateTime sinceOf(SeenState st) => switch (st) {
+      FinishedUnseen(:final since) || FinishedSeen(:final since) => since,
+      _ => now,
+    };
+    final stale = staleDone({for (final e in projected.entries) e.key: sinceOf(e.value)}, now: now);
     // Keys, panes and drafts of sessions that are gone go with them.
-    _keys.removeWhere((id, _) => !ids.contains(id));
-    _paneKeys.removeWhere((id, _) => !ids.contains(id));
-    _drafts.removeWhere((id, _) => !ids.contains(id));
+    final liveIds = {for (final s in sessions) s.id};
+    _keys.removeWhere((id, _) => !liveIds.contains(id));
+    _paneKeys.removeWhere((id, _) => !liveIds.contains(id));
+    _drafts.removeWhere((id, _) => !liveIds.contains(id));
     _statusOf = status;
-    final rerun = [
-      for (final id in seenAt.keys)
-        if (!ids.contains(id) || (columnOf[id] != null && columnOf[id] != BoardColumn.done)) id,
-    ];
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      ref.read(boardDoneSinceProvider.notifier).sync({
-        for (final e in doneSince.entries)
-          if (!stale.contains(e.key)) e.key: e.value,
+    final phase = {for (final s in known) s.id: phaseOf(s.id, seen: projected[s.id] is FinishedSeen)};
+    // Only once the statuses are in: until then nothing is recorded or cleared from a guess.
+    if (settled) {
+      final sessionIds = {for (final s in sessions) s.id};
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        ref
+            .read(boardMarksProvider.notifier)
+            .sync(
+              finished: {
+                for (final e in projected.entries)
+                  if (!stale.contains(e.key)) e.key: e.value,
+              },
+              // Sessions running again lose their marks, so their next finish shows as new.
+              ran: [
+                for (final e in columnOf.entries)
+                  if (e.value != BoardColumn.done) e.key,
+              ],
+              // Auto-cleared ones and deleted sessions. A card the user cleared keeps its marks, so Undo brings it
+              // back as it was.
+              gone: [
+                ...stale,
+                for (final id in marks.marks.keys)
+                  if (!sessionIds.contains(id)) id,
+              ],
+            );
+        if (stale.isNotEmpty) ref.read(boardDismissedProvider.notifier).dismiss(stale);
       });
-      if (stale.isNotEmpty) ref.read(boardDismissedProvider.notifier).dismiss(stale);
-      if (rerun.isNotEmpty) ref.read(boardSeenProvider.notifier).forget(rerun);
-    });
+    }
 
     final harnesses = <String>{for (final s in all) s.harness}.toList();
     final harness = harnesses.contains(_harness) ? _harness : null;
@@ -550,7 +583,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     String labelOf(String h) => h == everyaiHarnessName ? 'EveryAI' : registry.resolve(h)?.info.label ?? h;
     final projectNames = {for (final p in ref.watch(codeProjectsProvider)) p.id: p.name};
     final shown = [
-      for (final s in all)
+      for (final s in known)
         if ((harness == null || s.harness == harness) &&
             !(dismissed.contains(s.id) && columnOf[s.id] == BoardColumn.done) &&
             matchesBoardFilter(
@@ -808,7 +841,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
               child: GlowBackdrop(
                 child: AmbientClock(
                   // One breathing clock for every card, and only while something breathes.
-                  running: phase.values.any((p) => p.active || p == BoardPhase.needsYou),
+                  running: shown.any((s) => phase[s.id]!.active || phase[s.id] == BoardPhase.needsYou),
                   child: LayoutBuilder(
                     builder: (context, box) {
                       final wide = box.maxWidth >= 860;
@@ -1219,6 +1252,32 @@ class _BoardCardState extends ConsumerState<BoardCard> {
 
   var _act = _Act.idle;
 
+  /// The warning lines the last build showed, so the clock rebuilds the card only when they change.
+  var _warned = const <String>[];
+
+  /// The clock that re-reads the warnings (stall minutes grow with time); running only while the card has a live
+  /// session (a Done or closed card has no warnings to age). Off in tests ([Motion.ambient]) so they can settle.
+  Timer? _clock;
+
+  void _syncClock(bool live) {
+    if (!live || !Motion.ambient) {
+      _clock?.cancel();
+      _clock = null;
+    } else {
+      _clock ??= Timer.periodic(const Duration(seconds: 30), (_) {
+        if (!mounted) return;
+        final now = [for (final w in _warnings(ref.read(codeSessionProvider(widget.info.id)).transcript)) w.line];
+        if (!listEquals(now, _warned)) setState(() {});
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _clock?.cancel();
+    super.dispose();
+  }
+
   @override
   void didUpdateWidget(BoardCard old) {
     super.didUpdateWidget(old);
@@ -1303,48 +1362,45 @@ class _BoardCardState extends ConsumerState<BoardCard> {
     // A question is answered right on the card, open from the start.
     final asking = waiting && question != null;
     void openSession() {
-      ref.read(boardSeenProvider.notifier).see(info.id);
+      ref.read(boardMarksProvider.notifier).apply(info.id, Looked(DateTime.now()));
       context.go(Routes.codeSession(info.id));
     }
 
     const radius = EveryTheme.cardRadius;
-    // Warnings move with the clock; everything else rebuilds on its own changes.
-    return PeriodicRebuild(
-      period: const Duration(seconds: 30),
-      builder: (context) {
-        final warnings = _warnings(live);
-        final edge = failed ? theme.danger : (warnings.isNotEmpty ? theme.warning : null);
-        return FinishBurst(
-          trigger: _finished == 0 ? null : _finished,
-          color: theme.success,
-          child: BreathingRing(
-            active: waiting,
-            color: theme.warning,
-            radius: radius,
-            child: GlowPulse(
-              active: phase.active,
-              color: theme.accent,
-              radius: radius,
-              strength: phase == BoardPhase.working ? 1 : 0.55,
-              child: _body(
-                theme: theme,
-                warnings: warnings,
-                edge: edge,
-                openSession: openSession,
-                asking: asking,
-                stopAll: stopAll,
-                live: live,
-                pending: pending,
-                undecided: undecided,
-                question: question,
-                activity: activity,
-                where: where,
-                phaseLine: phaseLine,
-              ),
-            ),
+    // Warnings move with the clock, which only a card with a live session needs ([_syncClock]).
+    final warnings = _warnings(live);
+    _warned = [for (final w in warnings) w.line];
+    _syncClock(live != null);
+    final edge = failed ? theme.danger : (warnings.isNotEmpty ? theme.warning : null);
+    return FinishBurst(
+      trigger: _finished == 0 ? null : _finished,
+      color: theme.success,
+      child: BreathingRing(
+        active: waiting,
+        color: theme.warning,
+        radius: radius,
+        child: GlowPulse(
+          active: phase.active,
+          color: theme.accent,
+          radius: radius,
+          strength: phase == BoardPhase.working ? 1 : 0.55,
+          child: _body(
+            theme: theme,
+            warnings: warnings,
+            edge: edge,
+            openSession: openSession,
+            asking: asking,
+            stopAll: stopAll,
+            live: live,
+            pending: pending,
+            undecided: undecided,
+            question: question,
+            activity: activity,
+            where: where,
+            phaseLine: phaseLine,
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 

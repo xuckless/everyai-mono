@@ -32,7 +32,14 @@ class AmbientClock extends StatefulWidget {
 }
 
 class _AmbientClockState extends State<AmbientClock> with SingleTickerProviderStateMixin {
-  late final _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 2800));
+  /// The breath, 0 to 1 and back. It is stepped by [_timer] at [Motion.breathTick] instead of running on a ticker, so
+  /// the glow and ring under it redraw ~15 times a second rather than on every frame.
+  late final _c = AnimationController(vsync: this, duration: Motion.breath);
+
+  Timer? _timer;
+
+  /// Position in the breath, in 0..2 (up, then back down).
+  var _phase = 0.0;
 
   /// Whether it runs: the scope below hands the clock out only then.
   bool _on = false;
@@ -53,15 +60,19 @@ class _AmbientClockState extends State<AmbientClock> with SingleTickerProviderSt
     final run = widget.running && Motion.loops(context);
     if (run == _on) return;
     _on = run;
+    _timer?.cancel();
+    _timer = null;
     if (run) {
-      _c.repeat(reverse: true);
-    } else {
-      _c.stop();
+      _timer = Timer.periodic(Motion.breathTick, (_) {
+        _phase = (_phase + Motion.breathTick.inMicroseconds / Motion.breath.inMicroseconds * 2) % 2;
+        _c.value = _phase <= 1 ? _phase : 2 - _phase;
+      });
     }
   }
 
   @override
   void dispose() {
+    _timer?.cancel();
     _c.dispose();
     super.dispose();
   }
@@ -193,7 +204,7 @@ class FinishBurst extends StatefulWidget {
 }
 
 class _FinishBurstState extends State<FinishBurst> with SingleTickerProviderStateMixin {
-  late final _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 820));
+  late final _c = AnimationController(vsync: this, duration: Motion.burst);
 
   /// A new seed per burst, so two bursts don't look the same.
   var _seed = 0;

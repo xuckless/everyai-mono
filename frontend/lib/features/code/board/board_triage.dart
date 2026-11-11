@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import '../../../core/platform/platform_kind.dart' show Host;
 
 import '../harness/events.dart' show ActionCall;
+import 'board_providers.dart' show SeenState;
 
 /// Which card the keyboard is on, if any. While the inspector is open the selection is the inspected card (j/k and
 /// n move both together), so a/d/x always act on the session the inspector shows:
@@ -134,8 +135,8 @@ final class Sweeping extends DoneSweep {
   final String over;
 }
 
-/// The last clear the user can take back, while its bar shows. It keeps when each card had finished ([doneSince]), so
-/// Undo puts them back as they were (not as fresh, unseen finishes):
+/// The last clear the user can take back, while its bar shows. It keeps each card's seen state ([marks]: when it
+/// finished, whether it was seen), so Undo puts them back as they were (not as fresh, unseen finishes):
 ///
 /// ```text
 ///   nothing ──cards cleared──► undoable(ids, gen) ──Undo, ⌘Z──► nothing (ids back)
@@ -151,11 +152,11 @@ final class NothingToUndo extends ClearUndo {
 }
 
 final class Undoable extends ClearUndo {
-  const Undoable(this.ids, this.generation, {this.doneSince = const {}});
+  const Undoable(this.ids, this.generation, {this.marks = const {}});
   final List<String> ids;
 
-  /// When each cleared card had finished (epoch ms), as the Board had it.
-  final Map<String, int> doneSince;
+  /// Each cleared card's marks, as the Board had them.
+  final Map<String, SeenState> marks;
 
   /// Which clear this is: the timer of an older one doesn't hide a newer bar.
   final int generation;

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:drift/native.dart';
 import 'package:every_ai/core/db/app_database.dart';
 import 'package:every_ai/core/preferences.dart';
@@ -8,6 +10,7 @@ import 'package:every_ai/features/code/domain/code_session.dart';
 import 'package:every_ai/features/code/domain/subagents.dart' show taskTool;
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/drivers/driver_events.dart';
+import 'package:every_ai/features/code/harness/events.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -121,6 +124,67 @@ void main() {
     }
   });
 
+  test("a closed fork's polled wait is not work for its lead; an open one's is", () {
+    final all = [_s('lead'), _s('a', parent: 'lead'), _s('g', parent: 'a')];
+    final byParent = childrenByParent(all);
+    SessionStatus waits(CodeSessionInfo s) => s.id == 'g' ? SessionStatus.needsInput : SessionStatus.done;
+    expect(runningDescendants('lead', byParent, waits, isOpen: (_) => false), 0);
+    expect(runningDescendants('lead', byParent, waits, isOpen: (s) => s.id == 'g'), 1);
+    // The Board opens the closed ones that wait, at any depth.
+    expect([for (final s in closedWaiting('lead', byParent, waits, (_) => false)) s.id], ['g']);
+    expect(closedWaiting('lead', byParent, waits, (s) => s.id == 'g'), isEmpty);
+  });
+
+  group('same step in a row follows the loop guard', () {
+    ActionCall tool(String id, String name, {String kind = 'TerminalAction', Map<String, Object?>? args}) =>
+        actionEvent(id: id, toolName: name, kind: kind, args: args ?? const {'command': 'x'});
+
+    Transcript of(List<Object> events) {
+      final b = TranscriptBuilder();
+      for (final e in events) {
+        switch (e) {
+          case final ActionCall c:
+            b
+              ..add(c)
+              ..add(resultEvent(id: 'r-${c.id}', actionId: c.id, toolName: c.toolName, text: 'ok'));
+          case final HarnessEvent h:
+            b.add(h);
+        }
+      }
+      return b.snapshot;
+    }
+
+    test('calls the guard ignores (client tools, thinking, trackers) are not a loop', () {
+      final checks = [for (var i = 0; i < 3; i++) tool('f$i', 'check_forks', kind: '', args: const {})];
+      expect(repeatedStep(of(checks)), isNull);
+      final think = [
+        for (var i = 0; i < 3; i++) tool('t$i', 'think', kind: 'ThinkAction', args: const {'thought': 'x'}),
+      ];
+      expect(repeatedStep(of(think)), isNull);
+      // They don't break a real run either.
+      expect(
+        repeatedStep(
+          of([
+            tool('a', 'bash'),
+            tool('c', 'check_forks', kind: '', args: const {}),
+            tool('b', 'bash'),
+            tool('d', 'bash'),
+          ]),
+        ),
+        isNotNull,
+      );
+    });
+
+    test('the user speaking starts the count again', () {
+      final user = ChatMessage(id: 'u1', raw: const {}, fromUser: true, text: 'try again');
+      expect(repeatedStep(of([tool('a', 'bash'), tool('b', 'bash'), user, tool('c', 'bash')])), isNull);
+      expect(
+        repeatedStep(of([tool('a', 'bash'), user, tool('b', 'bash'), tool('c', 'bash'), tool('d', 'bash')])),
+        isNotNull,
+      );
+    });
+  });
+
   test("an outside lead's subagents still out are listed with their task; ours and finished ones aren't", () {
     SubagentItem agent(String tool, String id, {bool done = false}) {
       final call = actionEvent(id: id, toolName: tool, kind: 'TaskAction', args: const {'description': 'Map the API'});
@@ -178,38 +242,108 @@ void main() {
 
   group('seen', () {
     late AppDatabase db;
+    late Preferences prefs;
     late ProviderContainer c;
+    final t0 = DateTime(2026, 11, 11, 10);
+
+    ProviderContainer make() => ProviderContainer(overrides: [preferencesProvider.overrideWithValue(prefs)]);
 
     setUp(() async {
       db = AppDatabase(NativeDatabase.memory());
-      final prefs = await Preferences.load(db);
-      prefs[BoardDoneSince.key] = '{}';
-      c = ProviderContainer(overrides: [preferencesProvider.overrideWithValue(prefs)]);
+      prefs = await Preferences.load(db);
+      prefs[BoardMarks.doneSinceKey] = '{}';
+      c = make();
     });
     tearDown(() async {
       c.dispose();
       await db.close();
     });
 
-    test('a mark at or after the finish counts; running again drops it', () {
-      final done = DateTime(2026, 11, 11, 10);
-      expect(seenSince(done.millisecondsSinceEpoch, done), isTrue);
-      expect(seenSince(done.millisecondsSinceEpoch - 1, done), isFalse);
-      expect(seenSince(null, done), isFalse);
-
-      c.read(boardSeenProvider.notifier).see('a', at: done);
-      expect(c.read(boardSeenProvider), {'a': done.millisecondsSinceEpoch});
-      c.read(boardSeenProvider.notifier).forget(['a']);
-      expect(c.read(boardSeenProvider), isEmpty);
+    test('one transition function moves a session between the states', () {
+      SeenState go(SeenState s, SeenEvent e) => seenTransition(s, e);
+      const none = NotTracked();
+      final unseen = go(none, Finished(t0));
+      expect(unseen, FinishedUnseen(t0));
+      // A later sighting of the same finish changes nothing.
+      expect(go(unseen, Finished(t0.add(const Duration(hours: 1)))), unseen);
+      final seen = go(unseen, Looked(t0.add(const Duration(minutes: 5))));
+      expect(seen, FinishedSeen(t0, t0.add(const Duration(minutes: 5))));
+      expect(go(seen, Looked(t0.add(const Duration(hours: 1)))), seen);
+      // Running drops the marks; the next finish is news again.
+      expect(go(seen, const Ran()), const RunningAgain());
+      expect(go(unseen, const Ran()), const RunningAgain());
+      expect(go(go(seen, const Ran()), Finished(t0)), FinishedUnseen(t0));
+      // Looking at a finish the Board hasn't recorded records it as seen; running with nothing recorded is nothing.
+      expect(go(none, Looked(t0)), FinishedSeen(t0, t0));
+      expect(go(none, const Ran()), none);
     });
 
-    test('the finish time is recorded once, and forgotten when the session runs again', () {
-      final n = c.read(boardDoneSinceProvider.notifier);
-      n.mark('a', DateTime(2026, 11, 11, 10));
-      n.mark('a', DateTime(2026, 11, 11, 12));
-      expect(c.read(boardDoneSinceProvider), {'a': DateTime(2026, 11, 11, 10).millisecondsSinceEpoch});
-      n.forget('a');
-      expect(c.read(boardDoneSinceProvider), isEmpty);
+    test('the marks have one writer: it writes only when a state changes, in the old preference format', () {
+      final n = c.read(boardMarksProvider.notifier);
+      n.apply('a', Looked(t0));
+      expect(c.read(boardMarksProvider).of('a'), FinishedSeen(t0, t0));
+      expect(jsonDecode(prefs[BoardMarks.doneSinceKey]!), {'a': t0.millisecondsSinceEpoch});
+      expect(jsonDecode(prefs[BoardMarks.seenKey]!), {'a': t0.millisecondsSinceEpoch});
+      // The session view calls this on every build: no change, no write.
+      prefs[BoardMarks.seenKey] = 'untouched';
+      n.apply('a', Looked(t0.add(const Duration(minutes: 1))));
+      n.apply('zz', const Ran());
+      expect(prefs[BoardMarks.seenKey], 'untouched');
+      n.apply('a', const Ran());
+      expect(c.read(boardMarksProvider).of('a'), const NotTracked());
+      expect(jsonDecode(prefs[BoardMarks.doneSinceKey]!), isEmpty);
+    });
+
+    test('old preferences load: a look at or after the finish is seen, an earlier one is not', () {
+      prefs[BoardMarks.doneSinceKey] = jsonEncode({
+        'a': t0.millisecondsSinceEpoch,
+        'b': t0.millisecondsSinceEpoch,
+        'c': t0.millisecondsSinceEpoch,
+      });
+      prefs[BoardMarks.seenKey] = jsonEncode({
+        'a': t0.millisecondsSinceEpoch,
+        'b': t0.millisecondsSinceEpoch - 1,
+        'stray': t0.millisecondsSinceEpoch,
+      });
+      final set = make().read(boardMarksProvider);
+      expect(set.era, MarksEra.tracking);
+      expect(set.of('a'), FinishedSeen(t0, t0));
+      expect(set.of('b'), FinishedUnseen(t0));
+      expect(set.of('c'), FinishedUnseen(t0));
+      expect(set.of('stray'), const NotTracked());
+    });
+
+    test('before the Board first records, finishes count from creation and the first refresh starts tracking', () {
+      final fresh = AppDatabase(NativeDatabase.memory());
+      addTearDown(fresh.close);
+      return Preferences.load(fresh).then((p) {
+        final k = ProviderContainer(overrides: [preferencesProvider.overrideWithValue(p)]);
+        addTearDown(k.dispose);
+        final set = k.read(boardMarksProvider);
+        expect(set.era, MarksEra.firstRun);
+        expect(set.finishedAt(DateTime(2026, 11, 1), t0), DateTime(2026, 11, 1));
+        // A look before the first record writes only what was seen.
+        k.read(boardMarksProvider.notifier).apply('a', Looked(t0));
+        expect(p[BoardMarks.doneSinceKey], isNull);
+        expect(k.read(boardMarksProvider).era, MarksEra.firstRun);
+        k.read(boardMarksProvider.notifier).sync(finished: {'b': FinishedUnseen(DateTime(2026, 11, 1))});
+        expect(k.read(boardMarksProvider).era, MarksEra.tracking);
+        expect(k.read(boardMarksProvider).finishedAt(DateTime(2026, 11, 1), t0), t0);
+        expect(
+          jsonDecode(p[BoardMarks.doneSinceKey]!),
+          containsPair('b', DateTime(2026, 11, 1).millisecondsSinceEpoch),
+        );
+      });
+    });
+
+    test('the Board refresh sets finished sessions, drops those that ran again or are gone, once', () {
+      final n = c.read(boardMarksProvider.notifier);
+      n.sync(finished: {'a': FinishedUnseen(t0), 'b': FinishedSeen(t0, t0), 'c': FinishedUnseen(t0)});
+      n.sync(finished: {'a': FinishedUnseen(t0)}, ran: ['b'], gone: ['c']);
+      expect(c.read(boardMarksProvider).marks, {'a': FinishedUnseen(t0)});
+      prefs[BoardMarks.doneSinceKey] = 'untouched';
+      n.sync(finished: {'a': FinishedUnseen(t0)});
+      expect(prefs[BoardMarks.doneSinceKey], 'untouched');
     });
   });
 }

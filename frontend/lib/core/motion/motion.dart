@@ -42,6 +42,14 @@ abstract final class Motion {
   static const settle = Duration(milliseconds: 340);
 
   static const pulse = Duration(milliseconds: 700);
+
+  /// One slow breath (back and forth) of the ambient glow and ring, and how often it is redrawn: a breath this slow
+  /// needs no more than ~15 frames a second.
+  static const breath = Duration(milliseconds: 2800);
+  static const breathTick = Duration(milliseconds: 66);
+
+  /// The sparks of a finish.
+  static const burst = Duration(milliseconds: 820);
   static const pressedScale = 0.97;
   static const popoverStartScale = 0.95;
   static const knobStretch = 0.12;

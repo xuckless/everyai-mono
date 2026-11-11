@@ -32,6 +32,9 @@ const _historySql = 'SELECT id, type, data FROM session_message WHERE session_id
 
 /// OpenCode's sessions for a folder.
 final class OpenCodePastSessions implements PastSessionSource {
+  @override
+  bool get deletes => true;
+
   OpenCodePastSessions({Future<Map<String, String>> Function()? env, this.dbPath}) : _env = env ?? files.resumeEnv;
 
   final Future<Map<String, String>> Function() _env;

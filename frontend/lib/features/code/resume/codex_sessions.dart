@@ -31,6 +31,9 @@ PastSessionSource codexPastSessions({
 }) => CodexPastSessions(env: env, resolve: resolve);
 
 final class CodexPastSessions implements PastSessionSource {
+  @override
+  bool get deletes => true;
+
   CodexPastSessions({Future<String?> Function(String name)? env, Future<String> Function(String path)? resolve})
     : _env = env ?? envVar,
       _resolve = resolve ?? realPath;

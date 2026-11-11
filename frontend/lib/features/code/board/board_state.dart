@@ -1,15 +1,12 @@
-import 'dart:convert';
-
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../core/preferences.dart';
 import '../code_providers.dart' show codeSessionProvider;
 import '../domain/code_session.dart';
 import '../domain/doom_loop.dart';
 import '../domain/transcript.dart';
 import '../harness/events.dart' show ActionCall;
 import '../shells/shell_registry.dart' show ShellRegistry;
-import 'board_providers.dart' show BoardColumn, boardDoneSinceProvider;
+import 'board_providers.dart' show BoardColumn, Looked, Ran, boardMarksProvider;
 
 /// What a Board card says about its session, counting the work it runs besides the lead's own turn:
 ///
@@ -87,21 +84,46 @@ String boardPhaseLine(BoardPhase phase, BoardWorkCount work) {
 /// which [boardPhase] shows as Needs you first, or on the lead, which answers it).
 const _childWorking = {SessionStatus.running, SessionStatus.starting, SessionStatus.paused, SessionStatus.needsInput};
 
-/// How many forks and subagents under [id] (sessions of ours, at any depth) are still work ([_childWorking]).
+/// How many forks and subagents under [id] (sessions of ours, at any depth) are still work ([_childWorking]). A child
+/// waiting on the user counts only while it is open ([isOpen]): a closed one's polled wait is the user's to answer
+/// (the Board opens it so its card shows the question), not work for its lead.
 int runningDescendants(
   String id,
   Map<String, List<CodeSessionInfo>> childrenOf,
-  SessionStatus Function(CodeSessionInfo) statusOf, [
+  SessionStatus Function(CodeSessionInfo) statusOf, {
+  bool Function(CodeSessionInfo) isOpen = _alwaysOpen,
   Set<String>? seen,
-]) {
+}) {
   final visited = seen ?? <String>{};
   var n = 0;
   for (final c in childrenOf[id] ?? const <CodeSessionInfo>[]) {
     if (!visited.add(c.id)) continue;
-    if (_childWorking.contains(statusOf(c))) n++;
-    n += runningDescendants(c.id, childrenOf, statusOf, visited);
+    final st = statusOf(c);
+    if (_childWorking.contains(st) && (st != SessionStatus.needsInput || isOpen(c))) n++;
+    n += runningDescendants(c.id, childrenOf, statusOf, isOpen: isOpen, seen: visited);
   }
   return n;
+}
+
+bool _alwaysOpen(CodeSessionInfo _) => true;
+
+/// The descendants of [id] (any depth) whose polled status says they wait on the user and that aren't open: the
+/// Board opens them so their card shows the wait.
+List<CodeSessionInfo> closedWaiting(
+  String id,
+  Map<String, List<CodeSessionInfo>> childrenOf,
+  SessionStatus Function(CodeSessionInfo) statusOf,
+  bool Function(CodeSessionInfo) isOpen, [
+  Set<String>? seen,
+]) {
+  final visited = seen ?? <String>{};
+  return [
+    for (final c in childrenOf[id] ?? const <CodeSessionInfo>[])
+      if (visited.add(c.id)) ...[
+        if (statusOf(c) == SessionStatus.needsInput && !isOpen(c)) c,
+        ...closedWaiting(c.id, childrenOf, statusOf, isOpen, visited),
+      ],
+  ];
 }
 
 /// An outside lead's own subagents still out (Claude Code's agents, which aren't sessions of ours), by call id, with
@@ -171,12 +193,14 @@ List<BoardWarning> boardWarnings({
     BoardContextFull(contextPercent.clamp(0, 100)),
 ];
 
-/// The step the transcript's last [times] tool calls repeat (identical tool and input, as the loop guard reads them),
-/// or null when they don't.
+/// The step the transcript's last [times] tool calls repeat (identical tool and input), or null. It reads the calls
+/// the loop guard counts ([DoomLoopDetector.counts]) and starts over when the user speaks, as the guard does.
 String? repeatedStep(Transcript t, {int times = doomLoopRepeats}) {
-  final calls = <ActionCall>[];
+  var calls = <ActionCall>[];
   for (final item in t.items) {
     switch (item) {
+      case UserTurn():
+        calls = [];
       case StepItem(:final step):
         calls.add(step.call);
       case ExploreGroup(:final steps):
@@ -185,54 +209,29 @@ String? repeatedStep(Transcript t, {int times = doomLoopRepeats}) {
         break;
     }
   }
-  if (calls.length < times) return null;
-  final tail = calls.sublist(calls.length - times);
-  final sig = DoomLoopDetector.signature(tail.first);
-  if (tail.any((c) => DoomLoopDetector.signature(c) != sig)) return null;
-  return loopedStep(tail.last);
+  final looped = DoomLoopDetector.loopAtEnd(calls, times: times);
+  return looped == null ? null : loopedStep(looped);
 }
 
 /// How full the context is, 0–100, from the last call's tokens and the model's window; 0 when either is unknown.
 int contextPercent(int usedTokens, int window) =>
     window <= 0 || usedTokens <= 0 ? 0 : (usedTokens * 100 / window).round().clamp(0, 100);
 
-/// When the user last looked at each session (epoch ms); Preferences `code.board.seen`. A finished session counts as
-/// seen when this is at or after when it finished ([BoardDoneSince]).
-final boardSeenProvider = NotifierProvider<BoardSeen, Map<String, int>>(BoardSeen.new);
-
-final class BoardSeen extends Notifier<Map<String, int>> {
-  static const key = 'code.board.seen';
-
-  @override
-  Map<String, int> build() {
-    try {
-      return {
-        for (final e in (jsonDecode(ref.read(preferencesProvider)[key] ?? '{}') as Map<String, Object?>).entries)
-          e.key: (e.value as num).toInt(),
-      };
-    } on Object {
-      return const {};
-    }
-  }
-
-  void _set(Map<String, int> next) {
-    state = next;
-    ref.read(preferencesProvider)[key] = jsonEncode(next);
-  }
-
-  /// The user is looking at [id] now.
-  void see(String id, {DateTime? at}) => _set({...state, id: (at ?? DateTime.now()).millisecondsSinceEpoch});
-
-  /// Drops the marks of sessions that run again, so their next finish is news.
-  void forget(Iterable<String> ids) {
-    if (!ids.any(state.containsKey)) return;
-    _set({...state}..removeWhere((k, _) => ids.contains(k)));
-  }
+/// What [BoardProgress] has seen of a session's running commands: nothing yet, or their output size and when it
+/// last grew.
+sealed class _ShellWatch {
+  const _ShellWatch();
 }
 
-/// Whether a session that finished at [doneSince] has been seen since ([seenAt]).
-bool seenSince(int? seenAt, DateTime? doneSince) =>
-    seenAt != null && doneSince != null && seenAt >= doneSince.millisecondsSinceEpoch;
+final class _NoShellLook extends _ShellWatch {
+  const _NoShellLook();
+}
+
+final class _ShellLook extends _ShellWatch {
+  const _ShellLook(this.bytes, this.changedAt);
+  final int bytes;
+  final DateTime changedAt;
+}
 
 /// When an open session last showed progress: a new transcript item, streamed text, an approval or a status change.
 /// A card watches it while it shows (it goes with the card) and reads [BoardProgress.last] on its clock
@@ -248,8 +247,7 @@ final class BoardProgress extends Notifier<DateTime> {
   /// Bytes the session's running foreground commands had written at the last look, and when that last grew. A long
   /// build or test run writes as it goes, so it isn't a stall. Background shells (dev servers) don't count: their
   /// logs say nothing about the lead.
-  int _shellBytes = -1;
-  DateTime _shellAt = DateTime.now();
+  _ShellWatch _watch = const _NoShellLook();
 
   /// The latest progress, counting command output seen since the last look. Read on the card's clock.
   DateTime last() {
@@ -257,11 +255,14 @@ final class BoardProgress extends Notifier<DateTime> {
     for (final e in _shells.of(sessionId)) {
       if (e.running && !e.background) bytes += e.logged;
     }
-    if (bytes != _shellBytes) {
-      _shellBytes = bytes;
-      _shellAt = DateTime.now();
-    }
-    return state.isAfter(_shellAt) ? state : _shellAt;
+    final look = _watch;
+    final at = switch (look) {
+      _ShellLook(bytes: final b, :final changedAt) when b == bytes => changedAt,
+      // The first look, or the output grew: progress now.
+      _ => DateTime.now(),
+    };
+    if (look is! _ShellLook || look.bytes != bytes) _watch = _ShellLook(bytes, at);
+    return state.isAfter(at) ? state : at;
   }
 
   @override
@@ -299,19 +300,14 @@ SeenUpdate seenUpdate({required SessionStatus status, required bool connected, r
 }
 
 /// The user is looking at session [id]: once it has finished, that finish counts as seen on the Board (recorded, if
-/// the Board hasn't yet); while it runs, an earlier mark is dropped so the next finish shows as new. Until it has
-/// connected nothing changes, so opening an old finished session keeps when it finished. Writes only on a change.
+/// the Board hasn't yet); while it runs, the marks are dropped so the next finish shows as new. Until it has
+/// connected nothing changes, so opening an old finished session keeps when it finished. The marks' one writer moves
+/// the state and writes only when it changes, so calling this on every build is free.
 void markBoardSeen(WidgetRef ref, String id, SeenUpdate update) {
-  final seenAt = ref.read(boardSeenProvider)[id];
-  final since = ref.read(boardDoneSinceProvider);
-  if (update == SeenUpdate.none) return;
-  if (update == SeenUpdate.running) {
-    if (seenAt != null) ref.read(boardSeenProvider.notifier).forget([id]);
-    if (since?.containsKey(id) ?? false) ref.read(boardDoneSinceProvider.notifier).forget(id);
-    return;
-  }
-  final now = DateTime.now();
-  ref.read(boardDoneSinceProvider.notifier).mark(id, now);
-  final doneAt = ref.read(boardDoneSinceProvider)?[id];
-  if (seenAt == null || (doneAt != null && seenAt < doneAt)) ref.read(boardSeenProvider.notifier).see(id, at: now);
+  final event = switch (update) {
+    SeenUpdate.none => null,
+    SeenUpdate.running => const Ran(),
+    SeenUpdate.finished => Looked(DateTime.now()),
+  };
+  if (event != null) ref.read(boardMarksProvider.notifier).apply(id, event);
 }
