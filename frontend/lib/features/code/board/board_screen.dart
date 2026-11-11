@@ -58,6 +58,16 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     final sessions = ref.watch(codeSessionsProvider);
     final all = boardSessions(sessions, ref.watch(boardDetachedProvider));
     final statuses = ref.watch(codeStatusesProvider);
+    // A session's own status: live once its controller has connected, else the polled one.
+    SessionStatus ownOf(CodeSessionInfo s) {
+      final live = ref.exists(codeSessionProvider(s.id))
+          ? ref.watch(codeSessionProvider(s.id).select((st) => st.connected || st.failure != null ? st.status : null))
+          : null;
+      return live ?? statuses[s.id] ?? SessionStatus.idle;
+    }
+
+    final childrenOf = childrenByParent(sessions);
+
     SessionStatus statusOf(CodeSessionInfo s) {
       // Waiting sessions are opened, so their card can answer for them.
       if (statuses[s.id] == SessionStatus.needsInput &&
@@ -68,13 +78,13 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
         });
       }
       // Until an opened session has connected, the polled status stands (no flicker to Done and back).
-      final live = ref.exists(codeSessionProvider(s.id))
-          ? ref.watch(codeSessionProvider(s.id).select((st) => st.connected || st.failure != null ? st.status : null))
-          : null;
-      final own = live ?? statuses[s.id] ?? SessionStatus.idle;
       return boardStatus(
-        own,
-        workRunning: ref.watch(workflowRunsProvider(s.id)).any((r) => r.status == WorkflowStatus.running),
+        ownOf(s),
+        workRunning:
+            ref.watch(workflowRunsProvider(s.id)).any((r) => r.status == WorkflowStatus.running) ||
+            childRunning(s.id, childrenOf, ownOf) ||
+            (ref.exists(codeSessionProvider(s.id)) &&
+                ref.watch(codeSessionProvider(s.id).select((st) => subagentsRunning(st.transcript)))),
         childWaits: [
           for (final c in sessions)
             if (c.parentId == s.id) c,

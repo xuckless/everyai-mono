@@ -37,6 +37,36 @@ SessionStatus boardStatus(SessionStatus own, {required bool workRunning, require
   return own;
 }
 
+/// Sessions by the session that started them (forks and subagents under their lead).
+Map<String, List<CodeSessionInfo>> childrenByParent(Iterable<CodeSessionInfo> sessions) {
+  final out = <String, List<CodeSessionInfo>>{};
+  for (final c in sessions) {
+    if (c.parentId case final p?) (out[p] ??= []).add(c);
+  }
+  return out;
+}
+
+/// Whether a fork or subagent under [id], at any depth, still works ([statusOf] its own status): the lead may sit
+/// idle meanwhile, and the session isn't done.
+bool childRunning(
+  String id,
+  Map<String, List<CodeSessionInfo>> childrenOf,
+  SessionStatus Function(CodeSessionInfo) statusOf, [
+  Set<String>? seen,
+]) {
+  final visited = seen ?? <String>{};
+  for (final c in childrenOf[id] ?? const <CodeSessionInfo>[]) {
+    if (!visited.add(c.id)) continue;
+    if (statusOf(c) == SessionStatus.running || childRunning(c.id, childrenOf, statusOf, visited)) return true;
+  }
+  return false;
+}
+
+/// Whether an outside lead's own subagents (Claude Code's background agents, which aren't sessions of ours) are
+/// still out: their card stays open until they report. EveryAI's forks are child sessions ([childRunning]); a fork
+/// Stop all ended never reports, so its card doesn't count.
+bool subagentsRunning(Transcript t) => t.items.any((i) => i is SubagentItem && !i.ours && !i.done);
+
 /// A harness's two-letter mark and colour: the fallback for harnesses without a logo ([HarnessLogo]).
 ({String letters, Color color}) harnessMark(String harness) => switch (harness) {
   everyaiHarnessName => (letters: 'EA', color: const Color(0xFF7756E4)),

@@ -10,6 +10,7 @@ import 'package:every_ai/features/code/board/board_screen.dart';
 import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
+import 'package:every_ai/features/code/domain/subagents.dart' show taskTool;
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/drivers/driver_events.dart';
 import 'package:every_ai/features/code/harness/events.dart';
@@ -58,6 +59,33 @@ void main() {
     expect(boardStatus(SessionStatus.failed, workRunning: true, childWaits: false), SessionStatus.failed);
     expect(boardStatus(SessionStatus.running, workRunning: false, childWaits: true), SessionStatus.needsInput);
     expect(boardStatus(SessionStatus.starting, workRunning: true, childWaits: false), SessionStatus.starting);
+  });
+
+  test('a session whose lead is idle stays Running while a fork or subagent under it works', () {
+    final all = [_s('lead'), _s('fork', parent: 'lead'), _s('sub', parent: 'fork'), _s('other')];
+    final children = childrenByParent(all);
+    var running = {'sub'};
+    SessionStatus statusOf(CodeSessionInfo s) => running.contains(s.id) ? SessionStatus.running : SessionStatus.done;
+    // A grandchild counts too.
+    expect(childRunning('lead', children, statusOf), isTrue);
+    expect(boardStatus(SessionStatus.done, workRunning: true, childWaits: false), SessionStatus.running);
+    expect(childRunning('other', children, statusOf), isFalse);
+    running = {};
+    expect(childRunning('lead', children, statusOf), isFalse);
+    // A loop of parents (a broken record) ends.
+    expect(childRunning('a', childrenByParent([_s('a', parent: 'b'), _s('b', parent: 'a')]), statusOf), isFalse);
+
+    // An outside lead's background subagent: open until it reports; EveryAI's own forks count as sessions instead.
+    SubagentItem agent(String tool, {bool reported = false}) {
+      final call = actionEvent(id: 'c-$tool', toolName: tool, kind: 'TaskAction');
+      return SubagentItem(
+        ToolStep(call, reported ? resultEvent(id: 'r-$tool', actionId: call.id, toolName: tool, text: 'Done.') : null),
+      );
+    }
+
+    expect(subagentsRunning(Transcript(items: [agent('Agent')])), isTrue);
+    expect(subagentsRunning(Transcript(items: [agent('Agent', reported: true)])), isFalse);
+    expect(subagentsRunning(Transcript(items: [agent(taskTool)])), isFalse);
   });
 
   test('top-level sessions plus detached forks, newest first', () {

@@ -966,6 +966,10 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   (bars): `usageLines` says `Spending cap ($5.00): 40% used`. Codex is asked for fresh limits on `/usage`
   (`RefreshesPlanLimits`, `account/rateLimits/read`); Claude Code's probe gets stdin closed (`EndsInput`; `claude -p`
   waited 3 s for it). OpenCode and ACP leads report no plan limits, so their card shows tokens, cost and the cap.
+- **Board: forks keep their lead running (2026-11-11; branch `fix/board-child-work`).** A session whose lead was idle
+  while a fork or subagent still worked went to Done: the Board only counted workflow runs. Now any child session
+  running at any depth (`childRunning`, `childrenByParent`) and an outside lead's open subagent cards (Claude Code's
+  background agents; `subagentsRunning`, not EveryAI's own forks, which are sessions) keep it Running.
 - **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
   `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
   `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,
