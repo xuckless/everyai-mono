@@ -26,6 +26,9 @@ import 'resume_files.dart' as files;
 
 /// Gemini CLI's chats for a folder.
 final class GeminiPastSessions implements PastSessionSource {
+  @override
+  bool get deletes => true;
+
   GeminiPastSessions({Future<Map<String, String>> Function()? env, this.home}) : _env = env ?? files.resumeEnv;
 
   final Future<Map<String, String>> Function() _env;
@@ -108,6 +111,13 @@ final class GeminiPastSessions implements PastSessionSource {
     final chat = path == null ? null : _decode(await files.readSmallFile(path));
     if (chat == null) return const [];
     return geminiChatEvents(chat, cwd: session.cwd);
+  }
+
+  /// The chat file.
+  @override
+  Future<void> delete(String nativeId, {required String cwd}) async {
+    if (!_files.containsKey(nativeId)) await list(cwd);
+    if (_files.remove(nativeId) case final path?) await files.deletePath(path);
   }
 }
 
@@ -215,6 +225,9 @@ String _resultText(Map<String, Object?> call) {
 /// An ACP agent that lists its own sessions (`session/list`). [open] starts the agent in a folder and returns a
 /// connected peer (the integration wires it to the ACP launcher); it is closed after listing.
 final class AcpListedSessions implements PastSessionSource {
+  @override
+  bool get deletes => false;
+
   AcpListedSessions({required this.harness, required this.open, this.pages = 5});
 
   @override
@@ -268,6 +281,10 @@ final class AcpListedSessions implements PastSessionSource {
   /// The agent replays the conversation itself on `session/load`; nothing is read ahead of it.
   @override
   Future<List<HarnessEvent>> history(PastSession session) async => const [];
+
+  /// ACP has no delete; the session stays hidden in EveryAI.
+  @override
+  Future<void> delete(String nativeId, {required String cwd}) async {}
 }
 
 /// Whether an `initialize` reply offers both `session/list` and `session/load`.

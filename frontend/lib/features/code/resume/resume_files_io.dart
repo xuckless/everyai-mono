@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:sqlite3/sqlite3.dart';
 
+import '../drivers/detection/cli_scan.dart' show findCli;
 import '../harness/everyai/shell_io.dart' show ShellEnv;
 
 Future<Map<String, String>> resumeEnv() async {
@@ -47,5 +48,39 @@ Future<List<Map<String, Object?>>?> sqliteRows(String path, String sql, List<Obj
     return null;
   } finally {
     db?.close();
+  }
+}
+
+Future<void> deletePath(String path) async {
+  try {
+    switch (FileSystemEntity.typeSync(path, followLinks: false)) {
+      case FileSystemEntityType.directory:
+        await Directory(path).delete(recursive: true);
+      case FileSystemEntityType.notFound:
+        return;
+      default:
+        await File(path).delete();
+    }
+  } on FileSystemException {
+    // Gone already, or not ours to delete: the session stays hidden either way.
+  }
+}
+
+Future<int?> runCli(String command, List<String> args, {required Duration timeout}) async {
+  final path = await findCli(command);
+  if (path == null) return null;
+  try {
+    final p = await Process.start(path, args, environment: await resumeEnv());
+    p.stdout.drain<void>().ignore();
+    p.stderr.drain<void>().ignore();
+    return await p.exitCode.timeout(
+      timeout,
+      onTimeout: () {
+        p.kill();
+        return -1;
+      },
+    );
+  } on Object {
+    return null;
   }
 }
