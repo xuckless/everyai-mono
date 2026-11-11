@@ -4,8 +4,9 @@ import 'dart:io';
 import 'package:cryptography/cryptography.dart';
 import 'package:every_ai/features/code/harness/everyai/app_tools_io.dart' show appFill;
 import 'package:every_ai/features/code/live/agent_logins.dart';
-import 'package:every_ai/features/code/live/app_view.dart' show AppError;
+import 'package:every_ai/features/code/live/app_view.dart' show AppError, dartString;
 import 'package:every_ai/features/code/live/browser_jar.dart';
+import 'package:every_ai/features/code/live/live_session.dart' show LiveControl;
 import 'package:every_ai/features/code/live/login_import.dart';
 import 'package:every_ai/features/code/live/totp.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -194,6 +195,25 @@ void main() {
       expect(loginFitsHost('github.com', 'notgithub.com'), isFalse);
     });
 
+    test('right before typing: the focused document counts too, and a frame that cannot be read is another site', () {
+      const strict = LoginPolicy(anySite: false);
+      const page = 'https://github.com/login';
+      expect(fillSiteRefusal(e, policy: strict, pageUrl: page, focus: const FocusIn(page)), isNull);
+      expect(
+        fillSiteRefusal(e, policy: strict, pageUrl: page, focus: const FocusIn('https://evil.io')),
+        contains('the focused field is on evil.io'),
+      );
+      expect(
+        fillSiteRefusal(e, policy: strict, pageUrl: page, focus: const FocusInForeignFrame()),
+        contains('frame of another site'),
+      );
+      expect(fillSiteRefusal(e, policy: strict, pageUrl: 'https://evil.io/', focus: null), contains('this page'));
+      // The switch on: no site check at all.
+      expect(fillSiteRefusal(e, policy: LoginPolicy.open, pageUrl: 'https://evil.io/', focus: null), isNull);
+      // App screens: the one decision point, open for now.
+      expect(appScreenFillVerdict(e, strict), isNull);
+    });
+
     test('asking first: unasked → asking → allowed, revoke, deny, stop', () async {
       final gate = LoginGate.of('s-ask');
       final first = gate.ensure('github', site: 'github.com');
@@ -251,5 +271,66 @@ void main() {
     final unknown = await appFill({'login': 'nope', 'ref': 's3'}, access, (r, v, s) async {});
     expect(unknown.error, contains('Saved logins: app (localhost)'));
     expect(access.redact('echo pw-secret-9'), isNot(contains('pw-secret-9')));
+  });
+
+  test('a value is hidden in its escaped forms too, and a code only while it is valid', () {
+    final gate = LoginGate.of('s-forms');
+    const pw = r"it's$a\back";
+    gate.remember(pw);
+    // As the Flutter driver writes it into an expression (a compile error echoes it), and as JSON quotes it.
+    final dart = dartString(pw), json = jsonEncode({'text': pw});
+    expect(dart, isNot(contains(pw)));
+    expect(gate.redact('Error: final t = $dart;'), 'Error: final t = \'[EVERYAI-HIDDEN: saved login]\';');
+    expect(gate.redact(json), '{"text":"[EVERYAI-HIDDEN: saved login]"}');
+    expect(secretForms(pw), hasLength(3));
+    final now = DateTime(2026, 11, 11, 12);
+    gate.rememberFor('482913', const Duration(seconds: 20), now: now);
+    expect(gate.redact('code 482913', now: now.add(const Duration(seconds: 19))), isNot(contains('482913')));
+    expect(gate.redact('code 482913', now: now.add(const Duration(seconds: 21))), 'code 482913');
+  });
+
+  test('the list loads once; a read the keychain refused is tried again', () async {
+    final tmp = Directory.systemTemp.createTempSync('logins');
+    addTearDown(() => tmp.deleteSync(recursive: true));
+    final key = SecretKey(List.filled(32, 4));
+    await AgentLogins(SealedStore('${tmp.path}/s', () async => key))
+        .save(name: 'a', url: 'a.com', username: '', password: 'pw-1234', scope: LoginScope.global);
+    var refuse = true;
+    final store = AgentLogins(SealedStore('${tmp.path}/s', () async => refuse ? throw StateError('refused') : key));
+    expect(store.loadState, isA<LoginsUnloaded>());
+    await expectLater(store.load(), throwsStateError);
+    expect(store.loadState, isA<LoginsUnloaded>());
+    refuse = false;
+    final loading = store.load();
+    expect(store.loadState, isA<LoginsLoading>());
+    await loading;
+    expect(store.loadState, isA<LoginsLoaded>());
+    expect(store.entries.value.single.name, 'a');
+    // Another keychain's file: unreadable, and nothing is saved over it.
+    final other = AgentLogins(SealedStore('${tmp.path}/s', () async => SecretKey(List.filled(32, 9))));
+    await other.load();
+    expect(other.loadState, isA<LoginsUnreadable>());
+    await expectLater(
+      other.save(name: 'b', url: 'b.com', username: '', password: 'pw-5678', scope: LoginScope.global),
+      throwsA(isA<LoginSaveError>()),
+    );
+  });
+
+  test('an app fill whose screen the user took during the wait types nothing', () async {
+    final tmp = Directory.systemTemp.createTempSync('logins');
+    addTearDown(() => tmp.deleteSync(recursive: true));
+    final store = AgentLogins(SealedStore('${tmp.path}/s', () async => SecretKey(List.filled(32, 2))));
+    await store.save(name: 'app', url: 'localhost', username: 'ada', password: 'pw-take-1', scope: LoginScope.global);
+    final gate = LoginGate.of('s-app-take');
+    final access = LoginAccess(policy: const LoginPolicy(withoutAsking: false), logins: () async => store, gate: gate);
+    final control = LiveControl(hold: const Duration(milliseconds: 50));
+    String? typed;
+    final pending = appFill({'login': 'app', 'ref': 's3'}, access, (ref, v, s) async => typed = v, control: control);
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+    control.take();
+    gate.answer('app', allow: true);
+    expect((await pending).error, contains('driving this view'));
+    expect(typed, isNull);
   });
 }

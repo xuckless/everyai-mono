@@ -107,6 +107,10 @@ abstract final class LiveBrowsers {
   /// Session [liveId]'s browser if it has one.
   static BrowserPage? of(String liveId) => _bySession[liveId];
 
+  /// The session whose browser [b] is, or null.
+  static String? idOf(BrowserPage b) =>
+      _bySession.entries.where((e) => identical(e.value, b)).map((e) => e.key).firstOrNull;
+
   /// A browser for session [liveId] without starting Chrome (tests); null takes it away.
   @visibleForTesting
   static void debugSet(String liveId, BrowserPage? b) => b == null ? _bySession.remove(liveId) : _bySession[liveId] = b;

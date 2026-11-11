@@ -21,10 +21,13 @@ import '../logins_settings.dart';
 // this page's login, stop allowing one in this session, delete one, and a way to Settings > Code > Logins.
 
 /// Fills the sign-in form on [b]'s page with [e]: its username into the first visible username or email field, its
-/// password into the first visible password field. What was filled, for a toast.
+/// password into the first visible password field. What was filled, for a toast. The password is hidden from the
+/// session's agent from then on, as when the agent fills it ([rememberFilled]): an `eval` of the field gets the mark.
 Future<String> fillPageWithLogin(BrowserPage b, LoginEntry e, AgentLogins store) async {
   final secrets = await store.secretsOf(e.id);
   if (secrets == null) throw StateError("'${e.name}' can't be read now.");
+  final session = LiveBrowsers.idOf(b);
+  rememberFilled(secrets.password, gate: session == null ? null : LoginGate.of(session));
   final found = await b.evaluate(_markFieldsJs);
   final have = found is List ? found.cast<Object?>() : const <Object?>[];
   final filled = <String>[];
@@ -57,10 +60,6 @@ const _markFieldsJs = r'''
   if (pass) { pass.setAttribute('data-everyai-fill', 'pass'); out.push('pass'); }
   return out;
 })()''';
-
-/// The Code session whose browser is [b], or null.
-String? _sessionOf(BrowserPage b) =>
-    LoginGate.all.map((g) => g.session).where((s) => identical(LiveBrowsers.of(s), b)).firstOrNull;
 
 /// The key menu's logins part: "Fill a login" (this site's first), then Save this login… and Manage logins….
 /// [host] stays mounted after the menu closes (the key button's context), for the dialogs.
@@ -119,7 +118,7 @@ class _BrowserLoginRowsState extends State<BrowserLoginRows> {
     if (!_loaded) return const SizedBox.shrink();
     final host = Uri.tryParse(_b.page.value.url)?.host ?? '';
     final site = host.isEmpty ? '' : siteOf(host);
-    final session = _sessionOf(_b);
+    final session = LiveBrowsers.idOf(_b);
     final gate = session == null ? null : LoginGate.find(session);
     final all = store == null
         ? const <LoginEntry>[]

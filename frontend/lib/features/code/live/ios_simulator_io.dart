@@ -324,7 +324,8 @@ final class IosSimulator implements DeviceScreen {
     if (now != null && !n.secret && held != text && held == (n.value ?? '')) {
       throw AppError("Typing into $ref didn't change it: it still holds \"$held\".");
     }
-    final shown = now == null || held == text ? '' : ' (the field shows "$held": iOS or the app changed it)';
+    // A saved login's value is never echoed, not even as the field holds it (a cut-off or changed password).
+    final shown = now == null || held == text || hidden ? '' : ' (the field shows "$held": iOS or the app changed it)';
     return 'Typed into $ref${n.name.isEmpty ? '' : ' "${n.name}"'}$shown${submit ? ' and pressed Return' : ''}.';
   }
 

@@ -1884,7 +1884,13 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : f && sensitiveForm(f) ?
   /// field held, and presses Enter with [submit]. No field guard (the user saved the login for agents), and the value
   /// goes nowhere but the page: not in the activity caption, the page log, or the result.
   @override
-  Future<String> typeSecret(String value, {String? selector, String? ref, bool submit = false}) async {
+  Future<String> typeSecret(
+    String value, {
+    String? selector,
+    String? ref,
+    bool submit = false,
+    Future<String?> Function()? lastCheck,
+  }) async {
     await _start();
     if (selector != null || ref != null) await click(selector: selector, ref: ref, guarded: false);
     control.report(const LiveActivity('type', caption: 'Filling a saved login'));
@@ -1893,6 +1899,8 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : f && sensitiveForm(f) ?
 const el = focused();
 try { if (el && typeof el.select === 'function') el.select(); } catch (_) {}
 return null;''', focus: false);
+    // Input.insertText goes to whichever frame has the focus now: the caller looks at where that is last.
+    if (await lastCheck?.call() case final why?) throw FillRefused(why);
     await _send('Input.insertText', {'text': value});
     if (submit) await press('Enter', guarded: false);
     return 'Filled the field${submit ? ' and pressed Enter' : ''}.';

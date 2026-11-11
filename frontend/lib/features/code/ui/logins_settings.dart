@@ -40,7 +40,11 @@ const _switches = [
     'Store authenticator codes',
     'A login may keep its authenticator secret, and agents type the current code.',
   ),
-  (LoginPolicy.prefAnySite, 'Fill on any site', 'Off: a login fills only on its own site and its subdomains.'),
+  (
+    LoginPolicy.prefAnySite,
+    'Fill on any site',
+    'Web pages only (apps have no site to check). Off: a login fills only on its own site and its subdomains.',
+  ),
 ];
 
 class LoginsSettingsBody extends ConsumerStatefulWidget {

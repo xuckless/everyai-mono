@@ -20,7 +20,7 @@ import '../../live/ios_simulator_io.dart';
 import '../../live/live_session.dart';
 import '../../live/nested_display_io.dart';
 import '../../live/react_native_io.dart';
-import 'screen_tools_io.dart' show runBrowser;
+import 'screen_tools_io.dart' show fillTurnRefusal, runBrowser;
 import 'screen_windows.dart' show sensitiveWindow;
 import 'tools_io.dart' show ToolOutput, imageDataUrl;
 import 'window_capture_io.dart' show executableOf;
@@ -469,12 +469,14 @@ const _acting = {'tap', 'type', 'submit', 'scroll', 'back', 'adjust', 'long_pres
 
 /// fill_login on an app screen: the login named in [args] typed into field `ref` by [type] (which may type into a
 /// password field). What the result says ([did]) or why it couldn't ([error]); never the value. App screens have no
-/// site, so the "own site only" switch doesn't apply here.
+/// site: [appScreenFillVerdict] decides what the "fill on any site" switch means here. [control]: the screen's driving
+/// lock, checked again after a wait for the user's Allow.
 Future<({String? did, String? error})> appFill(
   Map<String, Object?> args,
   LoginAccess? logins,
-  Future<void> Function(String ref, String value, bool submit) type,
-) async {
+  Future<void> Function(String ref, String value, bool submit) type, {
+  LiveControl? control,
+}) async {
   final name = (args['login'] as String?)?.trim() ?? '';
   final ref = (args['ref'] as String?)?.trim() ?? '';
   final field = LoginField.parse(args['field'] ?? 'password');
@@ -496,8 +498,14 @@ Future<({String? did, String? error})> appFill(
           '${all.map((l) => '${l.name} (${l.site})').join(', ')}.',
     );
   }
-  if (fillRefusal(e, field, policy: logins.policy) case final why?) return (did: null, error: why);
+  if (fillRefusal(e, field, policy: logins.policy) ?? appScreenFillVerdict(e, logins.policy) case final why?) {
+    return (did: null, error: why);
+  }
   if (await logins.consent(e) case final why?) return (did: null, error: why);
+  // The wait for Allow may have lasted minutes: the user may have taken the screen meanwhile.
+  if (control != null) {
+    if (await fillTurnRefusal(control) case final why?) return (did: null, error: why);
+  }
   final String value;
   try {
     value = await logins.valueOf(e, field);
@@ -508,8 +516,12 @@ Future<({String? did, String? error})> appFill(
   try {
     await type(ref, value, submit);
   } on AppError catch (err) {
-    // A driver's message may quote what the field shows: never the value.
-    return (did: null, error: logins.redact(err.message.replaceAll(value, '[the value]')));
+    // A driver's message may quote what the field shows (or the expression it ran): never the value, in any form.
+    var said = err.message;
+    for (final f in secretForms(value)) {
+      if (f.isNotEmpty) said = said.replaceAll(f, '[the value]');
+    }
+    return (did: null, error: logins.redact(said));
   }
   return (
     did: filledText(e, field, into: ref, submitted: submit).replaceFirst('pressed Enter', 'submitted'),
@@ -580,7 +592,12 @@ Future<ToolOutput> _flutter(
         if (ref == null || text == null) return const ToolOutput('Error: type needs a ref and text.', isError: true);
         did = await a.type(ref, text, submit: args['submit'] == true, secretOk: secretOk);
       case 'fill_login':
-        final f = await appFill(args, logins, (ref, v, submit) => a.type(ref, v, submit: submit, secretOk: true));
+        final f = await appFill(
+          args,
+          logins,
+          (ref, v, submit) => a.type(ref, v, submit: submit, secretOk: true),
+          control: a.control,
+        );
         if (f.error case final why?) return ToolOutput('Error: $why', isError: true);
         did = f.did!;
       case 'submit':
@@ -737,7 +754,12 @@ Future<ToolOutput> _reactNative(
         if (ref == null || text == null) return const ToolOutput('Error: type needs a ref and text.', isError: true);
         did = await a.type(ref, text, submit: args['submit'] == true, secretOk: secretOk);
       case 'fill_login':
-        final f = await appFill(args, logins, (ref, v, submit) => a.type(ref, v, submit: submit, secretOk: true));
+        final f = await appFill(
+          args,
+          logins,
+          (ref, v, submit) => a.type(ref, v, submit: submit, secretOk: true),
+          control: a.control,
+        );
         if (f.error case final why?) return ToolOutput('Error: $why', isError: true);
         did = f.did!;
       case 'submit':
@@ -924,6 +946,7 @@ Future<ToolOutput> _device(
           args,
           logins,
           (ref, v, submit) => a.type(ref, v, submit: submit, secretOk: true, hidden: true),
+          control: a.control,
         );
         if (f.error case final why?) return ToolOutput('Error: $why', isError: true);
         did = f.did!;

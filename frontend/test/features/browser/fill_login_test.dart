@@ -3,8 +3,11 @@ import 'dart:io';
 import 'package:cryptography/cryptography.dart';
 import 'package:every_ai/features/code/harness/everyai/browser_io.dart';
 import 'package:every_ai/features/code/harness/everyai/screen_tools_io.dart';
+import 'package:every_ai/features/code/harness/everyai/tools_io.dart' show ToolOutput;
 import 'package:every_ai/features/code/live/agent_logins.dart';
 import 'package:every_ai/features/code/live/browser_jar.dart';
+import 'package:every_ai/features/code/live/live_browsers.dart';
+import 'package:every_ai/features/code/ui/panes/browser_logins.dart' show fillPageWithLogin;
 import 'package:flutter_test/flutter_test.dart';
 
 /// Signs in to a local page with a saved login on a real headless Chrome; skipped where none is installed.
@@ -108,4 +111,114 @@ document.getElementById('f').addEventListener('submit', (e) => {
     skip: chrome == null ? 'no Chrome installed' : null,
     timeout: const Timeout(Duration(minutes: 1)),
   );
+
+  group('checked again right before typing', () {
+    late HttpServer server;
+    setUp(() async {
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((r) {
+        r.response.headers.contentType = ContentType.html;
+        r.response.write(
+          '<!doctype html><title>Sign in</title><form><input id="user"><input id="pw" type="password"></form>',
+        );
+        r.response.close();
+      });
+    });
+    tearDown(() => server.close(force: true));
+
+    // The login is for localhost; 127.0.0.1 is another site to the "fill on any site" switch.
+    String at(String host) => 'http://$host:${server.port}/login';
+
+    Future<ToolOutput> fill(LoginAccess access) => runBrowser(
+      browser,
+      {'action': 'fill_login', 'login': 'local', 'selector': '#pw'},
+      root: tmp.path,
+      vision: false,
+      fit: (t, _) => t,
+      logins: access,
+    );
+
+    Future<void> asking(LoginGate gate) async {
+      for (var i = 0; i < 100 && gate.stateOf('local') is! ConsentAsking; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      expect(gate.stateOf('local'), isA<ConsentAsking>());
+    }
+
+    test(
+      'own site only, asking first: a page that went elsewhere during the wait gets nothing',
+      () async {
+        final gate = LoginGate.of('fill-redirect');
+        final access = LoginAccess(
+          policy: const LoginPolicy(anySite: false, withoutAsking: false),
+          logins: () async => store,
+          gate: gate,
+        );
+        await run({'action': 'open', 'url': at('localhost')}, access);
+        final pending = fill(access);
+        await asking(gate);
+        // A redirect while the card waits.
+        await browser.evaluate('location.href = ${'"${at('127.0.0.1')}"'}');
+        for (var i = 0; i < 50 && await browser.evaluate('location.hostname') != '127.0.0.1'; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        }
+        gate.answer('local', allow: true);
+        final out = await pending;
+        expect(out.isError, isTrue);
+        expect(out.text, contains('this page is on 127.0.0.1'));
+        expect(out.text, contains('Nothing was typed'));
+        expect(await browser.evaluate('document.getElementById("pw").value'), '');
+      },
+      skip: chrome == null ? 'no Chrome installed' : null,
+      timeout: const Timeout(Duration(minutes: 1)),
+    );
+
+    test(
+      'Take control during the wait: nothing is typed',
+      () async {
+        final gate = LoginGate.of('fill-take');
+        final access = LoginAccess(
+          policy: const LoginPolicy(withoutAsking: false),
+          logins: () async => store,
+          gate: gate,
+        );
+        await run({'action': 'open', 'url': at('localhost')}, access);
+        final pending = fill(access);
+        await asking(gate);
+        browser.control.take();
+        gate.answer('local', allow: true);
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        browser.control.giveBack();
+        final out = await pending;
+        expect(out.isError, isTrue);
+        expect(out.text, contains('took control'));
+        expect(await browser.evaluate('document.getElementById("pw").value'), '');
+      },
+      skip: chrome == null ? 'no Chrome installed' : null,
+      timeout: const Timeout(Duration(minutes: 1)),
+    );
+
+    test(
+      "the Preview key menu's fill is hidden from the agent like its own",
+      () async {
+        LiveBrowsers.debugSet('fill-menu', browser);
+        addTearDown(() => LiveBrowsers.debugSet('fill-menu', null));
+        await browser.open(at('localhost'));
+        expect(await fillPageWithLogin(browser, store.entries.value.single, store), contains('password'));
+        final access = LoginAccess(logins: () async => store, gate: LoginGate.of('fill-menu'));
+        final read = await runBrowser(
+          browser,
+          {'action': 'eval', 'script': 'document.getElementById("pw").value'},
+          root: tmp.path,
+          vision: false,
+          fit: (t, _) => t,
+          logins: access,
+        );
+        expect(read.text, isNot(contains(password)));
+        expect(read.text, contains('[EVERYAI-HIDDEN: saved login]'));
+      },
+      skip: chrome == null ? 'no Chrome installed' : null,
+      timeout: const Timeout(Duration(minutes: 1)),
+    );
+  });
 }

@@ -428,6 +428,8 @@ Future<({String? did, String? error})> _fillLogin(
     return (did: null, error: 'no field has the focus: pass the ref (or selector) of the field to fill.');
   }
   if (await logins.consent(e) case final why?) return (did: null, error: why);
+  // The wait for Allow may have lasted minutes: the user may have taken the view, or the page gone elsewhere.
+  if (await fillTurnRefusal(b.control) case final why?) return (did: null, error: why);
   final String value;
   try {
     value = await logins.valueOf(e, field);
@@ -435,8 +437,45 @@ Future<({String? did, String? error})> _fillLogin(
     return (did: null, error: err.message);
   }
   final submit = args['submit'] == true;
-  await b.typeSecret(value, selector: selector, ref: ref, submit: submit);
+  try {
+    await b.typeSecret(
+      value,
+      selector: selector,
+      ref: ref,
+      submit: submit,
+      // After the click, right before the value goes: who drives, and where the page and its focus are now.
+      lastCheck: () async {
+        if (await fillTurnRefusal(b.control) case final why?) return why;
+        if (logins.policy.anySite) return null;
+        final top = await b.evaluate('location.href');
+        return fillSiteRefusal(
+          e,
+          policy: logins.policy,
+          pageUrl: top is String ? top : '',
+          focus: focusDocumentOf(await b.evaluate(focusDocumentJs)),
+        );
+      },
+    );
+  } on FillRefused catch (r) {
+    return (did: null, error: '${r.message} Nothing was typed.');
+  }
   return (did: filledText(e, field, into: ref ?? selector, submitted: submit), error: null);
+}
+
+/// [v] (the value of [focusDocumentJs]) as a [FocusDocument]; a value that isn't one counts as a foreign frame.
+FocusDocument focusDocumentOf(Object? v) => switch (v) {
+  {'url': final String url} => FocusIn(url),
+  _ => const FocusInForeignFrame(),
+};
+
+/// Why a fill can't type now on a view with [control]: the user took it (and didn't give it back within its hold),
+/// or took and gave it back since the fill was asked for (the page may have changed under the agent). Null when the
+/// agent drives and did all along.
+Future<String?> fillTurnRefusal(LiveControl control) async {
+  if (!control.userDriving) return null;
+  if (!await control.agentTurn()) return userDrivingText(control.hold);
+  return 'The user took control of the view while the fill waited and has given it back: look again (snapshot) '
+      'before filling, the page may have changed.';
 }
 
 /// The logins that fit a sign-in page on [pageHost]: those for its site, or, when the user lets logins fill

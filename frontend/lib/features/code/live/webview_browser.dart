@@ -1059,10 +1059,17 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : f && sensitiveForm(f) ?
   }
 
   @override
-  Future<String> typeSecret(String value, {String? selector, String? ref, bool submit = false}) async {
+  Future<String> typeSecret(
+    String value, {
+    String? selector,
+    String? ref,
+    bool submit = false,
+    Future<String?> Function()? lastCheck,
+  }) async {
     final t = await _activeTab();
     if (selector != null || ref != null) await click(selector: selector, ref: ref, guarded: false);
     control.report(const LiveActivity('type', caption: 'Filling a saved login'));
+    if (await lastCheck?.call() case final why?) throw FillRefused(why);
     final Object? r;
     try {
       // What the field holds is selected first, so the value replaces it.

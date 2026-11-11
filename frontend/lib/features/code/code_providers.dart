@@ -1912,6 +1912,7 @@ final class CodeSessionState {
     bool connected = false,
     String? error,
     this.subagentNeedsInput = false,
+    this.loginAsk = false,
     this.asides = const [],
     this.goal,
     this.decided = const {},
@@ -2001,6 +2002,10 @@ final class CodeSessionState {
 
   /// A subagent this session is waiting on needs the user (an approval).
   final bool subagentNeedsInput;
+
+  /// A fill of a saved login by this session, or one of its forks or workflow agents, waits for the user's Allow
+  /// ([LoginGate.asks]).
+  final bool loginAsk;
   final AgentMode mode;
 
   /// Messages typed while the agent was busy; sent when it stops.
@@ -2026,6 +2031,8 @@ final class CodeSessionState {
     _ when hold == StepHold.paused => SessionStatus.paused,
     // A workflow's estimate waits for the user's Start.
     _ when proposal != null => SessionStatus.needsInput,
+    // A saved login waits for the user's Allow (here, or for a fork or workflow agent of this session).
+    _ when loginAsk => SessionStatus.needsInput,
     Transcript(pending: [_, ...]) => SessionStatus.needsInput,
     final t when t.openQuestion != null || t.openPlan != null => SessionStatus.needsInput,
     // The agent stopped on a security alert: the user decides how to go on.
@@ -2049,6 +2056,7 @@ final class CodeSessionState {
     String? brokenBy,
     SessionNotice? notice,
     bool? subagentNeedsInput,
+    bool? loginAsk,
     List<Aside>? asides,
     Goal? goal,
     bool clearGoal = false,
@@ -2089,6 +2097,7 @@ final class CodeSessionState {
     brokenBy: brokenBy ?? _brokenBy,
     notice: clearNotice ? null : notice ?? this.notice,
     subagentNeedsInput: subagentNeedsInput ?? this.subagentNeedsInput,
+    loginAsk: loginAsk ?? this.loginAsk,
     asides: asides ?? this.asides,
     goal: clearGoal ? null : goal ?? this.goal,
   );
@@ -2530,7 +2539,23 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     // After build returns, so the connected flag isn't overwritten.
     if (info != null) unawaited(Future.microtask(() => _connect(info)));
     if (info != null && info.parentId == null) unawaited(Future.microtask(_resumeWorkflows));
-    return CodeSessionState(mode: info?.mode ?? AgentMode.ask);
+    // A saved login waiting for Allow, here or in a fork or workflow agent of this session: it needs the user.
+    LoginGate.asks.addListener(_syncLoginAsk);
+    ref.onDispose(() => LoginGate.asks.removeListener(_syncLoginAsk));
+    return CodeSessionState(mode: info?.mode ?? AgentMode.ask, loginAsk: _loginAsking);
+  }
+
+  /// Whether this session or one it started (a fork, a workflow agent) waits on a login's Allow.
+  bool get _loginAsking => LoginGate.asksOf({
+    sessionId,
+    for (final s in ref.read(codeSessionsProvider))
+      if (s.parentId == sessionId) s.id,
+  }).isNotEmpty;
+
+  void _syncLoginAsk() {
+    if (!ref.mounted) return;
+    final now = _loginAsking;
+    if (state.loginAsk != now) state = state.copyWith(loginAsk: now);
   }
 
   /// The session whose budget this one spends: itself, or the one that started it.

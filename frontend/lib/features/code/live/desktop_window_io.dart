@@ -439,7 +439,8 @@ final class DesktopWindow implements DeviceScreen {
     await settle();
     await tree();
     final held = _nodes[ref]?.value;
-    final shown = held == null || held == text ? '' : ' (the field shows "$held")';
+    // A saved login's value is never echoed, not even as the field holds it (a cut-off or changed password).
+    final shown = held == null || held == text || hidden ? '' : ' (the field shows "$held")';
     return '${real ? 'Typed into' : 'Set'} $ref${n.name.isEmpty ? '' : ' "${n.name}"'}${real ? '' : ' to the text'}'
         '$shown${submit ? ' and confirmed it' : ''}.';
   }

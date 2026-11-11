@@ -105,7 +105,15 @@ abstract interface class BrowserPage {
   Future<String> type(String text, {String? selector, String? ref, bool submit = false, bool guarded = true});
 
   /// Types a saved login's [value] with no field guard; the value reaches no log, caption or error text.
-  Future<String> typeSecret(String value, {String? selector, String? ref, bool submit = false});
+  /// [lastCheck] runs after the field was clicked and selected, right before the value goes to the page: a text
+  /// from it refuses ([FillRefused]) and nothing is typed.
+  Future<String> typeSecret(
+    String value, {
+    String? selector,
+    String? ref,
+    bool submit = false,
+    Future<String?> Function()? lastCheck,
+  });
 
   /// What the focused field is: "a password field", "a one-time code field", null for an ordinary one, '' when
   /// nothing that takes text has the focus.
@@ -292,6 +300,11 @@ class BrowserError implements Exception {
   String toString() => message;
 }
 
+/// A saved login's fill was stopped by its last check ([BrowserPage.typeSecret]'s `lastCheck`): nothing was typed.
+final class FillRefused extends BrowserError {
+  const FillRefused(super.message);
+}
+
 /// The tab a call went to closed before it answered (a pop-up that closed itself on the click).
 final class TabClosedError extends BrowserError {
   const TabClosedError() : super('The tab closed before it answered.');
@@ -374,3 +387,16 @@ const deep = (x, y) => {
   }
   return el;
 };''';
+
+/// An expression for where the page's focus is: `{url}` (the top page's address, or the origin of the same-origin
+/// frame holding the focus) or `{foreign: true}` (focus inside a frame whose document the page can't read: another
+/// origin, or a sandboxed one). Over [pageFieldGuardJs]'s `focused()`. Page script could lie to it: a tripwire, like
+/// the field guards.
+const focusDocumentJs =
+    '(() => { $pageFieldGuardJs\n'
+    'const el = focused();\n'
+    'if (el && (el.tagName === "IFRAME" || el.tagName === "FRAME")) return {foreign: true};\n'
+    'const doc = (el && el.ownerDocument) || document;\n'
+    'if (doc === document) return {url: location.href};\n'
+    'const o = doc.defaultView && doc.defaultView.location.origin;\n'
+    'return !o || o === "null" ? {foreign: true} : {url: o}; })()';

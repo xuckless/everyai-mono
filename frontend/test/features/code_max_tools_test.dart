@@ -32,6 +32,7 @@ import 'package:every_ai/features/models/models_providers.dart';
 import 'package:every_ai/features/questions/domain/questions.dart';
 import 'package:every_ai/features/usage/usage_totals.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:every_ai/features/code/live/agent_logins.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -381,6 +382,20 @@ void main() {
     final n = parseTaskNotification(notices(l.session).single)!;
     expect(n.status, SubagentStatus.stopped);
     expect(n.result, contains('Halfway there.'));
+  });
+
+  test("a fork's saved-login ask needs the user on its lead, and stop_fork ends it", () async {
+    final l = await lead();
+    final f = await fork(l.info.id);
+    // The fork asks on its own session id (its page), not on the lead's it bills to.
+    final asked = LoginGate.of(f.info.id).ensure('github', site: 'github.com');
+    await pumpEventQueue();
+    expect(container.read(codeSessionProvider(l.info.id)).loginAsk, isTrue);
+    expect(container.read(codeSessionProvider(l.info.id)).status, SessionStatus.needsInput);
+    await hostCall(l.info.id, stopForkTool, {'fork_id': f.info.id});
+    expect(await asked, ConsentOutcome.stopped);
+    expect(LoginGate.of(f.info.id).stateOf('github'), isA<ConsentUnasked>());
+    expect(container.read(codeSessionProvider(l.info.id)).loginAsk, isFalse);
   });
 
   test("a stopped fork's late events are no follow-up: it stays reported and holds no slot", () async {

@@ -13,6 +13,8 @@ import 'package:every_ai/features/code/domain/code_session.dart';
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/drivers/driver_events.dart';
 import 'package:every_ai/features/code/harness/events.dart';
+import 'package:every_ai/features/code/live/agent_logins.dart';
+import 'package:every_ai/features/code/ui/panes/login_ask_card.dart';
 import 'package:every_ai/features/code/workflows/workflow_engine.dart';
 import 'package:every_ai/features/code/workflows/workflow_runs.dart';
 import 'package:every_ai/features/questions/domain/questions.dart';
@@ -315,6 +317,35 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     debugDefaultTargetPlatformOverride = null;
     tester.view.reset();
+    c.dispose();
+    await db.close();
+  });
+
+  testWidgets("a fork's saved-login ask shows on its lead's card, naming the fork, and is answered there", (
+    tester,
+  ) async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final prefs = await Preferences.load(db);
+    prefs['code.sessions'] = jsonEncode([_s('lead').toJson(), _s('kid', parent: 'lead').toJson()]);
+    final c = ProviderContainer(overrides: [preferencesProvider.overrideWithValue(prefs)]);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: c,
+        child: LayoutHost(
+          language: DesignLanguage.material,
+          child: const Column(children: [LoginAskCard(sessionId: 'lead')]),
+        ),
+      ),
+    );
+    final asked = LoginGate.of('kid').ensure('github', site: 'github.com');
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"Session kid" wants your saved login for github.com'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('login-ask.allow.kid.github')));
+    await tester.pumpAndSettle();
+    expect(await asked, ConsentOutcome.allowed);
+    expect(find.textContaining('wants your saved login'), findsNothing);
+    LoginGate.forget('kid');
+    await tester.pumpWidget(const SizedBox());
     c.dispose();
     await db.close();
   });

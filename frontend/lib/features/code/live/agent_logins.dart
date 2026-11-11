@@ -1,11 +1,13 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
 import '../harness/everyai/scrub.dart' show Scrubber;
+import 'app_view.dart' show dartString;
 import 'browser_jar.dart' show LoginScope, SealedStore;
 import 'login_import.dart';
 import 'login_wall.dart' show siteOf;
@@ -181,8 +183,9 @@ bool loginFitsHost(String site, String pageHost) {
   return h == s || h.endsWith('.$s');
 }
 
-/// Why login [e]'s [field] may not be filled on the page at [pageUrl] (null: no page, an app screen) under [policy];
-/// null when it may. The consent card ([LoginGate]) comes after this.
+/// Why login [e]'s [field] may not be filled on the page at [pageUrl] (null: no page, an app screen: see
+/// [appScreenFillVerdict]) under [policy]; null when it may. The consent card ([LoginGate]) comes after this, and
+/// [fillSiteRefusal] again right before the value is typed.
 String? fillRefusal(LoginEntry e, LoginField field, {required LoginPolicy policy, String? pageUrl}) {
   if (!e.agentsCanUse) {
     return "The user turned off '${e.name}' for agents (Settings > Code > Logins).";
@@ -198,15 +201,53 @@ String? fillRefusal(LoginEntry e, LoginField field, {required LoginPolicy policy
     }
   }
   if (field == LoginField.username && e.username.isEmpty) return "'${e.name}' has no username saved.";
-  if (pageUrl != null && !policy.anySite) {
-    final host = Uri.tryParse(pageUrl)?.host ?? '';
-    if (!loginFitsHost(e.site, host)) {
-      return "'${e.name}' is for ${e.site}, and this page is on ${host.isEmpty ? 'no site' : host}. The user lets "
-          'logins fill only on their own site (Settings > Code > Logins).';
-    }
-  }
+  if (pageUrl != null) return fillSiteRefusal(e, policy: policy, pageUrl: pageUrl);
   return null;
 }
+
+/// Where the focused element of a page lives, for the last check before a value is typed ([fillSiteRefusal]).
+sealed class FocusDocument {
+  const FocusDocument();
+}
+
+/// Focus is in a document whose address could be read: the top page, or a frame of the same origin.
+final class FocusIn extends FocusDocument {
+  const FocusIn(this.url);
+  final String url;
+}
+
+/// Focus is inside a frame whose address the page's script can't read (another origin, a sandboxed frame).
+final class FocusInForeignFrame extends FocusDocument {
+  const FocusInForeignFrame();
+}
+
+/// Why [e] may not be typed on the page at [pageUrl] with the focus in [focus] (null: not read) under the user's
+/// "fill on any site" switch; null when it may. With the switch off the top page and the focused document must both
+/// be on the login's site, and a frame whose origin can't be read counts as another site.
+String? fillSiteRefusal(LoginEntry e, {required LoginPolicy policy, required String pageUrl, FocusDocument? focus}) {
+  if (policy.anySite) return null;
+  String own(String what, String host) =>
+      "'${e.name}' is for ${e.site}, and $what is on ${host.isEmpty ? 'no site' : host}. The user lets logins fill "
+      'only on their own site (Settings > Code > Logins).';
+  final host = Uri.tryParse(pageUrl)?.host ?? '';
+  if (!loginFitsHost(e.site, host)) return own('this page', host);
+  switch (focus) {
+    case null:
+      return null;
+    case FocusInForeignFrame():
+      return "'${e.name}' is for ${e.site}, and the focused field is in a frame of another site (its address can't be "
+          'read). The user lets logins fill only on their own site (Settings > Code > Logins).';
+    case FocusIn(:final url):
+      final at = Uri.tryParse(url)?.host ?? '';
+      return loginFitsHost(e.site, at) ? null : own('the focused field', at);
+  }
+}
+
+/// The one place that decides whether a login may fill on an app screen (the `app` tool: Flutter, React Native,
+/// devices, desktop windows) under [policy]; null when it may. An app screen has no site to compare with the login's,
+/// so the "fill on any site" switch covers web pages only for now (the switch's subtitle says so). The owner may yet
+/// decide to block here: change this function and nothing else.
+String? appScreenFillVerdict(LoginEntry e, LoginPolicy policy) => null;
 
 /// What the agent reads about [logins] ([pageHost]: the page's host, to mark the ones that fit it).
 String loginsListText(List<LoginEntry> logins, {String? pageHost, required LoginPolicy policy}) {
@@ -221,7 +262,7 @@ String loginsListText(List<LoginEntry> logins, {String? pageHost, required Login
       '- ${l.name} · ${l.site}${l.username.isEmpty ? '' : ' · user ${l.username}'}'
           '${l.hasCode && policy.codes ? ' · authenticator code' : ''}'
           '${pageHost != null && loginFitsHost(l.site, pageHost) ? '  [fits this page]' : ''}',
-    if (!policy.anySite) 'A login fills only on its own site and its subdomains.',
+    if (!policy.anySite) 'On a web page a login fills only on its own site and its subdomains.',
     if (!policy.withoutAsking) 'The user is asked once per login and session before the first fill.',
     'A one-time code sent by text message or email still needs the user.',
   ];
@@ -258,10 +299,13 @@ class AgentLogins {
 
   /// The list, for Settings and the tools (loaded by [load]).
   final entries = ValueNotifier<List<LoginEntry>>(const []);
-  Future<void>? _loading;
+
+  /// Where reading the list stands (see [LoginsLoad]).
+  LoginsLoad get loadState => _load;
+  LoginsLoad _load = const LoginsUnloaded();
 
   /// The list's file is there but doesn't open (another keychain): nothing is saved over it.
-  var unreadable = false;
+  bool get unreadable => _load is LoginsUnreadable;
 
   static AgentLogins? _one;
 
@@ -295,33 +339,52 @@ class AgentLogins {
     }
   }
 
-  /// What a tool call for session [sessionId] may do with logins: the switches now, the session's project and
-  /// consent gate. [hide] gets each value typed (the session's scrubber); [askFor]: how long a consent card waits.
+  /// What a tool call for session [sessionId] (the Code session whose page or screen it acts on: a fork's own, not
+  /// its lead's) may do with logins: the switches now, the session's project and consent gate. [hide] gets each
+  /// value put on the session's page from now on, whoever put it there (the session's scrubber); [askFor]: how long
+  /// a consent card waits.
   static LoginAccess accessFor(
     String sessionId, {
     void Function(String secret)? hide,
     Duration askFor = const Duration(minutes: 10),
-  }) => LoginAccess(
-    policy: readPolicy?.call() ?? LoginPolicy.open,
-    projectId: projectOf?.call(sessionId),
-    logins: app,
-    gate: LoginGate.of(sessionId),
-    hide: hide,
-    askFor: askFor,
-  );
+  }) {
+    final gate = LoginGate.of(sessionId);
+    if (hide != null) gate.addHider(hide);
+    return LoginAccess(
+      policy: readPolicy?.call() ?? LoginPolicy.open,
+      projectId: projectOf?.call(sessionId),
+      logins: app,
+      gate: gate,
+      hide: hide,
+      askFor: askFor,
+    );
+  }
 
   // ------------------------------------------------------------------------------------------------- the list
 
   /// Reads the list once; a read that fails (no key: a refused keychain prompt) is tried again next time.
-  Future<void> load() => _loading ??=
-      () async {
-        final j = await store.read('agent-logins');
-        if (j == null && store.exists('agent-logins')) unreadable = true;
-        entries.value = [for (final l in (j is List ? j : const [])) ?LoginEntry.fromJson(l)];
-      }().catchError((Object e) {
-        _loading = null;
-        throw e;
-      });
+  Future<void> load() {
+    switch (_load) {
+      case LoginsLoaded() || LoginsUnreadable():
+        return Future.value();
+      case LoginsLoading(:final done):
+        return done;
+      case LoginsUnloaded():
+        final done = () async {
+          final j = await store.read('agent-logins');
+          entries.value = [for (final l in (j is List ? j : const [])) ?LoginEntry.fromJson(l)];
+          _load = j == null && store.exists('agent-logins')
+              ? const LoginsUnreadable("the list doesn't open with this computer's keychain")
+              : const LoginsLoaded();
+        }();
+        _load = LoginsLoading(done);
+        return done.catchError((Object e) {
+          // Tried again on the next load.
+          _load = const LoginsUnloaded();
+          throw e;
+        });
+    }
+  }
 
   Future<void> _saveIndex() async {
     if (unreadable) {
@@ -510,6 +573,33 @@ class AgentLogins {
   }
 }
 
+/// Where reading an [AgentLogins] list stands:
+///
+///   unloaded ──load──▶ loading ──read──▶ loaded
+///                          │ ──file there, won't open──▶ unreadable(reason)   (nothing is saved over it)
+///                          └ ──read failed (keychain refused)──▶ unloaded     (tried again next load)
+sealed class LoginsLoad {
+  const LoginsLoad();
+}
+
+final class LoginsUnloaded extends LoginsLoad {
+  const LoginsUnloaded();
+}
+
+final class LoginsLoading extends LoginsLoad {
+  const LoginsLoading(this.done);
+  final Future<void> done;
+}
+
+final class LoginsLoaded extends LoginsLoad {
+  const LoginsLoaded();
+}
+
+final class LoginsUnreadable extends LoginsLoad {
+  const LoginsUnreadable(this.reason);
+  final String reason;
+}
+
 /// What one tool call may do with logins: the user's switches, the session's project, its store and consent gate.
 @immutable
 final class LoginAccess {
@@ -556,12 +646,13 @@ final class LoginAccess {
       if (spec == null) throw StateError("'${e.name}' has no usable authenticator secret.");
       // A code about to change is typed after it has: a page may take a second to check it.
       if (totpSecondsLeft(spec) <= 2) await Future<void>.delayed(Duration(seconds: totpSecondsLeft(spec)));
-      // A code is good for seconds and is a plain number: it isn't hidden in later output (that would garble
-      // numbers there), only kept out of this call's result.
-      return totpCode(spec);
+      // A code is a plain number good for seconds: it is hidden in this session's results only while it is valid
+      // (longer would garble ordinary numbers there).
+      final code = totpCode(spec);
+      gate?.rememberFor(code, Duration(seconds: totpSecondsLeft(spec)));
+      return code;
     }
-    gate?.remember(value);
-    hide?.call(value);
+    rememberFilled(value, gate: gate, hide: hide);
     return value;
   }
 
@@ -638,6 +729,13 @@ final class LoginGate {
 
   /// Every open question, for the cards above the composer and on the Board.
   static final asks = ValueNotifier<List<LoginAsk>>(const []);
+
+  /// The open questions of [sessions] (a session with its forks and workflow agents: they ask on their own ids, and
+  /// the user answers where they are).
+  static List<LoginAsk> asksOf(Set<String> sessions) => [
+    for (final a in asks.value)
+      if (sessions.contains(a.gate.session)) a,
+  ];
 
   /// Goes up whenever an answer changes anywhere (Settings' list of approvals follows it).
   static final changes = ValueNotifier<int>(0);
@@ -738,18 +836,68 @@ final class LoginGate {
 
   final _secrets = <String>{};
 
-  /// A value filled this session: hidden from now on in what the session's tools return.
+  /// Where else a filled value is hidden (the session's harness scrubber, which covers its other tools).
+  final _hiders = <void Function(String secret)>{};
+
+  /// [hide] gets every value filled in this session from now on (and those filled before).
+  void addHider(void Function(String secret) hide) {
+    if (!_hiders.add(hide)) return;
+    for (final v in _secrets) {
+      hide(v);
+    }
+  }
+
+  /// Values hidden only until a time (authenticator codes), with when they stop being hidden.
+  final _until = <String, DateTime>{};
+
+  /// A value filled this session: hidden from now on in what the session's tools return, as written and in the
+  /// escaped forms a driver puts it in ([secretForms]).
   void remember(String value) {
     // Very short values would hide ordinary text (a 4-digit PIN is still hidden).
-    if (value.length >= 4) _secrets.add(value);
+    for (final f in secretForms(value)) {
+      if (f.length < 4 || !_secrets.add(f)) continue;
+      for (final h in _hiders) {
+        h(f);
+      }
+    }
+  }
+
+  /// A value hidden for [valid] only (an authenticator code, for the rest of its time step).
+  void rememberFor(String value, Duration valid, {DateTime? now}) {
+    if (value.length < 4) return;
+    _until[value] = (now ?? DateTime.now()).add(valid);
   }
 
   /// [text] with the values filled this session swapped for a mark.
-  String redact(String text) {
+  String redact(String text, {DateTime? now}) {
+    final at = now ?? DateTime.now();
+    _until.removeWhere((_, end) => !end.isAfter(at));
     var out = text;
-    for (final v in _secrets.toList()..sort((a, b) => b.length - a.length)) {
+    for (final v in {..._secrets, ..._until.keys}.toList()..sort((a, b) => b.length - a.length)) {
       if (out.contains(v)) out = out.replaceAll(v, '${Scrubber.hiddenMark} saved login]');
     }
     return out;
   }
+}
+
+/// [value] as text can carry it: as written, JSON- or JavaScript-escaped (a driver's message quoting a script), and
+/// as a Dart string literal (the Flutter driver's expressions, echoed in a compile error). Without quotes.
+Set<String> secretForms(String value) {
+  String inner(String quoted) => quoted.substring(1, quoted.length - 1);
+  return {value, inner(jsonEncode(value)), inner(dartString(value))};
+}
+
+/// The one way a saved login's [value] is recorded as put on a session's page or screen (the agent's fill_login, the
+/// Preview key menu's fill): [gate] hides it in what the session's tools return, [hide] (the harness's scrubber) in
+/// what its other tools do. Escaped forms too ([secretForms]).
+void rememberFilled(String value, {LoginGate? gate, void Function(String secret)? hide}) {
+  if (gate == null) {
+    for (final f in secretForms(value)) {
+      if (f.length >= 4) hide?.call(f);
+    }
+    return;
+  }
+  // [hide] gets this and every later value of the session through the gate.
+  if (hide != null) gate.addHider(hide);
+  gate.remember(value);
 }

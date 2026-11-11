@@ -678,6 +678,7 @@ final class ToolRunner {
     this.packages,
     this.lsp,
     this._logins,
+    this.loginSession,
   }) : scrubber = scrubber ?? Scrubber.forProject(root, extra: [gateway.apiKey]);
 
   final String root;
@@ -686,7 +687,12 @@ final class ToolRunner {
   /// reads it from the app (see [AgentLogins.accessFor]).
   final LoginAccess Function()? _logins;
 
-  LoginAccess _loginAccess() => _logins?.call() ?? AgentLogins.accessFor(sessionTag, hide: scrubber.rememberSecret);
+  LoginAccess _loginAccess() =>
+      _logins?.call() ?? AgentLogins.accessFor(loginSession ?? sessionTag, hide: scrubber.rememberSecret);
+
+  /// The Code session whose page and screens this session's tools act on (its `liveId`: a fork's own, not the lead
+  /// it bills to): its logins are asked about and hidden there. Null: [sessionTag].
+  final String? loginSession;
 
   /// The session's language servers (diagnostics, and the hint after edits); null: none.
   final LspHub? lsp;
