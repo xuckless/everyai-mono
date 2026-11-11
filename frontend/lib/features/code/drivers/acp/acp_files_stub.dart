@@ -19,9 +19,3 @@ Future<bool?> kiroSignedIn(String executable) async => null;
 Future<bool?> cursorSignedIn() async => null;
 
 Future<bool?> grokSignedIn(String executable) async => null;
-
-Future<String?> geminiWorkspaceProblem(String cwd, {required String folder, required String label}) async => null;
-
-Future<String?> kiroWorkspaceProblem(String cwd) async => null;
-
-Future<String?> cursorWorkspaceProblem(String cwd) async => null;

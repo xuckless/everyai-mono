@@ -33,8 +33,8 @@ typedef ClaudeSpawn = Future<LineChannel> Function(
 
 /// Claude Code (`claude`), on the user's own subscription or key: one
 /// `claude -p` process per session speaking stream-json on stdio (see
-/// `claude_wire.dart`). Every tool call comes to us through a PreToolUse
-/// hook and waits for the app's rules or the user.
+/// `claude_wire.dart`). Claude's own permission mode decides what asks; its
+/// permission prompts (`can_use_tool`) wait for the user's answer on a card.
 ///
 /// A session's record (`<dataDir>/driver-sessions/claude-code/<id>.json`:
 /// folder, model, mode; never a token) and its event journal let [attach]
@@ -66,7 +66,8 @@ final class ClaudeDriver
         ChecksResume,
         StartsInNativeMode,
         AdoptsNativeSession,
-        RunsInEnvironments {
+        RunsInEnvironments,
+        RemembersApprovals {
   ClaudeDriver({
     this.which,
     this.dataDir = GitService.dataDir,
@@ -134,9 +135,13 @@ final class ClaudeDriver
   );
 
   @override
-  /// [permissionModeFor]: Full auto starts in `default`, which asks.
+  /// Every mode starts in one of Claude's own ([permissionModeFor]).
   @override
-  bool startsNatively(AgentMode mode) => mode != AgentMode.fullAuto && mode != AgentMode.bypass;
+  bool startsNatively(AgentMode mode) => true;
+
+  /// Claude keeps an allow for the session or saves its suggested rule in its own settings (`updatedPermissions`).
+  @override
+  NativeRemember get remembers => NativeRemember.sessionOrSaved;
 
   @override
   Set<DriverCap> get caps => const {
@@ -503,8 +508,7 @@ final class _Meta {
     autoMode: autoMode ?? this.autoMode,
   );
 
-  /// The permission mode the CLI runs in. Auto on a model without Claude's reviewer runs in `default`, where the
-  /// app's policy (as in Full auto) answers.
+  /// The permission mode the CLI runs in. Auto on a model without Claude's reviewer runs in `default`, which asks.
   String get permissionMode => native ?? (mode == AgentMode.auto && !autoMode ? 'default' : permissionModeFor(mode));
 
   Map<String, Object?> toJson() => {
@@ -537,9 +541,8 @@ final class _Meta {
 /// The briefing as Claude takes it, for the skills that are off now.
 typedef _Briefed = Delivery Function(Set<String> skillsOff);
 
-/// A call the CLI is waiting on us for: the request to answer, whether it
-/// came from our hook (else `can_use_tool`), and the call's input.
-typedef _Held = ({String requestId, bool hook, String name, Map<String, Object?> input});
+/// A permission prompt the CLI is waiting on us for: the request to answer, the tool and the call's input.
+typedef _Held = ({String requestId, String name, Map<String, Object?> input, List<Object?> suggestions});
 
 /// One Claude Code conversation. Refusing a call doesn't stop the run (the
 /// model is told and carries on); [resume] runs a stopped or failed turn on.
@@ -547,6 +550,7 @@ final class ClaudeSession
     implements
         HarnessSession,
         PerCallApprovals,
+        AllowsRemembered,
         HasNativeCommands,
         NativeModes,
         AnswersSideQuestion,
@@ -630,17 +634,12 @@ final class ClaudeSession
   /// Calls waiting for an answer, by call id.
   final _held = <String, _Held>{};
 
-  /// Answers given before the CLI asked (parallel calls): used when it does.
-  final _early = <String, ({bool accept, String? reason})>{};
-
-  /// Calls already answered, so a second answer is dropped.
-  final _answered = <String>{};
-
   /// Messages sent with `run: false`, which go along with the next one
   /// (also in the record, for [ClaudeDriver.attach]).
   final _carry = <String>[];
 
-  /// Calls already shown as let run ([approvedEvent]).
+  /// Calls shown as running without a card ([approvedEvent]): every call Claude runs without asking. A permission
+  /// prompt for one of them opens it again ([escalatedEvent]).
   final _let = <String>{};
 
   /// The CLI's `/` commands: from its `initialize` reply, else `system/init`
@@ -675,25 +674,11 @@ final class ClaudeSession
     _request({'subtype': 'set_permission_mode', 'mode': id});
   }
 
-  /// The CLI says which mode it is in (the user may have moved it, or a plan was approved).
+  /// The CLI says which mode it is in (the user may have moved it, or a plan was approved). Its choice stands, also
+  /// for a mode the picker doesn't list.
   void _modeSaid(String id) {
     if (id.isEmpty || id == _modes.latest.current) return;
     final m = nativeModeOf(_modes.latest.modes, id);
-    final hidden = claudeHiddenModes[id];
-    if (m?.blocked != null || hidden != null) {
-      final back = _meta.permissionMode;
-      _request({'subtype': 'set_permission_mode', 'mode': back});
-      _emit(
-        HarnessEvent.decode({
-          'kind': 'ConversationErrorEvent',
-          'id': const Uuid().v4(),
-          'source': 'environment',
-          'detail':
-              'Claude Code moved to ${m?.label ?? hidden}, which EveryAI doesn\'t offer; it was set back to $back.',
-        }),
-      );
-      return;
-    }
     unawaited(_save(_meta.copyWith(native: id, mode: m?.policy)));
     _modes.set(current: id);
   }
@@ -803,17 +788,40 @@ final class ClaudeSession
   Future<void> respond({required bool accept, String? reason, List<String>? callIds}) async {
     final ids = callIds ?? _held.keys.toList();
     for (final callId in ids) {
-      if (_held.remove(callId) case final h?) {
-        _answer(callId, h, accept: accept, reason: reason);
-      } else if (callIds != null && !_answered.contains(callId)) {
-        _early[callId] = (accept: accept, reason: reason);
-      }
+      // Only a call Claude asked about takes an answer; Claude decides the rest itself.
+      if (_held.remove(callId) case final h?) _answer(callId, h, accept: accept, reason: reason);
     }
     // Refusing everything at once parks the run, as with the EveryAI harness.
     if (callIds == null && !accept) {
       _waiting = false;
       _stopTurn();
       return;
+    }
+    if (_waiting && _held.isEmpty) {
+      _waiting = false;
+      _emit(stateEvent(const Uuid().v4(), ExecutionStatus.running));
+    }
+  }
+
+  /// Allows with the rules Claude itself suggested for the call (`permission_suggestions`), kept by Claude: for
+  /// this session, or where Claude proposed to save them. A call it offered no rule for is allowed once.
+  @override
+  Future<void> allowRemembered(NativeGrant grant, {List<String>? callIds}) async {
+    for (final callId in callIds ?? _held.keys.toList()) {
+      final h = _held.remove(callId);
+      if (h == null) continue;
+      final rules = claudeRememberedRules(h.suggestions, grant);
+      if (rules.isEmpty) {
+        _emit(
+          HarnessEvent.decode({
+            'kind': 'ConversationErrorEvent',
+            'id': const Uuid().v4(),
+            'source': 'environment',
+            'detail': 'Claude Code offered nothing to remember for ${h.name}, so it was allowed once.',
+          }),
+        );
+      }
+      _answer(callId, h, accept: true, permissions: rules);
     }
     if (_waiting && _held.isEmpty) {
       _waiting = false;
@@ -863,6 +871,8 @@ final class ClaudeSession
     _wakeStopped?.cancel();
     _driver._live.remove(id);
     await _drop();
+    // The record's last write (a mode the CLI moved to) lands before the session is gone.
+    await _saving.catchError((Object _) {});
     await _journal.close();
     await _events.close();
     _commands.close();
@@ -976,7 +986,7 @@ final class ClaudeSession
     _initListed = false;
     _sub = c.lines.listen(_line, onDone: () => _gone(c));
     // Before any message; the CLI reads its stdin in order.
-    _request({'subtype': 'initialize', 'hooks': gateHooks});
+    _request({'subtype': 'initialize'});
     return c;
   }
 
@@ -1043,7 +1053,8 @@ final class ClaudeSession
         for (final e in events) {
           if (stale && e is StateChange) continue;
           _emit(e);
-          if (e is ActionCall && _selfAnswered(e.toolName)) _letRun(e.id);
+          // Claude runs a call unless it asks (`can_use_tool`), so a call isn't the user's to answer until then.
+          if (e is ActionCall && !_held.containsKey(e.id)) _letRun(e.id);
         }
         if (line['type'] == 'result' && !stale) _ended();
     }
@@ -1101,51 +1112,48 @@ final class ClaudeSession
     if (_let.add(callId)) _emit(approvedEvent('ok:$callId', [callId]));
   }
 
-  /// The CLI asks before a tool call: our hook, or its permission prompt.
+  /// Claude asks before a tool call (`can_use_tool`): its own permission mode chose to. The user answers on a card.
   void _asked(String requestId, Map<String, Object?> request) {
-    final hook = request['subtype'] == 'hook_callback';
-    if (!hook && request['subtype'] != 'can_use_tool') {
+    if (request['subtype'] != 'can_use_tool') {
       _channel?.send(jsonEncode(controlError(requestId, 'EveryAI does not handle ${request['subtype']}.')));
       return;
     }
-    final body = hook ? request['input'] as Map<String, Object?>? ?? const {} : request;
-    if (hook && body['hook_event_name'] != 'PreToolUse') {
-      _channel?.send(jsonEncode(controlResponse(requestId, const {})));
-      return;
-    }
-    final callId = body['tool_use_id'] as String? ?? '';
-    final name = body['tool_name'] as String? ?? '';
-    final input = body[hook ? 'tool_input' : 'input'] as Map<String, Object?>? ?? const {};
-    final held = (requestId: requestId, hook: hook, name: name, input: input);
+    final callId = request['tool_use_id'] as String? ?? '';
+    final name = request['tool_name'] as String? ?? '';
+    final input = request['input'] as Map<String, Object?>? ?? const {};
+    final held = (
+      requestId: requestId,
+      name: name,
+      input: input,
+      suggestions: request['permission_suggestions'] as List<Object?>? ?? const [],
+    );
     if (!_decoder.knows(callId)) _emit(_decoder.action(callId, name, input));
-    // EveryAI's own tools (questions, plans, todos) are always allowed, also when Claude's reviewer asks about them.
+    // EveryAI's own tools (questions, plans, todos) are always allowed.
     if (_selfAnswered(name)) return _answer(callId, held, accept: true);
-    // Claude's own reviewer (auto mode) passed back a call our hook let through to it: the user decides this one.
-    if (!hook && _meta.permissionMode == 'auto' && _answered.contains(callId)) {
-      _let.remove(callId);
-      _emit(escalatedEvent(const Uuid().v4(), [callId]));
-      _held[callId] = held;
-      _waiting = true;
-      _emit(stateEvent(const Uuid().v4(), ExecutionStatus.waitingForConfirmation));
-      return;
-    }
-    if (_early.remove(callId) case final a?) return _answer(callId, held, accept: a.accept, reason: a.reason);
+    // Shown as running when it streamed in: it waits for the user now.
+    if (_let.remove(callId)) _emit(escalatedEvent(const Uuid().v4(), [callId]));
     _held[callId] = held;
     _waiting = true;
     _emit(stateEvent(const Uuid().v4(), ExecutionStatus.waitingForConfirmation));
   }
 
-  void _answer(String callId, _Held h, {required bool accept, String? reason}) {
-    _answered.add(callId);
+  void _answer(
+    String callId,
+    _Held h, {
+    required bool accept,
+    String? reason,
+    List<Map<String, Object?>> permissions = const [],
+  }) {
     if (accept) _letRun(callId);
     if (!accept) _decoder.refused[callId] = reason == null || reason.isEmpty ? refusedByUser : reason;
-    // In auto mode a call the app lets through goes on to Claude's own reviewer (no decision from the hook); a
-    // refusal (the floor, a deny rule) still stops it here.
-    // EveryAI's own tools get a real allow, so the reviewer never judges them.
-    final answer = accept && h.hook && _meta.permissionMode == 'auto' && !_selfAnswered(h.name)
-        ? const <String, Object?>{}
-        : approvalAnswer(hook: h.hook, accept: accept, reason: reason, input: h.input);
-    _channel?.send(jsonEncode(controlResponse(h.requestId, answer)));
+    _channel?.send(
+      jsonEncode(
+        controlResponse(
+          h.requestId,
+          approvalAnswer(accept: accept, reason: reason, input: h.input, permissions: permissions),
+        ),
+      ),
+    );
     // An approved plan: whether Claude leaves plan by itself under `-p` is unverified, so it is moved back.
     if (accept && h.name == 'ExitPlanMode' && _meta.permissionMode == 'plan') {
       final back = _beforePlan ?? 'default';

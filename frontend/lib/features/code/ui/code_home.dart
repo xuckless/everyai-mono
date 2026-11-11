@@ -1,5 +1,7 @@
 import 'dart:math' show Random;
 
+import '../repo_configs/repo_config_note.dart';
+import 'skip_permissions_consent.dart';
 import '../../../core/preferences.dart';
 import '../../../core/motion/motion.dart';
 
@@ -140,6 +142,16 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
     if (projectId != null) ref.read(preferencesProvider)[lastModeKey(projectId)] = mode.name;
   }
 
+  /// [_pickMode] from the picker: on an outside lead, its skip-permissions mode is agreed to once per harness first.
+  Future<void> _pickModeChecked(AgentMode mode, CodeProject project) async {
+    final lead = _leadFor(project);
+    if (lead != everyaiHarnessName) {
+      final label = ref.read(driverRegistryProvider).resolve(lead)?.info.label ?? lead;
+      if (!await confirmSkipPermissions(context, ref, harness: lead, lead: label, mode: mode)) return;
+    }
+    if (mounted) _pickMode(mode, project.id);
+  }
+
   Future<CodeProject?> _openFolder() async {
     final path = await getDirectoryPath(confirmButtonText: 'Open');
     if (path == null) return null;
@@ -202,6 +214,10 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
     final workflow = isDemoPath(project.path) ? null : _workflow;
     setState(() => _launch = const _LaunchStarting());
     try {
+      // The lead's CLI follows this project's own config for it: said once, before anything is made.
+      if (!await confirmRepoConfigs(context, ref, projectId: project.id, dir: project.path, harness: harness)) {
+        return false;
+      }
       final info = await ref
           .read(codeSessionsProvider.notifier)
           .start(
@@ -314,7 +330,7 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                                   prefill: _prefill,
                                   project: project.path,
                                   slashHost: CodeSlashHost(
-                                    setMode: (name) => _pickMode(AgentMode.values.byName(name), project.id),
+                                    setMode: (name) => _pickModeChecked(AgentMode.values.byName(name), project),
                                     morning: ref.read(morningBriefProvider.notifier).refresh,
                                   ),
                                   // Busy while resuming too: Enter then waits instead of starting a second session.
@@ -322,7 +338,10 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
                                   mode: mode,
                                   minLines: 3,
                                   placeholder: 'Describe the task',
-                                  onModeChanged: (m) => _pickMode(m, project.id),
+                                  onModeChanged: (m) => _pickModeChecked(m, project),
+                                  harnessLabel: lead == everyaiHarnessName
+                                      ? ''
+                                      : ref.read(driverRegistryProvider).resolve(lead)?.info.label ?? lead,
                                   onSend: (text, files) => _start(project, text, files),
                                   agent: AgentMenu(
                                     harness: lead,

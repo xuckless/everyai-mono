@@ -292,7 +292,7 @@ final class FakeHost implements HostServer {
   Object? mintFails;
 
   @override
-  Future<HostToken> mint(String sessionId, HostTools tools, {Set<String>? only}) async {
+  Future<HostToken> mint(String sessionId, HostTools tools, {Set<String>? only, Set<String> without = const {}}) async {
     if (mintFails case final e?) throw e;
     minted.add(sessionId);
     this.only[sessionId] = only;

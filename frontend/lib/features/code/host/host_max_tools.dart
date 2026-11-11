@@ -70,7 +70,7 @@ const maxHostToolInfos = <HostToolInfo>[
     name: forkHostTool,
     when:
         'a step of the plan stands on its own: a fork does it in the background (in its own worktree when asked) '
-        'and its report comes as an <everyai-notice> holding a <task-notification>.',
+        'and its report comes later as a message.',
   ),
   (name: checkForksTool, when: 'you want to see how your forks are doing.'),
   (name: answerForkTool, when: 'a <fork-question> reached you.'),

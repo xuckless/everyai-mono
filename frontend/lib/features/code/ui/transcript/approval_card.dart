@@ -14,6 +14,7 @@ import '../../../../core/ui/syntax_spans.dart';
 import '../../approval_risk.dart';
 import '../../domain/agent_mode.dart';
 import '../../domain/line_diff.dart';
+import '../../domain/native_approvals.dart';
 import '../../domain/permissions.dart';
 import '../../domain/transcript.dart';
 import '../../harness/events.dart';
@@ -39,7 +40,12 @@ class ApprovalCard extends StatefulWidget {
     this.rememberBy = const {},
     this.workingDir,
     this.session,
+    this.native,
   });
+
+  /// An outside lead's card: the ways its CLI can keep an allow (empty: once only). Then Allow answers once,
+  /// nothing is saved in EveryAI's rules, and [remember] / [rememberBy] aren't used. Null: EveryAI's rules.
+  final List<NativeAllowScope>? native;
 
   /// Where commands run; with it, each command gets an informational risk
   /// label ([approvalRiskProvider]) once one arrives. Null shows none.
@@ -94,17 +100,21 @@ class _ApprovalCardState extends State<ApprovalCard> {
     super.dispose();
   }
 
+  /// What the main Allow answers: once on an outside lead (its CLI keeps nothing unless asked), else saved.
+  ApprovalScope get _allow => widget.native == null ? ApprovalScope.always : ApprovalScope.once;
+
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final calls = widget.pending;
     final edits = calls.every((c) => AgentMode.isFileEdit(c) && !AgentMode.isReadOnly(c));
-    final remember = widget.remember;
+    final native = widget.native;
+    final remember = native == null ? widget.remember : null;
     if (widget.onAllowCall != null && widget.onDenyCall != null && calls.length > 1) return _stacked(theme, edits);
     return CallbackShortcuts(
       bindings: {
-        const SingleActivator(LogicalKeyboardKey.enter, meta: true): () => widget.onAllow(ApprovalScope.always),
-        const SingleActivator(LogicalKeyboardKey.enter, control: true): () => widget.onAllow(ApprovalScope.always),
+        const SingleActivator(LogicalKeyboardKey.enter, meta: true): () => widget.onAllow(_allow),
+        const SingleActivator(LogicalKeyboardKey.enter, control: true): () => widget.onAllow(_allow),
         const SingleActivator(LogicalKeyboardKey.escape): () => setState(() => _denying = true),
       },
       child: Focus(
@@ -175,11 +185,19 @@ class _ApprovalCardState extends State<ApprovalCard> {
                       emphasis: ButtonEmphasis.secondary,
                       onPressed: () => widget.onMode(AgentMode.autoEdit),
                     ),
-                  AdaptiveButton(
-                    label: 'Just this once',
-                    emphasis: ButtonEmphasis.secondary,
-                    onPressed: () => widget.onAllow(ApprovalScope.once),
-                  ),
+                  if (native != null)
+                    for (final n in native)
+                      AdaptiveButton(
+                        label: n.label,
+                        emphasis: ButtonEmphasis.secondary,
+                        onPressed: () => widget.onAllow(n.scope),
+                      )
+                  else
+                    AdaptiveButton(
+                      label: 'Just this once',
+                      emphasis: ButtonEmphasis.secondary,
+                      onPressed: () => widget.onAllow(ApprovalScope.once),
+                    ),
                   if (remember != null) ...[
                     AdaptiveButton(
                       label: widget.forks
@@ -195,10 +213,10 @@ class _ApprovalCardState extends State<ApprovalCard> {
                       emphasis: ButtonEmphasis.secondary,
                       onPressed: () => widget.onAllow(ApprovalScope.sessionAll),
                     ),
-                  // Asked once, kept for good: Allow saves the rule for this project.
+                  // Asked once, kept for good: Allow saves the rule for this project (on an outside lead: this once).
                   AdaptiveButton(
                     label: 'Allow  ${Host.enterKeys(command: true)}',
-                    onPressed: () => widget.onAllow(ApprovalScope.always),
+                    onPressed: () => widget.onAllow(_allow),
                   ),
                 ],
               ),
@@ -221,6 +239,8 @@ class _ApprovalCardState extends State<ApprovalCard> {
   /// "all commands", "all commands and all edits in the project"… when every pending call has a kind that
   /// "Allow all similar for this session" covers; null otherwise.
   String? _broadLabel() {
+    // An outside lead's CLI has no "every command" rule of ours.
+    if (widget.native != null) return null;
     final kinds = <String>[];
     for (final c in widget.pending) {
       if (widget.decided.containsKey(c.id)) continue;
@@ -238,8 +258,8 @@ class _ApprovalCardState extends State<ApprovalCard> {
     final open = calls.where((c) => !widget.decided.containsKey(c.id)).length;
     return CallbackShortcuts(
       bindings: {
-        const SingleActivator(LogicalKeyboardKey.enter, meta: true): () => widget.onAllow(ApprovalScope.always),
-        const SingleActivator(LogicalKeyboardKey.enter, control: true): () => widget.onAllow(ApprovalScope.always),
+        const SingleActivator(LogicalKeyboardKey.enter, meta: true): () => widget.onAllow(_allow),
+        const SingleActivator(LogicalKeyboardKey.enter, control: true): () => widget.onAllow(_allow),
         const SingleActivator(LogicalKeyboardKey.escape): () => setState(() => _denying = true),
       },
       child: Focus(
@@ -277,7 +297,8 @@ class _ApprovalCardState extends State<ApprovalCard> {
                               ? 'Allow similar for all forks of this session'
                               : 'Allow similar for this session',
                           decided: widget.decided[c.id],
-                          rule: widget.rememberBy[c.id],
+                          rule: widget.native == null ? widget.rememberBy[c.id] : null,
+                          native: widget.native,
                           workingDir: widget.workingDir,
                           session: widget.session,
                           onAllow: (scope) => widget.onAllowCall!(c.id, scope),
@@ -329,7 +350,7 @@ class _ApprovalCardState extends State<ApprovalCard> {
                     ),
                   AdaptiveButton(
                     label: 'Allow all  ${Host.enterKeys(command: true)}',
-                    onPressed: () => widget.onAllow(ApprovalScope.always),
+                    onPressed: () => widget.onAllow(_allow),
                   ),
                 ],
               ),
@@ -352,9 +373,13 @@ class _CallRow extends StatelessWidget {
     this.sessionLabel = 'Allow for this session',
     this.decided,
     this.rule,
+    this.native,
     this.workingDir,
     this.session,
   });
+
+  /// See [ApprovalCard.native].
+  final List<NativeAllowScope>? native;
 
   final ActionCall call;
   final String? flag;
@@ -404,17 +429,22 @@ class _CallRow extends StatelessWidget {
                     tooltip: rule == null ? 'Allow more' : 'Allow saves: $rule',
                     actions: [
                       MenuAction(label: 'Just this once', onSelected: () => onAllow(ApprovalScope.once)),
+                      for (final n in native ?? const <NativeAllowScope>[])
+                        MenuAction(label: n.label, onSelected: () => onAllow(n.scope)),
                       if (rule != null)
                         MenuAction(label: sessionLabel, onSelected: () => onAllow(ApprovalScope.session)),
-                      if (broadPattern(call) case final b?)
+                      if (native == null && broadPattern(call) != null)
                         MenuAction(
-                          label: 'Allow ${broadLabel(b)} for this session',
+                          label: 'Allow ${broadLabel(broadPattern(call)!)} for this session',
                           onSelected: () => onAllow(ApprovalScope.sessionAll),
                         ),
                     ],
                     child: const MenuTrigger('More'),
                   ),
-                  AdaptiveButton(label: 'Allow', onPressed: () => onAllow(ApprovalScope.always)),
+                  AdaptiveButton(
+                    label: 'Allow',
+                    onPressed: () => onAllow(native == null ? ApprovalScope.always : ApprovalScope.once),
+                  ),
                 ],
               ],
             ),

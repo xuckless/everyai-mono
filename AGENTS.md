@@ -690,7 +690,9 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   `docs/research/batches/multi-harness/run2/`. Drivers: `drivers/acp/` (Gemini `--acp`, `opencode acp`, `acp:<cmd>`),
   `drivers/opencode/` (`opencode serve`), `drivers/codex/` (`codex app-server`; fixtures derived from the schema and
   marked unverified), `drivers/claude/` (`claude -p` stream-json, approvals via a host permission tool),
-  `drivers/terminal/` (pty paste). A repo's own CLI config can't switch approvals off; no tokens on disk.
+  `drivers/terminal/` (pty paste). A repo's own CLI config can't switch approvals off (since 2026-11-11 only true
+  for Claude Code and OpenCode; Gemini, Qwen, Kiro and Cursor follow the project's config, with a one-time note);
+  no tokens on disk.
   `AttachesBriefed`: a reopened outside session gets a fresh host token and the old one is revoked; child sessions
   reopen without a briefing. Stage 2: lead + model at session start, per-CLI consent (Claude Code and Gemini off by
   default), briefing, `HostTools` on the controller, fidelity label, Settings → Code → Harnesses. Max/Ultra/Bug fix
@@ -777,7 +779,9 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
     into password/payment fields; screenshots skip password managers; package installs checked for typosquats and
     non-existent names (fail open offline); run_script bridge capped and guarded; red-team fixtures in `test/security/`.
   - `security_alert` tool and the owner's four checks in every lead's prompt or briefing (host MCP tool for outside
-    leads): red transcript card, OS notification, `stop_run` decided by the model. Memory, plans, handoffs and fork
+    leads): red transcript card, OS notification, `stop_run` decided by the model. Since 2026-11-11 outside leads keep
+    the `security_alert` tool but the four checks are no longer in their briefing (only the EveryAI harness's
+    prompt has them). Memory, plans, handoffs and fork
     reports are wrapped, and checked for smuggling on write.
   - Repos: EveryAI's git calls never run hooks, filters or fsmonitor; clone/open scan notes; MCP tool lists pinned by
     digest (changed tools left out until re-consent in Settings), shadowing flagged, results wrapped; skills, agents
@@ -1277,9 +1281,9 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   squashes in its worktree, then the next press fast-forwards the base (`fastForwardMerge`, `BaseMoved` asks again).
   Tier notes (`<everyai-tier>`) and `<workflow-result>` show as chips/notices, not the long text. Compaction: a plan
   approved by message is kept; clearing keeps the current user turn plus the last 3 steps. Auto mode
-  (`AgentMode.auto`): EveryAI lead = Full auto; Claude Code = its `auto` permission mode behind our hook (floor and
-  deny still refused; escalated calls ask as in Ask); Codex = approvalsReviewer `auto_review` (EveryAI's floor
-  doesn't see those calls; the mode says so). Forks: left-over fork worktrees pruned at launch (kept with unsaved
+  (`AgentMode.auto`): EveryAI lead = Full auto; Claude Code = its own `auto` permission mode (since 2026-11-11 no
+  hook of ours: EveryAI's floor and deny rules don't judge its calls; what Claude asks about comes to the card);
+  Codex = approvalsReviewer `auto_review` (EveryAI's floor doesn't see those calls; the mode says so). Forks: left-over fork worktrees pruned at launch (kept with unsaved
   work, listed in Settings → Code), `message_fork` reaches a running child after its current step, a per-fork
   Changes picker in the Diff tab; MCP servers and language servers stop on session delete and after 10 idle minutes
   (`StopsHelpers`). LSP (`harness/everyai/lsp*.dart`): `diagnostics` tool (EveryAI harness + host MCP), a one-line
@@ -1350,6 +1354,42 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   workflow estimate card, figures by id, local server states, one-line installs. Copy follows the owner's marketing plan
   (`marketing-plan.md`, local): no pricing, nothing about the vault, desktop control "macOS and Linux today, Windows
   next", Ultra/Max not pushed. README pitch and badge, CHANGELOG section, `releaseNotes` entry (8 items).
+- **Cursor CLI + outside agents on their own terms (2026-11-11; branch `feat/cursor-native`, plan
+  `~/.claude/plans/cursor-native.md`).** Owner: EveryAI switches harnesses and offers tools; outside agents keep
+  their own modes, approvals and habits. Cursor (`agent acp`, checked live with
+  `tool/live_drivers/cursor_live_test.dart`): a permission request's text is kept off the call
+  (`acpWithoutAskText`; "Not in allowlist: …" showed as every asked call's result), Cursor's MCP calls
+  (`{providerIdentifier, toolName, args}`) are MCP actions, no "ran without asking" notice, no
+  ask_user_question/present_plan host tools (`DriverCap.nativeQuestions`; it has cursor/ask_question), models probed
+  when nothing is cached (`OffersModels.modelsChanged` reloads the menu), usage estimated (`AcpUsageEstimate`,
+  `UsageReport.estimated` → ≈ on the meter). Controller: no `<everyai-mode>` notes for outside leads,
+  `_nativeApprovals` (their asks go to the user; only our host tools pass, check/bug_check still ask; workflow
+  agents keep our checks), native mode list always shown, no fidelity line, no workflow checkpoint/stall notes to
+  them. Briefing (`session_skill.dart`): tools, workflows, commit rule, working directory, notice nonce only.
+  Drivers: Claude without the gate hook (`can_use_tool` only, Bypass listed), Codex presets real (Full Access
+  allowed), OpenCode without `*: ask` (native subagents' asks routed), ACP modes all listed, no pins or set-backs,
+  no forced asking flags (Gemini/Qwen/Cline/Grok/Copilot/Goose).
+  **Removed by this PR, plainly:** the workspace preflights that refused to start Gemini/Qwen/Kiro/Cursor in a
+  project whose `.gemini`/`.qwen`/`.kiro`/`.cursor` config pre-allows tools or starts programs (now a one-time note,
+  below); the owner's security rules in outside leads' briefing (they keep the `security_alert` tool); EveryAI's
+  floor, deny rules and classifier on outside leads' calls (their own approvals decide; only `check`/`bug_check` and
+  the guards inside EveryAI's tools remain). Full auto and Bypass map to the CLI's own skip-permissions mode (Claude
+  `bypassPermissions`, Codex Full Access, Gemini YOLO). Codex keeps its sandbox on (read-only / workspace-write) in
+  every preset but Full Access.
+  Review fixes (branch `review/cursor-native`): ACP leads' `check`/`bug_check` go to the card and are granted on
+  approval; "for this session" / "always" on an outside lead's card go to the CLI's own mechanism (Claude
+  `updatedPermissions` from its suggestions, Codex `acceptForSession`, OpenCode `always`, ACP `allow_always`;
+  `NativeRemember` on the driver via `RemembersApprovals`, `domain/native_approvals.dart`) and nothing is written to
+  EveryAI's rules, the card's Allow answers once; Kiro's mode label shows Autopilot when it is on; OpenCode lists a
+  session's children on attach/resync (`GET /api/session?parentID=`) so a subagent's waiting request isn't lost; ACP
+  model probe is an explicit `ModelProbe` (a failure isn't retried per menu open; `refreshModels`). Owner's calls:
+  a project's CLI config gets a one-time note before the session starts (`repo_configs/`, per project + harness,
+  remembered by a digest of the files: unseen / shown / accepted(digest); Continue or Cancel); the first Full auto or
+  Bypass pick on an outside lead asks once per harness (`ui/skip_permissions_consent.dart`,
+  `SkipPermissionsConsent`, "Ask again" in Settings > Code > Harnesses; restored modes don't ask). Workflow agents of
+  an outside lead follow the lead: a worker takes the lead's mode, skip-permissions included; a read-only role starts
+  in the CLI's mode nearest Ask and EveryAI judges only what the CLI asks about, so there it is advice, not enforced.
+
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),

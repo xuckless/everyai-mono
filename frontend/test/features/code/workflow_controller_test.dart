@@ -162,7 +162,7 @@ void main() {
 
   /// The nonce the lead's briefing names, and a workflow result as the lead is sent it.
   String leadNonce() =>
-      RegExp('Notice nonce: `([0-9a-f]{32})`').firstMatch(drivers['test']!.specs.first.briefing!.sessionSkill!)![1]!;
+      RegExp('with nonce `([0-9a-f]{32})`').firstMatch(drivers['test']!.specs.first.briefing!.sessionSkill!)![1]!;
 
   String signed(String runId, String body) =>
       '<everyai-notice kind="workflow-result" id="$runId" nonce="${leadNonce()}">\n$body';
@@ -209,7 +209,8 @@ void main() {
     expect(File('$dir/$runId.jsonl').existsSync(), isFalse);
   });
 
-  test('a stalled run: the lead hears first and acts with workflow_agents; then the user', () async {
+  // An outside lead isn't nudged about its runs (owner, 2026-11-11); it can still steer them with workflow_agents.
+  test('a stalled run on an outside lead: no note to it, workflow_agents still works; then the user', () async {
     CodeSessionController.workflowStallAfter = Duration.zero;
     addTearDown(() => CodeSessionController.workflowStallAfter = const Duration(minutes: 7));
     final c = await open();
@@ -225,10 +226,8 @@ void main() {
     final engine = c.workflowEngineOf(runId)!;
     engine.checkStall();
     expect(engine.state, isA<RunStalled>());
-    for (var i = 0; i < 50 && !lead.sent.any((m) => m.contains('<workflow-stalled')); i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-    }
-    expect(lead.sent.where((m) => m.contains('<workflow-stalled')).single, contains('- Fixer (agent $key)'));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(lead.sent.where((m) => m.contains('<workflow-stalled')), isEmpty);
     expect((await c.call(agents({'action': 'inspect', 'agent': key}))).text, contains('Fixer (agent $key, id'));
     expect((await c.call(agents({'action': 'inspect', 'agent': 'nope'}))).text, contains('No live agent "nope"'));
     expect((await c.call(agents({'action': 'ignore'}))).text, startsWith('Noted'));
@@ -265,15 +264,10 @@ void main() {
       return (c, runId);
     }
 
-    test('an outside lead is asked to compare, and its off_track pauses the run for the user', () async {
+    test('an outside lead gets no checkpoint; its own off_track still pauses the run for the user', () async {
       final (c, runId) = await phaseEnded();
-      for (var i = 0; i < 50 && !lead.sent.any((m) => m.contains('<workflow-checkpoint')); i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-      }
-      final ask = lead.sent.singleWhere((m) => m.contains('<workflow-checkpoint'));
-      expect(ask, contains('The Research phase of the demo run ended'));
-      expect(ask, contains('Fix the login bug'));
-      expect(ask, contains('Scout answered:\nRewrote the billing page instead'));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(lead.sent.where((m) => m.contains('<workflow-checkpoint')), isEmpty);
       expect(api.where((p) => p.contains('decide')), isEmpty, reason: 'EveryAI spends nothing on an outside lead');
       final r = await c.call(agents({'action': 'off_track', 'text': 'It works on billing, not the login bug'}));
       expect(r.text, startsWith('Paused'));
@@ -624,7 +618,8 @@ void main() {
       (int n) => n == 1,
     );
     await c.approve(ApprovalScope.session);
-    expect(c.policy.session, contains('npm test *'));
+    // An outside lead's "for this session" is its CLI's to keep (review/cursor-native): nothing in EveryAI's rules.
+    expect(c.policy.session, isEmpty);
     await c.runWorkflow('demo', 'source');
     unawaited(bridge.agent('Review', {'harness': 'fake2', 'readOnly': true}).catchError((Object _) => null));
     final kid = await child();
@@ -1378,7 +1373,7 @@ void main() {
       expect(workflowHostTools, isNot(contains('memory')));
       expect(host.only[c.sessionId], isNull);
       final text = drivers['fake2']!.specs.single.briefing!.sessionSkill!;
-      final tools = text.substring(text.indexOf('## everyai tools'), text.indexOf('## Rules'));
+      final tools = text.substring(text.indexOf('## EveryAI tools'), text.indexOf('## Commits'));
       expect(
         RegExp(r'^- `(\w+)`', multiLine: true).allMatches(tools).map((m) => m[1]),
         unorderedEquals(workflowHostTools),
