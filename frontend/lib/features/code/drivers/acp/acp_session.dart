@@ -14,7 +14,7 @@ import '../briefing/briefing_types.dart';
 import '../briefing/recipes.dart' show acpMcpServer;
 import '../driver.dart';
 import '../driver_events.dart';
-import '../driver_policy.dart' show rewindRefusal;
+import '../driver_policy.dart' show hostRunTools, rewindRefusal;
 import '../event_journal.dart';
 import '../json_rpc.dart';
 import '../usage_limit.dart';
@@ -1068,8 +1068,11 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
     _afterLoad = false;
     final options = p['options'] as List<Object?>? ?? const [];
     final shown = _shown[callId] ?? _show(callId, call, options: options);
-    // A call to EveryAI's own tools: they guard themselves, so the agent isn't stopped to ask about them.
-    if (shown.actionKind == 'MCPToolAction' && shown.toolName.startsWith('${everyaiServerName}__')) {
+    // A call to EveryAI's own tools: they guard themselves, so the agent isn't stopped to ask about them. The ones
+    // that run a command ([hostRunTools]) still go to the card: the app grants the host its run on approval.
+    if (shown.actionKind == 'MCPToolAction' &&
+        shown.toolName.startsWith('${everyaiServerName}__') &&
+        !hostRunTools.contains(shown.toolName.substring('${everyaiServerName}__'.length))) {
       final allow = [
         for (final o in options.whereType<Map<String, Object?>>())
           if (o['kind'] == 'allow_once' && o['optionId'] is String) o['optionId']! as String,

@@ -854,6 +854,24 @@ void main() {
       expect((await driver().detect()).problem, startsWith('Not signed in. Run `agy` in a terminal'));
     });
 
+    test("EveryAI's own tools pass without a card, except check and bug_check, which wait for the user", () async {
+      final r = rig(['acp/host_run_tools.jsonl']);
+      final s = await r.driver('acp:dsh', 'dsh').start(r.spec());
+      final seen = _Seen(s);
+      await s.send('go');
+      await seen.untilStatus(ExecutionStatus.waitingForConfirmation);
+      // memory was answered at once; check waits for the card.
+      expect(_replyTo(r.channels.single, 'p1'), {
+        'outcome': {'outcome': 'selected', 'optionId': 'yes'},
+      });
+      expect(r.channels.single.sent.where((m) => m['id'] == 'p2'), isEmpty);
+      final check = _transcript(seen.all).pending.singleWhere((c) => hostToolOf(c) == 'check');
+      await s.respond(accept: true, callIds: [check.id]);
+      await seen.untilStatus(ExecutionStatus.finished);
+      r.expectPlayed();
+      await s.close();
+    });
+
     test('no allow-once option: refused, with a notice', () async {
       final r = rig(['acp/always_only.jsonl']);
       final d = r.driver('acp:dsh', 'dsh');
