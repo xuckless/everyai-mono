@@ -674,7 +674,7 @@ final class ToolRunner {
   final List<String> ownFolders;
 
   /// The session's headless browser; null (tests) means none.
-  final HeadlessBrowser? browser;
+  final BrowserPage? browser;
 
   /// Set for a research job: its sandbox (see [SessionSpec.researchSites]).
   final List<String>? researchSites;

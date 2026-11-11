@@ -2,7 +2,7 @@
 
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, visibleForTesting;
 
 import 'dart:convert';
 
@@ -17,7 +17,7 @@ import 'login_wall.dart';
 /// the project's Chrome ([browserProfileDir]) but in a context of its own: each session has its own cookies and
 /// storage (its jar, kept sealed between runs), and starts from a saved login when the user picks one.
 abstract final class LiveBrowsers {
-  static final _bySession = <String, HeadlessBrowser>{};
+  static final _bySession = <String, BrowserPage>{};
   static final _changes = StreamController<String>.broadcast();
 
   /// A session whose browser was made or released.
@@ -28,10 +28,11 @@ abstract final class LiveBrowsers {
   static Future<SealedStore> Function()? jars;
 
   /// Session [liveId]'s browser, made on first use with [profileDir].
-  static HeadlessBrowser forSession(String liveId, {required String profileDir}) {
+  static BrowserPage forSession(String liveId, {required String profileDir}) {
     if (_bySession[liveId] case final b?) return b;
     final store = jars;
-    final b = HeadlessBrowser(
+    final b = makeSessionBrowser(
+      backendFor(defaultTargetPlatform),
       profileDir: profileDir,
       jarHome: store == null ? null : (store: store, name: 'jar-$liveId'),
     );
@@ -43,7 +44,7 @@ abstract final class LiveBrowsers {
 
   /// A site asks [b]'s session to sign in again although it started from a saved login for it: that login expired.
   /// (The card still offers it: a wall can be wrong.)
-  static void _watchExpiry(HeadlessBrowser b, Future<SealedStore> Function() store) {
+  static void _watchExpiry(BrowserPage b, Future<SealedStore> Function() store) {
     b.loginWall.state.addListener(() {
       if (b.loginWall.state.value case WallWaiting(:final site)) {
         if (b.usedLogins[site] case final id?) {
@@ -56,7 +57,7 @@ abstract final class LiveBrowsers {
   /// The saved logins [b]'s session started from get its refreshed sign-ins (while it is still signed in). A login
   /// the site asked to sign in to again this session (the wall marked it expired) is left as it is unless the user
   /// signed in past that wall: what's left then is the site's signed-out cookies. [jar]: read just now.
-  static Future<void> _writeBack(HeadlessBrowser b, {JarData? jar}) async {
+  static Future<void> _writeBack(BrowserPage b, {JarData? jar}) async {
     final store = jars;
     if (store == null || b.usedLogins.isEmpty) return;
     try {
@@ -84,15 +85,14 @@ abstract final class LiveBrowsers {
   }
 
   /// Every session's browser this run.
-  static Iterable<HeadlessBrowser> get all => _bySession.values;
+  static Iterable<BrowserPage> get all => _bySession.values;
 
   /// Session [liveId]'s browser if it has one.
-  static HeadlessBrowser? of(String liveId) => _bySession[liveId];
+  static BrowserPage? of(String liveId) => _bySession[liveId];
 
   /// A browser for session [liveId] without starting Chrome (tests); null takes it away.
   @visibleForTesting
-  static void debugSet(String liveId, HeadlessBrowser? b) =>
-      b == null ? _bySession.remove(liveId) : _bySession[liveId] = b;
+  static void debugSet(String liveId, BrowserPage? b) => b == null ? _bySession.remove(liveId) : _bySession[liveId] = b;
 
   /// Closes session [liveId]'s page: the session was removed, so its jar goes too (its saved logins get their
   /// refreshed sign-ins first). A session that was never opened this run has only its jar file.
@@ -115,11 +115,12 @@ abstract final class LiveBrowsers {
     final all = [..._bySession.values];
     _bySession.clear();
     // Each jar is read once (the quit has a few seconds): its saved logins get it, close() saves it, then Chrome.
-    Future<void> stop(HeadlessBrowser b) async {
+    Future<void> stop(BrowserPage b) async {
       final jar = b.jarHome == null ? null : await b.captureJar().catchError((Object _) => emptyJar);
       if (jar != null) await _writeBack(b, jar: jar);
       await b.close(captured: jar != null);
-      await b.host.stop();
+      // Chrome itself stops with its profile's last page.
+      if (b case final HeadlessBrowser chrome) await chrome.host.stop();
     }
 
     await Future.wait([for (final b in all) stop(b)]);
@@ -127,6 +128,13 @@ abstract final class LiveBrowsers {
     await ChromeHost.stopAll();
   }
 }
+
+/// A session's page made with [backend]: the one place that picks what runs it.
+BrowserPage makeSessionBrowser(BrowserBackend backend, {required String profileDir, JarHome? jarHome}) =>
+    switch (backend) {
+      BrowserBackend.chromeStream => HeadlessBrowser(profileDir: profileDir, jarHome: jarHome),
+      BrowserBackend.osWebview => throw UnsupportedError('The OS webview backend is not built yet.'),
+    };
 
 /// Where project [projectDir]'s browser profile lives under the app's data folder [dataDir].
 String browserProfileDir(String dataDir, String projectDir) =>

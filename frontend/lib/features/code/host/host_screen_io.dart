@@ -66,7 +66,7 @@ final class _Browser implements ScreenBrowser {
   _Browser(this._b) {
     trackDriverClose(close);
   }
-  final HeadlessBrowser _b;
+  final BrowserPage _b;
 
   @override
   Future<ScreenResult> run(Map<String, Object?> args, String root) async => _result(

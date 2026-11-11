@@ -25,7 +25,7 @@ import 'window_capture_io.dart';
 /// under its `.everyai/scratch/downloads/`; [fit] cuts
 /// a long eval result (text, a name for its spill file).
 Future<ToolOutput> runBrowser(
-  HeadlessBrowser b,
+  BrowserPage b,
   Map<String, Object?> args, {
   required String root,
   required bool vision,
@@ -381,7 +381,7 @@ String? uploadRefusal(String pageUrl, List<String> files, {required String root}
 
 /// Where the model's [x],[y] in frame [frame] (null: its latest) lands on [b]'s page. Before any screenshot the
 /// point is taken as CSS pixels of the viewport, as the model may know them from the page itself.
-Future<FramePoint> _point(HeadlessBrowser b, String? frame, double x, double y) async {
+Future<FramePoint> _point(BrowserPage b, String? frame, double x, double y) async {
   if (b.frames.latest == null && (frame == null || frame.isEmpty)) return FramePoint(x, y);
   final at = await b.scrollOffset();
   return b.frames.map(frame, x, y, b.geometry, scrollX: at.x, scrollY: at.y);
@@ -445,7 +445,7 @@ final _judged = Expando<String>('browser page judged');
 
 /// The user took [b]'s page to [url] themselves (the Preview's address bar): the agent's next action starts from
 /// there instead of judging the user's move as a redirect.
-void noteUserNavigation(HeadlessBrowser b, String url) => _judged[b] = url;
+void noteUserNavigation(BrowserPage b, String url) => _judged[b] = url;
 
 /// What the browser tool makes of [target] (before opening it, and again where a redirect landed): the refusal
 /// for a look-alike of an official site, a one-line note for a host with a reason for doubt (a bare IP address, a
