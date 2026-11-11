@@ -1,6 +1,10 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import 'dart:convert';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../../core/preferences.dart';
 
 import '../code_providers.dart';
 import '../code_settings_providers.dart';
@@ -46,6 +50,27 @@ String? resumeUnsupported(String driverId) {
   return acpResumeUnsupported(driverId) ?? "Its earlier sessions aren't listed yet.";
 }
 
+/// Sessions the user deleted in EveryAI (`harness|native id`, [deletedConversationsKey]): the harness's copy is
+/// deleted too, and one it couldn't delete is never listed again.
+abstract final class DeletedConversations {
+  /// At most this many, newest kept.
+  static const cap = 2000;
+
+  static Set<String> of(Preferences prefs) {
+    try {
+      return {for (final k in jsonDecode(prefs[deletedConversationsKey] ?? '[]') as List<Object?>) '$k'};
+    } on Object {
+      return const {};
+    }
+  }
+
+  static void add(Preferences prefs, Iterable<String> keys) {
+    if (keys.isEmpty) return;
+    final all = [...of(prefs).where((k) => !keys.contains(k)), ...keys];
+    prefs[deletedConversationsKey] = jsonEncode(all.length > cap ? all.sublist(all.length - cap) : all);
+  }
+}
+
 /// One row of the list: one of EveryAI's own sessions ([ours]), or a harness's own ([past]) with what is in the
 /// way of resuming it ([blocked], the picker's one-line fix; null when it can resume).
 typedef EarlierSession = ({CodeSessionInfo? ours, PastSession? past, String? blocked, DateTime at});
@@ -76,6 +101,8 @@ final pastSessionsProvider = FutureProvider.autoDispose.family<List<PastSession>
   final sources = ref.watch(pastSessionSourcesProvider);
   if (sources.isEmpty) return const [];
   final sessions = ref.watch(codeSessionsProvider);
+  // Read before the awaits below (a ref isn't used after them). A delete changes [sessions], which rebuilds this.
+  final deleted = DeletedConversations.of(ref.read(preferencesProvider));
   final timeout = ref.watch(pastSessionTimeoutProvider);
   Map<String, DriverStatus> statuses;
   try {
@@ -105,7 +132,7 @@ final pastSessionsProvider = FutureProvider.autoDispose.family<List<PastSession>
           .timeout(timeout)
           .then<List<PastSession>>((l) => l, onError: (Object _) => const <PastSession>[]),
   ]);
-  final own = ownConversationKeys(sessions, project.id);
+  final own = {...ownConversationKeys(sessions, project.id), ...deleted};
   return [
     for (final l in lists)
       for (final p in l)

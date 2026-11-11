@@ -38,6 +38,9 @@ import '../../support/fake_leads.dart';
 
 /// A harness's own sessions for a folder, as a test lists them.
 final class _Source implements PastSessionSource {
+  @override
+  bool get deletes => true;
+
   _Source(this.harness, this.sessions, {this.gate, this.fails = false});
 
   @override
@@ -57,6 +60,11 @@ final class _Source implements PastSessionSource {
 
   @override
   Future<List<HarnessEvent>> history(PastSession session) async => const [];
+
+  final deleted = <String>[];
+
+  @override
+  Future<void> delete(String nativeId, {required String cwd}) async => deleted.add(nativeId);
 }
 
 /// [FakeLeadDriver] that takes over a CLI's own conversation: adopting one makes it reopenable, replaying
@@ -228,6 +236,27 @@ void main() {
       );
     },
   );
+
+  test("deleting a session deletes the harness's own copy, and one it can't delete never comes back", () async {
+    final info = await container
+        .read(codeSessionsProvider.notifier)
+        .start(project: theProject(), prompt: 'Add dark mode', model: '', mode: AgentMode.ask, harness: 'alpha');
+    // A source that can't delete (like ACP): the copy stays on disk.
+    final alpha = _Source('alpha', [
+      past('alpha', info.conversationId, at: DateTime(2026, 11, 3)),
+      past('alpha', 'a2', at: DateTime(2026, 11, 2)),
+    ]);
+    sources = [alpha];
+    container.invalidate(pastSessionSourcesProvider);
+    expect([for (final p in await listed()) p.nativeId], ['a2']);
+    await container.read(codeSessionsProvider.notifier).remove(info.id);
+    expect(alpha.deleted, [info.conversationId]);
+    expect([for (final p in await listed()) p.nativeId], ['a2']);
+    // Still hidden after a restart.
+    container.dispose();
+    container = make();
+    expect([for (final p in await listed()) p.nativeId], ['a2']);
+  });
 
   test('inside another environment the host-stored sessions are listed but not openable', () async {
     sources = [

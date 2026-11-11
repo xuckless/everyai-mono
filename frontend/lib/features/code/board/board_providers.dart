@@ -1,10 +1,12 @@
 import 'dart:convert';
 import 'dart:ui' show Color;
 
+import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/preferences.dart';
-import '../code_providers.dart' show codeSessionsProvider;
+import '../code_providers.dart' show codeSessionProvider, codeSessionsProvider;
+import '../domain/permissions.dart' show ApprovalScope;
 import '../domain/code_session.dart';
 import '../drivers/driver_registry.dart' show driverRegistryProvider;
 import '../harness/harness.dart' show ReadsRecentEvents;
@@ -35,6 +37,15 @@ SessionStatus boardStatus(SessionStatus own, {required bool workRunning, require
   // A failed session stays failed (broken, or its budget spent) even while a workflow still runs: Running would hide it.
   if (workRunning && (own == SessionStatus.idle || own == SessionStatus.done)) return SessionStatus.running;
   return own;
+}
+
+/// Sessions by the session that started them (forks and subagents under their lead).
+Map<String, List<CodeSessionInfo>> childrenByParent(Iterable<CodeSessionInfo> sessions) {
+  final out = <String, List<CodeSessionInfo>>{};
+  for (final c in sessions) {
+    if (c.parentId case final p?) (out[p] ??= []).add(c);
+  }
+  return out;
 }
 
 /// A harness's two-letter mark and colour: the fallback for harnesses without a logo ([HarnessLogo]).
@@ -133,6 +144,223 @@ final class BoardDismissed extends Notifier<Set<String>> {
   }
 }
 
+/// What the Board knows about a session's last finish, and whether the user has looked since (one state per session,
+/// moved only by [seenTransition]):
+///
+/// ```text
+///   NotTracked ──Finished──▶ FinishedUnseen ──Looked──▶ FinishedSeen
+///        │  ▲                     │   ▲                      │
+///        │  └──────Ran────────────┴───┼──────Ran─────────────┘
+///        └──Looked (it is finished)───┴─▶ FinishedSeen   RunningAgain ──Finished──▶ FinishedUnseen
+/// ```
+///
+/// A session in Done is tracked from when the Board first saw it there ([FinishedUnseen.since]); once it runs again
+/// the marks are dropped, so its next finish is news. Auto-clear ([staleDone]) reads `since`; a cleared session is
+/// dismissed (`boardDismissedProvider`) and its marks go.
+sealed class SeenState {
+  const SeenState();
+}
+
+/// Nothing recorded (never finished here, or cleared).
+final class NotTracked extends SeenState {
+  const NotTracked();
+  @override
+  bool operator ==(Object other) => other is NotTracked;
+  @override
+  int get hashCode => 0;
+}
+
+/// Finished at [since]; the user hasn't looked since.
+final class FinishedUnseen extends SeenState {
+  const FinishedUnseen(this.since);
+  final DateTime since;
+  @override
+  bool operator ==(Object other) => other is FinishedUnseen && other.since == since;
+  @override
+  int get hashCode => Object.hash(1, since);
+}
+
+/// Finished at [since]; the user looked at [seenAt] (at or after the finish).
+final class FinishedSeen extends SeenState {
+  const FinishedSeen(this.since, this.seenAt);
+  final DateTime since;
+  final DateTime seenAt;
+  @override
+  bool operator ==(Object other) => other is FinishedSeen && other.since == since && other.seenAt == seenAt;
+  @override
+  int get hashCode => Object.hash(2, since, seenAt);
+}
+
+/// It was finished and runs again: the marks are dropped (stored as nothing, so a later load reads [NotTracked]).
+final class RunningAgain extends SeenState {
+  const RunningAgain();
+  @override
+  bool operator ==(Object other) => other is RunningAgain;
+  @override
+  int get hashCode => 3;
+}
+
+sealed class SeenEvent {
+  const SeenEvent();
+}
+
+/// The Board sees the session in Done; [at] is when it counts from (used when it wasn't tracked yet).
+final class Finished extends SeenEvent {
+  const Finished(this.at);
+  final DateTime at;
+}
+
+/// The user looks at the finished session (opens it).
+final class Looked extends SeenEvent {
+  const Looked(this.at);
+  final DateTime at;
+}
+
+/// The session runs (or waits, or is paused).
+final class Ran extends SeenEvent {
+  const Ran();
+}
+
+/// The one transition function of a session's seen state.
+SeenState seenTransition(SeenState state, SeenEvent event) => switch ((state, event)) {
+  (NotTracked() || RunningAgain(), Finished(:final at)) => FinishedUnseen(at),
+  // Looking at a finished session records the finish (and that it was seen) if the Board hadn't yet.
+  (NotTracked() || RunningAgain(), Looked(:final at)) => FinishedSeen(at, at),
+  (NotTracked(), Ran()) => const NotTracked(),
+  (RunningAgain(), Ran()) => state,
+  (FinishedUnseen() || FinishedSeen(), Ran()) => const RunningAgain(),
+  (FinishedUnseen(), Finished()) => state,
+  (FinishedSeen(), Finished()) => state,
+  (FinishedUnseen(:final since), Looked(:final at)) => FinishedSeen(since, at),
+  (FinishedSeen(), Looked()) => state,
+};
+
+/// Whether the Board has recorded finishes before: sessions already Done on the first run count from when they were
+/// created; after that, a newly seen finish counts from now.
+enum MarksEra { firstRun, tracking }
+
+/// Every session's [SeenState] (those not listed are [NotTracked]).
+class BoardMarkSet {
+  const BoardMarkSet(this.era, this.marks);
+
+  final MarksEra era;
+  final Map<String, SeenState> marks;
+
+  SeenState of(String id) => marks[id] ?? const NotTracked();
+
+  /// When [id], seen in Done now, counts from.
+  DateTime finishedAt(DateTime createdAt, DateTime now) => era == MarksEra.firstRun ? createdAt : now;
+}
+
+/// The Board's marks, kept in Preferences `code.board.done_since` (id → finish, epoch ms) and `code.board.seen` (id →
+/// when the user looked); the only writer, for the Board's refresh, the session view and the card.
+final boardMarksProvider = NotifierProvider<BoardMarks, BoardMarkSet>(BoardMarks.new);
+
+final class BoardMarks extends Notifier<BoardMarkSet> {
+  static const doneSinceKey = 'code.board.done_since';
+  static const seenKey = 'code.board.seen';
+
+  @override
+  BoardMarkSet build() {
+    final prefs = ref.read(preferencesProvider);
+    Map<String, int>? ints(String? raw) {
+      if (raw == null) return null;
+      try {
+        return {for (final e in (jsonDecode(raw) as Map<String, Object?>).entries) e.key: (e.value as num).toInt()};
+      } on Object {
+        return const {};
+      }
+    }
+
+    final since = ints(prefs[doneSinceKey]);
+    final seen = ints(prefs[seenKey]) ?? const <String, int>{};
+    DateTime at(int ms) => DateTime.fromMillisecondsSinceEpoch(ms);
+    final era = since == null ? MarksEra.firstRun : MarksEra.tracking;
+    return BoardMarkSet(era, {
+      for (final MapEntry(key: id, value: ms) in (since ?? const <String, int>{}).entries)
+        id: switch (seen[id]) {
+          final seenMs? when seenMs >= ms => FinishedSeen(at(ms), at(seenMs)),
+          _ => FinishedUnseen(at(ms)),
+        },
+      // Before the first record, a look is all there is (it counts as the finish too).
+      if (era == MarksEra.firstRun)
+        for (final MapEntry(key: id, value: ms) in seen.entries) id: FinishedSeen(at(ms), at(ms)),
+    });
+  }
+
+  /// One session's event ([markBoardSeen], the card's open). Writes only when the state changes.
+  void apply(String id, SeenEvent event) => _set(state.era, _step({...state.marks}, id, event));
+
+  /// The Board's refresh: the Done sessions' projected [finished] states (not cleared), the ids that [ran] again
+  /// and the ids [gone] (cleared, dismissed or deleted). The first refresh moves the marks to tracking.
+  void sync({
+    required Map<String, SeenState> finished,
+    Iterable<String> ran = const [],
+    Iterable<String> gone = const [],
+  }) {
+    final next = {...state.marks};
+    for (final id in gone) {
+      next.remove(id);
+    }
+    next.addAll(finished);
+    for (final id in ran) {
+      _step(next, id, const Ran());
+    }
+    _set(MarksEra.tracking, next);
+  }
+
+  Map<String, SeenState> _step(Map<String, SeenState> marks, String id, SeenEvent event) {
+    final to = seenTransition(marks[id] ?? const NotTracked(), event);
+    if (to is NotTracked || to is RunningAgain) {
+      marks.remove(id);
+    } else {
+      marks[id] = to;
+    }
+    return marks;
+  }
+
+  void _set(MarksEra era, Map<String, SeenState> marks) {
+    if (era == state.era && mapEquals(marks, state.marks)) return;
+    state = BoardMarkSet(era, marks);
+    final prefs = ref.read(preferencesProvider);
+    if (era == MarksEra.tracking) {
+      prefs[doneSinceKey] = jsonEncode({
+        for (final e in marks.entries)
+          if (e.value case FinishedUnseen(:final since) || FinishedSeen(:final since))
+            e.key: since.millisecondsSinceEpoch,
+      });
+    }
+    prefs[seenKey] = jsonEncode({
+      for (final e in marks.entries)
+        if (e.value case FinishedSeen(:final seenAt)) e.key: seenAt.millisecondsSinceEpoch,
+    });
+  }
+
+  /// Puts back the marks of [marks] (Undo of a clear): they return as they were, not as fresh finishes.
+  void restore(Map<String, SeenState> marks) {
+    if (marks.isEmpty) return;
+    _set(state.era, {...state.marks, ...marks});
+  }
+}
+
+/// How long a finished session stays in Done, and how many stay at most; older ones clear by themselves.
+const boardDoneFor = Duration(days: 2);
+const boardDoneKeep = 8;
+
+/// The Done sessions to clear by themselves: those done longer than [maxAge] ago, and past the newest [keep].
+Set<String> staleDone(
+  Map<String, DateTime> doneSince, {
+  required DateTime now,
+  Duration maxAge = boardDoneFor,
+  int keep = boardDoneKeep,
+}) {
+  final newest = doneSince.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+  return {
+    for (final (i, e) in newest.indexed)
+      if (i >= keep || now.difference(e.value) > maxAge) e.key,
+  };
+}
+
 /// The Board's column widths as shares of its width (three, summing to 1); Preferences `code.board.columns`.
 final boardColumnsProvider = NotifierProvider<BoardColumns, List<double>>(BoardColumns.new);
 
@@ -188,3 +416,56 @@ final boardRecentTranscriptProvider = FutureProvider.autoDispose.family<Transcri
     return null;
   }
 });
+
+/// The Board's side inspector width in points; Preferences `code.board.inspector`.
+final boardInspectorWidthProvider = NotifierProvider<BoardInspectorWidth, double>(BoardInspectorWidth.new);
+
+final class BoardInspectorWidth extends Notifier<double> {
+  static const key = 'code.board.inspector';
+  static const initial = 440.0;
+  static const min = 340.0;
+  static const max = 760.0;
+
+  @override
+  double build() => (double.tryParse(ref.read(preferencesProvider)[key] ?? '') ?? initial).clamp(min, max);
+
+  void set(double width) {
+    state = width.clamp(min, max);
+    ref.read(preferencesProvider)[key] = state.toStringAsFixed(0);
+  }
+
+  void reset() => set(initial);
+}
+
+/// Approves or denies calls [callIds] of session [sessionId] from the Board, on the session's own controller.
+typedef BoardDecide = Future<void> Function(String sessionId, {required bool approve, required List<String> callIds});
+
+/// How the Board answers approvals (cards, keys, Approve all); tests listen in here.
+final boardDecideProvider = Provider<BoardDecide>(
+  (ref) =>
+      (sessionId, {required approve, required callIds}) => approve
+      ? ref.read(codeSessionProvider(sessionId).notifier).approve(ApprovalScope.once, callIds)
+      : ref.read(codeSessionProvider(sessionId).notifier).deny(null, callIds),
+);
+
+/// Sessions with an approve or deny from the Board in flight: one answer at a time each, whichever way it was asked
+/// (a/d, the card's buttons, Approve all).
+final boardDecidingProvider = Provider<Set<String>>((ref) => <String>{});
+
+/// [decide] for [sessionId] unless an answer for it is already in flight; false when it was skipped. A harness that
+/// answers whole batches would otherwise get a second answer landing on a newer batch nobody saw.
+Future<bool> decideOnce(
+  Set<String> deciding,
+  BoardDecide decide,
+  String sessionId, {
+  required bool approve,
+  required List<String> callIds,
+}) async {
+  if (!deciding.add(sessionId)) return false;
+  try {
+    await decide(sessionId, approve: approve, callIds: callIds);
+    return true;
+  } finally {
+    deciding.remove(sessionId);
+  }
+}
