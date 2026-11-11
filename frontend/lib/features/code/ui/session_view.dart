@@ -64,6 +64,7 @@ import 'transcript/transcript_items.dart';
 import '../workflows/ui/workflow_card.dart';
 import '../workflows/workflow_engine.dart' show WorkflowStatus;
 import '../workflows/workflow_runs.dart' show workflowRunsProvider;
+import 'skip_permissions_consent.dart';
 
 const _maxWidth = 780.0;
 
@@ -421,7 +422,20 @@ class CodeSessionScreen extends ConsumerWidget {
                                                   ?.path,
                                               busy: busy,
                                               mode: state.mode,
-                                              onModeChanged: controller.setMode,
+                                              onModeChanged: (m) async {
+                                                // An outside lead's skip-permissions mode is agreed to once per harness.
+                                                if (driver != null &&
+                                                    !await confirmSkipPermissions(
+                                                      context,
+                                                      ref,
+                                                      harness: driver.info.id,
+                                                      lead: driver.info.label,
+                                                      mode: m,
+                                                    )) {
+                                                  return;
+                                                }
+                                                await controller.setMode(m);
+                                              },
                                               onSend: (text, files) => controller.sendTyped(text, files: files),
                                               onSteer: (text, files) => controller.steer(text, files: files),
                                               onStop: controller.stop,
@@ -468,6 +482,18 @@ class CodeSessionScreen extends ConsumerWidget {
                                               nativeMode: state.nativeMode,
                                               harnessLabel: driver?.info.label ?? '',
                                               onNativeModeChanged: (id) async {
+                                                final picked = state.nativeModes.where((m) => m.id == id).firstOrNull;
+                                                if (driver != null &&
+                                                    picked != null &&
+                                                    !await confirmSkipPermissions(
+                                                      context,
+                                                      ref,
+                                                      harness: driver.info.id,
+                                                      lead: driver.info.label,
+                                                      mode: picked.policy,
+                                                    )) {
+                                                  return;
+                                                }
                                                 final why = await controller.setNativeMode(id);
                                                 if (why != null && context.mounted) showAdaptiveToast(context, why);
                                               },

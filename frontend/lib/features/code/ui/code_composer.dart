@@ -515,7 +515,11 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
             policy: widget.mode,
             onChanged: widget.onNativeModeChanged!,
           )
-        : ModeMenu(mode: widget.mode, onChanged: widget.onModeChanged);
+        : ModeMenu(
+            mode: widget.mode,
+            onChanged: widget.onModeChanged,
+            outsideLead: widget.harnessLabel.isEmpty ? null : widget.harnessLabel,
+          );
   }
 
   /// harness · model · effort under the box, each its own menu, then [CodeComposer.lineExtras].
@@ -695,10 +699,14 @@ class SessionActionsButton extends StatelessWidget {
 
 /// Ask · Auto-edit · Plan · Auto · Full auto · Bypass.
 class ModeMenu extends StatelessWidget {
-  const ModeMenu({super.key, required this.mode, required this.onChanged});
+  const ModeMenu({super.key, required this.mode, required this.onChanged, this.outsideLead});
 
   final AgentMode mode;
   final ValueChanged<AgentMode> onChanged;
+
+  /// The outside lead's name when the session runs on one: Full auto and Bypass say they are its own
+  /// skip-permissions mode, and the caller confirms them per harness (no EveryAI Bypass confirmation here).
+  final String? outsideLead;
 
   @override
   Widget build(BuildContext context) {
@@ -717,12 +725,17 @@ class ModeMenu extends StatelessWidget {
             for (final m in AgentMode.values)
               PopoverRow(
                 title: m.label,
-                subtitle: m.description,
+                subtitle: m.descriptionOn(outsideLead),
                 selected: m == mode,
                 trailing: m == mode ? AdaptiveIcon(EveryIcon.check, size: 14, color: theme.accent) : null,
                 onTap: () async {
                   close();
-                  if (m == AgentMode.bypass && mode != AgentMode.bypass && !await confirmBypass(context)) return;
+                  if (outsideLead == null &&
+                      m == AgentMode.bypass &&
+                      mode != AgentMode.bypass &&
+                      !await confirmBypass(context)) {
+                    return;
+                  }
                   onChanged(m);
                 },
               ),
