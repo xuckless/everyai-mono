@@ -1,5 +1,6 @@
 import 'dart:math' show Random;
 
+import '../repo_configs/repo_config_note.dart';
 import '../../../core/preferences.dart';
 import '../../../core/motion/motion.dart';
 
@@ -202,6 +203,10 @@ class _CodeHomeState extends ConsumerState<CodeHome> {
     final workflow = isDemoPath(project.path) ? null : _workflow;
     setState(() => _launch = const _LaunchStarting());
     try {
+      // The lead's CLI follows this project's own config for it: said once, before anything is made.
+      if (!await confirmRepoConfigs(context, ref, projectId: project.id, dir: project.path, harness: harness)) {
+        return false;
+      }
       final info = await ref
           .read(codeSessionsProvider.notifier)
           .start(
