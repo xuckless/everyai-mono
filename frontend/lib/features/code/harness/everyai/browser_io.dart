@@ -1201,7 +1201,7 @@ final class HeadlessBrowser implements StreamedPage {
   @override
   Future<PageContext?> contextAt(double x, double y) async {
     try {
-      final v = await evaluate('($_contextAtJs)($x, $y)');
+      final v = await evaluate('($pageContextAtJs)($x, $y)');
       if (v is! Map) return null;
       return (
         prevented: v['prevented'] == true,
@@ -2362,7 +2362,7 @@ const _contextTrackerJs = '''
 
 /// What is at a point, for the right-click menu: a link, a picture, an editable field, the selection, and a short
 /// description of the element (for "Ask the agent about this").
-const _contextAtJs = r'''
+const pageContextAtJs = r'''
 (x, y) => {
   let el = document.elementFromPoint(x, y);
   while (el && el.shadowRoot) {
@@ -2412,7 +2412,6 @@ String? storageEventOrigin(Map<String, Object?> storageId) {
 /// Whether pages at [a] and [b] (in one browsing group) may run in one renderer: Chrome isolates sites, so pages of
 /// different sites never do. Errs towards yes: a page with no web address (about:blank inherits its opener's), and
 /// hosts whose last two labels match (a superset of one registrable domain).
-@visibleForTesting
 bool maySharePageProcess(String a, String b) {
   String? site(String url) {
     final u = Uri.tryParse(url);

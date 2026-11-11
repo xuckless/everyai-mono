@@ -238,8 +238,21 @@ enum BrowserBackend {
   osWebview,
 }
 
-/// The backend a session's browser uses on [platform]. Chrome everywhere for now.
-BrowserBackend backendFor(TargetPlatform platform) => BrowserBackend.chromeStream;
+/// The backend a session's browser uses on [platform]: the OS webview where the webview plugin has one (macOS's
+/// WKWebView, Windows' WebView2), Chrome's stream elsewhere (Linux). [choice] is `EVERYAI_BROWSER` (`chrome` or
+/// `webview`; anything else is ignored); without [platformViews] (`flutter test`, which has none) it is Chrome, as the
+/// webview can't run there.
+BrowserBackend backendFor(TargetPlatform platform, {String? choice, bool platformViews = true}) {
+  final webviewHere = switch (platform) {
+    TargetPlatform.macOS || TargetPlatform.windows => true,
+    TargetPlatform.linux || TargetPlatform.android || TargetPlatform.iOS || TargetPlatform.fuchsia => false,
+  };
+  return switch ((choice?.trim().toLowerCase(), webviewHere && platformViews)) {
+    ('chrome', _) => BrowserBackend.chromeStream,
+    (_, false) => BrowserBackend.chromeStream,
+    (_, true) => BrowserBackend.osWebview,
+  };
+}
 
 /// A frame of a page's screencast: JPEG bytes, its size, and what to ack.
 typedef ScreencastFrame = ({List<int> jpeg, int width, int height, double scrollY, int session});
