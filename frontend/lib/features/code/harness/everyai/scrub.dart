@@ -41,6 +41,11 @@ final class Scrubber {
     }
   }
 
+  /// Adds a value the user saved as a secret (a login's password): hidden whatever its shape, from 4 characters.
+  void rememberSecret(String value) {
+    if (value.length >= 4) _values.add(value);
+  }
+
   /// Whether a value is a number, an email address or a yes/no word: not a secret, whatever its name says.
   static bool _plainValue(String v) =>
       RegExp(r'^[0-9.,_:-]+$').hasMatch(v) ||

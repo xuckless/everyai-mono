@@ -4,13 +4,10 @@ import 'dart:convert';
 import 'package:drift/native.dart';
 import 'package:every_ai/app/shell.dart';
 import 'package:every_ai/core/db/app_database.dart';
-import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/net/api_client.dart';
+import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/core/providers.dart' show apiClientProvider;
-import 'package:every_ai/features/usage/usage_totals.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 import 'package:every_ai/core/ui/kit.dart' show KitButton;
 import 'package:every_ai/features/code/board/board_providers.dart';
 import 'package:every_ai/features/code/board/board_screen.dart';
@@ -21,9 +18,14 @@ import 'package:every_ai/features/code/domain/code_session.dart';
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/drivers/driver_events.dart';
 import 'package:every_ai/features/code/harness/events.dart';
+import 'package:every_ai/features/code/live/agent_logins.dart';
+import 'package:every_ai/features/code/ui/panes/login_ask_card.dart';
 import 'package:every_ai/features/code/workflows/workflow_engine.dart';
 import 'package:every_ai/features/code/workflows/workflow_runs.dart';
 import 'package:every_ai/features/questions/domain/questions.dart';
+import 'package:every_ai/features/usage/usage_totals.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/services.dart';
@@ -1042,5 +1044,34 @@ void main() {
     expect(decisions, isEmpty);
 
     await done(tester, c);
+  });
+
+  testWidgets("a fork's saved-login ask shows on its lead's card, naming the fork, and is answered there", (
+    tester,
+  ) async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final prefs = await Preferences.load(db);
+    prefs['code.sessions'] = jsonEncode([_s('lead').toJson(), _s('kid', parent: 'lead').toJson()]);
+    final c = ProviderContainer(overrides: [preferencesProvider.overrideWithValue(prefs)]);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: c,
+        child: LayoutHost(
+          language: DesignLanguage.material,
+          child: const Column(children: [LoginAskCard(sessionId: 'lead')]),
+        ),
+      ),
+    );
+    final asked = LoginGate.of('kid').ensure('github', site: 'github.com');
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"Session kid" wants your saved login for github.com'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('login-ask.allow.kid.github')));
+    await tester.pumpAndSettle();
+    expect(await asked, ConsentOutcome.allowed);
+    expect(find.textContaining('wants your saved login'), findsNothing);
+    LoginGate.forget('kid');
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+    await db.close();
   });
 }

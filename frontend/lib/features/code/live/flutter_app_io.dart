@@ -511,13 +511,13 @@ final class FlutterApp {
   /// Puts [text] in text field [ref] (replacing what it held), and submits it with [submit]: focuses the field,
   /// then edits it the way the keyboard does (the field's own editing path, so onChanged and formatters run), and
   /// checks the field holds the text afterwards.
-  Future<String> type(String ref, String text, {bool submit = false}) async {
+  Future<String> type(String ref, String text, {bool submit = false, bool secretOk = false}) async {
     await tree();
     var n = _node(ref);
-    if (n.secret) {
+    if (n.secret && !secretOk) {
       throw AppError(
-        '$ref is a password field: the agent never types into one. Ask the user to type it (or use a test '
-        'account the app fills in itself).',
+        '$ref is a password field, and the user keeps those to saved logins: fill it with fill_login (logins lists '
+        'them), or ask the user to type it.',
       );
     }
     if (n.role != 'textbox') throw AppError('$ref is a ${n.role}, not a text field.');
@@ -563,7 +563,8 @@ final class FlutterApp {
     }
     if (now == null) throw AppError('$ref went away while typing into it: take a new snapshot.');
     final held = now.value ?? '';
-    if (held != text) {
+    // An obscured field shows dots, never the text: there is nothing to compare.
+    if (held != text && !n.secret) {
       if (held == (n.value ?? '')) {
         throw AppError(
           "Typing into $ref didn't change it: it still holds \"$held\". (The field may be read-only, "
@@ -572,7 +573,7 @@ final class FlutterApp {
       }
     }
     if (submit) await this.submit();
-    final shown = held == text ? '' : ' (the field shows "$held": the app changed what was typed)';
+    final shown = held == text || n.secret ? '' : ' (the field shows "$held": the app changed what was typed)';
     return 'Typed into $ref${n.name.isEmpty ? '' : ' "${n.name}"'}$shown${submit ? ' and submitted' : ''}.';
   }
 

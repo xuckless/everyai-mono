@@ -15,6 +15,7 @@ import '../../core/process/child_processes.dart';
 import 'live/browser_jar.dart' show SealedStore;
 import 'live/android_device_io.dart' show AndroidDevices;
 import 'live/app_sources.dart' show AppSources;
+import 'live/agent_logins.dart';
 import 'live/live_browsers.dart';
 import 'live/nested_display_io.dart';
 import 'shells/shell_registry.dart';
@@ -419,6 +420,13 @@ Future<List<WorkflowEntry>> _workflowsOfIn(Ref ref, String projectDir) async {
 final driverShutdownProvider = Provider<void>((ref) {
   // Sessions' browser jars and saved logins are sealed under the app's data folder (with a keychain key).
   LiveBrowsers.jars ??= () async => SealedStore.app(await GitService.dataDir());
+  // Logins saved for agents live in the same sealed store; the tools read the user's switches and a session's
+  // project when they run.
+  AgentLogins.sealed ??= LiveBrowsers.jars;
+  AgentLogins.readPolicy = () => LoginPolicy.read((key) => ref.read(preferencesProvider)[key]);
+  AgentLogins.projectOf = (id) => ref.read(codeSessionsProvider.notifier).byId(id)?.projectId;
+  // WebView2 folders (session cookies) a crashed or killed run left behind; none is live yet at app start.
+  LiveBrowsers.sweepLeftovers();
   // The registry's stop runs beside the owners' own (not after them, where one slow stop used up the budget); it only
   // ends children still running, so a child an owner already ended isn't touched again. It waits for the browsers
   // (at most 2.5 s): their jars are read from the running Chrome before it stops.
@@ -710,6 +718,7 @@ final class CodeProjects extends Notifier<List<CodeProject>> {
     _save();
     // The project's own saved logins go with it.
     unawaited(LiveBrowsers.forgetProjectLogins(id));
+    unawaited(AgentLogins.app().then((l) => l?.forgetProject(id)).catchError((Object _) {}));
   }
 
   /// Where [id]'s sessions run from now on ([envId] from `ExecEnv.id`). Sessions already started keep theirs.
@@ -1815,6 +1824,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     // Their browser pages and shell rows go with them.
     for (final g in gone) {
       unawaited(LiveBrowsers.release(g));
+      LoginGate.forget(g);
       NestedDisplays.stop(g);
       ShellRegistry.instance.forget(g);
     }
@@ -1924,6 +1934,7 @@ final class CodeSessionState {
     bool connected = false,
     String? error,
     this.subagentNeedsInput = false,
+    this.loginAsk = false,
     this.asides = const [],
     this.goal,
     this.decided = const {},
@@ -2013,6 +2024,10 @@ final class CodeSessionState {
 
   /// A subagent this session is waiting on needs the user (an approval).
   final bool subagentNeedsInput;
+
+  /// A fill of a saved login by this session, or one of its forks or workflow agents, waits for the user's Allow
+  /// ([LoginGate.asks]).
+  final bool loginAsk;
   final AgentMode mode;
 
   /// Messages typed while the agent was busy; sent when it stops.
@@ -2038,6 +2053,8 @@ final class CodeSessionState {
     _ when hold == StepHold.paused => SessionStatus.paused,
     // A workflow's estimate waits for the user's Start.
     _ when proposal != null => SessionStatus.needsInput,
+    // A saved login waits for the user's Allow (here, or for a fork or workflow agent of this session).
+    _ when loginAsk => SessionStatus.needsInput,
     Transcript(pending: [_, ...]) => SessionStatus.needsInput,
     final t when t.openQuestion != null || t.openPlan != null => SessionStatus.needsInput,
     // The agent stopped on a security alert: the user decides how to go on.
@@ -2061,6 +2078,7 @@ final class CodeSessionState {
     String? brokenBy,
     SessionNotice? notice,
     bool? subagentNeedsInput,
+    bool? loginAsk,
     List<Aside>? asides,
     Goal? goal,
     bool clearGoal = false,
@@ -2101,6 +2119,7 @@ final class CodeSessionState {
     brokenBy: brokenBy ?? _brokenBy,
     notice: clearNotice ? null : notice ?? this.notice,
     subagentNeedsInput: subagentNeedsInput ?? this.subagentNeedsInput,
+    loginAsk: loginAsk ?? this.loginAsk,
     asides: asides ?? this.asides,
     goal: clearGoal ? null : goal ?? this.goal,
   );
@@ -2553,7 +2572,23 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     // After build returns, so the connected flag isn't overwritten.
     if (info != null) unawaited(Future.microtask(() => _connect(info)));
     if (info != null && info.parentId == null) unawaited(Future.microtask(_resumeWorkflows));
-    return CodeSessionState(mode: info?.mode ?? AgentMode.ask);
+    // A saved login waiting for Allow, here or in a fork or workflow agent of this session: it needs the user.
+    LoginGate.asks.addListener(_syncLoginAsk);
+    ref.onDispose(() => LoginGate.asks.removeListener(_syncLoginAsk));
+    return CodeSessionState(mode: info?.mode ?? AgentMode.ask, loginAsk: _loginAsking);
+  }
+
+  /// Whether this session or one it started (a fork, a workflow agent) waits on a login's Allow.
+  bool get _loginAsking => LoginGate.asksOf({
+    sessionId,
+    for (final s in ref.read(codeSessionsProvider))
+      if (s.parentId == sessionId) s.id,
+  }).isNotEmpty;
+
+  void _syncLoginAsk() {
+    if (!ref.mounted) return;
+    final now = _loginAsking;
+    if (state.loginAsk != now) state = state.copyWith(loginAsk: now);
   }
 
   /// The session whose budget this one spends: itself, or the one that started it.

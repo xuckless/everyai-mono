@@ -8,12 +8,12 @@
 //   windows [--pid N]...                        top-level windows, frontmost first
 //   procs                                       [{pid, ppid, exe}] for every process
 //   tree --pid N [--window W]                   a window's UI Automation tree, in AX terms (pixels)
-//   act --pid N --path P --action A [--text T]  AXPress, AXShowMenu, AXIncrement, AXDecrement, focus, select, show,
+//   act --pid N --path P --action A [--text T | --text-stdin]  AXPress, AXShowMenu, AXIncrement, AXDecrement, focus, select, show,
 //                                               setvalue
 //   click --pid N --x X --y Y [--count C] [--right] [--front]
 //   drag --pid N --x X --y Y --to-x X2 --to-y Y2 [--front]
 //   scroll --pid N --x X --y Y --dy D [--front]
-//   key --pid N (--text T | --keyname K) [--mods ctrl,shift,alt,win] [--front]
+//   key --pid N (--text T | --text-stdin | --keyname K) [--mods ctrl,shift,alt,win] [--front]
 //   raise --pid N [--window W]
 //   shot --window ID --out FILE                 a PNG of the window with its pop-ups over it
 //   stream --window ID [--fps F] [--scale S]    JPEG frames as multipart on stdout
@@ -106,6 +106,20 @@ static class Program
     }
 
     static bool Flag(string name) { return args.Contains("--" + name); }
+
+    // The text to type or set: from stdin with --text-stdin (a saved password never reaches the process list), else
+    // --text.
+    static string TextArg()
+    {
+        if (Flag("text-stdin"))
+        {
+            using (var r = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false)))
+            {
+                return r.ReadToEnd();
+            }
+        }
+        return Value("text");
+    }
 
     static double? Number(string name)
     {
@@ -894,7 +908,7 @@ static class Program
             case "act":
                 if (Value("path") == null || Value("action") == null) Fail("act needs --path and --action", 1);
                 NeedPid();
-                Act(Value("path"), Value("action"), Value("text"));
+                Act(Value("path"), Value("action"), TextArg());
                 break;
             case "click":
                 if (Number("x") == null || Number("y") == null) Fail("click needs --x and --y", 1);
@@ -913,7 +927,7 @@ static class Program
                 Emit(ok);
                 break;
             case "key":
-                Key(NeedPid(), Value("text"), Value("keyname"), Value("mods"));
+                Key(NeedPid(), TextArg(), Value("keyname"), Value("mods"));
                 Emit(ok);
                 break;
             case "raise":

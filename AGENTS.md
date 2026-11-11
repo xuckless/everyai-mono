@@ -1390,6 +1390,44 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   an outside lead follow the lead: a worker takes the lead's mode, skip-permissions included; a read-only role starts
   in the CLI's mode nearest Ask and EveryAI judges only what the CLI asks about, so there it is advice, not enforced.
 
+- **Preview browser: real webview, Take control, agent logins (2026-11-11; branch `feat/real-webview`; owner answers
+  in memory `real-webview-decisions`).** Five lanes. `live/browser_page.dart`: `BrowserPage` (what the agent tool,
+  Preview chrome, sign-ins and login wall use) and `StreamedPage` (screencast + forwarded input, Chrome only);
+  `backendFor` picks `BrowserBackend.osWebview` on macOS and Windows, `chromeStream` on Linux, under `flutter test`
+  and with `EVERYAI_BROWSER=chrome`; Electron stays CDP. `WebviewBrowser` (`live/webview_browser.dart`, model and
+  lifecycles `WebviewLife`/`TabLife` in `webview_model.dart`): each tab is a flutter_inappwebview 6.1.5 view, headless
+  until the Preview shows it (`ui/panes/webview_page_view.dart`), parked in the window when it lets go so it keeps
+  running; agent actions are scripts in content world `everyai` (synthetic events: no native `<select>` list, no
+  user-gesture APIs, no cross-origin iframes; "full page" pictures are the viewport); cookies per session on a
+  non-persistent store, kept in the sealed jar. macOS native side: `WebviewBridge` in `MainFlutterWindow.swift`
+  (channel `everyai/webview`; reads the plugin's view id by reflection, swaps `NSApp.mainWindow` while a headless view
+  is made, hooks WKWebView's context menu). "Sign in in a window" and the project profile are Chrome-only.
+  **Take control:** every live view is watch-only while the agent has it (`LiveControlPhase.userMayAct`,
+  `control.mayAct()` pulses the button); `LiveDriverBar` has the only Take control / Give back; page-acting chrome is
+  greyed. **Logins:** `live/agent_logins.dart` (`AgentLogins` on `SealedStore`, `LoginPolicy` with four switches all
+  on by default: without asking, type into password fields, authenticator codes, fill on any site; `LoginGate`
+  unasked/asking/allowed/denied per session), tool actions `logins` and `fill_login` on the browser and app tools
+  (EveryAI harness and host MCP), `typeSecret`, values scrubbed from results and never on a command line (helpers
+  take text on stdin, Android through scrcpy), `live/totp.dart`, CSV import, Settings > Code > Logins with delete,
+  Delete all and the approvals list, key-menu rows. Chrome stream fixes: a tab opening with a dialog no longer hangs
+  the switch, acks go to the frame's own socket, the opener returns when a pop-up closes, focus emulation
+  (`browser_tabs_alive_test`). Checked: full suite 3140 pass (one load flake), macOS debug build, the live rig
+  `tool/live_apps/webview_rig.dart` 29/29 on macOS. Not checked: a real click against the watch-only layer (the
+  helper refused, another window covered the point), Windows (never run), Google sign-in and passkeys in the
+  webview, the stdin helper path on a real window, Android fills on a device.
+  Review fixes (same PR): fill_login checks again right before typing (who drives: `fillTurnRefusal`; the site of
+  the top page and of the focused document, `focusDocumentJs` → `fillSiteRefusal`, a frame it can't read counts as
+  another site; `typeSecret(lastCheck:)` → `FillRefused`); the app tool's fill rechecks who drives, and
+  `appScreenFillVerdict` is the one place that decides app screens ("Fill on any site" says web pages only).
+  `rememberFilled` is the one way a value is marked as put on a session's page (the key menu's fill too); values are
+  hidden in their JSON/Dart-escaped forms (`secretForms`), codes only for their time step (`rememberFor`). Login asks
+  are keyed by the session that asked (`ToolRunner.loginSession` = its `liveId`), shown on the lead's view and Board
+  card (`LoginAskCard` covers children), set `CodeSessionState.loginAsk` (needs input, OS notification), and end
+  when that fork stops. Webview: `JarLife`, `TabDialog`, per-request `openTab` (`matchOpenRequest`),
+  `TabLife.unparked`, `webviewStartCurrent` (a close while starting disposes what the start made), WebView2 folders
+  swept at start (`sweepWebviewFolders`); the Preview's driver bar shows whenever the browser runs; the macOS bridge
+  runs no script in non-session webviews and drops hover on a locked view. Rig 31/33 (the two hover steps couldn't
+  move the pointer: another window covered the point).
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),

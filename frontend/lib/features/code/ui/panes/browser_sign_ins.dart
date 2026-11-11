@@ -15,6 +15,7 @@ import '../../live/browser_jar.dart';
 import '../../live/live_browsers.dart';
 import '../../live/login_wall.dart';
 import '../console/console_state.dart';
+import 'browser_logins.dart';
 
 // The session browser's sign-ins for people: the key menu in the Preview (this session's sign-ins, saved logins,
 // clearing), signing in in a real Chrome window, and the card that asks the user to sign in while the agent waits.
@@ -45,7 +46,7 @@ Future<void> _signInInWindow(HeadlessBrowser b, String url) async {
   final target = url.isEmpty || url == 'about:blank' ? 'https://accounts.google.com' : url;
   final siblings = [
     for (final o in LiveBrowsers.all)
-      if (o.profileDir == b.profileDir && o.running) (browser: o, url: o.page.value.url),
+      if (o is HeadlessBrowser && o.profileDir == b.profileDir && o.running) (browser: o, url: o.page.value.url),
   ];
   await Future.wait([for (final o in siblings) o.browser.saveJar().catchError((Object _) {})]);
   final before = b.jarHome == null ? null : await b.profileSignIns().catchError((Object _) => emptyJar);
@@ -85,7 +86,7 @@ Future<SavedLogins?> _savedLogins() async {
 class BrowserKeysButton extends StatelessWidget {
   const BrowserKeysButton({super.key, required this.browser, required this.projectId});
 
-  final HeadlessBrowser browser;
+  final BrowserPage browser;
   final String? projectId;
 
   @override
@@ -97,7 +98,7 @@ class BrowserKeysButton extends StatelessWidget {
       button: true,
       child: AnchoredPopover(
         width: 340,
-        builder: (context, close) => _KeysPanel(browser: browser, projectId: projectId, close: close),
+        builder: (panel, close) => _KeysPanel(browser: browser, projectId: projectId, close: close, host: context),
         child: Padding(
           padding: const EdgeInsets.all(7),
           child: Icon(EveryIcon.key.of(theme.design), size: 16, color: theme.textMuted),
@@ -108,11 +109,14 @@ class BrowserKeysButton extends StatelessWidget {
 }
 
 class _KeysPanel extends StatefulWidget {
-  const _KeysPanel({required this.browser, required this.projectId, required this.close});
+  const _KeysPanel({required this.browser, required this.projectId, required this.close, required this.host});
 
-  final HeadlessBrowser browser;
+  final BrowserPage browser;
   final String? projectId;
   final VoidCallback close;
+
+  /// The key button's context: still mounted after the panel closes, for dialogs.
+  final BuildContext host;
 
   @override
   State<_KeysPanel> createState() => _KeysPanelState();
@@ -127,7 +131,7 @@ class _KeysPanelState extends State<_KeysPanel> {
   /// One action at a time (a second click while one runs does nothing).
   Future<void>? _busy;
 
-  HeadlessBrowser get _b => widget.browser;
+  BrowserPage get _b => widget.browser;
 
   @override
   void initState() {
@@ -275,15 +279,18 @@ class _KeysPanelState extends State<_KeysPanel> {
             onTap: () => _run(() async => _b.applyJar(await _b.profileSignIns(site: site)), closes: true),
           ),
       ],
+      BrowserLoginRows(browser: _b, projectId: widget.projectId, close: widget.close, host: widget.host),
       const SizedBox(height: 4),
-      PopoverRow(
-        title: 'Sign in in a window…',
-        subtitle: 'A real Chrome window, for Google and other sites that refuse this one',
-        onTap: () {
-          widget.close();
-          unawaited(signInInWindow(_b, _b.page.value.url).catchError((Object _) {}));
-        },
-      ),
+      // A window on the project's Chrome profile: Chrome pages only.
+      if (_b case final HeadlessBrowser chrome)
+        PopoverRow(
+          title: 'Sign in in a window…',
+          subtitle: 'A real Chrome window, for Google and other sites that refuse this one',
+          onTap: () {
+            widget.close();
+            unawaited(signInInWindow(chrome, chrome.page.value.url).catchError((Object _) {}));
+          },
+        ),
       if (k.session.isNotEmpty)
         PopoverRow(
           title: 'Sign out of everything in this session',
@@ -371,11 +378,11 @@ class LoginWallCard extends ConsumerWidget {
                 onPressed: preview,
               ),
               _UseSavedLogin(browser: b, site: state.site, projectId: projectId),
-              if (onOpen == null)
+              if (b case final HeadlessBrowser chrome when onOpen == null)
                 AdaptiveButton(
                   label: 'Sign in in a window',
                   emphasis: ButtonEmphasis.secondary,
-                  onPressed: () => unawaited(signInInWindow(b, state.url).catchError((Object _) {})),
+                  onPressed: () => unawaited(signInInWindow(chrome, state.url).catchError((Object _) {})),
                 ),
               AdaptiveButton(
                 key: ValueKey('login-wall.skip.$sessionId'),
@@ -395,7 +402,7 @@ class LoginWallCard extends ConsumerWidget {
 class _UseSavedLogin extends StatefulWidget {
   const _UseSavedLogin({required this.browser, required this.site, required this.projectId});
 
-  final HeadlessBrowser browser;
+  final BrowserPage browser;
   final String site;
   final String? projectId;
 

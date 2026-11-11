@@ -6,6 +6,7 @@ import 'dart:isolate';
 
 import '../../../../core/security/official_sites.dart';
 import '../../../../core/security/untrusted.dart';
+import '../../live/agent_logins.dart';
 import '../../live/app_view.dart';
 import '../../live/frames.dart';
 import '../../live/live_session.dart';
@@ -23,16 +24,39 @@ import 'window_capture_io.dart';
 /// Runs one browser tool call ([args] as the `browser` spec has them) on [b].
 /// Screenshots go under [root]'s `.everyai/scratch/screenshots/`, downloads
 /// under its `.everyai/scratch/downloads/`; [fit] cuts
-/// a long eval result (text, a name for its spill file).
+/// a long eval result (text, a name for its spill file). [logins]: the saved logins the agent may fill and the
+/// user's switches for them (null: none to fill, and the switches as they are by default).
 Future<ToolOutput> runBrowser(
-  HeadlessBrowser b,
+  BrowserPage b,
   Map<String, Object?> args, {
   required String root,
   required bool vision,
   required String Function(String text, String name) fit,
   String Function(String text)? scrub,
   Duration loginHold = const Duration(minutes: 10),
+  LoginAccess? logins,
 }) async {
+  final out = await _runBrowser(b, args, root, vision, fit, scrub, loginHold, logins);
+  // Values filled this session never come back, whatever the page did with them.
+  if (logins == null) return out;
+  final text = logins.redact(out.text);
+  return identical(text, out.text) || text == out.text
+      ? out
+      : ToolOutput(text, isError: out.isError, observation: out.observation, images: out.images);
+}
+
+Future<ToolOutput> _runBrowser(
+  BrowserPage b,
+  Map<String, Object?> args,
+  String root,
+  bool vision,
+  String Function(String text, String name) fit,
+  String Function(String text)? scrub,
+  Duration loginHold,
+  LoginAccess? logins,
+) async {
+  // The user's switches: with "type into password fields" on, the field guards are off for type, press and click.
+  final guarded = !(logins?.policy ?? LoginPolicy.open).secretFields;
   final action = args['action'] as String? ?? '';
   String? str(String k) => (args[k] as String?)?.trim().isEmpty ?? true ? null : (args[k] as String).trim();
   double? at(String k) => (args[k] as num?)?.toDouble();
@@ -85,7 +109,8 @@ Future<ToolOutput> runBrowser(
       }
     }
     // Acting on the page: compare its elements before and after, so the result says what the action did.
-    final before = const {'click', 'type', 'press', 'back', 'forward', 'scroll'}.contains(action) && b.running
+    final before =
+        const {'click', 'type', 'press', 'back', 'forward', 'scroll', 'fill_login'}.contains(action) && b.running
         ? await b.elements()
         : null;
     String did;
@@ -122,19 +147,36 @@ Future<ToolOutput> runBrowser(
         final sel = str('selector'), ref = str('ref');
         final count = (args['count'] as num?)?.toInt() ?? 1;
         if (ref != null || sel != null) {
-          did = await b.click(selector: sel, ref: ref, count: count);
+          did = await b.click(selector: sel, ref: ref, count: count, guarded: guarded);
         } else if (at('x') == null || at('y') == null) {
           return const ToolOutput('Error: click needs a ref, a selector, or x and y.', isError: true);
         } else {
           final p = await _point(b, str('frame'), at('x')!, at('y')!);
           if (p.refusal case final why?) return ToolOutput('Error: $why', isError: true);
-          did = await b.click(x: p.x, y: p.y, count: count);
+          did = await b.click(x: p.x, y: p.y, count: count, guarded: guarded);
           if (p.warning case final w?) note = [?note, w].join('\n');
         }
       case 'type':
         final text = args['text'] as String?;
         if (text == null) return const ToolOutput('Error: type needs text.', isError: true);
-        did = await b.type(text, selector: str('selector'), ref: str('ref'), submit: args['submit'] == true);
+        did = await b.type(
+          text,
+          selector: str('selector'),
+          ref: str('ref'),
+          submit: args['submit'] == true,
+          guarded: guarded,
+        );
+      case 'logins':
+        final here = b.running ? await b.evaluate('location.href') : null;
+        did = loginsListText(
+          await logins?.usable() ?? const [],
+          pageHost: here is String ? Uri.tryParse(here)?.host : null,
+          policy: logins?.policy ?? LoginPolicy.open,
+        );
+      case 'fill_login':
+        final filled = await _fillLogin(b, args, logins, str('selector'), str('ref'));
+        if (filled.error case final why?) return ToolOutput('Error: $why', isError: true);
+        did = filled.did!;
       case 'snapshot':
         list = true;
         did = 'Element list:';
@@ -159,7 +201,7 @@ Future<ToolOutput> runBrowser(
         await Future<void>.delayed(const Duration(milliseconds: 600));
         did = '${action[0].toUpperCase()}${action.substring(1)}: ${await b.describe()}';
       case 'press':
-        did = await b.press(str('key') ?? 'Enter');
+        did = await b.press(str('key') ?? 'Enter', guarded: guarded);
       case 'scroll':
         did = await b.scroll(at('dy') ?? 600, x: at('x'), y: at('y'));
       case 'wait':
@@ -273,10 +315,17 @@ Future<ToolOutput> runBrowser(
     if (b.jarHome != null &&
         b.running &&
         b.dialog.value == null &&
-        !const {'tabs', 'dialog', 'console'}.contains(action)) {
+        !const {'tabs', 'dialog', 'console', 'logins'}.contains(action)) {
       final probe = await b.loginProbe();
       final site = probe == null ? null : loginWallSite(probe.url, password: probe.password);
-      if (site != null && !b.loginWall.skipped(site)) {
+      // A saved login the agent may fill here: no wait, the agent signs in itself.
+      final fits = site == null || logins == null || b.loginWall.skipped(site)
+          ? const <LoginEntry>[]
+          : wallLogins(await logins.usable(), Uri.tryParse(probe!.url)?.host ?? '', policy: logins.policy);
+      if (site != null && fits.isNotEmpty) {
+        did = '$did\n${wallLoginsText(site, fits)}';
+        list = true;
+      } else if (site != null && !b.loginWall.skipped(site)) {
         b.control.report(LiveActivity('look', caption: 'Waiting for you to sign in to $site'));
         final outcome = await b.loginWall.hold(site, probe!.url, probe: b.loginProbe, timeout: loginHold);
         did = '$did\n${wallOutcomeText(site, outcome)}';
@@ -343,6 +392,109 @@ Future<ToolOutput> runBrowser(
   }
 }
 
+/// fill_login on [b]'s page: the login named in [args] typed into [selector], [ref] or the focused field. What the
+/// result says ([did]) or why it couldn't ([error]); never the value.
+Future<({String? did, String? error})> _fillLogin(
+  BrowserPage b,
+  Map<String, Object?> args,
+  LoginAccess? logins,
+  String? selector,
+  String? ref,
+) async {
+  final name = (args['login'] as String?)?.trim() ?? '';
+  final field = LoginField.parse(args['field'] ?? 'password');
+  if (field == null) return (did: null, error: 'fill_login field is "username", "password" or "code".');
+  final all = await logins?.usable() ?? const <LoginEntry>[];
+  if (logins == null || all.isEmpty) {
+    return (
+      did: null,
+      error: 'there are no saved logins for this project. The user adds them in Settings > Code > Logins; ask them.',
+    );
+  }
+  final e = all.where((l) => l.name == name.toLowerCase()).firstOrNull;
+  if (e == null) {
+    return (
+      did: null,
+      error:
+          '${name.isEmpty ? 'fill_login needs login' : 'no saved login is called "$name"'}. Saved logins: '
+          '${all.map((l) => '${l.name} (${l.site})').join(', ')}.',
+    );
+  }
+  final here = await b.evaluate('location.href');
+  if (fillRefusal(e, field, policy: logins.policy, pageUrl: here is String ? here : '') case final why?) {
+    return (did: null, error: why);
+  }
+  if (selector == null && ref == null && await b.focusedFieldKind() == '') {
+    return (did: null, error: 'no field has the focus: pass the ref (or selector) of the field to fill.');
+  }
+  if (await logins.consent(e) case final why?) return (did: null, error: why);
+  // The wait for Allow may have lasted minutes: the user may have taken the view, or the page gone elsewhere.
+  if (await fillTurnRefusal(b.control) case final why?) return (did: null, error: why);
+  final String value;
+  try {
+    value = await logins.valueOf(e, field);
+  } on StateError catch (err) {
+    return (did: null, error: err.message);
+  }
+  final submit = args['submit'] == true;
+  try {
+    await b.typeSecret(
+      value,
+      selector: selector,
+      ref: ref,
+      submit: submit,
+      // After the click, right before the value goes: who drives, and where the page and its focus are now.
+      lastCheck: () async {
+        if (await fillTurnRefusal(b.control) case final why?) return why;
+        if (logins.policy.anySite) return null;
+        final top = await b.evaluate('location.href');
+        return fillSiteRefusal(
+          e,
+          policy: logins.policy,
+          pageUrl: top is String ? top : '',
+          focus: focusDocumentOf(await b.evaluate(focusDocumentJs)),
+        );
+      },
+    );
+  } on FillRefused catch (r) {
+    return (did: null, error: '${r.message} Nothing was typed.');
+  }
+  return (did: filledText(e, field, into: ref ?? selector, submitted: submit), error: null);
+}
+
+/// [v] (the value of [focusDocumentJs]) as a [FocusDocument]; a value that isn't one counts as a foreign frame.
+FocusDocument focusDocumentOf(Object? v) => switch (v) {
+  {'url': final String url} => FocusIn(url),
+  _ => const FocusInForeignFrame(),
+};
+
+/// Why a fill can't type now on a view with [control]: the user took it (and didn't give it back within its hold),
+/// or took and gave it back since the fill was asked for (the page may have changed under the agent). Null when the
+/// agent drives and did all along.
+Future<String?> fillTurnRefusal(LiveControl control) async {
+  if (!control.userDriving) return null;
+  if (!await control.agentTurn()) return userDrivingText(control.hold);
+  return 'The user took control of the view while the fill waited and has given it back: look again (snapshot) '
+      'before filling, the page may have changed.';
+}
+
+/// The logins that fit a sign-in page on [pageHost]: those for its site, or, when the user lets logins fill
+/// anywhere and none is for it, all of them.
+List<LoginEntry> wallLogins(List<LoginEntry> usable, String pageHost, {required LoginPolicy policy}) {
+  final own = [
+    for (final l in usable)
+      if (loginFitsHost(l.site, pageHost)) l,
+  ];
+  return own.isNotEmpty || !policy.anySite ? own : usable;
+}
+
+/// What the agent reads on a sign-in page to [site] it can fill itself.
+String wallLoginsText(String site, List<LoginEntry> fits) =>
+    'This page asks to sign in to $site. Saved logins you may fill: '
+    '${fits.map((l) => "'${l.name}' (${l.site}${l.username.isEmpty ? '' : ', ${l.username}'})").join(', ')}. '
+    'Sign in with fill_login (username, then password, submit: true). If the site then asks for a code sent by text '
+    'message or email, ask the user for it.';
+
 /// The session's tabs as the agent sees them, the active one marked.
 String tabsText(List<BrowserTab> tabs, String? active) => [
   'Tabs (switch with tab {index}):',
@@ -381,7 +533,7 @@ String? uploadRefusal(String pageUrl, List<String> files, {required String root}
 
 /// Where the model's [x],[y] in frame [frame] (null: its latest) lands on [b]'s page. Before any screenshot the
 /// point is taken as CSS pixels of the viewport, as the model may know them from the page itself.
-Future<FramePoint> _point(HeadlessBrowser b, String? frame, double x, double y) async {
+Future<FramePoint> _point(BrowserPage b, String? frame, double x, double y) async {
   if (b.frames.latest == null && (frame == null || frame.isEmpty)) return FramePoint(x, y);
   final at = await b.scrollOffset();
   return b.frames.map(frame, x, y, b.geometry, scrollX: at.x, scrollY: at.y);
@@ -445,7 +597,7 @@ final _judged = Expando<String>('browser page judged');
 
 /// The user took [b]'s page to [url] themselves (the Preview's address bar): the agent's next action starts from
 /// there instead of judging the user's move as a redirect.
-void noteUserNavigation(HeadlessBrowser b, String url) => _judged[b] = url;
+void noteUserNavigation(BrowserPage b, String url) => _judged[b] = url;
 
 /// What the browser tool makes of [target] (before opening it, and again where a redirect landed): the refusal
 /// for a look-alike of an official site, a one-line note for a host with a reason for doubt (a bare IP address, a

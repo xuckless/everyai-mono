@@ -27,6 +27,7 @@ import 'package:every_ai/features/code/host/host_providers.dart';
 import 'package:every_ai/features/models/models_providers.dart';
 import 'package:every_ai/features/usage/usage_totals.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:every_ai/features/code/live/agent_logins.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../../support/fake_leads.dart';
@@ -233,6 +234,19 @@ void main() {
       start('p1', harness: everyaiHarnessName),
       throwsA(isA<HarnessError>().having((e) => e.message, 'message', contains('runs on this computer only'))),
     );
+  });
+
+  test('Stop ends a saved-login fill waiting on the Allow card: back to unasked', () async {
+    final info = await start('p1');
+    container.listen(codeSessionProvider(info.id), (_, _) {});
+    await whenValue(container, codeSessionProvider(info.id).select((s) => s.connected), (bool c) => c);
+    final gate = LoginGate.of(info.id);
+    final waiting = gate.ensure('github', site: 'github.com');
+    expect(gate.stateOf('github'), isA<ConsentAsking>());
+    await container.read(codeSessionProvider(info.id).notifier).stop();
+    expect(await waiting, ConsentOutcome.stopped);
+    expect(gate.stateOf('github'), isA<ConsentUnasked>());
+    expect(LoginGate.asks.value.where((a) => a.gate == gate), isEmpty);
   });
 
   test("Stop ends what the CLI's shells run inside", () async {

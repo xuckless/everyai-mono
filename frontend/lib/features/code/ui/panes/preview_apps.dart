@@ -7,6 +7,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+import '../../../../core/motion/motion.dart';
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../live/adb_io.dart';
@@ -61,12 +62,21 @@ class PreviewSourceBar extends StatelessWidget {
   );
 }
 
-/// "Agent driving" / "You're driving" for an app, with the switch.
-class AppDriverBar extends StatelessWidget {
-  const AppDriverBar({super.key, required this.control, this.actions = const []});
+/// The one bar above every live view: who has it, and the only control that changes that. The view is watch-only
+/// until Take control; [noun] is what the view shows ("page", "app", "device", "window").
+class LiveDriverBar extends StatelessWidget {
+  const LiveDriverBar({super.key, required this.control, this.noun = 'page', this.actions});
 
   final LiveControl control;
-  final List<Widget> actions;
+  final String noun;
+  final List<Widget> Function(bool mayAct)? actions;
+
+  /// The bar's words per phase.
+  static String textFor(LiveControlPhase phase, String noun) => switch (phase) {
+    LiveControlPhase.agentDriving => 'Agent is using this $noun',
+    LiveControlPhase.userDriving => 'You have control',
+    LiveControlPhase.agentWaiting => 'Agent is waiting · you have control',
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -74,7 +84,8 @@ class AppDriverBar extends StatelessWidget {
     return ListenableBuilder(
       listenable: control,
       builder: (context, _) {
-        final user = control.userDriving;
+        final phase = control.phase;
+        final user = phase.userMayAct;
         return Container(
           margin: const EdgeInsets.fromLTRB(10, 6, 10, 6),
           padding: const EdgeInsets.fromLTRB(10, 4, 4, 4),
@@ -90,18 +101,18 @@ class AppDriverBar extends StatelessWidget {
                 decoration: BoxDecoration(color: user ? theme.warning : theme.accent, shape: BoxShape.circle),
               ),
               const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  user ? "You're driving · the agent waits" : 'Agent driving · click the app to take over',
-                  style: theme.type.caption.tint(theme.text),
-                ),
-              ),
-              ...actions,
+              Expanded(child: Text(textFor(phase, noun), style: theme.type.caption.tint(theme.text))),
+              ...?actions?.call(user),
               const SizedBox(width: 4),
-              AdaptiveButton(
-                label: user ? 'Give back' : 'Take control',
-                emphasis: ButtonEmphasis.secondary,
-                onPressed: user ? control.giveBack : control.take,
+              ValueListenableBuilder<int>(
+                valueListenable: control.takeHints,
+                builder: (context, hints, button) =>
+                    SuccessPulse(trigger: hints, radius: 8, color: theme.accent, child: button!),
+                child: AdaptiveButton(
+                  label: user ? 'Give back' : 'Take control',
+                  emphasis: ButtonEmphasis.secondary,
+                  onPressed: user ? control.giveBack : control.take,
+                ),
               ),
             ],
           ),
@@ -212,12 +223,8 @@ class _FlutterAppViewState extends State<FlutterAppView> {
     }
   }
 
-  void _takeOver() {
-    final c = _app.control;
-    if (c.userDriving) return;
-    c.take();
-    showAdaptiveToast(context, "You're driving: the agent's app actions wait until you give it back.");
-  }
+  /// Input reaches the source only while the user has control; else Take control pulses.
+  bool _mayAct() => _app.control.mayAct();
 
   Future<void> _reload(bool restart) async {
     setState(() => _reloading = true);
@@ -238,19 +245,20 @@ class _FlutterAppViewState extends State<FlutterAppView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        AppDriverBar(
+        LiveDriverBar(
+          noun: 'app',
           control: _app.control,
-          actions: [
+          actions: (may) => [
             AdaptiveButton(
               label: 'Hot reload',
               emphasis: ButtonEmphasis.secondary,
-              onPressed: _reloading ? null : () => _reload(false),
+              onPressed: _reloading || !may ? null : () => _reload(false),
             ),
             const SizedBox(width: 4),
             AdaptiveButton(
               label: 'Restart',
               emphasis: ButtonEmphasis.secondary,
-              onPressed: _reloading ? null : () => _reload(true),
+              onPressed: _reloading || !may ? null : () => _reload(true),
             ),
           ],
         ),
@@ -282,13 +290,13 @@ class _FlutterAppViewState extends State<FlutterAppView> {
                           final at = _downAt;
                           _downAt = null;
                           if (at == null || (e.localPosition - at).distance > 8) return;
-                          _takeOver();
+                          if (!_mayAct()) return;
                           final p = e.localPosition / _scale;
                           unawaited(_app.userTap(p.dx, p.dy).then((_) => _refresh(), onError: (Object _) {}));
                         },
                         onPointerSignal: (s) {
                           if (s is! PointerScrollEvent) return;
-                          _takeOver();
+                          if (!_mayAct()) return;
                           final p = s.localPosition / _scale;
                           unawaited(
                             _app
@@ -435,13 +443,14 @@ class _ReactNativeAppViewState extends State<ReactNativeAppView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        AppDriverBar(
+        LiveDriverBar(
+          noun: 'app',
           control: widget.app.control,
-          actions: [
+          actions: (may) => [
             AdaptiveButton(
               label: 'Reload',
               emphasis: ButtonEmphasis.secondary,
-              onPressed: () => widget.app.reload().then((_) => _refresh(), onError: (Object _) {}),
+              onPressed: !may ? null : () => widget.app.reload().then((_) => _refresh(), onError: (Object _) {}),
             ),
           ],
         ),
@@ -600,15 +609,11 @@ class _IosSimulatorViewState extends State<IosSimulatorView> {
     }
   }
 
-  void _takeOver() {
-    final c = _sim.control;
-    if (c.userDriving) return;
-    c.take();
-    showAdaptiveToast(context, "You're driving: the agent's simulator actions wait until you give it back.");
-  }
+  /// Input reaches the source only while the user has control; else Take control pulses.
+  bool _mayAct() => _sim.control.mayAct();
 
   void _wheelBy(Offset at, double dy) {
-    _takeOver();
+    if (!_mayAct()) return;
     _wheel += dy;
     _wheelAt = at;
     _wheelTimer?.cancel();
@@ -652,13 +657,14 @@ class _IosSimulatorViewState extends State<IosSimulatorView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        AppDriverBar(
+        LiveDriverBar(
+          noun: 'device',
           control: _sim.control,
-          actions: [
+          actions: (may) => [
             AdaptiveButton(
               label: 'Home',
               emphasis: ButtonEmphasis.secondary,
-              onPressed: () => _sim.home().catchError((Object _) => ''),
+              onPressed: !may ? null : () => _sim.home().catchError((Object _) => ''),
             ),
           ],
         ),
@@ -700,7 +706,7 @@ class _IosSimulatorViewState extends State<IosSimulatorView> {
                               final at = _downAt;
                               _downAt = null;
                               if (at == null) return;
-                              _takeOver();
+                              if (!_mayAct()) return;
                               final from = at / _scale, to = e.localPosition / _scale;
                               final move = (e.localPosition - at).distance;
                               unawaited(
@@ -984,12 +990,8 @@ class _AndroidDeviceViewState extends State<AndroidDeviceView> {
     }
   }
 
-  void _takeOver() {
-    final c = _device.control;
-    if (c.userDriving) return;
-    c.take();
-    showAdaptiveToast(context, "You're driving: the agent's device actions wait until you give it back.");
-  }
+  /// Input reaches the source only while the user has control; else Take control pulses.
+  bool _mayAct() => _device.control.mayAct();
 
   /// A point in the view as the scrcpy video's coordinates, and as the device's pixels.
   Offset _video(Offset local) => local / _scale;
@@ -1001,7 +1003,7 @@ class _AndroidDeviceViewState extends State<AndroidDeviceView> {
   }
 
   void _key(int code) {
-    _takeOver();
+    if (!_mayAct()) return;
     final c = _scrcpy;
     if (c != null && !c.closed) {
       c.key(code);
@@ -1026,7 +1028,7 @@ class _AndroidDeviceViewState extends State<AndroidDeviceView> {
       LogicalKeyboardKey.escape => 4,
       _ => null,
     };
-    _takeOver();
+    if (!_mayAct()) return KeyEventResult.handled;
     if (code != null) {
       c.key(code);
       return KeyEventResult.handled;
@@ -1084,22 +1086,24 @@ class _AndroidDeviceViewState extends State<AndroidDeviceView> {
                   child: Listener(
                     onPointerDown: (e) {
                       _focus.requestFocus();
-                      _takeOver();
+                      if (!_mayAct()) return;
                       _downAt = e.localPosition;
                       final v = _video(e.localPosition);
                       if (c != null && !c.closed) c.touch(0, v.dx, v.dy);
                     },
                     onPointerMove: (e) {
+                      if (_downAt == null) return;
                       final v = _video(e.localPosition);
                       if (c != null && !c.closed) c.touch(2, v.dx, v.dy);
                     },
                     onPointerUp: (e) {
                       final at = _downAt;
                       _downAt = null;
+                      if (at == null) return;
                       final v = _video(e.localPosition);
                       if (c != null && !c.closed) {
                         c.touch(1, v.dx, v.dy);
-                      } else if (at != null) {
+                      } else {
                         final from = _pixels(at), to = _pixels(e.localPosition);
                         unawaited(
                           ((e.localPosition - at).distance > 12
@@ -1111,7 +1115,7 @@ class _AndroidDeviceViewState extends State<AndroidDeviceView> {
                     },
                     onPointerSignal: (s) {
                       if (s is PointerScrollEvent && c != null && !c.closed) {
-                        _takeOver();
+                        if (!_mayAct()) return;
                         final v = _video(s.localPosition);
                         c.scroll(v.dx, v.dy, -s.scrollDelta.dy / 40);
                       }
@@ -1158,12 +1162,17 @@ class _AndroidDeviceViewState extends State<AndroidDeviceView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        AppDriverBar(
+        LiveDriverBar(
+          noun: 'device',
           control: _device.control,
-          actions: [
-            AdaptiveButton(label: 'Back', emphasis: ButtonEmphasis.secondary, onPressed: () => _key(4)),
-            AdaptiveButton(label: 'Home', emphasis: ButtonEmphasis.secondary, onPressed: () => _key(3)),
-            AdaptiveButton(label: 'Recents', emphasis: ButtonEmphasis.secondary, onPressed: () => _key(187)),
+          actions: (may) => [
+            AdaptiveButton(label: 'Back', emphasis: ButtonEmphasis.secondary, onPressed: may ? () => _key(4) : null),
+            AdaptiveButton(label: 'Home', emphasis: ButtonEmphasis.secondary, onPressed: may ? () => _key(3) : null),
+            AdaptiveButton(
+              label: 'Recents',
+              emphasis: ButtonEmphasis.secondary,
+              onPressed: may ? () => _key(187) : null,
+            ),
           ],
         ),
         Expanded(child: picture),
@@ -1303,13 +1312,14 @@ class _DesktopWindowViewState extends State<DesktopWindowView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        AppDriverBar(
+        LiveDriverBar(
+          noun: 'window',
           control: _window.control,
-          actions: [
+          actions: (may) => [
             AdaptiveButton(
               label: 'Bring to front',
               emphasis: ButtonEmphasis.secondary,
-              onPressed: () => _window.raise().catchError((Object _) {}),
+              onPressed: !may ? null : () => _window.raise().catchError((Object _) {}),
             ),
           ],
         ),
@@ -1337,8 +1347,7 @@ class _DesktopWindowViewState extends State<DesktopWindowView> {
                     return Center(
                       child: Listener(
                         onPointerUp: (e) {
-                          final c = _window.control;
-                          if (!c.userDriving) c.take();
+                          if (!_window.control.mayAct()) return;
                           final p = e.localPosition / _scale;
                           unawaited(_window.userClick(p.dx, p.dy).catchError((Object _) => false));
                         },
