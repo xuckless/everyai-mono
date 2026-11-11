@@ -40,6 +40,7 @@ void main() {
       }
       return null;
     });
+    browser.control.take();
     final focus = FocusNode();
     addTearDown(focus.dispose);
     await tester.pumpWidget(
@@ -49,14 +50,7 @@ void main() {
         home: SizedBox(
           width: 1280,
           height: 800,
-          child: PreviewPageView(
-            image: null,
-            browser: browser,
-            focus: focus,
-            device: null,
-            ghost: null,
-            onInput: () {},
-          ),
+          child: PreviewPageView(image: null, browser: browser, focus: focus, device: null, ghost: null),
         ),
       ),
     );
