@@ -220,8 +220,16 @@ void main() {
         vision: false,
         browser: b,
       );
+      // The call reaches the wall once Chrome started, the page loaded and its elements were read: wait for it
+      // rather than for a fixed time (a cold Chrome takes longer than the 2 s this once slept).
+      Future<void> atWall() async {
+        for (var i = 0; i < 150 && b.loginWall.state.value is! WallWaiting; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        }
+      }
+
       final waiting = runner.run('browser', {'action': 'open', 'url': url('/login')});
-      await Future<void>.delayed(const Duration(seconds: 2));
+      await atWall();
       expect(b.loginWall.state.value, isA<WallWaiting>());
       expect((b.loginWall.state.value as WallWaiting).site, 'localhost');
       // The user signs in (in the Preview): the page moves on.
@@ -231,7 +239,8 @@ void main() {
       expect(b.loginWall.state.value, isA<WallIdle>());
 
       final again = runner.run('browser', {'action': 'open', 'url': url('/login')});
-      await Future<void>.delayed(const Duration(seconds: 2));
+      await atWall();
+      expect(b.loginWall.state.value, isA<WallWaiting>());
       b.loginWall.skip();
       expect((await again).text, contains('chose to carry on without signing in'));
       // Skipped: that site doesn't hold the agent again.
