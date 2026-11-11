@@ -2,7 +2,9 @@
 
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show defaultTargetPlatform, visibleForTesting;
+import 'dart:io' show Platform;
+
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb, visibleForTesting;
 
 import 'dart:convert';
 
@@ -11,6 +13,7 @@ import 'package:crypto/crypto.dart';
 import '../harness/everyai/browser_io.dart';
 import 'browser_jar.dart';
 import 'login_wall.dart';
+import 'webview_browser.dart';
 
 /// The shared browser page of each Code session: the one the agent drives (the EveryAI harness's browser tool, or
 /// the host's for an outside lead) and the Preview paints, so user and agent see and use the same page. It runs in
@@ -32,7 +35,7 @@ abstract final class LiveBrowsers {
     if (_bySession[liveId] case final b?) return b;
     final store = jars;
     final b = makeSessionBrowser(
-      backendFor(defaultTargetPlatform),
+      debugBackend ?? sessionBackend,
       profileDir: profileDir,
       jarHome: store == null ? null : (store: store, name: 'jar-$liveId'),
     );
@@ -84,6 +87,20 @@ abstract final class LiveBrowsers {
     }
   }
 
+  /// The backend new sessions' browsers use here (see [backendFor]): `EVERYAI_BROWSER` picks, and `flutter test`
+  /// (no platform views) gets Chrome.
+  static BrowserBackend get sessionBackend => kIsWeb
+      ? BrowserBackend.chromeStream
+      : backendFor(
+          defaultTargetPlatform,
+          choice: Platform.environment['EVERYAI_BROWSER'],
+          platformViews: !Platform.environment.containsKey('FLUTTER_TEST'),
+        );
+
+  /// A backend a test (or the live rig) picks instead of [sessionBackend].
+  @visibleForTesting
+  static BrowserBackend? debugBackend;
+
   /// Every session's browser this run.
   static Iterable<BrowserPage> get all => _bySession.values;
 
@@ -133,8 +150,11 @@ abstract final class LiveBrowsers {
 BrowserPage makeSessionBrowser(BrowserBackend backend, {required String profileDir, JarHome? jarHome}) =>
     switch (backend) {
       BrowserBackend.chromeStream => HeadlessBrowser(profileDir: profileDir, jarHome: jarHome),
-      BrowserBackend.osWebview => throw UnsupportedError('The OS webview backend is not built yet.'),
+      BrowserBackend.osWebview => WebviewBrowser(jarHome: jarHome),
     };
+
+/// Which backend runs [b].
+BrowserBackend backendOf(BrowserPage b) => b is WebviewBrowser ? BrowserBackend.osWebview : BrowserBackend.chromeStream;
 
 /// Where project [projectDir]'s browser profile lives under the app's data folder [dataDir].
 String browserProfileDir(String dataDir, String projectDir) =>

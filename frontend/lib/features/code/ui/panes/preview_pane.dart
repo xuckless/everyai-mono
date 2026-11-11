@@ -28,12 +28,14 @@ import '../../live/key_map.dart';
 import '../../live/ios_simulator_io.dart';
 import '../../live/live_browsers.dart';
 import '../../live/live_session.dart';
+import '../../live/webview_browser.dart';
 import '../../panes/panes_providers.dart';
 import '../../panes/processes.dart';
 import '../../shells/shell_registry.dart';
 import 'browser_overlays.dart';
 import 'browser_sign_ins.dart';
 import 'preview_apps.dart';
+import 'webview_page_view.dart';
 import '../../../../core/ui/image_decode.dart';
 
 /// The page sizes the Preview offers (CSS pixels); phones and tablets get a device frame.
@@ -300,6 +302,11 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     }
   }
 
+  void _focusAddress() {
+    _fieldFocus.requestFocus();
+    _field.selection = TextSelection(baseOffset: 0, extentOffset: _field.text.length);
+  }
+
   void _ask(String text) => ref.read(composerInsertProvider(_id).notifier).insert(text);
 
   /// Paints only while the Preview shows.
@@ -495,7 +502,13 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     final page = b?.page.value;
     final blank = page == null || page.url.isEmpty || page.url == 'about:blank';
     // The first server that shows up opens by itself, unless the page is somewhere already.
-    if (asked == null && blank && candidates.isNotEmpty && chromeAvailable) {
+    // What runs the page: the OS webview needs no Chrome.
+    final backend = b == null ? LiveBrowsers.sessionBackend : backendOf(b);
+    final hasBrowser = switch (backend) {
+      BrowserBackend.chromeStream => chromeAvailable,
+      BrowserBackend.osWebview => true,
+    };
+    if (asked == null && blank && candidates.isNotEmpty && hasBrowser) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted && ref.read(previewUrlProvider(_id)) == null) unawaited(_go(candidates.first));
       });
@@ -638,8 +651,15 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
                 tooltip: 'More',
                 actions: [
                   if (!blank) MenuAction(label: 'Open in my browser', onSelected: () => _openOutside(page.url)),
-                  MenuAction(label: 'Sign in in a window…', onSelected: _signIn),
-                  MenuAction(label: "Clear the project's browser data…", destructive: true, onSelected: _clearProfile),
+                  // The project's shared Chrome profile: the Chrome backend's only.
+                  if (backend == BrowserBackend.chromeStream) ...[
+                    MenuAction(label: 'Sign in in a window…', onSelected: _signIn),
+                    MenuAction(
+                      label: "Clear the project's browser data…",
+                      destructive: true,
+                      onSelected: _clearProfile,
+                    ),
+                  ],
                 ],
                 child: Padding(
                   padding: const EdgeInsets.all(7),
@@ -655,29 +675,41 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
         Expanded(
           child: _withDialog(
             b,
-            !chromeAvailable
+            !hasBrowser
                 ? _NeedsBrowser(progress: _downloading, problem: _problem, onDownload: _download)
                 : _signingIn
                 ? const _Note(
                     'Sign in in the Chrome window that opened, then close it. The Preview and the agent use the new sign-ins.',
                   )
-                : _problem != null && _image == null
-                ? _Note(_problem!)
-                : blank && _image == null
-                ? _Empty(candidates: candidates, onPick: _go)
-                : PreviewPageView(
-                    image: _image,
-                    browser: b! as StreamedPage,
-                    focus: _viewFocus,
-                    device: _size.device ? _size : null,
-                    ghost: _ghost,
-                    onFind: () => setState(() => _finding = true),
-                    onAddressBar: () {
-                      _fieldFocus.requestFocus();
-                      _field.selection = TextSelection(baseOffset: 0, extentOffset: _field.text.length);
-                    },
-                    onAsk: _ask,
-                  ),
+                : switch (b) {
+                    final WebviewBrowser w =>
+                      _problem != null && !w.running
+                          ? _Note(_problem!)
+                          : blank && !w.running
+                          ? _Empty(candidates: candidates, onPick: _go)
+                          : WebviewPageView(
+                              browser: w,
+                              focus: _viewFocus,
+                              device: _size.device ? _size : null,
+                              ghost: _ghost,
+                              onFind: () => setState(() => _finding = true),
+                              onAddressBar: _focusAddress,
+                              onAsk: _ask,
+                            ),
+                    _ when _problem != null && _image == null => _Note(_problem!),
+                    _ when blank && _image == null => _Empty(candidates: candidates, onPick: _go),
+                    final StreamedPage s => PreviewPageView(
+                      image: _image,
+                      browser: s,
+                      focus: _viewFocus,
+                      device: _size.device ? _size : null,
+                      ghost: _ghost,
+                      onFind: () => setState(() => _finding = true),
+                      onAddressBar: _focusAddress,
+                      onAsk: _ask,
+                    ),
+                    _ => _Empty(candidates: candidates, onPick: _go),
+                  },
           ),
         ),
       ],
@@ -962,7 +994,7 @@ class _PreviewPageViewState extends State<PreviewPageView> {
                   left: ghost.x! * _scale - 14,
                   top: ghost.y! * _scale - 14,
                   child: IgnorePointer(
-                    child: _Ripple(key: ValueKey(ghost), color: theme.accent),
+                    child: AgentRipple(key: ValueKey(ghost), color: theme.accent),
                   ),
                 ),
               if (ghost != null && ghost.caption.isNotEmpty)
@@ -1043,15 +1075,15 @@ class _PreviewPageViewState extends State<PreviewPageView> {
 }
 
 /// A click ripple where the agent clicked.
-class _Ripple extends StatefulWidget {
-  const _Ripple({super.key, required this.color});
+class AgentRipple extends StatefulWidget {
+  const AgentRipple({super.key, required this.color});
   final Color color;
 
   @override
-  State<_Ripple> createState() => _RippleState();
+  State<AgentRipple> createState() => _AgentRippleState();
 }
 
-class _RippleState extends State<_Ripple> with SingleTickerProviderStateMixin {
+class _AgentRippleState extends State<AgentRipple> with SingleTickerProviderStateMixin {
   late final _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 900))..forward();
 
   @override
