@@ -384,11 +384,14 @@ final class DesktopWindow implements DeviceScreen {
   }
 
   @override
-  Future<String> type(String ref, String text, {bool submit = false}) async {
+  Future<String> type(String ref, String text, {bool submit = false, bool secretOk = false}) async {
     await _fresh();
     final n = _node(ref);
-    if (n.secret) {
-      throw AppError('$ref is a password field: the agent never types into one. Ask the user to type it.');
+    if (n.secret && !secretOk) {
+      throw AppError(
+        '$ref is a password field, and the user keeps those to saved logins: fill it with fill_login (logins lists '
+        'them), or ask the user to type it.',
+      );
     }
     if (n.role != 'textbox') throw AppError('$ref is a ${n.role}, not a text field.');
     control.report(LiveActivity('type', x: n.centreX, y: n.centreY, caption: 'Typing into ${n.name}'));

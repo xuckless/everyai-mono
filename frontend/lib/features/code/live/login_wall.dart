@@ -4,9 +4,9 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
-// The login wall: the agent's browser reached a sign-in page. Signing in is the user's (the browser tool never types
-// passwords or codes), so the agent's call waits while a card asks the user, and goes on once the page is past the
-// sign-in, or the user says to carry on without it.
+// The login wall: the agent's browser reached a sign-in page it has no saved login for (with one, the browser tool
+// tells the agent to fill it instead: see runBrowser). Signing in is then the user's, so the agent's call waits while
+// a card asks the user, and goes on once the page is past the sign-in, or the user says to carry on without it.
 //
 //   idle ──hold──▶ waiting ──page past the sign-in──▶ idle   (passed)
 //                     │ ──Skip──────────────────────▶ idle   (skipped; that site holds no more calls)

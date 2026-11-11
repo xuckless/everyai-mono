@@ -15,6 +15,7 @@ import '../../live/browser_jar.dart';
 import '../../live/live_browsers.dart';
 import '../../live/login_wall.dart';
 import '../console/console_state.dart';
+import 'browser_logins.dart';
 
 // The session browser's sign-ins for people: the key menu in the Preview (this session's sign-ins, saved logins,
 // clearing), signing in in a real Chrome window, and the card that asks the user to sign in while the agent waits.
@@ -97,7 +98,7 @@ class BrowserKeysButton extends StatelessWidget {
       button: true,
       child: AnchoredPopover(
         width: 340,
-        builder: (context, close) => _KeysPanel(browser: browser, projectId: projectId, close: close),
+        builder: (panel, close) => _KeysPanel(browser: browser, projectId: projectId, close: close, host: context),
         child: Padding(
           padding: const EdgeInsets.all(7),
           child: Icon(EveryIcon.key.of(theme.design), size: 16, color: theme.textMuted),
@@ -108,11 +109,14 @@ class BrowserKeysButton extends StatelessWidget {
 }
 
 class _KeysPanel extends StatefulWidget {
-  const _KeysPanel({required this.browser, required this.projectId, required this.close});
+  const _KeysPanel({required this.browser, required this.projectId, required this.close, required this.host});
 
   final HeadlessBrowser browser;
   final String? projectId;
   final VoidCallback close;
+
+  /// The key button's context: still mounted after the panel closes, for dialogs.
+  final BuildContext host;
 
   @override
   State<_KeysPanel> createState() => _KeysPanelState();
@@ -275,6 +279,7 @@ class _KeysPanelState extends State<_KeysPanel> {
             onTap: () => _run(() async => _b.applyJar(await _b.profileSignIns(site: site)), closes: true),
           ),
       ],
+      BrowserLoginRows(browser: _b, projectId: widget.projectId, close: widget.close, host: widget.host),
       const SizedBox(height: 4),
       PopoverRow(
         title: 'Sign in in a window…',

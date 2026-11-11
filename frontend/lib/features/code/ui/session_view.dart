@@ -50,6 +50,7 @@ import 'console/bottom_drawer.dart';
 import 'console/console_layout.dart';
 import '../panes/panes_providers.dart' show codePaneProvider;
 import 'panes/browser_sign_ins.dart';
+import 'panes/login_ask_card.dart';
 import 'panes/take_control_reminder.dart';
 import 'stop_all_button.dart';
 import '../domain/session_work.dart';
@@ -301,6 +302,7 @@ class CodeSessionScreen extends ConsumerWidget {
                                           children: [
                                             TakeControlReminder(sessionId: sessionId),
                                             LoginWallCard(sessionId: sessionId, projectId: info.projectId),
+                                            LoginAskCard(sessionId: sessionId),
                                             if (state.proposal case final p?)
                                               Padding(
                                                 padding: const EdgeInsets.only(bottom: 8),
