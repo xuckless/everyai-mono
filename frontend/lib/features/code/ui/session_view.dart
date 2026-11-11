@@ -19,6 +19,7 @@ import '../../questions/ui/question_card.dart';
 import '../../usage/usage_totals.dart';
 import '../code_providers.dart';
 import 'subagent_banner.dart';
+import '../board/board_state.dart' show markBoardSeen, seenUpdate;
 import '../limit_providers.dart' show codePlanLimitsProvider;
 import '../morning_providers.dart';
 import '../domain/agent_mode.dart';
@@ -93,6 +94,11 @@ class CodeSessionScreen extends ConsumerWidget {
     // Watched so Stop all appears and goes with the session's workflow runs (forks come with [state]).
     ref.watch(workflowRunsProvider(sessionId));
     final work = controller.runningWork;
+    // Looking at the session counts as seeing it on the Board: a finish shows as new there until it is opened.
+    final seen = seenUpdate(status: state.status, connected: state.connected, sideWork: hasSideWork(work));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (context.mounted) markBoardSeen(ref, sessionId, seen);
+    });
 
     final showStartBuilding =
         state.mode == AgentMode.plan &&
