@@ -110,29 +110,41 @@ void main() {
   });
 
   group('finishedPrOwner', () {
-    test('the newest session on a branch owns its finished pull request', () {
+    // Every card here found PR #2 unless [numbers] says otherwise.
+    String owner(List<CodeSessionInfo> shown, CodeSessionInfo s, {Map<String, int?> numbers = const {}}) =>
+        finishedPrOwner(shown, s, number: 2, numberOf: (id) => numbers.containsKey(id) ? numbers[id] : 2);
+
+    test('the newest card on the pull request owns it', () {
       final all = [_s('a', day: 1), _s('b', day: 3), _s('c', day: 2)];
       for (final s in all) {
-        expect(finishedPrOwner(all, s), 'b');
+        expect(owner(all, s), 'b');
       }
     });
 
-    test('other branches, other projects and the default branch stay apart', () {
+    test('other pull requests and other projects stay apart', () {
       final a = _s('a', day: 1);
       final other = _s('o', day: 5, branch: 'feat/y');
       final elsewhere = _s('e', day: 6, project: 'p2');
       final all = [a, other, elsewhere];
-      expect(finishedPrOwner(all, a), 'a');
-      expect(finishedPrOwner(all, other), 'o');
-      expect(finishedPrOwner(all, _s('m', branch: 'main')), isNull);
+      expect(owner(all, a, numbers: {'o': 3}), 'a');
+      expect(owner(all, other, numbers: {'a': 3}), 'o');
     });
 
-    test('a session EveryAI opened the PR for keeps it; the branch sessions share theirs', () {
+    test('a session EveryAI opened the PR for wins over newer branch sessions, which group with it', () {
       final opened = _s('p', day: 1, pr: 2);
       final later = _s('l', day: 4);
       final all = [opened, later];
-      expect(finishedPrOwner(all, opened), 'p');
-      expect(finishedPrOwner(all, later), 'l');
+      expect(owner(all, opened), 'p');
+      expect(owner(all, later), 'p');
+    });
+
+    test('cards that found nothing (unknown, none) are not candidates; the asking card always counts', () {
+      final a = _s('a', day: 1);
+      final b = _s('b', day: 5);
+      expect(owner([a, b], a, numbers: {'b': null}), 'a');
+      // Not in the shown list (a cleared card, a removed harness, a fork that isn't detached): never picked.
+      expect(owner([a], a), 'a');
+      expect(owner(const [], a), 'a');
     });
   });
 

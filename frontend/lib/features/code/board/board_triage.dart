@@ -56,6 +56,24 @@ enum InspectorBody { loading, empty, transcript }
 InspectorBody liveInspectorBody({required bool connected, required bool failed, required bool hasItems}) =>
     !connected && !failed && !hasItems ? InspectorBody.loading : InspectorBody.transcript;
 
+/// How long a live session may connect with nothing to show before the inspector offers Open and Retry
+/// ([ConnectWait]).
+const inspectorConnectPatience = Duration(seconds: 15);
+
+/// The live inspector's loading body while its session connects:
+///
+/// ```text
+///   waiting ──[inspectorConnectPatience] passes──► slow ("Still connecting…", Open · Retry)
+///      ▲                                             │
+///      └───────────────Retry (reconnects)────────────┘
+/// ```
+/// It ends when the body stops loading (the session connected, showed something, or failed).
+enum ConnectWait { waiting, slow }
+
+/// The connect wait after [elapsed] of it.
+ConnectWait connectWaitAfter(Duration elapsed) =>
+    elapsed >= inspectorConnectPatience ? ConnectWait.slow : ConnectWait.waiting;
+
 /// The preview's body, from its read ([loading] until it answers; [found] when it found a transcript).
 InspectorBody previewInspectorBody({required bool loading, required bool found}) => loading
     ? InspectorBody.loading

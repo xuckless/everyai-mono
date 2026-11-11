@@ -263,10 +263,30 @@ StreamDelta acpDelta({String content = '', String reasoning = ''}) =>
     HarnessEvent.decode({'kind': 'StreamingDeltaEvent', 'content': content, 'reasoning_content': reasoning})
         as StreamDelta;
 
-/// Something the user should know, shown as a notice in the transcript.
-ConversationFailure acpNotice(String id, String message) =>
-    HarnessEvent.decode({'kind': 'ConversationErrorEvent', 'id': id, 'source': 'environment', 'detail': message})
-        as ConversationFailure;
+/// How an ACP turn's `stopReason` ends it: the status it leaves, and whether its notice (if any) is a failure.
+///
+/// - `end_turn` (and anything unknown): finished.
+/// - `max_tokens`, `max_turn_requests`: finished, with a note. The agent ran out of room or of steps, and what it did
+///   stands, so the session reads Done (a plan's dependents go on; the user can ask it to carry on).
+/// - `refusal`: finished, with a fatal notice. The request wasn't done, so the session reads Failed and a plan's
+///   dependents don't start on it.
+/// - `error`: error, fatal. `cancelled`: paused (the user stopped it).
+({ExecutionStatus status, bool fatal}) acpStopOutcome(Object? stop) => switch (stop) {
+  'cancelled' => (status: ExecutionStatus.paused, fatal: false),
+  'error' => (status: ExecutionStatus.error, fatal: true),
+  'refusal' => (status: ExecutionStatus.finished, fatal: true),
+  _ => (status: ExecutionStatus.finished, fatal: false),
+};
+
+/// Something the user should know, shown as a notice in the transcript. [fatal]: the run itself failed (the prompt
+/// errored, the agent couldn't be reached, it refused the request), so the session reads Failed; a note doesn't.
+ConversationFailure acpNotice(String id, String message, {bool fatal = false}) => HarnessEvent.decode({
+  'kind': 'ConversationErrorEvent',
+  'id': id,
+  'source': 'environment',
+  'fatal': fatal,
+  'detail': message,
+}) as ConversationFailure;
 
 /// Whether a failed `session/prompt` says the agent's plan or key ran out
 /// (switching harness helps), with when it resets if the agent said; null

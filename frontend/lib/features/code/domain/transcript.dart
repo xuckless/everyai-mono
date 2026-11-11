@@ -303,9 +303,15 @@ final class NoticeItem extends TranscriptItem {
     this.detail = '',
     this.limit,
     this.handedOffFrom = '',
+    this.fatal = true,
   });
   final String message;
   final bool error;
+
+  /// For an [error]: the run itself failed ([ConversationFailure.fatal]); false for a note shown as an error (a
+  /// refused mode switch, a fork that failed in the background). Only fatal ones make a session read Failed
+  /// ([endedOnFailure]).
+  final bool fatal;
 
   /// More to show on request (a compaction's summary), or ''.
   final String detail;
@@ -584,6 +590,8 @@ final class TranscriptBuilder {
               e.id,
               '${n.title} ${n.status == SubagentStatus.completed ? 'finished' : n.status.label.toLowerCase()} in the background',
               error: n.status == SubagentStatus.failed,
+              // A fork's failure is the fork's, not the lead's: the lead goes on and decides what to do.
+              fatal: false,
               detail: n.result,
             ),
           );
@@ -603,7 +611,7 @@ final class TranscriptBuilder {
       case ConversationFailure(:final message):
         // EveryAI's own limit is the gateway's 402: no reset time.
         final limit = usageLimitOf(e) ?? (isOutOfCredits(message) ? UsageLimit(message: message) : null);
-        _items.add(NoticeItem(e.id, message, error: true, limit: limit));
+        _items.add(NoticeItem(e.id, message, error: true, fatal: e.fatal, limit: limit));
       case UnknownEvent(kind: leadNoticeKind, :final raw):
         _items.add(
           NoticeItem(
@@ -1033,8 +1041,10 @@ bool endedOnFailure(Transcript t) {
   for (final item in t.items.reversed) {
     if (item is NoticeItem) {
       if (item.limit != null) return false;
-      if (item.error) return true;
-      continue; // An informational notice (mode note, reconnect) after the failure doesn't undo it.
+      if (item.error && item.fatal) return true;
+      // A note (mode note, reconnect, a refused mode switch, a fork's failure) neither fails the run nor undoes a
+      // failure before it.
+      continue;
     }
     return false;
   }

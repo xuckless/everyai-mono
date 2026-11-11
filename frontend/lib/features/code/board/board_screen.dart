@@ -37,12 +37,12 @@ import 'board_plan.dart';
 import 'board_plan_providers.dart';
 import 'board_plan_view.dart';
 import 'board_pr.dart';
-import 'board_race.dart' show RaceStage;
+import 'board_race.dart' show BoardRace, RaceStage;
 import 'board_snooze.dart';
 import 'board_providers.dart';
 import 'board_state.dart';
 import 'board_triage.dart';
-import '../domain/transcript.dart' show QuestionItem, Transcript, endedOnFailure;
+import '../domain/transcript.dart' show QuestionItem, Transcript;
 import '../harness/events.dart' show ActionCall;
 import 'board_work.dart';
 import '../workflows/workflow_runs.dart' show workflowRunsProvider;
@@ -552,16 +552,8 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       // first poll has answered it has no status at all, and stays off the Board.
       final polled = ownOf(s);
       if (polled == null) continue;
-      // A closed run that ended on an error counts as failed, though its harness's poll may say idle (an open
-      // session's own status already reads it: [endedOnFailure]).
-      bool closedFailed() {
-        if (isOpen(s) || (polled != SessionStatus.idle && polled != SessionStatus.done)) return false;
-        final t = ref.watch(boardRecentTranscriptProvider((s.id, polled))).value;
-        return t != null && endedOnFailure(t);
-      }
-
-      final o = closedFailed() ? SessionStatus.failed : polled;
-      own[s.id] = o;
+      // A closed run that ended on a failure already polls as Failed ([failedRunStatus]); nothing is read here.
+      own[s.id] = polled;
       work[s.id] = workOf(s);
       // A child waiting on the user: an open one shows it; a closed one's polled wait counts too (it opens next).
       waitsOnChild[s.id] = (childrenOf[s.id] ?? const <CodeSessionInfo>[]).any(
@@ -1077,94 +1069,100 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
           : _withInspector(
               shown: shown,
               child: GlowBackdrop(
-                child: AmbientClock(
-                  // One breathing clock for every card, and only while something breathes.
-                  running:
-                      shown.any((s) => phase[s.id]!.active || phase[s.id] == BoardPhase.needsYou) ||
-                      goals.any((g) => g.stage == GoalStage.running) ||
-                      races.any((r) => r.stage == RaceStage.running || r.stage == RaceStage.starting),
-                  child: LayoutBuilder(
-                    builder: (context, box) {
-                      final layout = ref.watch(boardPlanLaneProvider);
-                      final laneWidth = _laneDragging ?? layout.width;
-                      // The lane as a column, or folded to a rail; the columns keep the rest.
-                      final laneTotal = layout.collapsed ? _railWidth : laneWidth + _Divider.hit;
-                      final wide = box.maxWidth >= 860 + laneTotal;
-                      final lane = PlanLane(
-                        phases: phase,
-                        taskKey: taskKey,
-                        onInspect: _inspect,
-                        scrolls: wide,
-                        onCollapse: wide ? () => ref.read(boardPlanLaneProvider.notifier).setCollapsed(true) : null,
-                      );
-                      final Widget body;
-                      if (wide) {
-                        final List<double> shares = _dragging ?? ref.watch(boardColumnsProvider);
-                        final width = box.maxWidth - 28 - 2 * _Divider.hit - laneTotal;
-                        // Each column keeps at least 220pt.
-                        const min = 220.0;
-                        List<double> moved(int divider, double dx, List<double> from) {
-                          final w = [for (final v in from) v * width];
-                          final a = (w[divider] + dx).clamp(min, w[divider] + w[divider + 1] - min);
-                          w[divider + 1] = w[divider] + w[divider + 1] - a;
-                          w[divider] = a;
-                          return [for (final v in w) v / width];
-                        }
-
-                        Widget divider(int i) => _Divider(
-                          key: ValueKey('board.divider.$i'),
-                          onDrag: (dx) => setState(() => _dragging = moved(i, dx, _dragging ?? shares)),
-                          onEnd: () {
-                            if (_dragging case final d?) ref.read(boardColumnsProvider.notifier).set(d);
-                            setState(() => _dragging = null);
-                          },
-                          onReset: ref.read(boardColumnsProvider.notifier).reset,
-                        );
-                        body = Row(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            if (layout.collapsed)
-                              SizedBox(
-                                width: _railWidth,
-                                child: PlanRail(
-                                  onExpand: () => ref.read(boardPlanLaneProvider.notifier).setCollapsed(false),
-                                ),
-                              )
-                            else ...[
-                              SizedBox(width: laneWidth, child: lane),
-                              _Divider(
-                                key: const ValueKey('board.divider.plan'),
-                                onDrag: (dx) => setState(
-                                  () => _laneDragging = ((_laneDragging ?? laneWidth) + dx).clamp(
-                                    BoardPlanLane.minWidth,
-                                    BoardPlanLane.maxWidth,
-                                  ),
-                                ),
-                                onEnd: () {
-                                  if (_laneDragging case final w?) ref.read(boardPlanLaneProvider.notifier).setWidth(w);
-                                  setState(() => _laneDragging = null);
-                                },
-                                onReset: () =>
-                                    ref.read(boardPlanLaneProvider.notifier).setWidth(BoardPlanLane.defaultWidth),
-                              ),
-                            ],
-                            for (final (i, c) in BoardColumn.values.indexed) ...[
-                              if (i > 0) divider(i - 1),
-                              SizedBox(width: shares[i] * width, child: column(c, scrolls: true)),
-                            ],
-                          ],
-                        );
-                      } else {
-                        body = ListView(
-                          children: [
-                            Padding(padding: const EdgeInsets.only(bottom: 12), child: lane),
-                            for (final c in BoardColumn.values)
-                              if (columns[c]!.isNotEmpty)
-                                Padding(padding: const EdgeInsets.only(bottom: 12), child: column(c, scrolls: false)),
-                          ],
-                        );
+                child: LayoutBuilder(
+                  builder: (context, box) {
+                    final layout = ref.watch(boardPlanLaneProvider);
+                    final laneWidth = _laneDragging ?? layout.width;
+                    // The lane as a column, or folded to a rail; the columns keep the rest.
+                    final laneTotal = layout.collapsed ? _railWidth : laneWidth + _Divider.hit;
+                    final wide = box.maxWidth >= 860 + laneTotal;
+                    // The plan lane's goals and races breathe only while the lane shows (folded to the rail, they
+                    // don't); the cards only while they pass the filter.
+                    final laneShown = !(wide && layout.collapsed);
+                    final breathing = boardBreathing(
+                      cards: shown.any((s) => phase[s.id]!.active || phase[s.id] == BoardPhase.needsYou),
+                      laneShown: laneShown,
+                      goals: goals,
+                      races: races,
+                    );
+                    final lane = PlanLane(
+                      phases: phase,
+                      taskKey: taskKey,
+                      onInspect: _inspect,
+                      scrolls: wide,
+                      onCollapse: wide ? () => ref.read(boardPlanLaneProvider.notifier).setCollapsed(true) : null,
+                    );
+                    final Widget body;
+                    if (wide) {
+                      final List<double> shares = _dragging ?? ref.watch(boardColumnsProvider);
+                      final width = box.maxWidth - 28 - 2 * _Divider.hit - laneTotal;
+                      // Each column keeps at least 220pt.
+                      const min = 220.0;
+                      List<double> moved(int divider, double dx, List<double> from) {
+                        final w = [for (final v in from) v * width];
+                        final a = (w[divider] + dx).clamp(min, w[divider] + w[divider + 1] - min);
+                        w[divider + 1] = w[divider] + w[divider + 1] - a;
+                        w[divider] = a;
+                        return [for (final v in w) v / width];
                       }
-                      return Padding(
+
+                      Widget divider(int i) => _Divider(
+                        key: ValueKey('board.divider.$i'),
+                        onDrag: (dx) => setState(() => _dragging = moved(i, dx, _dragging ?? shares)),
+                        onEnd: () {
+                          if (_dragging case final d?) ref.read(boardColumnsProvider.notifier).set(d);
+                          setState(() => _dragging = null);
+                        },
+                        onReset: ref.read(boardColumnsProvider.notifier).reset,
+                      );
+                      body = Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (layout.collapsed)
+                            SizedBox(
+                              width: _railWidth,
+                              child: PlanRail(
+                                onExpand: () => ref.read(boardPlanLaneProvider.notifier).setCollapsed(false),
+                              ),
+                            )
+                          else ...[
+                            SizedBox(width: laneWidth, child: lane),
+                            _Divider(
+                              key: const ValueKey('board.divider.plan'),
+                              onDrag: (dx) => setState(
+                                () => _laneDragging = ((_laneDragging ?? laneWidth) + dx).clamp(
+                                  BoardPlanLane.minWidth,
+                                  BoardPlanLane.maxWidth,
+                                ),
+                              ),
+                              onEnd: () {
+                                if (_laneDragging case final w?) ref.read(boardPlanLaneProvider.notifier).setWidth(w);
+                                setState(() => _laneDragging = null);
+                              },
+                              onReset: () =>
+                                  ref.read(boardPlanLaneProvider.notifier).setWidth(BoardPlanLane.defaultWidth),
+                            ),
+                          ],
+                          for (final (i, c) in BoardColumn.values.indexed) ...[
+                            if (i > 0) divider(i - 1),
+                            SizedBox(width: shares[i] * width, child: column(c, scrolls: true)),
+                          ],
+                        ],
+                      );
+                    } else {
+                      body = ListView(
+                        children: [
+                          Padding(padding: const EdgeInsets.only(bottom: 12), child: lane),
+                          for (final c in BoardColumn.values)
+                            if (columns[c]!.isNotEmpty)
+                              Padding(padding: const EdgeInsets.only(bottom: 12), child: column(c, scrolls: false)),
+                        ],
+                      );
+                    }
+                    // One breathing clock for every card, and only while something shown breathes.
+                    return AmbientClock(
+                      running: breathing,
+                      child: Padding(
                         padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1202,9 +1200,9 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
                             Expanded(child: body),
                           ],
                         ),
-                      );
-                    },
-                  ),
+                      ),
+                    );
+                  },
                 ),
               ),
             ),
@@ -1622,7 +1620,7 @@ class _BoardCardState extends ConsumerState<BoardCard> {
     final open = ref.exists(codeSessionProvider(info.id));
     final live = open ? ref.watch(codeSessionProvider(info.id).select((s) => s.transcript)) : null;
     // A closed session: what it last did, from its harness's files.
-    final transcript = live ?? ref.watch(boardRecentTranscriptProvider((info.id, widget.status))).value;
+    final transcript = live ?? ref.watch(boardRecentTranscriptProvider(info.id)).value;
     final activity = transcript == null ? '' : boardActivity(transcript);
     final pending = live?.pending ?? const [];
     // What Approve and Deny on the card answer: calls already decided one by one keep their answer.
@@ -2217,3 +2215,17 @@ class _SnoozedFold extends StatelessWidget {
     );
   }
 }
+
+/// Whether the Board's shared ambient clock runs: a shown card breathes ([cards]), or the plan lane shows
+/// ([laneShown]: not folded to its rail) with a goal or race at work. A goal whose tasks failed or closed settles
+/// (its stage leaves running), so it stops the clock too.
+bool boardBreathing({
+  required bool cards,
+  required bool laneShown,
+  required List<PlanGoal> goals,
+  required List<BoardRace> races,
+}) =>
+    cards ||
+    laneShown &&
+        (goals.any((g) => g.stage == GoalStage.running) ||
+            races.any((r) => r.stage == RaceStage.running || r.stage == RaceStage.starting));

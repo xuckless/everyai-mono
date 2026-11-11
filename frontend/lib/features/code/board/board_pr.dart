@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../code_providers.dart' show codeSessionsProvider, isDemoPath;
+import 'board_providers.dart' show boardDetachedProvider, boardDismissedProvider, boardSessions;
 import '../domain/code_session.dart';
 import '../git/git_service.dart';
 
@@ -78,18 +79,28 @@ String? prTarget(CodeSessionInfo s) {
   return const {'', 'main', 'master', 'trunk', 'develop'}.contains(s.branch) ? null : s.branch;
 }
 
-/// Which session's card shows a finished (merged or closed) pull request: of the sessions in one project that look
-/// for the same one ([prTarget]), only the newest. Several sessions on one branch would otherwise all repeat
-/// "PR #2 · Merged"; an open pull request still shows on each, as each may be the one to merge it.
-String? finishedPrOwner(Iterable<CodeSessionInfo> sessions, CodeSessionInfo s) {
-  final target = prTarget(s);
-  if (target == null) return null;
-  CodeSessionInfo? newest;
-  for (final o in sessions) {
-    if (o.projectId != s.projectId || prTarget(o) != target) continue;
-    if (newest == null || o.createdAt.isAfter(newest.createdAt)) newest = o;
+/// Which card shows finished (merged or closed) pull request #[number], which [s]'s card found: several sessions on
+/// one pull request would otherwise all repeat "PR #2 · Merged" (an open one still shows on each, as each may be the
+/// one to merge it).
+///
+/// The candidates are the cards on the Board ([shown]: detached forks in, removed harnesses and cleared cards out)
+/// in [s]'s project whose card found the same pull request ([numberOf]: the number a card shows, null while it knows
+/// none), so a session that found it by number (EveryAI opened it) and one that found it by branch count as one. Of
+/// those, a session EveryAI opened it for ([CodeSessionInfo.prNumber]) wins, then the newest. [s] always counts, so
+/// the chip shows somewhere.
+String finishedPrOwner(
+  Iterable<CodeSessionInfo> shown,
+  CodeSessionInfo s, {
+  required int number,
+  required int? Function(String id) numberOf,
+}) {
+  var owner = s;
+  for (final o in shown) {
+    if (o.id == s.id || o.projectId != s.projectId || numberOf(o.id) != number) continue;
+    final opened = o.prNumber == number, ownerOpened = owner.prNumber == number;
+    if (opened != ownerOpened ? opened : o.createdAt.isAfter(owner.createdAt)) owner = o;
   }
-  return newest?.id;
+  return owner.id;
 }
 
 /// A card's pull request, as far as the Board knows, and a merge from it:
@@ -320,6 +331,29 @@ class _BoardPrChipState extends ConsumerState<BoardPrChip> {
     }
   }
 
+  /// [finishedPrOwner] over the cards on the Board; only cards already on screen are asked what they show (asking
+  /// would start a lookup for the rest).
+  String _finishedOwner(int number) {
+    final detached = ref.watch(boardDetachedProvider);
+    final dismissed = ref.watch(boardDismissedProvider);
+    final shown = [
+      for (final o in boardSessions(ref.watch(codeSessionsProvider), detached))
+        if (!dismissed.contains(o.id) && o.projectId == widget.info.projectId) o,
+    ];
+    return finishedPrOwner(
+      shown,
+      widget.info,
+      number: number,
+      numberOf: (id) {
+        if (id != widget.info.id && !ref.exists(boardPrProvider(id))) return null;
+        return switch (ref.watch(boardPrProvider(id))) {
+          PrShown(:final pr) || PrMerging(:final pr) => pr.number,
+          PrUnknown() || PrNone() => null,
+        };
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(boardPrProvider(widget.info.id));
@@ -331,8 +365,7 @@ class _BoardPrChipState extends ConsumerState<BoardPrChip> {
     if (pr == null) return const SizedBox.shrink();
     // A merged or closed pull request shows once, on the newest of the sessions that share it ([finishedPrOwner]).
     final finished = pr.state == PrState.merged || pr.state == PrState.closed;
-    final owner = ref.watch(codeSessionsProvider.select((all) => finishedPrOwner(all, widget.info)));
-    if (finished && owner != widget.info.id) return const SizedBox.shrink();
+    if (finished && _finishedOwner(pr.number) != widget.info.id) return const SizedBox.shrink();
     final theme = EveryTheme.of(context);
     final text = prChipText(pr, done: widget.done);
     final checksColor = switch (pr.checks) {

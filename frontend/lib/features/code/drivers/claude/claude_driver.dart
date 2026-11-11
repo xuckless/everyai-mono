@@ -817,6 +817,7 @@ final class ClaudeSession
             'kind': 'ConversationErrorEvent',
             'id': const Uuid().v4(),
             'source': 'environment',
+            'fatal': false,
             'detail': 'Claude Code offered nothing to remember for ${h.name}, so it was allowed once.',
           }),
         );
@@ -1003,7 +1004,16 @@ final class ClaudeSession
         _asked(line['request_id'] as String? ?? '', line['request'] as Map<String, Object?>? ?? const {});
       case 'control_response':
         if (line['response'] case {'subtype': 'error', 'error': final Object error}) {
-          _emit(HarnessEvent.decode({'kind': 'ConversationErrorEvent', 'id': const Uuid().v4(), 'detail': '$error'}));
+          // A refused control request (a model or mode change, a late interrupt) is a note: the turn's own result
+          // says whether the run failed.
+          _emit(
+            HarnessEvent.decode({
+              'kind': 'ConversationErrorEvent',
+              'id': const Uuid().v4(),
+              'fatal': false,
+              'detail': '$error',
+            }),
+          );
         }
         // req_1 is this process's initialize.
         if (line['response'] case {'request_id': 'req_1', 'response': final Map<String, Object?> init}) {

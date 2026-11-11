@@ -1138,6 +1138,42 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   - The Plan count skips a blank draft (`planCount`).
   Tests: `board_demo_fixes_test.dart`, `board_phase3_test` (PR chip once), `board_test` (inspector loading, folded
   filter). Not seen in the running app.
+- **Board v2, phase 4: demo-fix review (2026-11-11; `board-v2/phase4`).**
+  - Fatal vs informational: `ConversationFailure.fatal` comes from the event's `fatal`. Events without the field
+    count as fatal unless their `source` is `environment`. `NoticeItem.fatal` carries it, and `endedOnFailure` counts
+    only fatal ones.
+  - Notes are not failures:
+    - ACP notes: `acpNotice(fatal: false)` by default; a failed prompt or connect passes `fatal: true`.
+    - Claude's "nothing to remember" notice and its refused control requests.
+    - A failed fork's `<task-notification>`: still shown red, but it is the fork's failure, not the lead's.
+  - ACP stop reasons: `acpStopOutcome` in `acp_mapping.dart`.
+    - `max_tokens` and `max_turn_requests` finish with a note and read Done.
+    - `refusal` finishes with a fatal notice and reads Failed, so a plan's dependents don't start on it.
+    - `error` is Failed; `cancelled` is Paused.
+  - Closed sessions: `codeFailedRunsProvider` (Preferences `code.failed_runs`).
+    - The controller sets it while its transcript `endedOnFailure` (connected, history in) and clears it on the next
+      turn. It is dropped on remove.
+    - The poller maps idle/done to Failed for marked sessions (`failedRunStatus`). Dots, notifications, the Board and
+      the plan/race watch all read it, so a closed failed Codex plan task fails instead of running forever.
+    - The Board's recent-transcript check for this is gone.
+  - Retry:
+    - The session view shows the Retry row for `endedOnFailure` too.
+    - `retry()` sends the carry-on turn (`resumeAfterLimitMessage`) after an idle failure, since `resume()` has nothing
+      to continue. That turn clears Failed and the marker.
+    - After a failure, compaction or a manual handoff leaves the session Failed (their notices are informational)
+      until a turn runs.
+  - `boardRecentTranscriptProvider` is keyed by session id. It reads again when the polled status changes and keeps
+    the last read meanwhile.
+  - The ambient clock (`boardBreathing`) counts goals and races only while the plan lane shows (not folded to the
+    rail). Goals with a failed or closed-failed task settle and stop it.
+  - PR chips:
+    - `finishedPrOwner` picks among the cards on the Board (`boardSessions` minus cleared) whose card found the same
+      PR number, so number-keyed and branch-keyed lookups group together.
+    - A session EveryAI opened it for wins, then the newest.
+    - Cards that found nothing don't count.
+  - Inspector: `InspectorConnecting` with `ConnectWait` (waiting → slow after `inspectorConnectPatience`, 15 s) shows
+    "Still connecting…" with Open and Retry. Retry rebuilds the controller.
+  - Tests: `board_demo_review_test.dart` and `board_demo_fixes_test.dart` (PR owner). Not seen in the running app.
 - **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
   `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
   `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -19,7 +21,8 @@ import '../../usage/usage_totals.dart' show UsageTotals;
 import 'board_limits.dart' show boardCostLine;
 import 'board_providers.dart' show boardRecentTranscriptProvider;
 import 'board_state.dart';
-import 'board_triage.dart' show InspectorBody, InspectorView, liveInspectorBody, previewInspectorBody;
+import 'board_triage.dart'
+    show ConnectWait, InspectorBody, InspectorView, inspectorConnectPatience, liveInspectorBody, previewInspectorBody;
 import 'board_work.dart';
 
 /// One session beside the Board: its header, its forks and subagents, the conversation (newest at the bottom, following
@@ -145,7 +148,7 @@ class BoardInspectorPane extends ConsumerWidget {
 
   /// The session as its harness's files last showed it, read-only: looking attaches nothing.
   Widget _preview(BuildContext context, WidgetRef ref, CodeSessionInfo info, EveryTheme theme) {
-    final read = ref.watch(boardRecentTranscriptProvider((sessionId, status)));
+    final read = ref.watch(boardRecentTranscriptProvider(sessionId));
     final t = read.value;
     final body = previewInspectorBody(loading: read.isLoading && t == null, found: t != null);
     final seen = seenUpdate(status: status, connected: true, sideWork: false);
@@ -250,6 +253,12 @@ class BoardInspectorPane extends ConsumerWidget {
                 workingDir: info.workingDir,
               ),
             ),
+            InspectorBody.loading => InspectorConnecting(
+              key: ValueKey('board.inspector.connecting.$sessionId'),
+              onOpen: onOpenFull,
+              // A new controller connects again (nothing is shown yet, so nothing is lost).
+              onRetry: () => ref.invalidate(provider),
+            ),
             final other => _placeholder(other, theme),
           },
         ),
@@ -341,6 +350,81 @@ class _InspectorEdgeState extends State<InspectorEdge> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// The live inspector while its session connects ([ConnectWait]): a quiet loading line, then after
+/// [inspectorConnectPatience] "Still connecting…" with Open (the full session) and Retry (connect again).
+class InspectorConnecting extends StatefulWidget {
+  const InspectorConnecting({super.key, required this.onOpen, required this.onRetry});
+
+  final VoidCallback onOpen;
+  final VoidCallback onRetry;
+
+  @override
+  State<InspectorConnecting> createState() => _InspectorConnectingState();
+}
+
+class _InspectorConnectingState extends State<InspectorConnecting> {
+  ConnectWait _wait = ConnectWait.waiting;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _start();
+  }
+
+  void _start() {
+    _timer?.cancel();
+    _wait = ConnectWait.waiting;
+    _timer = Timer(inspectorConnectPatience, () {
+      if (mounted) setState(() => _wait = ConnectWait.slow);
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final quiet = theme.type.callout.tint(theme.textSubtle);
+    return Center(
+      child: switch (_wait) {
+        ConnectWait.waiting => ShimmerText(
+          'Loading the conversation…',
+          key: const ValueKey('board.inspector.loading'),
+          style: quiet,
+        ),
+        ConnectWait.slow => Column(
+          key: const ValueKey('board.inspector.slow'),
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Still connecting…', style: quiet),
+            const SizedBox(height: 10),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                AdaptiveButton(label: 'Open', emphasis: ButtonEmphasis.secondary, onPressed: widget.onOpen),
+                const SizedBox(width: 8),
+                AdaptiveButton(
+                  label: 'Retry',
+                  emphasis: ButtonEmphasis.secondary,
+                  onPressed: () {
+                    widget.onRetry();
+                    setState(_start);
+                  },
+                ),
+              ],
+            ),
+          ],
+        ),
+      },
     );
   }
 }

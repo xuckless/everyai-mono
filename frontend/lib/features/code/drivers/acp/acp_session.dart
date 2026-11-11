@@ -776,7 +776,7 @@ final class AcpSession implements HarnessSession, PerCallApprovals, AllowsRememb
     try {
       await _ensureConnected();
     } on HarnessError catch (e) {
-      _emit(acpNotice(_next('n'), e.message));
+      _emit(acpNotice(_next('n'), e.message, fatal: true));
       _setStatus(ExecutionStatus.error);
       return;
     }
@@ -801,7 +801,7 @@ final class AcpSession implements HarnessSession, PerCallApprovals, AllowsRememb
     try {
       await _ensureConnected();
     } on HarnessError catch (e) {
-      _emit(acpNotice(_next('n'), e.message));
+      _emit(acpNotice(_next('n'), e.message, fatal: true));
       _setStatus(ExecutionStatus.error);
       return;
     }
@@ -892,19 +892,17 @@ final class AcpSession implements HarnessSession, PerCallApprovals, AllowsRememb
         _setStatus(ExecutionStatus.error);
         return;
       }
-      if (note != null) _emit(acpNotice(_next('n'), note));
-      _setStatus(switch (stop) {
-        'cancelled' => ExecutionStatus.paused,
-        'error' => ExecutionStatus.error,
-        _ => ExecutionStatus.finished,
-      });
+      // Which stops are failures: [acpStopOutcome].
+      final outcome = acpStopOutcome(stop);
+      if (note != null) _emit(acpNotice(_next('n'), note, fatal: outcome.fatal));
+      _setStatus(outcome.status);
     } on JsonRpcError catch (e) {
       _flush();
       final grokLimit = _profile.agent == AcpAgent.grok && xaiUsageLimit(e);
       final limit = peer.isClosed ? null : (grokLimit ? (resetsAt: null) : acpUsageLimit(e, now: DateTime.now()));
       _emit(
         limit == null
-            ? acpNotice(_next('n'), _errorText(e, closed: peer.isClosed))
+            ? acpNotice(_next('n'), _errorText(e, closed: peer.isClosed), fatal: true)
             : usageLimitEvent(_next('n'), '$_label: ${e.message}', resetsAt: limit.resetsAt),
       );
       _setStatus(ExecutionStatus.error);

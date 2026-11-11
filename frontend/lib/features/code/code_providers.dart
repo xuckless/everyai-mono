@@ -1867,6 +1867,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       ref.read(preferencesProvider)['$codeLayoutPrefix$g'] = null;
       ref.read(preferencesProvider)['$codeLimitBannerPrefix$g'] = null;
     }
+    ref.read(codeFailedRunsProvider.notifier).forget(gone);
     // The harnesses' own copies (every lead the session had) go too, so they don't come back under Earlier.
     final natives = [
       for (final s in state)
@@ -2577,6 +2578,14 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       for (final w in _workflows.values) {
         w.detach();
       }
+    });
+    // A run that ended on a failure the harness then reports as idle (Codex reattaches) is remembered, so the
+    // session still reads Failed once its view closes and only the harness's status is polled ([CodeFailedRuns]).
+    // Only from a connected session with its history in: an empty transcript while it loads says nothing.
+    listenSelf((_, next) {
+      final t = next.transcript;
+      if (!next.connected || t.items.isEmpty) return;
+      ref.read(codeFailedRunsProvider.notifier).set(sessionId, failed: endedOnFailure(t));
     });
     // Subagents and forks don't notify: an approval they wait on shows on the
     // parent (subagentNeedsInput), and their questions are the orchestrator's.
@@ -5259,10 +5268,16 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// upstream error); the conversation keeps everything so far. A stuck
   /// agent needs a new message: the server's stuck check reads the history
   /// and would stop a plain re-run at once.
+  ///
+  /// A run that ended on a failure the harness then reports as idle ([endedOnFailure]; Codex reattaches its thread)
+  /// gets a carry-on turn too: the driver's `resume()` has nothing paused to continue, so the session would stay
+  /// Failed. The turn's user message is what clears it.
   Future<void> retry() async {
     if (!_withinBudget()) return;
-    if (state.transcript.status == ExecutionStatus.stuck) {
-      await send('Carry on from where you stopped.');
+    final t = state.transcript;
+    final idleAfterFailure = t.status != ExecutionStatus.error && endedOnFailure(t);
+    if (t.status == ExecutionStatus.stuck || idleAfterFailure) {
+      await send(resumeAfterLimitMessage);
       return;
     }
     await _session?.resume();
@@ -7396,6 +7411,44 @@ final class CodeStatusesLoad extends Notifier<StatusesLoad> {
   }
 }
 
+/// A polled [status] for a session whose last run ended on a failure the harness now reports as idle or done
+/// ([failedRun], from [CodeFailedRuns]): Failed, as its open view said. A running or waiting session is past it.
+SessionStatus failedRunStatus(SessionStatus status, {required bool failedRun}) =>
+    failedRun && (status == SessionStatus.idle || status == SessionStatus.done) ? SessionStatus.failed : status;
+
+/// Sessions whose last run ended on a failure ([endedOnFailure]), kept while their view is closed; Preferences
+/// `code.failed_runs`. Set and cleared by the session's controller as its transcript changes (a new turn clears it),
+/// and dropped with the session.
+final codeFailedRunsProvider = NotifierProvider<CodeFailedRuns, Set<String>>(CodeFailedRuns.new);
+
+final class CodeFailedRuns extends Notifier<Set<String>> {
+  static const key = 'code.failed_runs';
+
+  @override
+  Set<String> build() {
+    try {
+      return {...(jsonDecode(ref.read(preferencesProvider)[key] ?? '[]') as List).whereType<String>()};
+    } on Object {
+      return const {};
+    }
+  }
+
+  void set(String id, {required bool failed}) {
+    if (state.contains(id) == failed) return;
+    _save(failed ? {...state, id} : ({...state}..remove(id)));
+  }
+
+  void forget(Iterable<String> ids) {
+    if (!ids.any(state.contains)) return;
+    _save({...state}..removeAll(ids));
+  }
+
+  void _save(Set<String> ids) {
+    state = ids;
+    ref.read(preferencesProvider)[key] = ids.isEmpty ? null : jsonEncode([...ids]);
+  }
+}
+
 final class CodeStatuses extends Notifier<Map<String, SessionStatus>> {
   Timer? _timer;
 
@@ -7422,9 +7475,11 @@ final class CodeStatuses extends Notifier<Map<String, SessionStatus>> {
       final byConversation = await _driverStatuses(ref, sessions);
       if (!ref.mounted) return;
       final before = state;
+      final failedRuns = ref.read(codeFailedRunsProvider);
       state = {
         for (final s in sessions)
-          if (byConversation[s.conversationId] case final status?) s.id: _sessionStatus(status),
+          if (byConversation[s.conversationId] case final status?)
+            s.id: failedRunStatus(_sessionStatus(status), failedRun: failedRuns.contains(s.id)),
       };
       ref.read(codeStatusesLoadProvider.notifier).loaded();
       // Sessions whose view is closed still tell the user when they need them.

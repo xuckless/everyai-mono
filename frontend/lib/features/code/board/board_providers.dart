@@ -5,7 +5,7 @@ import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/preferences.dart';
-import '../code_providers.dart' show codeSessionProvider, codeSessionsProvider;
+import '../code_providers.dart' show codeSessionProvider, codeSessionsProvider, codeStatusesProvider;
 import '../domain/permissions.dart' show ApprovalScope;
 import '../domain/code_session.dart';
 import '../drivers/driver_registry.dart' show driverRegistryProvider;
@@ -418,12 +418,11 @@ List<CodeSessionInfo> boardSessions(List<CodeSessionInfo> all, Set<String> detac
 ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
 /// What a closed session last did, read from its harness's files (null when the harness keeps none). Keyed by the
-/// session and its status, so a status change reads it again.
-final boardRecentTranscriptProvider = FutureProvider.autoDispose.family<Transcript?, (String, SessionStatus)>((
-  ref,
-  key,
-) async {
-  final info = ref.read(codeSessionsProvider).where((s) => s.id == key.$1).firstOrNull;
+/// session alone: a change of its polled status reads it again, and the last read stays shown meanwhile (no loading
+/// flash on the card or the inspector). Read only by what is on screen (a card, the inspector).
+final boardRecentTranscriptProvider = FutureProvider.autoDispose.family<Transcript?, String>((ref, id) async {
+  ref.watch(codeStatusesProvider.select((m) => m[id]));
+  final info = ref.read(codeSessionsProvider).where((s) => s.id == id).firstOrNull;
   if (info == null || info.removedHarness) return null;
   final driver = ref.read(driverRegistryProvider).resolve(info.harness);
   if (driver is! ReadsRecentEvents) return null;
