@@ -892,6 +892,9 @@ final class HeadlessBrowser implements StreamedPage {
       _send('Network.enable'),
       _send('Target.setAutoAttach', {'autoAttach': true, 'waitForDebuggerOnStart': false, 'flatten': true}),
       _send('Page.setInterceptFileChooserDialog', {'enabled': true}),
+      // A tab in a window that isn't the front one still counts as focused and visible: it keeps painting and its
+      // timers and focus handlers keep running.
+      _send('Emulation.setFocusEmulationEnabled', {'enabled': true}).then((_) {}, onError: (Object _) {}),
       _send('Page.addScriptToEvaluateOnNewDocument', {'source': _contextTrackerJs}),
       // A session with a jar follows its pages' local storage as it changes, so a write just before the page leaves
       // (a token saved right before an OAuth redirect) is kept.
@@ -997,14 +1000,33 @@ final class HeadlessBrowser implements StreamedPage {
     _parked.removeWhere((_, p) => identical(p.socket, socket));
     if (!identical(_socket, socket) || _closing) return;
     final gone = _targetId;
+    final opener = gone == null ? null : _openerOf.remove(gone);
     _tabList.removeWhere((t) => t.id == gone);
     _publishTabs();
     if (_tabList.isNotEmpty && _browserSocket != null) {
       _socket = null;
-      unawaited(switchTab(_tabList.last.id).catchError((Object _) => _closed()));
+      // As in a browser, the page that opened the closed tab comes back; else the newest tab.
+      final next = _tabList.any((t) => t.id == opener) ? opener! : _tabList.last.id;
+      unawaited(_fallBackTo(next));
       return;
     }
     _closed();
+  }
+
+  /// Switches to [id] after the active tab went; if that fails the other tabs are tried, and only with none left
+  /// does the session's browser count as closed (one stuck tab must not close the rest).
+  Future<void> _fallBackTo(String id) async {
+    final tryOrder = [id, ..._tabList.map((t) => t.id).where((t) => t != id).toList().reversed];
+    for (final t in tryOrder) {
+      if (_closing || _browserSocket == null || !_tabList.any((x) => x.id == t)) continue;
+      try {
+        await switchTab(t);
+        if (_socket != null) return;
+      } on Object {
+        // The next one.
+      }
+    }
+    if (_socket == null) _closed();
   }
 
   /// Closes [socket], a tab switched away from, once the calls sent on it have answered (the click that opened the
@@ -1053,6 +1075,8 @@ final class HeadlessBrowser implements StreamedPage {
     dialog.value = null;
     fileChooser.value = null;
     if (old != null) {
+      // The tab left stops painting; its late frames would otherwise be acked against the new tab's socket.
+      if (_casting) unawaited(_sendOn(old, 'Page.stopScreencast', const {}).then((_) {}, onError: (Object _) {}));
       // A page waiting on a dialog answers nothing on a new socket (Chrome doesn't tell a new one of the dialog
       // either): its socket is kept, and coming back to the tab takes it up again.
       if (shown != null && oldId != null) {
@@ -1067,6 +1091,8 @@ final class HeadlessBrowser implements StreamedPage {
       await _sendOn(_browserSocket, 'Target.activateTarget', {'targetId': id});
       frames.moved();
       _publishTabs();
+      // It shows its dialog and paints nothing: the cast is started without waiting (it answers with the dialog).
+      if (_casting) unawaited(_castStart().then((_) {}, onError: (Object _) {}));
       return;
     }
     final socket = await WebSocket.connect('ws://${e.host}:${e.port}/devtools/page/$id');
@@ -1087,7 +1113,11 @@ final class HeadlessBrowser implements StreamedPage {
       await _enablePage().timeout(const Duration(seconds: 5));
     } on TimeoutException {
       _log.add("The tab doesn't answer yet${_parked.isEmpty ? '' : ': another tab waits on a dialog'}.");
+      // Still the active tab: in front, and painting once it answers.
+      await _sendOn(_browserSocket, 'Target.activateTarget', {'targetId': id}).then((_) {}, onError: (Object _) {});
+      frames.moved();
       _publishTabs();
+      if (_casting) unawaited(_castStart().then((_) {}, onError: (Object _) {}));
       return;
     }
     await _learnFrames();
@@ -1277,6 +1307,9 @@ final class HeadlessBrowser implements StreamedPage {
     switch (method) {
       case 'Page.screencastFrame':
         final m = params['metadata'] as Map<String, Object?>? ?? const {};
+        // Acked on the socket it came from, whichever tab is active by then.
+        final sid = (params['sessionId'] as num?)?.toInt();
+        if (sid != null) _unacked[sid] = from;
         _screencast.add((
           jpeg: base64Decode(params['data'] as String? ?? ''),
           width: ((m['deviceWidth'] as num?) ?? width).round(),
@@ -2084,18 +2117,29 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     // Chrome sends frames on changes only: a still page would show nothing until it moves. One picture now.
     // A page waiting on a dialog paints nothing and runs no script: the picture would wait out the call's timeout.
     if (dialog.value != null || dialogHoldingThis != null) return;
-    final shot = await _send('Page.captureScreenshot', {'format': 'jpeg', 'quality': 72});
-    // Straight to the page, not through [evaluate]: that waits for a tab switch in flight, and a switch casts
-    // through here (it would wait for itself).
-    final r = await _send('Runtime.evaluate', {'expression': 'scrollY', 'returnByValue': true});
-    final scroll = (r['result'] as Map<String, Object?>?)?['value'];
-    _screencast.add((
-      jpeg: base64Decode(shot['data']! as String),
-      width: width,
-      height: height,
-      scrollY: scroll is num ? scroll.toDouble() : 0,
-      session: 0,
-    ));
+    // Bounded: a dialog that opened just now isn't known yet, and a switch casts through here (it must end).
+    try {
+      final shot = await _send('Page.captureScreenshot', {
+        'format': 'jpeg',
+        'quality': 72,
+      }).timeout(const Duration(seconds: 4));
+      // Straight to the page, not through [evaluate]: that waits for a tab switch in flight, and a switch casts
+      // through here (it would wait for itself).
+      final r = await _send('Runtime.evaluate', {
+        'expression': 'scrollY',
+        'returnByValue': true,
+      }).timeout(const Duration(seconds: 4));
+      final scroll = (r['result'] as Map<String, Object?>?)?['value'];
+      _screencast.add((
+        jpeg: base64Decode(shot['data']! as String),
+        width: width,
+        height: height,
+        scrollY: scroll is num ? scroll.toDouble() : 0,
+        session: 0,
+      ));
+    } on TimeoutException {
+      // The page is waiting on something (a dialog); Chrome's own frames follow once it paints.
+    }
   }
 
   /// Starts the screencast again with a fresh picture (the Preview saw the page change and no frame came).
@@ -2127,10 +2171,19 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
   void ackFrame(int session) {
     // 0: the picture taken at the start, not one of Chrome's frames.
     if (_socket == null || session == 0) return;
+    // The socket that sent the frame (a tab since left has stopped casting: its ack is dropped, and a stale id
+    // must never reach the new tab's screencast).
+    final from = _unacked.remove(session);
+    if (from == null || !identical(from, _socket)) return;
     unawaited(
-      _send('Page.screencastFrameAck', {'sessionId': session}).catchError((Object _) => const <String, Object?>{}),
+      _sendOn(from, 'Page.screencastFrameAck', {
+        'sessionId': session,
+      }).catchError((Object _) => const <String, Object?>{}),
     );
   }
+
+  /// The socket each frame not yet acked came from, by its session number.
+  final _unacked = <int, WebSocket>{};
 
   /// A mouse event from the user's view, in CSS pixels: `mouseMoved`, `mousePressed`, `mouseReleased`,
   /// `mouseWheel`.
