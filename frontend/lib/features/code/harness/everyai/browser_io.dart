@@ -1074,6 +1074,8 @@ final class HeadlessBrowser implements StreamedPage {
     _targetId = id;
     dialog.value = null;
     fileChooser.value = null;
+    // Frames of the tab left are never acked: forgotten, so their ids can't meet the new tab's.
+    _unacked.clear();
     if (old != null) {
       // The tab left stops painting; its late frames would otherwise be acked against the new tab's socket.
       if (_casting) unawaited(_sendOn(old, 'Page.stopScreencast', const {}).then((_) {}, onError: (Object _) {}));
