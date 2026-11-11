@@ -23,7 +23,7 @@ final class DoomLoopDetector {
   /// Whether [call] completes a loop. Each call counts once, so a replayed
   /// history can't count twice; after a loop is reported the count starts over.
   bool add(ActionCall call) {
-    if (!_counts(call) || !_seen.add(call.id)) return false;
+    if (!counts(call) || !_seen.add(call.id)) return false;
     final sig = signature(call);
     _run = sig == _last ? _run + 1 : 1;
     _last = sig;
@@ -39,8 +39,24 @@ final class DoomLoopDetector {
     _run = 0;
   }
 
-  static bool _counts(ActionCall c) =>
+  /// Whether [c] takes part in a loop at all: planning, thinking, finishing and the client tools that talk to the
+  /// user (or an orchestrator's `check_forks`) never do. The Board's "same step" warning reads the same rule.
+  static bool counts(ActionCall c) =>
       !isClientTool(c) && !const {'ThinkAction', 'FinishAction', 'TaskTrackerAction'}.contains(c.actionKind);
+
+  /// The call that ends a run of [times] identical counted calls at the end of [sinceUser] (the calls made since the
+  /// user last spoke, in order, which is where [reset] starts counting again), or null. Calls that don't [counts]
+  /// are skipped, not breaking the run.
+  static ActionCall? loopAtEnd(Iterable<ActionCall> sinceUser, {int times = doomLoopRepeats}) {
+    final counted = [
+      for (final c in sinceUser)
+        if (counts(c)) c,
+    ];
+    if (counted.length < times) return null;
+    final tail = counted.sublist(counted.length - times);
+    final sig = signature(tail.first);
+    return tail.every((c) => signature(c) == sig) ? tail.last : null;
+  }
 
   /// The tool and its input, with whitespace in strings collapsed and keys sorted,
   /// so `ls  -la` and `ls -la` are the same step.

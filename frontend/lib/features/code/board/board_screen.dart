@@ -1,3 +1,6 @@
+import 'dart:async' show Timer;
+
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:flutter/widgets.dart';
@@ -6,12 +9,16 @@ import 'package:go_router/go_router.dart';
 import 'package:material_ui/material_ui.dart' as m show Tooltip;
 
 import '../../../app/router.dart';
+import '../../../core/motion/ambient.dart';
 import '../../../core/motion/motion.dart';
 import '../../../core/platform/platform_kind.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/adaptive_page.dart';
 import '../../../core/ui/every_icons.dart';
+import '../../../core/ui/glass.dart';
+import '../../models/domain/model_catalog.dart';
+import '../../models/models_providers.dart';
 import '../../questions/ui/question_card.dart';
 import '../code_providers.dart';
 import '../domain/permissions.dart';
@@ -20,6 +27,9 @@ import '../domain/code_session.dart';
 import '../drivers/driver_registry.dart' show driverRegistryProvider;
 import '../ui/harness_logo.dart';
 import 'board_providers.dart';
+import 'board_state.dart';
+import '../domain/transcript.dart' show QuestionItem, Transcript;
+import '../harness/events.dart' show ActionCall;
 import 'board_work.dart';
 import '../workflows/workflow_runs.dart' show workflowRunsProvider;
 import '../domain/session_work.dart';
@@ -71,58 +81,109 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     }
 
     final childrenOf = childrenByParent(sessions);
+    bool isOpen(CodeSessionInfo c) => ref.exists(codeSessionProvider(c.id));
+    SessionStatus polledOf(CodeSessionInfo c) => ownOf(c) ?? SessionStatus.idle;
 
-    SessionStatus? statusOf(CodeSessionInfo s) {
-      final own = ownOf(s);
-      if (own == null) return null;
-      // Waiting sessions are opened, so their card can answer for them.
-      if (statuses[s.id] == SessionStatus.needsInput &&
-          !isDemoPath(s.workingDir) &&
-          !ref.exists(codeSessionProvider(s.id))) {
+    // Waiting sessions are opened, so their card can answer for them: the Board's own, and the forks and
+    // subagents under them (their wait shows on the lead's card, which sits under Needs you meanwhile).
+    void openIfWaiting(CodeSessionInfo s) {
+      if (statuses[s.id] == SessionStatus.needsInput && !isDemoPath(s.workingDir) && !isOpen(s)) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) ref.read(codeSessionProvider(s.id));
         });
       }
-      // Until an opened session has connected, the polled status stands (no flicker to Done and back).
-      return boardStatus(
-        own,
-        workRunning:
-            ref.watch(workflowRunsProvider(s.id)).any((r) => r.status == WorkflowStatus.running) ||
-            childRunning(s.id, childrenOf, (c) => ownOf(c) ?? SessionStatus.idle) ||
-            (ref.exists(codeSessionProvider(s.id)) &&
-                ref.watch(codeSessionProvider(s.id).select((st) => subagentsRunning(st.transcript)))),
-        childWaits: [
-          for (final c in sessions)
-            if (c.parentId == s.id) c,
-        ].any((c) => childWaitsOnUser(ref, s.id, c.id) != null),
-      );
     }
 
-    final status = {for (final s in all) s.id: ?statusOf(s)};
+    // What each session runs besides its lead's turn.
+    BoardWorkCount workOf(CodeSessionInfo s) => (
+      forks: runningDescendants(s.id, childrenOf, polledOf, isOpen: isOpen),
+      subagents: ref.exists(codeSessionProvider(s.id))
+          ? ref.watch(codeSessionProvider(s.id).select((st) => outsideSubagents(st.transcript).length))
+          : 0,
+      workflows: ref.watch(workflowRunsProvider(s.id)).where((r) => r.status == WorkflowStatus.running).length,
+    );
+
+    final work = <String, BoardWorkCount>{};
+    final own = <String, SessionStatus>{};
+    final waitsOnChild = <String, bool>{};
+    for (final s in all) {
+      openIfWaiting(s);
+      for (final c in closedWaiting(s.id, childrenOf, polledOf, isOpen)) {
+        openIfWaiting(c);
+      }
+      // Until an opened session has connected, the polled status stands (no flicker to Done and back); before the
+      // first poll has answered it has no status at all, and stays off the Board.
+      final o = ownOf(s);
+      if (o == null) continue;
+      own[s.id] = o;
+      work[s.id] = workOf(s);
+      // A child waiting on the user: an open one shows it; a closed one's polled wait counts too (it opens next).
+      waitsOnChild[s.id] = (childrenOf[s.id] ?? const <CodeSessionInfo>[]).any(
+        (c) => childWaitsOnUser(ref, s.id, c.id) != null || (!isOpen(c) && ownOf(c) == SessionStatus.needsInput),
+      );
+    }
+    final known = [
+      for (final s in all)
+        if (own.containsKey(s.id)) s,
+    ];
+    // The session's status as the rest of the app reads it (Running while its work runs), for its recent events.
+    final status = {
+      for (final s in known)
+        s.id: boardStatus(own[s.id]!, workRunning: hasBoardWork(work[s.id]!), childWaits: waitsOnChild[s.id]!),
+    };
+    // The phase without "seen", which needs when it finished (below).
+    BoardPhase phaseOf(String id, {bool seen = false}) =>
+        boardPhase(own[id]!, work: work[id]!, childWaits: waitsOnChild[id]!, seen: seen);
+    final columnOf = {for (final s in known) s.id: phaseOf(s.id).column};
+
     // A cleared session that runs again comes back.
     final back = [
       for (final id in dismissed)
-        if (status[id] case final st? when BoardColumn.of(st) != BoardColumn.done) id,
+        if (columnOf[id] case final c? when c != BoardColumn.done) id,
     ];
     if (back.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => ref.read(boardDismissedProvider.notifier).restore(back));
     }
+    // What each Done card's marks would be once the Board has seen it there (the marks' state machine, run ahead).
     // Old finishes clear by themselves ([staleDone]): Done keeps the last two days, at most [boardDoneKeep].
-    final clock = ref.watch(boardDoneSinceProvider);
+    final marks = ref.watch(boardMarksProvider);
     final now = DateTime.now();
-    final doneSince = <String, DateTime>{
-      for (final s in all)
-        if (status[s.id] case final st? when BoardColumn.of(st) == BoardColumn.done && !dismissed.contains(s.id))
-          s.id: clock.countsFrom(s.id, s.createdAt, now),
+    final projected = <String, SeenState>{
+      for (final s in known)
+        if (columnOf[s.id] == BoardColumn.done && !dismissed.contains(s.id))
+          s.id: seenTransition(marks.of(s.id), Finished(marks.finishedAt(s.createdAt, now))),
     };
-    final stale = staleDone(doneSince, now: now);
+    DateTime sinceOf(SeenState st) => switch (st) {
+      FinishedUnseen(:final since) || FinishedSeen(:final since) => since,
+      _ => now,
+    };
+    final stale = staleDone({for (final e in projected.entries) e.key: sinceOf(e.value)}, now: now);
+    final phase = {for (final s in known) s.id: phaseOf(s.id, seen: projected[s.id] is FinishedSeen)};
+    // Only once the statuses are in: until then nothing is recorded or cleared from a guess.
     if (settled) {
+      final sessionIds = {for (final s in sessions) s.id};
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
-        ref.read(boardDoneSinceProvider.notifier).sync({
-          for (final e in doneSince.entries)
-            if (!stale.contains(e.key)) e.key: e.value,
-        });
+        ref
+            .read(boardMarksProvider.notifier)
+            .sync(
+              finished: {
+                for (final e in projected.entries)
+                  if (!stale.contains(e.key)) e.key: e.value,
+              },
+              // Sessions running again lose their marks, so their next finish shows as new.
+              ran: [
+                for (final e in columnOf.entries)
+                  if (e.value != BoardColumn.done) e.key,
+              ],
+              // Cleared or dismissed ones, and deleted sessions.
+              gone: [
+                ...stale,
+                ...dismissed,
+                for (final id in marks.marks.keys)
+                  if (!sessionIds.contains(id)) id,
+              ],
+            );
         if (stale.isNotEmpty) ref.read(boardDismissedProvider.notifier).dismiss(stale);
       });
     }
@@ -130,17 +191,16 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     final harnesses = <String>{for (final s in all) s.harness}.toList();
     final harness = harnesses.contains(_harness) ? _harness : null;
     final shown = [
-      for (final s in all)
-        if (status[s.id] case final st?
-            when (harness == null || s.harness == harness) &&
-                !(dismissed.contains(s.id) && BoardColumn.of(st) == BoardColumn.done))
+      for (final s in known)
+        if ((harness == null || s.harness == harness) &&
+            !(dismissed.contains(s.id) && columnOf[s.id] == BoardColumn.done))
           s,
     ];
     final columns = {
       for (final c in BoardColumn.values)
         c: [
           for (final s in shown)
-            if (BoardColumn.of(status[s.id]!) == c) s,
+            if (columnOf[s.id] == c) s,
         ],
     };
     final registry = ref.read(driverRegistryProvider);
@@ -178,6 +238,8 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
                 key: ValueKey('board.card.${s.id}.$_generation'),
                 info: s,
                 status: status[s.id]!,
+                phase: phase[s.id]!,
+                work: work[s.id]!,
                 harnessLabel: labelOf(s.harness),
                 onDismiss: c == BoardColumn.done
                     ? () => ref.read(boardDismissedProvider.notifier).dismiss([s.id])
@@ -200,7 +262,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
               const SizedBox(width: 8),
               Text(c.label, style: theme.type.callout.semibold.tint(theme.text)),
               const SizedBox(width: 8),
-              Text('${items.length}', style: theme.type.caption.tint(theme.textSubtle)),
+              TickingCount(items.length, style: theme.type.caption.mono.tint(theme.textSubtle)),
               const Spacer(),
               if (c == BoardColumn.done && items.isNotEmpty)
                 KitButton(
@@ -263,65 +325,71 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       ],
       body: all.isEmpty
           ? Center(child: Text('No sessions yet', style: theme.type.callout.tint(theme.textSubtle)))
-          : LayoutBuilder(
-              builder: (context, box) {
-                final wide = box.maxWidth >= 860;
-                final Widget body;
-                if (wide) {
-                  final List<double> shares = _dragging ?? ref.watch(boardColumnsProvider);
-                  final width = box.maxWidth - 28 - 2 * _Divider.hit;
-                  // Each column keeps at least 220pt.
-                  const min = 220.0;
-                  List<double> moved(int divider, double dx, List<double> from) {
-                    final w = [for (final v in from) v * width];
-                    final a = (w[divider] + dx).clamp(min, w[divider] + w[divider + 1] - min);
-                    w[divider + 1] = w[divider] + w[divider + 1] - a;
-                    w[divider] = a;
-                    return [for (final v in w) v / width];
-                  }
+          : GlowBackdrop(
+              child: AmbientClock(
+                // One breathing clock for every card, and only while something breathes.
+                running: shown.any((s) => phase[s.id]!.active || phase[s.id] == BoardPhase.needsYou),
+                child: LayoutBuilder(
+                  builder: (context, box) {
+                    final wide = box.maxWidth >= 860;
+                    final Widget body;
+                    if (wide) {
+                      final List<double> shares = _dragging ?? ref.watch(boardColumnsProvider);
+                      final width = box.maxWidth - 28 - 2 * _Divider.hit;
+                      // Each column keeps at least 220pt.
+                      const min = 220.0;
+                      List<double> moved(int divider, double dx, List<double> from) {
+                        final w = [for (final v in from) v * width];
+                        final a = (w[divider] + dx).clamp(min, w[divider] + w[divider + 1] - min);
+                        w[divider + 1] = w[divider] + w[divider + 1] - a;
+                        w[divider] = a;
+                        return [for (final v in w) v / width];
+                      }
 
-                  Widget divider(int i) => _Divider(
-                    key: ValueKey('board.divider.$i'),
-                    onDrag: (dx) => setState(() => _dragging = moved(i, dx, _dragging ?? shares)),
-                    onEnd: () {
-                      if (_dragging case final d?) ref.read(boardColumnsProvider.notifier).set(d);
-                      setState(() => _dragging = null);
-                    },
-                    onReset: ref.read(boardColumnsProvider.notifier).reset,
-                  );
-                  body = Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      for (final (i, c) in BoardColumn.values.indexed) ...[
-                        if (i > 0) divider(i - 1),
-                        SizedBox(width: shares[i] * width, child: column(c, scrolls: true)),
-                      ],
-                    ],
-                  );
-                } else {
-                  body = ListView(
-                    children: [
-                      for (final c in BoardColumn.values)
-                        if (columns[c]!.isNotEmpty)
-                          Padding(padding: const EdgeInsets.only(bottom: 12), child: column(c, scrolls: false)),
-                    ],
-                  );
-                }
-                return Padding(
-                  padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      if (filters != null)
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(4, 0, 4, 14),
-                          child: Align(alignment: Alignment.centerLeft, child: filters),
-                        ),
-                      Expanded(child: body),
-                    ],
-                  ),
-                );
-              },
+                      Widget divider(int i) => _Divider(
+                        key: ValueKey('board.divider.$i'),
+                        onDrag: (dx) => setState(() => _dragging = moved(i, dx, _dragging ?? shares)),
+                        onEnd: () {
+                          if (_dragging case final d?) ref.read(boardColumnsProvider.notifier).set(d);
+                          setState(() => _dragging = null);
+                        },
+                        onReset: ref.read(boardColumnsProvider.notifier).reset,
+                      );
+                      body = Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          for (final (i, c) in BoardColumn.values.indexed) ...[
+                            if (i > 0) divider(i - 1),
+                            SizedBox(width: shares[i] * width, child: column(c, scrolls: true)),
+                          ],
+                        ],
+                      );
+                    } else {
+                      body = ListView(
+                        children: [
+                          for (final c in BoardColumn.values)
+                            if (columns[c]!.isNotEmpty)
+                              Padding(padding: const EdgeInsets.only(bottom: 12), child: column(c, scrolls: false)),
+                        ],
+                      );
+                    }
+                    return Padding(
+                      padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (filters != null)
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(4, 0, 4, 14),
+                              child: Align(alignment: Alignment.centerLeft, child: filters),
+                            ),
+                          Expanded(child: body),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
             ),
     );
   }
@@ -432,12 +500,29 @@ class _GlideState extends State<_Glide> with SingleTickerProviderStateMixin {
     return AnimatedBuilder(
       animation: _c,
       builder: (context, child) {
-        if (!_c.isAnimating || _delta == Offset.zero) return child!;
-        final t = Motion.easeInOut.transform(_c.value);
-        final left = 1 - t;
-        // A shallow arc: lifted most at the middle of the trip.
-        final lift = -4 * t * left * (_delta.distance.clamp(0, 600) * 0.08);
-        return Transform.translate(offset: Offset(_delta.dx * left, _delta.dy * left + lift), child: child);
+        // One structure moving or not (no painter, no offset at rest), so the card under it is never rebuilt.
+        final moving = _c.isAnimating && _delta != Offset.zero;
+        // Where the card is at [v] of the trip: a shallow arc, lifted most at the middle.
+        Offset at(double v) {
+          final t = Motion.easeInOut.transform(v.clamp(0, 1));
+          final left = 1 - t;
+          final lift = -4 * t * left * (_delta.distance.clamp(0, 600) * 0.08);
+          return Offset(_delta.dx * left, _delta.dy * left + lift);
+        }
+
+        final now = moving ? at(_c.value) : Offset.zero;
+        // A soft light trail behind it, fading as it lands.
+        return CustomPaint(
+          painter: moving
+              ? TrailPainter(
+                  from: at(_c.value - 0.22),
+                  to: now,
+                  color: EveryTheme.of(context).accent,
+                  opacity: 1 - _c.value,
+                )
+              : null,
+          child: Transform.translate(offset: now, child: child),
+        );
       },
       child: widget.child,
     );
@@ -448,10 +533,26 @@ class _GlideState extends State<_Glide> with SingleTickerProviderStateMixin {
 /// what it waits on: Approve and Deny for an approval, the question itself for a question. A Done card can be
 /// cleared.
 class BoardCard extends ConsumerStatefulWidget {
-  const BoardCard({super.key, required this.info, required this.status, required this.harnessLabel, this.onDismiss});
+  const BoardCard({
+    super.key,
+    required this.info,
+    required this.status,
+    required this.harnessLabel,
+    required this.phase,
+    this.work = noBoardWork,
+    this.onDismiss,
+  });
 
   final CodeSessionInfo info;
+
+  /// Its status as the rest of the app reads it (for its recent events).
   final SessionStatus status;
+
+  /// What the card shows ([boardPhase]).
+  final BoardPhase phase;
+
+  /// What it runs besides its lead's turn.
+  final BoardWorkCount work;
   final String harnessLabel;
 
   /// Clears a Done card off the Board; null elsewhere.
@@ -461,9 +562,84 @@ class BoardCard extends ConsumerStatefulWidget {
   ConsumerState<BoardCard> createState() => _BoardCardState();
 }
 
+/// A warning action in flight from a card (a second click meanwhile does nothing).
+enum _Act { idle, nudging, stopping, compacting }
+
+/// What Nudge sends: a short ask for a status.
+/// Prompt reason: a stalled agent should say what it is doing, not start over.
+const boardNudgeText =
+    'Quick status check from the Board: what are you doing right now, and is anything stuck? Reply in one or two '
+    'lines, then carry on.';
+
 class _BoardCardState extends ConsumerState<BoardCard> {
   /// Bumped when an approval from this card goes through: the button pulses.
   int _approved = 0;
+
+  /// Bumped when the session finishes while on the Board: the card bursts.
+  int _finished = 0;
+
+  var _act = _Act.idle;
+
+  /// The warning lines the last build showed, so the clock rebuilds the card only when they change.
+  var _warned = const <String>[];
+
+  /// The clock that re-reads the warnings (stall minutes grow with time); running only while the card has a live
+  /// session (a Done or closed card has no warnings to age). Off in tests ([Motion.ambient]) so they can settle.
+  Timer? _clock;
+
+  void _syncClock(bool live) {
+    if (!live || !Motion.ambient) {
+      _clock?.cancel();
+      _clock = null;
+    } else {
+      _clock ??= Timer.periodic(const Duration(seconds: 30), (_) {
+        if (!mounted) return;
+        final now = [for (final w in _warnings(ref.read(codeSessionProvider(widget.info.id)).transcript)) w.line];
+        if (!listEquals(now, _warned)) setState(() {});
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _clock?.cancel();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(BoardCard old) {
+    super.didUpdateWidget(old);
+    if (old.phase.active && widget.phase.column == BoardColumn.done && widget.phase != BoardPhase.failed) _finished++;
+  }
+
+  Future<void> _run(_Act act, Future<void> Function() action) async {
+    if (_act != _Act.idle) return;
+    setState(() => _act = act);
+    try {
+      await action();
+    } finally {
+      if (mounted) setState(() => _act = _Act.idle);
+    }
+  }
+
+  /// Stall, loop and context warnings for an open session, re-read on the card's clock.
+  List<BoardWarning> _warnings(Transcript? live) {
+    if (live == null) return const [];
+    final id = widget.info.id;
+    final connected = ref.read(codeSessionProvider(id)).connected;
+    final usage = ref.exists(codeUsageProvider(id)) ? ref.read(codeUsageProvider(id)).value : null;
+    // The catalog only when there is a reading to measure against it.
+    final window = (usage?.contextTokens ?? 0) == 0
+        ? 0
+        : ref.read(modelCatalogProvider)[ModelId(widget.info.model)]?.contextLength ?? 0;
+    return boardWarnings(
+      phase: widget.phase,
+      sinceProgress: DateTime.now().difference(ref.read(boardProgressProvider(id).notifier).last()),
+      connected: connected,
+      repeated: repeatedStep(live),
+      contextPercent: contextPercent(usage?.contextTokens ?? 0, window),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -484,7 +660,12 @@ class _BoardCardState extends ConsumerState<BoardCard> {
       if (info.worktree != null) 'worktree' else if (info.branch.isNotEmpty) info.branch,
       if (info.parentId != null) 'fork',
     ].join(' · ');
-    final waiting = widget.status == SessionStatus.needsInput;
+    final phase = widget.phase;
+    final waiting = phase == BoardPhase.needsYou;
+    final failed = phase == BoardPhase.failed;
+    final phaseLine = boardPhaseLine(phase, widget.work);
+    // Keeps the progress clock running for an open session (the card reads it on its own clock).
+    if (open) ref.watch(boardProgressProvider(info.id).select((_) => 0));
     // Stop all, while an open session runs anything (the lead's turn, forks, a workflow).
     final controller = open ? ref.read(codeSessionProvider(info.id).notifier) : null;
     if (open) ref.watch(workflowRunsProvider(info.id));
@@ -504,8 +685,66 @@ class _BoardCardState extends ConsumerState<BoardCard> {
         : null;
     // A question is answered right on the card, open from the start.
     final asking = waiting && question != null;
-    void openSession() => context.go(Routes.codeSession(info.id));
+    void openSession() {
+      ref.read(boardMarksProvider.notifier).apply(info.id, Looked(DateTime.now()));
+      context.go(Routes.codeSession(info.id));
+    }
 
+    const radius = EveryTheme.cardRadius;
+    // Warnings move with the clock, which only a card with a live session needs ([_syncClock]).
+    final warnings = _warnings(live);
+    _warned = [for (final w in warnings) w.line];
+    _syncClock(live != null);
+    final edge = failed ? theme.danger : (warnings.isNotEmpty ? theme.warning : null);
+    return FinishBurst(
+      trigger: _finished == 0 ? null : _finished,
+      color: theme.success,
+      child: BreathingRing(
+        active: waiting,
+        color: theme.warning,
+        radius: radius,
+        child: GlowPulse(
+          active: phase.active,
+          color: theme.accent,
+          radius: radius,
+          strength: phase == BoardPhase.working ? 1 : 0.55,
+          child: _body(
+            theme: theme,
+            warnings: warnings,
+            edge: edge,
+            openSession: openSession,
+            asking: asking,
+            stopAll: stopAll,
+            live: live,
+            pending: pending,
+            question: question,
+            activity: activity,
+            where: where,
+            phaseLine: phaseLine,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _body({
+    required EveryTheme theme,
+    required List<BoardWarning> warnings,
+    required Color? edge,
+    required VoidCallback openSession,
+    required bool asking,
+    required Widget? stopAll,
+    required Transcript? live,
+    required List<ActionCall> pending,
+    required QuestionItem? question,
+    required String activity,
+    required String where,
+    required String phaseLine,
+  }) {
+    final info = widget.info;
+    final phase = widget.phase;
+    final waiting = phase == BoardPhase.needsYou;
+    final failed = phase == BoardPhase.failed;
     return Pressable(
       onTap: openSession,
       scale: !asking,
@@ -513,12 +752,7 @@ class _BoardCardState extends ConsumerState<BoardCard> {
       builder: (context, s, child) => AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: theme.background,
-          borderRadius: BorderRadius.circular(EveryTheme.cardRadius),
-          border: Border.all(color: s.hovered ? theme.borderStrong : theme.border),
-          boxShadow: s.hovered ? theme.shadowSoft : null,
-        ),
+        decoration: glassDecoration(theme, hovered: s.hovered, edge: edge, radius: EveryTheme.cardRadius),
         child: Stack(
           clipBehavior: Clip.none,
           children: [
@@ -562,12 +796,24 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                         crossAxisAlignment: CrossAxisAlignment.baseline,
                         textBaseline: TextBaseline.alphabetic,
                         children: [
+                          if (phase == BoardPhase.doneUnseen)
+                            Padding(
+                              key: ValueKey('board.unseen.${info.id}'),
+                              padding: const EdgeInsets.only(right: 6),
+                              child: Container(
+                                width: 6,
+                                height: 6,
+                                decoration: BoxDecoration(color: theme.accent, shape: BoxShape.circle),
+                              ),
+                            ),
                           Expanded(
                             child: Text(
                               info.title,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: theme.type.callout.medium.tint(theme.text),
+                              style: theme.type.callout.medium.tint(
+                                phase == BoardPhase.doneSeen ? theme.textMuted : theme.text,
+                              ),
                             ),
                           ),
                           const SizedBox(width: 8),
@@ -591,26 +837,37 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                 ),
               ],
             ),
-            if ((activity.isNotEmpty || widget.status == SessionStatus.failed) && !asking)
+            if (phaseLine.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(left: 36, top: 8),
+                child: Text(
+                  phaseLine,
+                  key: ValueKey('board.phase.${info.id}'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.type.caption.medium.tint(theme.accentText),
+                ),
+              ),
+            if ((activity.isNotEmpty || failed) && !asking)
               Padding(
                 padding: const EdgeInsets.only(left: 36, top: 8),
                 child: StateSwap(
                   child: Text(
-                    widget.status == SessionStatus.failed && activity.isEmpty ? 'Failed' : activity,
+                    failed && activity.isEmpty ? 'Failed' : activity,
                     key: ValueKey(activity),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: theme.type.caption.tint(
                       waiting
                           ? theme.warning
-                          : widget.status == SessionStatus.failed
+                          : failed
                           ? theme.danger
                           : theme.textMuted,
                     ),
                   ),
                 ),
               ),
-            if (asking)
+            if (asking && question != null)
               Padding(
                 key: ValueKey('board.question.${info.id}'),
                 padding: const EdgeInsets.only(top: 10),
@@ -622,6 +879,20 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                     await ref.read(codeSessionProvider(info.id).notifier).answer(question, answers);
                   },
                 ).settle(),
+              ),
+            if (warnings.isNotEmpty)
+              _Warnings(
+                info: info,
+                warnings: warnings,
+                live: live,
+                state: this,
+                // Compact works on an idle EveryAI-led session; an outside CLI keeps its own context.
+                compactable:
+                    live != null &&
+                    !live.running &&
+                    live.pending.isEmpty &&
+                    live.held.isEmpty &&
+                    !isOutsideLead(info.harness, info.workingDir),
               ),
             BoardWork(sessionId: info.id),
             Padding(
@@ -687,5 +958,91 @@ class _BoardCardState extends ConsumerState<BoardCard> {
     if (d.inHours < 1) return '${d.inMinutes}m';
     if (d.inDays < 1) return '${d.inHours}h';
     return '${d.inDays}d';
+  }
+}
+
+/// A card's warnings (stalled, looping, context nearly full), each as an amber line, with Nudge, Stop and, when the
+/// context is the problem, Compact. One action at a time ([_Act]).
+class _Warnings extends StatelessWidget {
+  const _Warnings({
+    required this.info,
+    required this.warnings,
+    required this.live,
+    required this.state,
+    required this.compactable,
+  });
+
+  final CodeSessionInfo info;
+  final List<BoardWarning> warnings;
+  final Transcript? live;
+  final _BoardCardState state;
+
+  /// Whether Compact would do anything now (else it would only say the agent is busy).
+  final bool compactable;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final controller = state.ref.read(codeSessionProvider(info.id).notifier);
+    final idle = state._act == _Act.idle;
+    return Padding(
+      key: ValueKey('board.warnings.${info.id}'),
+      padding: const EdgeInsets.only(left: 36, top: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final w in warnings)
+            Text(
+              w.line,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.type.caption.medium.tint(theme.warning),
+            ),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              KitButton(
+                key: ValueKey('board.nudge.${info.id}'),
+                label: 'Nudge',
+                style: KitButtonStyle.soft,
+                onPressed: !idle
+                    ? null
+                    : () => state._run(_Act.nudging, () async {
+                        // Joins the running turn after its current step (a long build isn't cut off); an idle lead
+                        // gets it as its next message.
+                        await controller.tellWhileRunning(boardNudgeText, fromUser: true);
+                      }),
+              ),
+              KitButton(
+                key: ValueKey('board.stop.${info.id}'),
+                label: 'Stop',
+                style: KitButtonStyle.ghost,
+                onPressed: !idle ? null : () => state._run(_Act.stopping, controller.stop),
+              ),
+              if (compactable && warnings.any((w) => w is BoardContextFull))
+                KitButton(
+                  key: ValueKey('board.compact.${info.id}'),
+                  label: 'Compact',
+                  style: KitButtonStyle.ghost,
+                  onPressed: !idle
+                      ? null
+                      : () => state._run(_Act.compacting, () async {
+                          final outcome = await controller.compact();
+                          if (!context.mounted) return;
+                          showAdaptiveToast(context, switch (outcome.kind) {
+                            CompactKind.compacted => 'Compacted: older turns are now a summary.',
+                            CompactKind.nothing => 'Nothing to compact yet.',
+                            CompactKind.busy => 'The agent is busy; compact when it stops.',
+                            CompactKind.failed => "Couldn't compact: ${outcome.message}",
+                          });
+                        }),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 }

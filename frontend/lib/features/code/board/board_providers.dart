@@ -47,27 +47,6 @@ Map<String, List<CodeSessionInfo>> childrenByParent(Iterable<CodeSessionInfo> se
   return out;
 }
 
-/// Whether a fork or subagent under [id], at any depth, still works ([statusOf] its own status): the lead may sit
-/// idle meanwhile, and the session isn't done.
-bool childRunning(
-  String id,
-  Map<String, List<CodeSessionInfo>> childrenOf,
-  SessionStatus Function(CodeSessionInfo) statusOf, [
-  Set<String>? seen,
-]) {
-  final visited = seen ?? <String>{};
-  for (final c in childrenOf[id] ?? const <CodeSessionInfo>[]) {
-    if (!visited.add(c.id)) continue;
-    if (statusOf(c) == SessionStatus.running || childRunning(c.id, childrenOf, statusOf, visited)) return true;
-  }
-  return false;
-}
-
-/// Whether an outside lead's own subagents (Claude Code's background agents, which aren't sessions of ours) are
-/// still out: their card stays open until they report. EveryAI's forks are child sessions ([childRunning]); a fork
-/// Stop all ended never reports, so its card doesn't count.
-bool subagentsRunning(Transcript t) => t.items.any((i) => i is SubagentItem && !i.ours && !i.done);
-
 /// A harness's two-letter mark and colour: the fallback for harnesses without a logo ([HarnessLogo]).
 ({String letters, Color color}) harnessMark(String harness) => switch (harness) {
   everyaiHarnessName => (letters: 'EA', color: const Color(0xFF7756E4)),
@@ -164,65 +143,196 @@ final class BoardDismissed extends Notifier<Set<String>> {
   }
 }
 
-/// The Board's auto-clear clock for Done cards, kept in Preferences `code.board.done_since` (id → epoch ms).
+/// What the Board knows about a session's last finish, and whether the user has looked since (one state per session,
+/// moved only by [seenTransition]):
 ///
-/// [DoneFirstRun] ─ the Board records a first set ─▶ [DoneTracking]
+/// ```text
+///   NotTracked ──Finished──▶ FinishedUnseen ──Looked──▶ FinishedSeen
+///        │  ▲                     │   ▲                      │
+///        │  └──────Ran────────────┴───┼──────Ran─────────────┘
+///        └──Looked (it is finished)───┴─▶ FinishedSeen   RunningAgain ──Finished──▶ FinishedUnseen
+/// ```
 ///
-/// A session in Done is tracked from when the Board first saw it there; one that leaves Done is forgotten, so its
-/// next finish counts from then. Once the clock clears it ([staleDone]) it is dismissed (`boardDismissedProvider`),
-/// which is the "cleared" state; it comes back when the session runs again.
-sealed class DoneClock {
-  const DoneClock();
-
-  /// When [id], Done now, counts from: the first run counts from when the session was created (what finished before
-  /// the Board recorded anything), a tracked one from its record, a newly seen one from [now].
-  DateTime countsFrom(String id, DateTime createdAt, DateTime now) => switch (this) {
-    DoneFirstRun() => createdAt,
-    DoneTracking(:final since) => switch (since[id]) {
-      final ms? => DateTime.fromMillisecondsSinceEpoch(ms),
-      null => now,
-    },
-  };
+/// A session in Done is tracked from when the Board first saw it there ([FinishedUnseen.since]); once it runs again
+/// the marks are dropped, so its next finish is news. Auto-clear ([staleDone]) reads `since`; a cleared session is
+/// dismissed (`boardDismissedProvider`) and its marks go.
+sealed class SeenState {
+  const SeenState();
 }
 
-/// Nothing recorded yet (no preference).
-final class DoneFirstRun extends DoneClock {
-  const DoneFirstRun();
+/// Nothing recorded (never finished here, or cleared).
+final class NotTracked extends SeenState {
+  const NotTracked();
+  @override
+  bool operator ==(Object other) => other is NotTracked;
+  @override
+  int get hashCode => 0;
 }
 
-final class DoneTracking extends DoneClock {
-  const DoneTracking(this.since);
-  final Map<String, int> since;
+/// Finished at [since]; the user hasn't looked since.
+final class FinishedUnseen extends SeenState {
+  const FinishedUnseen(this.since);
+  final DateTime since;
+  @override
+  bool operator ==(Object other) => other is FinishedUnseen && other.since == since;
+  @override
+  int get hashCode => Object.hash(1, since);
 }
 
-final boardDoneSinceProvider = NotifierProvider<BoardDoneSince, DoneClock>(BoardDoneSince.new);
+/// Finished at [since]; the user looked at [seenAt] (at or after the finish).
+final class FinishedSeen extends SeenState {
+  const FinishedSeen(this.since, this.seenAt);
+  final DateTime since;
+  final DateTime seenAt;
+  @override
+  bool operator ==(Object other) => other is FinishedSeen && other.since == since && other.seenAt == seenAt;
+  @override
+  int get hashCode => Object.hash(2, since, seenAt);
+}
 
-final class BoardDoneSince extends Notifier<DoneClock> {
-  static const key = 'code.board.done_since';
+/// It was finished and runs again: the marks are dropped (stored as nothing, so a later load reads [NotTracked]).
+final class RunningAgain extends SeenState {
+  const RunningAgain();
+  @override
+  bool operator ==(Object other) => other is RunningAgain;
+  @override
+  int get hashCode => 3;
+}
+
+sealed class SeenEvent {
+  const SeenEvent();
+}
+
+/// The Board sees the session in Done; [at] is when it counts from (used when it wasn't tracked yet).
+final class Finished extends SeenEvent {
+  const Finished(this.at);
+  final DateTime at;
+}
+
+/// The user looks at the finished session (opens it).
+final class Looked extends SeenEvent {
+  const Looked(this.at);
+  final DateTime at;
+}
+
+/// The session runs (or waits, or is paused).
+final class Ran extends SeenEvent {
+  const Ran();
+}
+
+/// The one transition function of a session's seen state.
+SeenState seenTransition(SeenState state, SeenEvent event) => switch ((state, event)) {
+  (NotTracked() || RunningAgain(), Finished(:final at)) => FinishedUnseen(at),
+  // Looking at a finished session records the finish (and that it was seen) if the Board hadn't yet.
+  (NotTracked() || RunningAgain(), Looked(:final at)) => FinishedSeen(at, at),
+  (NotTracked(), Ran()) => const NotTracked(),
+  (RunningAgain(), Ran()) => state,
+  (FinishedUnseen() || FinishedSeen(), Ran()) => const RunningAgain(),
+  (FinishedUnseen(), Finished()) => state,
+  (FinishedSeen(), Finished()) => state,
+  (FinishedUnseen(:final since), Looked(:final at)) => FinishedSeen(since, at),
+  (FinishedSeen(), Looked()) => state,
+};
+
+/// Whether the Board has recorded finishes before: sessions already Done on the first run count from when they were
+/// created; after that, a newly seen finish counts from now.
+enum MarksEra { firstRun, tracking }
+
+/// Every session's [SeenState] (those not listed are [NotTracked]).
+class BoardMarkSet {
+  const BoardMarkSet(this.era, this.marks);
+
+  final MarksEra era;
+  final Map<String, SeenState> marks;
+
+  SeenState of(String id) => marks[id] ?? const NotTracked();
+
+  /// When [id], seen in Done now, counts from.
+  DateTime finishedAt(DateTime createdAt, DateTime now) => era == MarksEra.firstRun ? createdAt : now;
+}
+
+/// The Board's marks, kept in Preferences `code.board.done_since` (id → finish, epoch ms) and `code.board.seen` (id →
+/// when the user looked); the only writer, for the Board's refresh, the session view and the card.
+final boardMarksProvider = NotifierProvider<BoardMarks, BoardMarkSet>(BoardMarks.new);
+
+final class BoardMarks extends Notifier<BoardMarkSet> {
+  static const doneSinceKey = 'code.board.done_since';
+  static const seenKey = 'code.board.seen';
 
   @override
-  DoneClock build() {
-    final raw = ref.read(preferencesProvider)[key];
-    if (raw == null) return const DoneFirstRun();
-    try {
-      return DoneTracking({
-        for (final e in (jsonDecode(raw) as Map<String, Object?>).entries) e.key: (e.value as num).toInt(),
-      });
-    } on Object {
-      return const DoneTracking({});
+  BoardMarkSet build() {
+    final prefs = ref.read(preferencesProvider);
+    Map<String, int>? ints(String? raw) {
+      if (raw == null) return null;
+      try {
+        return {for (final e in (jsonDecode(raw) as Map<String, Object?>).entries) e.key: (e.value as num).toInt()};
+      } on Object {
+        return const {};
+      }
     }
+
+    final since = ints(prefs[doneSinceKey]);
+    final seen = ints(prefs[seenKey]) ?? const <String, int>{};
+    DateTime at(int ms) => DateTime.fromMillisecondsSinceEpoch(ms);
+    final era = since == null ? MarksEra.firstRun : MarksEra.tracking;
+    return BoardMarkSet(era, {
+      for (final MapEntry(key: id, value: ms) in (since ?? const <String, int>{}).entries)
+        id: switch (seen[id]) {
+          final seenMs? when seenMs >= ms => FinishedSeen(at(ms), at(seenMs)),
+          _ => FinishedUnseen(at(ms)),
+        },
+      // Before the first record, a look is all there is (it counts as the finish too).
+      if (era == MarksEra.firstRun)
+        for (final MapEntry(key: id, value: ms) in seen.entries) id: FinishedSeen(at(ms), at(ms)),
+    });
   }
 
-  /// Records [done] (id → when it counts from) for the ids not yet known, and forgets known ids not in [done].
-  void sync(Map<String, DateTime> done) {
-    final before = switch (state) {
-      DoneTracking(:final since) => since,
-      DoneFirstRun() => const <String, int>{},
-    };
-    final next = {for (final MapEntry(key: id, value: at) in done.entries) id: before[id] ?? at.millisecondsSinceEpoch};
-    if (state is DoneTracking && mapEquals(next, before)) return;
-    state = DoneTracking(next);
-    ref.read(preferencesProvider)[key] = jsonEncode(next);
+  /// One session's event ([markBoardSeen], the card's open). Writes only when the state changes.
+  void apply(String id, SeenEvent event) => _set(state.era, _step({...state.marks}, id, event));
+
+  /// The Board's refresh: the Done sessions' projected [finished] states (not cleared), the ids that [ran] again
+  /// and the ids [gone] (cleared, dismissed or deleted). The first refresh moves the marks to tracking.
+  void sync({
+    required Map<String, SeenState> finished,
+    Iterable<String> ran = const [],
+    Iterable<String> gone = const [],
+  }) {
+    final next = {...state.marks};
+    for (final id in gone) {
+      next.remove(id);
+    }
+    next.addAll(finished);
+    for (final id in ran) {
+      _step(next, id, const Ran());
+    }
+    _set(MarksEra.tracking, next);
+  }
+
+  Map<String, SeenState> _step(Map<String, SeenState> marks, String id, SeenEvent event) {
+    final to = seenTransition(marks[id] ?? const NotTracked(), event);
+    if (to is NotTracked || to is RunningAgain) {
+      marks.remove(id);
+    } else {
+      marks[id] = to;
+    }
+    return marks;
+  }
+
+  void _set(MarksEra era, Map<String, SeenState> marks) {
+    if (era == state.era && mapEquals(marks, state.marks)) return;
+    state = BoardMarkSet(era, marks);
+    final prefs = ref.read(preferencesProvider);
+    if (era == MarksEra.tracking) {
+      prefs[doneSinceKey] = jsonEncode({
+        for (final e in marks.entries)
+          if (e.value case FinishedUnseen(:final since) || FinishedSeen(:final since))
+            e.key: since.millisecondsSinceEpoch,
+      });
+    }
+    prefs[seenKey] = jsonEncode({
+      for (final e in marks.entries)
+        if (e.value case FinishedSeen(:final seenAt)) e.key: seenAt.millisecondsSinceEpoch,
+    });
   }
 }
 
