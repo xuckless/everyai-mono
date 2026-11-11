@@ -1,6 +1,9 @@
 import 'package:flutter/services.dart';
 
+import '../../../core/platform/platform_kind.dart' show Host;
+
 import '../harness/events.dart' show ActionCall;
+import 'board_providers.dart' show SeenState;
 
 /// Which card the keyboard is on, if any. While the inspector is open the selection is the inspected card (j/k and
 /// n move both together), so a/d/x always act on the session the inspector shows:
@@ -30,12 +33,23 @@ final class SelectedCard extends BoardSelection {
   int get hashCode => id.hashCode;
 }
 
-/// The side inspector. Opened by a click, its composer takes the keys (typing a reply is text, not Board keys);
-/// opened from the keyboard (Enter), the Board keeps them, and j/k/n carry it to the next card:
+/// Who gets the keys when the inspector opens or moves: the Board (opened from the keyboard; j/k/n carry it along)
+/// or the inspector's composer (a click: a reply typed at once is text, not Board keys).
+enum InspectorKeys { board, composer }
+
+/// What the inspector shows of a session: its recent transcript read-only ([preview]: nothing is attached, no
+/// controller is made for a card merely looked at), or the session itself ([live]: its controller, approvals and
+/// composer). A session with an open controller is always shown live; a preview goes live only when the user acts.
+enum InspectorView { preview, live }
+
+/// The side inspector. Each open or move bumps [generation], so a repeated click on the same card is a new request
+/// for [keys]:
 ///
 /// ```text
-///   closed ──a click on a card, Enter──► open(id) ──another card, j/k/n──► open(other id)
-///     ▲                                     │
+///   closed ──a click on a card, Enter──► open(id, keys, view, gen)
+///     ▲                                     │ another card, j/k/n ──► open(other id, board, preview, gen+1)
+///     │                                     │ a click on the card ──► open(id, composer, gen+1)
+///     │                                     │ Reply (preview) ──► open(id, composer, live, gen+1)
 ///     └──── Esc, ×, its session gone ───────┘
 /// ```
 sealed class BoardInspector {
@@ -47,14 +61,49 @@ final class InspectorClosed extends BoardInspector {
 }
 
 final class InspectorOpen extends BoardInspector {
-  const InspectorOpen(this.id);
+  const InspectorOpen(
+    this.id, {
+    this.keys = InspectorKeys.board,
+    this.view = InspectorView.preview,
+    this.generation = 0,
+  });
   final String id;
+  final InspectorKeys keys;
+  final InspectorView view;
+  final int generation;
 
   @override
-  bool operator ==(Object other) => other is InspectorOpen && other.id == id;
+  bool operator ==(Object other) =>
+      other is InspectorOpen &&
+      other.id == id &&
+      other.keys == keys &&
+      other.view == view &&
+      other.generation == generation;
 
   @override
-  int get hashCode => id.hashCode;
+  int get hashCode => Object.hash(id, keys, view, generation);
+}
+
+/// Where the inspector sits, as last laid out: beside the columns, or covering them (a narrow window; the hidden
+/// cards then take no keys).
+enum InspectorLayout { beside, covering }
+
+/// The inspector's width while its edge is dragged (written when the drag ends):
+///
+/// ```text
+///   idle ──drag the edge──► dragging(width) ──let go, cancel, the window narrows (no edge) ──► idle
+/// ```
+sealed class InspectorDrag {
+  const InspectorDrag();
+}
+
+final class DragIdle extends InspectorDrag {
+  const DragIdle();
+}
+
+final class DragActive extends InspectorDrag {
+  const DragActive(this.width);
+  final double width;
 }
 
 /// A press-and-drag across Done cards (mouse) that clears them when let go. A press alone is still a click: the sweep
@@ -86,8 +135,8 @@ final class Sweeping extends DoneSweep {
   final String over;
 }
 
-/// The last clear the user can take back, while its bar shows. It keeps when each card had finished ([doneSince]), so
-/// Undo puts them back as they were (not as fresh, unseen finishes):
+/// The last clear the user can take back, while its bar shows. It keeps each card's seen state ([marks]: when it
+/// finished, whether it was seen), so Undo puts them back as they were (not as fresh, unseen finishes):
 ///
 /// ```text
 ///   nothing ──cards cleared──► undoable(ids, gen) ──Undo, ⌘Z──► nothing (ids back)
@@ -103,11 +152,11 @@ final class NothingToUndo extends ClearUndo {
 }
 
 final class Undoable extends ClearUndo {
-  const Undoable(this.ids, this.generation, {this.doneSince = const {}});
+  const Undoable(this.ids, this.generation, {this.marks = const {}});
   final List<String> ids;
 
-  /// When each cleared card had finished (epoch ms), as the Board had it.
-  final Map<String, int> doneSince;
+  /// Each cleared card's marks, as the Board had them.
+  final Map<String, SeenState> marks;
 
   /// Which clear this is: the timer of an older one doesn't hide a newer bar.
   final int generation;
@@ -142,11 +191,20 @@ enum BoardKey {
 
 /// The Board's key map: j/k and the arrows move, Enter opens the inspector (⌘/Ctrl+Enter the full session), a/d
 /// approve or deny, A approves everything waiting, x clears a Done card, / filters, n jumps to the next card that
-/// needs you, ? shows the keys, Esc steps back, ⌘/Ctrl+Z undoes a clear. Null for any other key.
+/// needs you, ? shows the keys, Esc steps back, ⌘/Ctrl+Z undoes a clear. Null for any other key, and for any key
+/// pressed with Alt/Option ([alt]).
 ///
 /// `/` and `?` go by the [character] typed when there is one, since keyboard layouts put them on different keys
 /// (Shift+7 is `/` on a German keyboard).
-BoardKey? boardKeyOf(LogicalKeyboardKey key, {bool shift = false, bool meta = false, String? character}) {
+BoardKey? boardKeyOf(
+  LogicalKeyboardKey key, {
+  bool shift = false,
+  bool meta = false,
+  bool alt = false,
+  String? character,
+}) {
+  // Option+A types å: a key with Alt/Option held is text, not a Board key.
+  if (alt) return null;
   if (!meta) {
     if (character == '?') return BoardKey.help;
     if (character == '/') return BoardKey.filter;
@@ -175,12 +233,12 @@ BoardKey? boardKeyOf(LogicalKeyboardKey key, {bool shift = false, bool meta = fa
 
 /// The keys, for the shortcuts overlay; [apple] writes the modifier as ⌘, else Ctrl.
 List<(String, String)> boardKeyHelp({required bool apple}) {
-  final mod = apple ? '⌘ ' : 'Ctrl+';
+  final mod = apple ? '⌘' : 'Ctrl+';
   return [
     ('j  k', 'Next, previous card'),
     ('n', 'Next card that needs you'),
-    ('Enter', 'Open in the inspector'),
-    ('${mod}Enter', 'Open the full session'),
+    (Host.enterKeys(), 'Open in the inspector'),
+    (Host.enterKeys(command: true), 'Open the full session'),
     ('a  d', 'Approve, deny'),
     ('A', 'Approve everything waiting'),
     ('x', 'Clear a Done card'),

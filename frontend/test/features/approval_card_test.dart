@@ -1,7 +1,9 @@
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/theme/every_theme.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
+import 'package:every_ai/features/code/domain/native_approvals.dart';
 import 'package:every_ai/features/code/domain/permissions.dart';
+import 'package:every_ai/features/code/harness/harness.dart' show NativeRemember;
 import 'package:every_ai/features/code/harness/events.dart';
 import 'package:every_ai/features/code/ui/transcript/approval_card.dart';
 import 'package:flutter/widgets.dart';
@@ -28,6 +30,7 @@ void main() {
     Map<String, String> flags = const {},
     List<String>? remember,
     bool forks = false,
+    List<NativeAllowScope>? native,
   }) => m.MaterialApp(
     home: m.Material(
       child: EveryThemeScope(
@@ -47,6 +50,7 @@ void main() {
             onDenyCall: onDenyCall,
             decided: decided,
             rememberBy: const {'a': 'Bash(npm test)'},
+            native: native,
           ),
         ),
       ),
@@ -72,6 +76,26 @@ void main() {
 
     await tester.tap(find.text('Allow all  ${Host.enterKeys(command: true)}'));
     expect(all, ApprovalScope.always, reason: 'asked once, saved for good');
+  });
+
+  testWidgets("an outside lead's card: Allow answers once, its CLI's own scopes only, no EveryAI rule", (tester) async {
+    final scopes = <ApprovalScope>[];
+    await tester.pumpWidget(
+      host(
+        pending: [calls.first],
+        remember: const ['Bash(npm test)'],
+        native: nativeAllowScopes(NativeRemember.session, 'Codex'),
+        onAllow: scopes.add,
+        onAllowCall: (_, _) {},
+        onDenyCall: (_) {},
+      ),
+    );
+    expect(find.textContaining('Allow similar'), findsNothing);
+    expect(find.textContaining('Allow saves'), findsNothing);
+    expect(find.textContaining('all commands'), findsNothing);
+    await tester.tap(find.text('Allow for this session'));
+    await tester.tap(find.text('Allow  ${Host.enterKeys(command: true)}'));
+    expect(scopes, [ApprovalScope.session, ApprovalScope.once]);
   });
 
   testWidgets('answered rows are settled', (tester) async {

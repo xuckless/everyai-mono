@@ -14,7 +14,7 @@ import '../briefing/briefing_types.dart';
 import '../briefing/recipes.dart' show acpMcpServer;
 import '../driver.dart';
 import '../driver_events.dart';
-import '../driver_policy.dart' show rewindRefusal;
+import '../driver_policy.dart' show hostRunTools, rewindRefusal;
 import '../event_journal.dart';
 import '../json_rpc.dart';
 import '../usage_limit.dart';
@@ -86,32 +86,29 @@ final class AcpLauncher {
 }
 
 /// One conversation with an ACP agent (agentclientprotocol.com). The agent
-/// uses its own file and shell tools (the client offers no `fs`/`terminal`);
-/// every call it asks about comes as `session/request_permission`, which the
-/// app's rules or the user answer per call. The transcript is the event
-/// journal in [dir]; after an app restart the agent's own memory comes back
-/// through `session/load` when the next message is sent.
-/// The agent's own modes for the picker: the choices of its `mode` config
-/// option when it has one, else `modes.availableModes`. A mode runs under
-/// the profile's policy for it ([AcpProfile.modePolicy], its [AcpProfile.askMode]
-/// as Ask, its [AcpProfile.planMode] as Plan); any other one (Gemini's
-/// `yolo`, Goose's `auto`) is listed greyed, since the app can't tell
-/// whether it still asks before acting.
+/// uses its own file and shell tools (the client offers no `fs`/`terminal`)
+/// and its own modes decide what asks; every call it asks about comes as
+/// `session/request_permission`, which the user answers per call. The
+/// transcript is the event journal in [dir]; after an app restart the agent's
+/// own memory comes back through `session/load` when the next message is sent.
+/// The agent's own modes for the picker: every choice of its `mode` config
+/// option when it has one, else every one of `modes.availableModes`. Each
+/// carries the app's nearest name for it ([acpModePolicy]); that is only a
+/// name, and nothing is refused by it.
+///
+/// With the profile's [AcpProfile.autopilot] option on, every mode but its plan mode runs tools without asking:
+/// those show the option's name after their own and its description as the agent reports it. Their app name
+/// ([NativeMode.policy]) stays the mode's own, so picking the mode nearest the app's stays as it was.
 NativeModeSet acpModes(AcpProfile profile, Map<String, Object?>? modes, List<Object?>? config) {
+  final pilot = acpAutopilot(profile, config);
   NativeMode entry(String id, String label, String description) {
-    final policy =
-        profile.modePolicy[id] ??
-        (id == profile.askMode
-            ? AgentMode.ask
-            : id == profile.planMode
-            ? AgentMode.plan
-            : null);
+    final policy = acpModePolicy(profile, id);
+    final on = pilot != null && policy != AgentMode.plan;
     return NativeMode(
       id: id,
-      label: label,
-      description: description,
-      policy: policy ?? AgentMode.fullAuto,
-      blocked: policy == null ? "Not offered: EveryAI can't tell whether this mode still asks before acting." : null,
+      label: on ? '$label · ${pilot.name}' : label,
+      description: on ? pilot.description : description,
+      policy: policy,
     );
   }
 
@@ -128,7 +125,37 @@ NativeModeSet acpModes(AcpProfile profile, Map<String, Object?>? modes, List<Obj
   );
 }
 
-final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCommands, NativeModes {
+/// The agent's [AcpProfile.autopilot] option when it is on: its name and what it does (the agent's description of
+/// the choice, else a plain one). Null when the profile has none or it is off.
+({String name, String description})? acpAutopilot(AcpProfile profile, List<Object?>? config) {
+  final pilot = profile.autopilot;
+  if (pilot == null) return null;
+  final o = acpOption(config, null, id: pilot.option);
+  if (o == null || o.current != pilot.on) return null;
+  final choice = o.choices.where((c) => c.value == pilot.on).firstOrNull;
+  return (
+    name: choice?.name ?? pilot.option,
+    description: acpChoiceDescription(config, pilot.option, pilot.on) ?? 'Runs tools without asking first.',
+  );
+}
+
+/// The app's nearest name for the agent's mode [id]: the profile's own word for it ([AcpProfile.modePolicy],
+/// [AcpProfile.askMode] as Ask, [AcpProfile.planMode] as Plan), else a guess from the id (`plan`, `…edit…`,
+/// `yolo`/`auto`/`bypass`/`full…`), else Ask.
+AgentMode acpModePolicy(AcpProfile profile, String id) {
+  if (profile.modePolicy[id] case final p?) return p;
+  if (id == profile.askMode) return AgentMode.ask;
+  if (id == profile.planMode) return AgentMode.plan;
+  final words = id.toLowerCase();
+  if (words.contains('plan')) return AgentMode.plan;
+  if (words.contains('edit')) return AgentMode.autoEdit;
+  if (words.contains('yolo') || words.contains('bypass') || words.startsWith('full') || words == 'auto') {
+    return AgentMode.fullAuto;
+  }
+  return AgentMode.ask;
+}
+
+final class AcpSession implements HarnessSession, PerCallApprovals, AllowsRemembered, HasNativeCommands, NativeModes {
   AcpSession({
     required this.id,
     required this.dir,
@@ -179,11 +206,14 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
 
   AgentMode _mode;
 
-  /// The agent's mode picked by its own name ([setNativeMode]), kept in
-  /// `meta.json`; null pins [AcpProfile.askMode] (or [AcpProfile.planMode]).
+  /// The agent's mode picked by its own name ([setNativeMode]) or moved to by the agent, kept in `meta.json`; null
+  /// starts the session in the mode nearest the app's ([_startMode]).
   String? _native;
   final _modeFeed = NativeModeFeed();
   ({String model, String? effort})? _llm;
+
+  /// What the turns used, guessed from the text that went by, for agents that report nothing (Cursor).
+  final _estimate = AcpUsageEstimate();
   String? _acpSessionId;
   JsonRpcPeer? _peer;
   Future<void>? _connecting;
@@ -330,7 +360,6 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
 
   Future<void> _connect({required bool fresh}) async {
     final exe = await _launcher.resolve();
-    if (await _profile.preflight(cwd) case final problem?) throw HarnessError(problem);
     final delivery = await _delivery();
     final cmd = _launcher.command;
     final channel = await _launcher.connect(
@@ -409,6 +438,12 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
         }
       }
       _absorb(reply);
+      // An agent run on an API key (one of its key variables set) is billed per token, not on a plan.
+      try {
+        _estimate.onPlan = !await envHasAny(_profile.keyEnv, env: await _launcher.loginEnv());
+      } on Object {
+        // Unknown: counted as a plan, as before.
+      }
       // The models list is a cache: failing to write it doesn't stop the session.
       try {
         await _launcher.offered(reply);
@@ -416,7 +451,7 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
         // Left as it was.
       }
       await _saveMeta();
-      await _pinMode();
+      await _startMode();
       if (_llm case final l?) await _applyLlm(l.model, l.effort, strict: false);
     } on TimeoutException {
       await peer.close();
@@ -574,7 +609,7 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
   });
 
   void _absorb(Map<String, Object?> reply) {
-    if (reply['configOptions'] case final List<Object?> c) _config = c;
+    if (reply['configOptions'] case final List<Object?> c) _config = acpKeepDescriptions(_config, c);
     if (reply['modes'] case final Map<String, Object?> m) _modes = {...m};
     if (reply['models'] case final Map<String, Object?> m) _models = {...m};
     _publishModes();
@@ -607,25 +642,22 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
 
   // ------------------------------------------------------- modes and model
 
-  /// Keeps the agent in its asking mode (or read-only for Plan), so the app's
-  /// rules decide every call; never a mode that skips asking.
-  Future<void> _pinMode() async {
-    await _pinConfig();
-    final picked = nativeModeOf(_modeFeed.latest.modes, _native);
-    final targets = [
-      if (picked != null && picked.blocked == null) picked.id,
-      if (_mode == AgentMode.plan) ?_profile.planMode,
-      ?_profile.askMode,
-    ];
-    for (final target in targets) {
-      try {
-        if (await _applyMode(target)) return;
-      } on JsonRpcError catch (e) {
-        _emit(acpNotice(_next('n'), "$_label didn't switch to its $target mode: ${e.message}"));
-        return;
-      } finally {
-        _publishModes();
-      }
+  /// Starts the agent in the mode picked by name, else the one nearest the app's mode (its plan mode for Plan);
+  /// with neither, the agent stays in the mode it started in.
+  Future<void> _startMode() async {
+    _publishModes();
+    final modes = _modeFeed.latest.modes;
+    final target =
+        nativeModeOf(modes, _native)?.id ??
+        (_mode == AgentMode.plan ? _profile.planMode : null) ??
+        nativeModeFor(modes, _mode)?.id;
+    if (target == null) return;
+    try {
+      await _applyMode(target);
+    } on JsonRpcError catch (e) {
+      _emit(acpNotice(_next('n'), "$_label didn't switch to its $target mode: ${e.message}"));
+    } finally {
+      _publishModes();
     }
   }
 
@@ -650,61 +682,16 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
     return false;
   }
 
-  /// The agent moved its own mode (its command, a key): one the app can't
-  /// tell asks is set back, with a notice; another is followed.
+  /// The agent moved its own mode (its command, a key): its choice stands.
   void _modeMoved() {
     final set = acpModes(_profile, _modes, _config);
     final now = nativeModeOf(set.modes, set.current);
     if (now == null || now.id == _modeFeed.latest.current) return _publishModes();
-    if (now.blocked == null) {
-      _native = now.id;
-      _mode = now.policy;
-      unawaited(_saveMeta().catchError((Object _) {}));
-      return _publishModes();
-    }
-    if (_peer == null) return;
-    unawaited(
-      _pinMode().then(
-        (_) {
-          final back = nativeModeOf(_modeFeed.latest.modes, _modeFeed.latest.current)?.label ?? 'its asking mode';
-          _emit(
-            acpNotice(
-              _next('n'),
-              "$_label moved to ${now.label}, which EveryAI doesn't offer; it was set back to $back.",
-            ),
-          );
-        },
-        onError: (Object e) {
-          _emit(acpNotice(_next('n'), "$_label moved to ${now.label}, and it couldn't be set back: $e"));
-        },
-      ),
-    );
+    _native = now.id;
+    _mode = now.policy;
+    unawaited(_saveMeta().catchError((Object _) {}));
+    _publishModes();
   }
-
-  /// Sets the profile's pinned config options ([AcpProfile.configPins])
-  /// where the agent offers them. A refusal is an error: the agent would act
-  /// without asking.
-  Future<void> _pinConfig() async {
-    for (final MapEntry(key: id, :value) in _profile.configPins.entries) {
-      final o = acpOption(_config, null, id: id);
-      if (o == null || o.current == value || !o.choices.any((c) => c.value == value)) continue;
-      _absorb(
-        _map(
-          await _peer!.request('session/set_config_option', {
-            'sessionId': _acpSessionId,
-            'configId': id,
-            'value': value,
-          }),
-        ),
-      );
-    }
-  }
-
-  /// Whether a pinned config option has moved off its value.
-  bool get _pinsMoved => _profile.configPins.entries.any((e) {
-    final o = acpOption(_config, null, id: e.key);
-    return o != null && o.current != e.value && o.choices.any((c) => c.value == e.value);
-  });
 
   /// Moves the agent to [model] and [effort] where it offers them. [strict]:
   /// one it can't take is an error (a switch the user asked for).
@@ -759,7 +746,7 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
     // Not running yet (a reopened conversation): set when it starts.
     if (_peer == null || _acpSessionId == null) return;
     await _saveMeta();
-    await _pinMode();
+    await _startMode();
   }
 
   @override
@@ -860,6 +847,7 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
     _paused = false;
     _waking = false;
     _setStatus(ExecutionStatus.running);
+    _estimate.start(blocks);
     // Grok can leave the reply hanging after it says the prompt is complete;
     // whichever comes first ends the turn.
     final promptId = _profile.agent == AcpAgent.grok ? _next('p') : null;
@@ -885,6 +873,8 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
         _emit(usage);
       } else if (promptId != null) {
         _xaiUnreported = promptId;
+      } else if (_estimate.report(_next('usage')) case final guess?) {
+        _emit(guess);
       }
       final stop = reply['stopReason'];
       final note = switch (stop) {
@@ -1015,7 +1005,23 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
   // -------------------------------------------------------------- approvals
 
   @override
-  Future<void> respond({required bool accept, String? reason, List<String>? callIds}) async {
+  Future<void> respond({required bool accept, String? reason, List<String>? callIds}) =>
+      _answer(accept: accept, reason: reason, callIds: callIds);
+
+  /// Picks the agent's own `allow_always` where the request offered it (the agent keeps it as it does); a request
+  /// without one is allowed once, with a notice.
+  @override
+  Future<void> allowRemembered(NativeGrant grant, {List<String>? callIds}) => _answer(
+    accept: true,
+    callIds: callIds,
+    always: switch (grant) {
+      NativeGrant.always => true,
+      // ACP has no "for this session"; the card doesn't offer it.
+      NativeGrant.session => false,
+    },
+  );
+
+  Future<void> _answer({required bool accept, String? reason, List<String>? callIds, bool always = false}) async {
     final targets = [
       for (final id in callIds ?? _asking.keys.toList())
         if (_asking.containsKey(id)) id,
@@ -1042,11 +1048,20 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
           final quoted = '`${floorAdviceSubject(call)}`';
           _notes.removeWhere((n) => n.startsWith(floorAdviceLead) && n.contains(quoted));
         }
+        if (always) {
+          if (option('allow_always') case final id?) {
+            a.reply.complete(_selected(id));
+            continue;
+          }
+          if (option('allow_once') != null) {
+            _emit(acpNotice(_next('n'), '$_label offered no "always" for ${_quoted(title)}, so it was allowed once.'));
+          }
+        }
         if (option('allow_once') case final id?) {
           a.reply.complete(_selected(id));
           continue;
         }
-        // "Always" would outlast this answer; the app's own rules remember.
+        // "Always" would outlast this answer: only the card's own "Always allow" picks it.
         _emit(acpNotice(_next('n'), '$_label only offered to always allow ${_quoted(title)}, so it was refused.'));
       }
       final refuse = option('reject_once');
@@ -1103,11 +1118,25 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
     // Asked about a call that already finished or was cancelled: nobody waits for it.
     if (_done.contains(callId) || _cancelled || _closed) return _cancelledOutcome;
     _wake();
-    final call = _calls[callId] = mergeToolCall(_calls[callId] ?? const {}, tc);
+    // The request's text content says why the agent asks (Cursor: "Not in allowlist: git status"), not what the
+    // call returned: kept off the call, so its result is the output that comes later. Diffs stay (Gemini shows the
+    // edit it asks about that way).
+    final call = _calls[callId] = mergeToolCall(_calls[callId] ?? const {}, acpWithoutAskText(tc));
     _asked.add(callId);
     _afterLoad = false;
     final options = p['options'] as List<Object?>? ?? const [];
     final shown = _shown[callId] ?? _show(callId, call, options: options);
+    // A call to EveryAI's own tools: they guard themselves, so the agent isn't stopped to ask about them. The ones
+    // that run a command ([hostRunTools]) still go to the card: the app grants the host its run on approval.
+    if (shown.actionKind == 'MCPToolAction' &&
+        shown.toolName.startsWith('${everyaiServerName}__') &&
+        !hostRunTools.contains(shown.toolName.substring('${everyaiServerName}__'.length))) {
+      final allow = [
+        for (final o in options.whereType<Map<String, Object?>>())
+          if (o['kind'] == 'allow_once' && o['optionId'] is String) o['optionId']! as String,
+      ].firstOrNull;
+      if (allow != null) return _selected(allow);
+    }
     final reply = Completer<Object?>();
     _asking[shown.id] = (reply: reply, options: options, callId: callId);
     _setStatus(ExecutionStatus.waitingForConfirmation);
@@ -1391,21 +1420,8 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
         _modes?['currentModeId'] = u['currentModeId'];
         _modeMoved();
       case 'config_option_update':
-        if (u['configOptions'] case final List<Object?> c) _config = c;
+        if (u['configOptions'] case final List<Object?> c) _config = acpKeepDescriptions(_config, c);
         _modeMoved();
-        // The agent turned a pinned option back (its own command): set it again.
-        if (_pinsMoved && _peer != null) {
-          unawaited(
-            _pinConfig().catchError((Object e) {
-              _emit(
-                acpNotice(
-                  _next('n'),
-                  "$_label changed a setting that keeps it asking, and it couldn't be set back: $e",
-                ),
-              );
-            }),
-          );
-        }
       case 'available_commands_update':
         final before = _commands.latest;
         _commands.set(acpCommands(u['availableCommands']));
@@ -1418,11 +1434,13 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
         final t = acpChunkText(u['content']);
         if (t.isEmpty) return;
         _text.write(t);
+        _estimate.produced(t.length);
         _emit(acpDelta(content: t));
       case 'agent_thought_chunk':
         final t = acpChunkText(u['content']);
         if (t.isEmpty) return;
         _reasoning.write(t);
+        _estimate.produced(t.length);
         _emit(acpDelta(reasoning: t));
       case 'tool_call' || 'tool_call_update':
         _toolUpdate(u);
@@ -1432,6 +1450,7 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
         _emit(call);
         _emit(result);
       case 'usage_update':
+        _estimate.reported = true;
         final (report, cost) = acpUsageUpdate(u, id: _next('usage'), lastCost: _cost);
         _cost = cost;
         _emit(report);
@@ -1458,7 +1477,6 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
     // A pending call's input may still be streaming: shown once it runs or asks.
     if (status == 'pending') return;
     final shown = _shown[callId] ?? _show(callId, call);
-    if (!_asked.contains(callId)) _unasked(callId, shown);
     if (finished) {
       _done.add(callId);
       _calls.remove(callId);
@@ -1468,6 +1486,7 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
         }
       }
       if (_xaiSpawned(call, shown)) return;
+      _estimate.toolCall(call);
       _emit(acpResultEvent(call, id: 'tr-$callId', actionId: shown.id, toolName: shown.toolName));
     }
   }
@@ -1525,33 +1544,6 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
       ),
     );
   }
-
-  /// A call that changes things ran without a permission request: the
-  /// agent's own settings let it past the app. The user is told; in Plan the
-  /// turn is stopped.
-  void _unasked(String callId, ActionCall call) {
-    if (!_gated.contains(call.actionKind) || AgentMode.isReadOnly(call) || !_asked.add(callId)) return;
-    final plan = _mode == AgentMode.plan;
-    _emit(
-      acpNotice(
-        _next('n'),
-        '$_label ran ${_quoted(call.summary)} without asking the app first, so its own settings allow it.'
-        '${plan ? ' Plan mode stopped the turn.' : ''}',
-      ),
-    );
-    if (plan) _stopTurn(running: callId);
-  }
-
-  static const _gated = {
-    'TerminalAction',
-    'FileEditorAction',
-    'EditAction',
-    'ApplyPatchAction',
-    'AcpExecuteAction',
-    'AcpEditAction',
-    'AcpDeleteAction',
-    'AcpMoveAction',
-  };
 
   ActionCall _show(String callId, Map<String, Object?> call, {List<Object?> options = const []}) {
     _flush();

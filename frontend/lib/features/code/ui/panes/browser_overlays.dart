@@ -13,6 +13,7 @@ import '../../../../core/ui/anchored_popover.dart';
 import '../../../../core/ui/every_icons.dart';
 import '../../harness/everyai/browser_io.dart';
 import '../../harness/everyai/screen_tools_io.dart' show browserOpenRefusal;
+import '../../live/live_session.dart';
 
 // The Preview browser's own chrome for people: tabs, the page's dialogs, find, the right-click menu and downloads.
 
@@ -20,7 +21,7 @@ import '../../harness/everyai/screen_tools_io.dart' show browserOpenRefusal;
 class BrowserTabStrip extends StatelessWidget {
   const BrowserTabStrip({super.key, required this.browser});
 
-  final HeadlessBrowser browser;
+  final BrowserPage browser;
 
   @override
   Widget build(BuildContext context) {
@@ -29,22 +30,33 @@ class BrowserTabStrip extends StatelessWidget {
       valueListenable: browser.tabs,
       builder: (context, tabs, _) {
         if (tabs.length < 2) return const SizedBox.shrink();
-        return SizedBox(
-          height: 30,
-          child: ListView(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            children: [
-              for (final t in tabs)
-                _TabChip(
-                  key: ValueKey(t.id),
-                  title: t.title.isNotEmpty ? t.title : (Uri.tryParse(t.url)?.host ?? t.url),
-                  active: t.id == browser.activeTab,
-                  onTap: () => unawaited(browser.switchTab(t.id).catchError((Object _) {})),
-                  onClose: () => unawaited(browser.closeTab(t.id).catchError((Object _) {})),
-                  theme: theme,
-                ),
-            ],
+        // Switching and closing tabs act on the page: only while the user has control.
+        return ListenableBuilder(
+          listenable: browser.control,
+          builder: (context, _) => Opacity(
+            opacity: browser.control.phase.userMayAct ? 1 : 0.55,
+            child: SizedBox(
+              height: 30,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                children: [
+                  for (final t in tabs)
+                    _TabChip(
+                      key: ValueKey(t.id),
+                      title: t.title.isNotEmpty ? t.title : (Uri.tryParse(t.url)?.host ?? t.url),
+                      active: t.id == browser.activeTab,
+                      onTap: () {
+                        if (browser.control.mayAct()) unawaited(browser.switchTab(t.id).catchError((Object _) {}));
+                      },
+                      onClose: () {
+                        if (browser.control.mayAct()) unawaited(browser.closeTab(t.id).catchError((Object _) {}));
+                      },
+                      theme: theme,
+                    ),
+                ],
+              ),
+            ),
           ),
         );
       },
@@ -105,7 +117,7 @@ class _TabChip extends StatelessWidget {
 class PageDialogPanel extends StatefulWidget {
   const PageDialogPanel({super.key, required this.browser, required this.dialog});
 
-  final HeadlessBrowser browser;
+  final BrowserPage browser;
   final PageDialog dialog;
 
   @override
@@ -129,14 +141,22 @@ class _PageDialogPanelState extends State<PageDialogPanel> {
     super.dispose();
   }
 
-  void _answer(bool accept) => unawaited(
-    widget.browser
-        .answerDialog(accept: accept, text: widget.dialog.type == 'prompt' && accept ? _text.text : null)
-        .catchError((Object _) {}),
-  );
+  void _answer(bool accept) {
+    if (!widget.browser.control.mayAct()) return;
+    unawaited(_send(accept));
+  }
+
+  Future<void> _send(bool accept) => widget.browser
+      .answerDialog(accept: accept, text: widget.dialog.type == 'prompt' && accept ? _text.text : null)
+      .catchError((Object _) {});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: widget.browser.control,
+    builder: (context, _) => _panel(context, widget.browser.control.phase.userMayAct),
+  );
+
+  Widget _panel(BuildContext context, bool may) {
     final d = widget.dialog;
     final host = Uri.tryParse(widget.browser.page.value.url)?.host ?? '';
     final leave = d.type == 'beforeunload';
@@ -166,9 +186,9 @@ class _PageDialogPanelState extends State<PageDialogPanel> {
               AdaptiveButton(
                 label: leave ? 'Stay' : 'Cancel',
                 emphasis: ButtonEmphasis.secondary,
-                onPressed: () => _answer(false),
+                onPressed: may ? () => _answer(false) : null,
               ),
-            AdaptiveButton(label: leave ? 'Leave' : 'OK', onPressed: () => _answer(true)),
+            AdaptiveButton(label: leave ? 'Leave' : 'OK', onPressed: may ? () => _answer(true) : null),
           ],
         ),
       ),
@@ -180,7 +200,7 @@ class _PageDialogPanelState extends State<PageDialogPanel> {
 class BrowserFindBar extends StatefulWidget {
   const BrowserFindBar({super.key, required this.browser, required this.onClose});
 
-  final HeadlessBrowser browser;
+  final BrowserPage browser;
   final VoidCallback onClose;
 
   @override
@@ -271,7 +291,7 @@ typedef PageMenuItem = ({String label, VoidCallback? onSelected});
 
 /// The items of the right-click menu for what is under the pointer ([at]): editing, links, pictures, and asking the
 /// agent about the element. [ask] puts a line about it in the composer.
-List<PageMenuItem> pageMenuItems(HeadlessBrowser b, PageContext at, {required void Function(String text) ask}) {
+List<PageMenuItem> pageMenuItems(BrowserPage b, PageContext at, {required void Function(String text) ask}) {
   Future<void> copy(String text) => Clipboard.setData(ClipboardData(text: text));
   final page = b.page.value;
   return [
@@ -363,7 +383,7 @@ class PageContextMenu extends StatelessWidget {
 class BrowserDownloadsButton extends StatelessWidget {
   const BrowserDownloadsButton({super.key, required this.browser});
 
-  final HeadlessBrowser browser;
+  final BrowserPage browser;
 
   @override
   Widget build(BuildContext context) {

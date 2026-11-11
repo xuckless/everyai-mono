@@ -165,14 +165,12 @@ final class _HostServer implements HostServer {
   }
 
   @override
-  Future<HostToken> mint(String sessionId, HostTools tools, {Set<String>? only}) async {
+  Future<HostToken> mint(String sessionId, HostTools tools, {Set<String>? only, Set<String> without = const {}}) async {
     _sweep();
-    final specs = only == null
-        ? hostToolSpecs
-        : [
-            for (final s in hostToolSpecs)
-              if (only.contains(s['name'])) s,
-          ];
+    final specs = [
+      for (final s in hostToolSpecs)
+        if ((only == null || only.contains(s['name'])) && !without.contains(s['name'])) s,
+    ];
     final token = 'eai_host_${base64Url.encode(List.generate(32, (_) => _random.nextInt(256))).replaceAll('=', '')}';
     final grant = _Grant(token, sessionId, tools, specs, now());
     _grants.add(grant);

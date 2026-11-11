@@ -10,7 +10,7 @@ import 'package:every_ai/features/code/board/board_plan.dart';
 import 'package:every_ai/features/code/board/board_plan_providers.dart';
 import 'package:every_ai/features/code/board/board_plan_view.dart';
 import 'package:every_ai/features/code/board/board_planner.dart';
-import 'package:every_ai/features/code/board/board_providers.dart' show BoardDoneSince;
+import 'package:every_ai/features/code/board/board_providers.dart' show BoardMarks;
 import 'package:every_ai/features/code/board/board_race.dart';
 import 'package:every_ai/features/code/board/board_screen.dart';
 import 'package:every_ai/features/code/code_providers.dart';
@@ -132,7 +132,7 @@ Future<(ProviderContainer, Preferences)> _board(
   addTearDown(db.close);
   final prefs = await Preferences.load(db);
   prefs['code.projects'] = '[{"id":"p1","name":"Shop","path":"/tmp/shop"}]';
-  prefs[BoardDoneSince.key] = '{}';
+  prefs[BoardMarks.doneSinceKey] = '{}';
   prefs['code.sessions'] = jsonEncode([for (final s in sessions) s.toJson()]);
   more.forEach((k, v) => prefs[k] = v);
   final all = [

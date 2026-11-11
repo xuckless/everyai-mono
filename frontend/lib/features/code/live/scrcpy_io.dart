@@ -232,13 +232,14 @@ final class ScrcpyConnection {
     _send([...b.buffer.asUint8List(), ...bytes]);
   }
 
-  /// Puts [s] on the device's clipboard and pastes it into the focused field (any text, emoji included).
-  void paste(String s) {
+  /// Puts [s] on the device's clipboard and pastes it into the focused field (any text, emoji included); with
+  /// [paste] false only sets the clipboard.
+  void paste(String s, {bool paste = true}) {
     final bytes = utf8.encode(s);
     final b = ByteData(14)
       ..setUint8(0, 9)
       ..setInt64(1, 0)
-      ..setUint8(9, 1)
+      ..setUint8(9, paste ? 1 : 0)
       ..setUint32(10, bytes.length);
     _send([...b.buffer.asUint8List(), ...bytes]);
   }

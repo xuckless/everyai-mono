@@ -12,7 +12,7 @@ import '../driver_events.dart';
 // ThreadTokenUsage, AskForApproval, SandboxMode, SandboxPolicy), checked
 // against `codex app-server generate-json-schema` of codex-cli 0.166.0.
 
-/// What Codex is told for a mode: its approval policy, who answers its
+/// What Codex is told for a preset: its approval policy, who answers its
 /// approvals (`approvalsReviewer`), the thread's `sandbox` (a `SandboxMode`
 /// string, for thread/start and thread/resume) and the turn's
 /// `sandboxPolicy` (a tagged object, which holds for that turn and the ones
@@ -24,121 +24,108 @@ typedef CodexPolicy = ({
   Map<String, Object?> sandboxPolicy,
 });
 
-/// The policy for [mode]. Codex always asks ("untrusted": every patch and
-/// every command outside its known-safe reads, `core/src/safety.rs`) and
-/// the app's own permission policy answers, as for the EveryAI harness: the
-/// safety floor, the mode and the rules judge every call Codex asks about,
-/// Full auto included (Codex's "never" would skip them, and "on-request"
-/// lets the model run commands without asking).
+const _workspaceWrite = <String, Object?>{
+  'type': 'workspaceWrite',
+  'writableRoots': <String>[],
+  'networkAccess': false,
+  'excludeTmpdirEnvVar': false,
+  'excludeSlashTmp': false,
+};
+
+/// The policy for Codex's own preset [preset] (an id from [codexModes]), as Codex sets it. Codex decides what asks;
+/// what it asks about comes to the app as a card and the user's answer goes back.
 ///
-/// Not covered: the reads Codex counts as known-safe (`cat`, `rg`, `sed -n`,
-/// `git log`, ...) run without asking, so deny rules on reads (`Read(.env)`)
-/// don't hold for Codex, and its sandboxes never limit reads.
+/// - Read Only: read-only sandbox, `on-request` (Codex asks to edit or to step out of the sandbox).
+/// - Default: workspace-write sandbox, `on-request`.
+/// - Auto review: workspace-write, `on-request`, and Codex's own reviewer answers its requests (`auto_review`).
+/// - Full Access: no sandbox, `never` (nothing asks).
 ///
-/// Outside Plan the sandbox is off, like the EveryAI harness: a call the
-/// app approved runs once, as approved (inside a sandbox Codex runs a
-/// blocked call again without one and without asking, and a network call
-/// just fails). Plan keeps a read-only sandbox with the network on, for the
-/// fetches planning may approve; it isn't a backstop, since an approved
-/// call that the sandbox blocks runs again without it.
-///
-/// The thread itself always starts and resumes read-only, in every mode,
-/// and each turn/start carries the mode's sandbox. A thread/start with a cwd
+/// The thread itself always starts and resumes read-only, in every preset,
+/// and each turn/start carries the preset's sandbox. A thread/start with a cwd
 /// and a writable sandbox makes app-server write `[projects."<cwd>"]
 /// trust_level = "trusted"` into the user's own `~/.codex/config.toml` for a
 /// git checkout or project root (app-server README, "Project trust"; seen in
 /// the 2026-11-04 recordings). Codex loads a trusted project's own `.codex/`
 /// config and hooks, so any repo opened here (a cloned one too) would get to
-/// run them in later Codex sessions without the app's consent. Checked live
+/// run them in later Codex sessions without the user's say. Checked live
 /// with codex-cli 0.166.0 (2026-11-04, signed in): a read-only thread/start
 /// left config.toml as it was, the thread reply said `readOnly`, and a
-/// turn/start with `dangerFullAccess` ran an approved write outside the
-/// repo once, with one approval (the rollout's turn context recorded
-/// `danger-full-access`); thread/resume read-only also wrote nothing.
-///
-/// The reviewer is always the user (here: the app). A user's
-/// `approvals_reviewer = "auto_review"` in their Codex config would
-/// otherwise let Codex's own reviewer answer calls the app must judge.
-///
-/// The presets ([codexModes]) pick only the mode: Read Only runs as Ask,
-/// with no sandbox outside Plan, for the reason above (the app's approval is
-/// the gate, as in Codex's own Read Only, where edits need approval).
-///
-/// Auto ([codexAutoReview], the owner's call, 2026-11-07) is the exception: Codex's own reviewer answers the
-/// requests (`approvalsReviewer: auto_review`) and Codex works in its workspace-write sandbox, asking only to step
-/// out of it. Those calls never reach the app, so EveryAI's floor and the user's rules don't judge them; the mode's
-/// description says so.
-CodexPolicy codexPolicy(AgentMode mode) => mode == AgentMode.auto
-    ? (
-        approvalPolicy: 'on-request',
-        approvalsReviewer: 'auto_review',
-        sandbox: 'read-only',
-        sandboxPolicy: const {
-          'type': 'workspaceWrite',
-          'writableRoots': <String>[],
-          'networkAccess': false,
-          'excludeTmpdirEnvVar': false,
-          'excludeSlashTmp': false,
-        },
-      )
-    : (
-        approvalPolicy: 'untrusted',
-        approvalsReviewer: 'user',
-        sandbox: 'read-only',
-        sandboxPolicy: mode == AgentMode.plan
-            ? const {'type': 'readOnly', 'networkAccess': true}
-            : const {'type': 'dangerFullAccess'},
-      );
+/// turn/start with `dangerFullAccess` ran a write outside the repo, with the
+/// rollout's turn context recording `danger-full-access`; thread/resume
+/// read-only also wrote nothing.
+CodexPolicy codexPolicy(String preset) => switch (preset) {
+  codexAutoReview => (
+    approvalPolicy: 'on-request',
+    approvalsReviewer: 'auto_review',
+    sandbox: 'read-only',
+    sandboxPolicy: _workspaceWrite,
+  ),
+  codexDefault => (
+    approvalPolicy: 'on-request',
+    approvalsReviewer: 'user',
+    sandbox: 'read-only',
+    sandboxPolicy: _workspaceWrite,
+  ),
+  codexFullAccess => (
+    approvalPolicy: 'never',
+    approvalsReviewer: 'user',
+    sandbox: 'read-only',
+    sandboxPolicy: const {'type': 'dangerFullAccess'},
+  ),
+  _ => (
+    approvalPolicy: 'on-request',
+    approvalsReviewer: 'user',
+    sandbox: 'read-only',
+    sandboxPolicy: const {'type': 'readOnly', 'networkAccess': false},
+  ),
+};
 
 const codexReadOnly = 'read-only';
 
-/// Codex's auto review as a mode of its own ([codexPolicy]).
+/// Codex's Default preset (its "Agent" in some versions).
+const codexDefault = 'default';
+
+/// Codex's auto review as a preset of its own.
 const codexAutoReview = 'auto-review';
 
-/// Codex's own presets under its names, each under the app's policy for it.
-/// `full-access` is listed greyed, never offered (Codex's `never` would skip
-/// the app's check). Codex's plan mode is the experimental collaboration
-/// mode, not used here. Descriptions are ours: in both, Codex asks the app
-/// about every edit and command it doesn't count as a safe read. They say
-/// there is no sandbox: unlike Codex's own presets (read-only,
-/// workspace-write), the turns run unsandboxed outside Plan, since a
-/// sandbox-blocked call that the app approved would run again outside the
-/// sandbox without asking (see [codexPolicy]).
+const codexFullAccess = 'full-access';
+
+/// Codex's own presets under its names ([codexPolicy]). Each policy is only the app's nearest name for it. Codex's
+/// plan mode is the experimental collaboration mode, not used here.
 const codexModes = [
   NativeMode(
     id: codexReadOnly,
     label: 'Read Only',
-    description: "Asks before edits and commands, which run outside Codex's sandbox once approved",
+    description: 'Reads files; asks before edits and before stepping out of its sandbox',
     policy: AgentMode.ask,
   ),
   NativeMode(
-    id: 'default',
+    id: codexDefault,
     label: 'Default',
-    description: "Edits files without asking; commands still ask, and run outside Codex's sandbox once approved",
+    description: 'Edits and runs commands in this folder; asks before stepping out of its sandbox',
     policy: AgentMode.autoEdit,
   ),
   NativeMode(
     id: codexAutoReview,
     label: 'Auto review',
-    description:
-        "Codex's own reviewer approves its requests in its sandbox. EveryAI's safety checks and your rules don't see "
-        'these calls',
+    description: "Works in this folder; Codex's own reviewer answers its requests",
     policy: AgentMode.auto,
   ),
   NativeMode(
-    id: 'full-access',
+    id: codexFullAccess,
     label: 'Full Access',
+    description: 'Runs everything without a sandbox and without asking',
     policy: AgentMode.fullAuto,
-    blocked: 'Not offered: Codex would run everything without asking EveryAI first.',
   ),
 ];
 
-/// The preset a session in [mode] shows when none was picked by name.
-String codexModeFor(AgentMode mode) => mode == AgentMode.auto
-    ? codexAutoReview
-    : mode == AgentMode.autoEdit || mode == AgentMode.fullAuto || mode == AgentMode.bypass
-    ? 'default'
-    : codexReadOnly;
+/// The preset a session in our [mode] shows when none was picked by name: the nearest of Codex's own.
+String codexModeFor(AgentMode mode) => switch (mode) {
+  AgentMode.plan || AgentMode.ask => codexReadOnly,
+  AgentMode.autoEdit => codexDefault,
+  AgentMode.auto => codexAutoReview,
+  AgentMode.fullAuto || AgentMode.bypass => codexFullAccess,
+};
 
 /// Whether usage under an `account/updated` `authMode` is on a plan rather
 /// than billed per token: the modes Codex serves from its own backend

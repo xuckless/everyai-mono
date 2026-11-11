@@ -72,14 +72,13 @@ class CodeComposer extends ConsumerStatefulWidget {
     this.nativeModes,
     this.nativeMode,
     this.onNativeModeChanged,
-    this.nativeBypass = false,
-    this.onNativeBypass,
     this.harnessLabel = '',
     this.sessionId,
     this.prefill,
     this.initialDraft,
     this.onDraftChanged,
     this.takeFocus = false,
+    this.focusRequest = 0,
   });
 
   final bool busy;
@@ -141,6 +140,9 @@ class CodeComposer extends ConsumerStatefulWidget {
   /// alone): the Board's inspector opened by a click.
   final bool takeFocus;
 
+  /// A new number asks again for the keys while [takeFocus] stays set (the same card clicked once more).
+  final int focusRequest;
+
   /// What `/` commands can drive in an open session; null: only the mode and Stop.
   final CodeSlashHost? slashHost;
 
@@ -168,10 +170,6 @@ class CodeComposer extends ConsumerStatefulWidget {
   final List<NativeMode>? nativeModes;
   final String? nativeMode;
   final ValueChanged<String>? onNativeModeChanged;
-
-  /// "Bypass EveryAI checks" under an outside lead's modes: on, and how to switch it.
-  final bool nativeBypass;
-  final ValueChanged<bool>? onNativeBypass;
 
   /// The harness's name, the native picker's header.
   final String harnessLabel;
@@ -237,6 +235,11 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
     if (widget.prefill case final p? when p.seq != old.prefill?.seq) _setDraft(p.text);
     // The harness listed its commands again while the menu may be open.
     if (!identical(old.commands, widget.commands)) _slash.update(_controller.value, _commands);
+    if (widget.takeFocus && (!old.takeFocus || widget.focusRequest != old.focusRequest)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _focus.requestFocus();
+      });
+    }
   }
 
   /// Puts a link's prompt in the box, after anything already typed there.
@@ -543,10 +546,12 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
             current: widget.nativeMode,
             policy: widget.mode,
             onChanged: widget.onNativeModeChanged!,
-            bypass: widget.nativeBypass,
-            onBypass: widget.onNativeBypass,
           )
-        : ModeMenu(mode: widget.mode, onChanged: widget.onModeChanged);
+        : ModeMenu(
+            mode: widget.mode,
+            onChanged: widget.onModeChanged,
+            outsideLead: widget.harnessLabel.isEmpty ? null : widget.harnessLabel,
+          );
   }
 
   /// harness · model · effort under the box, each its own menu, then [CodeComposer.lineExtras].
@@ -726,10 +731,14 @@ class SessionActionsButton extends StatelessWidget {
 
 /// Ask · Auto-edit · Plan · Auto · Full auto · Bypass.
 class ModeMenu extends StatelessWidget {
-  const ModeMenu({super.key, required this.mode, required this.onChanged});
+  const ModeMenu({super.key, required this.mode, required this.onChanged, this.outsideLead});
 
   final AgentMode mode;
   final ValueChanged<AgentMode> onChanged;
+
+  /// The outside lead's name when the session runs on one: Full auto and Bypass say they are its own
+  /// skip-permissions mode, and the caller confirms them per harness (no EveryAI Bypass confirmation here).
+  final String? outsideLead;
 
   @override
   Widget build(BuildContext context) {
@@ -748,12 +757,17 @@ class ModeMenu extends StatelessWidget {
             for (final m in AgentMode.values)
               PopoverRow(
                 title: m.label,
-                subtitle: m.description,
+                subtitle: m.descriptionOn(outsideLead),
                 selected: m == mode,
                 trailing: m == mode ? AdaptiveIcon(EveryIcon.check, size: 14, color: theme.accent) : null,
                 onTap: () async {
                   close();
-                  if (m == AgentMode.bypass && mode != AgentMode.bypass && !await confirmBypass(context)) return;
+                  if (outsideLead == null &&
+                      m == AgentMode.bypass &&
+                      mode != AgentMode.bypass &&
+                      !await confirmBypass(context)) {
+                    return;
+                  }
                   onChanged(m);
                 },
               ),
@@ -768,9 +782,7 @@ class ModeMenu extends StatelessWidget {
 /// An outside harness's own modes under its names (Claude Code's Default ·
 /// Accept edits · Plan mode, Codex's presets, OpenCode's agents, an ACP
 /// agent's modes). A greyed one can't be picked and says why. The chip's
-/// colour comes from the [policy] the current one runs under. Below the modes,
-/// the "Bypass EveryAI checks" switch ([onBypass]), which leaves the lead's
-/// mode as it is.
+/// colour comes from the [policy] the current one runs under.
 class NativeModeMenu extends StatelessWidget {
   const NativeModeMenu({
     super.key,
@@ -779,8 +791,6 @@ class NativeModeMenu extends StatelessWidget {
     required this.current,
     required this.policy,
     required this.onChanged,
-    this.bypass = false,
-    this.onBypass,
   });
 
   final String harness;
@@ -789,25 +799,15 @@ class NativeModeMenu extends StatelessWidget {
   final AgentMode policy;
   final ValueChanged<String> onChanged;
 
-  /// EveryAI's checks are off for this session.
-  final bool bypass;
-  final ValueChanged<bool>? onBypass;
-
-  Future<void> _toggleBypass(BuildContext context) async {
-    if (!bypass && !await confirmBypass(context)) return;
-    onBypass?.call(!bypass);
-  }
-
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
     final label = nativeModeOf(modes, current)?.label ?? current ?? policy.label;
     return AnchoredPopover(
       width: 300,
-      // Tall enough for the modes and the Bypass switch under them; a short window still caps it (and it scrolls).
+      // Tall enough for the modes; a short window still caps it (and it scrolls).
       maxHeight: 640,
-      // An agent may list many modes: the list scrolls rather than overflow. The popover closes before the Bypass
-      // confirmation, so that asks from this widget's context.
+      // An agent may list many modes: the list scrolls rather than overflow.
       builder: (_, close) => SingleChildScrollView(
         padding: const EdgeInsets.symmetric(vertical: 6),
         child: Column(
@@ -828,26 +828,10 @@ class NativeModeMenu extends StatelessWidget {
                         onChanged(m.id);
                       },
               ),
-            if (onBypass != null) ...[
-              Container(height: 1, color: theme.border, margin: const EdgeInsets.symmetric(vertical: 6)),
-              PopoverRow(
-                key: const ValueKey('composer.bypassChecks'),
-                title: 'Bypass EveryAI checks',
-                subtitle: "EveryAI's floor, rules and risk prompts off for this session",
-                selected: bypass,
-                trailing: IgnorePointer(
-                  child: AdaptiveSwitch(value: bypass, onChanged: (_) {}),
-                ),
-                onTap: () {
-                  close();
-                  _toggleBypass(context);
-                },
-              ),
-            ],
           ],
         ),
       ),
-      child: _ModeChip(label: label, policy: bypass ? AgentMode.bypass : policy),
+      child: _ModeChip(label: label, policy: policy),
     );
   }
 }

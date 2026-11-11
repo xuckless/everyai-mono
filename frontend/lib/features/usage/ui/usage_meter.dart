@@ -29,7 +29,7 @@ class UsageMeter extends StatelessWidget {
     final theme = EveryTheme.of(context);
     // Credits and own-key spend together: switching to a key mid-session
     // must not freeze the figure.
-    final label = '${formatTokens(totals.totalTokens)} · ${formatMicros(totals.spentMicros)}';
+    final label = '${totals.tokens(totals.totalTokens)} · ${formatMicros(totals.spentMicros)}';
     return Semantics(
       button: true,
       label:
@@ -169,7 +169,7 @@ class UsageBreakdown extends StatelessWidget {
                         style: theme.type.callout.semibold.tint(theme.text),
                       ),
                       Text(
-                        '${formatTokens(totals.contextTokens)} of ${formatTokens(contextWindow)}'
+                        '${totals.tokens(totals.contextTokens)} of ${formatTokens(contextWindow)}'
                         '${modelName == null ? '' : ' · $modelName'}',
                         style: theme.type.caption.tint(theme.textMuted),
                       ),
@@ -180,12 +180,13 @@ class UsageBreakdown extends StatelessWidget {
             ),
             const SizedBox(height: 10),
           ],
-          row('Input', formatTokens(totals.promptTokens)),
+          row('Input', totals.tokens(totals.promptTokens)),
           if (totals.cachedTokens > 0)
             row('  from cache', '${formatTokens(totals.cachedTokens)} (${(totals.cacheShare * 100).round()}%)'),
           if (totals.cacheWriteTokens > 0) row('  written to cache', formatTokens(totals.cacheWriteTokens)),
-          row('Output', formatTokens(totals.completionTokens)),
+          row('Output', totals.tokens(totals.completionTokens)),
           row('Model calls', '${totals.calls}'),
+          if (totals.estimated) row('Tokens', 'estimated (the agent reports none)'),
           if (totals.ownKeyMicros > 0) ...[
             if (BillingFlag.enabled) row('EveryAI credits', formatMicros(totals.chargedMicros)),
             row('On your own key', formatMicros(totals.ownKeyMicros)),

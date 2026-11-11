@@ -49,6 +49,10 @@ enum DriverCap {
   /// Takes a reasoning effort.
   effort,
 
+  /// Asks the user and presents plans with requests of its own (Cursor's `cursor/ask_question`, `cursor/create_plan`),
+  /// so the host's question and plan tools aren't offered.
+  nativeQuestions,
+
   /// Has modes of its own (`NativeModes`): the picker shows them, and no
   /// EveryAI mode note goes with its messages.
   nativeModes,
@@ -148,6 +152,16 @@ final class DriverModel {
 ///   state change; `respond(callIds)` maps back to the native reply. A driver
 ///   whose refusals don't park the run makes `resume()` a no-op.
 /// - what a model call cost is a `UsageReport`.
+/// A driver whose model list can change after it was read (it learns the list from a running agent): the model
+/// menu reads it again on [modelsChanged].
+abstract interface class OffersModels {
+  Stream<void> get modelsChanged;
+
+  /// Asks the agent for its models again, also after an ask that failed (which [HarnessDriver.models] doesn't
+  /// repeat on its own).
+  Future<void> refreshModels();
+}
+
 abstract interface class HarnessDriver implements Harness {
   DriverInfo get info;
 

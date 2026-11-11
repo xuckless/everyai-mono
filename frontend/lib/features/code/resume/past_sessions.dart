@@ -47,6 +47,10 @@ abstract interface class PastSessionSource {
   /// Deletes the harness's own copy of session [nativeId] (run in [cwd]), so the CLI and the Earlier list don't
   /// show it again. Best effort: a copy it can't delete stays hidden by EveryAI ([deletedConversationsKey]).
   Future<void> delete(String nativeId, {required String cwd});
+
+  /// Whether [delete] really removes the harness's copy. False when the harness has no way to (its copy stays and
+  /// EveryAI only hides it), so the delete dialog doesn't promise more.
+  bool get deletes;
 }
 
 /// Preferences key: `harness|native id` of sessions the user deleted in EveryAI, never listed again.

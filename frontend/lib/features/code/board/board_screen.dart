@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/gestures.dart' show DragStartBehavior, PointerDeviceKind, kPrimaryMouseButton;
 import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:flutter/services.dart';
@@ -48,6 +49,7 @@ import '../workflows/workflow_runs.dart' show workflowRunsProvider;
 import '../domain/session_work.dart';
 import '../ui/stop_all_button.dart';
 import '../ui/panes/browser_sign_ins.dart';
+import '../ui/panes/login_ask_card.dart';
 import '../ui/console/console_state.dart';
 import '../workflows/workflow_engine.dart' show WorkflowStatus;
 
@@ -84,7 +86,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
   List<double>? _dragging;
 
   /// The inspector's width while its edge is dragged (written when it ends).
-  double? _inspectorDragging;
+  InspectorDrag _inspectorDrag = const DragIdle();
 
   BoardSelection _selection = const NoSelection();
   BoardInspector _inspector = const InspectorClosed();
@@ -111,14 +113,11 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
   var _doneOrder = const <String>[];
   var _needsYouOrder = const <String>[];
 
-  /// The inspector covers the Board (a narrow window), as last laid out: the hidden cards take no keys then.
-  var _inspectorCovers = false;
+  /// Where the inspector sits, as last laid out: covering the Board (a narrow window), the hidden cards take no keys.
+  var _inspectorLayout = InspectorLayout.beside;
 
-  /// The inspector was opened by a click: its composer takes the keys.
-  var _inspectorFocusesComposer = false;
-
-  /// Sessions with an approve or deny from the Board in flight (one at a time each).
-  final _deciding = <String>{};
+  /// Each shown session's status as last built (the preview reads its harness's files by it).
+  var _statusOf = const <String, SessionStatus>{};
 
   /// One key per inspected session, so its pane (draft, scroll) survives moving between beside and over the Board.
   final _paneKeys = <String, GlobalKey>{};
@@ -196,8 +195,15 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
   void _inspect(String id, {bool fromKeyboard = false}) {
     setState(() {
       _selection = SelectedCard(id);
-      _inspector = InspectorOpen(id);
-      _inspectorFocusesComposer = !fromKeyboard;
+      _inspector = switch (_inspector) {
+        InspectorOpen(id: final was, :final view, :final generation) => InspectorOpen(
+          id,
+          keys: fromKeyboard ? InspectorKeys.board : InspectorKeys.composer,
+          view: was == id ? view : InspectorView.preview,
+          generation: generation + 1,
+        ),
+        InspectorClosed() => InspectorOpen(id, keys: fromKeyboard ? InspectorKeys.board : InspectorKeys.composer),
+      };
     });
     if (fromKeyboard) {
       _focus.requestFocus();
@@ -224,6 +230,20 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     }
   }
 
+  /// The user acts on a previewed session (Reply): it is attached, and its composer takes the keys.
+  void _goLive(String id) {
+    if (_inspector case InspectorOpen(id: final open, :final generation) when open == id) {
+      setState(
+        () => _inspector = InspectorOpen(
+          id,
+          keys: InspectorKeys.composer,
+          view: InspectorView.live,
+          generation: generation + 1,
+        ),
+      );
+    }
+  }
+
   void _closeInspector() {
     if (_inspector is InspectorClosed) return;
     setState(() => _inspector = const InspectorClosed());
@@ -231,19 +251,20 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
   }
 
   void _openFull(String id) {
-    ref.read(boardSeenProvider.notifier).see(id);
+    ref.read(boardMarksProvider.notifier).apply(id, Looked(DateTime.now()));
     context.go(Routes.codeSession(id));
   }
 
   /// Clears [ids] off the Board, with Undo for a few seconds.
   void _clear(List<String> ids) {
-    if (ids.isEmpty) return;
-    // When each had finished, so Undo brings them back as they were.
-    final known = ref.read(boardDoneSinceProvider) ?? const <String, int>{};
+    // Nothing is cleared from a guess: until the statuses are in, a card may only look finished.
+    if (ids.isEmpty || ref.read(codeStatusesLoadProvider) is! StatusesLoaded) return;
+    // When each had finished and whether it was seen, so Undo brings them back as they were.
+    final known = ref.read(boardMarksProvider).marks;
     final since = {for (final id in ids) id: ?known[id]};
     ref.read(boardDismissedProvider.notifier).dismiss(ids);
     final gen = ++_undoGeneration;
-    setState(() => _undo = Undoable(ids, gen, doneSince: since));
+    setState(() => _undo = Undoable(ids, gen, marks: since));
     _undoTimer?.cancel();
     _undoTimer = Timer(const Duration(seconds: 6), () {
       if (!mounted) return;
@@ -252,8 +273,8 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
   }
 
   void _undoClear() {
-    if (_undo case Undoable(:final ids, :final doneSince)) {
-      ref.read(boardDoneSinceProvider.notifier).restore(doneSince);
+    if (_undo case Undoable(:final ids, :final marks)) {
+      ref.read(boardMarksProvider.notifier).restore(marks);
       ref.read(boardDismissedProvider.notifier).restore(ids);
       setState(() => _undo = const NothingToUndo());
     }
@@ -262,19 +283,20 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
   /// [id]'s own approvals, approved or denied (a/d): the calls not already decided one by one, one answer in flight
   /// per session.
   Future<void> _decide(String? id, {required bool approve}) async {
-    if (id == null || !ref.exists(codeSessionProvider(id)) || _deciding.contains(id)) return;
+    if (id == null || !ref.exists(codeSessionProvider(id)) || ref.read(boardDecidingProvider).contains(id)) return;
     final st = ref.read(codeSessionProvider(id));
     final calls = undecidedCalls(st.transcript.pending, st.decided);
     if (calls.isEmpty) {
       showAdaptiveToast(context, 'Nothing to ${approve ? 'approve' : 'deny'} here');
       return;
     }
-    _deciding.add(id);
-    try {
-      await ref.read(boardDecideProvider)(id, approve: approve, callIds: [for (final c in calls) c.id]);
-    } finally {
-      _deciding.remove(id);
-    }
+    await decideOnce(
+      ref.read(boardDecidingProvider),
+      ref.read(boardDecideProvider),
+      id,
+      approve: approve,
+      callIds: [for (final c in calls) c.id],
+    );
   }
 
   /// Approves every approval waiting on the shown cards. It confirms first whenever it spans more than one session
@@ -341,8 +363,19 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
         }
         if (targets.isEmpty) continue;
         try {
-          await ref.read(boardDecideProvider)(w.sessionId, approve: true, callIds: targets);
-          approved += targets.length;
+          final sent = await decideOnce(
+            ref.read(boardDecidingProvider),
+            ref.read(boardDecideProvider),
+            w.sessionId,
+            approve: true,
+            callIds: targets,
+          );
+          if (sent) {
+            approved += targets.length;
+          } else {
+            // An answer for this session is already on its way; its calls are left for the user.
+            changed.add(w.title);
+          }
         } on Object {
           failed.add(w.title);
         }
@@ -395,16 +428,24 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       event.logicalKey,
       shift: keys.isShiftPressed,
       meta: keys.isMetaPressed || keys.isControlPressed,
+      alt: keys.isAltPressed,
       character: event.character,
     );
     if (action == null) return KeyEventResult.ignored;
     // Typing in the filter field (inside the Board) is text, not Board keys; Esc still steps back. (The inspector's
     // composer sits outside the Board's focus, so its keys never reach here.)
     if (!_focus.hasPrimaryFocus && action != BoardKey.escape) return KeyEventResult.ignored;
+    // Esc inside a card's own text field (a question's "Other") is that field's, not the Board's.
+    if (action == BoardKey.escape &&
+        !_focus.hasPrimaryFocus &&
+        !_filterFocus.hasFocus &&
+        FocusManager.instance.primaryFocus?.context?.findAncestorWidgetOfExactType<EditableText>() != null) {
+      return KeyEventResult.ignored;
+    }
     // Holding x, a or d acts once; only moving repeats.
     if (event is KeyRepeatEvent && !boardKeyRepeats(action)) return KeyEventResult.handled;
     // An inspector covering the Board leaves the hidden cards alone: only Esc, the keys, Undo and the full session.
-    final covered = _inspector is InspectorOpen && _inspectorCovers;
+    final covered = _inspector is InspectorOpen && _inspectorLayout == InspectorLayout.covering;
     if (covered && !const {BoardKey.escape, BoardKey.help, BoardKey.undo, BoardKey.openFull}.contains(action)) {
       return KeyEventResult.handled;
     }
@@ -434,6 +475,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       case BoardKey.clear:
         if (target != null && _doneOrder.contains(target)) _clear([target]);
       case BoardKey.undo:
+        if (_undo is! Undoable) return KeyEventResult.ignored;
         _undoClear();
       case BoardKey.filter:
         _filterFocus.requestFocus();
@@ -463,21 +505,26 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     final sessions = ref.watch(codeSessionsProvider);
     final all = boardSessions(sessions, ref.watch(boardDetachedProvider));
     final statuses = ref.watch(codeStatusesProvider);
+    final load = ref.watch(codeStatusesLoadProvider);
+    // Until the first poll has answered, a session without a live controller has no status (not "idle", which
+    // would read as Done): it stays off the Board, and nothing is recorded or cleared from it.
+    final settled = load is StatusesLoaded;
     // A session's own status: live once its controller has connected, else the polled one.
-    SessionStatus ownOf(CodeSessionInfo s) {
+    SessionStatus? ownOf(CodeSessionInfo s) {
       final live = ref.exists(codeSessionProvider(s.id))
           ? ref.watch(codeSessionProvider(s.id).select((st) => st.connected || st.failure != null ? st.status : null))
           : null;
-      return live ?? statuses[s.id] ?? SessionStatus.idle;
+      return live ?? statuses[s.id] ?? (load is StatusesLoading ? null : SessionStatus.idle);
     }
 
     final childrenOf = childrenByParent(sessions);
+    bool isOpen(CodeSessionInfo c) => ref.exists(codeSessionProvider(c.id));
+    SessionStatus polledOf(CodeSessionInfo c) => ownOf(c) ?? SessionStatus.idle;
 
-    // Waiting sessions are opened, so their card can answer for them.
+    // Waiting sessions are opened, so their card can answer for them: the Board's own, and the forks and
+    // subagents under them (their wait shows on the lead's card, which sits under Needs you meanwhile).
     void openIfWaiting(CodeSessionInfo s) {
-      if (statuses[s.id] == SessionStatus.needsInput &&
-          !isDemoPath(s.workingDir) &&
-          !ref.exists(codeSessionProvider(s.id))) {
+      if (statuses[s.id] == SessionStatus.needsInput && !isDemoPath(s.workingDir) && !isOpen(s)) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) ref.read(codeSessionProvider(s.id));
         });
@@ -486,7 +533,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
 
     // What each session runs besides its lead's turn.
     BoardWorkCount workOf(CodeSessionInfo s) => (
-      forks: runningDescendants(s.id, childrenOf, ownOf),
+      forks: runningDescendants(s.id, childrenOf, polledOf, isOpen: isOpen),
       subagents: ref.exists(codeSessionProvider(s.id))
           ? ref.watch(codeSessionProvider(s.id).select((st) => outsideSubagents(st.transcript).length))
           : 0,
@@ -498,22 +545,33 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     final waitsOnChild = <String, bool>{};
     for (final s in all) {
       openIfWaiting(s);
-      // Until an opened session has connected, the polled status stands (no flicker to Done and back).
-      own[s.id] = ownOf(s);
+      for (final c in closedWaiting(s.id, childrenOf, polledOf, isOpen)) {
+        openIfWaiting(c);
+      }
+      // Until an opened session has connected, the polled status stands (no flicker to Done and back); before the
+      // first poll has answered it has no status at all, and stays off the Board.
+      final o = ownOf(s);
+      if (o == null) continue;
+      own[s.id] = o;
       work[s.id] = workOf(s);
+      // A child waiting on the user: an open one shows it; a closed one's polled wait counts too (it opens next).
       waitsOnChild[s.id] = (childrenOf[s.id] ?? const <CodeSessionInfo>[]).any(
-        (c) => childWaitsOnUser(ref, s.id, c.id) != null,
+        (c) => childWaitsOnUser(ref, s.id, c.id) != null || (!isOpen(c) && ownOf(c) == SessionStatus.needsInput),
       );
     }
+    final known = [
+      for (final s in all)
+        if (own.containsKey(s.id)) s,
+    ];
     // The session's status as the rest of the app reads it (Running while its work runs), for its recent events.
     final status = {
-      for (final s in all)
+      for (final s in known)
         s.id: boardStatus(own[s.id]!, workRunning: hasBoardWork(work[s.id]!), childWaits: waitsOnChild[s.id]!),
     };
     // The phase without "seen", which needs when it finished (below).
     BoardPhase phaseOf(String id, {bool seen = false}) =>
         boardPhase(own[id]!, work: work[id]!, childWaits: waitsOnChild[id]!, seen: seen);
-    final columnOf = {for (final s in all) s.id: phaseOf(s.id).column};
+    final columnOf = {for (final s in known) s.id: phaseOf(s.id).column};
 
     // A cleared session that runs again comes back.
     final back = [
@@ -523,35 +581,55 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     if (back.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => ref.read(boardDismissedProvider.notifier).restore(back));
     }
+    // What each Done card's marks would be once the Board has seen it there (the marks' state machine, run ahead).
     // Old finishes clear by themselves ([staleDone]): Done keeps the last two days, at most [boardDoneKeep].
-    final known = ref.watch(boardDoneSinceProvider);
-    final doneSince = <String, DateTime>{
-      for (final s in all)
+    final marks = ref.watch(boardMarksProvider);
+    final now = DateTime.now();
+    final projected = <String, SeenState>{
+      for (final s in known)
         if (columnOf[s.id] == BoardColumn.done && !dismissed.contains(s.id))
-          s.id: switch (known?[s.id]) {
-            final ms? => DateTime.fromMillisecondsSinceEpoch(ms),
-            // Before the Board first recorded anything, from when it started; since then, from now.
-            null => known == null ? s.createdAt : DateTime.now(),
-          },
+          s.id: seenTransition(marks.of(s.id), Finished(marks.finishedAt(s.createdAt, now))),
     };
-    final stale = staleDone(doneSince, now: DateTime.now());
-    final seenAt = ref.watch(boardSeenProvider);
-    final phase = {for (final s in all) s.id: phaseOf(s.id, seen: seenSince(seenAt[s.id], doneSince[s.id]))};
-    // Sessions running again lose their seen mark, so their next finish shows as new; deleted sessions lose theirs too.
-    final ids = {for (final s in sessions) s.id};
-    final rerun = [
-      for (final id in seenAt.keys)
-        if (!ids.contains(id) || (columnOf[id] != null && columnOf[id] != BoardColumn.done)) id,
-    ];
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      ref.read(boardDoneSinceProvider.notifier).sync({
-        for (final e in doneSince.entries)
-          if (!stale.contains(e.key)) e.key: e.value,
+    DateTime sinceOf(SeenState st) => switch (st) {
+      FinishedUnseen(:final since) || FinishedSeen(:final since) => since,
+      _ => now,
+    };
+    final stale = staleDone({for (final e in projected.entries) e.key: sinceOf(e.value)}, now: now);
+    // Keys, panes and drafts of sessions that are gone go with them.
+    final liveIds = {for (final s in sessions) s.id};
+    _keys.removeWhere((id, _) => !liveIds.contains(id));
+    _paneKeys.removeWhere((id, _) => !liveIds.contains(id));
+    _drafts.removeWhere((id, _) => !liveIds.contains(id));
+    _statusOf = status;
+    final phase = {for (final s in known) s.id: phaseOf(s.id, seen: projected[s.id] is FinishedSeen)};
+    // Only once the statuses are in: until then nothing is recorded or cleared from a guess.
+    if (settled) {
+      final sessionIds = {for (final s in sessions) s.id};
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        ref
+            .read(boardMarksProvider.notifier)
+            .sync(
+              finished: {
+                for (final e in projected.entries)
+                  if (!stale.contains(e.key)) e.key: e.value,
+              },
+              // Sessions running again lose their marks, so their next finish shows as new.
+              ran: [
+                for (final e in columnOf.entries)
+                  if (e.value != BoardColumn.done) e.key,
+              ],
+              // Auto-cleared ones and deleted sessions. A card the user cleared keeps its marks, so Undo brings it
+              // back as it was.
+              gone: [
+                ...stale,
+                for (final id in marks.marks.keys)
+                  if (!sessionIds.contains(id)) id,
+              ],
+            );
+        if (stale.isNotEmpty) ref.read(boardDismissedProvider.notifier).dismiss(stale);
       });
-      if (stale.isNotEmpty) ref.read(boardDismissedProvider.notifier).dismiss(stale);
-      if (rerun.isNotEmpty) ref.read(boardSeenProvider.notifier).forget(rerun);
-    });
+    }
 
     // Plans and races follow their sessions app-wide (boardPlanWatchProvider); the Board only shows them.
     final goals = ref.watch(boardPlansProvider);
@@ -584,19 +662,17 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
 
     // Sessions stopped on a usage limit (open ones: the limit is in their transcript), and the ones snoozed until it
     // resets ([boardLimitState]). A snooze whose session runs again, or whose reset passed, ends.
-    final now = DateTime.now();
     final snoozes = ref.watch(boardSnoozedProvider);
     // Rebuilds when a session's controller opens or closes (from the inspector, a card's question), which
     // `ref.exists` alone doesn't; `ref.exists` stays the truth (a closed one isn't opened again by watching it).
     ref.watch(openCodeSessionsProvider);
-    bool isOpen(String id) => ref.exists(codeSessionProvider(id));
     final limitOf = <String, BoardLimitState>{};
     for (final s in all) {
       final until = switch (snoozes[s.id]) {
         final ms? => DateTime.fromMillisecondsSinceEpoch(ms),
         null => null,
       };
-      if (!isOpen(s.id)) {
+      if (!isOpen(s)) {
         // A closed session (after a restart) has no transcript here: its snooze alone folds it until the reset,
         // then ends; the card shows its limit again once the session is opened.
         if (until != null) limitOf[s.id] = now.isBefore(until) ? Snoozed(until) : const NotLimited();
@@ -616,7 +692,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     // Snoozes of deleted sessions go too.
     final gone = [
       for (final id in snoozes.keys)
-        if (!ids.contains(id)) id,
+        if (!liveIds.contains(id)) id,
     ];
     if (wake.isNotEmpty || gone.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -624,7 +700,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
         for (final id in wake) {
           ref.read(boardSnoozedProvider.notifier).wake(id);
         }
-        if (gone.isNotEmpty) ref.read(boardSnoozedProvider.notifier).keepOnly(ids);
+        if (gone.isNotEmpty) ref.read(boardSnoozedProvider.notifier).keepOnly(liveIds);
       });
     }
 
@@ -636,7 +712,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     // Where each project's sessions run: another environment (WSL, a container) may be signed in to another account.
     final environmentOf = {for (final p in ref.watch(codeProjectsProvider)) p.id: p.environment};
     final shown = [
-      for (final s in all)
+      for (final s in known)
         if ((harness == null || s.harness == harness) &&
             !(dismissed.contains(s.id) && columnOf[s.id] == BoardColumn.done) &&
             matchesBoardFilter(
@@ -668,7 +744,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     final plans = <SessionPlan>[
       for (final s in all)
         // Watched for every open session ([openCodeSessionsProvider]), so a first report from one opened later shows.
-        if (isOpen(s.id))
+        if (isOpen(s))
           if (ref.watch(codePlanLimitsProvider(s.id)) case final plan?)
             (
               sessionId: s.id,
@@ -681,7 +757,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     final budgets = ref.watch(codeSettingsProvider.select((st) => st.budgets));
     final cap = busiestCap([
       for (final s in all)
-        if (budgets[s.id] != null && isOpen(s.id) && ref.exists(codeUsageProvider(s.id)))
+        if (budgets[s.id] != null && isOpen(s) && ref.exists(codeUsageProvider(s.id)))
           (
             sessionId: s.id,
             title: s.title,
@@ -966,7 +1042,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
                 child: AmbientClock(
                   // One breathing clock for every card, and only while something breathes.
                   running:
-                      phase.values.any((p) => p.active || p == BoardPhase.needsYou) ||
+                      shown.any((s) => phase[s.id]!.active || phase[s.id] == BoardPhase.needsYou) ||
                       goals.any((g) => g.stage == GoalStage.running) ||
                       races.any((r) => r.stage == RaceStage.running || r.stage == RaceStage.starting),
                   child: LayoutBuilder(
@@ -1101,10 +1177,11 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
   /// over them (with a back control) when there isn't.
   Widget _withInspector({required List<CodeSessionInfo> shown, required Widget child}) {
     final theme = EveryTheme.of(context);
-    final inspected = switch (_inspector) {
-      InspectorOpen(:final id) => id,
+    final open = switch (_inspector) {
+      InspectorOpen() && final o => o,
       InspectorClosed() => null,
     };
+    final inspected = open?.id;
     final board = Focus(
       focusNode: _focus,
       autofocus: true,
@@ -1162,17 +1239,21 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     return LayoutBuilder(
       builder: (context, box) {
         final double saved = ref.watch(boardInspectorWidthProvider);
-        final width = (_inspectorDragging ?? saved).clamp(BoardInspectorWidth.min, BoardInspectorWidth.max);
+        final dragWidth = switch (_inspectorDrag) {
+          DragActive(:final width) => width,
+          DragIdle() => null,
+        };
+        final width = (dragWidth ?? saved).clamp(BoardInspectorWidth.min, BoardInspectorWidth.max);
         // Beside the columns while they keep 520pt; over them otherwise. Dragging the edge stops where the columns
         // would get too narrow, so a drag never flips it over the Board.
         const keep = 520.0;
         final beside = box.maxWidth - width >= keep;
         final widest = math.max(BoardInspectorWidth.min, math.min(BoardInspectorWidth.max, box.maxWidth - keep));
-        _inspectorCovers = !beside;
-        if (!beside && _inspectorDragging != null) {
+        _inspectorLayout = beside ? InspectorLayout.beside : InspectorLayout.covering;
+        if (!beside && _inspectorDrag is DragActive) {
           // The window narrowed mid-drag: the edge is gone, so end the drag here.
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted && _inspectorDragging != null) setState(() => _inspectorDragging = null);
+            if (mounted && _inspectorDrag is DragActive) setState(() => _inspectorDrag = const DragIdle());
           });
         }
         final pane = inspected == null
@@ -1181,7 +1262,11 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
                 key: _paneKeys.putIfAbsent(inspected, () => GlobalKey(debugLabel: 'board.inspector.$inspected')),
                 sessionId: inspected,
                 cover: !beside,
-                focusComposer: _inspectorFocusesComposer,
+                view: ref.exists(codeSessionProvider(inspected)) ? InspectorView.live : open!.view,
+                focusComposer: open!.keys == InspectorKeys.composer,
+                focusRequest: open.generation,
+                status: _statusOf[inspected] ?? SessionStatus.idle,
+                onReply: () => _goLive(inspected),
                 draft: _drafts[inspected],
                 onDraftChanged: (text) => _drafts[inspected] = text,
                 onClose: _closeInspector,
@@ -1199,14 +1284,15 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
                     InspectorEdge(
                       key: const ValueKey('board.inspector.edge'),
                       onDrag: (dx) => setState(
-                        () => _inspectorDragging = ((_inspectorDragging ?? width) - dx).clamp(
-                          BoardInspectorWidth.min,
-                          widest,
+                        () => _inspectorDrag = DragActive(
+                          ((dragWidth ?? width) - dx).clamp(BoardInspectorWidth.min, widest),
                         ),
                       ),
                       onEnd: () {
-                        if (_inspectorDragging case final w?) ref.read(boardInspectorWidthProvider.notifier).set(w);
-                        setState(() => _inspectorDragging = null);
+                        if (_inspectorDrag case DragActive(:final width)) {
+                          ref.read(boardInspectorWidthProvider.notifier).set(width);
+                        }
+                        setState(() => _inspectorDrag = const DragIdle());
                       },
                       onReset: ref.read(boardInspectorWidthProvider.notifier).reset,
                     ),
@@ -1430,6 +1516,32 @@ class _BoardCardState extends ConsumerState<BoardCard> {
 
   var _act = _Act.idle;
 
+  /// The warning lines the last build showed, so the clock rebuilds the card only when they change.
+  var _warned = const <String>[];
+
+  /// The clock that re-reads the warnings (stall minutes grow with time); running only while the card has a live
+  /// session (a Done or closed card has no warnings to age). Off in tests ([Motion.ambient]) so they can settle.
+  Timer? _clock;
+
+  void _syncClock(bool live) {
+    if (!live || !Motion.ambient) {
+      _clock?.cancel();
+      _clock = null;
+    } else {
+      _clock ??= Timer.periodic(const Duration(seconds: 30), (_) {
+        if (!mounted) return;
+        final now = [for (final w in _warnings(ref.read(codeSessionProvider(widget.info.id)).transcript)) w.line];
+        if (!listEquals(now, _warned)) setState(() {});
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _clock?.cancel();
+    super.dispose();
+  }
+
   @override
   void didUpdateWidget(BoardCard old) {
     super.didUpdateWidget(old);
@@ -1517,49 +1629,46 @@ class _BoardCardState extends ConsumerState<BoardCard> {
     // A question is answered right on the card, open from the start.
     final asking = waiting && question != null;
     void openSession() {
-      ref.read(boardSeenProvider.notifier).see(info.id);
+      ref.read(boardMarksProvider.notifier).apply(info.id, Looked(DateTime.now()));
       context.go(Routes.codeSession(info.id));
     }
 
     const radius = EveryTheme.cardRadius;
-    // Warnings move with the clock; everything else rebuilds on its own changes.
-    return PeriodicRebuild(
-      period: const Duration(seconds: 30),
-      builder: (context) {
-        final warnings = _warnings(live);
-        final edge = failed ? theme.danger : (warnings.isNotEmpty ? theme.warning : null);
-        return FinishBurst(
-          trigger: _finished == 0 ? null : _finished,
-          color: theme.success,
-          child: BreathingRing(
-            active: waiting,
-            color: theme.warning,
-            radius: radius,
-            child: GlowPulse(
-              active: phase.active,
-              color: theme.accent,
-              radius: radius,
-              strength: phase == BoardPhase.working ? 1 : 0.55,
-              child: _body(
-                theme: theme,
-                warnings: warnings,
-                edge: edge,
-                openSession: openSession,
-                asking: asking,
-                stopAll: stopAll,
-                live: live,
-                pending: pending,
-                undecided: undecided,
-                question: question,
-                activity: activity,
-                where: where,
-                phaseLine: phaseLine,
-                cost: cost,
-              ),
-            ),
+    // Warnings move with the clock, which only a card with a live session needs ([_syncClock]).
+    final warnings = _warnings(live);
+    _warned = [for (final w in warnings) w.line];
+    _syncClock(live != null);
+    final edge = failed ? theme.danger : (warnings.isNotEmpty ? theme.warning : null);
+    return FinishBurst(
+      trigger: _finished == 0 ? null : _finished,
+      color: theme.success,
+      child: BreathingRing(
+        active: waiting,
+        color: theme.warning,
+        radius: radius,
+        child: GlowPulse(
+          active: phase.active,
+          color: theme.accent,
+          radius: radius,
+          strength: phase == BoardPhase.working ? 1 : 0.55,
+          child: _body(
+            theme: theme,
+            warnings: warnings,
+            edge: edge,
+            openSession: openSession,
+            asking: asking,
+            stopAll: stopAll,
+            live: live,
+            pending: pending,
+            undecided: undecided,
+            question: question,
+            activity: activity,
+            where: where,
+            phaseLine: phaseLine,
+            cost: cost,
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 
@@ -1748,6 +1857,10 @@ class _BoardCardState extends ConsumerState<BoardCard> {
             BoardPrChip(info: info, done: phase.column == BoardColumn.done),
             Padding(
               padding: const EdgeInsets.only(left: 36, top: 8),
+              child: LoginAskCard(sessionId: info.id),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(left: 36, top: 8),
               child: LoginWallCard(
                 sessionId: info.id,
                 projectId: info.projectId,
@@ -1776,12 +1889,14 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                               : () async {
                                   // The calls this card showed (not those decided one by one): a batch that came in
                                   // since then waits for its own look.
-                                  await ref.read(boardDecideProvider)(
+                                  final sent = await decideOnce(
+                                    ref.read(boardDecidingProvider),
+                                    ref.read(boardDecideProvider),
                                     info.id,
                                     approve: true,
                                     callIds: [for (final c in undecided) c.id],
                                   );
-                                  if (mounted) setState(() => _approved++);
+                                  if (sent && mounted) setState(() => _approved++);
                                 },
                         ),
                       ),
@@ -1791,7 +1906,9 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                         style: KitButtonStyle.ghost,
                         onPressed: undecided.isEmpty
                             ? null
-                            : () => ref.read(boardDecideProvider)(
+                            : () => decideOnce(
+                                ref.read(boardDecidingProvider),
+                                ref.read(boardDecideProvider),
                                 info.id,
                                 approve: false,
                                 callIds: [for (final c in undecided) c.id],
@@ -1922,12 +2039,16 @@ class _LimitLine extends StatelessWidget {
     final theme = EveryTheme.of(context);
     final ref = state.ref;
     final idle = state._act == _Act.idle;
-    final (text, resetsAt) = switch (limit) {
-      Limited(:final resetsAt?) => ('Limit reached · ${resetsInText(resetsAt.difference(DateTime.now()))}', resetsAt),
-      Limited() => ('Limit reached', null),
-      ReadyToResume() => ('Limit reset', null),
-      NotLimited() || Snoozed() => ('', null),
+    final resetsAt = switch (limit) {
+      Limited(:final resetsAt?) => resetsAt,
+      _ => null,
     };
+    final text = switch (limit) {
+      Limited() => 'Limit reached',
+      ReadyToResume() => 'Limit reset',
+      NotLimited() || Snoozed() => '',
+    };
+    final style = theme.type.caption.medium.tint(limit is ReadyToResume ? theme.success : theme.warning);
     return Padding(
       key: ValueKey('board.limit.${info.id}'),
       padding: const EdgeInsets.only(left: 36, top: 8),
@@ -1936,7 +2057,14 @@ class _LimitLine extends StatelessWidget {
         runSpacing: 6,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          Text(text, style: theme.type.caption.medium.tint(limit is ReadyToResume ? theme.success : theme.warning)),
+          // The countdown has its own clock: the card rebuilds only when its warnings change.
+          if (resetsAt == null)
+            Text(text, style: style)
+          else
+            PeriodicRebuild(
+              period: const Duration(seconds: 30),
+              builder: (_) => Text('$text · ${resetsInText(resetsAt.difference(DateTime.now()))}', style: style),
+            ),
           if (resetsAt != null)
             KitButton(
               key: ValueKey('board.snooze.${info.id}'),

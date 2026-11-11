@@ -30,7 +30,7 @@ List<({LiveControl control, String what})> waitingControls(String sessionId, Lis
 }
 
 LiveControl? _controlOf(Object? driver) => switch (driver) {
-  final HeadlessBrowser b => b.control,
+  final BrowserPage b => b.control,
   final FlutterApp a => a.control,
   final ReactNativeApp a => a.control,
   final DeviceScreen s => s.control,

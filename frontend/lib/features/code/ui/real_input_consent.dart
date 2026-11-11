@@ -40,8 +40,7 @@ Future<bool> showRealInputConsent(BuildContext context) async {
           children: [
             const Text(
               'Some app windows (Tk, games, canvases) can\'t be driven in the background. The agent would bring the '
-              'window forward and use your real pointer and keyboard. Avoid using them meanwhile. It never types '
-              'into password fields.',
+              'window forward and use your real pointer and keyboard. Avoid using them meanwhile.',
             ),
             const SizedBox(height: 10),
             Text('Change this later in Settings > Code.', style: theme.type.caption.tint(theme.textMuted)),

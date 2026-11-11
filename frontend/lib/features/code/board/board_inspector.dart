@@ -7,6 +7,7 @@ import '../../../core/ui/every_icons.dart';
 import '../../models/domain/model_catalog.dart';
 import '../../models/models_providers.dart';
 import '../code_providers.dart';
+import '../domain/code_session.dart';
 import '../domain/session_work.dart';
 import '../ui/code_composer.dart';
 import '../ui/code_slash_host.dart';
@@ -16,7 +17,9 @@ import '../ui/transcript/session_approval.dart';
 import '../ui/transcript/transcript_items.dart' show TranscriptScope;
 import '../../usage/usage_totals.dart' show UsageTotals;
 import 'board_limits.dart' show boardCostLine;
+import 'board_providers.dart' show boardRecentTranscriptProvider;
 import 'board_state.dart';
+import 'board_triage.dart' show InspectorView;
 import 'board_work.dart';
 
 /// One session beside the Board: its header, its forks and subagents, the conversation (newest at the bottom, following
@@ -30,6 +33,10 @@ class BoardInspectorPane extends ConsumerWidget {
     required this.onOpenFull,
     this.cover = false,
     this.focusComposer = false,
+    this.focusRequest = 0,
+    this.view = InspectorView.live,
+    this.status = SessionStatus.idle,
+    this.onReply,
     this.draft,
     this.onDraftChanged,
   });
@@ -40,6 +47,18 @@ class BoardInspectorPane extends ConsumerWidget {
   /// the keyboard, the Board keeps them.
   final bool focusComposer;
 
+  /// Changes each time the keys are asked for again, even with [focusComposer] unchanged.
+  final int focusRequest;
+
+  /// [InspectorView.preview]: the session's recent transcript read-only, nothing attached (no controller is made).
+  final InspectorView view;
+
+  /// Its status as the Board has it (the preview reads its harness's files by it).
+  final SessionStatus status;
+
+  /// Reply on a preview: attaches the session and gives its composer the keys.
+  final VoidCallback? onReply;
+
   /// The reply typed earlier and not sent (kept by the Board when the pane closes or moves), and its changes.
   final String? draft;
   final ValueChanged<String>? onDraftChanged;
@@ -49,11 +68,127 @@ class BoardInspectorPane extends ConsumerWidget {
   final VoidCallback onClose;
   final VoidCallback onOpenFull;
 
+  /// [cost]: the session's spend or plan tokens ([boardCostLine]), '' when its usage isn't running.
+  Widget _header(CodeSessionInfo info, ModelSpec? model, SessionStatus status, EveryTheme theme, {String cost = ''}) =>
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+        child: Row(
+          children: [
+            if (cover) ...[
+              KitIconButton(
+                key: const ValueKey('board.inspector.back'),
+                icon: EveryIcon.chevronLeft,
+                tooltip: 'Back to the Board',
+                size: 16,
+                onPressed: onClose,
+              ),
+              const SizedBox(width: 4),
+            ],
+            HarnessLogo(info.harness, size: 22),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    info.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.type.callout.semibold.tint(theme.text),
+                  ),
+                  if ((model?.name ?? info.model).isNotEmpty || cost.isNotEmpty)
+                    Text.rich(
+                      TextSpan(
+                        children: [
+                          if ((model?.name ?? info.model).isNotEmpty) TextSpan(text: model?.name ?? info.model),
+                          if ((model?.name ?? info.model).isNotEmpty && cost.isNotEmpty) const TextSpan(text: '  ·  '),
+                          if (cost.isNotEmpty)
+                            TextSpan(text: cost, style: theme.type.caption.mono.tint(theme.textSubtle)),
+                        ],
+                      ),
+                      key: const ValueKey('board.inspector.meta'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.type.caption.tint(theme.textSubtle),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            StatusPill(status: status, dense: true),
+            const SizedBox(width: 4),
+            KitButton(
+              key: const ValueKey('board.inspector.open'),
+              label: 'Open',
+              style: KitButtonStyle.ghost,
+              onPressed: onOpenFull,
+            ),
+            if (!cover)
+              KitIconButton(
+                key: const ValueKey('board.inspector.close'),
+                icon: EveryIcon.close,
+                tooltip: 'Close (Esc)',
+                size: 16,
+                onPressed: onClose,
+              ),
+          ],
+        ),
+      );
+
+  /// The session as its harness's files last showed it, read-only: looking attaches nothing.
+  Widget _preview(BuildContext context, WidgetRef ref, CodeSessionInfo info, EveryTheme theme) {
+    final t = ref.watch(boardRecentTranscriptProvider((sessionId, status))).value;
+    final seen = seenUpdate(status: status, connected: true, sideWork: false);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (context.mounted) markBoardSeen(ref, sessionId, seen);
+    });
+    final model = ref.watch(modelCatalogProvider)[ModelId(info.model)];
+    return Column(
+      key: ValueKey('board.inspector.$sessionId'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _header(info, model, status, theme),
+        Container(height: 1, color: theme.border),
+        Expanded(
+          child: t == null
+              ? Center(child: Text('Nothing recent to show', style: theme.type.callout.tint(theme.textSubtle)))
+              : TranscriptScope(
+                  root: info.workingDir,
+                  child: TranscriptList(
+                    onRewind: null,
+                    transcript: t,
+                    onAnswer: (_, _) {},
+                    onApprovePlan: () => false,
+                    onRevisePlan: (_) => false,
+                    onRetry: () {},
+                    sessionId: sessionId,
+                    workingDir: info.workingDir,
+                    mode: info.mode,
+                  ),
+                ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+          child: Align(
+            alignment: Alignment.centerRight,
+            child: KitButton(
+              key: const ValueKey('board.inspector.reply'),
+              label: 'Reply',
+              style: KitButtonStyle.soft,
+              onPressed: onReply,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = EveryTheme.of(context);
     final info = ref.watch(codeSessionsProvider.select((all) => all.where((s) => s.id == sessionId).firstOrNull));
     if (info == null) return const SizedBox.shrink();
+    if (view == InspectorView.preview) return _preview(context, ref, info, theme);
     final provider = codeSessionProvider(sessionId);
     final state = ref.watch(provider);
     final controller = ref.read(provider.notifier);
@@ -70,76 +205,12 @@ class BoardInspectorPane extends ConsumerWidget {
     final cost = ref.exists(codeUsageProvider(sessionId))
         ? boardCostLine(ref.watch(codeUsageProvider(sessionId)).value ?? UsageTotals.zero)
         : '';
-    final modelName = model?.name ?? info.model;
 
     return Column(
       key: ValueKey('board.inspector.$sessionId'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
-          child: Row(
-            children: [
-              if (cover) ...[
-                KitIconButton(
-                  key: const ValueKey('board.inspector.back'),
-                  icon: EveryIcon.chevronLeft,
-                  tooltip: 'Back to the Board',
-                  size: 16,
-                  onPressed: onClose,
-                ),
-                const SizedBox(width: 4),
-              ],
-              HarnessLogo(info.harness, size: 22),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      info.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.type.callout.semibold.tint(theme.text),
-                    ),
-                    if (modelName.isNotEmpty || cost.isNotEmpty)
-                      Text.rich(
-                        TextSpan(
-                          children: [
-                            if (modelName.isNotEmpty) TextSpan(text: modelName),
-                            if (modelName.isNotEmpty && cost.isNotEmpty) const TextSpan(text: '  ·  '),
-                            if (cost.isNotEmpty)
-                              TextSpan(text: cost, style: theme.type.caption.mono.tint(theme.textSubtle)),
-                          ],
-                        ),
-                        key: const ValueKey('board.inspector.meta'),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.type.caption.tint(theme.textSubtle),
-                      ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              StatusPill(status: state.status, dense: true),
-              const SizedBox(width: 4),
-              KitButton(
-                key: const ValueKey('board.inspector.open'),
-                label: 'Open',
-                style: KitButtonStyle.ghost,
-                onPressed: onOpenFull,
-              ),
-              if (!cover)
-                KitIconButton(
-                  key: const ValueKey('board.inspector.close'),
-                  icon: EveryIcon.close,
-                  tooltip: 'Close (Esc)',
-                  size: 16,
-                  onPressed: onClose,
-                ),
-            ],
-          ),
-        ),
+        _header(info, model, state.status, theme, cost: cost),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: BoardWork(sessionId: sessionId),
@@ -205,6 +276,7 @@ class BoardInspectorPane extends ConsumerWidget {
                 placeholder: t.openQuestion != null ? 'Answer above, or reply in your own words' : 'Reply to the agent',
                 autofocus: false,
                 takeFocus: focusComposer,
+                focusRequest: focusRequest,
                 initialDraft: draft,
                 onDraftChanged: onDraftChanged,
                 model: model,

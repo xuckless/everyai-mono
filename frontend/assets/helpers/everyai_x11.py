@@ -12,7 +12,7 @@
 #   click --pid N --x X --y Y [--count C] [--right] [--front] [--nested]
 #   drag --pid N --x X --y Y --to-x X2 --to-y Y2 [--front] [--nested]
 #   scroll --pid N --x X --y Y --dy D [--front] [--nested]
-#   key --pid N (--text T | --keyname K) [--mods ctrl,shift,alt,super] [--front] [--nested]
+#   key --pid N (--text T | --text-stdin | --keyname K) [--mods ctrl,shift,alt,super] [--front] [--nested]
 #   raise --pid N [--window W]
 #   shot --window ID --out FILE [--nested]       a PNG of the window (on the nested display: with its pop-ups)
 #   stream --window ID [--fps F] [--scale S] [--nested]   PNG frames as multipart on stdout
@@ -37,6 +37,13 @@ def value(name):
 
 def flag(name):
     return ('--' + name) in args
+
+
+def text_arg():
+    # The text to type: from stdin with --text-stdin (a saved password never reaches the process list), else --text.
+    if flag('text-stdin'):
+        return sys.stdin.buffer.read().decode('utf-8')
+    return value('text')
 
 
 def number(name):
@@ -642,7 +649,7 @@ elif command == 'scroll':
     scroll(need_pid(), number('x'), number('y'), number('dy'))
     emit({'ok': True})
 elif command == 'key':
-    key(need_pid(), value('text'), value('keyname'), value('mods'))
+    key(need_pid(), text_arg(), value('keyname'), value('mods'))
     emit({'ok': True})
 elif command == 'raise':
     raise_app(need_pid())

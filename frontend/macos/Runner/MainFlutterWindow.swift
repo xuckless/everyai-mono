@@ -2,10 +2,12 @@ import Cocoa
 import FlutterMacOS
 import Sparkle
 import VideoToolbox
+import WebKit
 
 class MainFlutterWindow: NSWindow {
   private var updater: UpdaterBridge?
   private var video: VideoDecoderBridge?
+  private var webviews: WebviewBridge?
 
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
@@ -19,6 +21,8 @@ class MainFlutterWindow: NSWindow {
     updater = UpdaterBridge(messenger: flutterViewController.engine.binaryMessenger)
     let registrar = flutterViewController.registrar(forPlugin: "EveryAIVideoDecoder")
     video = VideoDecoderBridge(messenger: registrar.messenger, textures: registrar.textures)
+    webviews = WebviewBridge(messenger: flutterViewController.engine.binaryMessenger, window: self,
+                             flutterView: flutterViewController.view)
 
     super.awakeFromNib()
   }
@@ -310,5 +314,394 @@ final class H264Texture: NSObject, FlutterTexture {
     else { return }
     format = desc
     session = created
+  }
+}
+
+/// What the webview plugin doesn't give the Code session browser (`lib/features/code/live/webview_native.dart`):
+/// each session's cookie store, keeping a webview the Preview let go of live in the window, keeping keys away from a
+/// view the agent has, the browser shortcuts typed in a view, and "Ask the agent about this" in its context menu.
+/// A webview is found by a token its page carries in the "everyai" script world, which the Dart side sets just
+/// before [bind].
+final class WebviewBridge: NSObject {
+  static weak var shared: WebviewBridge?
+
+  private let channel: FlutterMethodChannel
+  fileprivate weak var window: NSWindow?
+  private weak var flutterView: NSView?
+  private var views: [String: WKWebView] = [:]
+  private var locked = Set<String>()
+  private var shown = Set<String>()
+  private var monitor: Any?
+  private let world = WKContentWorld.world(name: "everyai")
+
+  /// Holds parked views: in the window's frame view, under the Flutter view (which covers them and takes every
+  /// click), at full opacity, so WebKit counts them as visible and runs their pages at full speed.
+  private lazy var parking: NSView = {
+    let v = NSView(frame: .zero)
+    v.autoresizingMask = [.width, .height]
+    return v
+  }()
+
+  init(messenger: FlutterBinaryMessenger, window: NSWindow, flutterView: NSView) {
+    channel = FlutterMethodChannel(name: "everyai/webview", binaryMessenger: messenger)
+    self.window = window
+    self.flutterView = flutterView
+    super.init()
+    WebviewBridge.shared = self
+    WebviewBridge.addMenuHook()
+    WebviewBridge.addMouseHook()
+    WebviewBridge.addWindowLending()
+    channel.setMethodCallHandler { [weak self] call, result in self?.handle(call, result) }
+    monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
+      guard let self else { return event }
+      return self.filter(event)
+    }
+  }
+
+  private func handle(_ call: FlutterMethodCall, _ result: @escaping FlutterResult) {
+    let a = call.arguments as? [String: Any] ?? [:]
+    let token = a["token"] as? String ?? ""
+    switch call.method {
+    case "bind":
+      bind(token, viewId: a["viewId"] as? String, result)
+    case "release":
+      views[token] = nil
+      locked.remove(token)
+      shown.remove(token)
+      result(nil)
+    case "cookies":
+      guard let store = views[token]?.configuration.websiteDataStore.httpCookieStore else { return result([]) }
+      store.getAllCookies { cookies in result(cookies.map(WebviewBridge.cookieMap)) }
+    case "setCookies":
+      guard let store = views[token]?.configuration.websiteDataStore.httpCookieStore else { return result(nil) }
+      let list = (a["cookies"] as? [[String: Any]] ?? []).compactMap(WebviewBridge.cookie)
+      let group = DispatchGroup()
+      for c in list {
+        group.enter()
+        store.setCookie(c) { group.leave() }
+      }
+      group.notify(queue: .main) { result(nil) }
+    case "deleteCookies":
+      guard let store = views[token]?.configuration.websiteDataStore.httpCookieStore else { return result(nil) }
+      let wanted = (a["cookies"] as? [[String: Any]] ?? []).map {
+        "\($0["name"] ?? "")|\($0["domain"] ?? "")|\($0["path"] ?? "/")"
+      }
+      store.getAllCookies { cookies in
+        let group = DispatchGroup()
+        for c in cookies where wanted.contains("\(c.name)|\(c.domain)|\(c.path)") {
+          group.enter()
+          store.delete(c) { group.leave() }
+        }
+        group.notify(queue: .main) { result(nil) }
+      }
+    case "clearData":
+      guard let store = views[token]?.configuration.websiteDataStore else { return result(nil) }
+      store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {
+        result(nil)
+      }
+    case "lend":
+      WebviewBridge.lending = max(0, WebviewBridge.lending + (a["on"] as? Bool == true ? 1 : -1))
+      result(nil)
+    case "debug":
+      WebviewBridge.debug = a["on"] as? Bool == true
+      result(nil)
+    case "park":
+      park(token, width: a["width"] as? Int ?? 1280, height: a["height"] as? Int ?? 800, attempt: 0, result)
+    case "unfocus":
+      unfocus(token)
+      result(nil)
+    case "lock":
+      if a["locked"] as? Bool == true {
+        locked.insert(token)
+        unfocus(token)
+      } else {
+        locked.remove(token)
+      }
+      result(nil)
+    case "shown":
+      if a["shown"] as? Bool == true { shown.insert(token) } else { shown.remove(token) }
+      result(nil)
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+
+  private func bind(_ token: String, viewId: String?, _ result: @escaping FlutterResult) {
+    if views[token] != nil { return result(true) }
+    var all: [WKWebView] = []
+    func walk(_ v: NSView) {
+      if let w = v as? WKWebView { all.append(w) }
+      for s in v.subviews { walk(s) }
+    }
+    // From the frame view: parked views sit beside the content view.
+    for w in NSApp.windows { if let c = w.contentView { walk(c.superview ?? c) } }
+    // The plugin's own id for the view (internal to it, read by reflection): exact, whatever page it shows.
+    if let viewId, let w = all.first(where: { pluginId(of: $0) == viewId }) {
+      views[token] = w
+      return result(true)
+    }
+    // Without the plugin's id (it changed, or the view has none yet): ask the pages for the token, but only views
+    // that can be a session tab being made (in the plugin's headless holder or in [parking]) and that aren't bound
+    // yet. Other webviews of the app (artifacts, the plugin's views elsewhere) are never run script in.
+    let group = DispatchGroup()
+    var found: WKWebView?
+    for w in all where !views.values.contains(where: { $0 === w }) && mayBeSessionTab(w) {
+      group.enter()
+      w.evaluateJavaScript("window.__everyaiToken || ''", in: nil, in: world) { r in
+        if case .success(let v) = r, let s = v as? String, s == token { found = w }
+        group.leave()
+      }
+    }
+    group.notify(queue: .main) { [weak self] in
+      if WebviewBridge.debug {
+        print("EVERYAI bind \(token): \(all.count) views, found=\(found != nil) in \(NSApp.windows.count) windows")
+      }
+      if let f = found { self?.views[token] = f }
+      result(found != nil)
+    }
+  }
+
+  /// The view's container (the plugin's view) goes into [parking]: a headless view the plugin left in its own
+  /// nearly transparent holder at once, a view the Preview let go of once the engine has (it leaves the window a frame
+  /// after the widget goes); tried for up to three seconds.
+  private func park(_ token: String, width: Int, height: Int, attempt: Int, _ result: @escaping FlutterResult) {
+    guard let wv = views[token], let window = window, let content = window.contentView,
+          let frameView = content.superview else { return result(false) }
+    let container = wv.superview ?? wv
+    let size = NSRect(x: 0, y: 0, width: width, height: height)
+    if container.superview === parking {
+      container.frame = size
+      return result(true)
+    }
+    let holder = container.superview
+    let headless = holder != nil && holder!.frame.size == .zero && holder!.superview === content
+    if container.window != nil && !headless {
+      // Still on screen: the engine hasn't let go yet, or the Preview shows it again.
+      if attempt >= 60 {
+        if WebviewBridge.debug {
+          print("EVERYAI park \(token) gave up: holder=\(String(describing: holder.map { type(of: $0) })) hidden=\(container.isHiddenOrHasHiddenAncestor) chain=\(chain(container))")
+        }
+        return result(false)
+      }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        self?.park(token, width: width, height: height, attempt: attempt + 1, result)
+      }
+      return
+    }
+    if parking.superview == nil {
+      parking.frame = content.frame
+      frameView.addSubview(parking, positioned: .below, relativeTo: content)
+    }
+    container.removeFromSuperview()
+    container.alphaValue = 1
+    container.frame = size
+    parking.addSubview(container)
+    if headless { holder?.removeFromSuperview() }
+    if WebviewBridge.debug {
+      print("EVERYAI park \(token) parked (headless=\(headless), attempt \(attempt))")
+    }
+    result(true)
+  }
+
+  /// Whether [w] sits where a session tab's view is while it is made or kept offscreen: under [parking], or in the
+  /// plugin's zero-size headless holder directly under the window's content view (see [park]).
+  private func mayBeSessionTab(_ w: WKWebView) -> Bool {
+    let content = window?.contentView
+    var at: NSView? = w
+    for _ in 0..<4 {
+      guard let v = at, let up = v.superview else { return false }
+      if up === parking { return true }
+      if up.frame.size == .zero && content != nil && up.superview === content { return true }
+      at = up
+    }
+    return false
+  }
+
+  /// Whether [w] is a bound session view the agent has now.
+  fileprivate func isLocked(_ w: WKWebView) -> Bool {
+    guard let token = tokenOwning(w) else { return false }
+    return locked.contains(token)
+  }
+
+  /// The `id` the plugin gives its webview (its headless id or platform view id).
+  private func pluginId(of w: WKWebView) -> String? {
+    for child in Mirror(reflecting: w).children where child.label == "id" {
+      // `Any?` holding a String (headless) or a number (a platform view).
+      if let s = child.value as? String { return s }
+      if let o = child.value as? String? { return o }
+      return String(describing: child.value)
+    }
+    return nil
+  }
+
+  private func chain(_ v: NSView) -> String {
+    var out: [String] = []
+    var at: NSView? = v
+    while let x = at {
+      out.append("\(type(of: x))\(x.isHidden ? "[h]" : "")\(x.frame.size == .zero ? "[0]" : "")")
+      at = x.superview
+    }
+    return out.joined(separator: " < ")
+  }
+
+  private func unfocus(_ token: String) {
+    guard let wv = views[token], let w = wv.window ?? window else { return }
+    if let fr = w.firstResponder as? NSView, fr === wv || fr.isDescendant(of: wv) {
+      w.makeFirstResponder(flutterView)
+    }
+  }
+
+  private func tokenOwning(_ view: NSView?) -> String? {
+    guard let view = view else { return nil }
+    return views.first(where: { view === $0.value || view.isDescendant(of: $0.value) })?.key
+  }
+
+  /// Keys typed in a session view: kept from it while the agent has it; the browser's own shortcuts go to Dart.
+  private func filter(_ event: NSEvent) -> NSEvent? {
+    // Posted events may carry no window: the key window's first responder gets them.
+    let target = (event.window ?? NSApp.keyWindow ?? window)?.firstResponder as? NSView
+    guard let token = tokenOwning(target) else { return event }
+    if WebviewBridge.debug {
+      print("EVERYAI key \(event.type.rawValue) responder=\(String(describing: target.map { type(of: $0) })) locked=\(locked.contains(token))")
+    }
+    if locked.contains(token) {
+      if event.type == .keyDown { channel.invokeMethod("blocked", arguments: ["token": token]) }
+      return nil
+    }
+    let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    if event.type == .keyDown, shown.contains(token), mods.contains(.command), !mods.contains(.option),
+       let key = event.charactersIgnoringModifiers?.lowercased(), ["l", "r", "[", "]", "f"].contains(key) {
+      channel.invokeMethod("shortcut", arguments: ["token": token, "key": key])
+      return nil
+    }
+    return event
+  }
+
+  /// Adds "Ask the agent about this" to the context menu of a session view the user has.
+  fileprivate func extend(menu: NSMenu, of view: WKWebView, event: NSEvent) {
+    guard let token = tokenOwning(view), shown.contains(token), !locked.contains(token) else { return }
+    let p = view.convert(event.locationInWindow, from: nil)
+    let y = view.isFlipped ? p.y : view.bounds.height - p.y
+    let item = NSMenuItem(title: "Ask the agent about this", action: #selector(ask(_:)), keyEquivalent: "")
+    item.target = self
+    item.representedObject = ["token": token, "x": Double(p.x), "y": Double(y)]
+    menu.addItem(.separator())
+    menu.addItem(item)
+  }
+
+  @objc private func ask(_ sender: NSMenuItem) {
+    channel.invokeMethod("ask", arguments: sender.representedObject)
+  }
+
+  /// While above zero, `NSApp.mainWindow` is this window even when the app isn't active: the plugin puts a new
+  /// headless webview in the main window, and with none (the user is in another app) it would run in no window at
+  /// all (unfindable, and throttled).
+  fileprivate static var lending = 0
+  private static var lendingAdded = false
+
+  /// The live rig's trace of keys reaching session views.
+  static var debug = false
+
+  private static func addWindowLending() {
+    if lendingAdded { return }
+    lendingAdded = true
+    let cls: AnyClass = NSApplication.self
+    guard let original = class_getInstanceMethod(cls, #selector(getter: NSApplication.mainWindow)),
+          let ours = class_getInstanceMethod(cls, #selector(getter: NSApplication.everyaiMainWindow)) else { return }
+    method_exchangeImplementations(original, ours)
+  }
+
+  private static var hooked = false
+
+  /// WKWebView's `willOpenMenu(_:with:)` also lets the bridge add its item (views of other features are left as
+  /// they are: [extend] only touches bound session views).
+  private static func addMenuHook() {
+    if hooked { return }
+    hooked = true
+    let cls: AnyClass = WKWebView.self
+    let sel = #selector(NSView.willOpenMenu(_:with:))
+    guard let method = class_getInstanceMethod(cls, sel) else { return }
+    typealias Fn = @convention(c) (AnyObject, Selector, NSMenu, NSEvent) -> Void
+    let original = unsafeBitCast(method_getImplementation(method), to: Fn.self)
+    let block: @convention(block) (AnyObject, NSMenu, NSEvent) -> Void = { obj, menu, event in
+      original(obj, sel, menu, event)
+      if let wv = obj as? WKWebView { WebviewBridge.shared?.extend(menu: menu, of: wv, event: event) }
+    }
+    let imp = imp_implementationWithBlock(block)
+    // WKWebView may only inherit NSView's: then it gets its own, and NSView's stays as it is.
+    if !class_addMethod(cls, sel, imp, method_getTypeEncoding(method)) {
+      method_setImplementation(method, imp)
+    }
+  }
+
+  private static var mouseHooked = false
+
+  /// Hover reaches a WKWebView through its own tracking areas, not through Flutter (which only sees clicks, and pulses
+  /// Take control on them): while the agent has a session view, WKWebView's mouse-moved, -entered and -exited are
+  /// dropped, so the page shows no hover and runs no mouseover. Other webviews (artifacts) are left as they are.
+  private static func addMouseHook() {
+    if mouseHooked { return }
+    mouseHooked = true
+    let cls: AnyClass = WKWebView.self
+    for name in ["mouseMoved:", "mouseEntered:", "mouseExited:"] {
+      let sel = NSSelectorFromString(name)
+      guard let method = class_getInstanceMethod(cls, sel) else { continue }
+      typealias Fn = @convention(c) (AnyObject, Selector, NSEvent) -> Void
+      let original = unsafeBitCast(method_getImplementation(method), to: Fn.self)
+      let block: @convention(block) (AnyObject, NSEvent) -> Void = { obj, event in
+        if let wv = obj as? WKWebView, WebviewBridge.shared?.isLocked(wv) == true { return }
+        original(obj, sel, event)
+      }
+      let imp = imp_implementationWithBlock(block)
+      // WKWebView may only inherit NSResponder's: then it gets its own, and the inherited one stays as it is.
+      if !class_addMethod(cls, sel, imp, method_getTypeEncoding(method)) {
+        method_setImplementation(method, imp)
+      }
+    }
+  }
+
+  private static func cookieMap(_ c: HTTPCookie) -> [String: Any?] {
+    var same: String?
+    if let p = c.sameSitePolicy {
+      same = p == .sameSiteStrict ? "Strict" : p == .sameSiteLax ? "Lax" : nil
+    }
+    return [
+      "name": c.name,
+      "value": c.value,
+      "domain": c.domain,
+      "path": c.path,
+      "expiresMs": c.expiresDate.map { Int($0.timeIntervalSince1970 * 1000) },
+      "secure": c.isSecure,
+      "httpOnly": c.isHTTPOnly,
+      "sameSite": same,
+    ]
+  }
+
+  private static func cookie(_ m: [String: Any]) -> HTTPCookie? {
+    guard let name = m["name"] as? String, let domain = m["domain"] as? String else { return nil }
+    var p: [HTTPCookiePropertyKey: Any] = [
+      .name: name,
+      .value: m["value"] as? String ?? "",
+      .domain: domain,
+      .path: m["path"] as? String ?? "/",
+    ]
+    if let ms = m["expiresMs"] as? NSNumber {
+      p[.expires] = Date(timeIntervalSince1970: ms.doubleValue / 1000)
+    } else {
+      p[.discard] = "TRUE"
+    }
+    if m["secure"] as? Bool == true { p[.secure] = "TRUE" }
+    if m["httpOnly"] as? Bool == true { p[HTTPCookiePropertyKey("HttpOnly")] = "TRUE" }
+    if let s = m["sameSite"] as? String { p[.sameSitePolicy] = s.lowercased() }
+    return HTTPCookie(properties: p)
+  }
+}
+
+extension NSApplication {
+  /// Swapped with `mainWindow` (see `WebviewBridge.addWindowLending`): calling it calls the original.
+  @objc var everyaiMainWindow: NSWindow? {
+    let w = self.everyaiMainWindow
+    if w == nil, WebviewBridge.lending > 0 { return WebviewBridge.shared?.window }
+    return w
   }
 }

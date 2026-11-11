@@ -6,6 +6,7 @@ import 'package:every_ai/features/code/harness/everyai/llm.dart';
 import 'package:every_ai/features/code/harness/everyai/screen_windows.dart';
 import 'package:every_ai/features/code/harness/everyai/shell_io.dart';
 import 'package:every_ai/features/code/harness/everyai/tools_io.dart';
+import 'package:every_ai/features/code/live/agent_logins.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Drives a real headless Chrome; skipped where none is installed.
@@ -80,7 +81,9 @@ setTimeout(() => { throw new Error('boom'); }, 10);
     timeout: const Timeout(Duration(minutes: 1)),
   );
 
-  group('never types or submits passwords and payment details', () {
+  // The browser itself guards those fields; the tool lifts the guard while the user lets agents type into them
+  // (Settings > Code > Logins, on by default).
+  group('password and payment fields', () {
     late String url;
     setUp(() {
       url =
@@ -151,14 +154,18 @@ setTimeout(() => { throw new Error('boom'); }, 10);
     );
 
     test(
-      'through the tool, a refusal is an error in plain words',
+      'through the tool: typed by default, refused in plain words with the switch off',
       () async {
         final runner = _runner(tmp, browser);
         await runner.run('browser', {'action': 'open', 'url': url});
         final typed = await runner.run('browser', {'action': 'type', 'selector': '#pw', 'text': 'hunter2'});
-        expect(typed.isError, isTrue);
-        expect(typed.text, contains('Refused: the field is a password field.'));
-        expect(typed.text, contains('the user does that'));
+        expect(typed.isError, isFalse, reason: typed.text);
+        expect(await value('pw'), 'hunter2');
+        final strict = _runner(tmp, browser, policy: const LoginPolicy(secretFields: false));
+        final refused = await strict.run('browser', {'action': 'type', 'selector': '#cc', 'text': '4242'});
+        expect(refused.isError, isTrue);
+        expect(refused.text, contains('Refused: the field is a payment card field.'));
+        expect(refused.text, contains('fill_login'));
       },
       skip: chrome == null ? 'no Chrome installed' : null,
       timeout: const Timeout(Duration(minutes: 1)),
@@ -309,11 +316,12 @@ setTimeout(() => { throw new Error('boom'); }, 10);
 
 final _refused = isA<BrowserError>().having((e) => e.message, 'message', startsWith('Refused: '));
 
-ToolRunner _runner(Directory tmp, HeadlessBrowser browser) => ToolRunner(
+ToolRunner _runner(Directory tmp, HeadlessBrowser browser, {LoginPolicy policy = LoginPolicy.open}) => ToolRunner(
   root: tmp.path,
   shell: SessionShell(root: tmp.path, sessionTag: 't', scratchDir: '${tmp.path}/.sh'),
   gateway: GatewayClient(baseUrl: 'http://127.0.0.1:9/v1', apiKey: ''),
   sessionTag: 't',
   vision: true,
   browser: browser,
+  logins: () => LoginAccess(policy: policy),
 );

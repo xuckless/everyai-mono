@@ -9,6 +9,7 @@ import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/drivers/acp/acp_agents.dart';
 import 'package:every_ai/features/code/drivers/acp/acp_driver.dart';
 import 'package:every_ai/features/code/drivers/acp/acp_files.dart';
+import 'package:every_ai/features/code/drivers/acp/acp_session.dart' show acpModes;
 import 'package:every_ai/features/code/drivers/briefing/briefing_types.dart';
 import 'package:every_ai/features/code/drivers/driver_policy.dart';
 import 'package:every_ai/features/code/drivers/json_rpc.dart';
@@ -226,8 +227,8 @@ void main() {
       final spawn = r.spawns.single;
       expect((spawn.executable, spawn.cwd), ('/usr/local/bin/opencode', r.work));
       expect(spawn.args, ['acp']);
-      final config = jsonDecode(spawn.env['OPENCODE_CONFIG_CONTENT']!) as Map<String, Object?>;
-      expect((config['permission']! as Map)['*'], 'ask');
+      // No permission rules of ours: OpenCode's agents keep their own.
+      expect(spawn.env.containsKey('OPENCODE_CONFIG_CONTENT'), isFalse);
       final meta =
           jsonDecode(File('${r.dataDir}/acp-sessions/${s.id}/meta.json').readAsStringSync()) as Map<String, Object?>;
       expect(meta, {
@@ -371,38 +372,15 @@ void main() {
   });
 
   group('review fixes', () {
-    test("OpenCode's rules are pinned per agent too, and the project's own config is off", () async {
+    test("OpenCode's agents keep their own permissions; the project's own config is off", () async {
       final r = rig(['opencode/handshake.jsonl']);
       final s = await r.driver('acp:opencode', 'opencode').start(r.spec(mode: AgentMode.plan));
       final env = r.spawns.single.env;
       expect(env['OPENCODE_DISABLE_PROJECT_CONFIG'], '1');
-      final config = jsonDecode(env['OPENCODE_CONFIG_CONTENT']!) as Map<String, Object?>;
-      final agents = config['agent']! as Map<String, Object?>;
-      expect(agents.keys, containsAll(['build', 'plan', 'general', 'explore']));
-      for (final a in agents.values) {
-        expect(((a! as Map)['permission']! as Map)['*'], 'ask');
-      }
+      final config = jsonDecode(env['OPENCODE_CONFIG_CONTENT'] ?? '{}') as Map<String, Object?>;
+      expect(config.containsKey('permission'), isFalse);
+      expect(config.containsKey('agent'), isFalse);
       await s.close();
-    });
-
-    test("Gemini doesn't start in a project whose .gemini settings allow tools ahead of time", () async {
-      final r = rig(const []);
-      Directory('${r.work}/.gemini').createSync();
-      File('${r.work}/.gemini/settings.json').writeAsStringSync('{"ui":{"theme":"x"}}');
-      expect(await geminiWorkspaceProblem(r.work), isNull);
-      File('${r.work}/.gemini/settings.json')
-          .writeAsStringSync('{"ui":{},"tools":{"allowed":["run_shell_command"]},"mcpServers":{"x":{"command":"sh"}}}');
-      await expectLater(
-        r.driver('gemini', 'gemini').start(r.spec()),
-        throwsA(
-          isA<HarnessError>().having(
-            (e) => e.message,
-            'message',
-            contains('settings.json "tools", settings.json "mcpServers"'),
-          ),
-        ),
-      );
-      expect(r.spawns, isEmpty);
     });
 
     test('a Gemini conversation it no longer has (-32603) starts fresh, with a notice', () async {
@@ -535,22 +513,6 @@ void main() {
       }
     });
 
-    test('a command that ran without asking is shown with a notice; in Plan it stops the turn', () async {
-      final r = rig(['opencode/unasked_plan.jsonl']);
-      final s = await r.driver('acp:opencode', 'opencode').start(r.spec(mode: AgentMode.plan));
-      final seen = _Seen(s);
-      await s.send('Plan it.');
-      await seen.untilStatus(ExecutionStatus.paused);
-      r.expectPlayed();
-      expect(
-        seen.notices.single,
-        'OpenCode ran "rm -rf build" without asking the app first, so its own settings allow it. '
-        'Plan mode stopped the turn.',
-      );
-      expect(seen.results.single.text, isNot('Cancelled.'));
-      await s.close();
-    });
-
     test('a refusal without typed words adds nothing to the next prompt', () async {
       final r = rig(['gemini/deny_one_plain.jsonl']);
       final s = await r.driver('gemini', 'gemini').start(r.spec());
@@ -577,12 +539,12 @@ void main() {
   });
 
   group('Gemini CLI (derived from its source)', () {
-    test('a turn: its asking mode pinned, a shell call to approve once, its output, the reply', () async {
+    test('a turn: its default mode, a shell call to approve once, its output, the reply', () async {
       final r = rig(['gemini/turn.jsonl']);
       final d = r.driver('gemini', 'gemini', args: const ['--acp']);
       final s = await d.start(r.spec(model: 'gemini-2.5-flash'));
       final seen = _Seen(s);
-      expect(r.spawns.single.args, ['--acp', '--approval-mode', 'default']);
+      expect(r.spawns.single.args, ['--acp']);
       expect([for (final m in await d.models()) m.id], ['auto-gemini-2.5', 'gemini-2.5-pro', 'gemini-2.5-flash']);
       await s.send('List the files.');
       await seen.untilStatus(ExecutionStatus.waitingForConfirmation);
@@ -836,13 +798,13 @@ void main() {
   });
 
   group('other ACP agents', () {
-    test('goose is moved off its auto mode, which never asks, before the first prompt', () async {
+    test("goose starts in its mode nearest the app's Ask (approve) before the first prompt", () async {
       final r = rig(['acp/goose_mode.jsonl']);
       final d = r.driver('goose', 'goose');
       final s = await d.start(r.spec());
       final seen = _Seen(s);
       expect(r.spawns.single.args, ['acp']);
-      expect(r.spawns.single.env['GOOSE_MODE'], 'approve');
+      expect(r.spawns.single.env['GOOSE_MODE'], isNull);
       await s.send('go');
       await seen.untilStatus(ExecutionStatus.finished);
       r.expectPlayed();
@@ -851,31 +813,20 @@ void main() {
       await s.close();
     });
 
-    test('Kiro has Autopilot turned off before the first prompt, and again when it turns it back on', () async {
+    test('Kiro keeps its Autopilot as it has it, also when it turns it on mid-turn', () async {
       final r = rig(['acp/kiro_autopilot.jsonl']);
       final s = await r.driver('kiro', 'kiro-cli').start(r.spec());
       final seen = _Seen(s);
       expect(r.spawns.single.args, ['acp', '--agent-engine=v3', '--auth-method=cli']);
       await s.send('go');
       await seen.untilStatus(ExecutionStatus.finished);
-      await seen.until(
-        () => r.channels.single.sent.where((m) => m['method'] == 'session/set_config_option').length == 2,
-      );
       r.expectPlayed();
-      final methods = [for (final m in r.channels.single.sent) m['method']];
-      expect(methods.indexOf('session/set_config_option'), lessThan(methods.indexOf('session/prompt')));
+      expect(r.channels.single.sent.where((m) => m['method'] == 'session/set_config_option'), isEmpty);
       expect(seen.notices, isEmpty);
+      // The update mid-turn names the choices only; Kiro's description from the start is kept.
+      final shown = (await (s as NativeModes).nativeModes.first).modes.first;
+      expect((shown.label, shown.description), ('Default · Autopilot', 'Agent executes tools without confirmation'));
       await s.close();
-    });
-
-    test('Kiro refuses a project whose .kiro folder has its own agents or MCP servers', () async {
-      final r = rig(const []);
-      expect(await acpProfileOf('kiro-cli').preflight(r.work), isNull);
-      Directory('${r.work}/.kiro/settings').createSync(recursive: true);
-      File('${r.work}/.kiro/settings/mcp.json').writeAsStringSync('{}');
-      expect(await acpProfileOf('kiro-cli').preflight(r.work), contains('.kiro folder can let Kiro CLI act'));
-      Directory('${r.work}/.kiro/agents').createSync();
-      expect(await acpProfileOf('kiro-cli').preflight(r.work), contains('(agents/, settings/mcp.json)'));
     });
 
     test('a same-named program (pressly goose, AWS Copilot) shows as a problem, not a ready agent', () async {
@@ -887,10 +838,6 @@ void main() {
       expect((await driver('copilot').detect()).problem, contains('not GitHub Copilot CLI'));
       goose.writeAsStringSync('#!/bin/sh\necho "goose 1.9.3"\n');
       expect((await driver('goose').detect()).problem, isNull);
-    });
-
-    test("Copilot's allow-all environment variable from the user's shell is turned off", () async {
-      expect(acpProfileOf('copilot').env(null)['COPILOT_ALLOW_ALL'], 'false');
     });
 
     test('an Antigravity CLI before 1.5.0 shows the version problem; it needs no consent', () async {
@@ -911,11 +858,40 @@ void main() {
       expect((await driver().detect()).problem, startsWith('Not signed in. Run `agy` in a terminal'));
     });
 
-    test('Qwen Code refuses a project whose .qwen folder could let it act unasked', () async {
-      final r = rig(const []);
-      Directory('${r.work}/.qwen/policies').createSync(recursive: true);
-      expect(acpProfileOf('qwen').preflight(r.work), completion(contains('.qwen folder can let Qwen Code act')));
-      expect(await acpProfileOf('gemini').preflight(r.work), isNull);
+    test("EveryAI's own tools pass without a card, except check and bug_check, which wait for the user", () async {
+      final r = rig(['acp/host_run_tools.jsonl']);
+      final s = await r.driver('acp:dsh', 'dsh').start(r.spec());
+      final seen = _Seen(s);
+      await s.send('go');
+      await seen.untilStatus(ExecutionStatus.waitingForConfirmation);
+      // memory was answered at once; check waits for the card.
+      expect(_replyTo(r.channels.single, 'p1'), {
+        'outcome': {'outcome': 'selected', 'optionId': 'yes'},
+      });
+      expect(r.channels.single.sent.where((m) => m['id'] == 'p2'), isEmpty);
+      final check = _transcript(seen.all).pending.singleWhere((c) => hostToolOf(c) == 'check');
+      await s.respond(accept: true, callIds: [check.id]);
+      await seen.untilStatus(ExecutionStatus.finished);
+      r.expectPlayed();
+      await s.close();
+    });
+
+    test("Always allow on the card is the agent's own allow_always; without one, allowed once with a notice", () async {
+      final r = rig(['acp/allow_always.jsonl']);
+      final d = r.driver('acp:dsh', 'dsh');
+      expect(d.remembers, NativeRemember.agentAlways);
+      final s = await d.start(r.spec());
+      final seen = _Seen(s);
+      await s.send('go');
+      for (final title in ['Deploy', 'Publish']) {
+        await seen.until(() => _transcript(seen.all).pending.any((c) => c.summary == title));
+        final call = _transcript(seen.all).pending.singleWhere((c) => c.summary == title);
+        await (s as AllowsRemembered).allowRemembered(NativeGrant.always, callIds: [call.id]);
+      }
+      await seen.untilStatus(ExecutionStatus.finished);
+      r.expectPlayed();
+      expect(seen.notices, ['dsh offered no "always" for "Publish", so it was allowed once.']);
+      await s.close();
     });
 
     test('no allow-once option: refused, with a notice', () async {
@@ -955,7 +931,7 @@ void main() {
       await s.close();
     });
 
-    test("OpenCode's briefing goes in its inline config with the permission rules", () async {
+    test("OpenCode's briefing goes in its inline config, without permission rules of ours", () async {
       final r = rig(['opencode/handshake.jsonl']);
       final s = await r
           .driver('acp:opencode', 'opencode')
@@ -973,18 +949,53 @@ void main() {
       r.expectPlayed();
       final config = jsonDecode(r.spawns.single.env['OPENCODE_CONFIG_CONTENT']!) as Map<String, Object?>;
       expect(((config['mcp']! as Map)['servers']! as Map).keys, ['everyai']);
-      expect(config['permission'], isA<Map<String, Object?>>());
+      expect(config.containsKey('permission'), isFalse);
       expect(r.spawns.single.args, ['acp']);
       await s.close();
     });
   });
+  test(
+    'a failed model ask is kept, not repeated per menu open, and its temp folder is gone; refresh asks again',
+    () async {
+      final r = rig(const []);
+      final cwds = <String>[];
+      final d = r.driver(
+        'cursor',
+        'cursor-agent',
+        connect:
+            ({
+              required executable,
+              required args,
+              required cwd,
+              required sessionTag,
+              required logPath,
+              required env,
+            }) async {
+              cwds.add(cwd);
+              throw const HarnessError('not signed in');
+            },
+      );
+      expect(d.probe, isA<ModelProbeUnasked>());
+      expect(await d.models(), isEmpty);
+      await (d.probe as ModelProbeAsking).done;
+      expect(d.probe, isA<ModelProbeFailed>());
+      expect(await d.models(), isEmpty);
+      await pumpEventQueue();
+      expect(cwds, hasLength(1));
+      expect(Directory(cwds.single).existsSync(), isFalse);
+      await d.refreshModels();
+      expect(cwds, hasLength(2));
+      expect((d.probe as ModelProbeFailed).reason, contains('not signed in'));
+    },
+  );
+
   group('Cursor CLI (derived from its ACP doc)', () {
     test(
       'the handshake: `acp`, Plan pinned to its plan mode, our server in session/new and no .cursor/mcp.json',
       () async {
         final r = rig(['cursor/handshake.jsonl']);
         final s = await r
-            .driver('cursor', 'cursor-agent', args: const ['--force'])
+            .driver('cursor', 'cursor-agent')
             .start(r.spec(mode: AgentMode.plan, briefing: _cursorBrief(_Host())));
         await r.channels.single.finished;
         r.expectPlayed();
@@ -1345,24 +1356,6 @@ void main() {
       await s.close();
     });
 
-    test('Cursor refuses a project whose .cursor folder allows tools or has hooks', () async {
-      final r = rig(const []);
-      final p = acpProfileOf('cursor-agent');
-      Directory('${r.work}/.cursor').createSync();
-      File('${r.work}/.cursor/cli.json').writeAsStringSync('{"permissions":{"allow":[],"deny":["Shell(rm)"]}}');
-      expect(await p.preflight(r.work), isNull);
-      File('${r.work}/.cursor/cli.json').writeAsStringSync('{"permissions":{"allow":["Shell(*)"]}}');
-      expect(await p.preflight(r.work), contains('(cli.json "permissions.allow")'));
-      File('${r.work}/.cursor/hooks.json').writeAsStringSync('{}');
-      expect(await p.preflight(r.work), contains('.cursor folder can let Cursor CLI act'));
-      expect(await p.preflight(r.work), contains('hooks.json'));
-      expect(acpCommand('cursor-agent', const ['--trust', '--approve-mcps', '--model', 'x']).args, [
-        'acp',
-        '--model',
-        'x',
-      ]);
-    });
-
     test("another program named `agent` isn't taken for Cursor CLI", () async {
       final agent = File('${tmp.path}/agent')..writeAsStringSync('#!/bin/sh\necho "agent 0.3.1"\n');
       await Process.run('chmod', ['+x', agent.path]);
@@ -1391,7 +1384,7 @@ void main() {
       final r = rig(['grok/cancel.jsonl']);
       final s = await r.driver('grok', 'grok').start(r.spec());
       final seen = _Seen(s);
-      expect(r.spawns.single.args, ['--permission-mode', 'default', '--no-auto-update', 'agent', 'stdio']);
+      expect(r.spawns.single.args, ['--no-auto-update', 'agent', 'stdio']);
       await s.send('go');
       await seen.untilStatus(ExecutionStatus.running);
       await s.interrupt();
@@ -1818,21 +1811,24 @@ void main() {
       return (s as NativeModes).nativeModes.first;
     }
 
-    test("Gemini's own modes: Default offered, Auto Edit and YOLO greyed", () async {
+    test("Gemini's own modes: all offered, each under the app's nearest name", () async {
       final r = rig(['gemini/turn.jsonl']);
       final s = await r.driver('gemini', 'gemini', args: const ['--acp']).start(r.spec(model: 'gemini-2.5-flash'));
       final set = await modesOf(s);
       expect(
-        [for (final m in set.modes) (m.id, m.label, m.blocked == null)],
-        [('default', 'Default', true), ('autoEdit', 'Auto Edit', false), ('yolo', 'YOLO', false)],
+        [for (final m in set.modes) (m.id, m.label, m.policy, m.blocked)],
+        [
+          ('default', 'Default', AgentMode.ask, null),
+          ('autoEdit', 'Auto Edit', AgentMode.autoEdit, null),
+          ('yolo', 'YOLO', AgentMode.fullAuto, null),
+        ],
       );
       expect(set.current, 'default');
-      expect(nativeModeOf(set.modes, 'default')!.policy, AgentMode.ask);
-      await expectLater((s as NativeModes).setNativeMode('yolo'), throwsA(isA<HarnessError>()));
+      await expectLater((s as NativeModes).setNativeMode('nope'), throwsA(isA<HarnessError>()));
       await s.close();
     });
 
-    test("Cursor's modes all ask or only read; Kiro's come from its mode config option", () async {
+    test("Cursor's modes under their own names; Kiro's come from its mode config option", () async {
       final c = rig(['cursor/handshake.jsonl']);
       final cursor = await c
           .driver('cursor', 'cursor-agent')
@@ -1848,34 +1844,68 @@ void main() {
       final k = rig(['acp/kiro_autopilot.jsonl']);
       final kiro = await k.driver('kiro', 'kiro-cli').start(k.spec());
       final ks = await modesOf(kiro);
+      // Kiro v3 starts with Autopilot on: its default mode says so, with Kiro's own words for it.
       expect(
-        [for (final m in ks.modes) (m.id, m.label, m.policy)],
-        [('vibe', 'Default', AgentMode.ask), ('plan', 'Plan', AgentMode.plan)],
+        [for (final m in ks.modes) (m.id, m.label, m.description, m.policy)],
+        [
+          ('vibe', 'Default · Autopilot', 'Agent executes tools without confirmation', AgentMode.ask),
+          ('plan', 'Plan', '', AgentMode.plan),
+        ],
       );
       expect(ks.current, 'vibe');
       await kiro.close();
     });
 
-    test('a pick is session/set_mode; the agent moving itself to a mode that never asks is set back', () async {
+    test('Kiro with Autopilot off (Supervised) shows its modes plainly', () {
+      List<Object?> config(String pilot) => [
+        {
+          'type': 'select',
+          'id': 'mode',
+          'category': 'mode',
+          'currentValue': 'vibe',
+          'options': [
+            {'value': 'vibe', 'name': 'Default'},
+            {'value': 'plan', 'name': 'Plan'},
+          ],
+        },
+        {
+          'type': 'select',
+          'id': 'autopilot',
+          'currentValue': pilot,
+          'options': [
+            {'value': 'on', 'name': 'Autopilot'},
+            {'value': 'off', 'name': 'Supervised'},
+          ],
+        },
+      ];
+      final kiro = acpProfileOf('kiro-cli');
+      expect([for (final m in acpModes(kiro, null, config('off')).modes) m.label], ['Default', 'Plan']);
+      final on = acpModes(kiro, null, config('on')).modes.first;
+      expect((on.label, on.description), ('Default · Autopilot', 'Runs tools without asking first.'));
+    });
+
+    test('a pick is session/set_mode; the agent moving itself to another mode stands', () async {
       final r = rig(['acp/goose_native_mode.jsonl']);
       final s = await r.driver('goose', 'goose').start(r.spec());
       final seen = _Seen(s);
       final set = await modesOf(s);
       expect(
+        [for (final m in set.modes) (m.id, m.policy, m.blocked)],
         [
-          for (final m in set.modes)
-            if (m.blocked == null) m.id,
+          ('auto', AgentMode.fullAuto, null),
+          ('approve', AgentMode.ask, null),
+          ('smart_approve', AgentMode.autoEdit, null),
+          ('chat', AgentMode.plan, null),
         ],
-        ['approve', 'chat'],
       );
       expect(set.current, 'approve');
       await (s as NativeModes).setNativeMode('chat');
-      await seen.until(() => seen.notices.isNotEmpty);
-      expect(seen.notices.single, contains('set back to Chat'));
+      await seen.until(() => r.channels.single.sent.where((m) => m['method'] == 'session/set_mode').length == 2);
       await s.send('go');
       await seen.untilStatus(ExecutionStatus.finished);
       r.expectPlayed();
-      expect((await modesOf(s)).current, 'chat');
+      expect(seen.notices, isEmpty);
+      expect((await modesOf(s)).current, 'auto');
       await s.close();
     });
   });

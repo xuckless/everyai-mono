@@ -25,6 +25,7 @@ import 'app_tools_io.dart';
 import 'screen_tools_io.dart';
 import 'window_capture_io.dart';
 import 'scrub.dart';
+import '../../live/agent_logins.dart';
 import '../../shells/terminal_text.dart';
 import 'untrusted_tools.dart';
 
@@ -391,6 +392,8 @@ final _specs = [
   // be lost; the model needs the actions and to know a pop-up becomes the active tab.
   // Prompt reason (own profile, sign-in pages): each session now has its own cookies, and a call on a sign-in page
   // waits for the user; without saying so the model would try to sign in itself or read the wait as a hang.
+  // Prompt reason (logins, fill_login): the user can now save logins for agents; the model needs to know it may sign
+  // in with them by name (it never sees the values) and that codes sent by text or email still need the user.
   _fn(
     ToolNames.browser,
     'Use a web page the way the user would, in the browser the user sees live in the Preview tab (this session\'s own '
@@ -403,12 +406,16 @@ final _specs = [
     'scroll {dy} · wait {selector? ms?} · screenshot {full_page?} · zoom {x, y, width, height, frame?} · '
     'back · forward · reload · eval {script: a JS expression; its JSON value comes back} · console · '
     'resize {width, height} · tabs · tab {index} · dialog {accept, text?} · upload {files, ref? or selector?} · '
-    'close.\n'
+    'logins · fill_login {login, field: username | password | code, ref? or selector?, submit?} · close.\n'
     '- A pop-up or a link to a new tab opens as a new tab and becomes the active one (a sign-in pop-up that closes '
     'itself hands back to the page that opened it); tabs lists them. While the page shows a dialog (alert, confirm, '
     'prompt, leave page?) it waits: answer it with dialog. upload gives an open file picker (or a file input) files '
-    'of the project, on local pages only. On a site\'s sign-in page the call waits while the user is asked to sign in '
-    '(never type passwords or codes yourself), then says how it went.\n'
+    'of the project, on local pages only.\n'
+    '- Signing in: logins lists the logins the user saved for you (name, site, username; the values stay hidden). '
+    'fill_login types one by name into a field (the focused one when no ref or selector): username, password, or '
+    'code (the current authenticator code, when the login has one). When the user asks you to sign in, do it. A '
+    'one-time code sent by text message or email needs the user: ask them for it. On a sign-in page with no saved '
+    'login, the call waits while the user is asked to sign in, then says how it went.\n'
     '- open and snapshot return the element list: one line per button, link, field and heading, as '
     '`[ref_3] button "Sign in"`. Click and type by ref: exact, and far cheaper than a picture. Refs hold until the '
     'next list.\n'
@@ -421,8 +428,8 @@ final _specs = [
     '- Every action reports what the page logged since the last one (console errors, uncaught exceptions, failed '
     'requests); console reads it alone.\n'
     '- The user may take control of the page in the Preview; your actions then wait until they give it back.\n'
-    '- It never types into password, one-time code or payment fields nor submits their forms, and eval must not '
-    'either, nor read cookies or storage: the user does that. Downloads land in .everyai/scratch/downloads.',
+    '- eval must not read cookies or storage, or type passwords: use fill_login. Some users keep password, code '
+    'and payment fields to fill_login only; type then says so. Downloads land in .everyai/scratch/downloads.',
     {
       'action': {
         'type': 'string',
@@ -446,10 +453,18 @@ final _specs = [
           'tab',
           'dialog',
           'upload',
+          'logins',
+          'fill_login',
           'close',
         ],
       },
       'url': {'type': 'string'},
+      'login': {'type': 'string', 'description': 'fill_login: the name of a saved login (logins lists them)'},
+      'field': {
+        'type': 'string',
+        'enum': ['username', 'password', 'code'],
+        'description': 'fill_login: which value to type (default password)',
+      },
       'ref': {'type': 'string', 'description': 'An element of the last element list (ref_3)'},
       'frame': {'type': 'string', 'description': 'The screenshot (f_N) that x and y are in'},
       'selector': {'type': 'string', 'description': 'A CSS selector'},
@@ -662,9 +677,22 @@ final class ToolRunner {
     this.loadLoginEnv = false,
     this.packages,
     this.lsp,
+    this._logins,
+    this.loginSession,
   }) : scrubber = scrubber ?? Scrubber.forProject(root, extra: [gateway.apiKey]);
 
   final String root;
+
+  /// What this session may do with the user's saved logins (read per call: the user's switches may change); null
+  /// reads it from the app (see [AgentLogins.accessFor]).
+  final LoginAccess Function()? _logins;
+
+  LoginAccess _loginAccess() =>
+      _logins?.call() ?? AgentLogins.accessFor(loginSession ?? sessionTag, hide: scrubber.rememberSecret);
+
+  /// The Code session whose page and screens this session's tools act on (its `liveId`: a fork's own, not the lead
+  /// it bills to): its logins are asked about and hidden there. Null: [sessionTag].
+  final String? loginSession;
 
   /// The session's language servers (diagnostics, and the hint after edits); null: none.
   final LspHub? lsp;
@@ -674,7 +702,7 @@ final class ToolRunner {
   final List<String> ownFolders;
 
   /// The session's headless browser; null (tests) means none.
-  final HeadlessBrowser? browser;
+  final BrowserPage? browser;
 
   /// Set for a research job: its sandbox (see [SessionSpec.researchSites]).
   final List<String>? researchSites;
@@ -771,16 +799,21 @@ final class ToolRunner {
       case ToolNames.webSearch:
         if (scrubber.leak((args['query'] as String? ?? '').trim()) case final what?) why = 'the query contains $what';
       case ToolNames.browser:
-        // open's URL, and the free text of eval (page JavaScript, which can send requests) and type.
-        final text = '${args['url'] ?? ''} ${args['script'] ?? ''} ${args['text'] ?? ''}'.trim();
+        // open's URL, and the free text of eval (page JavaScript, which can send requests) and type. With the user's
+        // "type into password fields" on, what type and press send is the agent's to choose (a password the user
+        // gave it in chat): only the URL and scripts are checked.
+        final typed = _loginAccess().policy.secretFields ? '' : '${args['text'] ?? ''} ${args['key'] ?? ''}';
+        final text = '${args['url'] ?? ''} ${args['script'] ?? ''} $typed'.trim();
         if (scrubber.leak(text) case final what?) {
           why = 'the browser would get $what';
         } else if (args['action'] != 'open') {
           if (dropSiteIn(text) case final site?) why = '$site is a site that takes uploads';
         }
       case ToolNames.app:
-        // Text typed into the app and eval scripts (code in the app, which can send requests).
-        final text = '${args['script'] ?? ''} ${args['text'] ?? ''}'.trim();
+        // Text typed into the app and eval scripts (code in the app, which can send requests); typed text as for the
+        // browser.
+        final typed = _loginAccess().policy.secretFields ? '' : '${args['text'] ?? ''} ${args['key'] ?? ''}';
+        final text = '${args['script'] ?? ''} $typed'.trim();
         if (scrubber.leak(text) case final what?) {
           why = 'the app would get $what';
         } else if (dropSiteIn(text) case final site?) {
@@ -914,6 +947,7 @@ final class ToolRunner {
           fit: _fit,
           scrub: scrubber.redact,
           windowPids: shell.processes,
+          logins: _loginAccess(),
         ),
         _ => ToolOutput('Error: there is no tool called $tool.', isError: true),
       };
@@ -993,7 +1027,7 @@ final class ToolRunner {
   Future<ToolOutput> _browse(Map<String, Object?> args) async {
     final b = browser;
     if (b == null) return const ToolOutput('Error: no browser in this session.', isError: true);
-    return runBrowser(b, args, root: root, vision: vision, fit: _fit, scrub: scrubber.redact);
+    return runBrowser(b, args, root: root, vision: vision, fit: _fit, scrub: scrubber.redact, logins: _loginAccess());
   }
 
   Future<ToolOutput> _screenshot(Map<String, Object?> args) async {

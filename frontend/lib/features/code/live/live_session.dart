@@ -20,9 +20,9 @@ final class LiveActivity {
   final String caption;
 }
 
-/// The driving lock of one live source (a session's browser, a simulator): the agent drives until the user takes
-/// control (any input on the view does), and the agent's actions wait meanwhile, up to [hold]. Give back tells
-/// the agent's next action what happened.
+/// The driving lock of one live source (a session's browser, a simulator): the agent drives, and the view is
+/// watch-only for the user, until they press Take control (clicking the view never does). The agent's actions wait
+/// meanwhile, up to [hold]. Give back tells the agent's next action what happened.
 final class LiveControl extends ChangeNotifier {
   LiveControl({this.hold = const Duration(minutes: 2)});
 
@@ -69,7 +69,17 @@ final class LiveControl extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// The user starts driving (their first input on the view, or Take control).
+  /// Bumped when the user tries to act on a view they don't hold; the bar pulses its Take control button.
+  final ValueNotifier<int> takeHints = ValueNotifier(0);
+
+  /// Whether the user's input may reach the source now. When not, hints at Take control (once per try).
+  bool mayAct() {
+    if (_phase.userMayAct) return true;
+    takeHints.value++;
+    return false;
+  }
+
+  /// The user starts driving (the Take control button, or the login wall's).
   void take() {
     if (_phase != LiveControlPhase.agentDriving) return;
     _released = Completer<void>();
@@ -107,6 +117,7 @@ final class LiveControl extends ChangeNotifier {
 
   @override
   void dispose() {
+    takeHints.dispose();
     _activity.close();
     _released?.complete();
     asking.value = [
@@ -127,6 +138,15 @@ enum LiveControlPhase {
 
   /// The user drives and an agent action waits for them to give control back.
   agentWaiting,
+}
+
+extension LiveControlPhaseAccess on LiveControlPhase {
+  /// Whether the user's pointer, wheel, keys and page-acting chrome reach the source in this phase.
+  bool get userMayAct => switch (this) {
+    LiveControlPhase.agentDriving => false,
+    LiveControlPhase.userDriving => true,
+    LiveControlPhase.agentWaiting => true,
+  };
 }
 
 /// What an agent's action gets while the user drives, after waiting [hold].
