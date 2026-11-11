@@ -88,6 +88,17 @@ void main() {
     expect(subagentsRunning(Transcript(items: [agent(taskTool)])), isFalse);
   });
 
+  test('Done clears by itself after two days, and keeps at most the newest eight', () {
+    final now = DateTime(2026, 11, 11, 12);
+    final since = {
+      'old': now.subtract(const Duration(days: 3)),
+      for (var i = 0; i < 9; i++) 'n$i': now.subtract(Duration(minutes: i)),
+    };
+    // The ninth newest goes over the cap; the three-day-old one is too old.
+    expect(staleDone(since, now: now), {'old', 'n8'});
+    expect(staleDone({'a': now}, now: now), isEmpty);
+  });
+
   test('top-level sessions plus detached forks, newest first', () {
     final all = [_s('a', day: 1), _s('b', day: 3), _s('f', parent: 'a', day: 2), _s('g', parent: 'a', day: 4)];
     expect([for (final s in boardSessions(all, const {})) s.id], ['b', 'a']);
@@ -144,6 +155,8 @@ void main() {
     final db = AppDatabase(NativeDatabase.memory());
     final prefs = await Preferences.load(db);
     prefs['code.projects'] = '[{"id":"p1","name":"Alpha","path":"/tmp/p1"}]';
+    // The Board has recorded finishes before: these count from now, not from when they started.
+    prefs[BoardDoneSince.key] = '{}';
     prefs['code.sessions'] = jsonEncode([
       _s('a').toJson(),
       _s('b', harness: 'claude-code').toJson(),
@@ -236,6 +249,8 @@ void main() {
     final db = AppDatabase(NativeDatabase.memory());
     final prefs = await Preferences.load(db);
     prefs['code.projects'] = '[{"id":"p1","name":"Alpha","path":"/tmp/p1"}]';
+    // The Board has recorded finishes before: these count from now, not from when they started.
+    prefs[BoardDoneSince.key] = '{}';
     prefs['code.sessions'] = jsonEncode([
       _s('a').toJson(),
       _s('q', day: 2).toJson(),

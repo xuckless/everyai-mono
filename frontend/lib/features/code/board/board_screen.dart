@@ -101,6 +101,26 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     if (back.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => ref.read(boardDismissedProvider.notifier).restore(back));
     }
+    // Old finishes clear by themselves ([staleDone]): Done keeps the last two days, at most [boardDoneKeep].
+    final known = ref.watch(boardDoneSinceProvider);
+    final doneSince = <String, DateTime>{
+      for (final s in all)
+        if (BoardColumn.of(status[s.id]!) == BoardColumn.done && !dismissed.contains(s.id))
+          s.id: switch (known?[s.id]) {
+            final ms? => DateTime.fromMillisecondsSinceEpoch(ms),
+            // Before the Board first recorded anything, from when it started; since then, from now.
+            null => known == null ? s.createdAt : DateTime.now(),
+          },
+    };
+    final stale = staleDone(doneSince, now: DateTime.now());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ref.read(boardDoneSinceProvider.notifier).sync({
+        for (final e in doneSince.entries)
+          if (!stale.contains(e.key)) e.key: e.value,
+      });
+      if (stale.isNotEmpty) ref.read(boardDismissedProvider.notifier).dismiss(stale);
+    });
 
     final harnesses = <String>{for (final s in all) s.harness}.toList();
     final harness = harnesses.contains(_harness) ? _harness : null;

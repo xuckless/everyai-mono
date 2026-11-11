@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:ui' show Color;
 
+import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/preferences.dart';
@@ -161,6 +162,53 @@ final class BoardDismissed extends Notifier<Set<String>> {
   void restore(Iterable<String> ids) {
     if (ids.any(state.contains)) _set({...state}..removeAll(ids));
   }
+}
+
+/// When the Board first saw each session in Done (epoch ms); Preferences `code.board.done_since`. A session that
+/// leaves Done is forgotten, so its next finish counts from then.
+final boardDoneSinceProvider = NotifierProvider<BoardDoneSince, Map<String, int>?>(BoardDoneSince.new);
+
+final class BoardDoneSince extends Notifier<Map<String, int>?> {
+  static const key = 'code.board.done_since';
+
+  /// Null until the Board first records anything (sessions Done before then count from when they were created).
+  @override
+  Map<String, int>? build() {
+    final raw = ref.read(preferencesProvider)[key];
+    if (raw == null) return null;
+    try {
+      return {for (final e in (jsonDecode(raw) as Map<String, Object?>).entries) e.key: (e.value as num).toInt()};
+    } on Object {
+      return {};
+    }
+  }
+
+  /// Records [done] (id → when it counts from) for the ids not yet known, and forgets known ids not in [done].
+  void sync(Map<String, DateTime> done) {
+    final before = state ?? const <String, int>{};
+    final next = {for (final MapEntry(key: id, value: at) in done.entries) id: before[id] ?? at.millisecondsSinceEpoch};
+    if (state != null && mapEquals(next, before)) return;
+    state = next;
+    ref.read(preferencesProvider)[key] = jsonEncode(next);
+  }
+}
+
+/// How long a finished session stays in Done, and how many stay at most; older ones clear by themselves.
+const boardDoneFor = Duration(days: 2);
+const boardDoneKeep = 8;
+
+/// The Done sessions to clear by themselves: those done longer than [maxAge] ago, and past the newest [keep].
+Set<String> staleDone(
+  Map<String, DateTime> doneSince, {
+  required DateTime now,
+  Duration maxAge = boardDoneFor,
+  int keep = boardDoneKeep,
+}) {
+  final newest = doneSince.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+  return {
+    for (final (i, e) in newest.indexed)
+      if (i >= keep || now.difference(e.value) > maxAge) e.key,
+  };
 }
 
 /// The Board's column widths as shares of its width (three, summing to 1); Preferences `code.board.columns`.
