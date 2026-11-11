@@ -24,7 +24,7 @@ abstract interface class WebviewNative {
   Stream<WebviewNativeEvent> get events;
 
   /// Finds the webview whose page carries [token] (just set by the browser) and keeps hold of it.
-  Future<bool> bind(String token);
+  Future<bool> bind(String token, {String? viewId});
   Future<void> release(String token);
 
   /// The cookies of [token]'s store; [urls] are the addresses to read when the platform reads by address.
@@ -44,6 +44,9 @@ abstract interface class WebviewNative {
 
   /// While [locked] (the agent has the view), keys typed in [token]'s view are kept from it.
   Future<void> setLocked(String token, bool locked);
+
+  /// While [on], a new offscreen webview goes into the app's window even when the app isn't the active one.
+  Future<void> lendWindow(bool on);
 
   /// While [shown], the browser shortcuts typed in [token]'s view come as [events].
   Future<void> setShown(String token, bool shown);
@@ -73,7 +76,8 @@ final class MacWebviewNative implements WebviewNative {
   Stream<WebviewNativeEvent> get events => _events.stream;
 
   @override
-  Future<bool> bind(String token) async => await _channel.invokeMethod<bool>('bind', {'token': token}) ?? false;
+  Future<bool> bind(String token, {String? viewId}) async =>
+      await _channel.invokeMethod<bool>('bind', {'token': token, 'viewId': ?viewId}) ?? false;
 
   @override
   Future<void> release(String token) => _channel.invokeMethod<void>('release', {'token': token});
@@ -114,6 +118,9 @@ final class MacWebviewNative implements WebviewNative {
       _channel.invokeMethod<void>('lock', {'token': token, 'locked': locked});
 
   @override
+  Future<void> lendWindow(bool on) => _channel.invokeMethod<void>('lend', {'on': on});
+
+  @override
   Future<void> setShown(String token, bool shown) =>
       _channel.invokeMethod<void>('shown', {'token': token, 'shown': shown});
 }
@@ -133,7 +140,7 @@ final class PluginWebviewNative implements WebviewNative {
   Stream<WebviewNativeEvent> get events => const Stream.empty();
 
   @override
-  Future<bool> bind(String token) async => true;
+  Future<bool> bind(String token, {String? viewId}) async => true;
 
   @override
   Future<void> release(String token) async {}
@@ -196,6 +203,9 @@ final class PluginWebviewNative implements WebviewNative {
 
   @override
   Future<void> setLocked(String token, bool locked) async {}
+
+  @override
+  Future<void> lendWindow(bool on) async {}
 
   @override
   Future<void> setShown(String token, bool shown) async {}

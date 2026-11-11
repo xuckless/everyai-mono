@@ -268,10 +268,17 @@ final class WebviewBrowser implements BrowserPage {
       onJsAlert: (c, r) => _onAlert(t, r),
       onJsConfirm: (c, r) => _onConfirm(t, r),
       onJsPrompt: (c, r) => _onPrompt(t, r),
-      onDownloadStartRequest: (c, r) => unawaited(_download(t, r.url, r.suggestedFilename)),
+      onDownloadStartRequest: (c, r) => _onDownloadRequest(t, r),
+      onNavigationResponse: (c, r) async => _onNavigationResponse(t, r),
     );
     try {
-      await t._headless!.run();
+      // The plugin puts the view in the app's main window, which there is none of while the user is in another app.
+      await _native!.lendWindow(true);
+      try {
+        await t._headless!.run();
+      } finally {
+        await _native!.lendWindow(false);
+      }
       await created.future.timeout(const Duration(seconds: 15));
     } on Object catch (e) {
       _tabs.remove(t);
@@ -305,7 +312,8 @@ final class WebviewBrowser implements BrowserPage {
     onJsAlert: (c, r) => _onAlert(t, r),
     onJsConfirm: (c, r) => _onConfirm(t, r),
     onJsPrompt: (c, r) => _onPrompt(t, r),
-    onDownloadStartRequest: (c, r) => unawaited(_download(t, r.url, r.suggestedFilename)),
+    onDownloadStartRequest: (c, r) => _onDownloadRequest(t, r),
+    onNavigationResponse: (c, r) async => _onNavigationResponse(t, r),
   );
 
   /// The Preview put [t]'s view on screen: its widget's controller drives it now.
@@ -378,7 +386,12 @@ final class WebviewBrowser implements BrowserPage {
           source: 'window.__everyaiToken = ${jsonEncode(t.token)}; true',
           contentWorld: _world,
         );
-        if (await _native!.bind(t.token)) return;
+        // By the plugin's view id (its headless id); pages that navigate away lose the token set above.
+        if (await _native!.bind(t.token, viewId: t._headless?.id)) {
+          // Out of the plugin's nearly transparent holder, where WebKit counts the page hidden and slows it.
+          await _native!.park(t.token, _agentW, _agentH);
+          return;
+        }
       } on Object {
         // Loading: try again.
       }
@@ -395,6 +408,7 @@ final class WebviewBrowser implements BrowserPage {
     javaScriptCanOpenWindowsAutomatically: true,
     supportMultipleWindows: true,
     useOnDownloadStart: true,
+    useOnNavigationResponse: true,
     isInspectable: kDebugMode,
     allowsBackForwardNavigationGestures: true,
     mediaPlaybackRequiresUserGesture: true,
@@ -821,6 +835,18 @@ final class WebviewBrowser implements BrowserPage {
     return null;
   }
 
+  /// [script]'s value in tab [tabId]'s page (the live rig reads hidden tabs with it).
+  @visibleForTesting
+  Future<Object?> debugEvaluateIn(String tabId, String script) {
+    final t = _tab(tabId);
+    if (t == null) throw const TabClosedError();
+    return _on(t, (c) => c.evaluateJavascript(source: script));
+  }
+
+  /// Each tab's state, for the rig's notes.
+  @visibleForTesting
+  String get tabsDebug => [for (final t in _tabs) '${t.id}:${t._life.name}'].join(' ');
+
   // ------------------------------------------------------------------------------------------------- pictures
 
   /// The viewport's picture as the platform takes it.
@@ -1167,6 +1193,34 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
 
   @visibleForTesting
   Duration downloadWait = const Duration(seconds: 20);
+
+  /// Main-frame responses the page shows, or that went to [_download] already: the plugin also reports every
+  /// main-frame response that isn't text as a download, which these answer.
+  final _decided = <String>{};
+
+  /// A page's response: one sent as an attachment, or that the view can't show, is downloaded instead.
+  NavigationResponseAction _onNavigationResponse(WebTab t, NavigationResponse r) {
+    final url = r.response?.url;
+    if (!r.isForMainFrame || url == null) return NavigationResponseAction.ALLOW;
+    final headers = {
+      for (final e in (r.response?.headers ?? const <String, String>{}).entries) e.key.toLowerCase(): e.value,
+    };
+    final attachment = (headers['content-disposition'] ?? '').toLowerCase().startsWith('attachment');
+    final key = url.toString();
+    _decided.add(key);
+    Timer(const Duration(seconds: 2), () => _decided.remove(key));
+    if (attachment || !r.canShowMIMEType) {
+      unawaited(_download(t, url, r.response?.suggestedFilename));
+      return NavigationResponseAction.CANCEL;
+    }
+    return NavigationResponseAction.ALLOW;
+  }
+
+  /// A download the view hands over (a link with `download`, a script's blob), unless its response was decided.
+  void _onDownloadRequest(WebTab t, DownloadStartRequest r) {
+    if (_decided.remove(r.url.toString())) return;
+    unawaited(_download(t, r.url, r.suggestedFilename));
+  }
 
   /// The page started a download (the OS webview hands it over): the app fetches it with the session's cookies.
   Future<void> _download(WebTab t, WebUri url, String? suggested) async {

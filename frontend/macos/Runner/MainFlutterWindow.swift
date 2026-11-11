@@ -326,7 +326,7 @@ final class WebviewBridge: NSObject {
   static weak var shared: WebviewBridge?
 
   private let channel: FlutterMethodChannel
-  private weak var window: NSWindow?
+  fileprivate weak var window: NSWindow?
   private weak var flutterView: NSView?
   private var views: [String: WKWebView] = [:]
   private var locked = Set<String>()
@@ -334,11 +334,11 @@ final class WebviewBridge: NSObject {
   private var monitor: Any?
   private let world = WKContentWorld.world(name: "everyai")
 
-  /// Holds parked views offscreen: zero-sized (so it takes no clicks) and nearly transparent, like the plugin's
-  /// own headless views, so WebKit keeps them running and drawing.
+  /// Holds parked views: in the window's frame view, under the Flutter view (which covers them and takes every
+  /// click), at full opacity, so WebKit counts them as visible and runs their pages at full speed.
   private lazy var parking: NSView = {
     let v = NSView(frame: .zero)
-    v.alphaValue = 0.01
+    v.autoresizingMask = [.width, .height]
     return v
   }()
 
@@ -349,9 +349,11 @@ final class WebviewBridge: NSObject {
     super.init()
     WebviewBridge.shared = self
     WebviewBridge.addMenuHook()
+    WebviewBridge.addWindowLending()
     channel.setMethodCallHandler { [weak self] call, result in self?.handle(call, result) }
     monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
-      self?.filter(event) ?? event
+      guard let self else { return event }
+      return self.filter(event)
     }
   }
 
@@ -360,7 +362,7 @@ final class WebviewBridge: NSObject {
     let token = a["token"] as? String ?? ""
     switch call.method {
     case "bind":
-      bind(token, result)
+      bind(token, viewId: a["viewId"] as? String, result)
     case "release":
       views[token] = nil
       locked.remove(token)
@@ -396,6 +398,12 @@ final class WebviewBridge: NSObject {
       store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {
         result(nil)
       }
+    case "lend":
+      WebviewBridge.lending = max(0, WebviewBridge.lending + (a["on"] as? Bool == true ? 1 : -1))
+      result(nil)
+    case "debug":
+      WebviewBridge.debug = a["on"] as? Bool == true
+      result(nil)
     case "park":
       park(token, width: a["width"] as? Int ?? 1280, height: a["height"] as? Int ?? 800, attempt: 0, result)
     case "unfocus":
@@ -417,14 +425,20 @@ final class WebviewBridge: NSObject {
     }
   }
 
-  private func bind(_ token: String, _ result: @escaping FlutterResult) {
+  private func bind(_ token: String, viewId: String?, _ result: @escaping FlutterResult) {
     if views[token] != nil { return result(true) }
     var all: [WKWebView] = []
     func walk(_ v: NSView) {
       if let w = v as? WKWebView { all.append(w) }
       for s in v.subviews { walk(s) }
     }
-    for w in NSApp.windows { if let c = w.contentView { walk(c) } }
+    // From the frame view: parked views sit beside the content view.
+    for w in NSApp.windows { if let c = w.contentView { walk(c.superview ?? c) } }
+    // The plugin's own id for the view (internal to it, read by reflection): exact, whatever page it shows.
+    if let viewId, let w = all.first(where: { pluginId(of: $0) == viewId }) {
+      views[token] = w
+      return result(true)
+    }
     let group = DispatchGroup()
     var found: WKWebView?
     for w in all where !views.values.contains(where: { $0 === w }) {
@@ -435,32 +449,75 @@ final class WebviewBridge: NSObject {
       }
     }
     group.notify(queue: .main) { [weak self] in
+      if WebviewBridge.debug {
+        print("EVERYAI bind \(token): \(all.count) views, found=\(found != nil) in \(NSApp.windows.count) windows")
+      }
       if let f = found { self?.views[token] = f }
       result(found != nil)
     }
   }
 
-  /// The view's container (the plugin's view) goes into [parking] once the engine has let go of it (it leaves the
-  /// window a frame after the Preview's widget goes); tried for up to three seconds.
+  /// The view's container (the plugin's view) goes into [parking]: a headless view the plugin left in its own
+  /// nearly transparent holder at once, a view the Preview let go of once the engine has (it leaves the window a frame
+  /// after the widget goes); tried for up to three seconds.
   private func park(_ token: String, width: Int, height: Int, attempt: Int, _ result: @escaping FlutterResult) {
-    guard let wv = views[token], let window = window else { return result(false) }
+    guard let wv = views[token], let window = window, let content = window.contentView,
+          let frameView = content.superview else { return result(false) }
     let container = wv.superview ?? wv
-    if container.superview === parking { return result(true) }
-    if container.window != nil {
+    let size = NSRect(x: 0, y: 0, width: width, height: height)
+    if container.superview === parking {
+      container.frame = size
+      return result(true)
+    }
+    let holder = container.superview
+    let headless = holder != nil && holder!.frame.size == .zero && holder!.superview === content
+    if container.window != nil && !headless {
       // Still on screen: the engine hasn't let go yet, or the Preview shows it again.
-      if attempt >= 60 { return result(false) }
+      if attempt >= 60 {
+        if WebviewBridge.debug {
+          print("EVERYAI park \(token) gave up: holder=\(String(describing: holder.map { type(of: $0) })) hidden=\(container.isHiddenOrHasHiddenAncestor) chain=\(chain(container))")
+        }
+        return result(false)
+      }
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
         self?.park(token, width: width, height: height, attempt: attempt + 1, result)
       }
       return
     }
-    if parking.superview == nil, let content = window.contentView {
-      content.addSubview(parking, positioned: .below, relativeTo: nil)
+    if parking.superview == nil {
+      parking.frame = content.frame
+      frameView.addSubview(parking, positioned: .below, relativeTo: content)
     }
     container.removeFromSuperview()
-    container.frame = NSRect(x: 0, y: 0, width: width, height: height)
+    container.alphaValue = 1
+    container.frame = size
     parking.addSubview(container)
+    if headless { holder?.removeFromSuperview() }
+    if WebviewBridge.debug {
+      print("EVERYAI park \(token) parked (headless=\(headless), attempt \(attempt))")
+    }
     result(true)
+  }
+
+  /// The `id` the plugin gives its webview (its headless id or platform view id).
+  private func pluginId(of w: WKWebView) -> String? {
+    for child in Mirror(reflecting: w).children where child.label == "id" {
+      // `Any?` holding a String (headless) or a number (a platform view).
+      if let s = child.value as? String { return s }
+      if let o = child.value as? String? { return o }
+      return String(describing: child.value)
+    }
+    return nil
+  }
+
+  private func chain(_ v: NSView) -> String {
+    var out: [String] = []
+    var at: NSView? = v
+    while let x = at {
+      out.append("\(type(of: x))\(x.isHidden ? "[h]" : "")\(x.frame.size == .zero ? "[0]" : "")")
+      at = x.superview
+    }
+    return out.joined(separator: " < ")
   }
 
   private func unfocus(_ token: String) {
@@ -477,7 +534,12 @@ final class WebviewBridge: NSObject {
 
   /// Keys typed in a session view: kept from it while the agent has it; the browser's own shortcuts go to Dart.
   private func filter(_ event: NSEvent) -> NSEvent? {
-    guard let token = tokenOwning(event.window?.firstResponder as? NSView) else { return event }
+    // Posted events may carry no window: the key window's first responder gets them.
+    let target = (event.window ?? NSApp.keyWindow ?? window)?.firstResponder as? NSView
+    guard let token = tokenOwning(target) else { return event }
+    if WebviewBridge.debug {
+      print("EVERYAI key \(event.type.rawValue) responder=\(String(describing: target.map { type(of: $0) })) locked=\(locked.contains(token))")
+    }
     if locked.contains(token) {
       if event.type == .keyDown { channel.invokeMethod("blocked", arguments: ["token": token]) }
       return nil
@@ -505,6 +567,24 @@ final class WebviewBridge: NSObject {
 
   @objc private func ask(_ sender: NSMenuItem) {
     channel.invokeMethod("ask", arguments: sender.representedObject)
+  }
+
+  /// While above zero, `NSApp.mainWindow` is this window even when the app isn't active: the plugin puts a new
+  /// headless webview in the main window, and with none (the user is in another app) it would run in no window at
+  /// all (unfindable, and throttled).
+  fileprivate static var lending = 0
+  private static var lendingAdded = false
+
+  /// The live rig's trace of keys reaching session views.
+  static var debug = false
+
+  private static func addWindowLending() {
+    if lendingAdded { return }
+    lendingAdded = true
+    let cls: AnyClass = NSApplication.self
+    guard let original = class_getInstanceMethod(cls, #selector(getter: NSApplication.mainWindow)),
+          let ours = class_getInstanceMethod(cls, #selector(getter: NSApplication.everyaiMainWindow)) else { return }
+    method_exchangeImplementations(original, ours)
   }
 
   private static var hooked = false
@@ -564,5 +644,14 @@ final class WebviewBridge: NSObject {
     if m["httpOnly"] as? Bool == true { p[HTTPCookiePropertyKey("HttpOnly")] = "TRUE" }
     if let s = m["sameSite"] as? String { p[.sameSitePolicy] = s.lowercased() }
     return HTTPCookie(properties: p)
+  }
+}
+
+extension NSApplication {
+  /// Swapped with `mainWindow` (see `WebviewBridge.addWindowLending`): calling it calls the original.
+  @objc var everyaiMainWindow: NSWindow? {
+    let w = self.everyaiMainWindow
+    if w == nil, WebviewBridge.lending > 0 { return WebviewBridge.shared?.window }
+    return w
   }
 }
