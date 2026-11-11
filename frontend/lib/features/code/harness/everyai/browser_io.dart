@@ -279,9 +279,10 @@ const noBrowserMessage =
 /// browser or cookies), started on first use and stopped with the session.
 /// The agent opens pages (`http://localhost…`, `file://…`), clicks and types
 /// like a user (real mouse and key events), takes screenshots, runs scripts
-/// and reads what the page logged. It never types into password or payment
-/// fields nor submits their forms ([_guardJs]), and its downloads land in
-/// [downloadDir].
+/// and reads what the page logged. Its type, press and click refuse password,
+/// one-time code and payment fields and their forms ([_guardJs]) unless the
+/// caller lifts the guard (`guarded: false`: the user's switch, or a saved
+/// login through [typeSecret]), and its downloads land in [downloadDir].
 final class HeadlessBrowser implements StreamedPage {
   HeadlessBrowser({required this.profileDir, this.executable, this.jarHome}) : attachTo = null;
 
@@ -1794,8 +1795,17 @@ final class HeadlessBrowser implements StreamedPage {
 
   /// A real mouse click (press and release) on [selector] or at [x],[y]: it
   /// goes through overlays the way a user's click would.
+  /// [guarded] false (the user lets agents type into password fields): a button that submits a sign-in or payment
+  /// form is clicked too.
   @override
-  Future<String> click({String? selector, String? ref, double? x, double? y, int count = 1}) async {
+  Future<String> click({
+    String? selector,
+    String? ref,
+    double? x,
+    double? y,
+    int count = 1,
+    bool guarded = true,
+  }) async {
     await _start();
     final at = ref != null
         ? await refCentre(ref)
@@ -1803,9 +1813,11 @@ final class HeadlessBrowser implements StreamedPage {
         ? await _centre(selector)
         : (x: x ?? 0, y: y ?? 0);
     control.report(LiveActivity('click', x: at.x, y: at.y, caption: count > 1 ? 'Double-clicking' : 'Clicking'));
-    await _refuse('''
+    if (guarded) {
+      await _refuse('''
 const w = submits(deep(${at.x}, ${at.y}));
 return w ? 'that button submits a form with ' + w : null;''', focus: false);
+    }
     final before = await _here();
     // What is under the point before the click (a click may re-lay the page out).
     final hit = await evaluate(
@@ -1848,28 +1860,63 @@ return w ? 'that button submits a form with ' + w : null;''', focus: false);
     }
   }
 
-  /// Types [text] into [selector] (clicked first) or the focused element.
+  /// Types [text] into [selector] (clicked first) or the focused element. [guarded] false (the user lets agents type
+  /// into password fields): password, one-time code and payment fields take it too.
   @override
-  Future<String> type(String text, {String? selector, String? ref, bool submit = false}) async {
+  Future<String> type(String text, {String? selector, String? ref, bool submit = false, bool guarded = true}) async {
     await _start();
-    if (selector != null || ref != null) await click(selector: selector, ref: ref);
+    if (selector != null || ref != null) await click(selector: selector, ref: ref, guarded: guarded);
     control.report(const LiveActivity('type', caption: 'Typing'));
-    await _refuse(
-      '''
+    if (guarded) {
+      await _refuse(
+        '''
 const el = focused();
 const f = $submit && el && (el.form || (el.closest && el.closest('form')));
 return sensitive(el) ? 'the field is ' + sensitive(el) : f && sensitiveForm(f) ? 'its form has ' + sensitiveForm(f) : null;''',
-    );
+      );
+    }
     await _send('Input.insertText', {'text': text});
-    if (submit) await press('Enter');
+    if (submit) await press('Enter', guarded: guarded);
     return 'Typed ${text.length} characters${submit ? ' and pressed Enter' : ''}.';
+  }
+
+  /// Types a saved login's [value] into [selector] or [ref] (clicked first) or the focused field, replacing what the
+  /// field held, and presses Enter with [submit]. No field guard (the user saved the login for agents), and the value
+  /// goes nowhere but the page: not in the activity caption, the page log, or the result.
+  @override
+  Future<String> typeSecret(String value, {String? selector, String? ref, bool submit = false}) async {
+    await _start();
+    if (selector != null || ref != null) await click(selector: selector, ref: ref, guarded: false);
+    control.report(const LiveActivity('type', caption: 'Filling a saved login'));
+    // Select what the field holds, so the value replaces it (through shadow roots and same-origin frames).
+    await _guard('''
+const el = focused();
+try { if (el && typeof el.select === 'function') el.select(); } catch (_) {}
+return null;''', focus: false);
+    await _send('Input.insertText', {'text': value});
+    if (submit) await press('Enter', guarded: false);
+    return 'Filled the field${submit ? ' and pressed Enter' : ''}.';
+  }
+
+  /// What the focused field is, for a fill without a target: "a password field", "a one-time code field", or null
+  /// for an ordinary one ('' when nothing takes text has the focus).
+  @override
+  Future<String?> focusedFieldKind() async {
+    await _start();
+    final v = await evaluate('''(() => { $_guardJs
+const el = focused();
+if (!el || !(el.isContentEditable || /^(input|textarea)\$/i.test(el.tagName || ''))) return '';
+return sensitive(el); })()''');
+    return v is String ? v : null;
   }
 
   /// A key press: a key's name ("Enter", "ArrowUp", "Space"), one character ("a", "W", "@"), or a combination
   /// ("Shift+Tab", "Control+a", "Meta+Shift+z"). Characters press the US key that types them, with Shift when it
   /// takes it, so pages that read `key`, `code` or `shiftKey` see what a keyboard sends.
+  /// [guarded] false (the user lets agents type into password fields): keys reach those fields and Enter submits
+  /// their forms.
   @override
-  Future<String> press(String key) async {
+  Future<String> press(String key, {bool guarded = true}) async {
     await _start();
     final k = parseKeyPress(key);
     if (k == null) {
@@ -1887,7 +1934,9 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : f && sensitiveForm(f) ?
         if (editingCommandFor(k.code, shift: k.modifiers & cdpShift != 0) case final c?) 'commands': [c],
     };
     final text = k.text ?? '';
-    if (k.code == 'Enter' || k.code == 'NumpadEnter') {
+    if (!guarded) {
+      // The user lets agents type into any field.
+    } else if (k.code == 'Enter' || k.code == 'NumpadEnter') {
       await _refuse('''
 const el = focused();
 const f = el && (el.form || (el.closest && el.closest('form')));
@@ -1989,9 +2038,9 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     final why = await _guard(check, focus: focus);
     if (why == null) return;
     throw BrowserError(
-      'Refused: $why. The browser tool never types passwords, one-time codes or payment details and never submits '
-      'their forms: the user does that. To test a sign-in or checkout of the app you build, check it another way '
-      '(a test, or its API) or ask the user.',
+      'Refused: $why. The user keeps password, one-time code and payment fields to saved logins (Settings > Code > '
+      'Logins): fill a sign-in with fill_login (logins lists them), or ask the user to type it. A checkout is for '
+      'the user.',
     );
   }
 

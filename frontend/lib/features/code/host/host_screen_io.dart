@@ -4,6 +4,7 @@ import 'dart:io';
 
 import '../drivers/driver_process.dart';
 import '../harness/everyai/browser_io.dart';
+import '../live/agent_logins.dart';
 import '../live/live_browsers.dart';
 import '../harness/everyai/screen_tools_io.dart';
 import '../harness/everyai/scrub.dart';
@@ -36,7 +37,7 @@ ScreenAccess screenAccess() => ScreenAccess(
     sessionTag: sessionTag,
     logPath: logPath,
   ),
-  browser: (liveId, profileDir) => _Browser(LiveBrowsers.forSession(liveId, profileDir: profileDir)),
+  browser: (liveId, profileDir) => _Browser(LiveBrowsers.forSession(liveId, profileDir: profileDir), liveId),
   app: (args, {required session, required root, required pids}) async {
     // An outside lead's own background commands write their output to files: an app's address may be there.
     for (final pid in pids) {
@@ -51,6 +52,7 @@ ScreenAccess screenAccess() => ScreenAccess(
         fit: (text, _) => _cut(text),
         scrub: Scrubber.forProject(root).redact,
         windowPids: () async => pids,
+        logins: AgentLogins.accessFor(session, askFor: _outsideWait),
       ),
     );
   },
@@ -63,10 +65,11 @@ ScreenResult _result(ToolOutput o) =>
 /// The host's handle on a session's shared page: dropping it (Stop, the session closing) leaves the page for the
 /// Preview; the app's quit stops the browser.
 final class _Browser implements ScreenBrowser {
-  _Browser(this._b) {
+  _Browser(this._b, this._session) {
     trackDriverClose(close);
   }
   final BrowserPage _b;
+  final String _session;
 
   @override
   Future<ScreenResult> run(Map<String, Object?> args, String root) async => _result(
@@ -79,13 +82,17 @@ final class _Browser implements ScreenBrowser {
       scrub: Scrubber.forProject(root).redact,
       // An outside CLI may give up on a tool call that runs for long: the wait is shorter, and the result says to
       // check again.
-      loginHold: const Duration(minutes: 3),
+      loginHold: _outsideWait,
+      logins: AgentLogins.accessFor(_session, askFor: _outsideWait),
     ),
   );
 
   @override
   Future<void> close() async => untrackDriverClose(close);
 }
+
+/// How long an outside lead's call waits on the user (a sign-in, an Allow): an outside CLI may give up on a long call.
+const _outsideWait = Duration(minutes: 3);
 
 /// An eval result as long as a host result should be.
 String _cut(String text) => text.length <= 30000 ? text : '${text.substring(0, 30000)}\n[… cut]';

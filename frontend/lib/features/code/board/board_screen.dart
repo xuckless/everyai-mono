@@ -25,6 +25,7 @@ import '../workflows/workflow_runs.dart' show workflowRunsProvider;
 import '../domain/session_work.dart';
 import '../ui/stop_all_button.dart';
 import '../ui/panes/browser_sign_ins.dart';
+import '../ui/panes/login_ask_card.dart';
 import '../ui/console/console_state.dart';
 import '../workflows/workflow_engine.dart' show WorkflowStatus;
 
@@ -588,6 +589,10 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                 ).settle(),
               ),
             BoardWork(sessionId: info.id),
+            Padding(
+              padding: const EdgeInsets.only(left: 36, top: 8),
+              child: LoginAskCard(sessionId: info.id),
+            ),
             Padding(
               padding: const EdgeInsets.only(left: 36, top: 8),
               child: LoginWallCard(

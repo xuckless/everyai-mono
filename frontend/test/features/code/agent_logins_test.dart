@@ -1,0 +1,240 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:cryptography/cryptography.dart';
+import 'package:every_ai/features/code/harness/everyai/app_tools_io.dart' show appFill;
+import 'package:every_ai/features/code/live/agent_logins.dart';
+import 'package:every_ai/features/code/live/app_view.dart' show AppError;
+import 'package:every_ai/features/code/live/browser_jar.dart';
+import 'package:every_ai/features/code/live/login_import.dart';
+import 'package:every_ai/features/code/live/totp.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  group('TOTP (RFC 6238 vectors)', () {
+    final at = {
+      59: ['94287082', '46119246', '90693936'],
+      1111111109: ['07081804', '68084774', '25091201'],
+      1234567890: ['89005924', '91819424', '93441116'],
+      20000000000: ['65353130', '77737706', '47863826'],
+    };
+    final keys = [
+      (TotpHash.sha1, '12345678901234567890'),
+      (TotpHash.sha256, '12345678901234567890123456789012'),
+      (TotpHash.sha512, '1234567890123456789012345678901234567890123456789012345678901234'),
+    ];
+    for (final MapEntry(key: t, value: codes) in at.entries) {
+      test('T=$t', () {
+        for (final (i, (hash, key)) in keys.indexed) {
+          final spec = (key: utf8.encode(key), hash: hash, digits: 8, period: 30);
+          expect(totpCode(spec, at: DateTime.fromMillisecondsSinceEpoch(t * 1000, isUtc: true)), codes[i]);
+        }
+      });
+    }
+
+    test('base32 secrets and otpauth addresses', () {
+      // "12345678901234567890" in base32.
+      const b32 = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
+      expect(utf8.decode(base32Decode('gezd gnbv-gy3t qojq gezdgnbvgy3tqojq')!), '12345678901234567890');
+      final plain = parseTotp(b32)!;
+      expect((plain.hash, plain.digits, plain.period), (TotpHash.sha1, 6, 30));
+      expect(totpCode(plain, at: DateTime.fromMillisecondsSinceEpoch(59000)), '287082');
+      final uri = parseTotp('otpauth://totp/Acme:ada?secret=$b32&issuer=Acme&algorithm=SHA256&digits=8&period=60')!;
+      expect((uri.hash, uri.digits, uri.period), (TotpHash.sha256, 8, 60));
+      expect(parseTotp('not a secret!'), isNull);
+      expect(parseTotp('otpauth://hotp/x?secret=$b32'), isNull);
+    });
+  });
+
+  group('CSV import', () {
+    test('Chrome', () {
+      final r = parseLoginCsv(
+        'name,url,username,password,note\r\n'
+        'GitHub,https://github.com/login,ada,"pa,ss ""q""",\r\n'
+        'Empty,https://x.com,bob,,\r\n',
+      );
+      expect(r.format, LoginCsvFormat.chrome);
+      expect(r.logins.single.password, 'pa,ss "q"');
+      expect(r.logins.single.title, 'GitHub');
+      expect(r.skipped, 1);
+    });
+
+    test('Safari, with a code and a note across lines', () {
+      final r = parseLoginCsv(
+        'Title,URL,Username,Password,Notes,OTPAuth\n'
+        'Acme,https://acme.test/,ada@acme.test,s3cret,"line 1\nline 2",otpauth://totp/Acme?secret=GEZDGNBVGY3TQOJQ\n',
+      );
+      expect(r.format, LoginCsvFormat.safari);
+      expect(r.logins.single.totp, startsWith('otpauth://'));
+      expect(r.logins.single.username, 'ada@acme.test');
+    });
+
+    test('1Password, case and column order as exported', () {
+      final r = parseLoginCsv(
+        '﻿title,website,username,password,otpauth,favorite,archived,tags,notes\n'
+        'Work,https://app.work.io,ada,pw-1,,false,false,,\n',
+      );
+      expect(r.format, LoginCsvFormat.onePassword);
+      expect(r.logins.single.url, 'https://app.work.io');
+      expect(r.logins.single.totp, isNull);
+    });
+
+    test('no password column', () {
+      expect(() => parseLoginCsv('a,b\n1,2\n'), throwsFormatException);
+    });
+  });
+
+  group('the store', () {
+    late Directory tmp;
+    late SealedStore sealed;
+    late AgentLogins store;
+    setUp(() {
+      tmp = Directory.systemTemp.createTempSync('logins');
+      sealed = SealedStore('${tmp.path}/sealed', () async => SecretKey(List.filled(32, 7)));
+      store = AgentLogins(sealed);
+    });
+    tearDown(() => tmp.deleteSync(recursive: true));
+
+    test('sealed round trip; the index holds no secrets', () async {
+      final e = await store.save(
+        name: 'GitHub (work)',
+        url: 'https://gist.github.com/login',
+        username: 'ada',
+        password: 'hunter2-long',
+        totp: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ',
+        scope: LoginScope.global,
+      );
+      expect((e.name, e.site, e.hasCode), ('github-work', 'github.com', true));
+      final again = AgentLogins(sealed);
+      await again.load();
+      expect(again.entries.value.single.name, 'github-work');
+      expect((await again.secretsOf(e.id))!.password, 'hunter2-long');
+      // On disk nothing is readable, and the index's plain JSON has no password.
+      for (final f in Directory('${tmp.path}/sealed').listSync().whereType<File>()) {
+        expect(utf8.decode(f.readAsBytesSync(), allowMalformed: true), isNot(contains('hunter2')));
+      }
+      expect(jsonEncode(await sealed.read('agent-logins')), isNot(contains('hunter2')));
+      // An edit with no password keeps it; '' removes the code.
+      await again.save(id: e.id, name: 'github-work', url: e.url, username: 'ada2', totp: '', scope: LoginScope.global);
+      expect((await again.secretsOf(e.id))!.password, 'hunter2-long');
+      expect(again.entries.value.single.hasCode, isFalse);
+    });
+
+    test('names are unique; scopes decide who sees a login', () async {
+      await store.save(name: 'app', url: 'localhost:3000', username: 'a', password: 'p1', scope: LoginScope.global);
+      await expectLater(
+        store.save(name: 'APP', url: 'x.com', username: 'b', password: 'p2', scope: LoginScope.global),
+        throwsA(isA<LoginSaveError>()),
+      );
+      expect(store.freeName('App'), 'app-2');
+      await store.save(
+        name: 'mine',
+        url: 'https://mine.dev',
+        username: 'c',
+        password: 'p3',
+        scope: LoginScope.project,
+        projectId: 'p1',
+      );
+      expect(store.usable('p1').map((l) => l.name), ['mine', 'app']);
+      expect(store.usable('p2').map((l) => l.name), ['app']);
+      await store.setAgentsCanUse(store.named('app', 'p2')!.id, false);
+      expect(store.usable('p2'), isEmpty);
+      await store.forgetProject('p1');
+      expect(store.entries.value.map((l) => l.name), ['app']);
+      await expectLater(
+        store.save(name: 'bad', url: 'x.com', username: '', password: 'p', totp: 'nope!', scope: LoginScope.global),
+        throwsA(isA<LoginSaveError>()),
+      );
+    });
+
+    test('import keeps codes only when the switch allows; deleting revokes approvals', () async {
+      final rows = parseLoginCsv(
+        'Title,URL,Username,Password,Notes,OTPAuth\n'
+        'Acme,https://acme.test/,ada,s3cret-1,,otpauth://totp/A?secret=GEZDGNBVGY3TQOJQ\n'
+        'Acme,https://acme.test/,ada,s3cret-1,,\n',
+      ).logins;
+      final r = await store.importAll(rows, scope: LoginScope.global, codes: false);
+      expect((r.added, r.skipped), (1, 1));
+      expect(store.entries.value.single.hasCode, isFalse);
+      final gate = LoginGate.of('s-del');
+      final waiting = gate.ensure('acme', site: 'acme.test');
+      gate.answer('acme', allow: true);
+      expect(await waiting, ConsentOutcome.allowed);
+      await store.delete(store.entries.value.single.id);
+      expect(gate.stateOf('acme'), isA<ConsentUnasked>());
+      expect(store.entries.value, isEmpty);
+    });
+  });
+
+  group('policy', () {
+    final e = LoginEntry(
+      id: '1',
+      name: 'github',
+      site: 'github.com',
+      url: 'https://github.com',
+      username: 'ada',
+      scope: LoginScope.global,
+      saved: DateTime(2026),
+    );
+
+    test('read from preferences: everything on unless "0"', () {
+      expect(LoginPolicy.read((_) => null), LoginPolicy.open);
+      final off = LoginPolicy.read((k) => '0');
+      expect([off.withoutAsking, off.secretFields, off.codes, off.anySite], everyElement(isFalse));
+    });
+
+    test('own site only, codes, and the per-login switch', () {
+      const strict = LoginPolicy(anySite: false, codes: false);
+      expect(fillRefusal(e, LoginField.password, policy: strict, pageUrl: 'https://gist.github.com/x'), isNull);
+      expect(fillRefusal(e, LoginField.password, policy: strict, pageUrl: 'https://github.com.evil.io/'), isNotNull);
+      expect(fillRefusal(e, LoginField.password, policy: LoginPolicy.open, pageUrl: 'https://evil.io/'), isNull);
+      expect(fillRefusal(e, LoginField.code, policy: strict), contains('user types the code'));
+      expect(fillRefusal(e, LoginField.code, policy: LoginPolicy.open), contains('needs the user'));
+      expect(fillRefusal(e.copyWith(agentsCanUse: false), LoginField.username, policy: LoginPolicy.open), isNotNull);
+      expect(loginFitsHost('github.com', 'notgithub.com'), isFalse);
+    });
+
+    test('asking first: unasked → asking → allowed, revoke, deny, stop', () async {
+      final gate = LoginGate.of('s-ask');
+      final first = gate.ensure('github', site: 'github.com');
+      final second = gate.ensure('github', site: 'github.com');
+      expect(gate.stateOf('github'), isA<ConsentAsking>());
+      expect(LoginGate.asks.value.where((a) => a.gate == gate).map((a) => a.login), ['github']);
+      gate.answer('github', allow: true);
+      expect([await first, await second], [ConsentOutcome.allowed, ConsentOutcome.allowed]);
+      expect(gate.allowed, ['github']);
+      gate.revoke('github');
+      expect(gate.stateOf('github'), isA<ConsentUnasked>());
+      final third = gate.ensure('github', site: 'github.com');
+      gate.answer('github', allow: false);
+      expect(await third, ConsentOutcome.denied);
+      LoginGate.revokeAll();
+      final fourth = gate.ensure('github', site: 'github.com');
+      gate.stop();
+      expect(await fourth, ConsentOutcome.stopped);
+      expect(gate.stateOf('github'), isA<ConsentUnasked>());
+      expect(LoginGate.asks.value.where((a) => a.gate == gate), isEmpty);
+    });
+  });
+
+  test('an app fill says what it filled, never the value, even when the driver quotes it', () async {
+    final tmp = Directory.systemTemp.createTempSync('logins');
+    addTearDown(() => tmp.deleteSync(recursive: true));
+    final store = AgentLogins(SealedStore('${tmp.path}/s', () async => SecretKey(List.filled(32, 1))));
+    await store.save(name: 'app', url: 'localhost', username: 'ada', password: 'pw-secret-9', scope: LoginScope.global);
+    final access = LoginAccess(logins: () async => store, gate: LoginGate.of('s-app'));
+    String? typed;
+    final ok = await appFill({'login': 'app', 'ref': 's3', 'field': 'password'}, access, (ref, v, submit) async {
+      typed = v;
+    });
+    expect(typed, 'pw-secret-9');
+    expect(ok.did, "Filled the password of 'app' into s3.");
+    final bad = await appFill({'login': 'app', 'ref': 's3'}, access, (ref, v, submit) async {
+      throw AppError('the field shows "$v"');
+    });
+    expect(bad.error, isNot(contains('pw-secret-9')));
+    final unknown = await appFill({'login': 'nope', 'ref': 's3'}, access, (r, v, s) async {});
+    expect(unknown.error, contains('Saved logins: app (localhost)'));
+    expect(access.redact('echo pw-secret-9'), isNot(contains('pw-secret-9')));
+  });
+}

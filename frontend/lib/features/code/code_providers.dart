@@ -15,6 +15,7 @@ import '../../core/process/child_processes.dart';
 import 'live/browser_jar.dart' show SealedStore;
 import 'live/android_device_io.dart' show AndroidDevices;
 import 'live/app_sources.dart' show AppSources;
+import 'live/agent_logins.dart';
 import 'live/live_browsers.dart';
 import 'live/nested_display_io.dart';
 import 'shells/shell_registry.dart';
@@ -417,6 +418,11 @@ Future<List<WorkflowEntry>> _workflowsOfIn(Ref ref, String projectDir) async {
 final driverShutdownProvider = Provider<void>((ref) {
   // Sessions' browser jars and saved logins are sealed under the app's data folder (with a keychain key).
   LiveBrowsers.jars ??= () async => SealedStore.app(await GitService.dataDir());
+  // Logins saved for agents live in the same sealed store; the tools read the user's switches and a session's
+  // project when they run.
+  AgentLogins.sealed ??= LiveBrowsers.jars;
+  AgentLogins.readPolicy = () => LoginPolicy.read((key) => ref.read(preferencesProvider)[key]);
+  AgentLogins.projectOf = (id) => ref.read(codeSessionsProvider.notifier).byId(id)?.projectId;
   // The registry's stop runs beside the owners' own (not after them, where one slow stop used up the budget); it only
   // ends children still running, so a child an owner already ended isn't touched again. It waits for the browsers
   // (at most 2.5 s): their jars are read from the running Chrome before it stops.
@@ -703,6 +709,7 @@ final class CodeProjects extends Notifier<List<CodeProject>> {
     _save();
     // The project's own saved logins go with it.
     unawaited(LiveBrowsers.forgetProjectLogins(id));
+    unawaited(AgentLogins.app().then((l) => l?.forgetProject(id)).catchError((Object _) {}));
   }
 
   /// Where [id]'s sessions run from now on ([envId] from `ExecEnv.id`). Sessions already started keep theirs.
@@ -1813,6 +1820,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     // Their browser pages and shell rows go with them.
     for (final g in gone) {
       unawaited(LiveBrowsers.release(g));
+      LoginGate.forget(g);
       NestedDisplays.stop(g);
       ShellRegistry.instance.forget(g);
     }

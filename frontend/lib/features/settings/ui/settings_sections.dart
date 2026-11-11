@@ -15,6 +15,7 @@ import '../../billing/ui/billing_screen.dart';
 import '../../code/automations/ui/scheduled_tasks_body.dart';
 import '../../code/code_settings_providers.dart' show SettingsScope;
 import '../../code/ui/code_settings_section.dart';
+import '../../code/ui/logins_settings.dart';
 import '../../code/ui/mcp_settings_screen.dart';
 import '../../local_models/ui/local_models_section.dart';
 import '../../memory/ui/memory_screen.dart';
@@ -55,6 +56,7 @@ Widget settingsSectionBody(SettingsSection section, Map<String, String> args) =>
   SettingsSection.permissions => const PermissionsSection(),
   SettingsSection.schedules => const ScheduledTasksBody(),
   SettingsSection.mcp => McpSettingsBody(projectId: args['project']),
+  SettingsSection.logins => LoginsSettingsBody(projectId: args['project']),
   SettingsSection.skills => SkillsSettingsBody(projectId: args['project']),
   SettingsSection.agents => const AgentsSettingsBody(),
   SettingsSection.commands => const CustomCommandsBody(),

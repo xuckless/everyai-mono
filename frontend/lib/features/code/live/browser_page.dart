@@ -100,9 +100,17 @@ abstract interface class BrowserPage {
   /// The centre of element [ref] of the last element list, scrolled into view.
   Future<({double x, double y})> refCentre(String ref);
 
-  Future<String> click({String? selector, String? ref, double? x, double? y, int count = 1});
-  Future<String> type(String text, {String? selector, String? ref, bool submit = false});
-  Future<String> press(String key);
+  /// [guarded] false lifts the password, one-time code and payment field refusals (the user's switch).
+  Future<String> click({String? selector, String? ref, double? x, double? y, int count = 1, bool guarded = true});
+  Future<String> type(String text, {String? selector, String? ref, bool submit = false, bool guarded = true});
+
+  /// Types a saved login's [value] with no field guard; the value reaches no log, caption or error text.
+  Future<String> typeSecret(String value, {String? selector, String? ref, bool submit = false});
+
+  /// What the focused field is: "a password field", "a one-time code field", null for an ordinary one, '' when
+  /// nothing that takes text has the focus.
+  Future<String?> focusedFieldKind();
+  Future<String> press(String key, {bool guarded = true});
   Future<String> scroll(double dy, {double? x, double? y});
   Future<String> wait({String? selector, int ms = 5000});
   Future<String> resize(int w, int h);
