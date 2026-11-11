@@ -263,6 +263,7 @@ class _TabHostState extends State<_TabHost> {
   Widget build(BuildContext context) => switch (widget.tab.life) {
     TabLife.headless ||
     TabLife.parked ||
+    TabLife.unparked ||
     TabLife.shown => widget.browser.tabView(widget.tab, key: GlobalObjectKey(widget.tab)),
     TabLife.starting || TabLife.parking || TabLife.closed => ColoredBox(color: widget.well),
   };

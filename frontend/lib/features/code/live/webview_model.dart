@@ -1,5 +1,8 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import 'dart:async';
+
+import 'browser_page.dart' show PageDialog;
 import 'key_map.dart';
 
 // The pure parts of the OS webview backend ([WebviewBrowser] in webview_browser.dart): its lifecycle and each tab's,
@@ -12,7 +15,9 @@ import 'key_map.dart';
 ///                          │ fail / close                 ▲   show / hide   │                                  │
 ///                          └──────────────▶ closing       └─────────────────┘            closed ──use──▶ starting
 /// ```
-/// Every start takes a new generation: a start that lands under another one was closed meanwhile.
+/// Every start takes a new generation: a start that lands under another one was closed meanwhile. A close while
+/// starting goes starting ──▶ closing ──▶ closed at once; the start, when its native calls come back, finds it is no
+/// longer current ([webviewStartCurrent]) and disposes what it made (its view, the WebView2 environment and folder).
 sealed class WebviewLife {
   const WebviewLife();
 }
@@ -44,6 +49,13 @@ final class WebviewClosed extends WebviewLife {
   const WebviewClosed();
 }
 
+/// Whether a start (or a pop-up's tab) of generation [generation] still belongs to the browser at [now]: it is
+/// starting or running under that generation. False once a close came in between: what the start made is disposed.
+bool webviewStartCurrent(WebviewLife now, int generation) => switch (now) {
+  WebviewStarting(generation: final g) || WebviewRunning(generation: final g) => g == generation,
+  WebviewNotCreated() || WebviewClosing() || WebviewClosed() => false,
+};
+
 /// Whether the browser may move from [from] to [to].
 bool webviewEdge(WebviewLife from, WebviewLife to) => switch ((from, to)) {
   (WebviewNotCreated() || WebviewClosed(), WebviewStarting()) => true,
@@ -57,12 +69,14 @@ bool webviewEdge(WebviewLife from, WebviewLife to) => switch ((from, to)) {
 ///
 /// ```text
 ///   starting ──created──▶ headless ──Preview shows it──▶ shown ──Preview hides it──▶ parking ──back in the window──▶ parked
-///                                                          ▲                                                       │
-///                                                          └────────────────────── Preview shows it ───────────────┘
+///                                                          ▲                            │                          │
+///                                                          │                            └──couldn't──▶ unparked    │
+///                                                          │                                              │ retry ─▶ parked
+///                                                          └──────────────── Preview shows it ────────────┴────────┘
 ///   (any) ──close──▶ closed
 /// ```
 /// A tab hidden by the Preview is still being taken out of its view while parking; it is shown again only once
-/// parked, so the platform view isn't handed over twice in one frame.
+/// parked (or known unparked), so the platform view isn't handed over twice in one frame.
 enum TabLife {
   /// The plugin is making its webview.
   starting,
@@ -79,23 +93,128 @@ enum TabLife {
   /// Offscreen again, live.
   parked,
 
+  /// Offscreen, but it couldn't be put back in the window: it runs, maybe slowly (the OS throttles a view outside a
+  /// window). Parking is tried again on the next resize; showing it works as from parked.
+  unparked,
+
   closed;
 
   /// Whether a tab may move from this state to [to].
   bool canMoveTo(TabLife to) => switch ((this, to)) {
     (_, TabLife.closed) => this != TabLife.closed,
     (TabLife.starting, TabLife.headless) => true,
-    (TabLife.headless || TabLife.parked, TabLife.shown) => true,
+    (TabLife.headless || TabLife.parked || TabLife.unparked, TabLife.shown) => true,
     (TabLife.shown, TabLife.parking) => true,
-    (TabLife.parking, TabLife.parked) => true,
+    (TabLife.parking, TabLife.parked || TabLife.unparked) => true,
+    (TabLife.unparked, TabLife.parked) => true,
     _ => false,
   };
 
   /// Whether the Preview may put the tab's view on screen now.
-  bool get showable => this == TabLife.headless || this == TabLife.parked || this == TabLife.shown;
+  bool get showable => switch (this) {
+    TabLife.headless || TabLife.parked || TabLife.unparked || TabLife.shown => true,
+    TabLife.starting || TabLife.parking || TabLife.closed => false,
+  };
 
   /// Whether calls reach the page.
   bool get live => this != TabLife.starting && this != TabLife.closed;
+}
+
+/// A page dialog of a tab:
+///
+///   none ──the page opens one──▶ showing(dialog, answer) ──answered / tab closed──▶ none
+///
+/// While showing, the page runs no script: calls to it end with the dialog's text, and the page waits on [answer].
+sealed class TabDialog {
+  const TabDialog();
+}
+
+final class NoDialog extends TabDialog {
+  const NoDialog();
+}
+
+final class DialogShowing extends TabDialog {
+  DialogShowing(this.dialog);
+
+  /// What the page shows.
+  final PageDialog dialog;
+
+  /// Completed with the answer; the page's call waits on it.
+  final answer = Completer<({bool accept, String? text})>();
+}
+
+/// The session's cookie jar in a webview browser:
+///
+/// ```text
+///   unread ──read──▶ reading ──read──▶ ready ◀──done──┐
+///                       │                  └──save──▶ writing (writes queue behind each other)
+///                       ├ ──file there, won't open──▶ unreadable   (never written over)
+///                       └ ──read failed──▶ unread                  (tried again on the next use)
+///   (any) ──the session was removed──▶ forgotten                   (its file deleted; never written again)
+/// ```
+sealed class JarLife {
+  const JarLife();
+}
+
+final class JarUnread extends JarLife {
+  const JarUnread();
+}
+
+final class JarReading extends JarLife {
+  const JarReading(this.done);
+  final Future<void> done;
+}
+
+final class JarReady extends JarLife {
+  const JarReady();
+}
+
+/// Read, and a save is under way; [tail] completes when the last queued save has.
+final class JarWriting extends JarLife {
+  const JarWriting(this.tail);
+  final Future<void> tail;
+}
+
+final class JarUnreadable extends JarLife {
+  const JarUnreadable();
+}
+
+final class JarForgotten extends JarLife {
+  const JarForgotten();
+}
+
+/// Whether the jar may move from [from] to [to].
+bool jarEdge(JarLife from, JarLife to) => switch ((from, to)) {
+  (JarForgotten(), _) => false,
+  (_, JarForgotten()) => true,
+  (JarUnread(), JarReading()) => true,
+  (JarReading(), JarReady() || JarUnreadable() || JarUnread()) => true,
+  (JarReady() || JarWriting(), JarWriting()) => true,
+  (JarWriting(), JarReady()) => true,
+  _ => false,
+};
+
+/// Whether a save may write the jar now: only once read, and never over a file this keychain can't open or after
+/// the session was removed.
+bool jarWritable(JarLife l) => switch (l) {
+  JarReady() || JarWriting() => true,
+  JarUnread() || JarReading() || JarUnreadable() || JarForgotten() => false,
+};
+
+/// Which of the [pending] new-tab requests (their addresses, oldest first) a window the page opened for [requested]
+/// answers: the first with the same address, else null (a pop-up of the page's own).
+int? matchOpenRequest(List<String> pending, String requested) {
+  String norm(String u) {
+    final p = Uri.tryParse(u.trim());
+    if (p == null) return u.trim();
+    return (p.hasAuthority && p.path.isEmpty ? p.replace(path: '/') : p).toString();
+  }
+
+  final want = norm(requested);
+  for (final (i, u) in pending.indexed) {
+    if (norm(u) == want) return i;
+  }
+  return null;
 }
 
 /// A cookie as the native side reports and takes it (WKHTTPCookieStore or the plugin's CookieManager).

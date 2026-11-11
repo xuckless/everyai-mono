@@ -423,6 +423,8 @@ final driverShutdownProvider = Provider<void>((ref) {
   AgentLogins.sealed ??= LiveBrowsers.jars;
   AgentLogins.readPolicy = () => LoginPolicy.read((key) => ref.read(preferencesProvider)[key]);
   AgentLogins.projectOf = (id) => ref.read(codeSessionsProvider.notifier).byId(id)?.projectId;
+  // WebView2 folders (session cookies) a crashed or killed run left behind; none is live yet at app start.
+  LiveBrowsers.sweepLeftovers();
   // The registry's stop runs beside the owners' own (not after them, where one slow stop used up the budget); it only
   // ends children still running, so a child an owner already ended isn't touched again. It waits for the browsers
   // (at most 2.5 s): their jars are read from the running Chrome before it stops.

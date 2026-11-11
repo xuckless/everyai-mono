@@ -1,4 +1,11 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:cryptography/cryptography.dart';
+import 'package:every_ai/features/code/live/browser_jar.dart' show SealedStore;
 import 'package:every_ai/features/code/live/browser_page.dart';
+import 'package:every_ai/features/code/live/webview_browser.dart';
+import 'package:every_ai/features/code/live/webview_native.dart';
 import 'package:every_ai/features/code/live/key_map.dart';
 import 'package:every_ai/features/code/live/webview_model.dart';
 import 'package:flutter/foundation.dart';
@@ -61,6 +68,64 @@ void main() {
       }
       expect(TabLife.parking.showable, isFalse);
       expect(TabLife.parked.showable, isTrue);
+      // A park that failed is its own state: shown from there, parked on a later try, never counted as parked.
+      expect(TabLife.parking.canMoveTo(TabLife.unparked), isTrue);
+      expect(TabLife.unparked.canMoveTo(TabLife.shown), isTrue);
+      expect(TabLife.unparked.canMoveTo(TabLife.parked), isTrue);
+      expect(TabLife.headless.canMoveTo(TabLife.unparked), isFalse);
+      expect(TabLife.unparked.showable, isTrue);
+    });
+
+    test('a close while starting: starting → closing → closed, and the start is no longer current', () {
+      final starting = WebviewStarting(3, ready);
+      expect(webviewStartCurrent(starting, 3), isTrue);
+      expect(webviewStartCurrent(const WebviewRunning(3, shown: false), 3), isTrue);
+      // The close moves on at once; the start's native calls come back later and find it isn't theirs.
+      final closing = WebviewClosing(ready);
+      expect(webviewEdge(starting, closing), isTrue);
+      expect(webviewStartCurrent(closing, 3), isFalse);
+      expect(webviewEdge(closing, const WebviewClosed()), isTrue);
+      expect(webviewStartCurrent(const WebviewClosed(), 3), isFalse);
+      // A later start is another generation: the old one's late answer isn't current under it either.
+      expect(webviewStartCurrent(WebviewStarting(4, ready), 3), isFalse);
+      // And the late start can't take the browser to running from closed.
+      expect(webviewEdge(const WebviewClosed(), const WebviewRunning(3, shown: false)), isFalse);
+    });
+
+    test('the jar: read once, written only once read, never after the session was removed', () {
+      final reading = JarReading(Future<void>.value());
+      final writing = JarWriting(Future<void>.value());
+      expect(jarEdge(const JarUnread(), reading), isTrue);
+      expect(jarEdge(reading, const JarReady()), isTrue);
+      expect(jarEdge(reading, const JarUnreadable()), isTrue);
+      expect(jarEdge(reading, const JarUnread()), isTrue);
+      expect(jarEdge(const JarReady(), writing), isTrue);
+      expect(jarEdge(writing, writing), isTrue);
+      expect(jarEdge(writing, const JarReady()), isTrue);
+      expect(jarEdge(const JarUnreadable(), writing), isFalse);
+      expect(jarEdge(const JarUnread(), writing), isFalse);
+      for (final l in [const JarUnread(), reading, const JarReady(), writing, const JarUnreadable()]) {
+        expect(jarEdge(l, const JarForgotten()), isTrue);
+      }
+      expect(jarEdge(const JarForgotten(), writing), isFalse);
+      expect(jarEdge(const JarForgotten(), const JarForgotten()), isFalse);
+      expect(
+        [
+          for (final l in [const JarReady(), writing]) jarWritable(l),
+        ],
+        [true, true],
+      );
+      expect([
+        for (final l in [const JarUnread(), reading, const JarUnreadable(), const JarForgotten()]) jarWritable(l),
+      ], everyElement(isFalse));
+    });
+
+    test('a new-tab request is answered by the window opened for its address, not by any pop-up', () {
+      final pending = ['https://a.com', 'https://b.com/x'];
+      expect(matchOpenRequest(pending, 'https://b.com/x'), 1);
+      expect(matchOpenRequest(pending, 'https://a.com/'), 0);
+      expect(matchOpenRequest(pending, 'https://ads.example/pop'), isNull);
+      expect(matchOpenRequest(const [], 'https://a.com'), isNull);
     });
   });
 
@@ -150,4 +215,78 @@ void main() {
     expect(pngSize([...header, 0, 0, 5, 0, 0, 0, 3, 32]), (width: 1280, height: 800));
     expect(pngSize([1, 2, 3]), isNull);
   });
+
+  group('the browser object', () {
+    late Directory tmp;
+    setUp(() => tmp = Directory.systemTemp.createTempSync('webview'));
+    tearDown(() {
+      debugDefaultTargetPlatformOverride = null;
+      tmp.deleteSync(recursive: true);
+    });
+
+    test('a close while the start waits ends it closed; the late start makes nothing', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      final store = Completer<SealedStore>();
+      final b = WebviewBrowser(
+        native: _FakeNative(),
+        jarHome: (store: () => store.future, name: 'jar-x'),
+        tempRoot: tmp.path,
+      );
+      final opening = b.open('about:blank');
+      await Future<void>.delayed(Duration.zero);
+      expect(b.life.value, isA<WebviewStarting>());
+      await b.close();
+      expect(b.life.value, isA<WebviewClosed>());
+      // The start's jar read comes back after the close.
+      store.complete(SealedStore('${tmp.path}/s', () async => SecretKey(List.filled(32, 1))));
+      await expectLater(opening, throwsA(isA<BrowserError>()));
+      expect(b.life.value, isA<WebviewClosed>());
+      expect(b.tabs.value, isEmpty);
+      expect(b.refusedMoves, isEmpty);
+    });
+
+    test('left-over WebView2 folders go at start; a running owner keeps its own', () async {
+      Directory folder(String name, {int? owner}) {
+        final d = Directory('${tmp.path}/$name')..createSync();
+        if (owner != null) File('${d.path}/.everyai-owner').writeAsStringSync('$owner');
+        return d;
+      }
+
+      final dead = folder('session-a', owner: 111), live = folder('session-b', owner: 222);
+      final fresh = folder('session-c'), other = folder('keep-me', owner: 111);
+      final gone = await sweepWebviewFolders(root: tmp.path, alive: (p) => p == 222);
+      expect(gone, 1);
+      expect([dead, live, fresh, other].map((d) => d.existsSync()), [false, true, true, true]);
+      // An unclaimed folder past the grace counts as left over.
+      expect(await sweepWebviewFolders(root: tmp.path, alive: (p) => p == 222, grace: Duration.zero), 1);
+      expect(fresh.existsSync(), isFalse);
+    });
+  });
+}
+
+final class _FakeNative implements WebviewNative {
+  @override
+  Stream<WebviewNativeEvent> get events => const Stream.empty();
+  @override
+  Future<bool> bind(String token, {String? viewId}) async => true;
+  @override
+  Future<void> release(String token) async {}
+  @override
+  Future<List<NativeCookie>> cookies(String token, {Iterable<Uri> urls = const []}) async => const [];
+  @override
+  Future<void> setCookies(String token, List<NativeCookie> cookies) async {}
+  @override
+  Future<void> deleteCookies(String token, List<NativeCookie> cookies) async {}
+  @override
+  Future<void> clearData(String token) async {}
+  @override
+  Future<bool> park(String token, int width, int height) async => true;
+  @override
+  Future<void> unfocus(String token) async {}
+  @override
+  Future<void> setLocked(String token, bool locked) async {}
+  @override
+  Future<void> lendWindow(bool on) async {}
+  @override
+  Future<void> setShown(String token, bool shown) async {}
 }

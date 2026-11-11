@@ -32,7 +32,8 @@ abstract interface class WebviewNative {
   Future<void> setCookies(String token, List<NativeCookie> cookies);
   Future<void> deleteCookies(String token, List<NativeCookie> cookies);
 
-  /// Deletes everything [token]'s store holds (cookies, storage, caches).
+  /// Deletes what [token]'s store holds: cookies always; storage and caches where the platform's store does (macOS).
+  /// The browser clears its open pages' storage itself as well ([WebviewBrowser.clearJar]).
   Future<void> clearData(String token);
 
   /// Puts [token]'s view, which the Preview just let go of, back in the window offscreen at [width]×[height] so it
@@ -184,14 +185,26 @@ final class PluginWebviewNative implements WebviewNative {
     }
   }
 
+  // Unverified: not run on Windows.
   @override
   Future<void> deleteCookies(String token, List<NativeCookie> cookies) async {
     for (final c in cookies) {
       final host = c.domain.startsWith('.') ? c.domain.substring(1) : c.domain;
-      await _cookies.deleteCookie(url: WebUri('https://$host${c.path}'), name: c.name, domain: c.domain, path: c.path);
+      // A cookie a plain http page set (localhost, a dev box) is found under http, a secure one under https.
+      for (final scheme in c.secure ? const ['https'] : const ['http', 'https']) {
+        await _cookies.deleteCookie(
+          url: WebUri('$scheme://$host${c.path}'),
+          name: c.name,
+          domain: c.domain,
+          path: c.path,
+        );
+      }
     }
   }
 
+  /// Cookies only: the plugin has no storage clearing for a WebView2 environment, so the browser clears its open
+  /// pages' storage itself ([WebviewBrowser.clearJar]); storage of origins no tab has open stays in the session's
+  /// folder until the browser closes (the folder is deleted then). Unverified: not run on Windows.
   @override
   Future<void> clearData(String token) async => _cookies.deleteAllCookies();
 
@@ -201,6 +214,8 @@ final class PluginWebviewNative implements WebviewNative {
   @override
   Future<void> unfocus(String token) async {}
 
+  /// Nothing native: the WebView2 view is a texture Flutter forwards input to, so the lock relies on Flutter alone
+  /// (the Preview's absorbing layer and focus). Unverified: not run on Windows.
   @override
   Future<void> setLocked(String token, bool locked) async {}
 

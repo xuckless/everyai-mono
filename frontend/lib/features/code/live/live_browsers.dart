@@ -101,6 +101,13 @@ abstract final class LiveBrowsers {
   @visibleForTesting
   static BrowserBackend? debugBackend;
 
+  /// Deletes the WebView2 folders (session cookies) a crashed or killed run left behind (Windows; none elsewhere).
+  /// At app start, before any session's browser is made; a folder another running app owns is kept.
+  static void sweepLeftovers() {
+    if (kIsWeb || !Platform.isWindows) return;
+    unawaited(sweepWebviewFolders().catchError((Object _) => 0));
+  }
+
   /// Every session's browser this run.
   static Iterable<BrowserPage> get all => _bySession.values;
 

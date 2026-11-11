@@ -24,6 +24,62 @@ import 'webview_model.dart';
 import 'webview_native.dart';
 import 'webview_page_js.dart';
 
+/// Where the WebView2 user data folders of session browsers go (Windows): one `session-*` folder per running
+/// browser, holding its cookies. [root] overrides it (tests).
+String webviewTempRoot([String? root]) => root ?? '${Directory.systemTemp.path}/everyai-webview';
+
+const _ownerFile = '.everyai-owner';
+
+/// Marks [dir] as this app run's (its process id), so a sweep by another run leaves it alone.
+Future<void> claimWebviewFolder(Directory dir) => File('${dir.path}/$_ownerFile').writeAsString('$pid');
+
+/// Deletes the `session-*` folders under [root] that no running app owns: left by a run that crashed or was killed
+/// (their session cookies would stay on disk). A folder is kept while its owner's process runs ([alive]), and a
+/// folder with no owner yet while it is younger than [grace] (a start between making it and claiming it). How many
+/// were deleted. Run at app start.
+Future<int> sweepWebviewFolders({
+  String? root,
+  bool Function(int pid)? alive,
+  Duration grace = const Duration(minutes: 10),
+}) async {
+  final base = Directory(webviewTempRoot(root));
+  if (!base.existsSync()) return 0;
+  final isAlive = alive ?? _pidAlive;
+  var gone = 0;
+  for (final d in base.listSync().whereType<Directory>()) {
+    if (!d.uri.pathSegments.where((p) => p.isNotEmpty).last.startsWith('session-')) continue;
+    final owner = File('${d.path}/$_ownerFile');
+    final keep = owner.existsSync()
+        ? switch (int.tryParse(owner.readAsStringSync().trim())) {
+            final p? => isAlive(p),
+            null => false,
+          }
+        : DateTime.now().difference(d.statSync().modified) < grace;
+    if (keep) continue;
+    try {
+      await d.delete(recursive: true);
+      gone++;
+    } on FileSystemException {
+      // In use (WebView2 still holds it): next start.
+    }
+  }
+  return gone;
+}
+
+bool _pidAlive(int p) {
+  if (p == pid) return true;
+  try {
+    if (Platform.isWindows) {
+      final r = Process.runSync('tasklist', ['/FI', 'PID eq $p', '/NH']);
+      return '${r.stdout}'.contains(' $p ');
+    }
+    return Process.runSync('kill', ['-0', '$p']).exitCode == 0;
+  } on Object {
+    // Can't tell: keep it.
+    return true;
+  }
+}
+
 /// One tab of a [WebviewBrowser]: a native webview of its own (the plugin's), the session's page or one a page of
 /// it opened. [life] says where its view is (see [TabLife]).
 final class WebTab {
@@ -57,8 +113,22 @@ final class WebTab {
   bool canBack = false;
   bool canForward = false;
 
-  /// The dialog the page waits on, and how it is answered.
-  ({PageDialog dialog, Completer<({bool accept, String? text})> answer})? _pending;
+  /// The dialog the page waits on, if any, and how it is answered (see [TabDialog]).
+  TabDialog _dialog = const NoDialog();
+
+  /// The dialog shown, or null.
+  PageDialog? get _shownDialog => switch (_dialog) {
+    DialogShowing(:final dialog) => dialog,
+    NoDialog() => null,
+  };
+
+  /// Ends a dialog the page waits on with [answer]: showing → none.
+  void _endDialog(({bool accept, String? text}) answer) {
+    if (_dialog case final DialogShowing d) {
+      _dialog = const NoDialog();
+      if (!d.answer.isCompleted) d.answer.complete(answer);
+    }
+  }
 
   /// A dialog opening (a [PageDialog]) or the tab closing (`#closed`): calls in flight to it end.
   // Lives as long as the tab object.
@@ -86,7 +156,10 @@ final class WebTab {
 final class WebviewBrowser implements BrowserPage {
   WebviewBrowser({this.jarHome, WebviewNative? native, String? tempRoot})
     : _nativeOverride = native,
-      _envRoot = tempRoot;
+      _envRoot = tempRoot {
+    // Once for the browser's life (it may start and close many times): the lock follows the control.
+    control.addListener(_syncLock);
+  }
 
   final WebviewNative? _nativeOverride;
   final String? _envRoot;
@@ -190,27 +263,46 @@ final class WebviewBrowser implements BrowserPage {
     }
   }
 
+  /// The start of generation [gen] is no longer wanted (a close came in): what it made is disposed by the caller.
+  bool _stale(int gen) => !webviewStartCurrent(_life.value, gen);
+
+  static const _closedWhileStarting = BrowserError('The browser was closed while it started.');
+
   Future<void> _launch(int gen) async {
     if (!_mac) {
-      // WebView2: a user data folder of the session's own is its own cookie store.
-      final dir = await Directory(_envRoot ?? '${Directory.systemTemp.path}/everyai-webview')
+      // WebView2: a user data folder of the session's own is its own cookie store. Held here until the start is
+      // known to be current, so a close meanwhile can't miss them: a stale start releases them itself.
+      final dir = await Directory(webviewTempRoot(_envRoot))
           .create(recursive: true)
           .then((d) => d.createTemp('session-'));
+      await claimWebviewFolder(dir);
+      WebViewEnvironment? env;
+      try {
+        env = await WebViewEnvironment.create(settings: WebViewEnvironmentSettings(userDataFolder: dir.path));
+      } on Object {
+        await _releaseEnv(null, dir);
+        rethrow;
+      }
+      if (_stale(gen)) {
+        await _releaseEnv(env, dir);
+        throw _closedWhileStarting;
+      }
+      _env = env;
       _envDir = dir;
-      _env = await WebViewEnvironment.create(settings: WebViewEnvironmentSettings(userDataFolder: dir.path));
     }
     _native = _nativeOverride ?? WebviewNative.forPlatform(macOS: _mac, environment: _env);
     _nativeEvents ??= _native!.events.listen(_onNative);
-    control.addListener(_syncLock);
     await _loadJar();
+    if (_stale(gen)) throw _closedWhileStarting;
     _restore
       ..clear()
       ..addAll(_jar.storage.keys);
-    final t = await _newTab();
-    if (gen != _generation) throw const BrowserError('The browser was closed while it started.');
+    final t = await _newTab(gen);
     _active = t;
     final cookies = [for (final c in _jar.cookies) ?nativeCookieOf(c)];
     if (cookies.isNotEmpty) await _native!.setCookies(t.token, cookies);
+    // Closed meanwhile: the close took the tab (it was in the list by then).
+    if (_stale(gen)) throw _closedWhileStarting;
     _set(WebviewRunning(gen, shown: false));
     _publish();
     _jarTimer?.cancel();
@@ -238,8 +330,9 @@ final class WebviewBrowser implements BrowserPage {
     return List.generate(20, (_) => r.nextInt(36).toRadixString(36)).join();
   }
 
-  /// Makes a tab running offscreen: the session's first page, or a page's pop-up ([windowId]).
-  Future<WebTab> _newTab({int? windowId, String? opener}) async {
+  /// Makes a tab running offscreen for generation [gen]: the session's first page, or a page's pop-up ([windowId]).
+  /// When the browser closed while the view was being made, the view is disposed here and it throws.
+  Future<WebTab> _newTab(int gen, {int? windowId, String? opener}) async {
     final t = WebTab._('t${++_tabSeq}', _newToken(), opener: opener, windowId: windowId);
     _tabs.add(t);
     final created = Completer<void>();
@@ -283,11 +376,37 @@ final class WebviewBrowser implements BrowserPage {
     } on Object catch (e) {
       _tabs.remove(t);
       _moveTab(t, TabLife.closed);
+      await _disposeHeadless(t);
       throw BrowserError('The webview did not start: $e');
+    }
+    // A close came while the view was being made (it disposed only what was there then): this start disposes its
+    // own view, which would otherwise keep running headless.
+    if (_stale(gen) || t._life == TabLife.closed) {
+      _tabs.remove(t);
+      if (t._life != TabLife.closed) _moveTab(t, TabLife.closed);
+      _native?.release(t.token).ignore();
+      await _disposeHeadless(t);
+      throw _closedWhileStarting;
     }
     _moveTab(t, TabLife.headless);
     await _bind(t);
     return t;
+  }
+
+  Future<void> _disposeHeadless(WebTab t) async {
+    final h = t._headless;
+    t._headless = null;
+    try {
+      if (h != null && h.isRunning()) await h.dispose();
+    } on Object {
+      // Gone already.
+    }
+  }
+
+  /// Releases a WebView2 environment and its user data folder (the session's cookies) and its claim.
+  static Future<void> _releaseEnv(WebViewEnvironment? env, Directory? dir) async {
+    await env?.dispose().catchError((Object _) {});
+    if (dir != null) await dir.delete(recursive: true).catchError((Object _) => dir);
   }
 
   /// The Preview's view of [t]: the tab's own webview (made offscreen, or kept alive while hidden), with the same
@@ -346,8 +465,14 @@ final class WebviewBrowser implements BrowserPage {
       _set(WebviewRunning(generation, shown: false));
     }
     unawaited(() async {
-      final ok = await _native!.park(t.token, _agentW, _agentH).catchError((Object _) => false);
-      if (t._life == TabLife.parking) _moveTab(t, ok ? TabLife.parked : TabLife.parked);
+      // Tried twice: the view may still be on its way out of the widget.
+      var ok = await _native!.park(t.token, _agentW, _agentH).catchError((Object _) => false);
+      if (!ok && t._life == TabLife.parking) {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        ok = await _native!.park(t.token, _agentW, _agentH).catchError((Object _) => false);
+      }
+      if (t._life != TabLife.parking) return;
+      _moveTab(t, ok ? TabLife.parked : TabLife.unparked);
       if (!ok) _log.add('The tab ${t.id} could not be kept in the window offscreen; it may run slowly until shown.');
     }());
   }
@@ -431,7 +556,7 @@ final class WebviewBrowser implements BrowserPage {
         ? (url: '', title: '', canBack: false, canForward: false, loading: false)
         : (url: a.url, title: a.title, canBack: a.canBack, canForward: a.canForward, loading: a.loading);
     tabs.value = List.unmodifiable([for (final t in _tabs) (id: t.id, url: t.url, title: t.title)]);
-    dialog.value = a?._pending?.dialog;
+    dialog.value = a?._shownDialog;
   }
 
   WebTab? _tab(String id) => _tabs.where((t) => t.id == id).firstOrNull;
@@ -456,20 +581,23 @@ final class WebviewBrowser implements BrowserPage {
   @override
   Future<void> openTab(String url) async {
     final from = await _activeTab();
-    final made = Completer<WebTab>();
-    _opening = made;
+    // Each request waits for its own window, matched by address when the page opens it ([matchOpenRequest]): two at
+    // once (the agent's and the user's) can't swap tabs, and a page's own pop-up meanwhile isn't taken for one.
+    final request = (url: url, made: Completer<WebTab>());
+    _openRequests.add(request);
     try {
       await _jsOn(from, 'window.open(a.url, "_blank", "noopener"); return true;', {'url': url}, dialogs: false);
-      final t = await made.future.timeout(const Duration(seconds: 10));
+      final t = await request.made.future.timeout(const Duration(seconds: 10));
       await switchTab(t.id);
     } on TimeoutException {
       throw const BrowserError('The new tab did not open.');
     } finally {
-      if (identical(_opening, made)) _opening = null;
+      _openRequests.remove(request);
     }
   }
 
-  Completer<WebTab>? _opening;
+  /// New-tab requests waiting for their window, oldest first.
+  final _openRequests = <({String url, Completer<WebTab> made})>[];
 
   @override
   Future<void> closeTab(String id) async {
@@ -483,8 +611,7 @@ final class WebviewBrowser implements BrowserPage {
     final wasActive = identical(t, _active);
     _moveTab(t, TabLife.closed);
     t._interrupts.add(#closed);
-    t._pending?.answer.complete((accept: false, text: null));
-    t._pending = null;
+    t._endDialog((accept: false, text: null));
     _tabs.remove(t);
     if (wasActive) {
       // As in a browser, the page that opened the closed tab comes back; else the newest tab.
@@ -527,8 +654,8 @@ final class WebviewBrowser implements BrowserPage {
 
     for (final (i, t) in _tabs.indexed) {
       if (identical(t, here)) continue;
-      if (t._pending case final p? when group(t) == group(here) && maySharePageProcess(here.url, t.url)) {
-        return (tab: i + 1, dialog: p.dialog);
+      if (t._shownDialog case final d? when group(t) == group(here) && maySharePageProcess(here.url, t.url)) {
+        return (tab: i + 1, dialog: d);
       }
     }
     return null;
@@ -538,7 +665,7 @@ final class WebviewBrowser implements BrowserPage {
   ({int tab, PageDialog dialog})? get dialogElsewhere {
     for (final (i, t) in _tabs.indexed) {
       if (identical(t, _active)) continue;
-      if (t._pending case final p?) return (tab: i + 1, dialog: p.dialog);
+      if (t._shownDialog case final d?) return (tab: i + 1, dialog: d);
     }
     return null;
   }
@@ -605,7 +732,7 @@ final class WebviewBrowser implements BrowserPage {
 
   Future<void> _refreshNav(WebTab t) async {
     final c = t._controller;
-    if (c == null || t._pending != null) return;
+    if (c == null || t._dialog is DialogShowing) return;
     try {
       t.canBack = await c.canGoBack();
       t.canForward = await c.canGoForward();
@@ -626,13 +753,20 @@ final class WebviewBrowser implements BrowserPage {
   }
 
   Future<bool?> _onCreateWindow(WebTab from, CreateWindowAction a) async {
-    if (_life.value is! WebviewRunning) return false;
-    final made = _opening;
+    if (_life.value case WebviewRunning(:final generation)) {
+      return _openWindow(from, a, generation);
+    }
+    return false;
+  }
+
+  Future<bool> _openWindow(WebTab from, CreateWindowAction a, int generation) async {
+    final asked = matchOpenRequest([for (final r in _openRequests) r.url], '${a.request.url ?? ''}');
+    final request = asked == null ? null : _openRequests.removeAt(asked);
     try {
-      final t = await _newTab(windowId: a.windowId, opener: made == null ? from.id : null);
+      final t = await _newTab(generation, windowId: a.windowId, opener: request == null ? from.id : null);
       _addLog('A new tab opened: ${a.request.url ?? ''} (now the active tab; tabs lists them).');
-      if (made != null && !made.isCompleted) {
-        made.complete(t);
+      if (request != null && !request.made.isCompleted) {
+        request.made.complete(t);
       } else {
         await switchTab(t.id);
       }
@@ -649,12 +783,14 @@ final class WebviewBrowser implements BrowserPage {
   }
 
   Future<({bool accept, String? text})> _dialogOn(WebTab t, PageDialog d) {
-    final answer = Completer<({bool accept, String? text})>();
-    t._pending = (dialog: d, answer: answer);
+    // A page shows one dialog at a time; one still up (it can't be) is dismissed first.
+    t._endDialog((accept: false, text: null));
+    final showing = DialogShowing(d);
+    t._dialog = showing;
     t._interrupts.add(d);
     _addLog('The page opened a${d.type == 'alert' ? 'n' : ''} ${d.type} dialog: "${d.message}".');
     _changed(t);
-    return answer.future;
+    return showing.answer.future;
   }
 
   Future<JsAlertResponse> _onAlert(WebTab t, JsAlertRequest r) async {
@@ -682,10 +818,8 @@ final class WebviewBrowser implements BrowserPage {
   @override
   Future<void> answerDialog({required bool accept, String? text}) async {
     final t = _active;
-    final p = t?._pending;
-    if (t == null || p == null) return;
-    t._pending = null;
-    p.answer.complete((accept: accept, text: text));
+    if (t == null || t._dialog is! DialogShowing) return;
+    t._endDialog((accept: accept, text: text));
     _changed(t);
     unawaited(_refreshNav(t));
   }
@@ -731,7 +865,7 @@ final class WebviewBrowser implements BrowserPage {
   /// answered), and so does the tab closing.
   Future<T> _on<T>(WebTab t, Future<T> Function(InAppWebViewController c) call, {bool dialogs = true}) async {
     if (t._life == TabLife.closed) throw const TabClosedError();
-    if (dialogs && t._pending != null) throw BrowserError(dialogWaitingText(t._pending!.dialog));
+    if (t._shownDialog case final d? when dialogs) throw BrowserError(dialogWaitingText(d));
     final c = t._controller;
     if (c == null) throw const BrowserError('The browser is not running.');
     final r = Completer<T>();
@@ -821,7 +955,7 @@ final class WebviewBrowser implements BrowserPage {
   @override
   Future<LoginProbe?> loginProbe() async {
     final t = _active;
-    if (t == null || !running || t._pending != null) return null;
+    if (t == null || !running || t._dialog is DialogShowing) return null;
     try {
       final v = await _expr(
         t,
@@ -1176,6 +1310,12 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
           await t._headless?.setSize(Size(_agentW.toDouble(), _agentH.toDouble()));
         case TabLife.parked:
           await _native?.park(t.token, _agentW, _agentH);
+        case TabLife.unparked:
+          // Another try at putting it back in the window.
+          if (await _native?.park(t.token, _agentW, _agentH).catchError((Object _) => false) == true &&
+              t._life == TabLife.unparked) {
+            _moveTab(t, TabLife.parked);
+          }
         case TabLife.starting || TabLife.shown || TabLife.parking || TabLife.closed:
           break;
       }
@@ -1489,35 +1629,55 @@ return n;''',
   // ------------------------------------------------------------------------------------------------- the jar
 
   JarData _jar = emptyJar;
-  Future<void>? _jarLoad;
-  var _jarLoaded = false;
-  var _jarUnreadable = false;
   final _restore = <String>{};
   final _topOrigins = <String>{};
-  Future<void>? _writing;
   Timer? _jarTimer;
-  var _forget = false;
+
+  /// Where the session's jar file stands (see [JarLife]).
+  JarLife get jarLife => _jarLife;
+  JarLife _jarLife = const JarUnread();
+
+  void _jarTo(JarLife next) {
+    if (!jarEdge(_jarLife, next)) {
+      refusedMoves.add('jar: ${_jarLife.runtimeType} → ${next.runtimeType}');
+      assert(false, 'WebviewBrowser: refused jar ${_jarLife.runtimeType} → ${next.runtimeType}');
+      return;
+    }
+    _jarLife = next;
+  }
 
   Future<void> _loadJar() {
     if (jarHome == null) return Future.value();
-    return _jarLoad ??= _readJar();
+    switch (_jarLife) {
+      case JarReading(:final done):
+        return done;
+      case JarUnread():
+        final done = _readJar();
+        _jarTo(JarReading(done));
+        return done;
+      case JarReady() || JarWriting() || JarUnreadable() || JarForgotten():
+        return Future.value();
+    }
   }
 
   Future<void> _readJar() async {
     final home = jarHome!;
+    final JarLife read;
     try {
       final store = await home.store();
       final j = await store.read(home.name);
-      if (j == null && store.exists(home.name)) _jarUnreadable = true;
+      read = j == null && store.exists(home.name) ? const JarUnreadable() : const JarReady();
       _jar = jarMerged(jarFromJson(j), _jar);
       if (j is Map && j['logins'] is Map) {
         usedLogins.addAll({for (final e in (j['logins'] as Map).entries) '${e.key}': '${e.value}'});
       }
     } on Object {
-      _jarLoad = null;
+      // No key now (a refused keychain prompt): read again on the next use.
+      if (_jarLife is JarReading) _jarTo(const JarUnread());
       return;
     }
-    _jarLoaded = true;
+    // Forgotten meanwhile stays forgotten.
+    if (_jarLife is JarReading) _jarTo(read);
   }
 
   Future<void> _restoreOrigin(WebTab t, String origin) async {
@@ -1539,7 +1699,7 @@ return true;''',
   }
 
   Future<void> _readStorage(WebTab t) async {
-    if (t._pending != null || !t._life.live) return;
+    if (t._dialog is DialogShowing || !t._life.live) return;
     try {
       final v = await _expr(t, storageReadJs).timeout(const Duration(seconds: 3));
       if (v is List && v.length == 2 && v[0] is String && v[1] is Map) {
@@ -1584,35 +1744,44 @@ return true;''',
 
   Future<void> _writeJar() async {
     final home = jarHome;
-    if (home == null || _forget || !_jarLoaded || _jarUnreadable) return;
-    final prev = _writing;
-    final w = _writing = () async {
+    if (home == null || !jarWritable(_jarLife)) return;
+    // Saves queue behind each other.
+    final prev = switch (_jarLife) {
+      JarWriting(:final tail) => tail,
+      _ => null,
+    };
+    final w = () async {
       if (prev != null) await prev;
-      if (_forget) return;
+      if (_jarLife is JarForgotten) return;
       try {
         await (await home.store()).write(home.name, {...jarToJson(_jar), 'logins': usedLogins});
       } on Object {
         // No keychain: the jar lives for this run only.
       }
     }();
+    _jarTo(JarWriting(w));
     await w;
-    if (identical(_writing, w)) _writing = null;
+    if (_jarLife case JarWriting(:final tail) when identical(tail, w)) _jarTo(const JarReady());
   }
 
   @override
   Future<void> saveJar({bool captured = false}) async {
-    if (!_jarLoaded) await _loadJar();
+    if (_jarLife is JarUnread || _jarLife is JarReading) await _loadJar();
     if (running && !captured) await captureJar();
     await _writeJar();
   }
 
   @override
   Future<void> forgetJar() async {
-    _forget = true;
+    final writing = switch (_jarLife) {
+      JarWriting(:final tail) => tail,
+      _ => null,
+    };
+    if (_jarLife is! JarForgotten) _jarTo(const JarForgotten());
     _jarTimer?.cancel();
     final home = jarHome;
     if (home == null) return;
-    if (_writing case final w?) await w;
+    if (writing != null) await writing;
     try {
       await (await home.store()).delete(home.name);
     } on Object {
@@ -1652,14 +1821,15 @@ return true;''',
       } else {
         final gone = [for (final c in jarForSite(all, site).cookies) ?nativeCookieOf(c)];
         await _native!.deleteCookies(t.token, gone);
-        for (final x in _tabs) {
-          final u = Uri.tryParse(x.url);
-          if (u != null && u.hasAuthority && siteOf(u.host) == site) {
-            await _js(
-              x,
-              'try { localStorage.clear(); sessionStorage.clear(); } catch (_) {} return true;',
-            ).catchError((Object _) => null);
-          }
+      }
+      // The open pages' storage too (WebView2's clearData takes only cookies).
+      for (final x in _tabs) {
+        final u = Uri.tryParse(x.url);
+        if (u != null && u.hasAuthority && (site == null || siteOf(u.host) == site)) {
+          await _js(
+            x,
+            'try { localStorage.clear(); sessionStorage.clear(); } catch (_) {} return true;',
+          ).catchError((Object _) => null);
         }
       }
     }
@@ -1700,7 +1870,7 @@ return true;''',
     _set(WebviewClosing(done.future));
     try {
       _jarTimer?.cancel();
-      if (wasRunning && !_forget) {
+      if (wasRunning && _jarLife is! JarForgotten) {
         await saveJar(captured: captured).timeout(const Duration(seconds: 2), onTimeout: () {});
       }
       loginWall.stop();
@@ -1710,7 +1880,6 @@ return true;''',
       }
       // A frame for the Preview to let go of a shown view first.
       await Future.wait([for (final t in all) _disposeView(t)]);
-      control.removeListener(_syncLock);
       _active = null;
       _publish();
       fileChooser.value = null;
@@ -1720,8 +1889,7 @@ return true;''',
       final env = _env, dir = _envDir;
       _env = null;
       _envDir = null;
-      await env?.dispose().catchError((Object _) {});
-      if (dir != null) await dir.delete(recursive: true).catchError((Object _) => dir);
+      await _releaseEnv(env, dir);
     } finally {
       _set(const WebviewClosed());
       done.complete();
