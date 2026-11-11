@@ -42,7 +42,7 @@ import 'board_snooze.dart';
 import 'board_providers.dart';
 import 'board_state.dart';
 import 'board_triage.dart';
-import '../domain/transcript.dart' show QuestionItem, Transcript;
+import '../domain/transcript.dart' show QuestionItem, Transcript, endedOnFailure;
 import '../harness/events.dart' show ActionCall;
 import 'board_work.dart';
 import '../workflows/workflow_runs.dart' show workflowRunsProvider;
@@ -550,8 +550,17 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       }
       // Until an opened session has connected, the polled status stands (no flicker to Done and back); before the
       // first poll has answered it has no status at all, and stays off the Board.
-      final o = ownOf(s);
-      if (o == null) continue;
+      final polled = ownOf(s);
+      if (polled == null) continue;
+      // A closed run that ended on an error counts as failed, though its harness's poll may say idle (an open
+      // session's own status already reads it: [endedOnFailure]).
+      bool closedFailed() {
+        if (isOpen(s) || (polled != SessionStatus.idle && polled != SessionStatus.done)) return false;
+        final t = ref.watch(boardRecentTranscriptProvider((s.id, polled))).value;
+        return t != null && endedOnFailure(t);
+      }
+
+      final o = closedFailed() ? SessionStatus.failed : polled;
       own[s.id] = o;
       work[s.id] = workOf(s);
       // A child waiting on the user: an open one shows it; a closed one's polled wait counts too (it opens next).
@@ -864,21 +873,50 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       child: child,
     );
 
+    void pickHarness(String? h) => setState(() {
+      _harness = h;
+      _generation++;
+      _keys.clear();
+    });
+    // Segments while they fit (each option takes the widest label's share); a menu once they don't, so no harness
+    // is cut off (with the inspector open the row is narrow).
     final filters = harnesses.length < 2
         ? null
-        : SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: KitSegmented<String?>(
-              key: const ValueKey('board.filter'),
-              values: [null, ...harnesses],
-              selected: harness,
-              label: (h) => h == null ? 'All' : labelOf(h),
-              onSelected: (h) => setState(() {
-                _harness = h;
-                _generation++;
-                _keys.clear();
-              }),
-            ),
+        : LayoutBuilder(
+            builder: (context, box) {
+              final labels = ['All', for (final h in harnesses) labelOf(h)];
+              final style = theme.type.callout.medium;
+              final widest = labels
+                  .map(
+                    (l) => (TextPainter(
+                      text: TextSpan(text: l, style: style),
+                      textDirection: TextDirection.ltr,
+                    )..layout()).width,
+                  )
+                  .fold<double>(0, (a, b) => a > b ? a : b);
+              if (segmentsFit(count: labels.length, widestLabel: widest, maxWidth: box.maxWidth)) {
+                return KitSegmented<String?>(
+                  key: const ValueKey('board.filter'),
+                  values: [null, ...harnesses],
+                  selected: harness,
+                  label: (h) => h == null ? 'All' : labelOf(h),
+                  onSelected: pickHarness,
+                );
+              }
+              return Align(
+                alignment: Alignment.centerLeft,
+                child: AdaptiveMenuButton(
+                  key: const ValueKey('board.filter.menu'),
+                  tooltip: 'Harness',
+                  actions: [
+                    MenuAction(label: 'All harnesses', checked: harness == null, onSelected: () => pickHarness(null)),
+                    for (final h in harnesses)
+                      MenuAction(label: labelOf(h), checked: h == harness, onSelected: () => pickHarness(h)),
+                  ],
+                  child: MenuTrigger(harness == null ? 'All harnesses' : labelOf(harness), muted: true),
+                ),
+              );
+            },
           );
 
     Widget column(BoardColumn c, {required bool scrolls}) {

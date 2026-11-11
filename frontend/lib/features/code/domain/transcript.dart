@@ -1024,3 +1024,19 @@ NoticeItem? workflowResultNotice(String id, String text) {
     detail: summary,
   );
 }
+
+/// Whether [t]'s last turn ended on a failure: its last item is an error notice (Codex stopped, a broken
+/// connection), not a usage limit (those have their own line) and nothing ran after it. A harness that reattaches
+/// a thread after a failure reports idle again (Codex), so the session's status reads this too.
+bool endedOnFailure(Transcript t) {
+  if (t.running || t.pending.isNotEmpty) return false;
+  for (final item in t.items.reversed) {
+    if (item is NoticeItem) {
+      if (item.limit != null) return false;
+      if (item.error) return true;
+      continue; // An informational notice (mode note, reconnect) after the failure doesn't undo it.
+    }
+    return false;
+  }
+  return false;
+}

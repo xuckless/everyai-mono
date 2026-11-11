@@ -1122,6 +1122,22 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
     - Race Keep (owner): the winner merges first (`mergeLocally` now returns whether it merged). Only after that are
       the losers stopped and removed. Keep is refused while a runner is starting. Race × asks "Keep them running" or
       "Stop and remove"; a runner that starts after Stop is stopped and removed. Races settle on load.
+- **Board v2, phase 4: merged phase 3 + main, demo fixes (2026-11-11; `board-v2/phase4`).** Phase 3 (with main)
+  merged in; one conflict (the ambient clock runs while a shown card is active or a goal/race runs). From the owner's
+  live demo:
+  - Inspector: `InspectorBody` (loading / empty / transcript; `liveInspectorBody`, `previewInspectorBody` in
+    `board_triage.dart`) shows a shimmering "Loading the conversation…" while a session connects or a preview reads.
+  - Card activity is plain text: `plainActivityLine` (first non-blank line; headings, quotes, list/task markers,
+    links, emphasis and code ticks out; snake_case kept).
+  - A run that ended on an error is Failed: `endedOnFailure(Transcript)` (`domain/transcript.dart`; last item an
+    error notice that isn't a usage limit, nothing after it). `CodeSessionState.status` reads it (Codex reattaches
+    idle after "Codex stopped"), and the Board applies it to closed sessions' recent transcripts.
+  - Harness filter: segments while they fit (`segmentsFit`), else one `MenuTrigger` menu ("All harnesses").
+  - PR chips: a merged or closed pull request shows only on the newest session of the project that looks for the
+    same target (`finishedPrOwner`); an open one shows on each. No Merge on a finished PR, ever.
+  - The Plan count skips a blank draft (`planCount`).
+  Tests: `board_demo_fixes_test.dart`, `board_phase3_test` (PR chip once), `board_test` (inspector loading, folded
+  filter). Not seen in the running app.
 - **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
   `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
   `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,

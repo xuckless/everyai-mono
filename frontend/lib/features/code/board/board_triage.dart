@@ -42,6 +42,27 @@ enum InspectorKeys { board, composer }
 /// composer). A session with an open controller is always shown live; a preview goes live only when the user acts.
 enum InspectorView { preview, live }
 
+/// What the inspector's body shows:
+///
+/// ```text
+///   loading ──the transcript arrives──► transcript
+///      └──nothing came back (preview)──► empty
+/// ```
+/// A live session is loading while it connects with nothing to show yet (a closed session reopening replays its
+/// history); a failure ends the loading so the error shows. A preview is loading until its read answers.
+enum InspectorBody { loading, empty, transcript }
+
+/// The live view's body: its transcript, or loading while the session connects and has shown nothing.
+InspectorBody liveInspectorBody({required bool connected, required bool failed, required bool hasItems}) =>
+    !connected && !failed && !hasItems ? InspectorBody.loading : InspectorBody.transcript;
+
+/// The preview's body, from its read ([loading] until it answers; [found] when it found a transcript).
+InspectorBody previewInspectorBody({required bool loading, required bool found}) => loading
+    ? InspectorBody.loading
+    : found
+    ? InspectorBody.transcript
+    : InspectorBody.empty;
+
 /// The side inspector. Each open or move bumps [generation], so a repeated click on the same card is a new request
 /// for [keys]:
 ///
@@ -374,3 +395,8 @@ String bulkCallLine(ActionCall call) {
     _ => call.nativeName.isEmpty ? call.toolName : call.nativeName,
   };
 }
+
+/// Whether a segmented control of [count] options fits in [maxWidth]: each option is as wide as the widest label
+/// ([widestLabel]) plus its padding (12 a side), inside the control's own 4 a side ([KitSegmented]'s sizes).
+bool segmentsFit({required int count, required double widestLabel, required double maxWidth}) =>
+    count * (widestLabel + 24) + 8 <= maxWidth;

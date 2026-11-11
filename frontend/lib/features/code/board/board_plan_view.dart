@@ -184,7 +184,7 @@ class _PlanLaneState extends ConsumerState<PlanLane> {
             const SizedBox(width: 8),
             Text('Plan', style: theme.type.callout.semibold.tint(theme.text)),
             const SizedBox(width: 8),
-            TickingCount(goals.length + races.length, style: theme.type.caption.mono.tint(theme.textSubtle)),
+            TickingCount(planCount(goals, races.length), style: theme.type.caption.mono.tint(theme.textSubtle)),
             const Spacer(),
             KitIconButton(
               key: const ValueKey('board.plan.race'),

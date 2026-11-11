@@ -26,7 +26,7 @@ import '../../layout/layout_host.dart';
 
 // Board v2, phase 3: the limits strip, cost on cards, snooze and resume at a limit's reset, and pull request chips.
 
-CodeSessionInfo _s(String id, {String dir = '/tmp/p1', int? pr, String branch = ''}) => CodeSessionInfo(
+CodeSessionInfo _s(String id, {String dir = '/tmp/p1', int? pr, String branch = '', int day = 1}) => CodeSessionInfo(
   id: id,
   projectId: 'p1',
   title: 'Session $id',
@@ -34,7 +34,7 @@ CodeSessionInfo _s(String id, {String dir = '/tmp/p1', int? pr, String branch = 
   model: 'a/m',
   mode: AgentMode.ask,
   workingDir: dir,
-  createdAt: DateTime(2026, 11, 1),
+  createdAt: DateTime(2026, 11, day),
   prNumber: pr,
   branch: branch,
 );
@@ -387,6 +387,68 @@ void main() {
       expect(find.text('Merged'), findsOneWidget);
       expect(find.byKey(const ValueKey('board.pr.merge.a')), findsNothing);
       await tester.pump(const Duration(seconds: 5));
+
+      await tester.pumpWidget(const SizedBox());
+      c.dispose();
+      await db.close();
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    testWidgets('a finished pull request shows once, on the newest session on its branch, with no Merge', (
+      tester,
+    ) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      final db = AppDatabase(NativeDatabase.memory());
+      final prefs = await Preferences.load(db);
+      final old = _s('old', branch: 'feat/x', day: 1);
+      final newest = _s('new', branch: 'feat/x', day: 3);
+      final open = _s('open', branch: 'feat/y', day: 1);
+      final openLater = _s('open2', branch: 'feat/y', day: 2);
+      prefs['code.sessions'] = jsonEncode([
+        for (final s in [old, newest, open, openLater]) s.toJson(),
+      ]);
+      // A merged one that GitHub still calls mergeable: no action is offered on it.
+      const merged = PrStatus(number: 2, url: 'u', state: PrState.merged, checks: PrChecks.passing, mergeable: true);
+      const stillOpen = PrStatus(number: 3, url: 'u', state: PrState.open, checks: PrChecks.passing);
+      final c = ProviderContainer(
+        overrides: [
+          preferencesProvider.overrideWithValue(prefs),
+          boardPrSourceProvider.overrideWithValue((
+            ready: (_) async => true,
+            status: (_, target) async => target == 'feat/x' ? merged : stillOpen,
+            method: (_, _) async => PrMergeMethod.squash,
+            blocker: (_, _) async => null,
+            merge: (_, _, _) async {},
+          )),
+        ],
+      );
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: c,
+          child: LayoutHost(
+            language: DesignLanguage.material,
+            child: Center(
+              child: SizedBox(
+                width: 420,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final s in [old, newest, open, openLater]) BoardPrChip(info: s, done: true),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+      expect(find.byKey(const ValueKey('board.pr.new')), findsOneWidget);
+      expect(find.byKey(const ValueKey('board.pr.old')), findsNothing);
+      expect(find.text('PR #2'), findsOneWidget);
+      expect(find.byKey(const ValueKey('board.pr.merge.new')), findsNothing);
+      // An open pull request still shows on every session that may merge it.
+      expect(find.text('PR #3'), findsNWidgets(2));
 
       await tester.pumpWidget(const SizedBox());
       c.dispose();

@@ -2082,6 +2082,8 @@ final class CodeSessionState {
     _ when subagentNeedsInput => SessionStatus.needsInput,
     Transcript(status: ExecutionStatus.running) => SessionStatus.running,
     Transcript(status: ExecutionStatus.error || ExecutionStatus.stuck) => SessionStatus.failed,
+    // Its last turn ended on an error, though the harness reports idle again (Codex reattaches its thread).
+    final t when endedOnFailure(t) => SessionStatus.failed,
     Transcript(status: ExecutionStatus.finished) => SessionStatus.done,
     _ when !connected => SessionStatus.starting,
     _ => SessionStatus.idle,

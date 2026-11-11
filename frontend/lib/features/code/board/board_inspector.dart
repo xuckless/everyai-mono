@@ -19,7 +19,7 @@ import '../../usage/usage_totals.dart' show UsageTotals;
 import 'board_limits.dart' show boardCostLine;
 import 'board_providers.dart' show boardRecentTranscriptProvider;
 import 'board_state.dart';
-import 'board_triage.dart' show InspectorView;
+import 'board_triage.dart' show InspectorBody, InspectorView, liveInspectorBody, previewInspectorBody;
 import 'board_work.dart';
 
 /// One session beside the Board: its header, its forks and subagents, the conversation (newest at the bottom, following
@@ -135,9 +135,19 @@ class BoardInspectorPane extends ConsumerWidget {
         ),
       );
 
+  /// The body while there's no transcript to show: a quiet loading line, or nothing recent.
+  Widget _placeholder(InspectorBody body, EveryTheme theme) => Center(
+    key: ValueKey('board.inspector.${body.name}'),
+    child: body == InspectorBody.loading
+        ? ShimmerText('Loading the conversation…', style: theme.type.callout.tint(theme.textSubtle))
+        : Text('Nothing recent to show', style: theme.type.callout.tint(theme.textSubtle)),
+  );
+
   /// The session as its harness's files last showed it, read-only: looking attaches nothing.
   Widget _preview(BuildContext context, WidgetRef ref, CodeSessionInfo info, EveryTheme theme) {
-    final t = ref.watch(boardRecentTranscriptProvider((sessionId, status))).value;
+    final read = ref.watch(boardRecentTranscriptProvider((sessionId, status)));
+    final t = read.value;
+    final body = previewInspectorBody(loading: read.isLoading && t == null, found: t != null);
     final seen = seenUpdate(status: status, connected: true, sideWork: false);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (context.mounted) markBoardSeen(ref, sessionId, seen);
@@ -150,8 +160,8 @@ class BoardInspectorPane extends ConsumerWidget {
         _header(info, model, status, theme),
         Container(height: 1, color: theme.border),
         Expanded(
-          child: t == null
-              ? Center(child: Text('Nothing recent to show', style: theme.type.callout.tint(theme.textSubtle)))
+          child: body != InspectorBody.transcript || t == null
+              ? _placeholder(body, theme)
               : TranscriptScope(
                   root: info.workingDir,
                   child: TranscriptList(
@@ -218,23 +228,30 @@ class BoardInspectorPane extends ConsumerWidget {
         const SizedBox(height: 4),
         Container(height: 1, color: theme.border),
         Expanded(
-          child: TranscriptScope(
-            root: info.workingDir,
-            child: TranscriptList(
-              onRewind: null,
-              transcript: t,
-              onAnswer: controller.answer,
-              onAnswerWithFiles: (item, a, files) => controller.answer(item, a, files: files),
-              acceptsFiles: controller.acceptsFiles,
-              model: model,
-              mode: state.mode,
-              onApprovePlan: controller.startBuilding,
-              onRevisePlan: controller.send,
-              onRetry: controller.retry,
-              sessionId: sessionId,
-              workingDir: info.workingDir,
+          child: switch (liveInspectorBody(
+            connected: state.connected,
+            failed: state.failure != null,
+            hasItems: t.items.isNotEmpty || t.streaming.isNotEmpty,
+          )) {
+            InspectorBody.transcript => TranscriptScope(
+              root: info.workingDir,
+              child: TranscriptList(
+                onRewind: null,
+                transcript: t,
+                onAnswer: controller.answer,
+                onAnswerWithFiles: (item, a, files) => controller.answer(item, a, files: files),
+                acceptsFiles: controller.acceptsFiles,
+                model: model,
+                mode: state.mode,
+                onApprovePlan: controller.startBuilding,
+                onRevisePlan: controller.send,
+                onRetry: controller.retry,
+                sessionId: sessionId,
+                workingDir: info.workingDir,
+              ),
             ),
-          ),
+            final other => _placeholder(other, theme),
+          },
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),

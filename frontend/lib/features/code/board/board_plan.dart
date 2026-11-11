@@ -189,6 +189,10 @@ TaskRun _runFromJson(Object? json) {
 /// [splitting] doesn't outlive the app (back to draft on the next load).
 enum GoalStage { draft, splitting, ready, running, done, failed, cancelled }
 
+/// What the Plan lane's count counts: goals with something in them (a blank draft is just the open form) and races.
+int planCount(Iterable<PlanGoal> goals, int races) =>
+    goals.where((g) => g.stage != GoalStage.draft || g.text.trim().isNotEmpty).length + races;
+
 @immutable
 final class PlanGoal {
   const PlanGoal({

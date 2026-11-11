@@ -230,9 +230,10 @@ void main() {
     expect(c.read(boardColumnsProvider).first, greaterThan(1 / 3));
     expect(prefs[BoardColumns.key], isNotNull);
 
-    await tester.tap(
-      find.descendant(of: find.byKey(const ValueKey('board.filter')), matching: find.text('Claude Code')),
-    );
+    // Three harnesses in the test font don't fit beside the search: the filter is a menu.
+    await tester.tap(find.byKey(const ValueKey('board.filter.menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(PopoverRow, 'Claude Code'));
     await tester.pumpAndSettle();
     expect(find.text('Session a'), findsNothing);
     expect(find.text('Session b'), findsOneWidget);
@@ -1054,6 +1055,73 @@ void main() {
     await done(tester, c);
   });
 
+  testWidgets('the inspector says it is loading while a session connects, then shows the conversation', (tester) async {
+    final live = {'w': const CodeSessionState()};
+    final c = await board(
+      tester,
+      sessions: [_s('w')],
+      live: live,
+      statuses: const {'w': SessionStatus.running},
+      decisions: [],
+    );
+    await settle(tester);
+    await tester.tap(find.byKey(const ValueKey('board.card.w.0')));
+    await settle(tester);
+    expect(find.byKey(const ValueKey('board.inspector.loading')), findsOneWidget);
+    // ignore: invalid_use_of_protected_member
+    c.read(codeSessionProvider('w').notifier).state = const CodeSessionState(connected: true);
+    await settle(tester);
+    expect(find.byKey(const ValueKey('board.inspector.loading')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('the harness filter folds into a menu when its segments would be cut off', (tester) async {
+    final sessions = [
+      _s('a', day: 1),
+      _s('b', harness: 'codex', day: 2),
+      _s('c', harness: 'claude-code', day: 3),
+      _s('d', harness: 'opencode', day: 4),
+    ];
+    // The test font draws every letter full width ("Claude Code" is ~150pt): a wide window fits them all.
+    var c = await board(
+      tester,
+      sessions: sessions,
+      live: const {},
+      statuses: const {},
+      decisions: [],
+      size: const Size(2600, 900),
+    );
+    await settle(tester);
+
+    expect(find.byKey(const ValueKey('board.filter')), findsOneWidget);
+    expect(find.byKey(const ValueKey('board.filter.menu')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+
+    c = await board(
+      tester,
+      sessions: sessions,
+      live: const {},
+      statuses: const {},
+      decisions: [],
+      size: const Size(820, 900),
+    );
+    await settle(tester);
+    expect(find.byKey(const ValueKey('board.filter')), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('board.filter.menu')));
+    await settle(tester);
+    expect(find.widgetWithText(PopoverRow, 'Codex'), findsOneWidget);
+    await tester.tap(find.widgetWithText(PopoverRow, 'Codex'));
+    await settle(tester);
+    expect(find.text('Session b'), findsOneWidget);
+    expect(find.text('Session a'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+    debugDefaultTargetPlatformOverride = null;
+  });
+
   testWidgets('the limits strip shows what the sessions reported, and hides with nothing known', (tester) async {
     final c = await board(
       tester,
@@ -1140,7 +1208,7 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('board.snooze.a')));
     await settle(tester);
-    expect(find.byKey(const ValueKey('board.card.a.0')), findsNothing);
+    expect(find.text('Session a'), findsNothing);
     expect(find.text('Snoozed'), findsOneWidget);
     expect(c.read(boardSnoozedProvider).keys, ['a']);
     await tester.tap(find.text('Snoozed'));
