@@ -61,6 +61,12 @@ final class WorkflowAgentCall {
   /// It may only read, whatever the lead's mode: its edits and commands off
   /// the read-only list wait for the user. For agents that read code an
   /// attacker may have written.
+  ///
+  /// On the EveryAI harness that is enforced by EveryAI's checks. On an outside lead (owner, 2026-11-11) a worker
+  /// follows the lead: one without this role takes the lead's mode, its skip-permissions mode included; one with it
+  /// starts in the CLI's mode nearest Ask, and EveryAI's checks judge only what that CLI asks about. What the CLI runs
+  /// without asking (its own mode, Kiro's Autopilot, a project config that pre-allows tools) isn't seen, so there the
+  /// role is advice, not a guarantee.
   final bool readOnly;
   final Map<String, Object?>? schema;
 
