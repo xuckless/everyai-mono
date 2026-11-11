@@ -297,6 +297,72 @@ void main() {
     expect(await driver.statuses([_ses]), {_ses: ExecutionStatus.idle});
   });
 
+  test("a native subagent's permission request asks the user and its answer goes to the child session", () async {
+    const parent = 'ses_e5adcc5e9ffeq46VWxD6qlLA9d';
+    const child = 'ses_child';
+    Map<String, Object?> event(String type, Map<String, Object?> data) => {
+      'event': {'type': type, 'data': data},
+    };
+    // Composed: the recording up to its first request, then a subagent in a child session asks about a command.
+    final http = ReplayHttpClient.script(
+      [
+        _head('external_dir_cancel.jsonl', '"permission.asked"'),
+        _line('in', event('session.created', {'sessionID': child, 'parentID': parent})),
+        _line('in', event('session.tool.input.started', {'sessionID': child, 'id': 'call_c', 'name': 'bash'})),
+        _line(
+          'in',
+          event('session.tool.called', {
+            'sessionID': child,
+            'id': 'call_c',
+            'input': {'command': 'npm install'},
+          }),
+        ),
+        _line('in', event('session.text.delta', {'sessionID': child, 'delta': 'Installing.'})),
+        _line(
+          'in',
+          event('permission.asked', {
+            'id': 'per_c',
+            'sessionID': child,
+            'action': 'bash',
+            'resources': ['npm install'],
+            'source': {'type': 'tool', 'id': 'call_c'},
+          }),
+        ),
+        _line('out', {
+          'id': 4,
+          'method': 'POST',
+          'path': '/api/session/$child/permission/per_c/reply',
+          'body': {'decision': 'once'},
+        }),
+        _line('in', {'id': 4, 'status': 204}),
+        _line('in', event('permission.replied', {'sessionID': child, 'requestID': 'per_c', 'reply': 'once'})),
+        _line(
+          'in',
+          event('session.tool.success', {
+            'sessionID': child,
+            'id': 'call_c',
+            'content': [
+              {'type': 'text', 'text': 'added 1 package'},
+            ],
+          }),
+        ),
+      ].join('\n'),
+    );
+    final (:driver, data: _) = _driver(http);
+    final session = await driver.start(_spec(model: 'x', initial: 'Read /etc/hosts.'));
+    final events = await _collect(session);
+    final call = events.whereType<ActionCall>().single;
+    expect(call.toolCallId, 'call_c');
+    expect(events.whereType<StateChange>().last.executionStatus, ExecutionStatus.waitingForConfirmation);
+    await session.respond(accept: true, callIds: [call.id]);
+    await pumpEventQueue();
+    http.channel.expectFinished();
+    expect(events.whereType<ToolResult>().single.actionId, call.id);
+    // The subagent's own text stays in its session.
+    expect(events.whereType<StreamDelta>().where((d) => d.content.contains('Installing')), isEmpty);
+    await session.close();
+  });
+
   test('interrupt, steer and a model switch use their own calls', () async {
     final http = _replay('interrupt_steer.jsonl');
     final (:driver, data: _) = _driver(http);

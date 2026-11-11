@@ -45,9 +45,7 @@ void main() {
     ours = null;
   });
 
-  testWidgets("an outside harness's picker shows its own modes; a greyed one says why and can't be picked", (
-    tester,
-  ) async {
+  testWidgets("an outside harness's picker shows its own modes, Bypass permissions too", (tester) async {
     tester.view.physicalSize = const Size(1200, 1600);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
@@ -56,12 +54,11 @@ void main() {
     await tester.tap(find.text('Default'));
     await tester.pumpAndSettle();
     expect(find.text('Claude Code modes'), findsOneWidget);
-    for (final label in ['Accept edits', 'Plan mode']) {
+    for (final label in ['Accept edits', 'Plan mode', 'Bypass permissions']) {
       expect(find.text(label), findsOneWidget);
     }
     expect(find.text('Full auto'), findsNothing);
-    // Claude's own Bypass permissions isn't listed; EveryAI's switch sits under the modes.
-    expect(find.text('Bypass permissions'), findsNothing);
+    // EveryAI's switch sits under Claude's own modes.
     expect(find.text('Bypass EveryAI checks'), findsOneWidget);
 
     await tester.tap(find.text('Accept edits'));

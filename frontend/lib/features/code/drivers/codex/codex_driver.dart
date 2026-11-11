@@ -70,9 +70,9 @@ final class CodexDriver
 
   /// Not fork or rewind (Codex has thread forks and rollbacks; not wired
   /// yet), not subagents (its own aren't mapped; ours stand in).
-  /// [codexModeFor]: Read Only for Ask, Default for Auto-edit; no preset runs Plan or Full auto.
+  /// [codexModeFor]: every mode has its nearest Codex preset except Plan, which runs in Read Only with our note.
   @override
-  bool startsNatively(AgentMode mode) => mode == AgentMode.ask || mode == AgentMode.autoEdit;
+  bool startsNatively(AgentMode mode) => mode != AgentMode.plan;
 
   @override
   Set<DriverCap> get caps => const {

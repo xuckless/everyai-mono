@@ -749,9 +749,10 @@ void main() {
       await journalled('finished');
     });
 
-    test("Gemini's shell call waits for the user even in Full auto", () async {
+    // Gemini's own default mode asks; Full auto would now start it in its own yolo mode, which doesn't.
+    test("Gemini's shell call waits for the user in its default mode", () async {
       final controller = await open(
-        AgentMode.fullAuto,
+        AgentMode.ask,
         harness: 'acp',
         // Reopened with a fresh briefing: our server and its new token go in session/load.
         extra: acp(

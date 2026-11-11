@@ -256,7 +256,7 @@ final class AcpDriver
   );
 
   /// No steering (ACP has none) and no fork or rewind yet.
-  /// The session pins the profile's ask mode, or its plan mode in Plan.
+  /// The session starts in the profile's ask mode, or its plan mode in Plan.
   @override
   bool startsNatively(AgentMode mode) => switch (mode) {
     AgentMode.ask => resolved.profile.askMode != null,

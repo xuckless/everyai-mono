@@ -1,7 +1,5 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
 
 import '../../domain/agent_mode.dart';
@@ -11,15 +9,15 @@ import '../driver.dart';
 import 'acp_files.dart';
 
 // What the app knows about each ACP agent it drives. One generic client
-// serves them all; an entry pins the flags and modes that keep an agent
-// asking (Gemini can start in its yolo mode, OpenCode and goose never ask by
-// default) and says how to tell it is signed in without a model call.
+// serves them all; an entry pins the flags the ACP pipe needs, names the
+// agent's modes nearest the app's, and says how to tell it is signed in
+// without a model call.
 // Agents without logic of their own are [AcpAgent.generic] plus data.
 
 /// The agents with logic of their own; anything else is [generic].
 enum AcpAgent { gemini, openCode, qwen, kiro, cursor, grok, generic }
 
-/// How to run one ACP agent so every risky call comes to the app as a
+/// How to run one ACP agent over the ACP pipe. Its own modes decide what asks; what asks comes to the app as a
 /// `session/request_permission`.
 @immutable
 final class AcpProfile {
@@ -38,7 +36,6 @@ final class AcpProfile {
     this.minVersion,
     this.keyEnv = const [],
     this.needsConsent = false,
-    this.configPins = const {},
     this.notThis,
     this.alsoNamed = const [],
     this.ttyFallback = false,
@@ -52,26 +49,23 @@ final class AcpProfile {
   /// a subcommand). One replaces the same flag given in the command.
   final List<List<String>> pinned;
 
-  /// Flags removed from the command (they would skip the agent's prompts).
+  /// Flags removed from the command (the ACP pipe needs their pinned value).
   final List<String> dropped;
 
   /// Like [dropped], for flags that take a value: `--auto high` loses both.
   final List<String> droppedWithValue;
 
-  /// Environment it always runs with (auto-update off, its asking mode).
+  /// Environment it always runs with (auto-update off).
   final Map<String, String> extraEnv;
   final Set<DriverCap> caps;
 
-  /// The agent's own mode that asks before acting, set for every app mode
-  /// but Plan; null leaves its modes alone.
+  /// The agent's own mode nearest the app's Ask (it asks before acting); null when unknown.
   final String? askMode;
 
-  /// Its read-only mode, for Plan (when it has one).
+  /// Its read-only mode, nearest the app's Plan (when it has one).
   final String? planMode;
 
-  /// The app's policy for its other modes that still ask before acting (the
-  /// picker offers them under their own names). [askMode] and [planMode]
-  /// need no entry; a mode in neither is listed greyed (`acpModes`).
+  /// The app's nearest name for its other modes, where a guess from the id would be wrong (`acpModePolicy`).
   final Map<String, AgentMode> modePolicy;
 
   /// What the user does to sign in, as an instruction.
@@ -92,10 +86,6 @@ final class AcpProfile {
   /// Whether the user must turn on "Use my own installed CLIs" for it: its
   /// vendor's terms leave a third-party client on the user's sign-in open.
   final bool needsConsent;
-
-  /// Session config options set by id whatever the agent starts with, kept
-  /// there when it changes them back (Kiro's `autopilot` runs tools unasked).
-  final Map<String, String> configPins;
 
   /// A pattern for a `--version` line that shows the command is another
   /// program of the same name, and what to tell the user then.
@@ -128,9 +118,10 @@ final class AcpProfile {
     _ => recipes.acp(i, skills: skills),
   };
 
-  /// Its environment on top of [delivery]'s: OpenCode gets [openCodePermissions].
+  /// Its environment on top of [delivery]'s: OpenCode's also turns off the project's own config
+  /// ([withoutOpenCodeProjectConfig]).
   Map<String, String> env(Delivery? delivery) => switch (agent) {
-    AcpAgent.openCode => withOpenCodePermissions({...extraEnv, ...?delivery?.env}),
+    AcpAgent.openCode => withoutOpenCodeProjectConfig({...extraEnv, ...?delivery?.env}),
     _ => {...extraEnv, ...?delivery?.env},
   };
 
@@ -138,19 +129,8 @@ final class AcpProfile {
   /// rather than in `session/new`.
   bool get mcpInConfig => agent == AcpAgent.openCode;
 
-  /// Why it must not start in [cwd] (project files that would let it act
-  /// without asking), or null.
-  Future<String?> preflight(String cwd) => switch (agent) {
-    AcpAgent.gemini => geminiWorkspaceProblem(cwd),
-    AcpAgent.qwen => geminiWorkspaceProblem(cwd, folder: '.qwen', label: 'Qwen Code'),
-    AcpAgent.kiro => kiroWorkspaceProblem(cwd),
-    AcpAgent.cursor => cursorWorkspaceProblem(cwd),
-    _ => Future.value(),
-  };
-
   /// This profile with [env] (an ACP registry entry's) under its own
-  /// [extraEnv]: on a clash the profile's value wins, so a registry entry
-  /// can't undo a pin that keeps the agent asking.
+  /// [extraEnv]: on a clash the profile's value wins.
   AcpProfile withEnv(Map<String, String> env) => env.isEmpty
       ? this
       : AcpProfile._(
@@ -168,7 +148,6 @@ final class AcpProfile {
           minVersion: minVersion,
           keyEnv: keyEnv,
           needsConsent: needsConsent,
-          configPins: configPins,
           notThis: notThis,
           alsoNamed: alsoNamed,
           ttyFallback: ttyFallback,
@@ -250,14 +229,10 @@ const _shared = {DriverCap.resume, ..._asks};
 
 const _gemini = AcpProfile._(
   agent: AcpAgent.gemini,
-  // `--acp` (0.33.2; `--experimental-acp` is its deprecated alias). The
-  // approval mode pins the asking mode whatever the user's settings say.
+  // `--acp` (0.33.2; `--experimental-acp` is its deprecated alias).
   pinned: [
     ['--acp'],
-    ['--approval-mode', 'default'],
   ],
-  // Gemini refuses --yolo next to --approval-mode.
-  dropped: ['--yolo', '-y'],
   caps: {..._shared, DriverCap.mcp, DriverCap.images, DriverCap.switchModel, DriverCap.skills},
   askMode: 'default',
   // Personal Google sign-in stopped working on 2026-06-18 (Antigravity CLI
@@ -318,11 +293,6 @@ const _copilot = AcpProfile._(
     ['--acp'],
     ['--stdio'],
   ],
-  dropped: ['--yolo', '--allow-all', '--allow-all-tools', '--allow-all-paths', '--allow-all-urls'],
-  droppedWithValue: ['--allow-tool', '--allow-url'],
-  // The environment twin of --allow-all (docs: cli-programmatic-reference),
-  // which a user's shell profile may set for terminal use.
-  extraEnv: {'COPILOT_ALLOW_ALL': 'false'},
   caps: {..._shared, DriverCap.mcp},
   signIn: 'Run `copilot` in a terminal and use /login',
   // The AWS Copilot CLI is also `copilot` ("copilot version: v1.34.0").
@@ -342,17 +312,13 @@ const _kiro = AcpProfile._(
     ['--agent-engine=v3'],
     ['--auth-method=cli'],
   ],
-  dropped: ['--trust-all-tools'],
-  droppedWithValue: ['--agent-engine', '--trust-tools', '--auth-method'],
+  // A given engine or auth method would replace the pinned ones the pipe needs.
+  droppedWithValue: ['--agent-engine', '--auth-method'],
   caps: {..._asks, DriverCap.mcp},
   signIn: 'Run `kiro-cli login` in a terminal',
   minVersion: '2.36.0',
   keyEnv: ['KIRO_API_KEY'],
-  // v3 starts with Autopilot on ("Agent executes tools without
-  // confirmation"); off, every tool comes as a permission request. T3 Code's
-  // `kiroAutopilotValue` turns it on only for full-access threads.
-  configPins: {'autopilot': 'off'},
-  // Its `mode` option; with Autopilot off both ask before acting.
+  // Its `mode` option. Autopilot (a config option of its own) is the user's to set in Kiro.
   modePolicy: {'vibe': AgentMode.ask, 'plan': AgentMode.plan},
 );
 
@@ -364,23 +330,20 @@ const _kimi = AcpProfile._(
   pinned: [
     ['acp'],
   ],
-  dropped: ['--yolo', '-y'],
   caps: {..._shared, DriverCap.mcp, DriverCap.switchModel},
   askMode: 'default',
   planMode: 'plan',
   signIn: 'Run `kimi` in a terminal and type /login',
 );
 
-// Qwen Code, a Gemini CLI fork: the same approval flags and a `.qwen`
-// project folder. Mode ids are unverified. No consent: Apache-2.0, run on
-// the user's own key.
+// Qwen Code, a Gemini CLI fork: the same modes and a `.qwen` project
+// folder. Mode ids are unverified. No consent: Apache-2.0, run on the user's
+// own key.
 const _qwen = AcpProfile._(
   agent: AcpAgent.qwen,
   pinned: [
     ['--acp'],
-    ['--approval-mode', 'default'],
   ],
-  dropped: ['--yolo', '-y'],
   caps: {..._asks, DriverCap.mcp},
   askMode: 'default',
   planMode: 'plan',
@@ -388,36 +351,30 @@ const _qwen = AcpProfile._(
   lateReplay: true,
 );
 
-// Cline CLI (cline/cline apps/cli): in ACP only an explicit
-// `--auto-approve true` or `--yolo` approves on its own; the pin keeps it
-// off. Modes are act and plan. No consent: Apache-2.0, ACP is a documented
-// mode for editors.
+// Cline CLI (cline/cline apps/cli): modes are act and plan. No consent:
+// Apache-2.0, ACP is a documented mode for editors.
 const _cline = AcpProfile._(
   agent: AcpAgent.generic,
   pinned: [
     ['--acp'],
-    ['--auto-approve', 'false'],
   ],
-  dropped: ['--yolo', '-y', '--zen', '-z'],
   caps: _shared,
   askMode: 'act',
   planMode: 'plan',
   signIn: 'Run `cline auth` in a terminal',
 );
 
-// goose (aaif-goose/goose): its default mode, auto, never asks, so the
-// environment and the session mode both pin `approve`. Its `chat` mode
-// can't read files, so Plan relies on the app's rules. No consent:
-// Apache-2.0, on the user's own provider key.
+// goose (aaif-goose/goose): its default mode, auto, never asks; `approve`
+// asks before acting, and `chat` can't read files. No consent: Apache-2.0,
+// on the user's own provider key.
 const _goose = AcpProfile._(
   agent: AcpAgent.generic,
   pinned: [
     ['acp'],
   ],
-  extraEnv: {'GOOSE_MODE': 'approve'},
   caps: {..._shared, DriverCap.mcp},
   askMode: 'approve',
-  modePolicy: {'chat': AgentMode.plan},
+  modePolicy: {'chat': AgentMode.plan, 'smart_approve': AgentMode.autoEdit},
   signIn: 'Run `goose configure` in a terminal',
   // pressly's database-migration tool is also `goose` ("goose version: v3.26.0").
   notThis: (
@@ -452,17 +409,14 @@ const _auggie = AcpProfile._(
 );
 
 // Factory Droid: the ACP registry's launch (docs.factory.ai describe
-// `--output-format acp` for Zed and JetBrains). `--auto` and
-// `--skip-permissions-unsafe` would raise its autonomy past asking. No
-// consent: Factory documents ACP use from editors.
+// `--output-format acp` for Zed and JetBrains). No consent: Factory
+// documents ACP use from editors.
 const _droid = AcpProfile._(
   agent: AcpAgent.generic,
   pinned: [
     ['exec'],
     ['--output-format', 'acp-daemon'],
   ],
-  dropped: ['--skip-permissions-unsafe'],
-  droppedWithValue: ['--auto'],
   extraEnv: {'DROID_DISABLE_AUTO_UPDATE': 'true', 'FACTORY_DROID_AUTO_UPDATE_ENABLED': 'false'},
   caps: _asks,
   signIn: 'Run `droid` in a terminal and sign in, or set FACTORY_API_KEY',
@@ -471,9 +425,8 @@ const _droid = AcpProfile._(
 
 // Cursor CLI (cursor.com/docs/cli/acp): `agent acp`, installed as both
 // `cursor-agent` and `agent`; the unambiguous name is looked for first.
-// Never its `ask` mode: that is read-only Q&A, while the app's Ask still
-// edits after approval, so every app mode but Plan pins `agent` and Cursor's
-// permission requests carry the approvals. Its question, plan, to-do and
+// Its `ask` mode is read-only Q&A, nearest the app's Plan; `agent` is
+// nearest the app's Ask. Its question, plan, to-do and
 // subagent requests are `cursor/*` extensions (`acp_cursor.dart`). Consent:
 // Cursor documents ACP for custom clients, but its terms weren't read.
 const _cursor = AcpProfile._(
@@ -481,9 +434,6 @@ const _cursor = AcpProfile._(
   pinned: [
     ['acp'],
   ],
-  // Its headless skip-approval flags, and the ones that trust the folder or
-  // approve every MCP server unasked.
-  dropped: ['--force', '--yolo', '-f', '--trust', '--approve-mcps'],
   caps: {..._shared, DriverCap.mcp, DriverCap.switchModel, DriverCap.subagents, DriverCap.nativeQuestions},
   askMode: 'agent',
   planMode: 'plan',
@@ -498,9 +448,8 @@ const _cursor = AcpProfile._(
 // Grok Build (docs.x.ai/build/cli/reference lists `grok agent stdio`). The
 // global flags go before `agent`, as in T3 Code (MIT),
 // packages/provider-grok/src/server/acpSupport.ts `grokAcpSpawnArgs`:
-// `--permission-mode default` keeps it asking whatever its config says, and
-// `--no-auto-update` keeps the installed version (neither is in xAI's
-// reference yet). `initialize` says `clientType: extension`, which asks
+// `--no-auto-update` keeps the installed version (not in xAI's reference
+// yet). `initialize` says `clientType: extension`, which asks
 // instead of quietly refusing, and Stop is Ctrl+C, which also holds back
 // background wakes until the next message. No session modes are known yet.
 // No consent: xAI's announcement (x.ai/news/grok-build-cli) offers ACP
@@ -508,14 +457,10 @@ const _cursor = AcpProfile._(
 const _grok = AcpProfile._(
   agent: AcpAgent.grok,
   pinned: [
-    ['--permission-mode', 'default'],
     ['--no-auto-update'],
     ['agent'],
     ['stdio'],
   ],
-  dropped: ['--always-approve', '--yolo', '--dangerously-skip-permissions'],
-  // Allow rules (docs.x.ai/build/cli/reference) would let calls past the app.
-  droppedWithValue: ['--allow'],
   caps: {..._shared, DriverCap.switchModel, DriverCap.subagents},
   signIn: 'Run `grok login` in a terminal',
   keyEnv: ['XAI_API_KEY'],
@@ -611,32 +556,9 @@ List<String> addArgs(List<String> base, List<String> extra) {
   return out;
 }
 
-/// OpenCode's permission rules for a session: every tool asks, so commands,
-/// edits, fetches and MCP calls reach the app's approvals; its to-do list,
-/// subagents and skills run without asking (their own tool calls still ask).
-const openCodePermissions = {'*': 'ask', 'todowrite': 'allow', 'todoread': 'allow', 'task': 'allow', 'skill': 'allow'};
-
-/// The agents [openCodePermissions] are pinned on as well. OpenCode applies
-/// the last matching rule, and puts every config's agent rules after all the
-/// top-level ones (2.1.3), so an `agent.build.permission` in the user's
-/// config would otherwise win over ours.
-const openCodeAgents = ['build', 'plan', 'general', 'explore'];
-
-/// [env] with [openCodePermissions] merged into `OPENCODE_CONFIG_CONTENT`
-/// (top level and per agent), and the project's own OpenCode config turned
-/// off: a cloned repository's `opencode.json` or `.opencode/` could allow
-/// tools, define agents or run plugins, and the app takes no settings from
-/// repository files.
-Map<String, String> withOpenCodePermissions(Map<String, String> env) {
-  final config = <String, Object?>{};
-  if (env['OPENCODE_CONFIG_CONTENT'] case final s?) {
-    if (jsonDecode(s) case final Map<String, Object?> m) config.addAll(m);
-  }
-  config['permission'] = openCodePermissions;
-  final agents = <String, Object?>{...?(config['agent'] as Map<String, Object?>?)};
-  for (final a in openCodeAgents) {
-    agents[a] = {...?(agents[a] as Map<String, Object?>?), 'permission': openCodePermissions};
-  }
-  config['agent'] = agents;
-  return {...env, 'OPENCODE_CONFIG_CONTENT': jsonEncode(config), 'OPENCODE_DISABLE_PROJECT_CONFIG': '1'};
-}
+/// [env] with the project's own OpenCode config turned off: a cloned repository's `opencode.json` or `.opencode/`
+/// could run plugins just by being opened. Each agent's permissions come from the user's own config.
+Map<String, String> withoutOpenCodeProjectConfig(Map<String, String> env) => {
+  ...env,
+  'OPENCODE_DISABLE_PROJECT_CONFIG': '1',
+};

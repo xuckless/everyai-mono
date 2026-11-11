@@ -12,19 +12,15 @@ import '../driver_policy.dart';
 import 'opencode_events.dart';
 import 'opencode_server.dart';
 
-/// The rules every session is created with (the last match wins): OpenCode
-/// asks about every tool call, and the app's own permissions decide each
-/// one. Its question tool and subagents are off (our question cards come
-/// through our MCP server; subagents run as the app's child sessions), the
-/// to-do list and skills need no answer, and our MCP server judges its own
-/// tools, except the two that run a command in the app (bug_check, check):
-/// those ask, so the session's approval sees them before the host runs it.
+/// The rules every session is created with, on top of each agent's own
+/// permissions (the last match wins). The agent's own permissions decide
+/// what asks; what asks comes to the app as a card. OpenCode's question tool
+/// stays off: the app has no card for its questions (ours come through our
+/// MCP server). Our MCP server's tools need no answer, except the two that
+/// run a command in the app (bug_check, check): those ask, so the user sees
+/// them before the host runs it.
 const openCodeSessionRules = [
-  {'action': '*', 'resource': '*', 'effect': 'ask'},
   {'action': 'question', 'resource': '*', 'effect': 'deny'},
-  {'action': 'subagent', 'resource': '*', 'effect': 'deny'},
-  {'action': 'todowrite', 'resource': '*', 'effect': 'allow'},
-  {'action': 'skill', 'resource': '*', 'effect': 'allow'},
   {'action': 'everyai_*', 'resource': '*', 'effect': 'allow'},
   {'action': 'everyai_bug_check', 'resource': '*', 'effect': 'ask'},
   {'action': 'everyai_check', 'resource': '*', 'effect': 'ask'},
@@ -58,10 +54,11 @@ List<NativeCommand> openCodeCommands(Object? data) {
   return out;
 }
 
-/// OpenCode's primary agents (`GET /api/agent`'s `data`; hidden ones and
-/// subagents left out) as modes: `plan` under the app's Plan, every other
-/// one (`build`, the user's own) under Ask. The session's rules (`*: ask`,
-/// last match wins) keep every agent asking, whatever its own permissions say.
+/// OpenCode's agents a session can run as (`GET /api/agent`'s `data`): every
+/// one except hidden ones (OpenCode's own title and summary agents) and
+/// subagent-only ones, which OpenCode runs only under another agent. `plan`
+/// sits under the app's Plan, every other one (`build`, the user's own) under
+/// Ask; that is only a name, as each agent's own permissions decide what asks.
 List<NativeMode> openCodeModes(Object? data) => [
   if (data is List<Object?>)
     for (final a in data)
@@ -254,8 +251,7 @@ final class OpenCodeSession implements HarnessSession, SteersRuns, PerCallApprov
   @override
   Future<void> resume() async {}
 
-  /// Accepting allows the call once (never "always": remembering is the
-  /// app's job). Refusing chosen calls sends the reason, which the model
+  /// Accepting allows the call once (never "always"). Refusing chosen calls sends the reason, which the model
   /// reads and carries on. Refusing all of them (no [callIds]) stops the
   /// run: with a reason, the refusals carry it and the run is interrupted
   /// (the model reads it next turn); without one, a bare refusal stops it.
@@ -275,7 +271,8 @@ final class OpenCodeSession implements HarnessSession, SteersRuns, PerCallApprov
         if (!accept && (callIds != null || stop)) 'message': why.isEmpty ? 'The user refused this call.' : reason,
       };
       try {
-        await _server.call('POST', '/api/session/$_id/permission/$request/reply', body: body);
+        final owner = _requestSession[request] ?? _id;
+        await _server.call('POST', '/api/session/$owner/permission/$request/reply', body: body);
       } on OpenCodeHttpError catch (e) {
         // Already answered, or the run moved on.
         if (e.status != 404) rethrow;
@@ -285,7 +282,7 @@ final class OpenCodeSession implements HarnessSession, SteersRuns, PerCallApprov
     if (stop && targets.isNotEmpty) await interrupt();
   }
 
-  /// The app's policy decides every request, whatever the mode.
+  /// The agent picked in the mode picker ([setNativeMode]) decides; the app's own mode names change nothing here.
   @override
   Future<void> setMode(AgentMode mode, {bool holdClientTools = false}) async {}
 
@@ -339,9 +336,34 @@ final class OpenCodeSession implements HarnessSession, SteersRuns, PerCallApprov
 
   void _handle(Map<String, Object?> frame) {
     final data = frame['data'];
-    if (data is! Map || data['sessionID'] != _id) return;
+    if (data is! Map) return;
+    final from = data['sessionID'];
+    // OpenCode's own subagents run in child sessions of this one (and of its children).
+    if (frame['type'] == 'session.created' && from is String && from != _id) {
+      if (_children.contains(data['parentID']) || data['parentID'] == _id) _children.add(from);
+      return;
+    }
+    if (from != _id && !(_children.contains(from) && _fromChild(frame['type'], data))) return;
+    if (frame['type'] == 'permission.asked' && data['id'] is String && from is String) {
+      _requestSession[data['id'] as String] = from;
+    }
     _mapper.live(frame).forEach(_emit);
   }
+
+  /// Child sessions (OpenCode's native subagents) by id.
+  final _children = <String>{};
+
+  /// Which session each permission request came from, so the answer goes back to it.
+  final _requestSession = <String, String>{};
+
+  /// What of a subagent's stream reaches the lead's transcript: its permission requests and their answers, the
+  /// tool details a request's card shows, and the end of a call it asked about. Its other work stays in its own
+  /// session.
+  bool _fromChild(Object? type, Map<Object?, Object?> data) => switch (type) {
+    'permission.asked' || 'permission.replied' || 'session.tool.input.started' || 'session.tool.called' => true,
+    'session.tool.success' || 'session.tool.failed' => _mapper.asked('${data['id']}'),
+    _ => false,
+  };
 
   void _flush() {
     _ready = true;

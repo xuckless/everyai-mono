@@ -42,7 +42,7 @@ String _handshake() => [
   }),
 ].join('\n');
 
-const _policy = {'approvalPolicy': 'untrusted', 'approvalsReviewer': 'user', 'sandbox': 'read-only'};
+const _policy = {'approvalPolicy': 'on-request', 'approvalsReviewer': 'user', 'sandbox': 'read-only'};
 
 String _import({Map<String, Object?>? injectError}) => [
   _handshake(),

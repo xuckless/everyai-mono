@@ -144,7 +144,10 @@ final class CodexSession
   String? get native => _native;
   String? _native;
 
-  late final _modes = NativeModeFeed((modes: codexModes, current: _native ?? codexModeFor(_currentMode)));
+  /// The Codex preset the session runs in.
+  String get preset => _native ?? codexModeFor(_currentMode);
+
+  late final _modes = NativeModeFeed((modes: codexModes, current: preset));
 
   @override
   Stream<NativeModeSet> get nativeModes => _modes.stream;
@@ -187,7 +190,7 @@ final class CodexSession
   }
 
   Future<void> startThread({String? instructions}) async {
-    final p = codexPolicy(_currentMode);
+    final p = codexPolicy(preset);
     final res = await _peer.request('thread/start', {
       'cwd': cwd,
       'model': ?_model,
@@ -205,7 +208,7 @@ final class CodexSession
   /// Rejoins [threadId] without its turns: the transcript comes from our
   /// journal ([replay]), which has our own messages, refusals and usage ids.
   Future<void> resumeThread(String threadId) async {
-    final p = codexPolicy(_currentMode);
+    final p = codexPolicy(preset);
     await _peer.request('thread/resume', {
       'threadId': threadId,
       'cwd': cwd,
@@ -450,7 +453,7 @@ final class CodexSession
       if (!starting.isCompleted) starting.complete();
     }
 
-    final p = codexPolicy(_currentMode);
+    final p = codexPolicy(preset);
     final Object? res;
     try {
       res = await _peer.request('turn/start', {
@@ -799,6 +802,7 @@ final class CodexSession
 
   Future<Object?> _onRequest(String method, Object? params) async {
     final p = params is Map<String, Object?> ? params : const <String, Object?>{};
+    // Not filtered by thread: a native subagent's approval requests come here too and ask the user like the lead's.
     switch (method) {
       case 'item/commandExecution/requestApproval' || 'item/fileChange/requestApproval':
         final decision = await _ask(_approvalCall(method, p), p['turnId'] as String?);
@@ -910,8 +914,8 @@ final class CodexSession
   /// item's completion).
   bool _isItem(ActionCall call) => !call.id.contains('#') && call.actionKind != 'CodexNetworkAction';
 
-  /// Allowing sends `accept` (never "for the session": each call is the
-  /// app's to judge). Refusing named calls sends `decline` and the turn goes
+  /// Allowing sends `accept` (never "for the session": each call Codex asks
+  /// about is the user's to answer). Refusing named calls sends `decline` and the turn goes
   /// on; refusing them all (Deny all, Stop, a reply typed in chat) sends
   /// `cancel`, which ends the turn. Codex's decision has no reason, so a
   /// refusal's reason follows as one steer.

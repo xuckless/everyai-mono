@@ -341,23 +341,15 @@ void main() {
   });
 
   group('profile', () {
-    test('the asking flags go before agent stdio; the skip-approval flags and allow rules are dropped', () {
-      const pinned = ['--permission-mode', 'default', '--no-auto-update', 'agent', 'stdio'];
+    test("its flags go before agent stdio; the user's own permission flags stay", () {
+      const pinned = ['--no-auto-update', 'agent', 'stdio'];
       expect(acpCommand('grok', const []).args, pinned);
-      expect(acpCommand('grok agent stdio --yolo', const []).args, pinned);
-      expect(
-        acpCommand('/opt/bin/grok', const [
-          '--permission-mode',
-          'bypassPermissions',
-          'agent',
-          '--always-approve',
-          '--allow',
-          'Bash(*)',
-          '--dangerously-skip-permissions',
-          'stdio',
-        ]).args,
-        pinned,
-      );
+      expect(acpCommand('grok agent stdio', const []).args, pinned);
+      expect(acpCommand('/opt/bin/grok', const ['--permission-mode', 'bypassPermissions', 'agent', 'stdio']).args, [
+        ...pinned,
+        '--permission-mode',
+        'bypassPermissions',
+      ]);
       final p = acpCommand('grok', const []).profile;
       expect((p.agent, p.ttyFallback, p.needsConsent), (AcpAgent.grok, true, false));
       expect(p.initializeMeta, {'clientType': 'extension'});

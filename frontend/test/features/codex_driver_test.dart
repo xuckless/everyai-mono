@@ -144,24 +144,43 @@ void main() {
   tearDown(() => tmp.deleteSync(recursive: true));
 
   group('mapping', () {
-    test('every mode lets Codex ask and the app answer; no sandbox outside Plan, Plan read-only with network', () {
+    test("each preset is Codex's own: its sandbox, its approval policy, its reviewer", () {
       List<Object?> flat(CodexPolicy p) => [p.approvalPolicy, p.approvalsReviewer, p.sandbox, p.sandboxPolicy];
-      expect(flat(codexPolicy(AgentMode.plan)), [
-        'untrusted',
+      const workspace = {
+        'type': 'workspaceWrite',
+        'writableRoots': <String>[],
+        'networkAccess': false,
+        'excludeTmpdirEnvVar': false,
+        'excludeSlashTmp': false,
+      };
+      // The thread is read-only in every preset (a writable thread/start marks the
+      // project trusted in the user's Codex config); the turn carries the sandbox.
+      expect(flat(codexPolicy('read-only')), [
+        'on-request',
         'user',
         'read-only',
-        {'type': 'readOnly', 'networkAccess': true},
+        {'type': 'readOnly', 'networkAccess': false},
       ]);
-      // The thread is read-only in every mode (a writable thread/start marks the
-      // project trusted in the user's Codex config); the turn carries the sandbox.
-      for (final m in [AgentMode.ask, AgentMode.autoEdit, AgentMode.fullAuto]) {
-        expect(flat(codexPolicy(m)), [
-          'untrusted',
-          'user',
-          'read-only',
-          {'type': 'dangerFullAccess'},
-        ], reason: m.name);
-      }
+      expect(flat(codexPolicy('default')), ['on-request', 'user', 'read-only', workspace]);
+      expect(flat(codexPolicy('auto-review')), ['on-request', 'auto_review', 'read-only', workspace]);
+      expect(flat(codexPolicy('full-access')), [
+        'never',
+        'user',
+        'read-only',
+        {'type': 'dangerFullAccess'},
+      ]);
+      // Our modes start in the nearest preset.
+      expect(
+        {for (final m in AgentMode.values) m: codexModeFor(m)},
+        {
+          AgentMode.plan: 'read-only',
+          AgentMode.ask: 'read-only',
+          AgentMode.autoEdit: 'default',
+          AgentMode.auto: 'auto-review',
+          AgentMode.fullAuto: 'full-access',
+          AgentMode.bypass: 'full-access',
+        },
+      );
     });
 
     test('usage counts on a plan for the auth modes Codex serves itself, not for API keys or signed out', () {
@@ -282,7 +301,7 @@ void main() {
       expect(channel.sent[3]['params'], {
         'extraRoots': [skills],
       });
-      // Codex's own reviewer never answers for the app.
+      // Plan runs in Read Only, where the user answers Codex's requests.
       expect((channel.sent[4]['params']! as Map)['approvalsReviewer'], 'user');
       // thread/started, skills/changed, mcpServer/startupStatus/updated, remoteControl/status/changed.
       expect(events, isEmpty);
@@ -897,13 +916,13 @@ ${_running()}
   test('two sends close together: the second turn/start waits for the first turn', () async {
     final channel = ReplayChannel('''
 ${_upTo('approve_command', '"id":3,"result"')}
-{"dir":"out","msg":{"id":4,"method":"turn/start","params":{"threadId":"thr_1","input":[{"type":"text","text":"first"}],"model":"gpt-5.5-codex","approvalPolicy":"untrusted","approvalsReviewer":"user","sandboxPolicy":{"type":"dangerFullAccess"}}}}
+{"dir":"out","msg":{"id":4,"method":"turn/start","params":{"threadId":"thr_1","input":[{"type":"text","text":"first"}],"model":"gpt-5.5-codex","approvalPolicy":"on-request","approvalsReviewer":"user","sandboxPolicy":{"type":"readOnly","networkAccess":false}}}}
 {"dir":"in","msg":{"id":4,"result":{"turn":{"id":"turn_1","status":"inProgress","items":[]}}}}
 {"dir":"in","msg":{"method":"turn/started","params":{"threadId":"thr_1","turn":{"id":"turn_1","status":"inProgress","items":[]}}}}
 {"dir":"out","msg":{"id":5,"method":"turn/interrupt","params":{"threadId":"thr_1","turnId":"turn_1"}}}
 {"dir":"in","msg":{"id":5,"result":{}}}
 {"dir":"in","msg":{"method":"turn/completed","params":{"threadId":"thr_1","turn":{"id":"turn_1","status":"interrupted","items":[]}}}}
-{"dir":"out","msg":{"id":6,"method":"turn/start","params":{"threadId":"thr_1","input":[{"type":"text","text":"second"}],"model":"gpt-5.5-codex","approvalPolicy":"untrusted","approvalsReviewer":"user","sandboxPolicy":{"type":"dangerFullAccess"}}}}
+{"dir":"out","msg":{"id":6,"method":"turn/start","params":{"threadId":"thr_1","input":[{"type":"text","text":"second"}],"model":"gpt-5.5-codex","approvalPolicy":"on-request","approvalsReviewer":"user","sandboxPolicy":{"type":"readOnly","networkAccess":false}}}}
 {"dir":"in","msg":{"id":6,"result":{"turn":{"id":"turn_2","status":"inProgress","items":[]}}}}
 {"dir":"in","msg":{"method":"turn/completed","params":{"threadId":"thr_1","turn":{"id":"turn_2","status":"completed","items":[]}}}}
 ''');
@@ -939,9 +958,9 @@ ${_upTo('approve_command', '"id":3,"result"')}
 
     final channel = ReplayChannel('''
 ${_upTo('resume', '"id":2,"result"')}
-{"dir":"out","msg":{"id":3,"method":"thread/resume","params":{"threadId":"thr_1","cwd":"{{cwd}}","excludeTurns":true,"approvalPolicy":"untrusted","approvalsReviewer":"user","sandbox":"read-only"}}}
+{"dir":"out","msg":{"id":3,"method":"thread/resume","params":{"threadId":"thr_1","cwd":"{{cwd}}","excludeTurns":true,"approvalPolicy":"on-request","approvalsReviewer":"user","sandbox":"read-only"}}}
 {"dir":"in","msg":{"id":3,"result":{"thread":{"id":"thr_1","cwd":"{{cwd}}","turns":[]}}}}
-{"dir":"out","msg":{"id":4,"method":"turn/start","params":{"threadId":"thr_1","input":[{"type":"text","text":"Carry on"}],"model":"gpt-5.4-mini","effort":"max","approvalPolicy":"untrusted","approvalsReviewer":"user","sandboxPolicy":{"type":"readOnly","networkAccess":true}}}}
+{"dir":"out","msg":{"id":4,"method":"turn/start","params":{"threadId":"thr_1","input":[{"type":"text","text":"Carry on"}],"model":"gpt-5.4-mini","effort":"max","approvalPolicy":"on-request","approvalsReviewer":"user","sandboxPolicy":{"type":"readOnly","networkAccess":false}}}}
 {"dir":"in","msg":{"id":4,"result":{"turn":{"id":"turn_2","status":"inProgress","items":[]}}}}
 {"dir":"in","msg":{"method":"turn/completed","params":{"threadId":"thr_1","turn":{"id":"turn_2","status":"completed","items":[]}}}}
 ''');
@@ -1012,7 +1031,7 @@ ${_upTo('resume', '"id":2,"result"')}
 ${_upTo('resume', '"id":2,"result"')}
 {"dir":"out","msg":{"id":3,"method":"skills/extraRoots/set","params":{"extraRoots":["$skills"]}}}
 {"dir":"in","msg":{"id":3,"result":{}}}
-{"dir":"out","msg":{"id":4,"method":"thread/resume","params":{"threadId":"thr_1","cwd":"{{cwd}}","excludeTurns":true,"approvalPolicy":"untrusted","approvalsReviewer":"user","sandbox":"read-only"}}}
+{"dir":"out","msg":{"id":4,"method":"thread/resume","params":{"threadId":"thr_1","cwd":"{{cwd}}","excludeTurns":true,"approvalPolicy":"on-request","approvalsReviewer":"user","sandbox":"read-only"}}}
 {"dir":"in","msg":{"id":4,"result":{"thread":{"id":"thr_1","cwd":"{{cwd}}","turns":[]}}}}
 ${dies ? '{"dir":"eof"}' : ''}
 ''';
@@ -1179,7 +1198,7 @@ ${dies ? '{"dir":"eof"}' : ''}
   test('a steer Codex refuses before turn/started goes again after it, in the same turn', () async {
     final channel = ReplayChannel('''
 ${_upTo('approve_command', '"id":3,"result"')}
-{"dir":"out","msg":{"id":4,"method":"turn/start","params":{"threadId":"thr_1","input":[{"type":"text","text":"first"}],"model":"gpt-5.5-codex","approvalPolicy":"untrusted","approvalsReviewer":"user","sandboxPolicy":{"type":"dangerFullAccess"}}}}
+{"dir":"out","msg":{"id":4,"method":"turn/start","params":{"threadId":"thr_1","input":[{"type":"text","text":"first"}],"model":"gpt-5.5-codex","approvalPolicy":"on-request","approvalsReviewer":"user","sandboxPolicy":{"type":"readOnly","networkAccess":false}}}}
 {"dir":"in","msg":{"id":4,"result":{"turn":{"id":"turn_1","status":"inProgress","items":[]}}}}
 {"dir":"out","msg":{"id":5,"method":"turn/steer","params":{"threadId":"thr_1","input":[{"type":"text","text":"also this"}],"expectedTurnId":"turn_1"}}}
 {"dir":"in","msg":{"error":{"code":-32600,"message":"no active turn to steer"},"id":5}}
@@ -1332,45 +1351,31 @@ ${_upTo('usage_limit', '"method":"turn/started"')}
   });
 
   group('native modes', () {
-    test("Codex's presets: Read Only asks, Default edits, neither sandboxed; Auto review is Codex's own; Full Access "
-        'greyed', () {
+    test("Codex's presets are all offered under their own names, Full Access too", () {
       expect([for (final m in codexModes) m.id], ['read-only', 'default', 'auto-review', 'full-access']);
       expect(
         [for (final m in codexModes) m.policy],
         [AgentMode.ask, AgentMode.autoEdit, AgentMode.auto, AgentMode.fullAuto],
       );
-      expect(nativeModeOf(codexModes, 'full-access')!.blocked, contains('Not offered'));
-      // What the picker shows is what runs: the preset only picks the mode (no read-only sandbox claimed for Ask).
-      for (final m in codexModes.where((m) => m.policy != AgentMode.auto)) {
-        final p = codexPolicy(m.policy);
-        expect((p.approvalPolicy, p.approvalsReviewer, p.sandbox), ('untrusted', 'user', 'read-only'), reason: m.id);
-        expect(p.sandboxPolicy, {'type': 'dangerFullAccess'}, reason: m.id);
-        if (m.blocked == null) expect(m.description, contains('outside'), reason: m.id);
-      }
-      // Auto review: Codex's reviewer answers in its workspace sandbox, and the description says EveryAI doesn't see it.
-      final auto = codexPolicy(AgentMode.auto);
-      expect((auto.approvalPolicy, auto.approvalsReviewer, auto.sandbox), ('on-request', 'auto_review', 'read-only'));
-      expect(auto.sandboxPolicy['type'], 'workspaceWrite');
-      expect(nativeModeOf(codexModes, 'auto-review')!.description, contains("don't see"));
-      expect(codexModeFor(AgentMode.auto), 'auto-review');
-      // No Plan preset: the app's Plan stays read-only as before.
+      expect(codexModes.where((m) => m.blocked != null), isEmpty);
+      // No Plan preset: the app's Plan starts in Read Only with its own note.
       expect(nativeModeFor(codexModes, AgentMode.plan), isNull);
-      // Full auto keeps EveryAI deciding: never Codex's reviewer.
-      expect(nativeModeFor(codexModes, AgentMode.fullAuto)!.id, 'default');
+      expect(nativeModeFor(codexModes, AgentMode.fullAuto)!.id, 'full-access');
       expect(nativeModeFor(codexModes, AgentMode.auto)!.id, 'auto-review');
     });
 
     test('a preset picked by name goes with the next turn/start, and a reopen keeps it', () async {
       final channel = ReplayChannel('''
 ${_upTo('approve_command', '"id":3,"result"')}
-{"dir":"out","msg":{"id":4,"method":"turn/start","params":{"threadId":"thr_1","input":[{"type":"text","text":"first"}],"model":"gpt-5.5-codex","approvalPolicy":"untrusted","approvalsReviewer":"user","sandboxPolicy":{"type":"dangerFullAccess"}}}}
+{"dir":"out","msg":{"id":4,"method":"turn/start","params":{"threadId":"thr_1","input":[{"type":"text","text":"first"}],"model":"gpt-5.5-codex","approvalPolicy":"on-request","approvalsReviewer":"user","sandboxPolicy":{"type":"readOnly","networkAccess":false}}}}
 {"dir":"in","msg":{"id":4,"result":{"turn":{"id":"turn_1","status":"inProgress","items":[]}}}}
 {"dir":"in","msg":{"method":"turn/completed","params":{"threadId":"thr_1","turn":{"id":"turn_1","status":"completed","items":[]}}}}
 ''');
       final s = await _driver(data, [channel]).start(_spec(work));
       final native = s as NativeModes;
       expect((await native.nativeModes.first).current, 'read-only');
-      await expectLater(native.setNativeMode('full-access'), throwsA(isA<HarnessError>()));
+      await expectLater(native.setNativeMode('yolo'), throwsA(isA<HarnessError>()));
+      await native.setNativeMode('full-access');
       await native.setNativeMode('default');
       await native.setNativeMode('read-only');
       await s.send('first');

@@ -450,27 +450,11 @@ void main() {
   });
 
   group('profiles', () {
-    test('Gemini pins its ACP flag and asking mode, whatever the command says', () {
-      expect(acpCommand('gemini', ['--acp']).args, ['--acp', '--approval-mode', 'default']);
-      expect(acpCommand('gemini', ['--yolo', '--approval-mode', 'yolo', '-m', 'x']).args, [
-        '--acp',
-        '--approval-mode',
-        'default',
-        '-m',
-        'x',
-      ]);
-      expect(acpCommand('/opt/bin/gemini', ['--approval-mode=auto_edit']).args, [
-        '--acp',
-        '--approval-mode',
-        'default',
-      ]);
-      expect(addArgs(['--acp', '--approval-mode', 'default'], ['--acp', '--include-directories', '/s']), [
-        '--acp',
-        '--approval-mode',
-        'default',
-        '--include-directories',
-        '/s',
-      ]);
+    test("Gemini pins only its ACP flag; the user's own approval flags stay", () {
+      expect(acpCommand('gemini', ['--acp']).args, ['--acp']);
+      expect(acpCommand('gemini', ['--yolo', '-m', 'x']).args, ['--acp', '--yolo', '-m', 'x']);
+      expect(acpCommand('/opt/bin/gemini', ['--approval-mode=auto_edit']).args, ['--acp', '--approval-mode=auto_edit']);
+      expect(addArgs(['--acp'], ['--acp', '--include-directories', '/s']), ['--acp', '--include-directories', '/s']);
     });
 
     test('a command with spaces is split into words; OpenCode gets its acp subcommand', () {
@@ -482,25 +466,28 @@ void main() {
       expect(oc.args, ['acp']);
     });
 
-    test('each listed agent runs with its ACP flags, and flags that skip asking are stripped', () {
+    test("each listed agent runs with its ACP flags; the user's own approval flags stay", () {
       final cases = <(String, List<String>, List<String>)>[
-        ('copilot', ['--yolo', '--allow-tool', 'shell(rm)', '-m', 'x'], ['--acp', '--stdio', '-m', 'x']),
-        ('copilot', ['--allow-all', '--allow-url=example.com'], ['--acp', '--stdio']),
-        ('droid', ['--auto', 'high', '--skip-permissions-unsafe'], ['exec', '--output-format', 'acp-daemon']),
-        ('droid', ['--auto=medium'], ['exec', '--output-format', 'acp-daemon']),
+        ('copilot', ['--yolo', '-m', 'x'], ['--acp', '--stdio', '--yolo', '-m', 'x']),
+        ('droid', ['--auto', 'high'], ['exec', '--output-format', 'acp-daemon', '--auto', 'high']),
+        // The pipe needs Kiro's v3 engine and its own auth: a given one is replaced, value and all.
         (
           'kiro-cli',
           ['--agent-engine=v2', '--trust-tools', 'fs_write'],
-          ['acp', '--agent-engine=v3', '--auth-method=cli'],
+          ['acp', '--agent-engine=v3', '--auth-method=cli', '--trust-tools', 'fs_write'],
         ),
-        ('kiro-cli', ['--agent-engine', 'v2', '--trust-all-tools'], ['acp', '--agent-engine=v3', '--auth-method=cli']),
-        ('cline', ['--auto-approve', 'true', '-y'], ['--acp', '--auto-approve', 'false']),
-        ('cline', ['--zen', '-z'], ['--acp', '--auto-approve', 'false']),
-        ('qwen', ['--yolo', '--approval-mode=yolo'], ['--acp', '--approval-mode', 'default']),
+        (
+          'kiro-cli',
+          ['--agent-engine', 'v2', '--trust-all-tools'],
+          ['acp', '--agent-engine=v3', '--auth-method=cli', '--trust-all-tools'],
+        ),
+        ('cline', ['--auto-approve', 'true'], ['--acp', '--auto-approve', 'true']),
+        ('qwen', ['--yolo'], ['--acp', '--yolo']),
+        ('grok', ['--always-approve'], ['--no-auto-update', 'agent', 'stdio', '--always-approve']),
         ('agy', [], ['acp']),
         ('/opt/homebrew/bin/goose', [], ['acp']),
         ('vibe-acp', [], []),
-        ('kimi', ['-y'], ['acp']),
+        ('kimi', ['-y'], ['acp', '-y']),
         ('auggie', [], ['--acp']),
       ];
       for (final (cmd, own, want) in cases) {
@@ -515,13 +502,14 @@ void main() {
       );
     });
 
-    test('auto-update stays off and goose starts in its asking mode', () {
+    test('auto-update stays off; no environment sets an approval mode', () {
       expect(acpProfileOf('droid').env(null), {
         'DROID_DISABLE_AUTO_UPDATE': 'true',
         'FACTORY_DROID_AUTO_UPDATE_ENABLED': 'false',
       });
       expect(acpProfileOf('auggie').env(null), {'AUGMENT_DISABLE_AUTO_UPDATE': '1'});
-      expect(acpProfileOf('goose').env(null), {'GOOSE_MODE': 'approve'});
+      expect(acpProfileOf('goose').env(null), isEmpty);
+      expect(acpProfileOf('copilot').env(null), isEmpty);
       expect(
         acpProfileOf('goose').env((
           args: const <String>[],
@@ -530,7 +518,7 @@ void main() {
           instructions: null,
           firstPrompt: null,
         )),
-        {'GOOSE_MODE': 'approve', 'X': '1'},
+        {'X': '1'},
       );
       expect(acpProfileOf('gemini').env(null), isEmpty);
     });
@@ -564,11 +552,10 @@ void main() {
       expect(await acpProfileOf('kiro-cli').signedIn('kiro-cli', env: const {'KIRO_API_KEY': 'k'}), isTrue);
     });
 
-    test("OpenCode's permission rules go into its inline config, next to the briefing's", () {
-      final env = withOpenCodePermissions({'OPENCODE_CONFIG_CONTENT': '{"mcp":{"servers":{}}}', 'X': '1'});
-      expect(env['X'], '1');
-      expect(env['OPENCODE_CONFIG_CONTENT'], contains('"mcp"'));
-      expect(env['OPENCODE_CONFIG_CONTENT'], contains('"permission":{"*":"ask"'));
+    test("OpenCode keeps the briefing's inline config as it is, with the project's own config off", () {
+      const config = '{"mcp":{"servers":{}}}';
+      final env = withoutOpenCodeProjectConfig({'OPENCODE_CONFIG_CONTENT': config, 'X': '1'});
+      expect(env, {'OPENCODE_CONFIG_CONTENT': config, 'X': '1', 'OPENCODE_DISABLE_PROJECT_CONFIG': '1'});
     });
   });
   group('Cursor', () {
@@ -633,17 +620,13 @@ void main() {
       expect(e.report('u2'), isNull);
     });
 
-    test('both of its names get its profile: `acp` pinned, skip-approval flags dropped, never its ask mode', () {
+    test("both of its names get its profile: `acp` pinned, the user's own flags kept", () {
       for (final exe in ['agent', 'cursor-agent', '/Users/me/.local/bin/agent']) {
         final p = acpProfileOf(exe);
         expect(p.agent, AcpAgent.cursor, reason: exe);
         expect((p.askMode, p.planMode, p.needsConsent, p.mcpInConfig), ('agent', 'plan', true, false));
       }
-      expect(acpCommand('cursor-agent', ['--force', '-f', '--yolo', '--model', 'gpt-6']).args, [
-        'acp',
-        '--model',
-        'gpt-6',
-      ]);
+      expect(acpCommand('cursor-agent', ['--force', '--model', 'gpt-6']).args, ['acp', '--force', '--model', 'gpt-6']);
       expect(acpCommand('agent acp', const []).args, ['acp']);
     });
 

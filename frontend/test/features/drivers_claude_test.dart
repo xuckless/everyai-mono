@@ -84,7 +84,7 @@ Future<void> _played(ReplayChannel c) async {
 
 // Short scripts for the CLI's side, built from the wire helpers.
 final _init = [
-  _out(controlRequest('req_1', {'subtype': 'initialize', 'hooks': gateHooks})),
+  _out(controlRequest('req_1', {'subtype': 'initialize'})),
   _in(controlResponse('req_1', const {})),
 ].join('\n');
 String _out(Map<String, Object?> msg) => jsonEncode({'dir': 'out', 'msg': msg});
@@ -110,16 +110,15 @@ String _use(String callId, String name, Map<String, Object?> input, {String? par
   'parent_tool_use_id': parent,
   'uuid': 'u-$callId',
 });
-String _hook(String requestId, String callId, String name, Map<String, Object?> input) => _in({
+
+/// Claude's permission prompt for a call (its own mode chose to ask).
+String _prompt(String requestId, String callId, String name, Map<String, Object?> input) => _in({
   'type': 'control_request',
   'request_id': requestId,
-  'request': {
-    'subtype': 'hook_callback',
-    'callback_id': gateCallbackId,
-    'input': {'hook_event_name': 'PreToolUse', 'tool_name': name, 'tool_input': input, 'tool_use_id': callId},
-  },
+  'request': {'subtype': 'can_use_tool', 'tool_name': name, 'input': input, 'tool_use_id': callId},
 });
-String _allow(String requestId) => _out(controlResponse(requestId, approvalAnswer(hook: true, accept: true)));
+String _allow(String requestId, Map<String, Object?> input) =>
+    _out(controlResponse(requestId, approvalAnswer(accept: true, input: input)));
 String _results(List<String> callIds) => _in({
   'type': 'user',
   'message': {
@@ -231,6 +230,7 @@ void main() {
         'stdio',
         '--permission-mode',
         'default',
+        '--allow-dangerously-skip-permissions',
         '--setting-sources',
         'user',
         '--session-id',
@@ -246,6 +246,7 @@ void main() {
       expect(resumed.args.sublist(9), [
         '--permission-mode',
         'plan',
+        '--allow-dangerously-skip-permissions',
         '--setting-sources',
         'user',
         '--resume',
@@ -302,8 +303,8 @@ void main() {
           AgentMode.autoEdit: 'acceptEdits',
           AgentMode.plan: 'plan',
           AgentMode.auto: 'auto',
-          AgentMode.fullAuto: 'default',
-          AgentMode.bypass: 'default',
+          AgentMode.fullAuto: 'bypassPermissions',
+          AgentMode.bypass: 'bypassPermissions',
         },
       );
     });
@@ -792,7 +793,7 @@ void main() {
   });
 
   group('sessions', () {
-    test('a turn with a picture: hook registered first, image sent, usage on the plan, then finished', () async {
+    test('a turn with a picture: initialize first, image sent, usage on the plan, then finished', () async {
       final channel = ReplayChannel(_fixture('init_image_turn.jsonl'));
       final s = _Spawner([channel]);
       final session = await driver(s).start(_spec());
@@ -802,7 +803,7 @@ void main() {
       await session.send('What colour is this pixel? Reply in one word.', images: ['data:image/png;base64,$_pixel']);
       await _played(channel);
 
-      expect(channel.sent.first['request'], {'subtype': 'initialize', 'hooks': gateHooks});
+      expect(channel.sent.first['request'], {'subtype': 'initialize'});
       expect(s.calls.single.args, containsAllInOrder(['--session-id', session.id, '--model', 'haiku']));
       expect(s.calls.single.cwd, '/work/repo');
       final shown = [
@@ -893,8 +894,8 @@ void main() {
       await session.close();
     });
 
-    test('a call waits at our hook until it is answered, then runs', () async {
-      final channel = ReplayChannel(_fixture('hook_allow.jsonl'));
+    test("a call Claude's permission prompt asks about waits until it is answered, then runs", () async {
+      final channel = ReplayChannel(_fixture('prompt_allow.jsonl'));
       final session = await driver(_Spawner([channel]))
           .start(_spec(message: 'Run the shell command `touch a.txt` with the Bash tool, then reply DONE.'));
       final events = _record(session, (e) {
@@ -911,7 +912,7 @@ void main() {
       );
       final states = [
         for (final e in events)
-          if (e is StateChange && e.key != approvedCallsKey) e.executionStatus,
+          if (e is StateChange && e.key != approvedCallsKey && e.key != escalatedCallsKey) e.executionStatus,
       ];
       expect(states, [
         ExecutionStatus.running,
@@ -926,11 +927,8 @@ void main() {
         'subtype': 'success',
         'request_id': '00000000-0000-4000-8000-000000000003',
         'response': {
-          'hookSpecificOutput': {
-            'hookEventName': 'PreToolUse',
-            'permissionDecision': 'allow',
-            'permissionDecisionReason': 'Allowed in EveryAI.',
-          },
+          'behavior': 'allow',
+          'updatedInput': {'command': 'touch a.txt', 'description': 'Create empty file a.txt in current directory'},
         },
       });
       await session.close();
@@ -959,7 +957,7 @@ void main() {
       );
       final states = [
         for (final e in events)
-          if (e is StateChange && e.key != approvedCallsKey) e.executionStatus,
+          if (e is StateChange && e.key != approvedCallsKey && e.key != escalatedCallsKey) e.executionStatus,
       ];
       expect(states, isNot(contains(ExecutionStatus.paused)));
       expect(states.last, ExecutionStatus.finished);
@@ -989,37 +987,40 @@ void main() {
       await session.close();
     });
 
-    test('an answer given before its hook arrives is used when it does, without asking again', () async {
-      final channel = ReplayChannel('''
-{"dir":"out","msg":{"type":"control_request","request_id":"req_1","request":{"subtype":"initialize","hooks":{"PreToolUse":[{"matcher":null,"hookCallbackIds":["everyai_gate"],"timeout":86400,"onFailure":"block"}]}}}}
-{"dir":"in","msg":{"type":"control_response","response":{"subtype":"success","request_id":"req_1","response":{}}}}
-{"dir":"out","msg":{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Two at once."}]},"parent_tool_use_id":null,"session_id":""}}
-{"dir":"in","msg":{"type":"system","subtype":"init","apiKeySource":"none","session_id":"s"}}
-{"dir":"in","msg":{"type":"assistant","message":{"id":"m","role":"assistant","content":[{"type":"tool_use","id":"toolu_a","name":"Bash","input":{"command":"echo a"}}]},"uuid":"u1"}}
-{"dir":"in","msg":{"type":"assistant","message":{"id":"m","role":"assistant","content":[{"type":"tool_use","id":"toolu_b","name":"Bash","input":{"command":"echo b"}}]},"uuid":"u2"}}
-{"dir":"in","msg":{"type":"control_request","request_id":"h1","request":{"subtype":"hook_callback","callback_id":"everyai_gate","input":{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo a"},"tool_use_id":"toolu_a"}}}}
-{"dir":"out","msg":{"type":"control_response","response":{"subtype":"success","request_id":"h1","response":{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"Allowed in EveryAI."}}}}}
-{"dir":"in","msg":{"type":"control_request","request_id":"h2","request":{"subtype":"hook_callback","callback_id":"everyai_gate","input":{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo b"},"tool_use_id":"toolu_b"}}}}
-{"dir":"out","msg":{"type":"control_response","response":{"subtype":"success","request_id":"h2","response":{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Not b."}}}}}
-{"dir":"in","msg":{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_a","type":"tool_result","content":"a","is_error":false},{"tool_use_id":"toolu_b","type":"tool_result","content":"Not b.","is_error":true}]},"uuid":"u3"}}
-{"dir":"in","msg":{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":0,"output_tokens":0},"uuid":"u4"}}
-{"dir":"eof"}
-''');
+    test("a call Claude runs without asking isn't the user's; an answer for it is dropped", () async {
+      final channel = ReplayChannel(
+        _script([
+          _init,
+          _say('Two at once.'),
+          _use('toolu_a', 'Bash', {'command': 'echo a'}),
+          _use('toolu_b', 'Bash', {'command': 'echo b'}),
+          _prompt('h2', 'toolu_b', 'Bash', {'command': 'echo b'}),
+          _out(controlResponse('h2', approvalAnswer(accept: false, reason: 'Not b.'))),
+          _results(['toolu_a']),
+          _done('r1'),
+        ]),
+      );
       final session = await driver(_Spawner([channel])).start(_spec(message: 'Two at once.'));
-      final events = _record(session, (e) {
+      final t = TranscriptBuilder();
+      final asked = <List<String>>[];
+      _record(session, (e) {
+        t.add(e);
         if (_isState(e, ExecutionStatus.waitingForConfirmation)) {
-          unawaited(session.respond(accept: true, callIds: ['toolu_a']));
+          asked.add([for (final c in t.snapshot.pending) c.id]);
+          // Claude never asked about a: this answer goes nowhere.
+          unawaited(session.respond(accept: false, reason: 'Not a.', callIds: ['toolu_a']));
           unawaited(session.respond(accept: false, reason: 'Not b.', callIds: ['toolu_b']));
         }
       });
       await _played(channel);
-      expect(events.where((e) => _isState(e, ExecutionStatus.waitingForConfirmation)), hasLength(1));
-      expect([for (final r in events.whereType<ToolResult>()) r.outcome], [ToolOutcome.ok, ToolOutcome.rejected]);
+      expect(asked, [
+        ['toolu_b'],
+      ]);
       await session.close();
     });
 
     test('a reopened session replays its journal, starts nothing, and resumes on the next message', () async {
-      final first = ReplayChannel(_fixture('hook_allow.jsonl'));
+      final first = ReplayChannel(_fixture('prompt_allow.jsonl'));
       final one = await driver(_Spawner([first]))
           .start(_spec(message: 'Run the shell command `touch a.txt` with the Bash tool, then reply DONE.'));
       final before = _record(one, (e) {
@@ -1103,7 +1104,7 @@ void main() {
       await _played(channel);
       final states = [
         for (final e in events)
-          if (e is StateChange && e.key != approvedCallsKey) e.executionStatus,
+          if (e is StateChange && e.key != approvedCallsKey && e.key != escalatedCallsKey) e.executionStatus,
       ];
       expect(states, containsAllInOrder([ExecutionStatus.paused, ExecutionStatus.running, ExecutionStatus.finished]));
       await session.close();
@@ -1130,7 +1131,7 @@ void main() {
       await _played(channel);
       final states = [
         for (final e in events)
-          if (e is StateChange && e.key != approvedCallsKey) e.executionStatus,
+          if (e is StateChange && e.key != approvedCallsKey && e.key != escalatedCallsKey) e.executionStatus,
       ];
       expect(states, isNot(contains(ExecutionStatus.paused)));
       expect(states.where((s) => s == ExecutionStatus.finished), hasLength(1));
@@ -1180,8 +1181,8 @@ void main() {
           _init,
           _say('Go.'),
           _use('toolu_a', 'Bash', {'command': 'make'}),
-          _hook('h1', 'toolu_a', 'Bash', {'command': 'make'}),
-          _allow('h1'),
+          _prompt('h1', 'toolu_a', 'Bash', {'command': 'make'}),
+          _allow('h1', {'command': 'make'}),
           _results(['toolu_a']),
           _done('r1'),
         ]),
@@ -1203,11 +1204,11 @@ void main() {
       await session.close();
     });
 
-    test("Auto: the hook leaves an allowed call to Claude's reviewer; one it passes back asks the user", () async {
+    test("Auto: Claude's reviewer decides; a call it passes to the user asks, one it lets run doesn't", () async {
       const input = {'command': 'rm -rf build'};
       final channel = ReplayChannel(
         _script([
-          _out(controlRequest('req_1', {'subtype': 'initialize', 'hooks': gateHooks})),
+          _out(controlRequest('req_1', {'subtype': 'initialize'})),
           _in(
             controlResponse('req_1', const {
               'models': [
@@ -1217,17 +1218,11 @@ void main() {
             }),
           ),
           _say('Clean up.'),
+          _use('toolu_s', 'Bash', {'command': 'ls'}),
           _use('toolu_r', 'Bash', input),
-          _hook('h1', 'toolu_r', 'Bash', input),
-          // No decision: Claude's own reviewer judges it.
-          _out(controlResponse('h1', const {})),
-          _in({
-            'type': 'control_request',
-            'request_id': 'p1',
-            'request': {'subtype': 'can_use_tool', 'tool_name': 'Bash', 'input': input, 'tool_use_id': 'toolu_r'},
-          }),
-          _out(controlResponse('p1', approvalAnswer(hook: false, accept: true, input: input))),
-          _results(['toolu_r']),
+          _prompt('p1', 'toolu_r', 'Bash', input),
+          _allow('p1', input),
+          _results(['toolu_s', 'toolu_r']),
           _done('r1'),
         ]),
       );
@@ -1242,11 +1237,10 @@ void main() {
         }
       });
       await _played(channel);
-      // Asked twice: by the hook (the app's policy), then by Claude's reviewer, which reopened the call.
       expect(asked, [
         ['toolu_r'],
-        ['toolu_r'],
       ]);
+      // Shown as running when it streamed in, then opened again by the prompt.
       expect(events.whereType<StateChange>().where((e) => e.key == escalatedCallsKey), hasLength(1));
       expect(t.snapshot.pending, isEmpty);
       await session.close();
@@ -1260,7 +1254,7 @@ void main() {
       };
       final channel = ReplayChannel(
         _script([
-          _out(controlRequest('req_1', {'subtype': 'initialize', 'hooks': gateHooks})),
+          _out(controlRequest('req_1', {'subtype': 'initialize'})),
           _in(
             controlResponse('req_1', const {
               'models': [
@@ -1271,8 +1265,8 @@ void main() {
           ),
           _say('Plan.'),
           _use('toolu_t', 'TodoWrite', todos),
-          _hook('h1', 'toolu_t', 'TodoWrite', todos),
-          _out(controlResponse('h1', approvalAnswer(hook: true, accept: true, input: todos))),
+          _prompt('h1', 'toolu_t', 'TodoWrite', todos),
+          _allow('h1', todos),
           _results(['toolu_t']),
           _done('r1'),
         ]),
@@ -1281,7 +1275,7 @@ void main() {
       final session = await driver(s).start(_spec(message: 'Plan.', mode: AgentMode.auto));
       _record(session, (_) {});
       await _played(channel);
-      // Nothing said yet whether this model has auto mode: the CLI starts in default, the app's policy answers.
+      // Nothing said yet whether this model has auto mode: the CLI starts in default.
       expect(s.calls.single.args, containsAllInOrder(['--permission-mode', 'default']));
       await session.close();
     });
@@ -1289,7 +1283,7 @@ void main() {
     test('Auto: a CLI started in default before auto was known is moved to auto once initialize offers it', () async {
       final channel = ReplayChannel(
         _script([
-          _out(controlRequest('req_1', {'subtype': 'initialize', 'hooks': gateHooks})),
+          _out(controlRequest('req_1', {'subtype': 'initialize'})),
           _in(
             controlResponse('req_1', const {
               'models': [
@@ -1318,11 +1312,11 @@ void main() {
           _init,
           _say('Use a subagent.'),
           _use('toolu_t', 'Task', {'description': 'Install', 'prompt': 'npm install'}),
-          _hook('h1', 'toolu_t', 'Task', {'description': 'Install', 'prompt': 'npm install'}),
-          _allow('h1'),
+          _prompt('h1', 'toolu_t', 'Task', {'description': 'Install', 'prompt': 'npm install'}),
+          _allow('h1', {'description': 'Install', 'prompt': 'npm install'}),
           _use('toolu_c', 'Bash', {'command': 'npm install'}, parent: 'toolu_t'),
-          _hook('h2', 'toolu_c', 'Bash', {'command': 'npm install'}),
-          _allow('h2'),
+          _prompt('h2', 'toolu_c', 'Bash', {'command': 'npm install'}),
+          _allow('h2', {'command': 'npm install'}),
           _results(['toolu_c']),
           _results(['toolu_t']),
           _done('r1'),
@@ -1588,7 +1582,7 @@ void main() {
 
     // Derived from the Agent SDK's initialize reply (the recordings scrub it to []).
     final listed = [
-      _out(controlRequest('req_1', {'subtype': 'initialize', 'hooks': gateHooks})),
+      _out(controlRequest('req_1', {'subtype': 'initialize'})),
       _in(
         controlResponse('req_1', {
           'commands': [
@@ -1680,48 +1674,70 @@ void main() {
     String setMode(String req, String mode) =>
         _out(controlRequest(req, {'subtype': 'set_permission_mode', 'mode': mode}));
 
-    test(
-      "Claude's own modes: auto once the model says it has it, bypass not listed; current from initialize",
-      () async {
-        final channel = ReplayChannel(_fixture('init_image_turn.jsonl'));
-        final session = await driverIn(_Spawner([channel])).start(_spec());
-        final native = session as NativeModes;
-        final before = await native.nativeModes.first;
-        expect([for (final m in before.modes) m.id], ['default', 'acceptEdits', 'plan']);
-        expect(before.current, 'default');
-        await session.send('What colour is this pixel? Reply in one word.', images: ['data:image/png;base64,$_pixel']);
-        await _played(channel);
-        final after = await native.nativeModes.first;
-        expect([for (final m in after.modes) m.id], ['default', 'acceptEdits', 'plan', 'auto']);
-        expect(after.current, 'default');
-        expect(nativeModeOf(after.modes, 'auto')!.policy, AgentMode.auto);
-        expect(
-          [
-            for (final m in after.modes)
-              if (m.blocked == null) m.policy,
-          ],
-          [AgentMode.ask, AgentMode.autoEdit, AgentMode.plan, AgentMode.auto],
-        );
-        await session.close();
-        // The reopened session lists auto before its CLI starts again.
-        final again = await driverIn(_Spawner([])).attach(session.id);
-        expect([for (final m in (await (again as NativeModes).nativeModes.first).modes) m.id], contains('auto'));
-        await again.close();
-      },
-    );
+    test("Claude's own modes: auto once the model says it has it, bypass listed; current from initialize", () async {
+      final channel = ReplayChannel(_fixture('init_image_turn.jsonl'));
+      final session = await driverIn(_Spawner([channel])).start(_spec());
+      final native = session as NativeModes;
+      final before = await native.nativeModes.first;
+      expect([for (final m in before.modes) m.id], ['default', 'acceptEdits', 'plan', 'bypassPermissions']);
+      expect(before.current, 'default');
+      await session.send('What colour is this pixel? Reply in one word.', images: ['data:image/png;base64,$_pixel']);
+      await _played(channel);
+      final after = await native.nativeModes.first;
+      expect([for (final m in after.modes) m.id], ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions']);
+      expect(after.current, 'default');
+      expect(nativeModeOf(after.modes, 'auto')!.policy, AgentMode.auto);
+      expect(after.modes.where((m) => m.blocked != null), isEmpty);
+      expect(
+        [for (final m in after.modes) m.policy],
+        [AgentMode.ask, AgentMode.autoEdit, AgentMode.plan, AgentMode.auto, AgentMode.fullAuto],
+      );
+      await session.close();
+      // The reopened session lists auto before its CLI starts again.
+      final again = await driverIn(_Spawner([])).attach(session.id);
+      expect([for (final m in (await (again as NativeModes).nativeModes.first).modes) m.id], contains('auto'));
+      await again.close();
+    });
 
-    test('a switch is set_permission_mode under the native id; a greyed one throws and sends nothing', () async {
-      final channel = ReplayChannel(_script([_init, _say('Go.'), _done('r1'), setMode('req_2', 'acceptEdits')]));
+    test('a switch is set_permission_mode under the native id; an unlisted one throws and sends nothing', () async {
+      final channel = ReplayChannel(
+        _script([
+          _init,
+          _say('Go.'),
+          _done('r1'),
+          setMode('req_2', 'acceptEdits'),
+          setMode('req_3', 'bypassPermissions'),
+        ]),
+      );
       final session = await driverIn(_Spawner([channel])).start(_spec(message: 'Go.'));
       final native = session as NativeModes;
       await pumpEventQueue();
       await native.setNativeMode('acceptEdits');
+      await native.setNativeMode('bypassPermissions');
       await _played(channel);
       final sent = channel.sent.length;
-      await expectLater(native.setNativeMode('bypassPermissions'), throwsA(isA<HarnessError>()));
       await expectLater(native.setNativeMode('dontAsk'), throwsA(isA<HarnessError>()));
       expect(channel.sent.length, sent);
-      expect((await native.nativeModes.first).current, 'acceptEdits');
+      expect((await native.nativeModes.first).current, 'bypassPermissions');
+      await session.close();
+    });
+
+    test('a mode Claude moves to by itself stands, also one the picker does not list', () async {
+      final channel = ReplayChannel(
+        _script([
+          _init,
+          _say('Go.'),
+          _in({'type': 'system', 'subtype': 'status', 'permissionMode': 'bypassPermissions'}),
+          _in({'type': 'system', 'subtype': 'status', 'permissionMode': 'dontAsk'}),
+          _done('r1'),
+        ]),
+      );
+      final session = await driverIn(_Spawner([channel])).start(_spec(message: 'Go.'));
+      final events = _record(session);
+      // Nothing is set back: the script has no set_permission_mode, and no error is shown.
+      await _played(channel);
+      expect((await (session as NativeModes).nativeModes.first).current, 'dontAsk');
+      expect(events.whereType<ConversationFailure>(), isEmpty);
       await session.close();
     });
 
@@ -1747,8 +1763,8 @@ void main() {
           _say('Plan it.'),
           setMode('req_2', 'plan'),
           _use('toolu_p', 'ExitPlanMode', plan),
-          _hook('h1', 'toolu_p', 'ExitPlanMode', plan),
-          _out(controlResponse('h1', approvalAnswer(hook: true, accept: true, input: plan))),
+          _prompt('h1', 'toolu_p', 'ExitPlanMode', plan),
+          _allow('h1', plan),
           setMode('req_3', 'acceptEdits'),
           _results(['toolu_p']),
           _done('r1'),

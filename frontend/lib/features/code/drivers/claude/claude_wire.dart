@@ -17,44 +17,24 @@ import '../usage_limit.dart';
 // messages (`control_request` / `control_response`) are the ones the Agent
 // SDK uses on the same pipe.
 
-/// The PreToolUse hook every session registers in `initialize`: the CLI asks
-/// us before every tool call, also those its own allow rules (or the user's
-/// `~/.claude` settings) would let through, so our floor and rules see them
-/// all. A failed or late answer blocks the call.
-const gateCallbackId = 'everyai_gate';
-
-Map<String, Object?> get gateHooks => {
-  'PreToolUse': [
-    {
-      'matcher': null,
-      'hookCallbackIds': [gateCallbackId],
-      'timeout': 86400,
-      'onFailure': 'block',
-    },
-  ],
-};
-
 /// Held MCP calls (question cards) wait up to 300 s on our side; Claude's
 /// default MCP timeout would cut them first.
 const _mcpTimeoutMs = '330000';
 
-/// Claude's permission mode for ours. Our hook decides every call, so this
-/// mostly shapes how Claude behaves; Plan is the one that matters.
+/// The Claude permission mode a session started in our [mode] runs in: the nearest of Claude's own. Claude's mode
+/// then decides what asks; its permission prompts come to the app as cards (`can_use_tool`).
 String permissionModeFor(AgentMode mode) => switch (mode) {
   AgentMode.plan => 'plan',
+  AgentMode.ask => 'default',
   AgentMode.autoEdit => 'acceptEdits',
   // Claude's own reviewer (where the model has it: see the session's `permissionMode`).
   AgentMode.auto => 'auto',
-  // Bypass too: our hook allows every call, so nothing reaches Claude's own prompts.
-  AgentMode.ask || AgentMode.fullAuto || AgentMode.bypass => 'default',
+  AgentMode.fullAuto || AgentMode.bypass => 'bypassPermissions',
 };
 
-/// Claude Code's own permission modes for the picker, each under the app's
-/// policy for it (our hook still decides every call). `auto` only when the
-/// session's model supports it ([claudeAutoMode]); `bypassPermissions` is not
-/// listed (see [claudeHiddenModes]; EveryAI's own "Bypass EveryAI checks" sits
-/// under the list); `dontAsk` and `manual` are left out (our hook's answers
-/// would undo `dontAsk`).
+/// Claude Code's own permission modes for the picker. Each mode's policy is only the app's nearest name for it;
+/// Claude decides what asks. `auto` only when the session's model supports it ([claudeAutoMode]). `dontAsk` and
+/// `manual` aren't listed; a session Claude moves there still shows it as its current mode.
 List<NativeMode> claudeModes({required bool autoMode}) => [
   const NativeMode(
     id: 'default',
@@ -78,15 +58,16 @@ List<NativeMode> claudeModes({required bool autoMode}) => [
     const NativeMode(
       id: 'auto',
       label: 'Auto mode',
-      description:
-          "Claude's own reviewer approves calls and asks you about the rest; EveryAI's safety floor runs first",
+      description: "Claude's own reviewer approves calls and asks you about the rest",
       policy: AgentMode.auto,
     ),
+  const NativeMode(
+    id: 'bypassPermissions',
+    label: 'Bypass permissions',
+    description: 'Runs every call without asking',
+    policy: AgentMode.fullAuto,
+  ),
 ];
-
-/// Claude Code modes the picker doesn't show and EveryAI never switches to, by id → label. If Claude reports one
-/// anyway, the session is set back.
-const claudeHiddenModes = {'bypassPermissions': 'Bypass permissions'};
 
 /// Whether [model] (the session's, as the app names it) supports Claude's
 /// `auto` mode, from the `initialize` reply's `models` (`supportsAutoMode`).
@@ -134,13 +115,14 @@ Delivery claudeDelivery(DriverBriefing b, {String sessionText = '', Set<String> 
 
 /// Only the user's own settings (`~/.claude`): a project's
 /// `.claude/settings*.json` would run its hooks, `apiKeyHelper`, env and
-/// `.mcp.json` servers before our hook sees anything (`-p` skips Claude's
+/// `.mcp.json` servers before the user sees anything (`-p` skips Claude's
 /// trust prompt), so a cloned repo could run code just by being opened.
 const _userSettingsOnly = ['--setting-sources', 'user'];
 
 /// How to start one session's process. [resume] continues the conversation
 /// [sessionId] (it has had a message); otherwise it starts under that id.
-/// Never `--dangerously-skip-permissions`: every call comes to our hook.
+/// `--allow-dangerously-skip-permissions` only lets the user pick Bypass permissions later; the session starts in
+/// the mode it is given.
 ({List<String> args, Map<String, String> env}) claudeLaunch({
   required String sessionId,
   required bool resume,
@@ -166,6 +148,7 @@ const _userSettingsOnly = ['--setting-sources', 'user'];
       'stdio',
       '--permission-mode',
       nativeMode ?? permissionModeFor(mode),
+      '--allow-dangerously-skip-permissions',
       ..._userSettingsOnly,
       ...resume ? ['--resume', sessionId] : ['--session-id', sessionId],
       if (m != null) ...['--model', m],
@@ -293,25 +276,9 @@ Map<String, Object?> userLine(String text, {List<String> images = const []}) => 
 
 final _dataUrl = RegExp(r'^data:([^;,]+);base64,(.*)$', dotAll: true);
 
-/// The answer to a held call: a hook decision for `hook_callback`, a
-/// behaviour for `can_use_tool` (which takes the call's [input] back when
-/// allowed).
-Map<String, Object?> approvalAnswer({
-  required bool hook,
-  required bool accept,
-  String? reason,
-  Map<String, Object?> input = const {},
-}) {
+/// The answer to a held permission prompt (`can_use_tool`), which takes the call's [input] back when allowed.
+Map<String, Object?> approvalAnswer({required bool accept, String? reason, Map<String, Object?> input = const {}}) {
   final why = reason == null || reason.isEmpty ? refusedByUser : reason;
-  if (hook) {
-    return {
-      'hookSpecificOutput': {
-        'hookEventName': 'PreToolUse',
-        'permissionDecision': accept ? 'allow' : 'deny',
-        'permissionDecisionReason': accept ? 'Allowed in EveryAI.' : why,
-      },
-    };
-  }
   return accept ? {'behavior': 'allow', 'updatedInput': input} : {'behavior': 'deny', 'message': why};
 }
 

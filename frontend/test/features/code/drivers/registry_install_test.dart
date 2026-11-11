@@ -427,7 +427,7 @@ void main() {
 
     List<String> line(AcpDriver d) => [d.resolved.executable, ...d.resolved.args];
 
-    test('gemini through npx keeps its asking flags', () {
+    test('gemini through npx keeps its ACP flag', () {
       expect(line(registryDriver(rec('gemini'), _fixed)), [
         'npx',
         '--prefix',
@@ -435,8 +435,6 @@ void main() {
         '-y',
         '@google/gemini-cli@0.66.0',
         '--acp',
-        '--approval-mode',
-        'default',
       ]);
     });
 
@@ -448,8 +446,6 @@ void main() {
         '/data/agents/grok-build',
         '-y',
         '@xai-official/grok@1.0.74',
-        '--permission-mode',
-        'default',
         '--no-auto-update',
         'agent',
         'stdio',
@@ -466,8 +462,8 @@ void main() {
     });
 
     test('a profile env wins over the registry env', () {
-      expect(acpProfileOf('goose').withEnv({'GOOSE_MODE': 'auto', 'X': '1'}).env(null), {
-        'GOOSE_MODE': 'approve',
+      expect(acpProfileOf('auggie').withEnv({'AUGMENT_DISABLE_AUTO_UPDATE': '0', 'X': '1'}).env(null), {
+        'AUGMENT_DISABLE_AUTO_UPDATE': '1',
         'X': '1',
       });
     });
