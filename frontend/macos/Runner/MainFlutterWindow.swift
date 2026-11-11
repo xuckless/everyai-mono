@@ -349,6 +349,7 @@ final class WebviewBridge: NSObject {
     super.init()
     WebviewBridge.shared = self
     WebviewBridge.addMenuHook()
+    WebviewBridge.addMouseHook()
     WebviewBridge.addWindowLending()
     channel.setMethodCallHandler { [weak self] call, result in self?.handle(call, result) }
     monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
@@ -439,9 +440,12 @@ final class WebviewBridge: NSObject {
       views[token] = w
       return result(true)
     }
+    // Without the plugin's id (it changed, or the view has none yet): ask the pages for the token, but only views
+    // that can be a session tab being made (in the plugin's headless holder or in [parking]) and that aren't bound
+    // yet. Other webviews of the app (artifacts, the plugin's views elsewhere) are never run script in.
     let group = DispatchGroup()
     var found: WKWebView?
-    for w in all where !views.values.contains(where: { $0 === w }) {
+    for w in all where !views.values.contains(where: { $0 === w }) && mayBeSessionTab(w) {
       group.enter()
       w.evaluateJavaScript("window.__everyaiToken || ''", in: nil, in: world) { r in
         if case .success(let v) = r, let s = v as? String, s == token { found = w }
@@ -497,6 +501,26 @@ final class WebviewBridge: NSObject {
       print("EVERYAI park \(token) parked (headless=\(headless), attempt \(attempt))")
     }
     result(true)
+  }
+
+  /// Whether [w] sits where a session tab's view is while it is made or kept offscreen: under [parking], or in the
+  /// plugin's zero-size headless holder directly under the window's content view (see [park]).
+  private func mayBeSessionTab(_ w: WKWebView) -> Bool {
+    let content = window?.contentView
+    var at: NSView? = w
+    for _ in 0..<4 {
+      guard let v = at, let up = v.superview else { return false }
+      if up === parking { return true }
+      if up.frame.size == .zero && content != nil && up.superview === content { return true }
+      at = up
+    }
+    return false
+  }
+
+  /// Whether [w] is a bound session view the agent has now.
+  fileprivate func isLocked(_ w: WKWebView) -> Bool {
+    guard let token = tokenOwning(w) else { return false }
+    return locked.contains(token)
   }
 
   /// The `id` the plugin gives its webview (its headless id or platform view id).
@@ -607,6 +631,32 @@ final class WebviewBridge: NSObject {
     // WKWebView may only inherit NSView's: then it gets its own, and NSView's stays as it is.
     if !class_addMethod(cls, sel, imp, method_getTypeEncoding(method)) {
       method_setImplementation(method, imp)
+    }
+  }
+
+  private static var mouseHooked = false
+
+  /// Hover reaches a WKWebView through its own tracking areas, not through Flutter (which only sees clicks, and pulses
+  /// Take control on them): while the agent has a session view, WKWebView's mouse-moved, -entered and -exited are
+  /// dropped, so the page shows no hover and runs no mouseover. Other webviews (artifacts) are left as they are.
+  private static func addMouseHook() {
+    if mouseHooked { return }
+    mouseHooked = true
+    let cls: AnyClass = WKWebView.self
+    for name in ["mouseMoved:", "mouseEntered:", "mouseExited:"] {
+      let sel = NSSelectorFromString(name)
+      guard let method = class_getInstanceMethod(cls, sel) else { continue }
+      typealias Fn = @convention(c) (AnyObject, Selector, NSEvent) -> Void
+      let original = unsafeBitCast(method_getImplementation(method), to: Fn.self)
+      let block: @convention(block) (AnyObject, NSEvent) -> Void = { obj, event in
+        if let wv = obj as? WKWebView, WebviewBridge.shared?.isLocked(wv) == true { return }
+        original(obj, sel, event)
+      }
+      let imp = imp_implementationWithBlock(block)
+      // WKWebView may only inherit NSResponder's: then it gets its own, and the inherited one stays as it is.
+      if !class_addMethod(cls, sel, imp, method_getTypeEncoding(method)) {
+        method_setImplementation(method, imp)
+      }
     }
   }
 

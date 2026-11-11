@@ -18,8 +18,10 @@ import 'package:every_ai/features/code/harness/everyai/screen_tools_io.dart';
 import 'package:every_ai/features/code/live/agent_logins.dart';
 import 'package:every_ai/features/code/live/browser_jar.dart';
 import 'package:every_ai/features/code/live/browser_page.dart';
+import 'package:every_ai/features/code/live/live_browsers.dart';
 import 'package:every_ai/features/code/live/webview_browser.dart';
 import 'package:every_ai/features/code/live/webview_model.dart';
+import 'package:every_ai/features/code/ui/panes/browser_logins.dart' show fillPageWithLogin;
 import 'package:every_ai/features/code/ui/panes/browser_overlays.dart';
 import 'package:every_ai/features/code/ui/panes/preview_apps.dart' show LiveDriverBar;
 import 'package:every_ai/features/code/ui/panes/webview_page_view.dart';
@@ -143,7 +145,8 @@ document.getElementById('f').addEventListener('submit', (e) => { e.preventDefaul
       case '/watch':
         html(
           '''<title>Watch</title><input id="t" style="width:400px;height:60px;font-size:30px" autofocus>
-<p id="c">0</p><script>let c = 0; addEventListener('mousedown', (e) => { if (e.isTrusted) c++; document.getElementById('c').textContent = c; });</script>''',
+<p id="c">0</p><p id="m">0</p><script>let c = 0, m = 0; addEventListener('mousedown', (e) => { if (e.isTrusted) c++; document.getElementById('c').textContent = c; });
+addEventListener('mousemove', (e) => { if (e.isTrusted) m++; document.getElementById('m').textContent = m; });</script>''',
         );
       default:
         r.statusCode = 404;
@@ -449,6 +452,45 @@ Future<void> _run() async {
   });
   await b.close();
 
+  // Checked again right before typing: a page that left the login's site while the Allow card waited gets nothing.
+  await check('fill_login after a redirect during the Allow wait types nothing (own site only)', () async {
+    final gate = LoginGate.of('rig-redirect');
+    final strict = LoginAccess(
+      policy: const LoginPolicy(withoutAsking: false, anySite: false),
+      logins: () async => logins,
+      gate: gate,
+    );
+    await tool(a, {'action': 'open', 'url': '$base/login'});
+    final pending = tool(a, {'action': 'fill_login', 'login': 'local', 'selector': '#pw'}, guard: strict);
+    for (var i = 0; i < 50 && gate.stateOf('local') is! ConsentAsking; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    // localhost is another site to a login for 127.0.0.1.
+    await js(a, 'location.href = "http://localhost:${server.port}/login"');
+    for (var i = 0; i < 50 && await js(a, 'location.hostname') != 'localhost'; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    gate.answer('local', allow: true);
+    final r = await pending;
+    final pw = await js(a, 'document.getElementById("pw").value');
+    _note('  ${r.split('\n').first}');
+    return r.contains('this page is on localhost') && pw == '' ? null : 'pw "$pw": $r';
+  });
+  await check("the Preview key menu's fill is blanked in a later eval", () async {
+    LiveBrowsers.debugSet('rig-a', a);
+    await tool(a, {'action': 'open', 'url': '$base/login'});
+    await fillPageWithLogin(a, logins.entries.value.single, logins);
+    final r = await tool(a, {
+      'action': 'eval',
+      'script': 'document.getElementById("pw").value',
+    }, guard: LoginAccess(logins: () async => logins, gate: LoginGate.of('rig-a')));
+    final typed = await js(a, 'document.getElementById("pw").value');
+    LiveBrowsers.debugSet('rig-a', null);
+    return typed == 'correct-horse-77' && !r.contains('correct-horse-77') && r.contains('EVERYAI-HIDDEN')
+        ? null
+        : 'typed ${typed == 'correct-horse-77'}, result $r';
+  });
+
   // Watch-only, with real clicks and keys posted to this app.
   final ax = _axDefine.isNotEmpty ? _axDefine : Platform.environment['EVERYAI_AX_HELPER'];
   if (ax == null || !File(ax).existsSync()) {
@@ -500,6 +542,29 @@ Future<void> _run() async {
       _note('  page clicks $c, field "$v", Take control hints $hinted${sent ? '' : ' (click not sent: keys only)'}');
       return c == '0' && v == '' && hinted > 0 ? null : 'clicks $c, field "$v", hints $hinted';
     });
+    // Moves the real pointer over the view (the helper's scroll with no distance moves the pointer there first);
+    // false when the helper sent nothing (another app's window over the point, or the user busy).
+    Future<bool> hover() async {
+      final p = await screenPoint();
+      var sent = 0;
+      for (final dx in [0, 40, 80]) {
+        final args = ['--x', '${p.x + dx}', '--y', '${p.y}', '--dy', '0', '--front'];
+        final r = await Process.run(ax, ['scroll', '--pid', '$pid', ...args]);
+        if (r.exitCode == 0) sent++;
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      _note('  pointer moves sent: $sent of 3');
+      return sent > 0;
+    }
+
+    await check('watch-only: the pointer moving over the page gives it no hover', () async {
+      final before = await js(a, 'document.getElementById("m").textContent');
+      final sent = await hover();
+      final after = await js(a, 'document.getElementById("m").textContent');
+      if (!sent) return 'not checked: the pointer was not moved (another window over the point)';
+      return before == after ? null : 'mousemove $before → $after';
+    });
     await check('Take control: the same click and keys reach the page natively', () async {
       a.control.take();
       await Future<void>.delayed(const Duration(milliseconds: 300));
@@ -509,6 +574,12 @@ Future<void> _run() async {
       final v = await js(a, 'document.getElementById("t").value');
       _note('  page clicks $c, field "$v"${sent ? '' : ' (click not sent: keys only)'}');
       return (c == '1' || !sent) && v == 'ok' ? null : 'clicks $c, field "$v"';
+    });
+    await check('with control, the pointer moving over the page hovers it', () async {
+      final before = int.tryParse('${await js(a, 'document.getElementById("m").textContent')}') ?? 0;
+      if (!await hover()) return 'not checked: the pointer was not moved (another window over the point)';
+      final after = int.tryParse('${await js(a, 'document.getElementById("m").textContent')}') ?? 0;
+      return after > before ? null : 'mousemove $before → $after';
     });
     await check('Give back: the keyboard leaves the page again', () async {
       a.control.giveBack();
