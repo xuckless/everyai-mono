@@ -1019,6 +1019,15 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   included after one confirm); questions are never bulk-answered; failures go in a toast. Clearing (×, x, Clear, a
   mouse sweep across Done cards) shows "Cleared n · Undo" for 6 s (⌘Z too). Pause / Stop all were already on cards
   (phase 1's `StopAllButton`). Not seen in the running app.
+  Review fixes: a click-open hands the keys to the inspector's composer (`CodeComposer.takeFocus`), so a typed reply
+  never fires Board keys; Enter keeps them on the Board. While the inspector is open, j/k/n carry it along and a/d/x act
+  on the session it shows; covering the Board it leaves the hidden cards alone. The sweep reads raw pointer events
+  (`Listener`) and starts only on a second Done card (`SweepPressed`), so clicks stay clicks. a/d and Approve leave calls
+  decided one by one alone (`undecidedCalls`); answers go through `boardDecideProvider` (tests listen there), one per
+  session at a time; held keys repeat only j/k. Approve all always confirms across sessions, lists what flagged calls
+  run (`bulkCallLine`), sends only the counted calls (`bulkTargets`; a whole-batch harness whose batch changed is left
+  for the user). Undo restores when cleared cards had finished (`BoardDoneSince.restore`). The inspector edge stops
+  before the columns get too narrow; its pane keeps a GlobalKey per session and the Board keeps unsent replies.
 - **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
   `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
   `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,

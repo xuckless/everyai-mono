@@ -77,6 +77,9 @@ class CodeComposer extends ConsumerStatefulWidget {
     this.harnessLabel = '',
     this.sessionId,
     this.prefill,
+    this.initialDraft,
+    this.onDraftChanged,
+    this.takeFocus = false,
   });
 
   final bool busy;
@@ -127,6 +130,16 @@ class CodeComposer extends ConsumerStatefulWidget {
 
   /// The session's model: whether attached images reach it.
   final ModelSpec? model;
+
+  /// Text the box starts with when there is no [prefill] (a draft kept by its host, e.g. the Board's inspector).
+  final String? initialDraft;
+
+  /// Every change of the typed text, so a host can keep the draft when the box goes away.
+  final ValueChanged<String>? onDraftChanged;
+
+  /// Takes the keys once it shows, even from another focused widget in the same scope (which [autofocus] leaves
+  /// alone): the Board's inspector opened by a click.
+  final bool takeFocus;
 
   /// What `/` commands can drive in an open session; null: only the mode and Stop.
   final CodeSlashHost? slashHost;
@@ -195,9 +208,19 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
   void initState() {
     super.initState();
     _slash.project = widget.project;
-    if (widget.prefill case final p?) _setDraft(p.text);
+    if (widget.prefill case final p?) {
+      _setDraft(p.text);
+    } else if (widget.initialDraft case final d? when d.isNotEmpty) {
+      _setDraft(d);
+    }
+    if (widget.takeFocus) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _focus.requestFocus();
+      });
+    }
     _controller.addListener(() {
       _slash.update(_controller.value, _commands);
+      widget.onDraftChanged?.call(_controller.text);
       setState(() {});
     });
   }

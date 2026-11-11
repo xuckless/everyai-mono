@@ -27,9 +27,20 @@ class BoardInspectorPane extends ConsumerWidget {
     required this.onClose,
     required this.onOpenFull,
     this.cover = false,
+    this.focusComposer = false,
+    this.draft,
+    this.onDraftChanged,
   });
 
   final String sessionId;
+
+  /// Opened by a click: the composer takes the keys, so a reply typed at once is text, not Board keys. Opened from
+  /// the keyboard, the Board keeps them.
+  final bool focusComposer;
+
+  /// The reply typed earlier and not sent (kept by the Board when the pane closes or moves), and its changes.
+  final String? draft;
+  final ValueChanged<String>? onDraftChanged;
 
   /// It covers the Board (a narrow window): the close control reads as Back.
   final bool cover;
@@ -162,7 +173,8 @@ class BoardInspectorPane extends ConsumerWidget {
                 onSend: (text, files) => controller.sendTyped(text, files: files),
                 onSteer: (text, files) => controller.steer(text, files: files),
                 onStop: controller.stop,
-                // Esc closes the inspector (the Board's own key) unless the composer has an aside to close first.
+                // Esc closes the inspector (the Board's own key) unless the composer has an aside to close first. A typed
+                // draft isn't lost: the Board keeps it and puts it back when the session is inspected again.
                 onEscape: () {
                   final asides = ref.read(provider).asides;
                   if (asides.isEmpty) {
@@ -177,6 +189,9 @@ class BoardInspectorPane extends ConsumerWidget {
                 onSendQueuedNow: controller.sendQueuedNow,
                 placeholder: t.openQuestion != null ? 'Answer above, or reply in your own words' : 'Reply to the agent',
                 autofocus: false,
+                takeFocus: focusComposer,
+                initialDraft: draft,
+                onDraftChanged: onDraftChanged,
                 model: model,
               ),
             ],
@@ -213,6 +228,7 @@ class _InspectorEdgeState extends State<InspectorEdge> {
         behavior: HitTestBehavior.opaque,
         onHorizontalDragUpdate: (d) => widget.onDrag(d.delta.dx),
         onHorizontalDragEnd: (_) => widget.onEnd(),
+        onHorizontalDragCancel: widget.onEnd,
         onDoubleTap: widget.onReset,
         child: SizedBox(
           width: 9,

@@ -23,6 +23,16 @@ void main() {
     // Other keys, and ⌘ with a letter the Board doesn't use, are left alone.
     expect(boardKeyOf(LogicalKeyboardKey.keyQ), isNull);
     expect(boardKeyOf(LogicalKeyboardKey.keyA, meta: true), isNull);
+    // `/` and `?` go by the character typed: Shift+7 is `/` on a German keyboard, and that filters.
+    expect(boardKeyOf(LogicalKeyboardKey.digit7, shift: true, character: '/'), BoardKey.filter);
+    expect(boardKeyOf(LogicalKeyboardKey.slash, shift: true, character: '?'), BoardKey.help);
+    // Only moving repeats when a key is held.
+    expect(boardKeyRepeats(BoardKey.next), isTrue);
+    expect(boardKeyRepeats(BoardKey.previous), isTrue);
+    expect([BoardKey.clear, BoardKey.approve, BoardKey.deny, BoardKey.approveAll].any(boardKeyRepeats), isFalse);
+    // The keys overlay writes the host's modifier.
+    expect(boardKeyHelp(apple: true).map((e) => e.$1), contains('⌘ Enter'));
+    expect(boardKeyHelp(apple: false).map((e) => e.$1), containsAll(['Ctrl+Enter', 'Ctrl+Z']));
   });
 
   test('the selection walks the cards in order, stops at the ends, and starts at an end', () {
@@ -69,7 +79,8 @@ void main() {
     const done = ['d1', 'd2', 'd3', 'd4'];
     expect(sweptCards(done, 'd2', 'd4'), ['d2', 'd3', 'd4']);
     expect(sweptCards(done, 'd3', 'd1'), ['d1', 'd2', 'd3']);
-    expect(sweptCards(done, 'd2', 'd2'), ['d2']);
+    // Ending where it began was a click, not a sweep.
+    expect(sweptCards(done, 'd2', 'd2'), isEmpty);
     expect(sweptCards(done, 'd2', 'gone'), ['d2']);
     expect(sweptCards(done, 'gone', 'd2'), isEmpty);
   });
@@ -81,10 +92,26 @@ void main() {
       (sessionId: 's1', title: 'One', pending: [rm, ls], flags: const {'c1': 'Deletes files'}),
       (sessionId: 's2', title: 'Two', pending: [ls], flags: const {}),
       (sessionId: 's3', title: 'Idle', pending: const [], flags: const {}),
-    ]);
+    ], what: (c) => c.str('command'));
     expect(plan.calls, 3);
     expect(plan.sessions, 2);
-    expect(plan.risky, [(sessionId: 's1', title: 'One', callId: 'c1', why: 'Deletes files')]);
+    expect(plan.risky, [(sessionId: 's1', title: 'One', callId: 'c1', what: 'rm -rf /', why: 'Deletes files')]);
     expect(bulkApprovePlan(const []).calls, 0);
+  });
+
+  test('calls decided one by one keep their answer; a bulk run sends only what the confirm counted', () {
+    final a = actionEvent(id: 'a', toolName: 'bash', kind: 'TerminalAction', args: const {'command': 'ls'});
+    final b = actionEvent(id: 'b', toolName: 'bash', kind: 'TerminalAction', args: const {'command': 'pwd'});
+    expect(
+      [
+        for (final c in undecidedCalls([a, b], const {'a': false})) c.id,
+      ],
+      ['b'],
+    );
+    // Per call: what still waits of the planned calls (a new one waits for its own look).
+    expect(bulkTargets(planned: ['a', 'b'], nowUndecided: ['b', 'c'], perCall: true), ['b']);
+    // Whole batches only: the very batch confirmed, or nothing.
+    expect(bulkTargets(planned: ['a', 'b'], nowUndecided: ['b', 'a'], perCall: false), ['a', 'b']);
+    expect(bulkTargets(planned: ['a'], nowUndecided: ['a', 'c'], perCall: false), isNull);
   });
 }

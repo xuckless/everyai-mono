@@ -5,7 +5,8 @@ import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/preferences.dart';
-import '../code_providers.dart' show codeSessionsProvider;
+import '../code_providers.dart' show codeSessionProvider, codeSessionsProvider;
+import '../domain/permissions.dart' show ApprovalScope;
 import '../domain/code_session.dart';
 import '../drivers/driver_registry.dart' show driverRegistryProvider;
 import '../harness/harness.dart' show ReadsRecentEvents;
@@ -204,6 +205,13 @@ final class BoardDoneSince extends Notifier<Map<String, int>?> {
     _set({...known, id: at.millisecondsSinceEpoch});
   }
 
+  /// Puts back when [ids] had finished (Undo of a clear): they return as they were, not as fresh finishes.
+  void restore(Map<String, int> ids) {
+    final known = state;
+    if (known == null || ids.isEmpty) return;
+    _set({...known, ...ids});
+  }
+
   /// [id] runs again: its next finish counts from then.
   void forget(String id) {
     final known = state;
@@ -305,3 +313,14 @@ final class BoardInspectorWidth extends Notifier<double> {
 
   void reset() => set(initial);
 }
+
+/// Approves or denies calls [callIds] of session [sessionId] from the Board, on the session's own controller.
+typedef BoardDecide = Future<void> Function(String sessionId, {required bool approve, required List<String> callIds});
+
+/// How the Board answers approvals (cards, keys, Approve all); tests listen in here.
+final boardDecideProvider = Provider<BoardDecide>(
+  (ref) =>
+      (sessionId, {required approve, required callIds}) => approve
+      ? ref.read(codeSessionProvider(sessionId).notifier).approve(ApprovalScope.once, callIds)
+      : ref.read(codeSessionProvider(sessionId).notifier).deny(null, callIds),
+);

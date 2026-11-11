@@ -1,6 +1,7 @@
 import 'dart:async';
+import 'dart:math' as math;
 
-import 'package:flutter/gestures.dart' show DragStartBehavior, PointerDeviceKind;
+import 'package:flutter/gestures.dart' show DragStartBehavior, PointerDeviceKind, kPrimaryMouseButton;
 import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -21,7 +22,6 @@ import '../../models/domain/model_catalog.dart';
 import '../../models/models_providers.dart';
 import '../../questions/ui/question_card.dart';
 import '../code_providers.dart';
-import '../domain/permissions.dart';
 import '../domain/fork_state.dart';
 import '../domain/code_session.dart';
 import '../drivers/driver_registry.dart' show driverRegistryProvider;
@@ -82,6 +82,21 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
   var _doneOrder = const <String>[];
   var _needsYouOrder = const <String>[];
 
+  /// The inspector covers the Board (a narrow window), as last laid out: the hidden cards take no keys then.
+  var _inspectorCovers = false;
+
+  /// The inspector was opened by a click: its composer takes the keys.
+  var _inspectorFocusesComposer = false;
+
+  /// Sessions with an approve or deny from the Board in flight (one at a time each).
+  final _deciding = <String>{};
+
+  /// One key per inspected session, so its pane (draft, scroll) survives moving between beside and over the Board.
+  final _paneKeys = <String, GlobalKey>{};
+
+  /// Replies typed in the inspector and not sent, by session (kept while the Board is open).
+  final _drafts = <String, String>{};
+
   final _focus = FocusNode(debugLabel: 'board');
   final _filterFocus = FocusNode(debugLabel: 'board.filter');
   final _filter = TextEditingController();
@@ -115,7 +130,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
         unawaited(
           Scrollable.ensureVisible(
             ctx,
-            duration: Motion.move,
+            duration: Motion.reduced(context) ? Duration.zero : Motion.move,
             alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
           ),
         );
@@ -123,12 +138,37 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     });
   }
 
-  void _inspect(String id) {
+  /// Opens [id] in the inspector, selected too. From a click its composer takes the keys (a reply typed at once is
+  /// text); from the keyboard ([fromKeyboard]: Enter, j/k/n carrying it along) the Board keeps them.
+  void _inspect(String id, {bool fromKeyboard = false}) {
     setState(() {
       _selection = SelectedCard(id);
       _inspector = InspectorOpen(id);
+      _inspectorFocusesComposer = !fromKeyboard;
     });
-    _focus.requestFocus();
+    if (fromKeyboard) {
+      _focus.requestFocus();
+      _reveal(id);
+    }
+  }
+
+  /// The card the keys act on: the inspected one while the inspector is open, else the selected one.
+  String? get _target => switch (_inspector) {
+    InspectorOpen(:final id) => id,
+    InspectorClosed() => switch (_selection) {
+      SelectedCard(:final id) => id,
+      NoSelection() => null,
+    },
+  };
+
+  /// Moves the selection to [id]; with the inspector open, the inspector goes along.
+  void _move(String? id) {
+    if (id == null) return;
+    if (_inspector is InspectorOpen) {
+      _inspect(id, fromKeyboard: true);
+    } else {
+      _select(id);
+    }
   }
 
   void _closeInspector() {
@@ -145,9 +185,12 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
   /// Clears [ids] off the Board, with Undo for a few seconds.
   void _clear(List<String> ids) {
     if (ids.isEmpty) return;
+    // When each had finished, so Undo brings them back as they were.
+    final known = ref.read(boardDoneSinceProvider) ?? const <String, int>{};
+    final since = {for (final id in ids) id: ?known[id]};
     ref.read(boardDismissedProvider.notifier).dismiss(ids);
     final gen = ++_undoGeneration;
-    setState(() => _undo = Undoable(ids, gen));
+    setState(() => _undo = Undoable(ids, gen, doneSince: since));
     _undoTimer?.cancel();
     _undoTimer = Timer(const Duration(seconds: 6), () {
       if (!mounted) return;
@@ -156,68 +199,69 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
   }
 
   void _undoClear() {
-    if (_undo case Undoable(:final ids)) {
+    if (_undo case Undoable(:final ids, :final doneSince)) {
+      ref.read(boardDoneSinceProvider.notifier).restore(doneSince);
       ref.read(boardDismissedProvider.notifier).restore(ids);
       setState(() => _undo = const NothingToUndo());
     }
   }
 
-  /// The selected card's own approvals, approved or denied as the card shows them.
-  Future<void> _decideSelected({required bool approve}) async {
-    final id = switch (_selection) {
-      SelectedCard(:final id) => id,
-      NoSelection() => null,
-    };
-    if (id == null) return;
-    if (!ref.exists(codeSessionProvider(id))) return;
-    final pending = ref.read(codeSessionProvider(id)).transcript.pending;
-    if (pending.isEmpty) {
+  /// [id]'s own approvals, approved or denied (a/d): the calls not already decided one by one, one answer in flight
+  /// per session.
+  Future<void> _decide(String? id, {required bool approve}) async {
+    if (id == null || !ref.exists(codeSessionProvider(id)) || _deciding.contains(id)) return;
+    final st = ref.read(codeSessionProvider(id));
+    final calls = undecidedCalls(st.transcript.pending, st.decided);
+    if (calls.isEmpty) {
       showAdaptiveToast(context, 'Nothing to ${approve ? 'approve' : 'deny'} here');
       return;
     }
-    final controller = ref.read(codeSessionProvider(id).notifier);
-    final ids = [for (final c in pending) c.id];
-    if (approve) {
-      await controller.approve(ApprovalScope.once, ids);
-    } else {
-      await controller.deny(null, ids);
+    _deciding.add(id);
+    try {
+      await ref.read(boardDecideProvider)(id, approve: approve, callIds: [for (final c in calls) c.id]);
+    } finally {
+      _deciding.remove(id);
     }
   }
 
-  /// Approves every approval waiting on the shown cards; flagged calls are listed in one confirm first.
+  /// Approves every approval waiting on the shown cards. It confirms first whenever it spans more than one session
+  /// or includes flagged calls (listed with what they run). Only the calls the confirm counted go out: a session whose
+  /// harness answers whole batches is skipped if its batch changed meanwhile.
   Future<void> _approveAll(List<CodeSessionInfo> shown) async {
     if (_bulk != BulkApprove.idle) return;
-    final waiting = <WaitingApprovals>[
-      for (final s in shown)
-        if (ref.exists(codeSessionProvider(s.id)))
-          if (ref.read(codeSessionProvider(s.id)).transcript.pending case final pending when pending.isNotEmpty)
-            (
-              sessionId: s.id,
-              title: s.title,
-              pending: pending,
-              flags: approvalFlags(
-                ref.read(codeSessionProvider(s.id).notifier).policy,
-                pending,
-                ref.read(codeSessionProvider(s.id).notifier).checkMode,
-              ),
-            ),
-    ];
-    final plan = bulkApprovePlan(waiting);
+    final waiting = <WaitingApprovals>[];
+    for (final s in shown) {
+      if (!ref.exists(codeSessionProvider(s.id))) continue;
+      final st = ref.read(codeSessionProvider(s.id));
+      final pending = undecidedCalls(st.transcript.pending, st.decided);
+      if (pending.isEmpty) continue;
+      final controller = ref.read(codeSessionProvider(s.id).notifier);
+      waiting.add((
+        sessionId: s.id,
+        title: s.title,
+        pending: pending,
+        flags: approvalFlags(controller.policy, pending, controller.checkMode),
+      ));
+    }
+    final plan = bulkApprovePlan(waiting, what: bulkCallLine);
     if (plan.calls == 0) {
       showAdaptiveToast(context, 'No approvals waiting');
       return;
     }
-    if (plan.risky.isNotEmpty) {
+    if (plan.risky.isNotEmpty || plan.sessions > 1) {
       setState(() => _bulk = BulkApprove.confirming);
+      final count =
+          '${plan.calls} ${plan.calls == 1 ? 'call' : 'calls'} in ${plan.sessions} '
+          '${plan.sessions == 1 ? 'session' : 'sessions'}';
       final ok = await showAdaptiveConfirm(
         context,
-        title: 'Approve all, risky ones included?',
-        message:
-            '${plan.calls} ${plan.calls == 1 ? 'call' : 'calls'} in ${plan.sessions} '
-            '${plan.sessions == 1 ? 'session' : 'sessions'}. These are flagged:',
-        detail: [for (final r in plan.risky) '${r.title}: ${r.why}'].join('\n'),
+        title: plan.risky.isEmpty ? 'Approve all?' : 'Approve all, risky ones included?',
+        message: plan.risky.isEmpty ? '$count.' : '$count. These are flagged:',
+        detail: plan.risky.isEmpty
+            ? [for (final w in waiting) '${w.title}: ${w.pending.length}'].join('\n')
+            : [for (final r in plan.risky) '${r.title}: ${r.what} (${r.why})'].join('\n'),
         confirmLabel: 'Approve all',
-        destructive: true,
+        destructive: plan.risky.isNotEmpty,
       );
       if (!mounted) return;
       if (!ok) {
@@ -227,13 +271,25 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     }
     setState(() => _bulk = BulkApprove.approving);
     final failed = <String>[];
+    final changed = <String>[];
+    var approved = 0;
     try {
       for (final w in waiting) {
+        if (!ref.exists(codeSessionProvider(w.sessionId))) continue;
+        final now = ref.read(codeSessionProvider(w.sessionId));
+        final targets = bulkTargets(
+          planned: [for (final c in w.pending) c.id],
+          nowUndecided: [for (final c in undecidedCalls(now.transcript.pending, now.decided)) c.id],
+          perCall: ref.read(codeSessionProvider(w.sessionId).notifier).perCall,
+        );
+        if (targets == null) {
+          changed.add(w.title);
+          continue;
+        }
+        if (targets.isEmpty) continue;
         try {
-          // The calls counted above: a batch that came in since then waits for its own look.
-          await ref.read(codeSessionProvider(w.sessionId).notifier).approve(ApprovalScope.once, [
-            for (final c in w.pending) c.id,
-          ]);
+          await ref.read(boardDecideProvider)(w.sessionId, approve: true, callIds: targets);
+          approved += targets.length;
         } on Object {
           failed.add(w.title);
         }
@@ -244,9 +300,12 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     if (!mounted) return;
     showAdaptiveToast(
       context,
-      failed.isEmpty
-          ? 'Approved ${plan.calls} ${plan.calls == 1 ? 'call' : 'calls'}'
-          : "Couldn't approve in ${failed.join(', ')}",
+      [
+        if (approved > 0 || (failed.isEmpty && changed.isEmpty))
+          'Approved $approved ${approved == 1 ? 'call' : 'calls'}',
+        if (failed.isNotEmpty) "Couldn't approve in ${failed.join(', ')}",
+        if (changed.isNotEmpty) 'New calls came in, left for you: ${changed.join(', ')}',
+      ].join('. '),
     );
   }
 
@@ -260,7 +319,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
         body: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            for (final (keys, what) in boardKeyHelp)
+            for (final (keys, what) in boardKeyHelp(apple: Host.isApple))
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 3),
                 child: Row(
@@ -283,38 +342,44 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       event.logicalKey,
       shift: keys.isShiftPressed,
       meta: keys.isMetaPressed || keys.isControlPressed,
+      character: event.character,
     );
     if (action == null) return KeyEventResult.ignored;
-    // Typing in the filter or the inspector's composer is text, not Board keys (Esc and ⌘Enter aside).
+    // Typing in the filter field (inside the Board) is text, not Board keys; Esc still steps back. (The inspector's
+    // composer sits outside the Board's focus, so its keys never reach here.)
     if (!_focus.hasPrimaryFocus && action != BoardKey.escape) return KeyEventResult.ignored;
-    final selected = switch (_selection) {
-      SelectedCard(:final id) => id,
-      NoSelection() => null,
-    };
+    // Holding x, a or d acts once; only moving repeats.
+    if (event is KeyRepeatEvent && !boardKeyRepeats(action)) return KeyEventResult.handled;
+    // An inspector covering the Board leaves the hidden cards alone: only Esc, the keys, Undo and the full session.
+    final covered = _inspector is InspectorOpen && _inspectorCovers;
+    if (covered && !const {BoardKey.escape, BoardKey.help, BoardKey.undo, BoardKey.openFull}.contains(action)) {
+      return KeyEventResult.handled;
+    }
+    final target = _target;
     switch (action) {
       case BoardKey.next:
-        _select(stepSelection(_order, _selection, 1));
+        _move(stepSelection(_order, _selection, 1));
       case BoardKey.previous:
-        _select(stepSelection(_order, _selection, -1));
+        _move(stepSelection(_order, _selection, -1));
       case BoardKey.nextNeedingYou:
         final next = nextNeedingYou(_needsYouOrder, _selection);
         if (next == null) {
           showAdaptiveToast(context, 'Nothing needs you');
         } else {
-          _select(next);
+          _move(next);
         }
       case BoardKey.open:
-        if (selected != null) _inspect(selected);
+        if (target != null) _inspect(target, fromKeyboard: true);
       case BoardKey.openFull:
-        if (selected != null) _openFull(selected);
+        if (target != null) _openFull(target);
       case BoardKey.approve:
-        unawaited(_decideSelected(approve: true));
+        unawaited(_decide(target, approve: true));
       case BoardKey.deny:
-        unawaited(_decideSelected(approve: false));
+        unawaited(_decide(target, approve: false));
       case BoardKey.approveAll:
         unawaited(_approveAll(shown));
       case BoardKey.clear:
-        if (selected != null && _doneOrder.contains(selected)) _clear([selected]);
+        if (target != null && _doneOrder.contains(target)) _clear([target]);
       case BoardKey.undo:
         _undoClear();
       case BoardKey.filter:
@@ -322,7 +387,9 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       case BoardKey.help:
         unawaited(_showKeys());
       case BoardKey.escape:
-        if (_filterFocus.hasFocus) {
+        if (_sweep is! SweepIdle) {
+          setState(() => _sweep = const SweepIdle());
+        } else if (_filterFocus.hasFocus) {
           _filter.clear();
           _focus.requestFocus();
         } else if (_inspector is InspectorOpen) {
@@ -465,11 +532,12 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     final order = [
       for (final c in BoardColumn.values) ...[for (final s in columns[c]!) s.id],
     ];
-    final kept = keepSelection(_selection, _order, order);
     final inspected = switch (_inspector) {
       InspectorOpen(:final id) when sessions.any((s) => s.id == id) => id,
       _ => null,
     };
+    // While the inspector shows a session, the selection stays on it even when its card is filtered out or cleared.
+    final kept = inspected != null ? SelectedCard(inspected) : keepSelection(_selection, _order, order);
     if (kept != _selection || (inspected == null && _inspector is InspectorOpen)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
@@ -488,7 +556,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     };
     final swept = switch (_sweep) {
       Sweeping(:final anchor, :final over) => sweptCards(_doneOrder, anchor, over).toSet(),
-      SweepIdle() => const <String>{},
+      SweepIdle() || SweepPressed() => const <String>{},
     };
     // The approvals the shown cards wait on (sessions open here), for Approve all.
     final approvalsWaiting = shown.any(
@@ -507,26 +575,38 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       return null;
     }
 
-    // Press on a Done card and drag over others (mouse): they clear together when let go.
-    Widget sweepable(String id, Widget child) => GestureDetector(
+    // Press on a Done card and drag over others (mouse): they clear together when let go. Raw pointer events, so a
+    // click (even one that drifts a little) stays the card's own; every card has the listener, so a card moving
+    // into Done keeps its structure ([DoneSweep]).
+    Widget sweepable(String id, Widget child) => Listener(
       key: ValueKey('board.sweep.$id'),
-      supportedDevices: const {PointerDeviceKind.mouse},
-      onPanStart: (_) => setState(() => _sweep = Sweeping(id, id)),
-      onPanUpdate: (d) {
-        final over = doneCardAt(d.globalPosition);
-        if (_sweep case Sweeping(:final anchor, over: final was) when over != null && over != was) {
-          setState(() => _sweep = Sweeping(anchor, over));
+      onPointerDown: (e) {
+        if (e.kind == PointerDeviceKind.mouse && e.buttons == kPrimaryMouseButton && _doneOrder.contains(id)) {
+          setState(() => _sweep = SweepPressed(id));
         }
       },
-      onPanEnd: (_) {
+      onPointerMove: (e) {
+        final over = doneCardAt(e.position);
+        if (over == null) return;
+        switch (_sweep) {
+          case SweepPressed(:final anchor) when over != anchor:
+            setState(() => _sweep = Sweeping(anchor, over));
+          case Sweeping(:final anchor, over: final was) when over != was:
+            setState(() => _sweep = Sweeping(anchor, over));
+          case _:
+        }
+      },
+      onPointerUp: (_) {
         final ids = switch (_sweep) {
           Sweeping(:final anchor, :final over) => sweptCards(_doneOrder, anchor, over),
-          SweepIdle() => const <String>[],
+          SweepIdle() || SweepPressed() => const <String>[],
         };
-        setState(() => _sweep = const SweepIdle());
+        if (_sweep is! SweepIdle) setState(() => _sweep = const SweepIdle());
         _clear(ids);
       },
-      onPanCancel: () => setState(() => _sweep = const SweepIdle()),
+      onPointerCancel: (_) {
+        if (_sweep is! SweepIdle) setState(() => _sweep = const SweepIdle());
+      },
       child: child,
     );
 
@@ -747,6 +827,8 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
                                       controller: _filter,
                                       focusNode: _filterFocus,
                                       placeholder: 'Filter  /',
+                                      // Enter keeps the filter and hands the keys back to the Board (to move and act
+                                      // on what it left).
                                       onSubmitted: (_) => _focus.requestFocus(),
                                     ),
                                   ),
@@ -831,14 +913,27 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       builder: (context, box) {
         final double saved = ref.watch(boardInspectorWidthProvider);
         final width = (_inspectorDragging ?? saved).clamp(BoardInspectorWidth.min, BoardInspectorWidth.max);
-        // Beside the columns while they keep 520pt; over them otherwise.
-        final beside = box.maxWidth - width >= 520;
+        // Beside the columns while they keep 520pt; over them otherwise. Dragging the edge stops where the columns
+        // would get too narrow, so a drag never flips it over the Board.
+        const keep = 520.0;
+        final beside = box.maxWidth - width >= keep;
+        final widest = math.max(BoardInspectorWidth.min, math.min(BoardInspectorWidth.max, box.maxWidth - keep));
+        _inspectorCovers = !beside;
+        if (!beside && _inspectorDragging != null) {
+          // The window narrowed mid-drag: the edge is gone, so end the drag here.
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _inspectorDragging != null) setState(() => _inspectorDragging = null);
+          });
+        }
         final pane = inspected == null
             ? null
             : BoardInspectorPane(
-                key: ValueKey('board.inspector.pane.$inspected'),
+                key: _paneKeys.putIfAbsent(inspected, () => GlobalKey(debugLabel: 'board.inspector.$inspected')),
                 sessionId: inspected,
                 cover: !beside,
+                focusComposer: _inspectorFocusesComposer,
+                draft: _drafts[inspected],
+                onDraftChanged: (text) => _drafts[inspected] = text,
                 onClose: _closeInspector,
                 onOpenFull: () => _openFull(inspected),
               );
@@ -853,7 +948,12 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
                   if (pane != null && beside) ...[
                     InspectorEdge(
                       key: const ValueKey('board.inspector.edge'),
-                      onDrag: (dx) => setState(() => _inspectorDragging = (_inspectorDragging ?? width) - dx),
+                      onDrag: (dx) => setState(
+                        () => _inspectorDragging = ((_inspectorDragging ?? width) - dx).clamp(
+                          BoardInspectorWidth.min,
+                          widest,
+                        ),
+                      ),
                       onEnd: () {
                         if (_inspectorDragging case final w?) ref.read(boardInspectorWidthProvider.notifier).set(w);
                         setState(() => _inspectorDragging = null);
@@ -1110,6 +1210,10 @@ class _BoardCardState extends ConsumerState<BoardCard> {
     final transcript = live ?? ref.watch(boardRecentTranscriptProvider((info.id, widget.status))).value;
     final activity = transcript == null ? '' : boardActivity(transcript);
     final pending = live?.pending ?? const [];
+    // What Approve and Deny on the card answer: calls already decided one by one keep their answer.
+    final undecided = live == null
+        ? const <ActionCall>[]
+        : undecidedCalls(pending, ref.watch(codeSessionProvider(info.id).select((s) => s.decided)));
     final question = live?.openQuestion;
     final project = ref.watch(
       codeProjectsProvider.select((all) => all.where((p) => p.id == info.projectId).firstOrNull?.name),
@@ -1177,6 +1281,7 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                 stopAll: stopAll,
                 live: live,
                 pending: pending,
+                undecided: undecided,
                 question: question,
                 activity: activity,
                 where: where,
@@ -1198,6 +1303,7 @@ class _BoardCardState extends ConsumerState<BoardCard> {
     required Widget? stopAll,
     required Transcript? live,
     required List<ActionCall> pending,
+    required List<ActionCall> undecided,
     required QuestionItem? question,
     required String activity,
     required String where,
@@ -1382,21 +1488,31 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                         child: KitButton(
                           key: ValueKey('board.approve.${info.id}'),
                           label: 'Approve',
-                          onPressed: () async {
-                            // The calls this card showed: a batch that came in since then waits for its own look.
-                            await ref.read(codeSessionProvider(info.id).notifier).approve(ApprovalScope.once, [
-                              for (final c in pending) c.id,
-                            ]);
-                            if (mounted) setState(() => _approved++);
-                          },
+                          onPressed: undecided.isEmpty
+                              ? null
+                              : () async {
+                                  // The calls this card showed (not those decided one by one): a batch that came in
+                                  // since then waits for its own look.
+                                  await ref.read(boardDecideProvider)(
+                                    info.id,
+                                    approve: true,
+                                    callIds: [for (final c in undecided) c.id],
+                                  );
+                                  if (mounted) setState(() => _approved++);
+                                },
                         ),
                       ),
                       KitButton(
                         key: ValueKey('board.deny.${info.id}'),
                         label: 'Deny',
                         style: KitButtonStyle.ghost,
-                        onPressed: () =>
-                            ref.read(codeSessionProvider(info.id).notifier).deny(null, [for (final c in pending) c.id]),
+                        onPressed: undecided.isEmpty
+                            ? null
+                            : () => ref.read(boardDecideProvider)(
+                                info.id,
+                                approve: false,
+                                callIds: [for (final c in undecided) c.id],
+                              ),
                       ),
                     ],
                     KitButton(

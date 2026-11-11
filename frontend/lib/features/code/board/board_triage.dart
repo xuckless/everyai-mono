@@ -2,12 +2,14 @@ import 'package:flutter/services.dart';
 
 import '../harness/events.dart' show ActionCall;
 
-/// Which card the keyboard is on, if any:
+/// Which card the keyboard is on, if any. While the inspector is open the selection is the inspected card (j/k and
+/// n move both together), so a/d/x always act on the session the inspector shows:
 ///
 /// ```text
 ///   none ──j/k, arrows, n, a click──► on(id) ──j/k, n──► on(other id)
 ///    ▲                                  │
 ///    └──── Esc (with no inspector) ─────┘   the card leaving the Board ──► the nearest card, or none
+///                                            (not while the inspector shows it: it stays on that session)
 /// ```
 sealed class BoardSelection {
   const BoardSelection();
@@ -28,10 +30,11 @@ final class SelectedCard extends BoardSelection {
   int get hashCode => id.hashCode;
 }
 
-/// The side inspector:
+/// The side inspector. Opened by a click, its composer takes the keys (typing a reply is text, not Board keys);
+/// opened from the keyboard (Enter), the Board keeps them, and j/k/n carry it to the next card:
 ///
 /// ```text
-///   closed ──a click on a card, Enter──► open(id) ──another card──► open(other id)
+///   closed ──a click on a card, Enter──► open(id) ──another card, j/k/n──► open(other id)
 ///     ▲                                     │
 ///     └──── Esc, ×, its session gone ───────┘
 /// ```
@@ -54,12 +57,15 @@ final class InspectorOpen extends BoardInspector {
   int get hashCode => id.hashCode;
 }
 
-/// A press-and-drag across Done cards that clears them when let go:
+/// A press-and-drag across Done cards (mouse) that clears them when let go. A press alone is still a click: the sweep
+/// starts only once the pointer reaches a second Done card, and it reads raw pointer events, so it never takes a
+/// click from the card's own buttons:
 ///
 /// ```text
-///   idle ──press on a Done card──► sweeping(anchor, over) ──drag over another──► sweeping(anchor, over')
-///    ▲                                  │
-///    └──── let go: clears anchor..over ─┘   (cancelled: clears nothing)
+///   idle ──press on a Done card──► pressed(anchor) ──pointer over another Done card──► sweeping(anchor, over)
+///    ▲                                  │ let go (a click)                                   │ over another ──► sweeping(anchor, over')
+///    ├──────────────────────────────────┘                                                    │
+///    └──── let go: clears anchor..over (nothing when it ends on its anchor); Esc, cancel: nothing ┘
 /// ```
 sealed class DoneSweep {
   const DoneSweep();
@@ -69,13 +75,19 @@ final class SweepIdle extends DoneSweep {
   const SweepIdle();
 }
 
+final class SweepPressed extends DoneSweep {
+  const SweepPressed(this.anchor);
+  final String anchor;
+}
+
 final class Sweeping extends DoneSweep {
   const Sweeping(this.anchor, this.over);
   final String anchor;
   final String over;
 }
 
-/// The last clear the user can take back, while its bar shows:
+/// The last clear the user can take back, while its bar shows. It keeps when each card had finished ([doneSince]), so
+/// Undo puts them back as they were (not as fresh, unseen finishes):
 ///
 /// ```text
 ///   nothing ──cards cleared──► undoable(ids, gen) ──Undo, ⌘Z──► nothing (ids back)
@@ -91,18 +103,22 @@ final class NothingToUndo extends ClearUndo {
 }
 
 final class Undoable extends ClearUndo {
-  const Undoable(this.ids, this.generation);
+  const Undoable(this.ids, this.generation, {this.doneSince = const {}});
   final List<String> ids;
+
+  /// When each cleared card had finished (epoch ms), as the Board had it.
+  final Map<String, int> doneSince;
 
   /// Which clear this is: the timer of an older one doesn't hide a newer bar.
   final int generation;
 }
 
-/// "Approve all" across the Board, one run at a time:
+/// "Approve all" across the Board, one run at a time. It always confirms when it spans more than one session or
+/// includes flagged calls:
 ///
 /// ```text
-///   idle ──Approve all──► confirming (only when risky calls are among them) ──yes──► approving ──► idle
-///     ▲                        │ no                                                    (a toast for failures)
+///   idle ──Approve all──► confirming (several sessions, or risky calls among them) ──yes──► approving ──► idle
+///     ▲                        │ no                                                            (a toast for failures)
 ///     └────────────────────────┘
 /// ```
 enum BulkApprove { idle, confirming, approving }
@@ -127,7 +143,14 @@ enum BoardKey {
 /// The Board's key map: j/k and the arrows move, Enter opens the inspector (⌘/Ctrl+Enter the full session), a/d
 /// approve or deny, A approves everything waiting, x clears a Done card, / filters, n jumps to the next card that
 /// needs you, ? shows the keys, Esc steps back, ⌘/Ctrl+Z undoes a clear. Null for any other key.
-BoardKey? boardKeyOf(LogicalKeyboardKey key, {bool shift = false, bool meta = false}) {
+///
+/// `/` and `?` go by the [character] typed when there is one, since keyboard layouts put them on different keys
+/// (Shift+7 is `/` on a German keyboard).
+BoardKey? boardKeyOf(LogicalKeyboardKey key, {bool shift = false, bool meta = false, String? character}) {
+  if (!meta) {
+    if (character == '?') return BoardKey.help;
+    if (character == '/') return BoardKey.filter;
+  }
   if (meta) {
     if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter) return BoardKey.openFull;
     if (key == LogicalKeyboardKey.keyZ && !shift) return BoardKey.undo;
@@ -150,19 +173,25 @@ BoardKey? boardKeyOf(LogicalKeyboardKey key, {bool shift = false, bool meta = fa
   return null;
 }
 
-/// The keys, for the shortcuts overlay.
-const boardKeyHelp = [
-  ('j  k', 'Next, previous card'),
-  ('n', 'Next card that needs you'),
-  ('Enter', 'Open in the inspector'),
-  ('⌘ Enter', 'Open the full session'),
-  ('a  d', 'Approve, deny'),
-  ('A', 'Approve everything waiting'),
-  ('x', 'Clear a Done card'),
-  ('⌘ Z', 'Undo the last clear'),
-  ('/', 'Filter'),
-  ('Esc', 'Close, then deselect'),
-];
+/// The keys, for the shortcuts overlay; [apple] writes the modifier as ⌘, else Ctrl.
+List<(String, String)> boardKeyHelp({required bool apple}) {
+  final mod = apple ? '⌘ ' : 'Ctrl+';
+  return [
+    ('j  k', 'Next, previous card'),
+    ('n', 'Next card that needs you'),
+    ('Enter', 'Open in the inspector'),
+    ('${mod}Enter', 'Open the full session'),
+    ('a  d', 'Approve, deny'),
+    ('A', 'Approve everything waiting'),
+    ('x', 'Clear a Done card'),
+    ('${mod}Z', 'Undo the last clear'),
+    ('/', 'Filter'),
+    ('Esc', 'Close, then deselect'),
+  ];
+}
+
+/// Whether a held key repeats [action]: only moving does; a held x, a or d acts once.
+bool boardKeyRepeats(BoardKey action) => action == BoardKey.next || action == BoardKey.previous;
 
 /// The card [delta] steps from [current] in [order] (column by column, top to bottom), stopping at the ends. With
 /// nothing selected, the first card going forward and the last going back. Null when there are no cards.
@@ -208,8 +237,10 @@ bool matchesBoardFilter(
   return words.every(hay.contains);
 }
 
-/// The Done cards a sweep from [anchor] to [over] covers, in [doneOrder] (top to bottom), both ends included.
+/// The Done cards a sweep from [anchor] to [over] covers, in [doneOrder] (top to bottom), both ends included. None
+/// when it ends where it began (that was a click, not a sweep).
 List<String> sweptCards(List<String> doneOrder, String anchor, String over) {
+  if (anchor == over) return const [];
   final a = doneOrder.indexOf(anchor);
   final b = doneOrder.indexOf(over);
   if (a < 0) return const [];
@@ -221,12 +252,17 @@ List<String> sweptCards(List<String> doneOrder, String anchor, String over) {
 /// One session's approvals waiting, with the calls the risk check flags ([flags], call id → why).
 typedef WaitingApprovals = ({String sessionId, String title, List<ActionCall> pending, Map<String, String> flags});
 
-/// One flagged call, for the confirm dialog.
-typedef RiskyCall = ({String sessionId, String title, String callId, String why});
+/// One flagged call, for the confirm dialog: what it runs ([what], the approval's own title) and why it is flagged.
+typedef RiskyCall = ({String sessionId, String title, String callId, String what, String why});
 
 /// Everything waiting across the Board, split into what Approve all may approve without asking and the flagged calls
 /// it confirms first (once, listing them). Sessions with nothing pending are left out.
-({int calls, int sessions, List<RiskyCall> risky}) bulkApprovePlan(Iterable<WaitingApprovals> waiting) {
+/// [waiting]'s `pending` must already leave out calls decided one by one (see [undecidedCalls]). [what] names a call
+/// for the list.
+({int calls, int sessions, List<RiskyCall> risky}) bulkApprovePlan(
+  Iterable<WaitingApprovals> waiting, {
+  String Function(ActionCall call)? what,
+}) {
   var calls = 0;
   var sessions = 0;
   final risky = <RiskyCall>[];
@@ -235,8 +271,48 @@ typedef RiskyCall = ({String sessionId, String title, String callId, String why}
     sessions++;
     calls += w.pending.length;
     for (final c in w.pending) {
-      if (w.flags[c.id] case final why?) risky.add((sessionId: w.sessionId, title: w.title, callId: c.id, why: why));
+      if (w.flags[c.id] case final why?) {
+        risky.add((sessionId: w.sessionId, title: w.title, callId: c.id, what: what?.call(c) ?? c.toolName, why: why));
+      }
     }
   }
   return (calls: calls, sessions: sessions, risky: risky);
+}
+
+/// The calls of [pending] not yet decided one by one ([decided]: call id → allowed): a call the user allowed or denied
+/// in the per-call menu keeps that answer, whatever Approve or Deny on the whole card does.
+List<ActionCall> undecidedCalls(List<ActionCall> pending, Map<String, bool> decided) => [
+  for (final c in pending)
+    if (!decided.containsKey(c.id)) c,
+];
+
+/// Which of [planned] (the call ids a confirm showed) a bulk run may still send for one session, given what waits now
+/// ([nowUndecided]). A harness that answers whole batches only ([perCall] false) is skipped unless the batch is the
+/// very one confirmed: its answer would reach calls nobody saw. Null: skip the session.
+List<String>? bulkTargets({required List<String> planned, required List<String> nowUndecided, required bool perCall}) {
+  if (!perCall) {
+    final same = planned.length == nowUndecided.length && planned.toSet().containsAll(nowUndecided);
+    return same ? planned : null;
+  }
+  return [
+    for (final id in planned)
+      if (nowUndecided.contains(id)) id,
+  ];
+}
+
+/// What a call runs, in one short line for the Approve all list: the command itself, the file it writes, else the
+/// tool's name.
+String bulkCallLine(ActionCall call) {
+  String cut(String t) {
+    final line = t.trim().split('\n').first;
+    return line.length <= 80 ? line : '${line.substring(0, 79)}…';
+  }
+
+  final command = call.str('command');
+  return switch (call.actionKind) {
+    'TerminalAction' when command.trim().isNotEmpty => cut(command),
+    'FileEditorAction' || 'ApplyPatchAction' when call.str('path').isNotEmpty =>
+      '${call.actionKind == 'ApplyPatchAction' ? 'Patch' : 'Edit'} ${call.str('path')}',
+    _ => call.nativeName.isEmpty ? call.toolName : call.nativeName,
+  };
 }
