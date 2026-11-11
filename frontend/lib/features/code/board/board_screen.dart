@@ -139,10 +139,11 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     final stale = staleDone(doneSince, now: DateTime.now());
     final seenAt = ref.watch(boardSeenProvider);
     final phase = {for (final s in all) s.id: phaseOf(s.id, seen: seenSince(seenAt[s.id], doneSince[s.id]))};
-    // Sessions running again lose their seen mark, so their next finish shows as new.
+    // Sessions running again lose their seen mark, so their next finish shows as new; deleted sessions lose theirs too.
+    final ids = {for (final s in sessions) s.id};
     final rerun = [
       for (final id in seenAt.keys)
-        if (columnOf[id] case final c? when c != BoardColumn.done) id,
+        if (!ids.contains(id) || (columnOf[id] != null && columnOf[id] != BoardColumn.done)) id,
     ];
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -292,65 +293,69 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       body: all.isEmpty
           ? Center(child: Text('No sessions yet', style: theme.type.callout.tint(theme.textSubtle)))
           : GlowBackdrop(
-              child: LayoutBuilder(
-                builder: (context, box) {
-                  final wide = box.maxWidth >= 860;
-                  final Widget body;
-                  if (wide) {
-                    final List<double> shares = _dragging ?? ref.watch(boardColumnsProvider);
-                    final width = box.maxWidth - 28 - 2 * _Divider.hit;
-                    // Each column keeps at least 220pt.
-                    const min = 220.0;
-                    List<double> moved(int divider, double dx, List<double> from) {
-                      final w = [for (final v in from) v * width];
-                      final a = (w[divider] + dx).clamp(min, w[divider] + w[divider + 1] - min);
-                      w[divider + 1] = w[divider] + w[divider + 1] - a;
-                      w[divider] = a;
-                      return [for (final v in w) v / width];
-                    }
+              child: AmbientClock(
+                // One breathing clock for every card, and only while something breathes.
+                running: phase.values.any((p) => p.active || p == BoardPhase.needsYou),
+                child: LayoutBuilder(
+                  builder: (context, box) {
+                    final wide = box.maxWidth >= 860;
+                    final Widget body;
+                    if (wide) {
+                      final List<double> shares = _dragging ?? ref.watch(boardColumnsProvider);
+                      final width = box.maxWidth - 28 - 2 * _Divider.hit;
+                      // Each column keeps at least 220pt.
+                      const min = 220.0;
+                      List<double> moved(int divider, double dx, List<double> from) {
+                        final w = [for (final v in from) v * width];
+                        final a = (w[divider] + dx).clamp(min, w[divider] + w[divider + 1] - min);
+                        w[divider + 1] = w[divider] + w[divider + 1] - a;
+                        w[divider] = a;
+                        return [for (final v in w) v / width];
+                      }
 
-                    Widget divider(int i) => _Divider(
-                      key: ValueKey('board.divider.$i'),
-                      onDrag: (dx) => setState(() => _dragging = moved(i, dx, _dragging ?? shares)),
-                      onEnd: () {
-                        if (_dragging case final d?) ref.read(boardColumnsProvider.notifier).set(d);
-                        setState(() => _dragging = null);
-                      },
-                      onReset: ref.read(boardColumnsProvider.notifier).reset,
-                    );
-                    body = Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        for (final (i, c) in BoardColumn.values.indexed) ...[
-                          if (i > 0) divider(i - 1),
-                          SizedBox(width: shares[i] * width, child: column(c, scrolls: true)),
+                      Widget divider(int i) => _Divider(
+                        key: ValueKey('board.divider.$i'),
+                        onDrag: (dx) => setState(() => _dragging = moved(i, dx, _dragging ?? shares)),
+                        onEnd: () {
+                          if (_dragging case final d?) ref.read(boardColumnsProvider.notifier).set(d);
+                          setState(() => _dragging = null);
+                        },
+                        onReset: ref.read(boardColumnsProvider.notifier).reset,
+                      );
+                      body = Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          for (final (i, c) in BoardColumn.values.indexed) ...[
+                            if (i > 0) divider(i - 1),
+                            SizedBox(width: shares[i] * width, child: column(c, scrolls: true)),
+                          ],
                         ],
-                      ],
+                      );
+                    } else {
+                      body = ListView(
+                        children: [
+                          for (final c in BoardColumn.values)
+                            if (columns[c]!.isNotEmpty)
+                              Padding(padding: const EdgeInsets.only(bottom: 12), child: column(c, scrolls: false)),
+                        ],
+                      );
+                    }
+                    return Padding(
+                      padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (filters != null)
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(4, 0, 4, 14),
+                              child: Align(alignment: Alignment.centerLeft, child: filters),
+                            ),
+                          Expanded(child: body),
+                        ],
+                      ),
                     );
-                  } else {
-                    body = ListView(
-                      children: [
-                        for (final c in BoardColumn.values)
-                          if (columns[c]!.isNotEmpty)
-                            Padding(padding: const EdgeInsets.only(bottom: 12), child: column(c, scrolls: false)),
-                      ],
-                    );
-                  }
-                  return Padding(
-                    padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        if (filters != null)
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(4, 0, 4, 14),
-                            child: Align(alignment: Alignment.centerLeft, child: filters),
-                          ),
-                        Expanded(child: body),
-                      ],
-                    ),
-                  );
-                },
+                  },
+                ),
               ),
             ),
     );
@@ -462,7 +467,8 @@ class _GlideState extends State<_Glide> with SingleTickerProviderStateMixin {
     return AnimatedBuilder(
       animation: _c,
       builder: (context, child) {
-        if (!_c.isAnimating || _delta == Offset.zero) return child!;
+        // One structure moving or not (no painter, no offset at rest), so the card under it is never rebuilt.
+        final moving = _c.isAnimating && _delta != Offset.zero;
         // Where the card is at [v] of the trip: a shallow arc, lifted most at the middle.
         Offset at(double v) {
           final t = Motion.easeInOut.transform(v.clamp(0, 1));
@@ -471,15 +477,17 @@ class _GlideState extends State<_Glide> with SingleTickerProviderStateMixin {
           return Offset(_delta.dx * left, _delta.dy * left + lift);
         }
 
-        final now = at(_c.value);
+        final now = moving ? at(_c.value) : Offset.zero;
         // A soft light trail behind it, fading as it lands.
         return CustomPaint(
-          painter: TrailPainter(
-            from: at(_c.value - 0.22),
-            to: now,
-            color: EveryTheme.of(context).accent,
-            opacity: 1 - _c.value,
-          ),
+          painter: moving
+              ? TrailPainter(
+                  from: at(_c.value - 0.22),
+                  to: now,
+                  color: EveryTheme.of(context).accent,
+                  opacity: 1 - _c.value,
+                )
+              : null,
           child: Transform.translate(offset: now, child: child),
         );
       },
@@ -559,6 +567,7 @@ class _BoardCardState extends ConsumerState<BoardCard> {
   List<BoardWarning> _warnings(Transcript? live) {
     if (live == null) return const [];
     final id = widget.info.id;
+    final connected = ref.read(codeSessionProvider(id)).connected;
     final usage = ref.exists(codeUsageProvider(id)) ? ref.read(codeUsageProvider(id)).value : null;
     // The catalog only when there is a reading to measure against it.
     final window = (usage?.contextTokens ?? 0) == 0
@@ -566,7 +575,8 @@ class _BoardCardState extends ConsumerState<BoardCard> {
         : ref.read(modelCatalogProvider)[ModelId(widget.info.model)]?.contextLength ?? 0;
     return boardWarnings(
       phase: widget.phase,
-      sinceProgress: DateTime.now().difference(ref.read(boardProgressProvider(id))),
+      sinceProgress: DateTime.now().difference(ref.read(boardProgressProvider(id).notifier).last()),
+      connected: connected,
       repeated: repeatedStep(live),
       contextPercent: contextPercent(usage?.contextTokens ?? 0, window),
     );
@@ -814,7 +824,20 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                   },
                 ).settle(),
               ),
-            if (warnings.isNotEmpty) _Warnings(info: info, warnings: warnings, live: live, state: this),
+            if (warnings.isNotEmpty)
+              _Warnings(
+                info: info,
+                warnings: warnings,
+                live: live,
+                state: this,
+                // Compact works on an idle EveryAI-led session; an outside CLI keeps its own context.
+                compactable:
+                    live != null &&
+                    !live.running &&
+                    live.pending.isEmpty &&
+                    live.held.isEmpty &&
+                    !isOutsideLead(info.harness, info.workingDir),
+              ),
             BoardWork(sessionId: info.id),
             Padding(
               padding: const EdgeInsets.only(left: 36, top: 8),
@@ -885,12 +908,21 @@ class _BoardCardState extends ConsumerState<BoardCard> {
 /// A card's warnings (stalled, looping, context nearly full), each as an amber line, with Nudge, Stop and, when the
 /// context is the problem, Compact. One action at a time ([_Act]).
 class _Warnings extends StatelessWidget {
-  const _Warnings({required this.info, required this.warnings, required this.live, required this.state});
+  const _Warnings({
+    required this.info,
+    required this.warnings,
+    required this.live,
+    required this.state,
+    required this.compactable,
+  });
 
   final CodeSessionInfo info;
   final List<BoardWarning> warnings;
   final Transcript? live;
   final _BoardCardState state;
+
+  /// Whether Compact would do anything now (else it would only say the agent is busy).
+  final bool compactable;
 
   @override
   Widget build(BuildContext context) {
@@ -922,12 +954,9 @@ class _Warnings extends StatelessWidget {
                 onPressed: !idle
                     ? null
                     : () => state._run(_Act.nudging, () async {
-                        // A stuck turn hears it now; an idle lead gets it as its next message.
-                        if (live?.running ?? false) {
-                          await controller.steer(boardNudgeText);
-                        } else {
-                          await controller.sendTyped(boardNudgeText);
-                        }
+                        // Joins the running turn after its current step (a long build isn't cut off); an idle lead
+                        // gets it as its next message.
+                        await controller.tellWhileRunning(boardNudgeText, fromUser: true);
                       }),
               ),
               KitButton(
@@ -936,7 +965,7 @@ class _Warnings extends StatelessWidget {
                 style: KitButtonStyle.ghost,
                 onPressed: !idle ? null : () => state._run(_Act.stopping, controller.stop),
               ),
-              if (warnings.any((w) => w is BoardContextFull))
+              if (compactable && warnings.any((w) => w is BoardContextFull))
                 KitButton(
                   key: ValueKey('board.compact.${info.id}'),
                   label: 'Compact',

@@ -8,6 +8,7 @@ import '../domain/code_session.dart';
 import '../domain/doom_loop.dart';
 import '../domain/transcript.dart';
 import '../harness/events.dart' show ActionCall;
+import '../shells/shell_registry.dart' show ShellRegistry;
 import 'board_providers.dart' show BoardColumn, boardDoneSinceProvider;
 
 /// What a Board card says about its session, counting the work it runs besides the lead's own turn:
@@ -16,29 +17,31 @@ import 'board_providers.dart' show BoardColumn, boardDoneSinceProvider;
 ///            ┌───────────── the session or a child waits on the user ─────────────┐
 ///            │                                                                     ▼
 ///   working ─┴─lead idle, its forks / subagents / workflows still run─► waitingOnWork      needsYou
-///      ▲                                   │                                                 │
-///      │                                   └──── all of it ends ──► doneUnseen ──opened──► doneSeen
-///      └──────────────── the lead (or its work) runs again ───────────────┘──────────────────┘
+///    ▲   │                                 │                                                 │
+///    │   └─Pause─► paused ─Resume─► working└──── all of it ends ──► doneUnseen ──opened──► doneSeen
+///    └──────────────── the lead (or its work) runs again ───────────────┘──────────────────┘
 ///   any of them ──broke, or its budget is spent──► failed
 /// ```
 ///
 /// Only [boardPhase] decides it, from the session's own status, its running work, whether a child waits on the user,
-/// and whether the user has seen it since it finished.
+/// and whether the user has seen it since it finished. A paused session sits in Running without glow or stall
+/// warnings: the user stopped it on purpose.
 enum BoardPhase {
   needsYou,
   working,
   waitingOnWork,
+  paused,
   failed,
   doneUnseen,
   doneSeen;
 
   BoardColumn get column => switch (this) {
     needsYou => BoardColumn.needsYou,
-    working || waitingOnWork => BoardColumn.running,
+    working || waitingOnWork || paused => BoardColumn.running,
     failed || doneUnseen || doneSeen => BoardColumn.done,
   };
 
-  /// Its lead's turn or work it started still runs.
+  /// Its lead's turn or work it started still runs (not paused).
   bool get active => this == working || this == waitingOnWork;
 }
 
@@ -60,9 +63,8 @@ BoardPhase boardPhase(
   if (own == SessionStatus.needsInput || childWaits) return BoardPhase.needsYou;
   // A failure shows even while its work still runs: Running would hide it.
   if (own == SessionStatus.failed) return BoardPhase.failed;
-  if (own == SessionStatus.running || own == SessionStatus.starting || own == SessionStatus.paused) {
-    return BoardPhase.working;
-  }
+  if (own == SessionStatus.paused) return BoardPhase.paused;
+  if (own == SessionStatus.running || own == SessionStatus.starting) return BoardPhase.working;
   if (hasBoardWork(work)) return BoardPhase.waitingOnWork;
   return seen ? BoardPhase.doneSeen : BoardPhase.doneUnseen;
 }
@@ -70,6 +72,7 @@ BoardPhase boardPhase(
 /// The card's status line for work in flight: "Lead waiting · 3 forks running", "Lead working · 1 subagent
 /// running". Empty when the session runs nothing besides its lead.
 String boardPhaseLine(BoardPhase phase, BoardWorkCount work) {
+  if (phase == BoardPhase.paused) return 'Paused';
   if (!phase.active || !hasBoardWork(work)) return '';
   String n(int count, String one, String many) => '$count ${count == 1 ? one : many}';
   final parts = [
@@ -80,7 +83,11 @@ String boardPhaseLine(BoardPhase phase, BoardWorkCount work) {
   return '${phase == BoardPhase.waitingOnWork ? 'Lead waiting' : 'Lead working'} · ${parts.join(' · ')}';
 }
 
-/// How many forks and subagents under [id] (sessions of ours, at any depth) are running.
+/// Child statuses that are still work for their lead: running, starting, paused (it resumes), or waiting (on the user,
+/// which [boardPhase] shows as Needs you first, or on the lead, which answers it).
+const _childWorking = {SessionStatus.running, SessionStatus.starting, SessionStatus.paused, SessionStatus.needsInput};
+
+/// How many forks and subagents under [id] (sessions of ours, at any depth) are still work ([_childWorking]).
 int runningDescendants(
   String id,
   Map<String, List<CodeSessionInfo>> childrenOf,
@@ -91,7 +98,7 @@ int runningDescendants(
   var n = 0;
   for (final c in childrenOf[id] ?? const <CodeSessionInfo>[]) {
     if (!visited.add(c.id)) continue;
-    if (statusOf(c) == SessionStatus.running) n++;
+    if (_childWorking.contains(statusOf(c))) n++;
     n += runningDescendants(c.id, childrenOf, statusOf, visited);
   }
   return n;
@@ -146,16 +153,19 @@ const boardStallAfter = Duration(minutes: 6);
 /// How full the context gets before the card says so.
 const boardContextWarnPercent = 90;
 
-/// The warnings for a card: stalled ([sinceProgress] past [boardStallAfter]) and looping ([repeated], the step a run of
-/// identical calls repeats) only while the lead works; a nearly full context ([contextPercent]) while anything runs or
-/// waits on the user.
+/// The warnings for a card: stalled ([sinceProgress] past [boardStallAfter]; only once [connected], so a session still
+/// connecting isn't "stalled") and looping ([repeated], the step a run of identical calls repeats) only while the lead
+/// works; a nearly full context ([contextPercent]) while anything runs or waits on the user. A paused session gets
+/// none of the first two: the user stopped it on purpose.
 List<BoardWarning> boardWarnings({
   required BoardPhase phase,
   Duration sinceProgress = Duration.zero,
   String? repeated,
   int contextPercent = 0,
+  bool connected = true,
 }) => [
-  if (phase == BoardPhase.working && sinceProgress >= boardStallAfter) BoardStalled(sinceProgress.inMinutes),
+  if (phase == BoardPhase.working && connected && sinceProgress >= boardStallAfter)
+    BoardStalled(sinceProgress.inMinutes),
   if (phase == BoardPhase.working && repeated != null) BoardLooping(repeated),
   if ((phase.active || phase == BoardPhase.needsYou) && contextPercent >= boardContextWarnPercent)
     BoardContextFull(contextPercent.clamp(0, 100)),
@@ -225,13 +235,34 @@ bool seenSince(int? seenAt, DateTime? doneSince) =>
     seenAt != null && doneSince != null && seenAt >= doneSince.millisecondsSinceEpoch;
 
 /// When an open session last showed progress: a new transcript item, streamed text, an approval or a status change.
-/// The Board keeps it alive for open sessions and reads it on its clock ([boardWarnings]' stall check).
-final boardProgressProvider = NotifierProvider.family<BoardProgress, DateTime, String>(BoardProgress.new);
+/// A card watches it while it shows (it goes with the card) and reads [BoardProgress.last] on its clock
+/// ([boardWarnings]' stall check), which also counts output of the session's running commands.
+final boardProgressProvider = NotifierProvider.autoDispose.family<BoardProgress, DateTime, String>(BoardProgress.new);
 
 final class BoardProgress extends Notifier<DateTime> {
-  BoardProgress(this.sessionId);
+  BoardProgress(this.sessionId, {ShellRegistry? shells}) : _shells = shells ?? ShellRegistry.instance;
 
   final String sessionId;
+  final ShellRegistry _shells;
+
+  /// Bytes the session's running foreground commands had written at the last look, and when that last grew. A long
+  /// build or test run writes as it goes, so it isn't a stall. Background shells (dev servers) don't count: their
+  /// logs say nothing about the lead.
+  int _shellBytes = -1;
+  DateTime _shellAt = DateTime.now();
+
+  /// The latest progress, counting command output seen since the last look. Read on the card's clock.
+  DateTime last() {
+    var bytes = 0;
+    for (final e in _shells.of(sessionId)) {
+      if (e.running && !e.background) bytes += e.logged;
+    }
+    if (bytes != _shellBytes) {
+      _shellBytes = bytes;
+      _shellAt = DateTime.now();
+    }
+    return state.isAfter(_shellAt) ? state : _shellAt;
+  }
 
   @override
   DateTime build() {
@@ -251,13 +282,30 @@ final class BoardProgress extends Notifier<DateTime> {
   }
 }
 
-/// The user is looking at session [id]: once it has [finished], that finish counts as seen on the Board (recorded,
-/// if the Board hasn't yet); while it runs, an earlier mark is dropped so the next finish shows as new. Writes only
-/// on a change.
-void markBoardSeen(WidgetRef ref, String id, {required bool finished}) {
+/// What looking at a session means for its Board marks ([markBoardSeen]): nothing yet (it hasn't connected, or is
+/// starting: its status says nothing about the last finish), it runs (drop the marks), or it finished (seen).
+enum SeenUpdate { none, running, finished }
+
+/// [markBoardSeen]'s reading of a session the user is looking at.
+SeenUpdate seenUpdate({required SessionStatus status, required bool connected, required bool sideWork}) {
+  if (!connected) return SeenUpdate.none;
+  return switch (status) {
+    SessionStatus.starting => SeenUpdate.none,
+    SessionStatus.running || SessionStatus.needsInput || SessionStatus.paused => SeenUpdate.running,
+    SessionStatus.idle ||
+    SessionStatus.done ||
+    SessionStatus.failed => sideWork ? SeenUpdate.running : SeenUpdate.finished,
+  };
+}
+
+/// The user is looking at session [id]: once it has finished, that finish counts as seen on the Board (recorded, if
+/// the Board hasn't yet); while it runs, an earlier mark is dropped so the next finish shows as new. Until it has
+/// connected nothing changes, so opening an old finished session keeps when it finished. Writes only on a change.
+void markBoardSeen(WidgetRef ref, String id, SeenUpdate update) {
   final seenAt = ref.read(boardSeenProvider)[id];
   final since = ref.read(boardDoneSinceProvider);
-  if (!finished) {
+  if (update == SeenUpdate.none) return;
+  if (update == SeenUpdate.running) {
     if (seenAt != null) ref.read(boardSeenProvider.notifier).forget([id]);
     if (since?.containsKey(id) ?? false) ref.read(boardDoneSinceProvider.notifier).forget(id);
     return;

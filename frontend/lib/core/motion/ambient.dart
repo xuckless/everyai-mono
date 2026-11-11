@@ -9,10 +9,91 @@ import 'motion.dart';
 // Calm ambient effects for live things: a breathing glow while something works, a ring while it waits on the user,
 // a small burst when it finishes, trails behind moving cards and numbers that tick. Endless loops run only while
 // [Motion.loops] allows (never under reduced motion, nor in tests); one-shot effects are skipped under reduced motion.
+//
+// Every effect keeps one widget structure whether it shows or not (an idle glow is a layer at zero opacity, an idle
+// burst a painter that is null), so switching an effect on or off never rebuilds what it wraps: the card under it
+// keeps its state.
 
-/// A soft glow around [child] in [color] while [active]: it breathes slowly (2.8 s) while loops run, and holds a
-/// faint steady glow otherwise. [strength] scales it (1 for something working, less for something waiting).
-class GlowPulse extends StatefulWidget {
+/// One slow breathing clock (2.8 s, back and forth) for every [GlowPulse] and [BreathingRing] under it, so a board of
+/// cards runs one ticker instead of one per card. It runs only while [running] (something on screen breathes) and
+/// [Motion.loops] allows; otherwise the effects under it hold still.
+class AmbientClock extends StatefulWidget {
+  const AmbientClock({super.key, required this.running, required this.child});
+
+  final bool running;
+  final Widget child;
+
+  /// The clock above [context] while it runs, else null (the effects then hold a steady value).
+  static Animation<double>? of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<_AmbientScope>()?.clock;
+
+  @override
+  State<AmbientClock> createState() => _AmbientClockState();
+}
+
+class _AmbientClockState extends State<AmbientClock> with SingleTickerProviderStateMixin {
+  late final _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 2800));
+
+  /// Whether it runs: the scope below hands the clock out only then.
+  bool _on = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(AmbientClock old) {
+    super.didUpdateWidget(old);
+    _sync();
+  }
+
+  void _sync() {
+    final run = widget.running && Motion.loops(context);
+    if (run == _on) return;
+    _on = run;
+    if (run) {
+      _c.repeat(reverse: true);
+    } else {
+      _c.stop();
+    }
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => _AmbientScope(clock: _on ? _c : null, child: widget.child);
+}
+
+class _AmbientScope extends InheritedWidget {
+  const _AmbientScope({required this.clock, required super.child});
+
+  final Animation<double>? clock;
+
+  @override
+  bool updateShouldNotify(_AmbientScope old) => old.clock != clock;
+}
+
+/// [clock] eased and mapped from [low] to [high]; [steady] when there is no clock running.
+Animation<double> _breath(
+  Animation<double>? clock, {
+  required double low,
+  required double high,
+  required double steady,
+}) => clock == null
+    ? AlwaysStoppedAnimation(steady)
+    : clock.drive(CurveTween(curve: Motion.easeInOut)).drive(Tween(begin: low, end: high));
+
+/// A soft glow around [child] in [color] while [active]: it breathes with the [AmbientClock] above it, and holds a
+/// faint steady glow without one. [strength] scales it (1 for something working, less for something waiting). The
+/// glow is a fixed blur whose opacity moves, so a breath repaints nothing: neither the blur nor [child] (kept behind
+/// a [RepaintBoundary]).
+class GlowPulse extends StatelessWidget {
   const GlowPulse({
     super.key,
     required this.active,
@@ -29,62 +110,37 @@ class GlowPulse extends StatefulWidget {
   final Widget child;
 
   @override
-  State<GlowPulse> createState() => _GlowPulseState();
-}
-
-class _GlowPulseState extends State<GlowPulse> with SingleTickerProviderStateMixin {
-  late final _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 2800));
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _sync();
-  }
-
-  @override
-  void didUpdateWidget(GlowPulse old) {
-    super.didUpdateWidget(old);
-    _sync();
-  }
-
-  void _sync() {
-    final run = widget.active && Motion.loops(context);
-    if (run && !_c.isAnimating) _c.repeat(reverse: true);
-    if (!run && _c.isAnimating) _c.stop();
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  BoxDecoration _glow(double t) => BoxDecoration(
-    borderRadius: BorderRadius.circular(widget.radius),
-    boxShadow: [
-      BoxShadow(
-        color: widget.color.withValues(alpha: (0.10 + 0.12 * t) * widget.strength),
-        blurRadius: 14 + 10 * t,
-        spreadRadius: -2 + 2 * t,
-      ),
-    ],
-  );
-
-  @override
   Widget build(BuildContext context) {
-    if (!widget.active) return widget.child;
-    if (!_c.isAnimating) return DecoratedBox(decoration: _glow(0.4), child: widget.child);
-    return AnimatedBuilder(
-      animation: _c,
-      child: widget.child,
-      builder: (context, child) => DecoratedBox(decoration: _glow(Motion.easeInOut.transform(_c.value)), child: child),
+    final opacity = active
+        ? _breath(AmbientClock.of(context), low: 0.45 * strength, high: strength, steady: 0.7 * strength)
+        : const AlwaysStoppedAnimation(0.0);
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Positioned.fill(
+          child: IgnorePointer(
+            child: FadeTransition(
+              opacity: opacity,
+              child: RepaintBoundary(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(radius),
+                    boxShadow: [BoxShadow(color: color.withValues(alpha: 0.22), blurRadius: 22, spreadRadius: -1)],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+        RepaintBoundary(child: child),
+      ],
     );
   }
 }
 
-/// A thin ring around [child] that breathes in [color] while [active] (something waits on the user); a steady ring
-/// when loops are off.
-class BreathingRing extends StatefulWidget {
+/// A thin ring around [child] that breathes in [color] while [active] (something waits on the user), with the
+/// [AmbientClock] above it; a steady ring without one. Like [GlowPulse], only the ring's opacity moves.
+class BreathingRing extends StatelessWidget {
   const BreathingRing({super.key, required this.active, required this.color, required this.child, this.radius = 16});
 
   final bool active;
@@ -93,60 +149,37 @@ class BreathingRing extends StatefulWidget {
   final Widget child;
 
   @override
-  State<BreathingRing> createState() => _BreathingRingState();
-}
-
-class _BreathingRingState extends State<BreathingRing> with SingleTickerProviderStateMixin {
-  late final _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 1700));
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _sync();
-  }
-
-  @override
-  void didUpdateWidget(BreathingRing old) {
-    super.didUpdateWidget(old);
-    _sync();
-  }
-
-  void _sync() {
-    final run = widget.active && Motion.loops(context);
-    if (run && !_c.isAnimating) _c.repeat(reverse: true);
-    if (!run && _c.isAnimating) _c.stop();
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    if (!widget.active) return widget.child;
-    Widget ring(double t) => DecoratedBox(
-      position: DecorationPosition.foreground,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(widget.radius),
-        border: Border.all(color: widget.color.withValues(alpha: 0.35 + 0.4 * t), width: 1.2),
-        boxShadow: [
-          BoxShadow(
-            color: widget.color.withValues(alpha: 0.12 * t),
-            blurRadius: 4 + 8 * t,
+    final opacity = active
+        ? _breath(AmbientClock.of(context), low: 0.45, high: 1, steady: 0.75)
+        : const AlwaysStoppedAnimation(0.0);
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        child,
+        Positioned.fill(
+          child: IgnorePointer(
+            child: FadeTransition(
+              opacity: opacity,
+              child: RepaintBoundary(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(radius),
+                    border: Border.all(color: color.withValues(alpha: 0.75), width: 1.2),
+                    boxShadow: [BoxShadow(color: color.withValues(alpha: 0.12), blurRadius: 10)],
+                  ),
+                ),
+              ),
+            ),
           ),
-        ],
-      ),
-      child: widget.child,
+        ),
+      ],
     );
-    if (!_c.isAnimating) return ring(0.5);
-    return AnimatedBuilder(animation: _c, builder: (context, _) => ring(Motion.easeInOut.transform(_c.value)));
   }
 }
 
 /// A small burst of sparks from [child]'s centre whenever [trigger] changes (a session finished). Nothing under
-/// reduced motion.
+/// reduced motion. [child] is always under the same painter (null when no burst shows), so a burst never rebuilds it.
 class FinishBurst extends StatefulWidget {
   const FinishBurst({super.key, required this.trigger, required this.color, required this.child, this.sparks = 14});
 
@@ -184,13 +217,12 @@ class _FinishBurstState extends State<FinishBurst> with SingleTickerProviderStat
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: _c,
     child: widget.child,
-    builder: (context, child) {
-      if (!_c.isAnimating) return child!;
-      return CustomPaint(
-        foregroundPainter: SparkPainter(t: _c.value, color: widget.color, count: widget.sparks, seed: _seed),
-        child: child,
-      );
-    },
+    builder: (context, child) => CustomPaint(
+      foregroundPainter: _c.isAnimating
+          ? SparkPainter(t: _c.value, color: widget.color, count: widget.sparks, seed: _seed)
+          : null,
+      child: child,
+    ),
   );
 }
 

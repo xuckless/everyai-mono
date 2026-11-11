@@ -168,7 +168,8 @@ void main() {
     c.listen(codeStatusesProvider, (_, _) {});
     // ignore: invalid_use_of_protected_member
     c.read(codeStatusesProvider.notifier).state = {
-      'a': SessionStatus.running,
+      // The lead idles while its fork works.
+      'a': SessionStatus.idle,
       'b': SessionStatus.needsInput,
       'c': SessionStatus.done,
       'f': SessionStatus.running,
@@ -200,8 +201,8 @@ void main() {
       ),
       findsOneWidget,
     );
-    // The lead idles while its fork works: "Lead waiting · 1 fork running" once its own status says idle.
-    expect(find.text('Lead working · 1 fork running'), findsOneWidget);
+    // The lead idles while its fork works: Running, waiting on its own work.
+    expect(find.text('Lead waiting · 1 fork running'), findsOneWidget);
     expect(jsonDecode(prefs[BoardDetached.key]!), ['f']);
     // A waiting session without a live controller can still be opened from its card.
     expect(find.byKey(const ValueKey('board.open.b')), findsOneWidget);
@@ -242,6 +243,49 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Session a'), findsNothing);
     expect(find.text('Session b'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+    debugDefaultTargetPlatformOverride = null;
+    tester.view.reset();
+    c.dispose();
+    await db.close();
+  });
+
+  testWidgets('a card keeps its state as it glides to Done, its glow goes off and it bursts', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    final db = AppDatabase(NativeDatabase.memory());
+    final prefs = await Preferences.load(db);
+    prefs['code.projects'] = '[{"id":"p1","name":"Alpha","path":"/tmp/p1"}]';
+    prefs[BoardDoneSince.key] = '{}';
+    prefs['code.sessions'] = jsonEncode([_s('x').toJson()]);
+    final c = ProviderContainer(overrides: [preferencesProvider.overrideWithValue(prefs)]);
+    c.listen(codeStatusesProvider, (_, _) {});
+    // ignore: invalid_use_of_protected_member
+    c.read(codeStatusesProvider.notifier).state = {'x': SessionStatus.running};
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: c,
+        child: LayoutHost(
+          language: DesignLanguage.material,
+          child: ShellScope(sidebarVisible: true, compact: false, toggleSidebar: () {}, child: const BoardScreen()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final card = find.byKey(const ValueKey('board.card.x.0'));
+    final before = tester.state(card);
+    // ignore: invalid_use_of_protected_member
+    c.read(codeStatusesProvider.notifier).state = {'x': SessionStatus.done};
+    // Mid-glide (and mid-burst) it is the same card, not a new one.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(tester.state(card), same(before));
+    expect(find.byType(CustomPaint), findsWidgets);
+    await tester.pumpAndSettle();
+    expect(tester.state(card), same(before));
+    expect(find.descendant(of: find.byKey(const ValueKey('board.column.done')), matching: card), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
     debugDefaultTargetPlatformOverride = null;

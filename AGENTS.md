@@ -993,6 +993,16 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   BackdropFilter per card) and `core/motion/ambient.dart` (`GlowPulse`, `BreathingRing`, `FinishBurst`, `TrailPainter`
   behind gliding cards, `TickingCount`, `PeriodicRebuild`); loops only under `Motion.loops`. Not seen in the running
   app.
+  Review fixes: a held "Finished" releases only `finishReleaseSettle` (3 s) after the work ends and counts reports still
+  on the way to the lead as work, so a report that wakes the lead gives one notification at that turn's end;
+  `StatusAlerts` is a sealed state (quiet / settling / held / releasing; a wait on the user drops a held finish);
+  batches are keyed by session id. Effects keep one widget structure when idle (zero-opacity layer, null painter,
+  zero offset), so a card keeps its state through a glide, its glow going off and a burst; one `AmbientClock` per
+  Board breathes for every card (opacity of a fixed blur, content behind a `RepaintBoundary`). `BoardPhase.paused`
+  (Running, no glow, no stall or loop warning); stalls only once connected, and running commands' output counts as
+  progress (`BoardProgress.last`); Nudge joins after the current step (`tellWhileRunning`); Compact shows only when it
+  can work. Starting, paused and waiting forks count as work. Opening a session changes its seen mark only once it
+  has connected (`seenUpdate`). Seen marks of deleted sessions are pruned; `boardProgressProvider` is autoDispose.
 - **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
   `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
   `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,

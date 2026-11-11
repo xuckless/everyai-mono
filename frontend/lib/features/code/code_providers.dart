@@ -2522,8 +2522,11 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       final alerts = _alerts = StatusAlerts(
         ref,
         () => ref.read(codeSessionsProvider.notifier).byId(sessionId)?.title ?? 'Code session',
-        // "Finished" waits for its forks and workflows: the notification comes at the real end.
-        busy: () => hasSideWork(runningWork),
+        // "Finished" waits for its forks and workflows, and for their reports still on the way to the lead: the
+        // notification comes at the real end.
+        busy: () => hasSideWork(runningWork) || _forkNotices.isNotEmpty || _leadNotes.isNotEmpty,
+        timer: (d, fire) => ref.read(notifyTimerProvider)(d, fire),
+        id: sessionId,
       );
       ref.onDispose(alerts.dispose);
       listenSelf((prev, next) {
@@ -7226,7 +7229,9 @@ final class CodeStatuses extends Notifier<Map<String, SessionStatus>> {
       // Sessions whose view is closed still tell the user when they need them.
       for (final s in sessions) {
         final now = state[s.id];
-        if (now != null && !ref.exists(codeSessionProvider(s.id))) notifyStatusChange(ref, before[s.id], now, s.title);
+        if (now != null && !ref.exists(codeSessionProvider(s.id))) {
+          notifyStatusChange(ref, before[s.id], now, s.title, id: s.id);
+        }
       }
     } on Object {
       // The server isn't up yet; try again on the next tick.

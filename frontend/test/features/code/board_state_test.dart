@@ -57,8 +57,28 @@ void main() {
       expect(boardPhase(SessionStatus.idle, seen: true), BoardPhase.doneSeen);
       expect(
         [for (final p in BoardPhase.values) p.column.name],
-        ['needsYou', 'running', 'running', 'done', 'done', 'done'],
+        ['needsYou', 'running', 'running', 'running', 'done', 'done', 'done'],
       );
+    });
+
+    test('a paused session is Paused, in Running, without glow; work out does not make it Working', () {
+      expect(boardPhase(SessionStatus.paused), BoardPhase.paused);
+      expect(boardPhase(SessionStatus.paused, work: forks), BoardPhase.paused);
+      expect(BoardPhase.paused.active, isFalse);
+      expect(boardPhaseLine(BoardPhase.paused, forks), 'Paused');
+    });
+
+    test('opening a session changes its seen mark only once it has connected and says how it stands', () {
+      SeenUpdate u(SessionStatus st, {bool connected = true, bool work = false}) =>
+          seenUpdate(status: st, connected: connected, sideWork: work);
+      // Still connecting, or starting: its status says nothing about the last finish yet.
+      expect(u(SessionStatus.done, connected: false), SeenUpdate.none);
+      expect(u(SessionStatus.running, connected: false), SeenUpdate.none);
+      expect(u(SessionStatus.starting), SeenUpdate.none);
+      expect(u(SessionStatus.done), SeenUpdate.finished);
+      expect(u(SessionStatus.idle, work: true), SeenUpdate.running);
+      expect(u(SessionStatus.paused), SeenUpdate.running);
+      expect(u(SessionStatus.needsInput), SeenUpdate.running);
     });
 
     test('the status line names the work in flight', () {
@@ -86,6 +106,19 @@ void main() {
     expect(count('lead'), 2);
     expect(count('f1'), 1);
     expect(count('f2'), 0);
+  });
+
+  test('a fork starting, paused or waiting is still work for its idle lead; a finished one is not', () {
+    final all = [_s('lead'), _s('a', parent: 'lead'), _s('b', parent: 'lead'), _s('c', parent: 'lead')];
+    for (final st in [SessionStatus.starting, SessionStatus.paused, SessionStatus.needsInput, SessionStatus.running]) {
+      final n = runningDescendants('lead', childrenByParent(all), (s) => s.id == 'a' ? st : SessionStatus.done);
+      expect(n, 1, reason: '$st');
+      final work = (forks: n, subagents: 0, workflows: 0);
+      expect(boardPhase(SessionStatus.idle, work: work), BoardPhase.waitingOnWork, reason: '$st');
+    }
+    for (final st in [SessionStatus.idle, SessionStatus.done, SessionStatus.failed]) {
+      expect(runningDescendants('lead', childrenByParent(all), (_) => st), 0, reason: '$st');
+    }
   });
 
   test("an outside lead's subagents still out are listed with their task; ours and finished ones aren't", () {
@@ -116,6 +149,17 @@ void main() {
       );
       expect([for (final x in boardWarnings(phase: BoardPhase.needsYou, contextPercent: 90)) x.line], ['Context 90%']);
       expect(boardWarnings(phase: BoardPhase.doneUnseen, contextPercent: 99), isEmpty);
+    });
+
+    test('no stall or loop warning for a paused session, nor a stall before it has connected', () {
+      expect(
+        boardWarnings(phase: BoardPhase.paused, sinceProgress: const Duration(hours: 1), repeated: 'npm test'),
+        isEmpty,
+      );
+      expect(
+        boardWarnings(phase: BoardPhase.working, sinceProgress: const Duration(hours: 1), connected: false),
+        isEmpty,
+      );
     });
 
     test('the same command three times in a row is a loop; a different one in between is not', () {
