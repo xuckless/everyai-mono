@@ -3,7 +3,9 @@
 import 'dart:io';
 
 import 'package:every_ai/features/code/harness/events.dart';
+import 'package:every_ai/features/code/resume/acp_sessions.dart';
 import 'package:every_ai/features/code/resume/claude_sessions.dart';
+import 'package:every_ai/features/code/ui/console/session_actions.dart' show deleteHarnessNote;
 import 'package:every_ai/features/code/resume/codex_sessions.dart';
 import 'package:every_ai/features/code/resume/past_sessions.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -134,6 +136,17 @@ void main() {
     final codex = codexPastSessions(env: env, resolve: same);
     await codex.delete('aaa', cwd: project);
     expect((await codex.list(project)).map((s) => s.nativeId), ['bbb']);
+  });
+
+  test('only a source that really deletes is promised in the delete dialog', () {
+    final acp = AcpListedSessions(harness: 'acp:x', open: (_) => throw UnimplementedError());
+    expect([claudePastSessions().deletes, codexPastSessions().deletes, acp.deletes], [true, true, false]);
+    expect(
+      deleteHarnessNote([('Claude Code', true), ('Cursor', acp.deletes)]),
+      ' It is deleted from Claude Code too. Cursor keeps its own copy.',
+    );
+    expect(deleteHarnessNote([('A', false), ('B', false)]), ' A and B keep their own copy.');
+    expect(deleteHarnessNote(const []), '');
   });
 
   group('Codex', () {

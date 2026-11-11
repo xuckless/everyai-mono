@@ -38,6 +38,9 @@ import '../../support/fake_leads.dart';
 
 /// A harness's own sessions for a folder, as a test lists them.
 final class _Source implements PastSessionSource {
+  @override
+  bool get deletes => true;
+
   _Source(this.harness, this.sessions, {this.gate, this.fails = false});
 
   @override

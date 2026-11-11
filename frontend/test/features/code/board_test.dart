@@ -26,7 +26,13 @@ import '../../layout/layout_host.dart';
 
 // The Board: columns by status, harness filters, detached forks, and the one-line activity on a card.
 
-CodeSessionInfo _s(String id, {String harness = everyaiHarnessName, String? parent, int day = 1}) => CodeSessionInfo(
+CodeSessionInfo _s(
+  String id, {
+  String harness = everyaiHarnessName,
+  String? parent,
+  int day = 1,
+  String dir = 'demo://p1',
+}) => CodeSessionInfo(
   id: id,
   projectId: 'p1',
   title: 'Session $id',
@@ -34,7 +40,7 @@ CodeSessionInfo _s(String id, {String harness = everyaiHarnessName, String? pare
   model: 'a/m',
   mode: AgentMode.ask,
   // Demo sessions: the status poller leaves them alone.
-  workingDir: 'demo://p1',
+  workingDir: dir,
   createdAt: DateTime(2026, 11, day),
   harness: harness,
   parentId: parent,
@@ -238,6 +244,56 @@ void main() {
     tester.view.reset();
     c.dispose();
     await db.close();
+  });
+
+  testWidgets('a first frame before any status has loaded clears and records nothing', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    final db = AppDatabase(NativeDatabase.memory());
+    final prefs = await Preferences.load(db);
+    prefs['code.projects'] = '[{"id":"p1","name":"Alpha","path":"/tmp/p1"}]';
+    // Ten sessions the harness has not reported on yet (real directories: the poller would ask about them).
+    final real = [for (var i = 0; i < 10; i++) _s('s$i', day: i + 1, dir: '/tmp/p1')];
+    prefs['code.sessions'] = jsonEncode([for (final s in real) s.toJson()]);
+    prefs[BoardDoneSince.key] = '{}';
+    final c = ProviderContainer(overrides: [preferencesProvider.overrideWithValue(prefs)]);
+    c.listen(codeStatusesLoadProvider, (_, _) {});
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: c,
+        child: LayoutHost(
+          language: DesignLanguage.material,
+          child: ShellScope(sidebarVisible: true, compact: false, toggleSidebar: () {}, child: const BoardScreen()),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(c.read(codeStatusesLoadProvider), isA<StatusesLoading>());
+    expect(c.read(boardDismissedProvider), isEmpty);
+    expect(prefs[BoardDismissed.key], isNull);
+    expect(prefs[BoardDoneSince.key], '{}');
+    expect(find.text('Session s0'), findsNothing);
+    // Once the statuses are in, the real states apply: a running one is Running, the rest are Done.
+    // ignore: invalid_use_of_protected_member
+    c.read(codeStatusesProvider.notifier).state = {'s9': SessionStatus.running};
+    c.read(codeStatusesLoadProvider.notifier).loaded();
+    await tester.pumpAndSettle();
+    expect(find.text('Session s9'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    debugDefaultTargetPlatformOverride = null;
+    tester.view.reset();
+    c.dispose();
+    await db.close();
+  });
+
+  test('the Done clock: first run counts from creation, tracking from the record, new ones from now', () {
+    final created = DateTime(2026, 11, 1);
+    final now = DateTime(2026, 11, 10);
+    expect(const DoneFirstRun().countsFrom('a', created, now), created);
+    final tracking = DoneTracking({'a': DateTime(2026, 11, 5).millisecondsSinceEpoch});
+    expect(tracking.countsFrom('a', created, now), DateTime(2026, 11, 5));
+    expect(tracking.countsFrom('b', created, now), now);
   });
 
   testWidgets('a card lists its work; questions are open, and a child waiting on the user shows its controls', (

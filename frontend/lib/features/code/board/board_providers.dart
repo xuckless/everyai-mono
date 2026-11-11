@@ -164,31 +164,64 @@ final class BoardDismissed extends Notifier<Set<String>> {
   }
 }
 
-/// When the Board first saw each session in Done (epoch ms); Preferences `code.board.done_since`. A session that
-/// leaves Done is forgotten, so its next finish counts from then.
-final boardDoneSinceProvider = NotifierProvider<BoardDoneSince, Map<String, int>?>(BoardDoneSince.new);
+/// The Board's auto-clear clock for Done cards, kept in Preferences `code.board.done_since` (id → epoch ms).
+///
+/// [DoneFirstRun] ─ the Board records a first set ─▶ [DoneTracking]
+///
+/// A session in Done is tracked from when the Board first saw it there; one that leaves Done is forgotten, so its
+/// next finish counts from then. Once the clock clears it ([staleDone]) it is dismissed (`boardDismissedProvider`),
+/// which is the "cleared" state; it comes back when the session runs again.
+sealed class DoneClock {
+  const DoneClock();
 
-final class BoardDoneSince extends Notifier<Map<String, int>?> {
+  /// When [id], Done now, counts from: the first run counts from when the session was created (what finished before
+  /// the Board recorded anything), a tracked one from its record, a newly seen one from [now].
+  DateTime countsFrom(String id, DateTime createdAt, DateTime now) => switch (this) {
+    DoneFirstRun() => createdAt,
+    DoneTracking(:final since) => switch (since[id]) {
+      final ms? => DateTime.fromMillisecondsSinceEpoch(ms),
+      null => now,
+    },
+  };
+}
+
+/// Nothing recorded yet (no preference).
+final class DoneFirstRun extends DoneClock {
+  const DoneFirstRun();
+}
+
+final class DoneTracking extends DoneClock {
+  const DoneTracking(this.since);
+  final Map<String, int> since;
+}
+
+final boardDoneSinceProvider = NotifierProvider<BoardDoneSince, DoneClock>(BoardDoneSince.new);
+
+final class BoardDoneSince extends Notifier<DoneClock> {
   static const key = 'code.board.done_since';
 
-  /// Null until the Board first records anything (sessions Done before then count from when they were created).
   @override
-  Map<String, int>? build() {
+  DoneClock build() {
     final raw = ref.read(preferencesProvider)[key];
-    if (raw == null) return null;
+    if (raw == null) return const DoneFirstRun();
     try {
-      return {for (final e in (jsonDecode(raw) as Map<String, Object?>).entries) e.key: (e.value as num).toInt()};
+      return DoneTracking({
+        for (final e in (jsonDecode(raw) as Map<String, Object?>).entries) e.key: (e.value as num).toInt(),
+      });
     } on Object {
-      return {};
+      return const DoneTracking({});
     }
   }
 
   /// Records [done] (id → when it counts from) for the ids not yet known, and forgets known ids not in [done].
   void sync(Map<String, DateTime> done) {
-    final before = state ?? const <String, int>{};
+    final before = switch (state) {
+      DoneTracking(:final since) => since,
+      DoneFirstRun() => const <String, int>{},
+    };
     final next = {for (final MapEntry(key: id, value: at) in done.entries) id: before[id] ?? at.millisecondsSinceEpoch};
-    if (state != null && mapEquals(next, before)) return;
-    state = next;
+    if (state is DoneTracking && mapEquals(next, before)) return;
+    state = DoneTracking(next);
     ref.read(preferencesProvider)[key] = jsonEncode(next);
   }
 }
