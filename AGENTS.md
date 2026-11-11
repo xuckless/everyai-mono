@@ -1313,6 +1313,19 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   `tool/live_apps/webview_rig.dart` 29/29 on macOS. Not checked: a real click against the watch-only layer (the
   helper refused, another window covered the point), Windows (never run), Google sign-in and passkeys in the
   webview, the stdin helper path on a real window, Android fills on a device.
+  Review fixes (same PR): fill_login checks again right before typing (who drives: `fillTurnRefusal`; the site of
+  the top page and of the focused document, `focusDocumentJs` → `fillSiteRefusal`, a frame it can't read counts as
+  another site; `typeSecret(lastCheck:)` → `FillRefused`); the app tool's fill rechecks who drives, and
+  `appScreenFillVerdict` is the one place that decides app screens ("Fill on any site" says web pages only).
+  `rememberFilled` is the one way a value is marked as put on a session's page (the key menu's fill too); values are
+  hidden in their JSON/Dart-escaped forms (`secretForms`), codes only for their time step (`rememberFor`). Login asks
+  are keyed by the session that asked (`ToolRunner.loginSession` = its `liveId`), shown on the lead's view and Board
+  card (`LoginAskCard` covers children), set `CodeSessionState.loginAsk` (needs input, OS notification), and end
+  when that fork stops. Webview: `JarLife`, `TabDialog`, per-request `openTab` (`matchOpenRequest`),
+  `TabLife.unparked`, `webviewStartCurrent` (a close while starting disposes what the start made), WebView2 folders
+  swept at start (`sweepWebviewFolders`); the Preview's driver bar shows whenever the browser runs; the macOS bridge
+  runs no script in non-session webviews and drops hover on a locked view. Rig 31/33 (the two hover steps couldn't
+  move the pointer: another window covered the point).
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),
