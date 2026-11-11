@@ -15,7 +15,8 @@ const appToolDescription =
     '- action: list · look · snapshot · screenshot · zoom {x, y, width, height, frame?} · tap {ref, or x and y '
     'with frame} · long_press {ref} · type {ref, text, submit?: replaces the field\'s text} · submit · '
     'adjust {ref, steps: a slider\'s steps, negative for down} · drag {x, y, to_x, to_y, frame?} · '
-    'scroll {dy, ref?} · back · home · reload · restart · logs · eval {script} · key {key} · devices · boot {device} · install {path} · launch {bundle}.\n'
+    'scroll {dy, ref?} · back · home · reload · restart · logs · eval {script} · key {key} · devices · boot {device} · install {path} · launch {bundle} · '
+    'logins · fill_login {login, field: username | password | code, ref, submit?}.\n'
     '- snapshot is the element list: `[s12] button "Add"`, text fields with their values, plain text as `text '
     '"…"`. Tap and type by ref. look is a screenshot for a model that can see pictures, else the element list.\n'
     '- After tap, type, scroll and back the result says what changed on screen (text that appeared or went away); '
@@ -36,8 +37,12 @@ const appToolDescription =
     'uses the real pointer and keyboard: the window comes to the front, and the user is asked once whether that is '
     'allowed. Screenshots show the window with its pop-ups and dialogs. window: a title when it has several.\n'
     '- Every action reports what the app logged since the last one (prints, errors); logs reads it alone.\n'
-    '- The user may take control in the Preview; your actions then wait until they give it back. It never types '
-    'into password fields: the user does that.';
+    '- Signing in: logins lists the logins the user saved for you (name, site, username; the values stay hidden), '
+    'and fill_login types one by name into the field ref: username, password, or code (the current authenticator '
+    'code, when the login has one). When the user asks you to sign in, do it. A one-time code sent by text message '
+    'or email needs the user: ask them for it. Some users keep password fields to fill_login only; type then says '
+    'so.\n'
+    '- The user may take control in the Preview; your actions then wait until they give it back.';
 
 const appToolActions = [
   'list',
@@ -63,6 +68,8 @@ const appToolActions = [
   'boot',
   'install',
   'launch',
+  'logins',
+  'fill_login',
 ];
 
 const appToolProperties = <String, Object?>{
@@ -74,6 +81,12 @@ const appToolProperties = <String, Object?>{
         'printed',
   },
   'ref': {'type': 'string', 'description': 'An element of the last element list (s12, r3, ref_4)'},
+  'login': {'type': 'string', 'description': 'fill_login: the name of a saved login (logins lists them)'},
+  'field': {
+    'type': 'string',
+    'enum': ['username', 'password', 'code'],
+    'description': 'fill_login: which value to type (default password)',
+  },
   'frame': {'type': 'string', 'description': 'The screenshot (f_N) that x and y are in'},
   'x': {'type': 'number'},
   'y': {'type': 'number'},

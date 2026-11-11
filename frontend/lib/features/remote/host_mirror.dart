@@ -9,6 +9,7 @@ import '../code/code_providers.dart'
 import '../code/domain/agent_mode.dart';
 import '../code/domain/code_session.dart';
 import '../code/domain/floor_advice.dart';
+import '../code/domain/native_approvals.dart' show NativeAllowScope;
 import '../code/domain/permissions.dart';
 import '../code/domain/questions.dart';
 import '../code/domain/transcript.dart';
@@ -52,6 +53,7 @@ Map<String, Object?> mirrorState(
   Map<String, String> rememberBy = const {},
   bool perCall = false,
   bool forks = false,
+  List<NativeAllowScope>? native,
 }) => {
   'mode': state.mode.name,
   'queued': [for (final q in state.queued) q.text],
@@ -65,6 +67,11 @@ Map<String, Object?> mirrorState(
   'remember_by': rememberBy,
   'per_call': perCall,
   if (forks) 'forks': true,
+  // An outside lead's card: how its CLI can keep an allow (see ApprovalCard.native).
+  if (native != null)
+    'native': [
+      for (final n in native) {'scope': n.scope.name, 'label': n.label},
+    ],
   'decided': state.decided,
 };
 
@@ -215,6 +222,7 @@ final class HostMirror {
       state,
       remember: controller.rememberable(),
       rememberBy: controller.rememberBy(),
+      native: controller.nativeAllowOffer(),
       perCall: controller.perCall,
       forks: _ref.read(codeSessionsProvider.notifier).byId(id)?.sharesApprovals ?? false,
       flags: approvalFlags(controller.policy, state.transcript.pending, controller.checkMode),

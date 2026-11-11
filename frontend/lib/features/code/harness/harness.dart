@@ -295,6 +295,44 @@ abstract interface class AsksAside {
 /// run carries on; only refusing every call at once (no [callIds]) parks it.
 abstract interface class PerCallApprovals {}
 
+/// What an outside lead's own approvals can keep beyond one answer: the CLI remembers an allow itself, so the app
+/// stores nothing (see `domain/native_approvals.dart`).
+enum NativeRemember {
+  /// Each answer covers one call.
+  onceOnly,
+
+  /// "For this session" (Codex's `acceptForSession`, OpenCode's `always`).
+  session,
+
+  /// "For this session", or saved for good in the CLI's own settings (Claude Code's permission updates).
+  sessionOrSaved,
+
+  /// The agent's own "always" (ACP `allow_always`); how long it keeps it is the agent's.
+  agentAlways,
+}
+
+/// How long an allow sent to an outside lead's CLI lasts.
+enum NativeGrant {
+  /// Until the CLI's session ends.
+  session,
+
+  /// The CLI's own "always" (saved in its settings, or as the agent keeps it).
+  always,
+}
+
+/// A driver whose CLI keeps an allow itself: what it can keep ([remembers]). A driver without it keeps nothing
+/// ([NativeRemember.onceOnly]).
+abstract interface class RemembersApprovals {
+  NativeRemember get remembers;
+}
+
+/// A session of a [RemembersApprovals] driver: sends an allow with how long the CLI keeps it.
+abstract interface class AllowsRemembered {
+  /// Allows [callIds] (or every one still undecided) and has the CLI remember it as [grant]. A call whose request
+  /// didn't offer that is allowed once, with a notice.
+  Future<void> allowRemembered(NativeGrant grant, {List<String>? callIds});
+}
+
 /// A session that runs helper processes itself (the EveryAI harness: MCP servers, language servers) and can stop
 /// them: when the session is deleted, and after it has sat idle. Its next run starts them again.
 abstract interface class StopsHelpers {

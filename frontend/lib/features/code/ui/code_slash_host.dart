@@ -10,6 +10,7 @@ import '../../slash/slash_command.dart';
 import '../agent_models.dart';
 import '../code_providers.dart';
 import '../morning_providers.dart';
+import '../repo_configs/repo_config_note.dart';
 import '../domain/agent_mode.dart';
 import '../domain/goal.dart';
 import '../domain/rewind.dart';
@@ -86,6 +87,9 @@ CodeSlashHost codeSlashHost(BuildContext context, WidgetRef ref, String sessionI
       final project = ref.read(codeProjectsProvider).where((p) => p.id == info?.projectId).firstOrNull;
       if (info == null || project == null || args.isEmpty) {
         if (context.mounted) context.go(Routes.code);
+        return;
+      }
+      if (!await confirmRepoConfigs(context, ref, projectId: project.id, dir: project.path, harness: info.harness)) {
         return;
       }
       try {

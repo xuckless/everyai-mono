@@ -12,6 +12,7 @@ import '../../live/app_view.dart';
 import '../../live/flutter_app_io.dart';
 import '../../live/frames.dart';
 import '../../live/adb_io.dart';
+import '../../live/agent_logins.dart';
 import '../../live/android_device_io.dart';
 import '../../live/desktop_window_io.dart';
 import '../../live/device_screen.dart';
@@ -19,7 +20,7 @@ import '../../live/ios_simulator_io.dart';
 import '../../live/live_session.dart';
 import '../../live/nested_display_io.dart';
 import '../../live/react_native_io.dart';
-import 'screen_tools_io.dart' show runBrowser;
+import 'screen_tools_io.dart' show fillTurnRefusal, runBrowser;
 import 'screen_windows.dart' show sensitiveWindow;
 import 'tools_io.dart' show ToolOutput, imageDataUrl;
 import 'window_capture_io.dart' show executableOf;
@@ -30,7 +31,8 @@ const _app = 'app';
 
 /// Runs one `app` tool call ([args]) on an app running in [sessions]' shells (the first one is the caller's own).
 /// Screenshots go under [root]'s `.everyai/scratch/screenshots/`; [fit] cuts a long eval result; [scrub] hides
-/// secrets in what the app printed or returned.
+/// secrets in what the app printed or returned. [logins]: the saved logins the agent may fill and the user's
+/// switches for them (null: none to fill, the switches as they are by default).
 Future<ToolOutput> runAppTool(
   Map<String, Object?> args, {
   required List<String> sessions,
@@ -39,8 +41,31 @@ Future<ToolOutput> runAppTool(
   required String Function(String text, String name) fit,
   String Function(String text)? scrub,
   Future<Set<int>> Function()? windowPids,
+  LoginAccess? logins,
 }) async {
+  final out = await _runAppTool(args, sessions, root, vision, fit, scrub, windowPids, logins);
+  // Values filled this session never come back, whatever the app did with them.
+  if (logins == null) return out;
+  final text = logins.redact(out.text);
+  return text == out.text
+      ? out
+      : ToolOutput(text, isError: out.isError, observation: out.observation, images: out.images);
+}
+
+Future<ToolOutput> _runAppTool(
+  Map<String, Object?> args,
+  List<String> sessions,
+  String root,
+  bool vision,
+  String Function(String text, String name) fit,
+  String Function(String text)? scrub,
+  Future<Set<int>> Function()? windowPids,
+  LoginAccess? logins,
+) async {
   final action = (args['action'] as String?)?.trim().isNotEmpty ?? false ? args['action']! as String : 'look';
+  if (action == 'logins') {
+    return ToolOutput(loginsListText(await logins?.usable() ?? const [], policy: logins?.policy ?? LoginPolicy.open));
+  }
   if (action == 'devices' || action == 'boot') return _devices(action, args, sessions.first);
   await Future.wait([IosSimulators.refresh(), AndroidDevices.refresh()]);
   final source = (args['source'] as String?)?.trim() ?? '';
@@ -94,8 +119,24 @@ Future<ToolOutput> runAppTool(
       ? '(Also running: ${others.map((a) => a.label).join('; ')}. Pick one with source.)\n'
       : '';
   final out = switch (app.kind) {
-    AppKind.flutter => await _flutter(AppSources.flutter(app.endpoint.uri), action, args, root, vision, fit, scrub),
-    AppKind.reactNative => await _reactNative(AppSources.reactNative(app.endpoint.uri), action, args, fit, scrub),
+    AppKind.flutter => await _flutter(
+      AppSources.flutter(app.endpoint.uri),
+      action,
+      args,
+      root,
+      vision,
+      fit,
+      scrub,
+      logins,
+    ),
+    AppKind.reactNative => await _reactNative(
+      AppSources.reactNative(app.endpoint.uri),
+      action,
+      args,
+      fit,
+      scrub,
+      logins,
+    ),
     AppKind.ios => await _device(
       IosSimulators.driver(app.endpoint.uri.path),
       IosSimulators.holds,
@@ -106,6 +147,7 @@ Future<ToolOutput> runAppTool(
       root,
       vision,
       scrub,
+      logins,
     ),
     AppKind.desktop => await _device(
       DesktopWindows.driver(int.parse(app.endpoint.uri.path))
@@ -119,6 +161,7 @@ Future<ToolOutput> runAppTool(
       root,
       vision,
       scrub,
+      logins,
     ),
     AppKind.android => await _device(
       AndroidDevices.driver(app.endpoint.uri.path),
@@ -130,6 +173,7 @@ Future<ToolOutput> runAppTool(
       root,
       vision,
       scrub,
+      logins,
     ),
     AppKind.electron => await runBrowser(
       AppSources.electron(app.endpoint.uri),
@@ -138,6 +182,7 @@ Future<ToolOutput> runAppTool(
       vision: vision,
       fit: fit,
       scrub: scrub,
+      logins: logins,
     ),
   };
   if (also.isEmpty) return out;
@@ -416,10 +461,73 @@ const _ours = {
   'drag',
   'reload',
   'restart',
+  'fill_login',
 };
 
 /// Actions that change what the app shows: their result says what changed.
-const _acting = {'tap', 'type', 'submit', 'scroll', 'back', 'adjust', 'long_press', 'drag'};
+const _acting = {'tap', 'type', 'submit', 'scroll', 'back', 'adjust', 'long_press', 'drag', 'fill_login'};
+
+/// fill_login on an app screen: the login named in [args] typed into field `ref` by [type] (which may type into a
+/// password field). What the result says ([did]) or why it couldn't ([error]); never the value. App screens have no
+/// site: [appScreenFillVerdict] decides what the "fill on any site" switch means here. [control]: the screen's driving
+/// lock, checked again after a wait for the user's Allow.
+Future<({String? did, String? error})> appFill(
+  Map<String, Object?> args,
+  LoginAccess? logins,
+  Future<void> Function(String ref, String value, bool submit) type, {
+  LiveControl? control,
+}) async {
+  final name = (args['login'] as String?)?.trim() ?? '';
+  final ref = (args['ref'] as String?)?.trim() ?? '';
+  final field = LoginField.parse(args['field'] ?? 'password');
+  if (field == null) return (did: null, error: 'fill_login field is "username", "password" or "code".');
+  if (ref.isEmpty) return (did: null, error: 'fill_login needs the ref of the field (snapshot lists them).');
+  final all = await logins?.usable() ?? const <LoginEntry>[];
+  if (logins == null || all.isEmpty) {
+    return (
+      did: null,
+      error: 'there are no saved logins for this project. The user adds them in Settings > Code > Logins; ask them.',
+    );
+  }
+  final e = all.where((l) => l.name == name.toLowerCase()).firstOrNull;
+  if (e == null) {
+    return (
+      did: null,
+      error:
+          '${name.isEmpty ? 'fill_login needs login' : 'no saved login is called "$name"'}. Saved logins: '
+          '${all.map((l) => '${l.name} (${l.site})').join(', ')}.',
+    );
+  }
+  if (fillRefusal(e, field, policy: logins.policy) ?? appScreenFillVerdict(e, logins.policy) case final why?) {
+    return (did: null, error: why);
+  }
+  if (await logins.consent(e) case final why?) return (did: null, error: why);
+  // The wait for Allow may have lasted minutes: the user may have taken the screen meanwhile.
+  if (control != null) {
+    if (await fillTurnRefusal(control) case final why?) return (did: null, error: why);
+  }
+  final String value;
+  try {
+    value = await logins.valueOf(e, field);
+  } on StateError catch (err) {
+    return (did: null, error: err.message);
+  }
+  final submit = args['submit'] == true;
+  try {
+    await type(ref, value, submit);
+  } on AppError catch (err) {
+    // A driver's message may quote what the field shows (or the expression it ran): never the value, in any form.
+    var said = err.message;
+    for (final f in secretForms(value)) {
+      if (f.isNotEmpty) said = said.replaceAll(f, '[the value]');
+    }
+    return (did: null, error: logins.redact(said));
+  }
+  return (
+    did: filledText(e, field, into: ref, submitted: submit).replaceFirst('pressed Enter', 'submitted'),
+    error: null,
+  );
+}
 
 Future<ToolOutput> _flutter(
   FlutterApp a,
@@ -429,9 +537,11 @@ Future<ToolOutput> _flutter(
   bool vision,
   String Function(String text, String name) fit,
   String Function(String text)? scrub,
+  LoginAccess? logins,
 ) async {
   String? str(String k) => (args[k] as String?)?.trim().isEmpty ?? true ? null : (args[k] as String).trim();
   double? at(String k) => (args[k] as num?)?.toDouble();
+  final secretOk = (logins?.policy ?? LoginPolicy.open).secretFields;
   if (!await a.control.agentTurn()) return ToolOutput(userDrivingText(a.control.hold), isError: true);
   final gaveBack = a.control.takeGiveBack();
   var shot = args['screenshot'] == true, list = args['snapshot'] == true || gaveBack;
@@ -480,7 +590,16 @@ Future<ToolOutput> _flutter(
       case 'type':
         final ref = str('ref'), text = args['text'] as String?;
         if (ref == null || text == null) return const ToolOutput('Error: type needs a ref and text.', isError: true);
-        did = await a.type(ref, text, submit: args['submit'] == true);
+        did = await a.type(ref, text, submit: args['submit'] == true, secretOk: secretOk);
+      case 'fill_login':
+        final f = await appFill(
+          args,
+          logins,
+          (ref, v, submit) => a.type(ref, v, submit: submit, secretOk: true),
+          control: a.control,
+        );
+        if (f.error case final why?) return ToolOutput('Error: $why', isError: true);
+        did = f.did!;
       case 'submit':
         did = await a.submit();
       case 'adjust':
@@ -524,7 +643,7 @@ Future<ToolOutput> _flutter(
     String? changed;
     if (before != null) {
       // type reads the screen itself to check the field.
-      if (action != 'type') {
+      if (action != 'type' && action != 'fill_login') {
         await a.settle();
         await a.tree();
       }
@@ -603,13 +722,15 @@ Future<ToolOutput> _reactNative(
   Map<String, Object?> args,
   String Function(String text, String name) fit,
   String Function(String text)? scrub,
+  LoginAccess? logins,
 ) async {
   String? str(String k) => (args[k] as String?)?.trim().isEmpty ?? true ? null : (args[k] as String).trim();
+  final secretOk = (logins?.policy ?? LoginPolicy.open).secretFields;
   if (!await a.control.agentTurn()) return ToolOutput(userDrivingText(a.control.hold), isError: true);
   final gaveBack = a.control.takeGiveBack();
   var list = args['snapshot'] == true || gaveBack;
   try {
-    final before = const {'tap', 'type', 'submit', 'long_press'}.contains(action) ? await a.tree() : null;
+    final before = const {'tap', 'type', 'submit', 'long_press', 'fill_login'}.contains(action) ? await a.tree() : null;
     final String did;
     switch (action) {
       case 'look' || 'snapshot':
@@ -631,11 +752,20 @@ Future<ToolOutput> _reactNative(
       case 'type':
         final ref = str('ref'), text = args['text'] as String?;
         if (ref == null || text == null) return const ToolOutput('Error: type needs a ref and text.', isError: true);
-        did = await a.type(ref, text, submit: args['submit'] == true);
+        did = await a.type(ref, text, submit: args['submit'] == true, secretOk: secretOk);
+      case 'fill_login':
+        final f = await appFill(
+          args,
+          logins,
+          (ref, v, submit) => a.type(ref, v, submit: submit, secretOk: true),
+          control: a.control,
+        );
+        if (f.error case final why?) return ToolOutput('Error: $why', isError: true);
+        did = f.did!;
       case 'submit':
         final ref = str('ref');
         if (ref == null) return const ToolOutput('Error: submit needs the ref of the text input.', isError: true);
-        did = await a.type(ref, args['text'] as String? ?? '', submit: true);
+        did = await a.type(ref, args['text'] as String? ?? '', submit: true, secretOk: secretOk);
       case 'long_press':
         final ref = str('ref');
         if (ref == null) return const ToolOutput('Error: long_press needs a ref.', isError: true);
@@ -728,9 +858,11 @@ Future<ToolOutput> _device(
   String root,
   bool vision,
   String Function(String text)? scrub,
+  LoginAccess? logins,
 ) async {
   String? str(String k) => (args[k] as String?)?.trim().isEmpty ?? true ? null : (args[k] as String).trim();
   double? at(String k) => (args[k] as num?)?.toDouble();
+  final secretOk = (logins?.policy ?? LoginPolicy.open).secretFields;
   if (holds.claim(id, session) case final other?) {
     return ToolOutput('Error: this device is in use by another session ($other).', isError: true);
   }
@@ -756,6 +888,7 @@ Future<ToolOutput> _device(
           'long_press',
           'drag',
           'launch',
+          'fill_login',
         }.contains(action)
         ? await a.tree()
         : null;
@@ -807,7 +940,16 @@ Future<ToolOutput> _device(
       case 'type':
         final ref = str('ref'), text = args['text'] as String?;
         if (ref == null || text == null) return const ToolOutput('Error: type needs a ref and text.', isError: true);
-        did = await a.type(ref, text, submit: args['submit'] == true);
+        did = await a.type(ref, text, submit: args['submit'] == true, secretOk: secretOk);
+      case 'fill_login':
+        final f = await appFill(
+          args,
+          logins,
+          (ref, v, submit) => a.type(ref, v, submit: submit, secretOk: true, hidden: true),
+          control: a.control,
+        );
+        if (f.error case final why?) return ToolOutput('Error: $why', isError: true);
+        did = f.did!;
       case 'submit':
         did = await a.submit();
       case 'scroll':
@@ -828,7 +970,7 @@ Future<ToolOutput> _device(
       case 'key':
         final k = str('key') ?? str('text');
         if (k == null) return const ToolOutput('Error: key needs key ("Enter", "Escape", "cmd+s").', isError: true);
-        if (keyTypesText(k)) {
+        if (keyTypesText(k) && !secretOk) {
           // Desktop trees mark focus; the simulator's and some apps' don't.
           final why = secretFocusRefusal(await a.tree(), focusKnown: a is DesktopWindow);
           if (why != null) return ToolOutput('Error: $why', isError: true);
@@ -880,7 +1022,7 @@ Future<ToolOutput> _device(
     String? changed;
     if (before != null) {
       // type reads the screen itself to check the field.
-      if (action != 'type') {
+      if (action != 'type' && action != 'fill_login') {
         await a.settle();
         await a.tree();
       }

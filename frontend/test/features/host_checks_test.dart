@@ -830,14 +830,7 @@ void main() {
   });
 
   test('the briefing lists the checks', () {
-    final text = sessionBriefing(
-      SessionSkillInput(
-        worktree: dir,
-        projectRoot: dir,
-        lead: (name: 'Claude Code', model: 'sonnet'),
-        hostTools: checkToolInfos,
-      ),
-    );
+    final text = sessionBriefing(SessionSkillInput(worktree: dir, hostTools: checkToolInfos));
     for (final t in ['bug_check', 'check', 'diff_stats', 'goal_check', 'run_script']) {
       expect(text, contains('`$t`'));
     }

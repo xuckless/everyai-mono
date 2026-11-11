@@ -124,13 +124,47 @@ final class _PerCallSession extends _Session implements PerCallApprovals {
   }
 }
 
+/// [_PerCallSession] whose CLI can keep an allow itself: records the grants it was sent.
+final class _RememberingSession extends _PerCallSession implements AllowsRemembered {
+  final grants = <(NativeGrant, List<String>?)>[];
+
+  @override
+  Future<void> allowRemembered(NativeGrant grant, {List<String>? callIds}) async => grants.add((grant, callIds));
+}
+
+/// A driver over [session] whose CLI keeps an allow as [remembers] says.
+final class _RememberingDriver implements HarnessDriver, RemembersApprovals {
+  _RememberingDriver(this.session, this.remembers);
+  final _Session session;
+  @override
+  final NativeRemember remembers;
+  @override
+  Set<DriverCap> get caps => const {DriverCap.approvals, DriverCap.perCallApprovals};
+  @override
+  DriverInfo get info => const DriverInfo(id: 'keeper', label: 'Keeper CLI');
+  @override
+  Future<DriverStatus> detect() async => const DriverStatus(installed: true);
+  @override
+  Future<List<DriverModel>> models() async => const [];
+  @override
+  Future<HarnessSession> start(SessionSpec spec) async => session;
+  @override
+  Future<HarnessSession> attach(String conversationId) async => session;
+  @override
+  Future<Map<String, ExecutionStatus>> statuses(List<String> conversationIds) async => const {};
+}
+
 /// The MCP host for outside sessions reopened here: hands out tokens, serves nothing.
 final class _Host implements HostServer {
   var _n = 0;
 
   @override
-  Future<HostToken> mint(String sessionId, HostTools tools, {Set<String>? only}) async =>
-      (url: Uri.parse('http://127.0.0.1:9/mcp'), token: 'tok${++_n}');
+  Future<HostToken> mint(
+    String sessionId,
+    HostTools tools, {
+    Set<String>? only,
+    Set<String> without = const {},
+  }) async => (url: Uri.parse('http://127.0.0.1:9/mcp'), token: 'tok${++_n}');
   @override
   bool touch(String token) => true;
   @override
@@ -270,21 +304,84 @@ void main() {
     return p;
   }
 
-  test('Full auto: an outside floor hit gets advice, then is refused (Full auto never asks)', () async {
-    // Every outside driver with approvals answers per call.
+  // Owner, 2026-11-11: an outside lead's own approvals decide. What it asks about waits for the user on our card,
+  // whatever our mode, rules or floor would say; only EveryAI's own tools pass without one.
+  for (final mode in [AgentMode.fullAuto, AgentMode.plan, AgentMode.ask]) {
+    test('${mode.name}: what an outside lead asks about waits for the user, deny rules and floor aside', () async {
+      session = _PerCallSession();
+      await open(mode, deny: ['rm *', 'git push *']);
+      for (final (tool, kind, args) in [
+        ('Bash', 'TerminalAction', {'command': 'rm -rf ~'}),
+        ('Bash', 'TerminalAction', {'command': 'ls'}),
+        ('Bash', 'TerminalAction', {'command': 'git push origin main'}),
+        ('Task', 'ClaudeTaskAction', {'prompt': 'look around'}),
+      ]) {
+        session.ask(tool, kind, args);
+      }
+      final waiting = await _when(
+        container,
+        codeSessionProvider('s1').select((s) => s.transcript.pending),
+        (List<ActionCall> p) => p.length == 4,
+      );
+      await pumpEventQueue();
+      expect(waiting, hasLength(4));
+      expect(session.answers, isEmpty);
+    });
+  }
+
+  test("an outside lead's call to EveryAI's own tools passes without a card; one that runs a command asks", () async {
     session = _PerCallSession();
-    final controller = await open(AgentMode.fullAuto);
-    session.ask('Bash', 'TerminalAction', {'command': 'rm -rf ~'});
-    final a = await answered();
-    expect(a.accept, isFalse);
-    expect(a.reason, startsWith(floorAdviceLead));
-    expect(a.reason, contains(floorReason('rm -rf ~')!));
-    // Run again: no card in Full auto, it is refused.
+    await open(AgentMode.ask);
+    session.ask('everyai__diff_stats', 'MCPToolAction', {'server': 'everyai', 'tool': 'diff_stats'});
+    expect((await answered()).accept, isTrue);
     session.forgetAnswers();
-    session.add(resultEvent(id: 'r1', actionId: 'a1', toolName: 'Bash', text: a.reason!));
-    session.ask('Bash', 'TerminalAction', {'command': 'rm -rf ~'});
-    expect((await answered()).accept, isFalse);
-    expect(controller.policy, isNotNull);
+    session.ask('everyai__check', 'MCPToolAction', {'server': 'everyai', 'tool': 'check'});
+    await _when(
+      container,
+      codeSessionProvider('s1').select((s) => s.transcript.pending),
+      (List<ActionCall> p) => p.any((c) => c.toolName == 'everyai__check'),
+    );
+    await pumpEventQueue();
+    expect(session.answers, isEmpty);
+  });
+
+  test("an outside lead's \"for this session\" / \"always\" go to its CLI; EveryAI keeps no rule", () async {
+    final keeper = _RememberingSession();
+    session = keeper;
+    final c = await open(
+      AgentMode.ask,
+      harness: 'keeper',
+      extra: {'keeper': _RememberingDriver(keeper, NativeRemember.sessionOrSaved)},
+    );
+    session.ask('Bash', 'TerminalAction', {'command': 'ls'});
+    final call = (await pending()).single;
+    expect(c.rememberable(), isNull);
+    expect(c.rememberBy(), isEmpty);
+    expect([for (final n in c.nativeAllowOffer()!) n.scope], [ApprovalScope.session, ApprovalScope.always]);
+    await c.approve(ApprovalScope.session, [call.id]);
+    session.ask('Bash', 'TerminalAction', {'command': 'pwd'});
+    final next = await _when(
+      container,
+      codeSessionProvider('s1').select((s) => s.transcript.pending),
+      (List<ActionCall> p) => p.any((x) => x.str('command') == 'pwd'),
+    );
+    await c.approve(ApprovalScope.always, [next.singleWhere((x) => x.str('command') == 'pwd').id]);
+    expect(keeper.grants.map((g) => g.$1), [NativeGrant.session, NativeGrant.always]);
+    expect(keeper.answers, isEmpty);
+    expect(container.read(codePermissionsProvider).rulesFor('p1').isEmpty, isTrue);
+    expect(c.policy.session, isEmpty);
+  });
+
+  test('an outside lead whose CLI keeps nothing: Allow answers once, and nothing is offered or saved', () async {
+    session = _PerCallSession();
+    final c = await open(AgentMode.ask);
+    session.ask('Bash', 'TerminalAction', {'command': 'ls'});
+    final call = (await pending()).single;
+    expect(c.nativeAllowOffer(), isEmpty);
+    await c.approve(ApprovalScope.always, [call.id]);
+    expect(session.answers.single.accept, isTrue);
+    expect(container.read(codePermissionsProvider).rulesFor('p1').isEmpty, isTrue);
+    expect(c.policy.session, isEmpty);
   });
 
   test('a denied edit is not the lead\'s for the checks; one that ran is', () async {
@@ -355,15 +452,6 @@ void main() {
     expect(approvalFlags(controller.policy, waiting, AgentMode.ask).values, [floorReason('rm -rf ~')]);
   });
 
-  test('a deny rule still refuses an outside floor hit outright', () async {
-    session = _PerCallSession();
-    await open(AgentMode.fullAuto, deny: ['rm *']);
-    session.ask('Bash', 'TerminalAction', {'command': 'rm -rf ~'});
-    final a = await answered();
-    expect(a.accept, isFalse);
-    expect(a.reason, contains('`rm *` forbids it'));
-  });
-
   test('the EveryAI harness keeps the hard floor in Full auto', () async {
     session = _PerCallSession();
     await open(AgentMode.fullAuto, harness: everyaiHarnessName);
@@ -373,56 +461,7 @@ void main() {
     expect(a.reason, contains('never runs'));
   });
 
-  test('Plan mode refuses an outside driver\'s changes', () async {
-    await open(AgentMode.plan);
-    session.ask('Bash', 'TerminalAction', {'command': 'npm install'});
-    final a = await answered();
-    expect((a.accept, a.reason), (false, AgentMode.planRefusal));
-  });
-
-  test('Ask mode runs reads at once and leaves the rest to the user', () async {
-    await open(AgentMode.ask);
-    session.ask('Bash', 'TerminalAction', {'command': 'ls'});
-    expect((await answered()).accept, isTrue);
-    session.forgetAnswers();
-    session.add(resultEvent(id: 'r1', actionId: 'a1', toolName: 'Bash', text: 'README.md'));
-    session.ask('Bash', 'TerminalAction', {'command': 'git push'});
-    await _when(
-      container,
-      codeSessionProvider('s1').select((s) => s.transcript.pending),
-      (List<ActionCall> p) => p.isNotEmpty,
-    );
-    await pumpEventQueue();
-    expect(session.answers, isEmpty);
-  });
-
-  test('a deny rule matches an outside driver\'s command', () async {
-    await open(AgentMode.fullAuto, deny: ['git push *']);
-    session.ask('Bash', 'TerminalAction', {'command': 'git push origin main'});
-    final a = await answered();
-    expect(a.accept, isFalse);
-    expect(a.reason, contains('git push *'));
-  });
-
-  test('a tool of the driver\'s own runs in Full auto, and asks in Ask until Allow keeps it', () async {
-    await open(AgentMode.fullAuto);
-    session.ask('Task', 'ClaudeTaskAction', {'prompt': 'look around'});
-    expect((await answered()).accept, isTrue);
-  });
-
-  test('a tool of the driver\'s own asks in Ask', () async {
-    await open(AgentMode.ask);
-    session.ask('Task', 'ClaudeTaskAction', {'prompt': 'look around'});
-    await _when(
-      container,
-      codeSessionProvider('s1').select((s) => s.transcript.pending),
-      (List<ActionCall> p) => p.isNotEmpty,
-    );
-    await pumpEventQueue();
-    expect(session.answers, isEmpty);
-  });
-
-  test('on the EveryAI harness the same kind still runs in Full auto', () async {
+  test('on the EveryAI harness a Task call still runs in Full auto', () async {
     await open(AgentMode.fullAuto, harness: everyaiHarnessName);
     session.ask('Task', 'ClaudeTaskAction', {'prompt': 'look around'});
     expect((await answered()).accept, isTrue);
@@ -759,22 +798,30 @@ void main() {
       await journalled('waiting_for_confirmation');
     });
 
-    test("Ask runs OpenCode's ls at once, allowed once", () async {
+    test("OpenCode's ls waits for the user in Ask, and goes back allowed once", () async {
       final controller = await open(
         AgentMode.ask,
         harness: 'acp',
         extra: acp('opencode', 'opencode/perm_read.jsonl', ses),
       );
       await controller.send('Look');
+      // The agent asked, so the user answers (an outside lead's own approvals decide).
+      await _when(
+        container,
+        codeSessionProvider('s1').select((s) => s.transcript.pending),
+        (List<ActionCall> p) => p.isNotEmpty,
+      );
+      await controller.approve(ApprovalScope.once);
       expect(await answered0(), 'once');
       await channels.single.finished;
       channels.single.expectFinished();
       await journalled('finished');
     });
 
-    test("Gemini's shell call waits for the user even in Full auto", () async {
+    // Gemini's own default mode asks; Full auto would now start it in its own yolo mode, which doesn't.
+    test("Gemini's shell call waits for the user in its default mode", () async {
       final controller = await open(
-        AgentMode.fullAuto,
+        AgentMode.ask,
         harness: 'acp',
         // Reopened with a fresh briefing: our server and its new token go in session/load.
         extra: acp(

@@ -31,7 +31,11 @@ abstract interface class DeviceScreen {
   Future<String> tap(String ref);
   Future<String> tapAt(double x, double y);
   Future<String> longPress(String ref);
-  Future<String> type(String ref, String text, {bool submit = false});
+
+  /// Puts [text] in field [ref]. [secretOk]: password fields take it too (a saved login, or the user lets agents
+  /// type into them). [hidden]: [text] is a saved login's value, so it never goes on a command line (the host's or
+  /// the device's process list).
+  Future<String> type(String ref, String text, {bool submit = false, bool secretOk = false, bool hidden = false});
   Future<String> submit();
 
   /// A key or shortcut ("Enter", "Escape", "Tab", "Backspace", arrows, "cmd+s", "ctrl+a"), or text to type when it
@@ -99,10 +103,10 @@ String? secretFocusRefusal(List<AppNode> nodes, {required bool focusKnown}) {
   final focused = secrets.any((n) => n.state.contains('focused'));
   if (!focused && (focusKnown || nodes.any((n) => n.state.contains('focused')))) return null;
   return focused
-      ? 'a password field has the focus, and the agent never types into one. Ask the user to type it, or type '
-            'other fields by ref with type.'
-      : 'a password field is on screen and the focus can\'t be seen, so key won\'t type text here (the agent never '
-            'types into password fields). Type other fields by ref with type.';
+      ? 'a password field has the focus, and the user keeps those to saved logins: fill it with fill_login (logins '
+            'lists them), or type other fields by ref with type.'
+      : 'a password field is on screen and the focus can\'t be seen, so key won\'t type text here (the user keeps '
+            'password fields to saved logins: fill_login). Type other fields by ref with type.';
 }
 
 /// The smallest placed node under (x, y).

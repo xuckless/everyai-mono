@@ -28,12 +28,14 @@ import '../../live/key_map.dart';
 import '../../live/ios_simulator_io.dart';
 import '../../live/live_browsers.dart';
 import '../../live/live_session.dart';
+import '../../live/webview_browser.dart';
 import '../../panes/panes_providers.dart';
 import '../../panes/processes.dart';
 import '../../shells/shell_registry.dart';
 import 'browser_overlays.dart';
 import 'browser_sign_ins.dart';
 import 'preview_apps.dart';
+import 'webview_page_view.dart';
 import '../../../../core/ui/image_decode.dart';
 
 /// The page sizes the Preview offers (CSS pixels); phones and tablets get a device frame.
@@ -52,9 +54,9 @@ enum PreviewSize {
 }
 
 /// The session's shared browser page, live: the agent's browser tool and the user drive the same page (the same
-/// tabs, sign-ins and state). The picture is the page's screencast, painted while the tab shows; the user's
-/// clicks, scrolls and keys go to the page. The user's first input takes control (the agent's browser actions
-/// wait) until Give back.
+/// tabs, sign-ins and state). The picture is the page's screencast, painted while the tab shows. The view is
+/// watch-only while the agent has it; Take control (the bar's button) lets the user's clicks, scrolls and keys
+/// reach the page, and the agent's browser actions wait until Give back.
 class PreviewPane extends ConsumerStatefulWidget {
   const PreviewPane({super.key, required this.session});
 
@@ -68,7 +70,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   final _field = TextEditingController();
   final _fieldFocus = FocusNode();
   final _viewFocus = FocusNode(debugLabel: 'preview.page');
-  HeadlessBrowser? _browser;
+  BrowserPage? _browser;
   StreamSubscription<ScreencastFrame>? _frames;
   StreamSubscription<String>? _made;
   StreamSubscription<LiveActivity>? _activity;
@@ -169,7 +171,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     }
   }
 
-  void _switchBrowser(HeadlessBrowser? b) {
+  void _switchBrowser(BrowserPage? b) {
     _detach();
     _image?.dispose();
     _image = null;
@@ -229,22 +231,23 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   }
 
   /// The session's page, made now when the user opens something before the agent did.
-  Future<HeadlessBrowser> _ensure() async {
+  Future<BrowserPage> _ensure() async {
     if (_browser case final b?) return b;
     final b = LiveBrowsers.forSession(_id, profileDir: await _profile());
     _attach(b);
     return b;
   }
 
-  void _attach(HeadlessBrowser? b) {
+  void _attach(BrowserPage? b) {
     if (b == null || identical(b, _browser)) return;
     _detach();
     _browser = b;
     b.page.addListener(_pageChanged);
+    b.tabs.addListener(_watchForFrame);
     b.control.addListener(_controlChanged);
     b.fileChooser.addListener(_fileChooserChanged);
     _activity = b.control.activity.listen(_showGhost);
-    _frames = b.screencast.listen(_paint);
+    if (b is StreamedPage) _frames = b.screencast.listen(_paint);
     _pageChanged();
     _syncCasting();
     if (mounted) setState(() {});
@@ -254,11 +257,12 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     final b = _browser;
     if (b == null) return;
     b.page.removeListener(_pageChanged);
+    b.tabs.removeListener(_watchForFrame);
     b.control.removeListener(_controlChanged);
     b.fileChooser.removeListener(_fileChooserChanged);
     unawaited(_activity?.cancel());
     unawaited(_frames?.cancel());
-    if (_cast != _Cast.off) unawaited(b.stopScreencast().catchError((Object _) {}));
+    if (b is StreamedPage && _cast != _Cast.off) unawaited(b.stopScreencast().catchError((Object _) {}));
     _castOff();
     _browser = null;
   }
@@ -298,14 +302,20 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     }
   }
 
+  void _focusAddress() {
+    _fieldFocus.requestFocus();
+    _field.selection = TextSelection(baseOffset: 0, extentOffset: _field.text.length);
+  }
+
   void _ask(String text) => ref.read(composerInsertProvider(_id).notifier).insert(text);
 
   /// Paints only while the Preview shows.
-  bool _wantCast(HeadlessBrowser b) => _visible && (b.attachTo != null || b.page.value.url.isNotEmpty || b.running);
+  bool _wantCast(StreamedPage b) =>
+      _visible && ((b is HeadlessBrowser && b.attachTo != null) || b.page.value.url.isNotEmpty || b.running);
 
   void _syncCasting() {
     final b = _browser;
-    if (b == null) return;
+    if (b is! StreamedPage) return;
     final want = _wantCast(b);
     if (want == (_cast != _Cast.off)) return;
     if (!want) {
@@ -340,14 +350,14 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     _staleCheck?.cancel();
     _staleCheck = Timer(const Duration(milliseconds: 1500), () {
       final b = _browser;
-      if (mounted && b != null && _cast == _Cast.on) unawaited(b.refreshScreencast());
+      if (mounted && b is StreamedPage && _cast == _Cast.on) unawaited(b.refreshScreencast());
     });
   }
 
   Future<void> _paint(ScreencastFrame f) async {
     _staleCheck?.cancel();
     if (_decoding) {
-      _browser?.ackFrame(f.session);
+      if (_browser case final StreamedPage b) b.ackFrame(f.session);
       return;
     }
     _decoding = true;
@@ -372,7 +382,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
       final wait = const Duration(milliseconds: 33) - DateTime.now().difference(_lastAck);
       if (wait > Duration.zero) await Future<void>.delayed(wait);
       _lastAck = DateTime.now();
-      _browser?.ackFrame(f.session);
+      if (_browser case final StreamedPage b) b.ackFrame(f.session);
     }
   }
 
@@ -404,14 +414,6 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
 
   Future<void> _openOutside(String url) => launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
 
-  /// The user's input on the page: they drive now.
-  void _takeOver() {
-    final c = _browser?.control;
-    if (c == null || c.userDriving) return;
-    c.take();
-    showAdaptiveToast(context, "You're driving: the agent's browser actions wait until you give it back.");
-  }
-
   Future<void> _setSize(PreviewSize s, {bool? landscape}) async {
     setState(() {
       _size = s;
@@ -425,7 +427,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   Future<void> _signIn() async {
     if (_signingIn) return;
     setState(() => _signingIn = true);
-    final HeadlessBrowser b;
+    final BrowserPage b;
     try {
       b = await _ensure();
     } on Object {
@@ -434,7 +436,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     }
     try {
       // A real window on the project's profile; the site's sign-in comes over into this session.
-      await signInInWindow(b, b.page.value.url);
+      if (b case final HeadlessBrowser chrome) await signInInWindow(chrome, chrome.page.value.url);
     } on BrowserError catch (e) {
       if (mounted) setState(() => _problem = e.message);
     } finally {
@@ -458,7 +460,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     if (ok != true) return;
     final b = await _ensure();
     await b.close();
-    await b.host.clear();
+    if (b case final HeadlessBrowser chrome) await chrome.host.clear();
     _castOff();
     if (!mounted) return;
     setState(() {
@@ -500,23 +502,30 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     final page = b?.page.value;
     final blank = page == null || page.url.isEmpty || page.url == 'about:blank';
     // The first server that shows up opens by itself, unless the page is somewhere already.
-    if (asked == null && blank && candidates.isNotEmpty && chromeAvailable) {
+    // What runs the page: the OS webview needs no Chrome.
+    final backend = b == null ? LiveBrowsers.sessionBackend : backendOf(b);
+    final hasBrowser = switch (backend) {
+      BrowserBackend.chromeStream => chromeAvailable,
+      BrowserBackend.osWebview => true,
+    };
+    if (asked == null && blank && candidates.isNotEmpty && hasBrowser) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted && ref.read(previewUrlProvider(_id)) == null) unawaited(_go(candidates.first));
       });
     }
     final control = b?.control;
+    // While the session's browser runs, page-acting chrome waits for Take control and the page itself is watch-only;
+    // the driver bar (Take control) shows the whole time, a blank page included, so the user always has a way in.
+    // Before it runs there is nothing to take: the address bar starts it.
+    final running = b?.running ?? false;
+    final may = !running || (control?.phase.userMayAct ?? true);
     final sourceBar = _apps.isEmpty ? null : PreviewSourceBar(apps: _apps, selected: _source, onSelect: _select);
     if (_source case final src?) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           ?sourceBar,
-          if (src.kind == AppKind.electron && control != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: _DriverBar(userDriving: control.userDriving, onTake: control.take, onGiveBack: control.giveBack),
-            ),
+          if (src.kind == AppKind.electron && control != null) LiveDriverBar(control: control, noun: 'app'),
           Expanded(
             child: switch (src.kind) {
               // Keyed by source: each view's state (stream, picture, pending input) belongs to one target.
@@ -550,11 +559,10 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
                     ? _Note(_problem ?? 'Connecting to the app…')
                     : PreviewPageView(
                         image: _image,
-                        browser: b,
+                        browser: b as StreamedPage,
                         focus: _viewFocus,
                         device: null,
                         ghost: _ghost,
-                        onInput: _takeOver,
                       ),
             },
           ),
@@ -573,19 +581,19 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
                 icon: EveryIcon.chevronLeft,
                 tooltip: 'Back',
                 size: 16,
-                onPressed: page?.canBack ?? false ? () => b!.back() : null,
+                onPressed: may && (page?.canBack ?? false) ? () => b!.back() : null,
               ),
               AdaptiveIconButton(
                 icon: EveryIcon.chevronRight,
                 tooltip: 'Forward',
                 size: 16,
-                onPressed: page?.canForward ?? false ? () => b!.forward() : null,
+                onPressed: may && (page?.canForward ?? false) ? () => b!.forward() : null,
               ),
               AdaptiveIconButton(
                 icon: EveryIcon.retry,
                 tooltip: 'Reload',
                 size: 16,
-                onPressed: blank ? null : () => b!.reload(),
+                onPressed: blank || !may ? null : () => b!.reload(),
               ),
               const SizedBox(width: 4),
               Expanded(
@@ -595,48 +603,66 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
                   placeholder: 'localhost:3000',
                   keyboardType: TextInputType.url,
                   textInputAction: TextInputAction.go,
-                  onSubmitted: _go,
+                  onSubmitted: may ? _go : null,
                 ),
               ),
               if (candidates.isNotEmpty)
-                AdaptiveMenuButton(
-                  tooltip: 'Detected servers',
+                _Gate(
+                  may: may,
+                  child: AdaptiveMenuButton(
+                    tooltip: 'Detected servers',
+                    actions: [
+                      for (final c in candidates)
+                        MenuAction(label: c, checked: c == page?.url, onSelected: () => _go(c)),
+                    ],
+                    child: Padding(
+                      padding: const EdgeInsets.all(7),
+                      child: Icon(EveryIcon.globe.of(theme.design), size: 16, color: theme.accent),
+                    ),
+                  ),
+                ),
+              if (b != null)
+                _Gate(
+                  may: may,
+                  child: BrowserKeysButton(browser: b, projectId: widget.session.projectId),
+                ),
+              if (b != null) BrowserDownloadsButton(browser: b),
+              _Gate(
+                may: may,
+                child: AdaptiveMenuButton(
+                  tooltip: 'Page size',
                   actions: [
-                    for (final c in candidates) MenuAction(label: c, checked: c == page?.url, onSelected: () => _go(c)),
+                    for (final s in PreviewSize.values)
+                      MenuAction(
+                        label: '${s.label}  ${s.width}×${s.height}',
+                        checked: s == _size,
+                        onSelected: () => _setSize(s),
+                      ),
+                    if (_size.device)
+                      MenuAction(
+                        label: _landscape ? 'Portrait' : 'Landscape',
+                        onSelected: () => _setSize(_size, landscape: !_landscape),
+                      ),
                   ],
                   child: Padding(
                     padding: const EdgeInsets.all(7),
-                    child: Icon(EveryIcon.globe.of(theme.design), size: 16, color: theme.accent),
+                    child: Text(_size.label, style: theme.type.caption.tint(theme.textMuted)),
                   ),
-                ),
-              if (b != null) BrowserKeysButton(browser: b, projectId: widget.session.projectId),
-              if (b != null) BrowserDownloadsButton(browser: b),
-              AdaptiveMenuButton(
-                tooltip: 'Page size',
-                actions: [
-                  for (final s in PreviewSize.values)
-                    MenuAction(
-                      label: '${s.label}  ${s.width}×${s.height}',
-                      checked: s == _size,
-                      onSelected: () => _setSize(s),
-                    ),
-                  if (_size.device)
-                    MenuAction(
-                      label: _landscape ? 'Portrait' : 'Landscape',
-                      onSelected: () => _setSize(_size, landscape: !_landscape),
-                    ),
-                ],
-                child: Padding(
-                  padding: const EdgeInsets.all(7),
-                  child: Text(_size.label, style: theme.type.caption.tint(theme.textMuted)),
                 ),
               ),
               AdaptiveMenuButton(
                 tooltip: 'More',
                 actions: [
                   if (!blank) MenuAction(label: 'Open in my browser', onSelected: () => _openOutside(page.url)),
-                  MenuAction(label: 'Sign in in a window…', onSelected: _signIn),
-                  MenuAction(label: "Clear the project's browser data…", destructive: true, onSelected: _clearProfile),
+                  // The project's shared Chrome profile: the Chrome backend's only.
+                  if (backend == BrowserBackend.chromeStream) ...[
+                    MenuAction(label: 'Sign in in a window…', onSelected: _signIn),
+                    MenuAction(
+                      label: "Clear the project's browser data…",
+                      destructive: true,
+                      onSelected: _clearProfile,
+                    ),
+                  ],
                 ],
                 child: Padding(
                   padding: const EdgeInsets.all(7),
@@ -648,35 +674,45 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
         ),
         if (b != null) BrowserTabStrip(browser: b),
         if (_finding && b != null) BrowserFindBar(browser: b, onClose: () => setState(() => _finding = false)),
-        if (control != null && !blank)
-          _DriverBar(userDriving: control.userDriving, onTake: control.take, onGiveBack: control.giveBack),
+        if (control != null && running) LiveDriverBar(control: control, noun: 'page'),
         Expanded(
           child: _withDialog(
             b,
-            !chromeAvailable
+            !hasBrowser
                 ? _NeedsBrowser(progress: _downloading, problem: _problem, onDownload: _download)
                 : _signingIn
                 ? const _Note(
                     'Sign in in the Chrome window that opened, then close it. The Preview and the agent use the new sign-ins.',
                   )
-                : _problem != null && _image == null
-                ? _Note(_problem!)
-                : blank && _image == null
-                ? _Empty(candidates: candidates, onPick: _go)
-                : PreviewPageView(
-                    image: _image,
-                    browser: b!,
-                    focus: _viewFocus,
-                    device: _size.device ? _size : null,
-                    ghost: _ghost,
-                    onInput: _takeOver,
-                    onFind: () => setState(() => _finding = true),
-                    onAddressBar: () {
-                      _fieldFocus.requestFocus();
-                      _field.selection = TextSelection(baseOffset: 0, extentOffset: _field.text.length);
-                    },
-                    onAsk: _ask,
-                  ),
+                : switch (b) {
+                    final WebviewBrowser w =>
+                      _problem != null && !w.running
+                          ? _Note(_problem!)
+                          : blank && !w.running
+                          ? _Empty(candidates: candidates, onPick: _go)
+                          : WebviewPageView(
+                              browser: w,
+                              focus: _viewFocus,
+                              device: _size.device ? _size : null,
+                              ghost: _ghost,
+                              onFind: () => setState(() => _finding = true),
+                              onAddressBar: _focusAddress,
+                              onAsk: _ask,
+                            ),
+                    _ when _problem != null && _image == null => _Note(_problem!),
+                    _ when blank && _image == null => _Empty(candidates: candidates, onPick: _go),
+                    final StreamedPage s => PreviewPageView(
+                      image: _image,
+                      browser: s,
+                      focus: _viewFocus,
+                      device: _size.device ? _size : null,
+                      ghost: _ghost,
+                      onFind: () => setState(() => _finding = true),
+                      onAddressBar: _focusAddress,
+                      onAsk: _ask,
+                    ),
+                    _ => _Empty(candidates: candidates, onPick: _go),
+                  },
           ),
         ),
       ],
@@ -684,7 +720,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   }
 
   /// [page] with the page's dialog over it, while the page waits on one.
-  Widget _withDialog(HeadlessBrowser? b, Widget page) {
+  Widget _withDialog(BrowserPage? b, Widget page) {
     if (b == null) return page;
     return ValueListenableBuilder<PageDialog?>(
       valueListenable: b.dialog,
@@ -704,47 +740,18 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   }
 }
 
-/// "Agent driving" or "You're driving", with the control to switch.
-class _DriverBar extends StatelessWidget {
-  const _DriverBar({required this.userDriving, required this.onTake, required this.onGiveBack});
+/// Greys out and blocks page-acting chrome while the agent has the view.
+class _Gate extends StatelessWidget {
+  const _Gate({required this.may, required this.child});
 
-  final bool userDriving;
-  final VoidCallback onTake;
-  final VoidCallback onGiveBack;
+  final bool may;
+  final Widget child;
 
   @override
-  Widget build(BuildContext context) {
-    final theme = EveryTheme.of(context);
-    return Container(
-      margin: const EdgeInsets.fromLTRB(10, 0, 10, 6),
-      padding: const EdgeInsets.fromLTRB(10, 4, 4, 4),
-      decoration: BoxDecoration(
-        color: userDriving ? theme.warningBg : theme.accentBg,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 7,
-            height: 7,
-            decoration: BoxDecoration(color: userDriving ? theme.warning : theme.accent, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              userDriving ? "You're driving · the agent waits" : 'Agent driving · click the page to take over',
-              style: theme.type.caption.tint(theme.text),
-            ),
-          ),
-          AdaptiveButton(
-            label: userDriving ? 'Give back' : 'Take control',
-            emphasis: ButtonEmphasis.secondary,
-            onPressed: userDriving ? onGiveBack : onTake,
-          ),
-        ],
-      ),
-    );
-  }
+  Widget build(BuildContext context) => IgnorePointer(
+    ignoring: !may,
+    child: Opacity(opacity: may ? 1 : 0.45, child: child),
+  );
 }
 
 /// The page's picture, scaled into the pane, with the user's input forwarded (in the page's CSS pixels) and the
@@ -758,7 +765,6 @@ class PreviewPageView extends StatefulWidget {
     required this.focus,
     required this.device,
     required this.ghost,
-    required this.onInput,
     this.onFind,
     this.onAddressBar,
     this.onAsk,
@@ -770,11 +776,10 @@ class PreviewPageView extends StatefulWidget {
   final void Function(String text)? onAsk;
 
   final ui.Image? image;
-  final HeadlessBrowser browser;
+  final StreamedPage browser;
   final FocusNode focus;
   final PreviewSize? device;
   final LiveActivity? ghost;
-  final VoidCallback onInput;
 
   @override
   State<PreviewPageView> createState() => _PreviewPageViewState();
@@ -821,7 +826,7 @@ class _PreviewPageViewState extends State<PreviewPageView> {
   DateTime _lastDown = DateTime.fromMillisecondsSinceEpoch(0);
   Offset _lastDownAt = Offset.zero;
 
-  HeadlessBrowser get _b => widget.browser;
+  StreamedPage get _b => widget.browser;
 
   Offset _toPage(Offset local) => (local - _offset) / _scale;
 
@@ -839,9 +844,12 @@ class _PreviewPageViewState extends State<PreviewPageView> {
       ? 'middle'
       : 'left';
 
+  /// Whether the user holds the view now (pointer moves and releases don't hint; a press, wheel or key does).
+  bool get _mayAct => _b.control.phase.userMayAct;
+
   void _down(PointerDownEvent e) {
-    widget.onInput();
     widget.focus.requestFocus();
+    if (!_b.control.mayAct()) return;
     final p = _toPage(e.localPosition);
     final now = DateTime.now();
     final again = now.difference(_lastDown) < const Duration(milliseconds: 450) && (p - _lastDownAt).distance < 6;
@@ -863,6 +871,7 @@ class _PreviewPageViewState extends State<PreviewPageView> {
   }
 
   void _up(PointerUpEvent e) {
+    if (_buttons == 0 || !_mayAct) return;
     final p = _toPage(e.localPosition);
     unawaited(
       _b.userMouse(
@@ -879,6 +888,7 @@ class _PreviewPageViewState extends State<PreviewPageView> {
   }
 
   void _move(Offset local, int buttons) {
+    if (!_mayAct) return;
     final p = _toPage(local);
     unawaited(
       _b.userMouse('mouseMoved', p.dx, p.dy, button: buttons == 0 ? 'none' : _button(buttons), buttons: buttons),
@@ -886,13 +896,12 @@ class _PreviewPageViewState extends State<PreviewPageView> {
   }
 
   void _wheel(Offset local, Offset delta) {
-    widget.onInput();
+    if (!_b.control.mayAct()) return;
     final p = _toPage(local);
     unawaited(_b.userMouse('mouseWheel', p.dx, p.dy, deltaX: delta.dx / _scale, deltaY: delta.dy / _scale));
   }
 
   KeyEventResult _key(FocusNode node, KeyEvent e) {
-    if (e is KeyRepeatEvent || e is KeyDownEvent || e is KeyUpEvent) widget.onInput();
     final meta = HardwareKeyboard.instance.isMetaPressed || HardwareKeyboard.instance.isControlPressed;
     final k = e.logicalKey;
     final down = e is! KeyUpEvent;
@@ -901,15 +910,25 @@ class _PreviewPageViewState extends State<PreviewPageView> {
       final VoidCallback? shortcut = switch (k) {
         LogicalKeyboardKey.keyF => widget.onFind,
         LogicalKeyboardKey.keyL => widget.onAddressBar,
-        LogicalKeyboardKey.keyR => () => unawaited(_b.reload().catchError((Object _) {})),
-        LogicalKeyboardKey.bracketLeft => () => unawaited(_b.back().catchError((Object _) {})),
-        LogicalKeyboardKey.bracketRight => () => unawaited(_b.forward().catchError((Object _) {})),
+        // Reload, back and forward act on the page.
+        LogicalKeyboardKey.keyR when _mayAct => () => unawaited(_b.reload().catchError((Object _) {})),
+        LogicalKeyboardKey.bracketLeft when _mayAct => () => unawaited(_b.back().catchError((Object _) {})),
+        LogicalKeyboardKey.bracketRight when _mayAct => () => unawaited(_b.forward().catchError((Object _) {})),
         _ => null,
       };
       if (shortcut != null) {
         shortcut();
         return KeyEventResult.handled;
       }
+    }
+    // Watch-only: copying what is selected still works; nothing else reaches the page.
+    if (!_mayAct) {
+      if (meta && down && !HardwareKeyboard.instance.isAltPressed && k == LogicalKeyboardKey.keyC) {
+        unawaited(_b.selectedText().then((t) => Clipboard.setData(ClipboardData(text: t))));
+        return KeyEventResult.handled;
+      }
+      if (down) _b.control.mayAct();
+      return KeyEventResult.ignored;
     }
     // The clipboard and editing shortcuts headless Chrome doesn't map from keys itself. Not with Alt: Ctrl+Alt is
     // AltGr on Windows and Linux, which types (AltGr+C is 'ć' on a Polish keyboard).
@@ -978,7 +997,7 @@ class _PreviewPageViewState extends State<PreviewPageView> {
                   left: ghost.x! * _scale - 14,
                   top: ghost.y! * _scale - 14,
                   child: IgnorePointer(
-                    child: _Ripple(key: ValueKey(ghost), color: theme.accent),
+                    child: AgentRipple(key: ValueKey(ghost), color: theme.accent),
                   ),
                 ),
               if (ghost != null && ghost.caption.isNotEmpty)
@@ -1059,15 +1078,15 @@ class _PreviewPageViewState extends State<PreviewPageView> {
 }
 
 /// A click ripple where the agent clicked.
-class _Ripple extends StatefulWidget {
-  const _Ripple({super.key, required this.color});
+class AgentRipple extends StatefulWidget {
+  const AgentRipple({super.key, required this.color});
   final Color color;
 
   @override
-  State<_Ripple> createState() => _RippleState();
+  State<AgentRipple> createState() => _AgentRippleState();
 }
 
-class _RippleState extends State<_Ripple> with SingleTickerProviderStateMixin {
+class _AgentRippleState extends State<AgentRipple> with SingleTickerProviderStateMixin {
   late final _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 900))..forward();
 
   @override

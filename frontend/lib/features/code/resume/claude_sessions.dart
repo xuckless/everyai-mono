@@ -32,6 +32,9 @@ PastSessionSource claudePastSessions({
 }) => ClaudePastSessions(env: env, resolve: resolve);
 
 final class ClaudePastSessions implements PastSessionSource {
+  @override
+  bool get deletes => true;
+
   ClaudePastSessions({Future<String?> Function(String name)? env, Future<String> Function(String path)? resolve})
     : _env = env ?? envVar,
       _resolve = resolve ?? realPath;

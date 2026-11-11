@@ -39,6 +39,7 @@ import '../../onboarding/git_bash_stub.dart';
 import '../../onboarding/onboarding_harness_providers.dart';
 import 'harness_setup_row.dart';
 import 'research_sites_editor.dart' show researchSiteProblem, siteOf;
+import 'skip_permissions_consent.dart';
 
 /// Settings → Code: the layers a session's settings come from (Global, a
 /// project, a session), each as rows of typed controls. Rows a layer doesn't
@@ -625,6 +626,7 @@ class HarnessesSetting extends ConsumerWidget {
       builtInBlocked: ref.watch(gitBashMissingProvider),
     );
     final handoff = ref.watch(codeLeadProvider.select((l) => l.handoff));
+    final skip = ref.watch(skipPermissionsProvider);
     final resumeUnsupported = ref.watch(resumeUnsupportedProvider);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -648,6 +650,24 @@ class HarnessesSetting extends ConsumerWidget {
                       key: ValueKey('code-settings.harness.${r.id}${r.keySuffix}.hint'),
                       style: theme.type.caption.mono.tint(theme.textMuted),
                     ),
+                  ),
+                // Its skip-permissions mode was agreed to once; Ask again takes that back.
+                if (skip[r.id] == SkipPermissionsConsent.allowed)
+                  Row(
+                    key: ValueKey('code-settings.harness.${r.id}${r.keySuffix}.skip'),
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Full auto and Bypass run ${r.driver.info.label} without asking (agreed once)',
+                          style: theme.type.caption.tint(theme.textMuted),
+                        ),
+                      ),
+                      AdaptiveButton(
+                        label: 'Ask again',
+                        emphasis: ButtonEmphasis.secondary,
+                        onPressed: () => ref.read(skipPermissionsProvider.notifier).reset(r.id),
+                      ),
+                    ],
                   ),
                 // A harness whose earlier sessions can't be listed or loaded isn't offered on New session.
                 if (resumeUnsupported(r.id) case final why?)

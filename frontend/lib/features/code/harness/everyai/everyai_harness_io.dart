@@ -28,6 +28,7 @@ import '../../drivers/usage_limit.dart';
 import '../../git/git_service_io.dart' show runGit;
 import '../../live/chrome_download_io.dart' show loadDownloadedChrome;
 import '../../live/live_browsers.dart';
+import '../../live/agent_logins.dart' show LoginGate;
 import 'browser_io.dart';
 import 'git_bash.dart' show findGitBash;
 import 'llm.dart';
@@ -206,6 +207,7 @@ final class EveryAISession
       loadLoginEnv: true,
       packages: _packages,
       lsp: _lsp,
+      loginSession: _spec.liveId,
     )..bypass = _spec.mode == AgentMode.bypass;
   }
 
@@ -222,7 +224,7 @@ final class EveryAISession
   /// The session's own headless browser (browser tool): started on first
   /// use, closed when a run ends or is stopped.
   /// The session's browser page: the Code session's shared one (the Preview paints it), else one of its own.
-  late final HeadlessBrowser _browser = _spec.liveId != null
+  late final BrowserPage _browser = _spec.liveId != null
       ? LiveBrowsers.forSession(_spec.liveId!, profileDir: _spec.browserProfile ?? '${_dir.path}/browser')
       : HeadlessBrowser(profileDir: '${_dir.path}/browser');
 
@@ -968,6 +970,8 @@ final class EveryAISession
     _closeOwnBrowser();
     // A browser call waiting at a sign-in page ends with the run.
     if (_spec.liveId case final id?) LiveBrowsers.of(id)?.loginWall.stop();
+    // And one waiting for the user's Allow on a saved login (asked on the session's own id).
+    if (_spec.liveId case final id?) LoginGate.find(id)?.stop();
     if (_cancel case final c? when !c.isCompleted) c.complete();
     for (final d in _decisions.values) {
       if (!d.isCompleted) d.complete((accept: false, reason: 'The user stopped this.'));
@@ -1034,6 +1038,7 @@ final class EveryAISession
       loadLoginEnv: true,
       packages: _packages,
       lsp: _lsp,
+      loginSession: _spec.liveId,
     )..bypass = _spec.mode == AgentMode.bypass;
     // Another vendor's model gets its own family's tools and rules (GPT's apply_patch, say). That rebuilds the
     // system prompt, which a vendor switch breaks the cache of anyway; within a family nothing changes, so the cached

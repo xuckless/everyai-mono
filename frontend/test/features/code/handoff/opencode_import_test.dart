@@ -142,6 +142,21 @@ void main() {
           'status': 200,
           'body': {'data': <Object?>[]},
         }),
+        // Its child sessions (none).
+        line('out', {
+          'id': 4,
+          'method': 'GET',
+          'path': '/api/session',
+          'query': {'parentID': id, 'limit': '100'},
+        }),
+        line('in', {
+          'id': 4,
+          'status': 200,
+          'body': {
+            'data': <Object?>[],
+            'cursor': {'previous': null, 'next': null},
+          },
+        }),
       ].join('\n'),
     );
     File('${data.path}/driver-sessions/opencode/$id.json')

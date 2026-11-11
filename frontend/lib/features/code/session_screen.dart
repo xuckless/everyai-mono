@@ -185,6 +185,8 @@ mixin _SessionScreen on Notifier<CodeSessionState> {
     _screenGen++;
     // An outside lead's browser call waiting at a sign-in page ends too.
     LiveBrowsers.of(sessionId)?.loginWall.stop();
+    // And one waiting for the user's Allow on a saved login.
+    LoginGate.find(sessionId)?.stop();
     _refuseLocalAsks();
     final browser = _screenBrowser, run = _appRun;
     _screenBrowser = null;

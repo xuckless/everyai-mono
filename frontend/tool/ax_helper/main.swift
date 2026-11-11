@@ -7,12 +7,12 @@
 //
 //   windows [--pid N]...                         the windows on screen
 //   tree --pid N [--window W]                    a window's accessibility tree (W: index or title; default: main)
-//   act --pid N --path P --action A [--text T]   AXPress, AXIncrement, AXDecrement, AXShowMenu, AXConfirm, AXCancel,
+//   act --pid N --path P --action A [--text T | --text-stdin]   AXPress, AXIncrement, AXDecrement, AXShowMenu, AXConfirm, AXCancel,
 //                                                AXRaise, focus, setvalue
 //   click --pid N --x X --y Y [--count C] [--right] [--front]   a mouse click at screen point (X, Y)
 //   drag --pid N --x X --y Y --to-x X2 --to-y Y2 [--front]
 //   scroll --pid N --x X --y Y --dy D [--front]
-//   key --pid N (--text T | --keycode K) [--mods cmd,shift,alt,ctrl]
+//   key --pid N (--text T | --text-stdin | --keycode K) [--mods cmd,shift,alt,ctrl]
 //   raise --pid N [--window W]                   brings the app and its window to the front
 //   shot --window ID --out FILE                  a PNG of one window
 //   stream --window ID [--fps F] [--scale S]     JPEG frames as multipart/x-mixed-replace on stdout
@@ -41,6 +41,14 @@ func value(_ name: String) -> String? {
   return args[i + 1]
 }
 func flag(_ name: String) -> Bool { args.contains("--\(name)") }
+/// The text to type or set: from stdin with --text-stdin (a saved password never reaches the process list), else
+/// --text.
+func textArg() -> String? {
+  if flag("text-stdin") {
+    return String(decoding: FileHandle.standardInput.readDataToEndOfFile(), as: UTF8.self)
+  }
+  return value("text")
+}
 func number(_ name: String) -> Double? { value(name).flatMap(Double.init) }
 
 func emit(_ object: Any) {
@@ -492,7 +500,7 @@ case "tree":
   tree(pid: needPid(), window: value("window"))
 case "act":
   guard let path = value("path"), let action = value("action") else { fail("act needs --path and --action") }
-  act(pid: needPid(), path: path, action: action, text: value("text"))
+  act(pid: needPid(), path: path, action: action, text: textArg())
 case "click":
   guard let x = number("x"), let y = number("y") else { fail("click needs --x and --y") }
   click(pid: needPid(), at: CGPoint(x: x, y: y), count: Int(number("count") ?? 1), right: flag("right"), front: flag("front"))
@@ -508,7 +516,7 @@ case "scroll":
   scroll(pid: needPid(), at: CGPoint(x: x, y: y), dy: dy, front: flag("front"))
   emit(["ok": true])
 case "key":
-  key(pid: needPid(), text: value("text"), keycode: value("keycode").flatMap(Int.init), mods: value("mods"), front: flag("front"))
+  key(pid: needPid(), text: textArg(), keycode: value("keycode").flatMap(Int.init), mods: value("mods"), front: flag("front"))
   emit(["ok": true])
 case "raise":
   raise(pid: needPid(), window: value("window"))

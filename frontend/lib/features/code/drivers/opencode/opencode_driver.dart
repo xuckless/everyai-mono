@@ -22,7 +22,13 @@ import 'opencode_session.dart';
 /// the id (the folder, the session's tag) is kept in
 /// `<data>/driver-sessions/opencode/<id>.json`.
 final class OpenCodeDriver
-    implements HarnessDriver, AttachesBriefed, StartsInNativeMode, AdoptsNativeSession, RunsInEnvironments {
+    implements
+        HarnessDriver,
+        AttachesBriefed,
+        StartsInNativeMode,
+        AdoptsNativeSession,
+        RunsInEnvironments,
+        RemembersApprovals {
   OpenCodeDriver({
     this.which,
     OpenCodeLauncher? launch,
@@ -114,6 +120,10 @@ final class OpenCodeDriver
   /// A new session runs the `build` agent (Ask); its `plan` agent is picked once the list loads.
   @override
   bool startsNatively(AgentMode mode) => mode == AgentMode.ask;
+
+  /// OpenCode's `always` keeps an allow for the rest of its session.
+  @override
+  NativeRemember get remembers => NativeRemember.session;
 
   @override
   Set<DriverCap> get caps => const {

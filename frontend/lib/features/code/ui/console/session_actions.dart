@@ -9,6 +9,7 @@ import '../../../../core/ui/adaptive.dart';
 import '../../code_providers.dart';
 import '../../domain/code_session.dart';
 import '../../drivers/driver_registry.dart' show driverRegistryProvider;
+import '../../resume/resume_providers.dart' show pastSessionSourcesProvider;
 
 // What the user can do with a whole session, from its title menu in the console and its row in the session list.
 
@@ -42,16 +43,34 @@ Future<void> exportSession(BuildContext context, WidgetRef ref, CodeSessionInfo 
   }
 }
 
+/// The dialog's sentence about the outside agents' own copies: [harnesses] are (label, whether its source really
+/// deletes). Only those are promised deleted; the others keep their copy (EveryAI just stops listing it).
+String deleteHarnessNote(List<(String, bool)> harnesses) {
+  final deleted = {
+    for (final (l, d) in harnesses)
+      if (d) l,
+  };
+  final kept = {
+    for (final (l, d) in harnesses)
+      if (!d) l,
+  };
+  return [
+    if (deleted.isNotEmpty) ' It is deleted from ${deleted.join(' and ')} too.',
+    if (kept.isNotEmpty) ' ${kept.join(' and ')} ${kept.length > 1 ? 'keep their' : 'keeps its'} own copy.',
+  ].join();
+}
+
 /// Deletes the session (with its worktree, branch and checkpoints) once the user agrees; true when it is gone.
 Future<bool> deleteSession(BuildContext context, WidgetRef ref, CodeSessionInfo info) async {
   final w = info.worktree;
   // Its harnesses' own copies are deleted with it (they would come back under Earlier otherwise).
   final registry = ref.read(driverRegistryProvider);
-  final clis = {
+  final sources = ref.read(pastSessionSourcesProvider);
+  final from = deleteHarnessNote([
     for (final h in [info.harness, ...info.leads.keys])
-      if (isOutsideLead(h, info.workingDir)) registry.resolve(h)?.info.label ?? h,
-  }.toList();
-  final from = clis.isEmpty ? '' : ' It is deleted from ${clis.join(' and ')} too.';
+      if (isOutsideLead(h, info.workingDir))
+        (registry.resolve(h)?.info.label ?? h, sources.any((s) => s.harness == h && s.deletes)),
+  ]);
   final ok = await showAdaptiveConfirm(
     context,
     title: 'Delete session?',

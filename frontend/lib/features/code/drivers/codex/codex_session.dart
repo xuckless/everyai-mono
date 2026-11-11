@@ -42,7 +42,9 @@ Future<Map<String, Object?>> codexHandshake(JsonRpcPeer peer) async {
   return account is Map<String, Object?> ? account : const {};
 }
 
-enum _Decision { accept, decline, cancel }
+/// Codex's answer to an approval (the names are its wire values); `acceptForSession` keeps the allow for the
+/// rest of Codex's session.
+enum _Decision { accept, acceptForSession, decline, cancel }
 
 /// An approval Codex is waiting for: [call] as the app shows it,
 /// [synthetic] when the request itself made it (no item stands behind it,
@@ -56,7 +58,14 @@ final class _Pending {
 }
 
 final class CodexSession
-    implements HarnessSession, PerCallApprovals, SteersRuns, HasNativeCommands, NativeModes, RefreshesPlanLimits {
+    implements
+        HarnessSession,
+        PerCallApprovals,
+        AllowsRemembered,
+        SteersRuns,
+        HasNativeCommands,
+        NativeModes,
+        RefreshesPlanLimits {
   CodexSession(
     LineChannel channel, {
     required this.cwd,
@@ -144,7 +153,10 @@ final class CodexSession
   String? get native => _native;
   String? _native;
 
-  late final _modes = NativeModeFeed((modes: codexModes, current: _native ?? codexModeFor(_currentMode)));
+  /// The Codex preset the session runs in.
+  String get preset => _native ?? codexModeFor(_currentMode);
+
+  late final _modes = NativeModeFeed((modes: codexModes, current: preset));
 
   @override
   Stream<NativeModeSet> get nativeModes => _modes.stream;
@@ -187,7 +199,7 @@ final class CodexSession
   }
 
   Future<void> startThread({String? instructions}) async {
-    final p = codexPolicy(_currentMode);
+    final p = codexPolicy(preset);
     final res = await _peer.request('thread/start', {
       'cwd': cwd,
       'model': ?_model,
@@ -205,7 +217,7 @@ final class CodexSession
   /// Rejoins [threadId] without its turns: the transcript comes from our
   /// journal ([replay]), which has our own messages, refusals and usage ids.
   Future<void> resumeThread(String threadId) async {
-    final p = codexPolicy(_currentMode);
+    final p = codexPolicy(preset);
     await _peer.request('thread/resume', {
       'threadId': threadId,
       'cwd': cwd,
@@ -450,7 +462,7 @@ final class CodexSession
       if (!starting.isCompleted) starting.complete();
     }
 
-    final p = codexPolicy(_currentMode);
+    final p = codexPolicy(preset);
     final Object? res;
     try {
       res = await _peer.request('turn/start', {
@@ -799,6 +811,7 @@ final class CodexSession
 
   Future<Object?> _onRequest(String method, Object? params) async {
     final p = params is Map<String, Object?> ? params : const <String, Object?>{};
+    // Not filtered by thread: a native subagent's approval requests come here too and ask the user like the lead's.
     switch (method) {
       case 'item/commandExecution/requestApproval' || 'item/fileChange/requestApproval':
         final decision = await _ask(_approvalCall(method, p), p['turnId'] as String?);
@@ -814,7 +827,8 @@ final class CodexSession
         );
         _call(call);
         final decision = await _ask(call, p['turnId'] as String?, synthetic: true);
-        return decision == _Decision.accept
+        // An MCP tool call has no "for the session": accepted once.
+        return decision == _Decision.accept || decision == _Decision.acceptForSession
             ? {'action': 'accept', 'content': const <String, Object?>{}}
             : {'action': decision.name, 'content': null};
       case 'item/tool/requestUserInput':
@@ -910,23 +924,37 @@ final class CodexSession
   /// item's completion).
   bool _isItem(ActionCall call) => !call.id.contains('#') && call.actionKind != 'CodexNetworkAction';
 
-  /// Allowing sends `accept` (never "for the session": each call is the
-  /// app's to judge). Refusing named calls sends `decline` and the turn goes
+  /// [allowRemembered] with [NativeGrant.session] sends `acceptForSession`: Codex keeps it, the app stores nothing.
+  @override
+  Future<void> allowRemembered(NativeGrant grant, {List<String>? callIds}) => _answerAll(callIds, switch (grant) {
+    NativeGrant.session => _Decision.acceptForSession,
+    // Codex has no "always"; the card doesn't offer it.
+    NativeGrant.always => _Decision.accept,
+  });
+
+  /// Allowing sends `accept` (each call Codex asks about is the user's to answer; "for the session" goes through
+  /// [allowRemembered]). Refusing named calls sends `decline` and the turn goes
   /// on; refusing them all (Deny all, Stop, a reply typed in chat) sends
   /// `cancel`, which ends the turn. Codex's decision has no reason, so a
   /// refusal's reason follows as one steer.
   @override
-  Future<void> respond({required bool accept, String? reason, List<String>? callIds}) async {
+  Future<void> respond({required bool accept, String? reason, List<String>? callIds}) => _answerAll(
+    callIds,
+    accept
+        ? _Decision.accept
+        : callIds == null
+        ? _Decision.cancel
+        : _Decision.decline,
+    reason: reason,
+  );
+
+  Future<void> _answerAll(List<String>? callIds, _Decision decision, {String? reason}) async {
+    final accept = decision == _Decision.accept || decision == _Decision.acceptForSession;
     final targets = [
       for (final p in _pending.values)
         if (callIds == null || callIds.contains(p.call.id)) p,
     ];
     if (targets.isEmpty) return;
-    final decision = accept
-        ? _Decision.accept
-        : callIds == null
-        ? _Decision.cancel
-        : _Decision.decline;
     for (final p in targets) {
       _pending.remove(p.call.id);
       p.answer.complete(decision);

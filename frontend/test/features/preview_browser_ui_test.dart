@@ -76,6 +76,9 @@ void main() {
       await tester.runAsync(() => browser.click(selector: '#b').then((_) {}, onError: (Object _) {}));
       await settle(tester);
       expect(find.text('Your name?'), findsOneWidget);
+      // Answering the page's dialog is the user's to do once they hold the view.
+      browser.control.take();
+      await tester.pump();
       clipboard = 'Ada Lovelace';
       await tester.tap(find.byType(EditableText));
       await tester.pump();
@@ -97,6 +100,7 @@ void main() {
       tester,
       '<a id="l" href="https://example.com/x" style="display:block;width:300px;height:60px">A link</a>',
     );
+    browser.control.take();
     final focus = FocusNode();
     addTearDown(focus.dispose);
     String? asked;
@@ -108,7 +112,6 @@ void main() {
           focus: focus,
           device: null,
           ghost: null,
-          onInput: () {},
           onAsk: (t) => asked = t,
         ),
       ),

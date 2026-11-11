@@ -11,10 +11,9 @@ import 'package:material_ui/material_ui.dart' as m;
 
 void main() {
   final picked = <String>[];
-  final bypassed = <bool>[];
   AgentMode? ours;
 
-  Widget host({List<NativeMode>? modes, String? current, bool bypass = false}) => ProviderScope(
+  Widget host({List<NativeMode>? modes, String? current}) => ProviderScope(
     child: m.MaterialApp(
       home: m.Material(
         child: EveryThemeScope(
@@ -30,8 +29,6 @@ void main() {
               nativeMode: current,
               harnessLabel: 'Claude Code',
               onNativeModeChanged: picked.add,
-              nativeBypass: bypass,
-              onNativeBypass: bypassed.add,
             ),
           ),
         ),
@@ -41,13 +38,10 @@ void main() {
 
   setUp(() {
     picked.clear();
-    bypassed.clear();
     ours = null;
   });
 
-  testWidgets("an outside harness's picker shows its own modes; a greyed one says why and can't be picked", (
-    tester,
-  ) async {
+  testWidgets("an outside harness's picker shows its own modes, Bypass permissions too", (tester) async {
     tester.view.physicalSize = const Size(1200, 1600);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
@@ -56,13 +50,12 @@ void main() {
     await tester.tap(find.text('Default'));
     await tester.pumpAndSettle();
     expect(find.text('Claude Code modes'), findsOneWidget);
-    for (final label in ['Accept edits', 'Plan mode']) {
+    for (final label in ['Accept edits', 'Plan mode', 'Bypass permissions']) {
       expect(find.text(label), findsOneWidget);
     }
     expect(find.text('Full auto'), findsNothing);
-    // Claude's own Bypass permissions isn't listed; EveryAI's switch sits under the modes.
-    expect(find.text('Bypass permissions'), findsNothing);
-    expect(find.text('Bypass EveryAI checks'), findsOneWidget);
+    // Only Claude's own modes: no EveryAI switch under them.
+    expect(find.text('Bypass EveryAI checks'), findsNothing);
 
     await tester.tap(find.text('Accept edits'));
     await tester.pumpAndSettle();
@@ -79,42 +72,5 @@ void main() {
     await tester.pumpAndSettle();
     expect(ours, AgentMode.plan);
     expect(picked, isEmpty);
-  });
-
-  testWidgets('the Bypass EveryAI checks switch asks before turning on, leaves the mode, and turns off at once', (
-    tester,
-  ) async {
-    tester.view.physicalSize = const Size(1200, 1600);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.reset);
-    await tester.pumpWidget(host(modes: claudeModes(autoMode: true), current: 'auto'));
-    await tester.tap(find.text('Auto mode'));
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Bypass EveryAI checks'));
-    await tester.tap(find.text('Bypass EveryAI checks'));
-    await tester.pumpAndSettle();
-    expect(find.text('Bypass permissions?'), findsOneWidget);
-    await tester.tap(find.text('Cancel'));
-    await tester.pumpAndSettle();
-    expect(bypassed, isEmpty);
-
-    await tester.tap(find.text('Auto mode'));
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Bypass EveryAI checks'));
-    await tester.tap(find.text('Bypass EveryAI checks'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Bypass permissions').last);
-    await tester.pumpAndSettle();
-    expect(bypassed, [true]);
-    expect(picked, isEmpty, reason: "the lead's mode is left alone");
-
-    await tester.pumpWidget(host(modes: claudeModes(autoMode: true), current: 'auto', bypass: true));
-    await tester.tap(find.text('Auto mode'));
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Bypass EveryAI checks'));
-    await tester.tap(find.text('Bypass EveryAI checks'));
-    await tester.pumpAndSettle();
-    expect(find.text('Bypass permissions?'), findsNothing, reason: 'turning it off needs no confirmation');
-    expect(bypassed, [true, false]);
   });
 }

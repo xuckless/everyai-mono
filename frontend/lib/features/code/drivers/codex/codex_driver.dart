@@ -38,7 +38,13 @@ typedef CodexSpawn = Future<LineChannel> Function({
 /// needs to start it again), `journal/<id>.jsonl` (the transcript) and
 /// `logs/<session>.log` (stderr).
 final class CodexDriver
-    implements HarnessDriver, AttachesBriefed, StartsInNativeMode, AdoptsNativeSession, RunsInEnvironments {
+    implements
+        HarnessDriver,
+        AttachesBriefed,
+        StartsInNativeMode,
+        AdoptsNativeSession,
+        RunsInEnvironments,
+        RemembersApprovals {
   CodexDriver({this.which, this.spawn, this.dataDir, this.execEnv = HostEnv.instance, this.find});
 
   @override
@@ -70,9 +76,14 @@ final class CodexDriver
 
   /// Not fork or rewind (Codex has thread forks and rollbacks; not wired
   /// yet), not subagents (its own aren't mapped; ours stand in).
-  /// [codexModeFor]: Read Only for Ask, Default for Auto-edit; no preset runs Plan or Full auto.
+  /// [codexModeFor]: every mode has its nearest Codex preset except Plan, which Codex has no preset for: it runs in
+  /// Read Only (no note goes with it; outside leads get no mode notes).
   @override
-  bool startsNatively(AgentMode mode) => mode == AgentMode.ask || mode == AgentMode.autoEdit;
+  bool startsNatively(AgentMode mode) => mode != AgentMode.plan;
+
+  /// Codex keeps an allow for the rest of its session (`acceptForSession`); it has no "always".
+  @override
+  NativeRemember get remembers => NativeRemember.session;
 
   @override
   Set<DriverCap> get caps => const {

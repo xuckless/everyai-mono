@@ -62,9 +62,18 @@ void main() {
     expect(tester.binding.hasScheduledFrame, isFalse);
     // Something breathes: one clock runs (one ticker for all four).
     await tester.pumpWidget(board(running: true));
-    await tester.pump(const Duration(milliseconds: 16));
-    expect(tester.binding.hasScheduledFrame, isTrue);
+    await tester.pump(Motion.breathTick * 2);
     expect(find.byType(FadeTransition), findsNWidgets(4));
+    // The breath redraws at ~15 frames a second, not on every frame.
+    double opacity() => tester.widget<FadeTransition>(find.byType(FadeTransition).first).opacity.value;
+    var changes = 0;
+    var last = opacity();
+    for (var i = 0; i < 60; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      if (opacity() != last) changes++;
+      last = opacity();
+    }
+    expect(changes, inInclusiveRange(10, 18), reason: '60 frames (~1 s) show about 15 distinct breaths');
     // Reduced motion stops it.
     await tester.pumpWidget(board(running: true, reduced: true));
     await tester.pump();
