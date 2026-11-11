@@ -9,7 +9,8 @@ import '../theme/every_theme.dart';
 /// border ([edge] tints it: amber for a warning, red for a failure), and a soft shadow when [hovered].
 BoxDecoration glassDecoration(EveryTheme theme, {bool hovered = false, Color? edge, double radius = 16}) {
   final base = theme.surface;
-  const lit = Color(0xFFFFFFFF);
+  // The lit edge: the on-primary white in both themes.
+  final lit = theme.onPrimary;
   return BoxDecoration(
     borderRadius: BorderRadius.circular(radius),
     gradient: LinearGradient(

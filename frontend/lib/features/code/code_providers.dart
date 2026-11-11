@@ -2524,12 +2524,15 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         () => ref.read(codeSessionsProvider.notifier).byId(sessionId)?.title ?? 'Code session',
         // "Finished" waits for its forks and workflows, and for their reports still on the way to the lead: the
         // notification comes at the real end.
-        busy: () => hasSideWork(runningWork) || _forkNotices.isNotEmpty || _leadNotes.isNotEmpty,
+        busy: () =>
+            hasSideWork(runningWork) || _forkNotices.isNotEmpty || _leadNotes.isNotEmpty || _report == _Report.sent,
         timer: (d, fire) => ref.read(notifyTimerProvider)(d, fire),
         id: sessionId,
       );
       ref.onDispose(alerts.dispose);
       listenSelf((prev, next) {
+        // The lead took a delivered report up (its status moved): the work is its own again.
+        if (prev?.status != next.status) _report = _Report.none;
         alerts.onChange(prev?.status, next.status);
         alerts.recheck();
       });
@@ -6299,6 +6302,23 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// security alert, sent together once it is idle (and the user replied).
   final _forkNotices = <({String kind, String id, String text})>[];
 
+  /// Whether a report was handed to the lead and it hasn't taken it up yet. "Finished" waits for it, since the lead
+  /// may need a moment to start on it:
+  ///
+  /// none ─ report sent to the idle lead ─▶ sent ─ the lead's status changes, or the send fails ─▶ none
+  var _report = _Report.none;
+
+  /// Sends a fork's report to the lead, counting it as work in flight until the lead moves.
+  void _deliverReport(String text) {
+    _report = _Report.sent;
+    unawaited(
+      _session?.send(text).catchError((Object _) {
+        _report = _Report.none;
+        _alerts?.recheck();
+      }),
+    );
+  }
+
   /// Whether the session is led by an outside harness now.
   bool get _onOutsideLead {
     final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
@@ -6317,7 +6337,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         _leadNotes.add(text);
         return;
       }
-      unawaited(_session?.send(_withChecks(text)).catchError((Object _) {}));
+      _deliverReport(_withChecks(text));
       return;
     }
     _forkNotices.add((kind: kind, id: id, text: text));
@@ -6360,7 +6380,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     // Wrapped now, for the lead that gets them.
     final text = [for (final n in _forkNotices) _notice(n.kind, n.id, n.text)].join('\n\n');
     _forkNotices.clear();
-    unawaited(session.send(_withChecks(text)).catchError((Object _) {}));
+    _deliverReport(_withChecks(text));
   }
 
   /// Whether this session's question card [rowId] waits on its agent's host call.
@@ -7201,11 +7221,48 @@ final class CodeSessionController extends Notifier<CodeSessionState>
 /// have no live controller), refreshed every 10 s while a list shows them.
 final codeStatusesProvider = NotifierProvider.autoDispose<CodeStatuses, Map<String, SessionStatus>>(CodeStatuses.new);
 
+/// Whether [codeStatusesProvider] has heard from the harnesses yet. Until it has, a session without a live
+/// controller has no status at all (not "idle"), so nothing may treat it as finished.
+///
+/// loading ─ first poll answered, or nothing to poll ─▶ loaded
+/// loading ─ first poll failed ─▶ unavailable ─ a later poll answers ─▶ loaded
+sealed class StatusesLoad {
+  const StatusesLoad();
+}
+
+final class StatusesLoading extends StatusesLoad {
+  const StatusesLoading();
+}
+
+final class StatusesLoaded extends StatusesLoad {
+  const StatusesLoaded();
+}
+
+/// The first poll failed (the server isn't up): sessions show as idle, but nothing is recorded or cleared from it.
+final class StatusesUnavailable extends StatusesLoad {
+  const StatusesUnavailable();
+}
+
+final codeStatusesLoadProvider = NotifierProvider.autoDispose<CodeStatusesLoad, StatusesLoad>(CodeStatusesLoad.new);
+
+final class CodeStatusesLoad extends Notifier<StatusesLoad> {
+  @override
+  StatusesLoad build() => const StatusesLoading();
+
+  void loaded() => state = const StatusesLoaded();
+
+  void unavailable() {
+    if (state is StatusesLoading) state = const StatusesUnavailable();
+  }
+}
+
 final class CodeStatuses extends Notifier<Map<String, SessionStatus>> {
   Timer? _timer;
 
   @override
   Map<String, SessionStatus> build() {
+    // Lives as long as the statuses do (it is only read below, which would let an autoDispose provider go).
+    ref.listen(codeStatusesLoadProvider, (_, _) {});
     _timer = Timer.periodic(const Duration(seconds: 10), (_) => unawaited(_refresh()));
     ref.onDispose(() => _timer?.cancel());
     unawaited(Future.microtask(_refresh));
@@ -7217,7 +7274,10 @@ final class CodeStatuses extends Notifier<Map<String, SessionStatus>> {
       for (final s in ref.read(codeSessionsProvider))
         if (!isDemoPath(s.workingDir)) s,
     ];
-    if (sessions.isEmpty) return;
+    if (sessions.isEmpty) {
+      ref.read(codeStatusesLoadProvider.notifier).loaded();
+      return;
+    }
     try {
       final byConversation = await _driverStatuses(ref, sessions);
       if (!ref.mounted) return;
@@ -7226,6 +7286,7 @@ final class CodeStatuses extends Notifier<Map<String, SessionStatus>> {
         for (final s in sessions)
           if (byConversation[s.conversationId] case final status?) s.id: _sessionStatus(status),
       };
+      ref.read(codeStatusesLoadProvider.notifier).loaded();
       // Sessions whose view is closed still tell the user when they need them.
       for (final s in sessions) {
         final now = state[s.id];
@@ -7235,6 +7296,7 @@ final class CodeStatuses extends Notifier<Map<String, SessionStatus>> {
       }
     } on Object {
       // The server isn't up yet; try again on the next tick.
+      if (ref.mounted) ref.read(codeStatusesLoadProvider.notifier).unavailable();
     }
   }
 
@@ -8116,3 +8178,6 @@ String _startText(String text, Object? workflow) => switch (workflow) {
   WorkflowPick(:final entry?) => workflowStartNote(entry, text),
   _ => '${maxWorkflowNote(on: true)}\n\n$text',
 };
+
+/// See `CodeSessionController._report`.
+enum _Report { none, sent }

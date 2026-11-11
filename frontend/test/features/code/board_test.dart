@@ -11,7 +11,6 @@ import 'package:every_ai/features/code/board/board_state.dart';
 import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
-import 'package:every_ai/features/code/domain/subagents.dart' show taskTool;
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/drivers/driver_events.dart';
 import 'package:every_ai/features/code/harness/events.dart';
@@ -27,7 +26,13 @@ import '../../layout/layout_host.dart';
 
 // The Board: columns by status, harness filters, detached forks, and the one-line activity on a card.
 
-CodeSessionInfo _s(String id, {String harness = everyaiHarnessName, String? parent, int day = 1}) => CodeSessionInfo(
+CodeSessionInfo _s(
+  String id, {
+  String harness = everyaiHarnessName,
+  String? parent,
+  int day = 1,
+  String dir = 'demo://p1',
+}) => CodeSessionInfo(
   id: id,
   projectId: 'p1',
   title: 'Session $id',
@@ -35,7 +40,7 @@ CodeSessionInfo _s(String id, {String harness = everyaiHarnessName, String? pare
   model: 'a/m',
   mode: AgentMode.ask,
   // Demo sessions: the status poller leaves them alone.
-  workingDir: 'demo://p1',
+  workingDir: dir,
   createdAt: DateTime(2026, 11, day),
   harness: harness,
   parentId: parent,
@@ -60,33 +65,6 @@ void main() {
     expect(boardStatus(SessionStatus.failed, workRunning: true, childWaits: false), SessionStatus.failed);
     expect(boardStatus(SessionStatus.running, workRunning: false, childWaits: true), SessionStatus.needsInput);
     expect(boardStatus(SessionStatus.starting, workRunning: true, childWaits: false), SessionStatus.starting);
-  });
-
-  test('a session whose lead is idle stays Running while a fork or subagent under it works', () {
-    final all = [_s('lead'), _s('fork', parent: 'lead'), _s('sub', parent: 'fork'), _s('other')];
-    final children = childrenByParent(all);
-    var running = {'sub'};
-    SessionStatus statusOf(CodeSessionInfo s) => running.contains(s.id) ? SessionStatus.running : SessionStatus.done;
-    // A grandchild counts too.
-    expect(childRunning('lead', children, statusOf), isTrue);
-    expect(boardStatus(SessionStatus.done, workRunning: true, childWaits: false), SessionStatus.running);
-    expect(childRunning('other', children, statusOf), isFalse);
-    running = {};
-    expect(childRunning('lead', children, statusOf), isFalse);
-    // A loop of parents (a broken record) ends.
-    expect(childRunning('a', childrenByParent([_s('a', parent: 'b'), _s('b', parent: 'a')]), statusOf), isFalse);
-
-    // An outside lead's background subagent: open until it reports; EveryAI's own forks count as sessions instead.
-    SubagentItem agent(String tool, {bool reported = false}) {
-      final call = actionEvent(id: 'c-$tool', toolName: tool, kind: 'TaskAction');
-      return SubagentItem(
-        ToolStep(call, reported ? resultEvent(id: 'r-$tool', actionId: call.id, toolName: tool, text: 'Done.') : null),
-      );
-    }
-
-    expect(subagentsRunning(Transcript(items: [agent('Agent')])), isTrue);
-    expect(subagentsRunning(Transcript(items: [agent('Agent', reported: true)])), isFalse);
-    expect(subagentsRunning(Transcript(items: [agent(taskTool)])), isFalse);
   });
 
   test('Done clears by itself after two days, and keeps at most the newest eight', () {
@@ -157,7 +135,7 @@ void main() {
     final prefs = await Preferences.load(db);
     prefs['code.projects'] = '[{"id":"p1","name":"Alpha","path":"/tmp/p1"}]';
     // The Board has recorded finishes before: these count from now, not from when they started.
-    prefs[BoardDoneSince.key] = '{}';
+    prefs[BoardMarks.doneSinceKey] = '{}';
     prefs['code.sessions'] = jsonEncode([
       _s('a').toJson(),
       _s('b', harness: 'claude-code').toJson(),
@@ -258,7 +236,7 @@ void main() {
     final db = AppDatabase(NativeDatabase.memory());
     final prefs = await Preferences.load(db);
     prefs['code.projects'] = '[{"id":"p1","name":"Alpha","path":"/tmp/p1"}]';
-    prefs[BoardDoneSince.key] = '{}';
+    prefs[BoardMarks.doneSinceKey] = '{}';
     prefs['code.sessions'] = jsonEncode([_s('x').toJson()]);
     final c = ProviderContainer(overrides: [preferencesProvider.overrideWithValue(prefs)]);
     c.listen(codeStatusesProvider, (_, _) {});
@@ -294,6 +272,111 @@ void main() {
     await db.close();
   });
 
+  testWidgets('a first frame before any status has loaded clears and records nothing', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    final db = AppDatabase(NativeDatabase.memory());
+    final prefs = await Preferences.load(db);
+    prefs['code.projects'] = '[{"id":"p1","name":"Alpha","path":"/tmp/p1"}]';
+    // Ten sessions the harness has not reported on yet (real directories: the poller would ask about them).
+    final real = [for (var i = 0; i < 10; i++) _s('s$i', day: i + 1, dir: '/tmp/p1')];
+    prefs['code.sessions'] = jsonEncode([for (final s in real) s.toJson()]);
+    prefs[BoardMarks.doneSinceKey] = '{}';
+    final c = ProviderContainer(overrides: [preferencesProvider.overrideWithValue(prefs)]);
+    c.listen(codeStatusesLoadProvider, (_, _) {});
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: c,
+        child: LayoutHost(
+          language: DesignLanguage.material,
+          child: ShellScope(sidebarVisible: true, compact: false, toggleSidebar: () {}, child: const BoardScreen()),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(c.read(codeStatusesLoadProvider), isA<StatusesLoading>());
+    expect(c.read(boardDismissedProvider), isEmpty);
+    expect(prefs[BoardDismissed.key], isNull);
+    expect(prefs[BoardMarks.doneSinceKey], '{}');
+    expect(find.text('Session s0'), findsNothing);
+    // Once the statuses are in, the real states apply: a running one is Running, the rest are Done.
+    // ignore: invalid_use_of_protected_member
+    c.read(codeStatusesProvider.notifier).state = {'s9': SessionStatus.running};
+    c.read(codeStatusesLoadProvider.notifier).loaded();
+    await tester.pumpAndSettle();
+    expect(find.text('Session s9'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    debugDefaultTargetPlatformOverride = null;
+    tester.view.reset();
+    c.dispose();
+    await db.close();
+  });
+
+  testWidgets("a closed fork's polled wait puts its lead under Needs you and opens the fork, not Running", (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1;
+    final db = AppDatabase(NativeDatabase.memory());
+    final prefs = await Preferences.load(db);
+    prefs['code.projects'] = '[{"id":"p1","name":"Alpha","path":"/tmp/p1"}]';
+    prefs[BoardMarks.doneSinceKey] = '{}';
+    prefs['code.sessions'] = jsonEncode([_s('lead').toJson(), _s('kid', parent: 'lead', dir: '/tmp/p1').toJson()]);
+    final approval =
+        (TranscriptBuilder()
+              ..add(
+                actionEvent(
+                  id: 'x1',
+                  toolName: 'bash',
+                  kind: 'TerminalAction',
+                  args: const {'command': 'rm -rf build/'},
+                ),
+              )
+              ..add(stateEvent('x1-w', ExecutionStatus.waitingForConfirmation)))
+            .snapshot;
+    final c = ProviderContainer(
+      overrides: [
+        preferencesProvider.overrideWithValue(prefs),
+        codeSessionProvider.overrideWithBuild(
+          (ref, n) =>
+              n.sessionId == 'kid' ? CodeSessionState(connected: true, transcript: approval) : const CodeSessionState(),
+        ),
+      ],
+    );
+    c.listen(codeStatusesProvider, (_, _) {});
+    c.listen(codeStatusesLoadProvider, (_, _) {});
+    // After a restart: the fork has no controller, and the harness says it waits.
+    // ignore: invalid_use_of_protected_member
+    c.read(codeStatusesProvider.notifier).state = {'lead': SessionStatus.idle, 'kid': SessionStatus.needsInput};
+    c.read(codeStatusesLoadProvider.notifier).loaded();
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: c,
+        child: LayoutHost(
+          language: DesignLanguage.material,
+          child: ShellScope(sidebarVisible: true, compact: false, toggleSidebar: () {}, child: const BoardScreen()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    Finder inColumn(String col, String text) =>
+        find.descendant(of: find.byKey(ValueKey('board.column.$col')), matching: find.text(text));
+    expect(inColumn('needsYou', 'Session lead'), findsOneWidget);
+    expect(inColumn('running', 'Session lead'), findsNothing);
+    // The fork was opened, so its wait shows under the lead with its controls.
+    expect(c.exists(codeSessionProvider('kid')), isTrue);
+    expect(find.byKey(const ValueKey('board.work.approve.kid')), findsOneWidget);
+    expect(find.textContaining('Lead waiting'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+    debugDefaultTargetPlatformOverride = null;
+    tester.view.reset();
+    c.dispose();
+    await db.close();
+  });
+
   testWidgets('a card lists its work; questions are open, and a child waiting on the user shows its controls', (
     tester,
   ) async {
@@ -304,7 +387,7 @@ void main() {
     final prefs = await Preferences.load(db);
     prefs['code.projects'] = '[{"id":"p1","name":"Alpha","path":"/tmp/p1"}]';
     // The Board has recorded finishes before: these count from now, not from when they started.
-    prefs[BoardDoneSince.key] = '{}';
+    prefs[BoardMarks.doneSinceKey] = '{}';
     prefs['code.sessions'] = jsonEncode([
       _s('a').toJson(),
       _s('q', day: 2).toJson(),
