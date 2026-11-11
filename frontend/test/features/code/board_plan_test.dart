@@ -55,19 +55,38 @@ final class _Planner implements BoardPlanner {
   @override
   String? unavailable(LeadPick pick) => pick.harness == 'off' ? 'Not installed' : null;
 
+  /// Set when the planner was told to stop.
+  var cancelled = false;
+
   @override
-  Future<String> ask(LeadPick pick, String prompt, {required CodeProject project, required String tag}) async {
+  Future<String> ask(
+    LeadPick pick,
+    String prompt, {
+    required CodeProject project,
+    required String tag,
+    Future<void>? cancel,
+  }) async {
     asked.add((pick, prompt));
+    unawaited(cancel?.then((_) => cancelled = true));
     await gate?.future;
     if (error case final e?) throw e;
     return reply;
   }
 }
 
-/// A starter that records each start and returns `s-<n>`; [fail] names prompts that fail to start.
+/// A starter that records each start and returns `s-<n>`; [fail] names prompts that fail to start; [gate] holds
+/// starts; [handoffs] are the commits of sessions' work (none: it ran in the project folder).
 final class _Starter implements BoardStarter {
-  final started = <({String prompt, LeadPick lead, bool worktree})>[];
+  final started = <({String prompt, LeadPick lead, bool worktree, AgentMode mode, String? from})>[];
   final fail = <String>{};
+  Completer<void>? gate;
+  final handoffs = <String, String>{};
+  final stopped = <String>[];
+  final discarded = <String>[];
+
+  /// Starts that ran at the same time as another, at most.
+  var overlap = 0;
+  var _running = 0;
 
   @override
   Future<String> start({
@@ -75,15 +94,45 @@ final class _Starter implements BoardStarter {
     required String prompt,
     required LeadPick lead,
     required bool worktree,
+    required AgentMode mode,
+    String? fromCommit,
   }) async {
-    if (fail.any(prompt.startsWith)) throw const HarnessError('No room.');
-    started.add((prompt: prompt, lead: lead, worktree: worktree));
-    return 's-${started.length}';
+    _running++;
+    if (_running > overlap) overlap = _running;
+    try {
+      await gate?.future;
+      await Future<void>.delayed(Duration.zero);
+      if (fail.any(prompt.startsWith)) throw const HarnessError('No room.');
+      started.add((prompt: prompt, lead: lead, worktree: worktree, mode: mode, from: fromCommit));
+      return 's-${started.length}';
+    } finally {
+      _running--;
+    }
   }
+
+  @override
+  Future<String?> handoff(String sessionId) async => handoffs[sessionId];
+
+  @override
+  Future<void> stop(String sessionId) async => stopped.add(sessionId);
+
+  @override
+  Future<void> discard(String sessionId) async => discarded.add(sessionId);
 }
 
 void main() {
   group('the split', () {
+    test('takes the last object with a tasks list, skipping other objects; long briefs are cut', () {
+      final long = 'x' * 5000;
+      final split = _parse(
+        'I read {"name":"shop","version":"1.0"} and "quotes" here.\n'
+        '{"tasks":[{"title":"A","brief":"$long"},{"title":"B"}]}',
+      );
+      final tasks = (split as SplitTasks).tasks;
+      expect([for (final t in tasks) t.title], ['A', 'B']);
+      expect(tasks.first.brief.length, maxBriefChars);
+    });
+
     test('reads the first JSON object, maps "after" numbers to ids, and checks harnesses and models', () {
       final split = _parse('''
 Here is the plan:
@@ -144,6 +193,7 @@ Here is the plan:
     });
 
     test("each CLI plans headless and read-only; Claude's JSON reply is unwrapped", () {
+      // No MCP servers and only the user's own settings (a repository's hooks don't run).
       expect(plannerArgs(PlannerCli.claude, model: 'anthropic/claude-opus-5.5', prompt: 'P'), [
         '-p',
         'P',
@@ -151,6 +201,9 @@ Here is the plan:
         'json',
         '--permission-mode',
         'plan',
+        '--strict-mcp-config',
+        '--setting-sources',
+        'user',
         '--no-session-persistence',
         '--model',
         'claude-opus-5-5',
@@ -160,12 +213,31 @@ Here is the plan:
         '--skip-git-repo-check',
         '--sandbox',
         'read-only',
+        '-c',
+        'mcp_servers={}',
         '--output-last-message',
         '/t/r',
         '--',
         'P',
       ]);
-      expect(plannerArgs(PlannerCli.opencode, model: 'x/y', prompt: 'P'), ['run', '-m', 'x/y', '--', 'P']);
+      // OpenCode's plan agent, not its build agent.
+      expect(plannerArgs(PlannerCli.opencode, model: 'x/y', prompt: 'P'), [
+        'run',
+        '--agent',
+        'plan',
+        '-m',
+        'x/y',
+        '--',
+        'P',
+      ]);
+      expect(plannerArgs(PlannerCli.gemini, model: '', prompt: 'P'), [
+        '-p',
+        'P',
+        '--approval-mode',
+        'plan',
+        '--allowed-mcp-server-names',
+        'none',
+      ]);
       expect(plannerReplyText(PlannerCli.claude, '{"type":"result","result":"{\\"tasks\\":[]}"}'), '{"tasks":[]}');
       expect(plannerReplyText(PlannerCli.gemini, 'plain'), 'plain');
       expect(
@@ -202,6 +274,49 @@ Here is the plan:
       expect(tasksToStart(failed), isEmpty);
       expect(taskBlocked(failed, failed.tasks[1]), isTrue);
       expect(tasksToStart(g.copyWith(stage: GoalStage.cancelled)), isEmpty);
+    });
+
+    test("a dependent task's prompt says whose work its branch holds, what to merge first and what isn't there", () {
+      final g = _g([
+        _t('a', run: TaskDone('s1', at: DateTime(2026, 1, 1, 9))),
+        _t('b', run: TaskDone('s2', at: DateTime(2026, 1, 1, 10))),
+        _t('c', run: const TaskDone('s3')),
+        _t('d', after: ['a', 'b', 'c']),
+      ]);
+      // The one that finished last first; unknown times last.
+      expect([for (final t in depsByFinish(g, g.tasks[3])) t.id], ['b', 'a', 'c']);
+      final prompt = planTaskPrompt(
+        g,
+        g.tasks[3],
+        handoff: (
+          base: (title: 'Task b', commit: 'bbb'),
+          merges: [(title: 'Task a', commit: 'aaa')],
+          inPlace: ['Task c'],
+        ),
+      );
+      expect(prompt, contains('Your branch already holds the work of "Task b"'));
+      expect(prompt, contains('`git merge --no-edit aaa` ("Task a")'));
+      expect(prompt, contains('"Task c" ran in the project folder itself'));
+      expect(planTaskPrompt(g, g.tasks[0]), isNot(contains('merge')));
+    });
+
+    test('what a tracked session counts as: done only when done with nothing under it working', () {
+      final info = CodeSessionInfo(
+        id: 's',
+        projectId: 'p1',
+        title: 's',
+        conversationId: 'c',
+        model: '',
+        mode: AgentMode.ask,
+        workingDir: '/w',
+        createdAt: DateTime(2026),
+      );
+      expect(sessionOutcome(info: null, own: null, childrenWorking: false), SessionOutcome.gone);
+      expect(sessionOutcome(info: info, own: SessionStatus.done, childrenWorking: false), SessionOutcome.done);
+      expect(sessionOutcome(info: info, own: SessionStatus.done, childrenWorking: true), SessionOutcome.running);
+      // Idle reads before a first turn: not done.
+      expect(sessionOutcome(info: info, own: SessionStatus.idle, childrenWorking: false), SessionOutcome.running);
+      expect(sessionOutcome(info: info, own: SessionStatus.failed, childrenWorking: false), SessionOutcome.failed);
     });
 
     test('loops and missing tasks are found', () {
@@ -429,18 +544,107 @@ Here is the plan:
       await pumpEventQueue();
       expect([for (final s in starter.started) s.prompt.split('\n').first], ['API', 'Docs']);
       expect(starter.started.first.lead, (harness: 'beta', model: ''));
-      expect(starter.started.every((s) => s.worktree), isTrue);
+      expect(starter.started.every((s) => s.worktree && s.mode == AgentMode.autoEdit), isTrue);
+      // One start at a time: worktrees aren't made on one repository at once.
+      expect(starter.overlap, 1);
       expect(plans.goal(id)!.stage, GoalStage.running);
-      // The API task's session finished: UI starts, told what ran before it.
+      // The API task's session finished: UI starts on its branch's work, told so.
+      starter.handoffs['s-1'] = 'api-work';
       plans.observe({'s-1': SessionOutcome.done});
       await pumpEventQueue();
       expect(starter.started.last.prompt, startsWith('UI'));
-      expect(starter.started.last.prompt, contains('"API"'));
+      expect(starter.started.last.prompt, contains('holds the work of "API"'));
+      expect(starter.started.last.from, 'api-work');
       plans.observe({'s-2': SessionOutcome.done, 's-3': SessionOutcome.done});
       expect(plans.goal(id)!.stage, GoalStage.done);
-      // Kept across a restart.
-      expect(BoardPlans.key, isNotEmpty);
       expect(jsonDecode(prefs[BoardPlans.key]!), hasLength(1));
+    });
+
+    test('after a restart a goal settles, and queued tasks whose tasks finished meanwhile start', () async {
+      final goal = PlanGoal(
+        id: 'g',
+        projectId: 'p1',
+        planner: _fallback,
+        createdAt: DateTime(2026),
+        text: 'x',
+        stage: GoalStage.running,
+        tasks: [
+          _t('a', run: const TaskStarting()),
+          _t('b', run: const TaskDone('s-0')),
+          _t('c', after: ['b'], run: const TaskQueued()),
+        ],
+      );
+      prefs[BoardPlans.key] = jsonEncode([goal.toJson()]);
+      c.dispose();
+      c = ProviderContainer(
+        overrides: [
+          preferencesProvider.overrideWithValue(prefs),
+          boardPlannerProvider.overrideWithValue(planner),
+          boardStarterProvider.overrideWithValue(starter),
+          plannerLeadsProvider.overrideWithValue(_leads),
+        ],
+      );
+      final plans = c.read(boardPlansProvider.notifier);
+      // The start the app quit during came back failed; c had been waiting on b and starts now.
+      expect(plans.goal('g')!.tasks[0].run, isA<TaskFailed>());
+      await pumpEventQueue();
+      expect(starter.started.single.prompt, startsWith('Task c'));
+      expect(plans.goal('g')!.stage, GoalStage.running);
+      // Retry runs the failed one again.
+      plans.retry('g', 'a');
+      await pumpEventQueue();
+      expect(starter.started.last.prompt, startsWith('Task a'));
+      expect(plans.goal('g')!.tasks[0].run, isA<TaskStarted>());
+    });
+
+    test('the goal picks the mode its tasks start in', () async {
+      final plans = c.read(boardPlansProvider.notifier);
+      final id = plans.add(projectId: 'p1', planner: _fallback);
+      plans
+        ..setText(id, 'x')
+        ..setMode(id, AgentMode.ask);
+      planner.reply = reply;
+      await plans.split(id);
+      plans.delegate(id);
+      await pumpEventQueue();
+      expect(starter.started.every((s) => s.mode == AgentMode.ask), isTrue);
+    });
+
+    test('Retry after a failed start unblocks the tasks waiting on it', () async {
+      final plans = c.read(boardPlansProvider.notifier);
+      final id = plans.add(projectId: 'p1', planner: _fallback);
+      plans.setText(id, 'x');
+      planner.reply = reply;
+      await plans.split(id);
+      final ui = plans.goal(id)!.tasks[1];
+      starter.fail.add('API');
+      plans.delegate(id, taskId: ui.id);
+      await pumpEventQueue();
+      expect(plans.goal(id)!.stage, GoalStage.failed);
+      starter.fail.clear();
+      plans.retry(id, plans.goal(id)!.tasks[0].id);
+      await pumpEventQueue();
+      expect(starter.started.single.prompt, startsWith('API'));
+      plans.observe({'s-1': SessionOutcome.done});
+      await pumpEventQueue();
+      expect(starter.started.last.prompt, startsWith('UI'));
+    });
+
+    test('removing a goal mid-split stops its planner', () async {
+      final plans = c.read(boardPlansProvider.notifier);
+      final id = plans.add(projectId: 'p1', planner: _fallback);
+      plans.setText(id, 'x');
+      planner
+        ..reply = reply
+        ..gate = Completer();
+      final split = plans.split(id);
+      expect(plans.busy(id), isTrue);
+      plans.remove(id);
+      await pumpEventQueue();
+      expect(planner.cancelled, isTrue);
+      planner.gate!.complete();
+      await split;
+      expect(c.read(boardPlansProvider), isEmpty);
     });
 
     test('a bad reply or an error leaves a draft with why; an old split\'s reply is dropped', () async {
@@ -499,16 +703,86 @@ Here is the plan:
       expect(plans.goal(id)!.task(api.id)!.after, isEmpty);
       plans.delegate(id, taskId: docs.id);
       await pumpEventQueue();
-      expect(plans.cancel(id), isEmpty);
+      plans.cancel(id);
       final goal = plans.goal(id)!;
       expect(goal.stage, GoalStage.cancelled);
       expect([for (final t in goal.tasks) t.run.runtimeType], [TaskCancelled, TaskCancelled, TaskStarted]);
+      expect(starter.stopped, isEmpty);
       final id2 = plans.add(projectId: 'p1', planner: _fallback);
       plans.setText(id2, 'y');
       await plans.split(id2);
       plans.delegate(id2);
       await pumpEventQueue();
-      expect(plans.cancel(id2, stopStarted: true), ['s-2', 's-3']);
+      // Stop reaches every started session, whether or not its view was ever opened.
+      plans.cancel(id2, started: StartedChoice.stop);
+      await pumpEventQueue();
+      expect(starter.stopped, ['s-2', 's-3']);
+    });
+
+    test('Cancel with Stop while a task is starting stops its session once it exists', () async {
+      final plans = c.read(boardPlansProvider.notifier);
+      final id = plans.add(projectId: 'p1', planner: _fallback);
+      plans.setText(id, 'x');
+      planner.reply = reply;
+      await plans.split(id);
+      starter.gate = Completer();
+      plans.delegate(id);
+      await pumpEventQueue();
+      expect(plans.goal(id)!.tasks[0].run, isA<TaskStarting>());
+      plans.cancel(id, started: StartedChoice.stop);
+      starter.gate!.complete();
+      await pumpEventQueue();
+      expect(plans.goal(id)!.tasks[0].run, isA<TaskCancelled>());
+      expect(starter.stopped, ['s-1']);
+      // Nothing more started after the cancel.
+      expect(starter.started, hasLength(1));
+    });
+
+    test('the plans follow their sessions app-wide, with the Board closed', () async {
+      final info = CodeSessionInfo(
+        id: 's-1',
+        projectId: 'p1',
+        title: 'API',
+        conversationId: 'c',
+        model: '',
+        mode: AgentMode.autoEdit,
+        workingDir: 'demo://p1',
+        createdAt: DateTime(2026),
+      );
+      final goal = PlanGoal(
+        id: 'g',
+        projectId: 'p1',
+        planner: _fallback,
+        createdAt: DateTime(2026),
+        text: 'x',
+        stage: GoalStage.running,
+        tasks: [
+          _t('a', run: const TaskStarted('s-1')),
+          _t('b', after: ['a'], run: const TaskQueued()),
+        ],
+      );
+      prefs[BoardPlans.key] = jsonEncode([goal.toJson()]);
+      prefs['code.sessions'] = jsonEncode([info.toJson()]);
+      var statuses = <String, SessionStatus>{'s-1': SessionStatus.running};
+      c.dispose();
+      c = ProviderContainer(
+        overrides: [
+          preferencesProvider.overrideWithValue(prefs),
+          boardPlannerProvider.overrideWithValue(planner),
+          boardStarterProvider.overrideWithValue(starter),
+          plannerLeadsProvider.overrideWithValue(_leads),
+          codeStatusesProvider.overrideWithBuild((ref, _) => statuses),
+        ],
+      );
+      c.listen(boardPlanWatchProvider, (_, _) {});
+      await pumpEventQueue();
+      expect(starter.started, isEmpty);
+      statuses = {'s-1': SessionStatus.done};
+      c.invalidate(codeStatusesProvider);
+      c.read(boardPlanWatchProvider);
+      await pumpEventQueue();
+      expect(c.read(boardPlansProvider).single.tasks[0].run, isA<TaskDone>());
+      expect(starter.started.single.prompt, startsWith('Task b'));
     });
 
     test('a race starts every runner in a worktree, records when each finished, and keeps one', () async {
@@ -528,11 +802,51 @@ Here is the plan:
       expect(races.race(id)!.stage, RaceStage.running);
       races.observe({'s-2': SessionOutcome.failed});
       expect(races.race(id)!.stage, RaceStage.comparing);
+      expect(races.keepBlocked(id), isNull);
       races.keep(id, 's-1');
       final kept = races.race(id)!;
       expect((kept.stage, kept.keptSession), (RaceStage.kept, 's-1'));
       expect(kept.runners[1].run, isA<RunnerDiscarded>());
       expect(BoardRace.fromJson((jsonDecode(prefs[BoardRaces.key]!) as List<Object?>)[0])!.keptSession, 's-1');
+    });
+
+    test('Keep waits for runners still starting; Cancel with Stop removes runners, even ones starting', () async {
+      final races = c.read(boardRacesProvider.notifier);
+      final project = c.read(codeProjectsProvider).single;
+      starter.gate = Completer();
+      final id = races.start(
+        project: project,
+        prompt: 'Go',
+        leads: const [(harness: 'alpha', model: 'a1'), (harness: 'beta', model: '')],
+      );
+      await pumpEventQueue();
+      expect(races.keepBlocked(id), contains('still starting'));
+      races.cancel(id, started: StartedChoice.stop);
+      starter.gate!.complete();
+      await pumpEventQueue();
+      // The first runner started after the cancel: stopped and removed; the second never started.
+      expect(starter.stopped, ['s-1']);
+      expect(starter.discarded, ['s-1']);
+      expect(starter.started, hasLength(1));
+      expect(races.race(id)!.runners.every((r) => r.run is RunnerDiscarded), isTrue);
+    });
+
+    test('a race restored mid-start settles instead of staying Starting', () {
+      final race = BoardRace(
+        id: 'r',
+        projectId: 'p1',
+        prompt: 'x',
+        createdAt: DateTime(2026),
+        stage: RaceStage.running,
+        runners: [
+          RaceRunner(lead: _fallback, run: const RunnerStarting()),
+          RaceRunner(lead: _fallback, run: RunnerDone('s', DateTime(2026))),
+        ],
+      );
+      prefs[BoardRaces.key] = jsonEncode([race.toJson()]);
+      c.dispose();
+      c = ProviderContainer(overrides: [preferencesProvider.overrideWithValue(prefs)]);
+      expect(c.read(boardRacesProvider).single.stage, RaceStage.comparing);
     });
   });
 }

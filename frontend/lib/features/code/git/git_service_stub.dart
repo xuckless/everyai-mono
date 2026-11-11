@@ -15,7 +15,9 @@ Future<SessionWorktree> createWorktree({
   required String slug,
   required String worktreesDir,
   required String hooksDir,
+  String? from,
 }) async => _unsupported();
+Future<String> handoffCommit(SessionWorktree w) async => _unsupported();
 Future<List<FileChange>> changes(SessionWorktree w) async => const [];
 Future<List<FileDiff>> diff(SessionWorktree w) async => const [];
 Future<List<FileDiff>> uncommittedDiff(SessionWorktree w) async => const [];

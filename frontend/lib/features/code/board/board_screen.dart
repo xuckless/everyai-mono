@@ -553,32 +553,12 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       if (rerun.isNotEmpty) ref.read(boardSeenProvider.notifier).forget(rerun);
     });
 
-    // Plans and races follow their sessions: a task whose session finished lets the tasks waiting on it start. Only
-    // while the Board is open.
+    // Plans and races follow their sessions app-wide (boardPlanWatchProvider); the Board only shows them.
     final goals = ref.watch(boardPlansProvider);
     final races = ref.watch(boardRacesProvider);
     final boardIds = {for (final s in all) s.id};
-    SessionOutcome? outcomeOf(String id) {
-      if (!ids.contains(id)) return SessionOutcome.gone;
-      if (!boardIds.contains(id)) return null;
-      if (phase[id] == BoardPhase.failed) return SessionOutcome.failed;
-      // Done, not merely idle: a session that just started reads idle before its first turn.
-      if (columnOf[id] == BoardColumn.done && own[id] == SessionStatus.done) return SessionOutcome.done;
-      return SessionOutcome.running;
-    }
-
     final goalOf = ref.read(boardPlansProvider.notifier).bySession;
     final raceOf = ref.read(boardRacesProvider.notifier).bySession;
-    final outcomes = <String, SessionOutcome>{
-      for (final id in {...goalOf.keys, ...raceOf.keys}) id: ?outcomeOf(id),
-    };
-    if (outcomes.values.any((o) => o != SessionOutcome.running)) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        ref.read(boardPlansProvider.notifier).observe(outcomes);
-        ref.read(boardRacesProvider.notifier).observe(outcomes);
-      });
-    }
     // A session a task delegated since the last build flies out of its task card.
     final taskOf = {
       for (final g in goals)

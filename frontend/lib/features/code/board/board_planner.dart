@@ -1,8 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../core/preferences.dart';
 import '../agent_models.dart' show codeAgentProvider;
 import '../code_providers.dart';
 import '../code_settings_providers.dart' show codeSettingsProvider;
@@ -15,7 +15,7 @@ import '../drivers/driver_policy.dart' show leadBlocked;
 import '../drivers/driver_registry.dart';
 import '../harness/harness.dart' show HarnessError;
 import '../harness/summarizer.dart' show gatewaySummarizer;
-import '../ui/code_home.dart' show lastModeKey;
+import '../git/git_service.dart';
 import 'board_plan.dart';
 import 'board_planner_stub.dart' if (dart.library.io) 'board_planner_io.dart' as cli;
 
@@ -39,9 +39,12 @@ enum PlannerCli {
 }
 
 /// The CLI's arguments for one headless, read-only planning run ([lastMessage]: where Codex writes its reply).
+/// The planner runs in the project folder so it can read the code; each CLI is held to reading there: no edits, no
+/// MCP servers (the user's or the repository's), and no hooks or settings from the repository.
 List<String> plannerArgs(PlannerCli cli, {required String model, required String prompt, String? lastMessage}) =>
     switch (cli) {
-      // Plan mode reads but never edits; nothing is saved as a session.
+      // Plan mode reads but never edits; no MCP servers; only the user's own settings (a cloned repo's hooks don't
+      // run); nothing is saved as a session.
       PlannerCli.claude => [
         '-p',
         prompt,
@@ -49,32 +52,48 @@ List<String> plannerArgs(PlannerCli cli, {required String model, required String
         'json',
         '--permission-mode',
         'plan',
+        '--strict-mcp-config',
+        '--setting-sources',
+        'user',
         '--no-session-persistence',
         if (claudeModelArg(model) case final m?) ...['--model', m],
       ],
-      // A read-only sandbox; the last message alone goes to the file.
+      // A read-only sandbox and no MCP servers; the last message alone goes to the file.
       PlannerCli.codex => [
         'exec',
         '--skip-git-repo-check',
         '--sandbox',
         'read-only',
+        '-c',
+        'mcp_servers={}',
         if (lastMessage != null) ...['--output-last-message', lastMessage],
         if (model.isNotEmpty) ...['-m', model],
         '--',
         prompt,
       ],
+      // OpenCode's own plan agent: it may read but not edit or run commands.
       PlannerCli.opencode => [
         'run',
+        '--agent',
+        'plan',
         if (model.isNotEmpty) ...['-m', model],
         '--',
         prompt,
       ],
+      // Gemini's read-only plan mode, with only an MCP server named `none` allowed (so none of the user's).
       PlannerCli.gemini => [
         '-p',
         prompt,
+        '--approval-mode',
+        'plan',
+        '--allowed-mcp-server-names',
+        'none',
         if (model.isNotEmpty) ...['-m', model],
       ],
     };
+
+/// How long a planner may take.
+const plannerTimeout = Duration(minutes: 4);
 
 /// The reply in a CLI's output: Claude's JSON `result`, else the output as it is.
 String plannerReplyText(PlannerCli cli, String stdout) {
@@ -95,8 +114,15 @@ abstract interface class BoardPlanner {
   /// Why [pick] can't plan now (not installed, no consent, can't run headless), or null.
   String? unavailable(LeadPick pick);
 
-  /// The planner's reply to [prompt], run in [project]'s folder.
-  Future<String> ask(LeadPick pick, String prompt, {required CodeProject project, required String tag});
+  /// The planner's reply to [prompt], run in [project]'s folder. Completing [cancel] ends it at once (its process
+  /// and what that started); the call then throws.
+  Future<String> ask(
+    LeadPick pick,
+    String prompt, {
+    required CodeProject project,
+    required String tag,
+    Future<void>? cancel,
+  });
 }
 
 final boardPlannerProvider = Provider<BoardPlanner>(_AppPlanner.new);
@@ -120,12 +146,18 @@ final class _AppPlanner implements BoardPlanner {
   }
 
   @override
-  Future<String> ask(LeadPick pick, String prompt, {required CodeProject project, required String tag}) async {
+  Future<String> ask(
+    LeadPick pick,
+    String prompt, {
+    required CodeProject project,
+    required String tag,
+    Future<void>? cancel,
+  }) async {
     if (unavailable(pick) case final why?) throw HarnessError(why);
     if (isDemoPath(project.path)) throw const HarnessError('The demo project has no model to plan with.');
     if (pick.harness != everyaiHarnessName) {
       if (project.environment != 'host') throw const HarnessError('Planning with a CLI runs on this computer only.');
-      return cli.runPlannerCli(pick.harness, pick.model, prompt, project.path);
+      return cli.runPlannerCli(pick.harness, pick.model, prompt, project.path, tag: tag, cancel: cancel);
     }
     final ask = gatewaySummarizer(
       baseUrl: gatewayBaseUrl(ref),
@@ -134,20 +166,38 @@ final class _AppPlanner implements BoardPlanner {
       model: pick.model.isEmpty ? ref.read(codeAgentProvider).model : pick.model,
       onUnauthorized: (k) => remintGatewayKey(ref, k),
     );
-    return ask([
+    final reply = ask([
       {'role': 'user', 'content': prompt},
-    ]);
+    ]).timeout(plannerTimeout, onTimeout: () => throw const HarnessError('The planner took too long.'));
+    if (cancel == null) return reply;
+    // The request itself can't be called back; its answer is dropped.
+    unawaited(reply.then<void>((_) {}, onError: (Object _) {}));
+    return Future.any([reply, cancel.then<String>((_) => throw const HarnessError('Stopped.'))]);
   }
 }
 
-/// Starts a session for a task or a race runner; its id. Tests replace it.
+/// Starts, stops and hands on the sessions of tasks and race runners. Tests replace it.
 abstract interface class BoardStarter {
+  /// Starts a session in [mode]; its id. With [worktree], it gets its own (branched from [fromCommit] when given)
+  /// or fails: it never falls back to the project folder.
   Future<String> start({
     required CodeProject project,
     required String prompt,
     required LeadPick lead,
     required bool worktree,
+    required AgentMode mode,
+    String? fromCommit,
   });
+
+  /// A commit of [sessionId]'s work in its worktree (committed or not), or null when it ran in the project folder
+  /// (or is gone).
+  Future<String?> handoff(String sessionId);
+
+  /// Stops [sessionId] and everything it runs (its controller is opened for it when it isn't).
+  Future<void> stop(String sessionId);
+
+  /// Removes [sessionId] with its worktree and branch (or the session alone when it has none).
+  Future<void> discard(String sessionId);
 }
 
 final boardStarterProvider = Provider<BoardStarter>(_AppStarter.new);
@@ -162,10 +212,9 @@ final class _AppStarter implements BoardStarter {
     required String prompt,
     required LeadPick lead,
     required bool worktree,
+    required AgentMode mode,
+    String? fromCommit,
   }) async {
-    // The mode the user last started a session of this project in; Auto-edit when none (Code home's default).
-    final saved = ref.read(preferencesProvider)[lastModeKey(project.id)];
-    final mode = AgentMode.values.asNameMap()[saved] ?? AgentMode.autoEdit;
     final effort = lead.harness == everyaiHarnessName
         ? ref.read(codeAgentProvider).effort
         : ref.read(codeLeadProvider).of(lead.harness).effort;
@@ -185,8 +234,31 @@ final class _AppStarter implements BoardStarter {
           isolated: worktree,
           tier: ref.read(codeSettingsProvider).tier,
           harness: lead.harness,
+          fromCommit: fromCommit,
+          requireWorktree: worktree,
         );
     return info.id;
+  }
+
+  @override
+  Future<String?> handoff(String sessionId) async {
+    final w = ref.read(codeSessionsProvider.notifier).byId(sessionId)?.worktree;
+    return w == null ? null : GitService.handoffCommit(w);
+  }
+
+  @override
+  Future<void> stop(String sessionId) async {
+    if (ref.read(codeSessionsProvider.notifier).byId(sessionId) == null) return;
+    await ref.read(codeSessionProvider(sessionId).notifier).stopAll();
+  }
+
+  @override
+  Future<void> discard(String sessionId) async {
+    final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
+    if (info == null) return;
+    await (info.worktree != null
+        ? ref.read(codeGitProvider(sessionId).notifier).discard()
+        : ref.read(codeSessionsProvider.notifier).remove(sessionId));
   }
 }
 

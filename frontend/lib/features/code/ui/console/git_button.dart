@@ -112,9 +112,9 @@ class GitButton extends ConsumerWidget {
 /// of the base, the agent is asked to rebase and squash it (conflicts are resolved in its own worktree, so the
 /// user's checkout never holds a half-done merge). Once it is, the user confirms the agent's commit and the base
 /// fast-forwards to it; then the worktree can go. Failures are shown, not thrown.
-Future<void> mergeLocally(BuildContext context, WidgetRef ref, CodeSessionInfo info) async {
+Future<bool> mergeLocally(BuildContext context, WidgetRef ref, CodeSessionInfo info) async {
   final w = info.worktree;
-  if (w == null) return;
+  if (w == null) return false;
   final controller = ref.read(codeSessionProvider(info.id).notifier);
   Future<void> ask(String request) async {
     if (await controller.send(request) && context.mounted) {
@@ -129,23 +129,26 @@ Future<void> mergeLocally(BuildContext context, WidgetRef ref, CodeSessionInfo i
     (snapshot, dirty) = await (ref.read(codeGitProvider(info.id).future), GitService.isDirty(w)).wait;
   } on Object catch (e) {
     if (context.mounted) showAdaptiveToast(context, '$e');
-    return;
+    return false;
   }
-  if (dirty || snapshot.ahead != 1 || snapshot.behind != 0) return ask(prepareMergeRequest(w.baseBranch));
+  if (dirty || snapshot.ahead != 1 || snapshot.behind != 0) {
+    await ask(prepareMergeRequest(w.baseBranch));
+    return false;
+  }
   // While the agent works its branch can still change under the dialog.
   bool running() => ref.read(codeSessionProvider(info.id)).transcript.running;
   if (running()) {
     if (context.mounted) showAdaptiveToast(context, 'The agent is still working. Merge once it has finished.');
-    return;
+    return false;
   }
   final ({String sha, String subject}) candidate;
   try {
     candidate = await GitService.mergeCandidate(w);
   } on Object catch (e) {
     if (context.mounted) showAdaptiveToast(context, '$e');
-    return;
+    return false;
   }
-  if (!context.mounted) return;
+  if (!context.mounted) return false;
   final go = await showAdaptiveConfirm(
     context,
     title: 'Merge into ${w.baseBranch}?',
@@ -154,22 +157,23 @@ Future<void> mergeLocally(BuildContext context, WidgetRef ref, CodeSessionInfo i
         '(${candidate.sha.substring(0, 7)}).',
     confirmLabel: 'Merge',
   );
-  if (!go || !context.mounted) return;
+  if (!go || !context.mounted) return false;
   if (running()) {
     showAdaptiveToast(context, 'The agent started working again, so nothing was merged.');
-    return;
+    return false;
   }
   try {
     // Exactly the commit the user confirmed, whatever the branch points at by now.
     final sha = await git.fastForwardMerge(candidate.sha);
     if (context.mounted) showAdaptiveToast(context, 'Merged into ${w.baseBranch} as ${sha.substring(0, 7)}');
   } on BaseMoved {
-    return ask(baseMovedRequest(w.baseBranch));
+    await ask(baseMovedRequest(w.baseBranch));
+    return false;
   } on Object catch (e) {
     if (context.mounted) showAdaptiveToast(context, '$e');
-    return;
+    return false;
   }
-  if (!context.mounted) return;
+  if (!context.mounted) return true;
   final remove = await showAdaptiveConfirm(
     context,
     title: 'Remove the worktree?',
@@ -178,10 +182,11 @@ Future<void> mergeLocally(BuildContext context, WidgetRef ref, CodeSessionInfo i
         'cancel to keep it and go on working there.',
     confirmLabel: 'Remove',
   );
-  if (!remove || !context.mounted) return;
+  if (!remove || !context.mounted) return true;
   try {
     await git.discard();
   } on Object catch (e) {
     if (context.mounted) showAdaptiveToast(context, '$e');
   }
+  return true;
 }

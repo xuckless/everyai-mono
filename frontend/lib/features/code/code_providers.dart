@@ -743,6 +743,8 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     HarnessTier? tier,
     String harness = everyaiHarnessName,
     WorkflowPick? workflow,
+    String? fromCommit,
+    bool requireWorktree = false,
   }) async {
     final id = const Uuid().v7();
     final title = titleFor(prompt.isEmpty ? files.first.name : prompt);
@@ -763,8 +765,21 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       if (await _workflowProblem(ref, project.path, script) case final why?) throw HarnessError(why);
     }
     final worktree = local && isolated
-        ? await _worktreeFor(project, title, id, env: driver == null ? HostEnv.instance : _envOf(driver))
+        ? await _worktreeFor(
+            project,
+            title,
+            id,
+            env: driver == null ? HostEnv.instance : _envOf(driver),
+            from: fromCommit,
+          )
         : null;
+    // The Board's tasks and race runners must not share the project folder when they asked for their own branch.
+    if (requireWorktree && isolated && worktree == null) {
+      throw const HarnessError(
+        "This project can't have worktrees (it isn't a git repository with a commit yet), so this would run in "
+        'the project folder itself.',
+      );
+    }
     final baseline = local && worktree == null ? await _baselineFor(project.path) : null;
     final workingDir = worktree?.path ?? project.path;
     tier ??= ref.read(codeSettingsProvider).tier;
@@ -1758,6 +1773,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     String title,
     String id, {
     ExecEnv env = HostEnv.instance,
+    String? from,
   }) async {
     final root = await GitService.repoRoot(project.path);
     if (root == null || !await GitService.hasCommits(root)) return null;
@@ -1770,6 +1786,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       slug: sessionSlug(title, id),
       worktreesDir: dir,
       hooksDir: '$data/git-hooks',
+      from: from,
     );
   }
 

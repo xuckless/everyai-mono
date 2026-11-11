@@ -56,13 +56,17 @@ abstract final class GitService {
   static Future<GitBaseline?> baseline(String dir) => impl.baseline(dir);
 
   /// A worktree for a new session on `everyai/<slug>`, branched from the main
-  /// checkout's current commit, with EveryAI's commit hooks.
+  /// checkout's current commit (or commit [from]), with EveryAI's commit hooks.
   static Future<SessionWorktree> createWorktree({
     required String repoRoot,
     required String slug,
     required String worktreesDir,
     required String hooksDir,
-  }) => impl.createWorktree(repoRoot: repoRoot, slug: slug, worktreesDir: worktreesDir, hooksDir: hooksDir);
+    String? from,
+  }) => impl.createWorktree(repoRoot: repoRoot, slug: slug, worktreesDir: worktreesDir, hooksDir: hooksDir, from: from);
+
+  /// A commit of everything in [w]'s folder now (its uncommitted work too), kept by a ref; [w] is left as it is.
+  static Future<String> handoffCommit(SessionWorktree w) => impl.handoffCommit(w);
 
   /// Files changed since the base commit, committed or not.
   static Future<List<FileChange>> changes(SessionWorktree w) => impl.changes(w);

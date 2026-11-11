@@ -16,9 +16,10 @@ typedef LeadPick = ({String harness, String model});
 ///   draft ──Delegate──► queued ──every task it waits for is done──► starting ──started──► started(session)
 ///     │                   │                                            └──couldn't start──► failed(why)
 ///     │                   └── a task it waits for failed or was cancelled: stays queued, shown as blocked
-///     │                                                     started ──its session finished──► done(session)
+///     │                                                     started ──its session finished──► done(session, at)
 ///     │                                                            └──its session failed──► failed(why, session)
 ///     └──────────── Cancel plan (draft, queued; started ones only when the user agrees) ──────────► cancelled
+///   failed ──Retry──► queued (a new session; the tasks waiting on it start once it is done)
 /// ```
 ///
 /// Only [BoardPlans] moves a task; [starting] never outlives the app (a start the app quit during is a failure on
@@ -48,8 +49,11 @@ final class TaskStarted extends TaskRun {
 }
 
 final class TaskDone extends TaskRun {
-  const TaskDone(this.sessionId);
+  const TaskDone(this.sessionId, {this.at});
   final String sessionId;
+
+  /// When the plan saw it finish (a task waiting on several starts from the one that finished last).
+  final DateTime? at;
 }
 
 final class TaskFailed extends TaskRun {
@@ -144,7 +148,7 @@ Map<String, Object?> _runToJson(TaskRun run) => switch (run) {
   // Never kept as starting: see [_runFromJson].
   TaskStarting() => {'s': 'starting'},
   TaskStarted(:final sessionId) => {'s': 'started', 'session': sessionId},
-  TaskDone(:final sessionId) => {'s': 'done', 'session': sessionId},
+  TaskDone(:final sessionId, :final at) => {'s': 'done', 'session': sessionId, 'at': ?at?.millisecondsSinceEpoch},
   TaskFailed(:final why, :final sessionId) => {'s': 'failed', 'why': why, 'session': ?sessionId},
   TaskCancelled(:final sessionId) => {'s': 'cancelled', 'session': ?sessionId},
 };
@@ -156,10 +160,16 @@ TaskRun _runFromJson(Object? json) {
     'queued' => const TaskQueued(),
     // The app quit while it was starting: maybe it started, maybe not. Failing it starts nothing twice.
     'starting' => const TaskFailed(
-      'EveryAI closed while this task was starting. Check for its session, then delegate it again.',
+      'EveryAI closed while this task was starting. Check for its session, then retry it.',
     ),
     'started' when session != null => TaskStarted(session),
-    'done' when session != null => TaskDone(session),
+    'done' when session != null => TaskDone(
+      session,
+      at: switch (json['at']) {
+        final num ms => DateTime.fromMillisecondsSinceEpoch(ms.toInt()),
+        _ => null,
+      },
+    ),
     'failed' => TaskFailed(json['why'] as String? ?? 'Failed.', sessionId: session),
     'cancelled' => TaskCancelled(sessionId: session),
     _ => const TaskDraft(),
@@ -190,11 +200,15 @@ final class PlanGoal {
     this.tasks = const [],
     this.stage = GoalStage.draft,
     this.error,
+    this.mode = defaultDelegateMode,
   });
 
   final String id;
   final String projectId;
   final String text;
+
+  /// The mode its tasks' sessions start in (an AgentMode name): Auto-edit unless the user picked another.
+  final String mode;
   final LeadPick planner;
   final List<GoalTask> tasks;
   final GoalStage stage;
@@ -211,8 +225,10 @@ final class PlanGoal {
     GoalStage? stage,
     String? error,
     bool clearError = false,
+    String? mode,
   }) => PlanGoal(
     id: id,
+    mode: mode ?? this.mode,
     projectId: projectId ?? this.projectId,
     planner: planner ?? this.planner,
     createdAt: createdAt,
@@ -237,6 +253,7 @@ final class PlanGoal {
     'stage': stage.name,
     'error': ?error,
     'created': createdAt.millisecondsSinceEpoch,
+    'mode': mode,
   };
 
   static PlanGoal? fromJson(Object? json) {
@@ -256,9 +273,13 @@ final class PlanGoal {
       stage: stage == GoalStage.splitting ? GoalStage.draft : stage,
       error: json['error'] as String?,
       createdAt: DateTime.fromMillisecondsSinceEpoch((json['created'] as num?)?.toInt() ?? 0),
+      mode: json['mode'] as String? ?? defaultDelegateMode,
     );
   }
 }
+
+/// Delegated tasks run unattended, so Auto-edit by default: edits go ahead, commands still ask.
+const defaultDelegateMode = 'autoEdit';
 
 /// The stage [goal]'s tasks put it in: drafts only → ready; any queued, starting or started → running; every
 /// remaining task done → done; else (a task failed or the rest were cancelled) → failed. Draft, splitting and
@@ -371,7 +392,7 @@ Rules:
 Agents:
 $list
 
-Reply with JSON only, no other text, in exactly this shape:
+Reply with JSON only, as the text of your final message (don't present it through a tool), in exactly this shape:
 {"tasks":[{"title":"Short imperative title","brief":"What to do and how to check it.","after":[],"harness":"<id>","model":""}]}
 
 Goal:
@@ -393,8 +414,11 @@ final class SplitRefused extends PlanSplit {
   final String why;
 }
 
-/// Reads the planner's [reply] into 2–8 tasks: the first JSON object in it (code fences and words around it are
-/// skipped), each task with a title, a brief, earlier tasks to wait for (1-based), and a harness from [leads] (else
+/// The longest brief kept from a planner (they are stored with the goal).
+const maxBriefChars = 2000;
+
+/// Reads the planner's [reply] into 2–8 tasks: the last JSON object in it with a "tasks" list (code fences, words
+/// and other objects around it, such as a file the planner printed, are skipped), each task with a title, a brief, earlier tasks to wait for (1-based), and a harness from [leads] (else
 /// [fallback]) with one of its models (else its default). New ids come from [newId].
 PlanSplit parsePlanSplit(
   String reply, {
@@ -402,7 +426,7 @@ PlanSplit parsePlanSplit(
   required LeadPick fallback,
   required String Function() newId,
 }) {
-  final json = _firstObject(reply);
+  final json = _planObject(reply);
   if (json == null) return const SplitRefused("The planner's reply had no tasks in it.");
   final raw = json['tasks'];
   if (raw is! List || raw.isEmpty) return const SplitRefused("The planner's reply had no tasks in it.");
@@ -415,7 +439,8 @@ PlanSplit parsePlanSplit(
     if (t is! Map<String, Object?>) return SplitRefused('Task ${i + 1} in the reply isn\'t an object.');
     final title = '${t['title']}'.trim();
     if (t['title'] is! String || title.isEmpty) return SplitRefused('Task ${i + 1} has no title.');
-    final brief = t['brief'] is String ? (t['brief']! as String).trim() : '';
+    var brief = t['brief'] is String ? (t['brief']! as String).trim() : '';
+    if (brief.length > maxBriefChars) brief = '${brief.substring(0, maxBriefChars - 1)}…';
     final after = <String>[];
     for (final a in t['after'] is List ? t['after']! as List : const []) {
       final n = a is num ? a.toInt() : int.tryParse('$a');
@@ -441,61 +466,69 @@ PlanSplit parsePlanSplit(
   return SplitTasks(tasks);
 }
 
-/// The first `{…}` in [text] that decodes as a JSON object, or null.
-Map<String, Object?>? _firstObject(String text) {
-  for (var start = text.indexOf('{'); start >= 0; start = text.indexOf('{', start + 1)) {
-    var depth = 0;
-    var inString = false;
-    var escaped = false;
-    for (var i = start; i < text.length; i++) {
-      final c = text[i];
-      if (inString) {
-        if (escaped) {
-          escaped = false;
-        } else if (c == r'\') {
-          escaped = true;
-        } else if (c == '"') {
-          inString = false;
-        }
-        continue;
+/// The last top-level `{…}` in [text] that decodes as a JSON object with a "tasks" list, or null. One pass over the
+/// text finds the top-level objects (quotes count only inside braces, so prose around them can't confuse it).
+Map<String, Object?>? _planObject(String text) {
+  final spans = <(int, int)>[];
+  var depth = 0;
+  var start = -1;
+  var inString = false;
+  var escaped = false;
+  for (var i = 0; i < text.length; i++) {
+    final c = text.codeUnitAt(i);
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (c == 0x5C) {
+        escaped = true;
+      } else if (c == 0x22) {
+        inString = false;
       }
-      if (c == '"') {
-        inString = true;
-      } else if (c == '{') {
-        depth++;
-      } else if (c == '}') {
-        depth--;
-        if (depth == 0) {
-          try {
-            final v = jsonDecode(text.substring(start, i + 1));
-            if (v is Map<String, Object?>) return v;
-          } on FormatException {
-            // Not JSON after all: try the next brace.
-          }
-          break;
-        }
-      }
+      continue;
+    }
+    if (c == 0x22 && depth > 0) {
+      inString = true;
+    } else if (c == 0x7B) {
+      if (depth == 0) start = i;
+      depth++;
+    } else if (c == 0x7D && depth > 0) {
+      depth--;
+      if (depth == 0) spans.add((start, i + 1));
+    }
+  }
+  for (final (from, to) in spans.reversed) {
+    try {
+      final v = jsonDecode(text.substring(from, to));
+      if (v is Map<String, Object?> && v['tasks'] is List) return v;
+    } on FormatException {
+      // Not JSON: an earlier one may be.
     }
   }
   return null;
 }
 
 /// What a delegated task's session is told.
-/// Prompt reason: the agent starts cold in its own branch; it needs the whole goal for context, its own share of it,
-/// and to know that tasks it waited on may live on other branches.
-String planTaskPrompt(PlanGoal goal, GoalTask task) {
-  final done = [
-    for (final id in task.after)
-      if (goal.task(id) case final dep?) dep.title,
+/// Prompt reason: the agent starts cold on its own branch; it needs the whole goal for context and its own share of
+/// it. A task that waits on others starts from their work (stacked on the one that finished last), so it is told
+/// whose work its branch already holds, which other tasks' work to merge in before it starts (by commit, so it
+/// can't pick the wrong branch), and which ran in the project folder, whose changes aren't on any branch.
+String planTaskPrompt(PlanGoal goal, GoalTask task, {TaskHandoff handoff = noHandoff}) {
+  final notes = [
+    if (handoff.base case final b?) 'Your branch already holds the work of "${b.title}", which this task builds on.',
+    if (handoff.merges.isNotEmpty)
+      'Before you start, merge in the work of the other tasks this one waits on: '
+          '${handoff.merges.map((m) => '`git merge --no-edit ${m.commit}` ("${m.title}")').join(', ')}. Resolve any '
+          'conflicts so both sides keep working.',
+    if (handoff.inPlace.isNotEmpty)
+      '${handoff.inPlace.map((t) => '"$t"').join(', ')} ran in the project folder itself, so '
+          '${handoff.inPlace.length == 1 ? 'its changes are' : 'their changes are'} not on your branch.',
   ];
   return [
     task.title,
     if (task.brief.trim().isNotEmpty) task.brief.trim(),
     'This is one task of a larger goal, split into ${goal.tasks.length} tasks that run as separate sessions. Do only '
         'this task. The goal:\n${goal.text.trim()}',
-    if (done.isNotEmpty)
-      'These tasks ran before yours: ${done.map((t) => '"$t"').join(', ')}. If they worked on their own branches, '
-          'their changes may not be in your checkout yet.',
+    ...notes,
   ].join('\n\n');
 }
 
@@ -508,4 +541,24 @@ String planId([math.Random? random]) {
   final r = random ?? math.Random();
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
   return [for (var i = 0; i < 10; i++) chars[r.nextInt(chars.length)]].join();
+}
+
+/// What a task's worktree starts from, worked out when it starts: the work of the task it waits on that finished last
+/// ([base]: a commit holding that task's work, committed or not), the other finished tasks' work to merge first
+/// ([merges]), and tasks that ran in the project folder itself ([inPlace]; their work isn't on any branch).
+typedef TaskHandoff = ({
+  ({String title, String commit})? base,
+  List<({String title, String commit})> merges,
+  List<String> inPlace,
+});
+
+const TaskHandoff noHandoff = (base: null, merges: [], inPlace: []);
+
+/// The tasks [task] waits on, the one that finished last first (unknown finish times last).
+List<GoalTask> depsByFinish(PlanGoal goal, GoalTask task) {
+  int at(GoalTask t) => switch (t.run) {
+    TaskDone(:final at?) => at.millisecondsSinceEpoch,
+    _ => 0,
+  };
+  return [for (final id in task.after) ?goal.task(id)]..sort((a, b) => at(b).compareTo(at(a)));
 }

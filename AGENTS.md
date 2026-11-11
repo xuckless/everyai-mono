@@ -1095,6 +1095,29 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
       for both in tests.
   - Progress is driven from the Board's build (`SessionOutcome`: done needs the session's own status Done, not idle),
     so dependents start only while the Board is open. Not run live: no CLI or gateway planning, no real race or merge.
+  - Review fixes and owner decisions (2026-11-11, same branch):
+    - Stacked dependencies (owner): a dependent task's worktree branches from a handoff commit of the dependency
+      that finished last (`TaskDone.at`, `depsByFinish`). `GitService.handoffCommit` snapshots the worktree,
+      including uncommitted work, into `refs/everyai/<slug>/handoff` without moving its branch. `planTaskPrompt`
+      tells the task to merge the other dependencies' commits first and names the ones that ran in place. In-place
+      tasks merge all of them.
+    - App-wide (owner): `boardPlanWatchProvider` follows tracked sessions from the shell on desktop
+      (`sessionOutcome`; removed harness counts as failed). The notifiers settle on load and start whatever is ready.
+    - Starts run one at a time, with at most one in-place task per project. Own-branch tasks and race runners pass
+      `requireWorktree` and are refused where the project can't have a worktree.
+    - Goals pick the mode their tasks start in (default Auto-edit; the "In …" chip beside Delegate all). Failed
+      tasks have Retry.
+    - Cancel and Remove ask "Keep them running" or "Stop them" (`StartedChoice`). Stop goes through
+      `BoardStarter.stop`, which opens the controller if needed. A task still starting is stopped once its session
+      exists. Remove cancels a split in flight.
+    - Planners are sandboxed: Claude gets `--strict-mcp-config --setting-sources user`, OpenCode `--agent plan`,
+      Codex `-c mcp_servers={}`, and Gemini `--approval-mode plan --allowed-mcp-server-names none`. They run through
+      `spawnDriver` (registered, so their tree is killed on timeout, cancel and quit). The gateway planner has the
+      same 4-minute timeout.
+    - The split parser takes the last object with a `tasks` list. Briefs are capped at 2,000 characters.
+    - Race Keep (owner): the winner merges first (`mergeLocally` now returns whether it merged). Only after that are
+      the losers stopped and removed. Keep is refused while a runner is starting. Race × asks "Keep them running" or
+      "Stop and remove"; a runner that starts after Stop is stopped and removed. Races settle on load.
 - **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
   `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
   `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,

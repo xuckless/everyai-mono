@@ -222,9 +222,10 @@ Future<SessionWorktree> createWorktree({
   required String slug,
   required String worktreesDir,
   required String hooksDir,
+  String? from,
 }) async {
   final baseBranch = await _out(repoRoot, ['branch', '--show-current']);
-  final baseCommit = await _out(repoRoot, ['rev-parse', 'HEAD']);
+  final baseCommit = from ?? await _out(repoRoot, ['rev-parse', 'HEAD']);
   final path = '$worktreesDir/$slug';
   final branch = 'everyai/$slug';
   await Directory(worktreesDir).create(recursive: true);
@@ -606,6 +607,16 @@ Future<String> checkpoint(SessionWorktree w, int turn) => _withSnapshot(w, (env)
   final ref = 'refs/everyai/${w.slug}/turn-$turn';
   await _git(w.path, ['update-ref', ref, sha]);
   return ref;
+});
+
+/// A commit of everything in [w]'s folder now (uncommitted and untracked work too, ignored files not), on top of its
+/// HEAD, kept under `refs/everyai/<slug>/handoff` so it isn't collected. A task that waits on this one starts from it.
+/// [w]'s own branch, index and files are left as they are.
+Future<String> handoffCommit(SessionWorktree w) => _withSnapshot(w, (env) async {
+  final tree = await _out(w.path, ['write-tree'], env: env);
+  final sha = await _out(w.path, ['commit-tree', tree, '-p', 'HEAD', '-m', 'EveryAI: work of ${w.slug}, handed on']);
+  await _git(w.path, ['update-ref', 'refs/everyai/${w.slug}/handoff', sha]);
+  return sha;
 });
 
 Future<void> restoreCheckpoint(SessionWorktree w, String ref) async {

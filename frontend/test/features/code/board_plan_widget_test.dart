@@ -54,7 +54,13 @@ final class _Planner implements BoardPlanner {
   String? unavailable(LeadPick pick) => null;
 
   @override
-  Future<String> ask(LeadPick pick, String prompt, {required CodeProject project, required String tag}) async {
+  Future<String> ask(
+    LeadPick pick,
+    String prompt, {
+    required CodeProject project,
+    required String tag,
+    Future<void>? cancel,
+  }) async {
     asked.add(pick);
     return reply;
   }
@@ -72,6 +78,8 @@ final class _Starter implements BoardStarter {
     required String prompt,
     required LeadPick lead,
     required bool worktree,
+    required AgentMode mode,
+    String? fromCommit,
   }) async {
     started.add((title: prompt.split('\n').first, worktree: worktree, lead: lead));
     final id = 's-${started.length}';
@@ -82,17 +90,32 @@ final class _Starter implements BoardStarter {
     ];
     return id;
   }
+
+  @override
+  Future<String?> handoff(String sessionId) async => null;
+
+  @override
+  Future<void> stop(String sessionId) async {}
+
+  @override
+  Future<void> discard(String sessionId) async {}
 }
 
 final class _Actions implements RaceActions {
-  final merged = <String>[];
-  final discarded = <String>[];
+  /// What happened, in order.
+  final log = <String>[];
+
+  /// Whether the merge lands.
+  var merges = true;
 
   @override
-  Future<void> merge(BuildContext context, WidgetRef ref, CodeSessionInfo winner) async => merged.add(winner.id);
+  Future<bool> merge(BuildContext context, WidgetRef ref, CodeSessionInfo winner) async {
+    log.add('merge ${winner.id}${merges ? '' : ' (not merged)'}');
+    return merges;
+  }
 
   @override
-  Future<void> discard(WidgetRef ref, CodeSessionInfo loser) async => discarded.add(loser.id);
+  Future<void> discard(WidgetRef ref, CodeSessionInfo loser) async => log.add('discard ${loser.id}');
 }
 
 Future<(ProviderContainer, Preferences)> _board(
@@ -120,6 +143,8 @@ Future<(ProviderContainer, Preferences)> _board(
   ];
   final c = make?.call(all) ?? ProviderContainer(overrides: all);
   c.listen(codeStatusesProvider, (_, _) {});
+  // The shell keeps the plans following their sessions app-wide.
+  c.listen(boardPlanWatchProvider, (_, _) {});
   await tester.pumpWidget(
     UncontrolledProviderScope(
       container: c,
@@ -207,7 +232,7 @@ void main() {
     await _done(tester, c);
   });
 
-  testWidgets('a race compares its runners; Keep asks, then removes the others and merges the one kept', (
+  testWidgets('a race compares its runners; Keep asks, merges the one kept first, then removes the others', (
     tester,
   ) async {
     final actions = _Actions();
@@ -248,15 +273,26 @@ void main() {
     expect(find.byKey(_k('board.compare.0')), findsOneWidget);
     expect(find.byKey(_k('board.compare.1')), findsOneWidget);
 
+    // A merge that doesn't land (the user said no, or the agent tidies first) removes nothing.
+    actions.merges = false;
     await tester.tap(find.byKey(_k('board.compare.keep.w1')));
     await tester.pumpAndSettle();
     expect(find.text('Keep this one?'), findsOneWidget);
     expect(find.textContaining('Beta'), findsWidgets);
-    expect(actions.merged, isEmpty);
+    expect(actions.log, isEmpty);
     await tester.tap(find.text('Keep'));
     await tester.pumpAndSettle();
-    expect(actions.discarded, ['w2']);
-    expect(actions.merged, ['w1']);
+    expect(actions.log, ['merge w1 (not merged)']);
+    expect(c.read(boardRacesProvider).single.stage, RaceStage.comparing);
+
+    actions.merges = true;
+    await tester.tap(compare);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(_k('board.compare.keep.w1')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Keep'));
+    await tester.pumpAndSettle();
+    expect(actions.log, ['merge w1 (not merged)', 'merge w1', 'discard w2']);
     final kept = c.read(boardRacesProvider).single;
     expect((kept.stage, kept.keptSession), (RaceStage.kept, 'w1'));
     expect(prefs[BoardRaces.key], contains('"kept":"w1"'));

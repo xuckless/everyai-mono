@@ -31,6 +31,7 @@ import '../features/local_models/local_model_bridge.dart'
 import '../features/code/drivers/driver_registry.dart' show driverStatusesProvider;
 import '../features/code/ui/real_input_consent.dart' show connectRealInput;
 import '../features/history/ui/sidebar.dart';
+import '../features/code/board/board_plan_providers.dart' show boardPlanWatchProvider;
 import '../features/onboarding/onboarding_providers.dart';
 import '../features/onboarding/ui/onboarding_screen.dart';
 import '../features/remote/remote_providers.dart' show remoteHostingProvider;
@@ -233,6 +234,9 @@ class _AppShellState extends ConsumerState<AppShell> {
       ref.listen(serverLifecyclesProvider, (_, _) {});
       // Scheduled tasks start their sessions while the app is open.
       ref.listen(scheduleRunnerProvider, (_, _) {});
+      // The Board's plans start the tasks waiting on finished ones, and races see their runners finish, wherever the
+      // user is.
+      ref.listen(boardPlanWatchProvider, (_, _) {});
       ref.listen(remoteHostingProvider.select((s) => s.link.pending.length), (before, now) {
         if (now > (before ?? 0)) {
           showAdaptiveToast(context, 'A device wants to use Code here. Approve it in Settings → Remote.');

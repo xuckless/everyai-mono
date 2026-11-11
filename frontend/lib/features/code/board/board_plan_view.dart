@@ -11,6 +11,7 @@ import '../../../core/ui/every_icons.dart';
 import '../../../core/ui/glass.dart';
 import '../../usage/usage_totals.dart';
 import '../code_providers.dart';
+import '../domain/agent_mode.dart';
 import '../domain/code_session.dart';
 import '../ui/console/git_button.dart' show mergeLocally;
 import '../ui/harness_logo.dart';
@@ -39,7 +40,8 @@ String _leadText(String label, String model) => model.isEmpty ? label : '$label 
 /// Keeps a race's Keep: the winner's work merged (the session's own merge, with its confirms), the losers' worktrees
 /// removed. Tests replace it.
 abstract interface class RaceActions {
-  Future<void> merge(BuildContext context, WidgetRef ref, CodeSessionInfo winner);
+  /// True when the winner's work landed (false when the user said no, or the agent was asked to tidy its branch).
+  Future<bool> merge(BuildContext context, WidgetRef ref, CodeSessionInfo winner);
   Future<void> discard(WidgetRef ref, CodeSessionInfo loser);
 }
 
@@ -49,7 +51,7 @@ final class _AppRaceActions implements RaceActions {
   const _AppRaceActions();
 
   @override
-  Future<void> merge(BuildContext context, WidgetRef ref, CodeSessionInfo winner) => mergeLocally(context, ref, winner);
+  Future<bool> merge(BuildContext context, WidgetRef ref, CodeSessionInfo winner) => mergeLocally(context, ref, winner);
 
   @override
   Future<void> discard(WidgetRef ref, CodeSessionInfo loser) => loser.worktree != null
@@ -105,44 +107,63 @@ class _PlanLaneState extends ConsumerState<PlanLane> {
     await keepRunner(race.id, keep);
   }
 
-  /// Keeps [session]'s runner of [raceId] once the user agrees: the other runners' worktrees go, then the session's
-  /// own merge runs (asking the agent to tidy its branch first when it needs to).
+  /// Keeps [session]'s runner of [raceId] once the user agrees: the winner's own merge runs first (asking the agent
+  /// to tidy its branch first when it needs to), and only once its work has landed are the other runners stopped and
+  /// removed with their worktrees. A merge that didn't happen loses nothing.
   Future<void> keepRunner(String raceId, String session) async {
     if (_keep != _Keep.idle) return;
-    final race = ref.read(boardRacesProvider.notifier).race(raceId);
+    final races = ref.read(boardRacesProvider.notifier);
+    if (races.keepBlocked(raceId) case final why?) {
+      showAdaptiveToast(context, why);
+      return;
+    }
+    final race = races.race(raceId)!;
     final sessions = ref.read(codeSessionsProvider);
     final winner = sessions.where((s) => s.id == session).firstOrNull;
-    if (race == null || winner == null) return;
+    if (winner == null) return;
+    final working = {
+      for (final r in race.runners)
+        if (r.run case RunnerRunning(:final sessionId)) sessionId,
+    };
     final losers = [
       for (final r in race.runners)
         if (sessionOfRunner(r.run) case final id? when id != session) ?sessions.where((s) => s.id == id).firstOrNull,
     ];
     final leads = {for (final l in ref.read(plannerLeadsProvider)) l.id: l.label};
+    String name(CodeSessionInfo s) =>
+        '${_leadText(leads[s.harness] ?? s.harness, s.model)}${working.contains(s.id) ? ' (still working)' : ''}';
     final ok = await showAdaptiveConfirm(
       context,
       title: 'Keep this one?',
       message: [
-        '"${winner.title}" on ${_leadText(leads[winner.harness] ?? winner.harness, winner.model)} is kept, and its '
-            'work merges next (you confirm the merge).',
+        '"${winner.title}" on ${_leadText(leads[winner.harness] ?? winner.harness, winner.model)} merges first (you '
+            'confirm the merge).',
         if (losers.isNotEmpty)
-          'Removed with their worktrees and branches: ${[for (final l in losers) _leadText(leads[l.harness] ?? l.harness, l.model)].join(', ')}.',
+          'Once it has merged, these are stopped and removed with their worktrees and branches: '
+              '${losers.map(name).join(', ')}.',
       ].join(' '),
       confirmLabel: 'Keep',
     );
     if (!ok || !mounted) return;
     setState(() => _keep = _Keep.keeping);
     try {
-      ref.read(boardRacesProvider.notifier).keep(raceId, session);
       final actions = ref.read(boardRaceActionsProvider);
+      final merged = await actions.merge(context, ref, winner);
+      if (!mounted) return;
+      if (!merged) {
+        showAdaptiveToast(context, 'Nothing merged yet, so the other runners are kept.');
+        return;
+      }
+      races.keep(raceId, session);
+      final starter = ref.read(boardStarterProvider);
       for (final l in losers) {
         try {
+          if (working.contains(l.id)) await starter.stop(l.id);
           await actions.discard(ref, l);
         } on Object catch (e) {
           if (mounted) showAdaptiveToast(context, "Couldn't remove ${l.title}: $e");
         }
       }
-      if (!mounted) return;
-      await actions.merge(context, ref, winner);
     } finally {
       if (mounted) setState(() => _keep = _Keep.idle);
     }
@@ -385,9 +406,6 @@ class GoalCard extends ConsumerStatefulWidget {
   ConsumerState<GoalCard> createState() => _GoalCardState();
 }
 
-/// What Cancel does to a goal's started tasks.
-enum _CancelChoice { back, keepRunning, stop }
-
 class _GoalCardState extends ConsumerState<GoalCard> {
   late final _text = TextEditingController(text: widget.goal.text);
 
@@ -421,48 +439,55 @@ class _GoalCardState extends ConsumerState<GoalCard> {
     if (_plans.delegate(widget.goal.id, taskId: taskId) case final why?) showAdaptiveToast(context, why);
   }
 
+  int get _startedCount => widget.goal.tasks.where((t) => t.run is TaskStarted || t.run is TaskStarting).length;
+
   Future<void> _cancel() async {
     final g = widget.goal;
-    final started = g.tasks.where((t) => t.run is TaskStarted).length;
-    var choice = _CancelChoice.keepRunning;
+    final started = _startedCount;
+    var choice = StartedChoice.keepRunning;
     if (started > 0) {
-      choice =
-          await showKitDialog<_CancelChoice>(
-            context,
-            builder: (ctx) => KitDialog(
-              title: 'Cancel this plan?',
-              body: Text(
-                'Tasks not started yet are cancelled. $started started ${started == 1 ? 'task is' : 'tasks are'} '
-                'still running.',
-              ),
-              actions: [
-                KitButton(
-                  label: 'Back',
-                  style: KitButtonStyle.ghost,
-                  shortcut: 'esc',
-                  onPressed: () => Navigator.of(ctx).pop(_CancelChoice.back),
-                ),
-                KitButton(
-                  key: const ValueKey('board.goal.cancel.keep'),
-                  label: 'Keep them running',
-                  style: KitButtonStyle.soft,
-                  onPressed: () => Navigator.of(ctx).pop(_CancelChoice.keepRunning),
-                ),
-                KitButton(
-                  key: const ValueKey('board.goal.cancel.stop'),
-                  label: 'Stop them',
-                  style: KitButtonStyle.danger,
-                  onPressed: () => Navigator.of(ctx).pop(_CancelChoice.stop),
-                ),
-              ],
-            ),
-          ) ??
-          _CancelChoice.back;
-      if (!mounted || choice == _CancelChoice.back) return;
+      final picked = await askStartedChoice(
+        context,
+        title: 'Cancel this plan?',
+        body:
+            'Tasks not started yet are cancelled. $started started ${started == 1 ? 'task is' : 'tasks are'} still '
+            'running.',
+        keyPrefix: 'board.goal.cancel',
+      );
+      if (picked == null || !mounted) return;
+      choice = picked;
     }
-    for (final id in _plans.cancel(g.id, stopStarted: choice == _CancelChoice.stop)) {
-      if (ref.exists(codeSessionProvider(id))) unawaited(ref.read(codeSessionProvider(id).notifier).stopAll());
+    _plans.cancel(g.id, started: choice);
+  }
+
+  Future<void> _remove() async {
+    final g = widget.goal;
+    final started = _startedCount;
+    var choice = StartedChoice.keepRunning;
+    if (started > 0) {
+      final picked = await askStartedChoice(
+        context,
+        title: 'Remove this goal?',
+        body:
+            'Tasks not started yet never start. $started started ${started == 1 ? 'task is' : 'tasks are'} still '
+            'running.',
+        keyPrefix: 'board.goal.removing',
+      );
+      if (picked == null || !mounted) return;
+      choice = picked;
+    } else if (_plans.busy(g.id)) {
+      final ok = await showAdaptiveConfirm(
+        context,
+        title: 'Remove this goal?',
+        message: g.stage == GoalStage.splitting
+            ? 'Its planner is still splitting it; that stops.'
+            : 'Its queued tasks never start.',
+        confirmLabel: 'Remove',
+        destructive: true,
+      );
+      if (!ok || !mounted) return;
     }
+    _plans.remove(g.id, started: choice);
   }
 
   @override
@@ -516,7 +541,7 @@ class _GoalCardState extends ConsumerState<GoalCard> {
           icon: EveryIcon.close,
           tooltip: 'Remove goal',
           size: 13,
-          onPressed: () => _plans.remove(g.id),
+          onPressed: _remove,
         ),
       ],
     );
@@ -671,6 +696,18 @@ class _GoalCardState extends ConsumerState<GoalCard> {
                   onPressed: _cancel,
                 ),
               if (drafts)
+                AdaptiveMenuButton(
+                  key: ValueKey('board.goal.mode.${g.id}'),
+                  tooltip: 'Delegated tasks start in',
+                  actions: [
+                    for (final m in const [AgentMode.ask, AgentMode.autoEdit, AgentMode.auto, AgentMode.fullAuto])
+                      MenuAction(label: m.label, checked: g.mode == m.name, onSelected: () => _plans.setMode(g.id, m)),
+                  ],
+                  child: QuietTrigger(
+                    label: 'In ${(AgentMode.values.asNameMap()[g.mode] ?? AgentMode.autoEdit).label}',
+                  ),
+                ),
+              if (drafts)
                 KitButton(
                   key: ValueKey('board.goal.delegate.${g.id}'),
                   label: 'Delegate all',
@@ -696,7 +733,7 @@ class _GoalCardState extends ConsumerState<GoalCard> {
           radius: EveryTheme.cardRadius,
         ),
         child: AnimatedSize(
-          duration: Motion.move,
+          duration: Motion.reduced(context) ? Duration.zero : Motion.move,
           curve: Motion.easeInOut,
           alignment: Alignment.topCenter,
           child: Column(
@@ -976,6 +1013,13 @@ class _TaskCardState extends ConsumerState<TaskCard> {
                       style: theme.type.caption.tint(tint),
                     ),
                   ),
+                  if (t.run is TaskFailed && g.stage != GoalStage.cancelled)
+                    KitButton(
+                      key: ValueKey('board.task.retry.${t.id}'),
+                      label: 'Retry',
+                      style: KitButtonStyle.soft,
+                      onPressed: () => _plans.retry(g.id, t.id),
+                    ),
                   if (session != null && ref.watch(codeSessionsProvider).any((s) => s.id == session))
                     KitButton(
                       key: ValueKey('board.task.open.${t.id}'),
@@ -1045,7 +1089,19 @@ class RaceCard extends ConsumerWidget {
                   icon: EveryIcon.close,
                   tooltip: live ? 'Stop following this race' : 'Remove race',
                   size: 13,
-                  onPressed: () => live ? races.cancel(race.id) : races.remove(race.id),
+                  onPressed: () async {
+                    if (!live) return races.remove(race.id);
+                    final choice = await askStartedChoice(
+                      context,
+                      title: 'Cancel this race?',
+                      body:
+                          'Its runners can keep running as ordinary sessions, or stop and be removed with their '
+                          'worktrees.',
+                      keyPrefix: 'board.race.cancel',
+                      stopLabel: 'Stop and remove',
+                    );
+                    if (choice != null) races.cancel(race.id, started: choice);
+                  },
                 ),
               ],
             ),
@@ -1545,3 +1601,33 @@ class _RaceDialogState extends ConsumerState<_RaceDialog> {
     );
   }
 }
+
+/// Asks what happens to the sessions a goal or race already started: kept running or stopped; null for Back.
+Future<StartedChoice?> askStartedChoice(
+  BuildContext context, {
+  required String title,
+  required String body,
+  required String keyPrefix,
+  String stopLabel = 'Stop them',
+}) => showKitDialog<StartedChoice>(
+  context,
+  builder: (ctx) => KitDialog(
+    title: title,
+    body: Text(body),
+    actions: [
+      KitButton(label: 'Back', style: KitButtonStyle.ghost, shortcut: 'esc', onPressed: () => Navigator.of(ctx).pop()),
+      KitButton(
+        key: ValueKey('$keyPrefix.keep'),
+        label: 'Keep them running',
+        style: KitButtonStyle.soft,
+        onPressed: () => Navigator.of(ctx).pop(StartedChoice.keepRunning),
+      ),
+      KitButton(
+        key: ValueKey('$keyPrefix.stop'),
+        label: stopLabel,
+        style: KitButtonStyle.danger,
+        onPressed: () => Navigator.of(ctx).pop(StartedChoice.stop),
+      ),
+    ],
+  ),
+);
