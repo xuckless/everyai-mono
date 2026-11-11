@@ -190,16 +190,16 @@ void main() {
     expect(outcome.kind, HandoffKind.full);
     final b = d('beta');
     final first = b.specs.single.initialMessage!;
-    expect(first, startsWith('<everyai-mode name="ask">${AgentMode.ask.instructions}'));
-    expect(first, contains('$handoffOpen from="alpha" kind="full">'));
+    // An outside lead gets the handoff without a mode note of ours.
+    expect(first, startsWith('$handoffOpen from="alpha" kind="full">'));
     expect(first, contains('Added the toggle.'));
     expect(first, endsWith(carryOnMessage('Alpha')));
     final now = infoOf(info.id);
     expect((now.harness, now.conversationId), ('beta', 'beta-c1'));
     expect(now.leads['alpha']?.conversationId, 'alpha-c1');
     expect(d('alpha').latest!.closed, isTrue);
-    // Beta's briefing names only Beta: it is fixed for its conversation (the handoff names Alpha).
-    expect(b.specs.single.briefing!.sessionSkill, contains('Beta'));
+    // Beta's briefing names no lead (the handoff names Alpha).
+    expect(b.specs.single.briefing!.sessionSkill, contains('# EveryAI session'));
     expect(b.specs.single.briefing!.sessionSkill, isNot(contains('Alpha')));
     await turn(b.latest!, 'b1', 'Picked it up.');
     final items = transcriptOf(info.id).items;
@@ -499,6 +499,7 @@ void main() {
   test('a switch that fails leaves the old lead its token and briefing', () async {
     final (info, c) = await limited();
     final briefing = File('${tmp.path}/data/driver-sessions/${info.id}/briefing/$sessionFileName');
+    final before = briefing.readAsStringSync();
     expect(host.live[info.id], {'tok1'});
     d('beta').startFails = true;
     final outcome = await c.switchLead('beta', run: true);
@@ -509,8 +510,7 @@ void main() {
     // Alpha still reaches EveryAI; only Beta's token went.
     expect(host.live[info.id], {'tok1'});
     expect(host.revokedSessions, isEmpty);
-    expect(briefing.readAsStringSync(), contains('Alpha'));
-    expect(briefing.readAsStringSync(), isNot(contains('Beta')));
+    expect(briefing.readAsStringSync(), before);
     expect(d('alpha').latest!.closed, isFalse);
   });
 
@@ -739,13 +739,13 @@ void main() {
       expect(a.sent.last, 'Go on.');
     });
 
-    test('started in Plan on a lead with no plan mode: our Plan, its note and our picker stay', () async {
+    test('started in Plan on a lead with no plan mode: it stays in its own mode, with no note of ours', () async {
       final (info, c, a) = await startedIn(AgentMode.plan, list: [modes.first, modes.last]);
       expect(a.picked, isEmpty);
       final state = container.read(codeSessionProvider(info.id));
       expect((state.mode, state.inNativeMode), (AgentMode.plan, false));
       await c.send('Go on.');
-      expect(a.sent.last, startsWith('<everyai-mode name="plan"'));
+      expect(a.sent.last, 'Go on.');
     });
 
     test('a reopen before the list loads: no mode note when the session was last in a native mode', () async {
@@ -770,7 +770,7 @@ void main() {
       expect(transcriptOf(info.id).pending.map((p) => p.id), ['x1']);
     });
 
-    test('without its own modes the session keeps ours and the mode note', () async {
+    test('without its own modes the session keeps ours, and sends no mode note', () async {
       final info = await start();
       final c = await open(info.id);
       final a = d('alpha').latest!;
@@ -779,7 +779,7 @@ void main() {
       await c.setMode(AgentMode.plan);
       expect(a.modes, [AgentMode.plan]);
       await c.send('Plan it.');
-      expect(a.sent.last, contains('<everyai-mode'));
+      expect(a.sent.last, 'Plan it.');
     });
   });
 
@@ -834,8 +834,7 @@ void main() {
     expect(infoOf(info.id).pendingHandoff, startsWith(handoffOpen));
     await c.send('Now the docs');
     final sent = b.sent.single;
-    expect(sent, startsWith('<everyai-mode name="ask">${AgentMode.ask.instructions}'));
-    expect(sent, contains('$handoffOpen from="alpha"'));
+    expect(sent, startsWith('$handoffOpen from="alpha"'));
     expect(sent, endsWith('Now the docs'));
     expect(infoOf(info.id).pendingHandoff, isEmpty);
     b.add(userMessageEvent('b1-u', sent));

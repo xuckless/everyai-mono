@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:every_ai/features/code/checks/runtime_profiles.dart';
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/drivers/acp/acp_mapping.dart';
-import 'package:every_ai/features/code/drivers/briefing/session_skill.dart';
 import 'package:every_ai/features/code/drivers/claude/claude_wire.dart';
 import 'package:every_ai/features/code/drivers/codex/codex_mapping.dart';
 import 'package:every_ai/features/code/harness/events.dart';
@@ -37,14 +36,9 @@ void main() {
     if (key != null) await recordRuntime(root, key.command, key.dir, r.took);
   }
 
-  Future<String> briefing(String session) async => sessionBriefing(
-    SessionSkillInput(
-      worktree: root,
-      projectRoot: root,
-      lead: (name: 'Lead', model: 'm'),
-      runtimeProfiles: await sessionRuntimeProfiles('${tmp.path}/$session', root),
-    ),
-  );
+  // The profiles as the session reads them (outside leads no longer get them in their briefing).
+  Future<String> briefing(String session) async =>
+      [for (final l in await sessionRuntimeProfiles('${tmp.path}/$session', root)) '- $l'].join('\n');
 
   test('Claude Code: a Bash tool_use and its tool_result', () async {
     final d = ClaudeDecoder();

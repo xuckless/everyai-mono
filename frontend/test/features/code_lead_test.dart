@@ -187,7 +187,8 @@ void main() {
     }
     expect(spec.llmApiKey, isEmpty);
     expect(spec.bugCheck, isFalse);
-    expect(spec.initialMessage, startsWith('<everyai-mode name="ask">'));
+    // An outside lead runs in its own modes: no note of ours.
+    expect(spec.initialMessage, isNot(contains('<everyai-mode')));
     expect(host.minted, [info.id]);
     expect(info.harness, 'test');
   });
@@ -207,15 +208,14 @@ void main() {
     expect((info.tier, info.workflow), (HarnessTier.thorough, 'max'));
   });
 
-  test('every message carries the mode note, in full after a switch', () async {
+  test('messages to an outside lead carry no mode note, before or after a switch', () async {
     final info = await start();
     final c = await open(info.id);
     await c.send('first');
-    expect(session.sent.last, startsWith('<everyai-mode name="ask">'));
-    expect(session.sent.last, endsWith('first'));
+    expect(session.sent.last, 'first');
     await c.setMode(AgentMode.plan);
     await c.send('second');
-    expect(session.sent.last, startsWith('<everyai-mode name="plan">${AgentMode.plan.instructions}'));
+    expect(session.sent.last, 'second');
   });
 
   test('a host question shows as a card and the answer is the call\'s result', () async {

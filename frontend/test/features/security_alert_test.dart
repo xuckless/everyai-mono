@@ -172,19 +172,14 @@ void main() {
       expect(flat, contains('Set stop_run only when the work cannot continue safely'));
     });
 
-    test('every lead gets it: the harness rules, subagents, the outside briefing', () {
+    // An outside lead gets the tool, not our rules (owner, 2026-11-11: no directives beyond the tools).
+    test('the EveryAI harness and subagents get the rules; an outside briefing only the tool', () {
       expect(harnessRules, contains('# Security\n$securityRules'));
       expect(subagentRules, contains('security_alert does'));
-      SessionSkillInput input() => const SessionSkillInput(
-        worktree: '/wt',
-        projectRoot: '/p',
-        lead: (name: 'Codex', model: 'gpt'),
-        hostTools: [(name: securityAlertTool, when: 'see below')],
+      final md = sessionBriefing(
+        const SessionSkillInput(worktree: '/wt', hostTools: [(name: securityAlertTool, when: 'see below')]),
       );
-      final md = sessionBriefing(input());
-      expect(sessionBriefing(input()), md);
-      expect(md, contains('## Security\n\n$securityRules'));
-      expect(md.indexOf('## Security'), lessThan(md.indexOf('## This session')));
+      expect(md, isNot(contains('## Security')));
       expect(md, contains('- `security_alert`: see below'));
     });
   });
