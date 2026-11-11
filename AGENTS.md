@@ -978,6 +978,21 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   most eight (`staleDone`); older ones clear by themselves and come back if they run again. When each one finished is
   Preferences `code.board.done_since` (`BoardDoneSince`), from when the Board first sees it; on the first run, sessions
   already Done count from when they started, so old clutter goes at once.
+- **Board v2, phase 1 (2026-11-11; branch `board-v2/phase1`, on top of `fix/board-child-work`).** Owner's decisions in
+  `docs/research/board-competitors.md` and the memory note. `board/board_state.dart`: `BoardPhase` (needsYou, working,
+  waitingOnWork, failed, doneUnseen, doneSeen; diagram there) from `boardPhase` (own status, `BoardWorkCount` of forks
+  at any depth via `runningDescendants`, an outside lead's open subagents via `outsideSubagents`, running workflows;
+  dev servers don't count), the card's line (`boardPhaseLine`: "Lead waiting · 3 forks running"), seen marks
+  (Preferences `code.board.seen`, `BoardSeen`; the session view calls `markBoardSeen`), and warnings
+  (`boardWarnings`: no progress for 6 min from `boardProgressProvider`, the same step 3× from `repeatedStep`, context
+  ≥90%) with Nudge / Stop / Compact (`_Act` guards repeats). The family tree in `BoardWork` shows each child's harness
+  logo, model, step and elapsed time, waiting children first, Claude Code's own subagents too; open for up to three rows
+  while something runs; building a row no longer opens (connects) the child. "Finished" notifications wait for the
+  session's forks and workflows (`StatusAlerts(busy:)`, `recheck`) and finishes within 2 s go out as one
+  (`FinishBatch`, `notifyTimerProvider`). Look: `core/ui/glass.dart` (`glassDecoration`, `GlowBackdrop`; no
+  BackdropFilter per card) and `core/motion/ambient.dart` (`GlowPulse`, `BreathingRing`, `FinishBurst`, `TrailPainter`
+  behind gliding cards, `TickingCount`, `PeriodicRebuild`); loops only under `Motion.loops`. Not seen in the running
+  app.
 - **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
   `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
   `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,

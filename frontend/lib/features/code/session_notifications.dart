@@ -69,11 +69,63 @@ bool _appInFront() {
 }
 
 /// Notifies about a status change of [session] unless the app is in front
-/// (then the status pill and the session list already show it).
+/// (then the status pill and the session list already show it). Finishes go
+/// through [finishBatchProvider], so several at once make one notification.
 void notifyStatusChange(Ref ref, SessionStatus? from, SessionStatus to, String session) {
   final n = notificationFor(from, to, session);
   if (n == null || ref.read(appFocusedProvider)()) return;
+  if (to == SessionStatus.done) return ref.read(finishBatchProvider).add(session);
   unawaited(ref.read(systemNotifierProvider).show(n.title, n.body));
+}
+
+/// Starts the timers notifications wait on; tests replace it.
+final notifyTimerProvider = Provider<Timer Function(Duration, void Function())>((ref) => Timer.new);
+
+/// Finishes this close together go out as one notification.
+const finishBatchWindow = Duration(seconds: 2);
+
+/// The notification for sessions [names] that finished together.
+({String title, String body}) finishedNotice(List<String> names) => names.length == 1
+    ? (title: 'Finished', body: names.single)
+    : (title: '${names.length} sessions finished', body: names.join(', '));
+
+final finishBatchProvider = Provider<FinishBatch>((ref) {
+  final batch = FinishBatch(ref);
+  ref.onDispose(batch.dispose);
+  return batch;
+});
+
+/// Collects finished sessions for [finishBatchWindow], then sends one notification for all of them:
+///
+/// ```text
+///   empty ──add──► collecting ──window ends──► empty (one notification)
+/// ```
+final class FinishBatch {
+  FinishBatch(this._ref);
+
+  final Ref _ref;
+  final _names = <String>[];
+  Timer? _timer;
+
+  void add(String session) {
+    if (!_names.contains(session)) _names.add(session);
+    _timer ??= _ref.read(notifyTimerProvider)(finishBatchWindow, _flush);
+  }
+
+  void _flush() {
+    _timer = null;
+    final names = [..._names];
+    _names.clear();
+    if (names.isEmpty || _ref.read(appFocusedProvider)()) return;
+    final n = finishedNotice(names);
+    unawaited(_ref.read(systemNotifierProvider).show(n.title, n.body));
+  }
+
+  void dispose() {
+    _timer?.cancel();
+    _timer = null;
+    _names.clear();
+  }
 }
 
 /// The notification for a security alert the agent of [session] raised.
@@ -102,13 +154,24 @@ const needsInputSettle = Duration(seconds: 3);
 
 /// One session's notifications, with waits that end within [needsInputSettle]
 /// left out. Feed it every status change; dispose it with the session.
+///
+/// A finish while the session's own work still runs ([busy]: its forks,
+/// subagents or workflows) is held until that work ends ([recheck]): the
+/// notification comes at the real end, once.
 final class StatusAlerts {
-  StatusAlerts(this._ref, this._title, {Timer Function(Duration, void Function())? timer})
-    : _startTimer = timer ?? Timer.new;
+  StatusAlerts(this._ref, this._title, {Timer Function(Duration, void Function())? timer, bool Function()? busy})
+    : _startTimer = timer ?? Timer.new,
+      _busy = busy ?? _never;
+
+  static bool _never() => false;
 
   final Ref _ref;
   final String Function() _title;
   final Timer Function(Duration, void Function()) _startTimer;
+  final bool Function() _busy;
+
+  /// A finish held while work ran: the status it came from.
+  SessionStatus? _held;
 
   Timer? _wait;
 
@@ -136,11 +199,25 @@ final class StatusAlerts {
       _wait = null;
       since = _beforeWait;
     }
+    if (to != SessionStatus.done) _held = null;
+    if (to == SessionStatus.done && notificationFor(since, to, '') != null && _busy()) {
+      _held = since;
+      return;
+    }
     notifyStatusChange(_ref, since, to, _title());
+  }
+
+  /// The session's work changed: a finish held for it goes out once nothing runs.
+  void recheck() {
+    final held = _held;
+    if (held == null || _busy()) return;
+    _held = null;
+    notifyStatusChange(_ref, held, SessionStatus.done, _title());
   }
 
   void dispose() {
     _wait?.cancel();
     _wait = null;
+    _held = null;
   }
 }

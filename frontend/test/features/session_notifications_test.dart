@@ -37,26 +37,36 @@ void main() {
     late _Recorder recorder;
     late ProviderContainer container;
     late List<void Function()> timers;
+    late List<void Function()> batches;
     late StatusAlerts alerts;
+    var busy = false;
+
+    StatusAlerts make(String title) => StatusAlerts(
+      container.read(_ref),
+      () => title,
+      timer: (_, fire) {
+        timers.add(fire);
+        return _NoTimer();
+      },
+      busy: () => busy,
+    );
 
     setUp(() {
       recorder = _Recorder();
       timers = [];
+      batches = [];
+      busy = false;
       container = ProviderContainer(
         overrides: [
           appFocusedProvider.overrideWithValue(() => false),
           systemNotifierProvider.overrideWithValue(recorder),
+          notifyTimerProvider.overrideWithValue((_, fire) {
+            batches.add(fire);
+            return _NoTimer();
+          }),
         ],
       );
-      final ref = container.read(_ref);
-      alerts = StatusAlerts(
-        ref,
-        () => 'Fix the tests',
-        timer: (_, fire) {
-          timers.add(fire);
-          return _NoTimer();
-        },
-      );
+      alerts = make('Fix the tests');
     });
     tearDown(() => container.dispose());
 
@@ -77,7 +87,38 @@ void main() {
     test('a blip right before the end still reads as finished', () {
       alerts.onChange(SessionStatus.running, SessionStatus.needsInput);
       alerts.onChange(SessionStatus.needsInput, SessionStatus.done);
+      batches.single();
       expect(recorder.shown, ['Finished']);
+    });
+
+    test("a lead that finishes while its forks run isn't news until they end, then once", () {
+      busy = true;
+      alerts.onChange(SessionStatus.running, SessionStatus.done);
+      alerts.recheck();
+      expect(batches, isEmpty);
+      busy = false;
+      alerts.recheck();
+      alerts.recheck();
+      batches.single();
+      expect(recorder.shown, ['Finished']);
+    });
+
+    test('running again drops a held finish', () {
+      busy = true;
+      alerts.onChange(SessionStatus.running, SessionStatus.done);
+      alerts.onChange(SessionStatus.done, SessionStatus.running);
+      busy = false;
+      alerts.recheck();
+      expect(batches, isEmpty);
+    });
+
+    test('sessions that finish together make one notification', () {
+      alerts.onChange(SessionStatus.running, SessionStatus.done);
+      make('Write docs').onChange(SessionStatus.running, SessionStatus.done);
+      expect(batches, hasLength(1));
+      batches.single();
+      expect(recorder.shown, ['2 sessions finished']);
+      expect(finishedNotice(['A', 'B']).body, 'A, B');
     });
 
     test('a session reopened already waiting is not news', () {

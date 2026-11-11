@@ -2519,12 +2519,17 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     // Subagents and forks don't notify: an approval they wait on shows on the
     // parent (subagentNeedsInput), and their questions are the orchestrator's.
     if (info?.parentId == null) {
-      final alerts = StatusAlerts(
+      final alerts = _alerts = StatusAlerts(
         ref,
         () => ref.read(codeSessionsProvider.notifier).byId(sessionId)?.title ?? 'Code session',
+        // "Finished" waits for its forks and workflows: the notification comes at the real end.
+        busy: () => hasSideWork(runningWork),
       );
       ref.onDispose(alerts.dispose);
-      listenSelf((prev, next) => alerts.onChange(prev?.status, next.status));
+      listenSelf((prev, next) {
+        alerts.onChange(prev?.status, next.status);
+        alerts.recheck();
+      });
     }
     // A switch in Settings → Skills reaches the lead's next process.
     ref.listen(leadSkillsProvider, (_, _) => _applySkillsOff());
@@ -4219,6 +4224,9 @@ final class CodeSessionController extends Notifier<CodeSessionState>
         if (r.status == WorkflowStatus.running) r.name,
     ],
   );
+
+  /// The session's OS notifications (top-level sessions only).
+  StatusAlerts? _alerts;
 
   /// Workflow runs Stop all ended: their results aren't sent to the lead.
   final _quietRuns = <String>{};
@@ -6121,6 +6129,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       onProgress: (run) {
         if (!ref.mounted) return;
         runs.put(run);
+        // A finish held for this run goes out once nothing else runs.
+        _alerts?.recheck();
         // Paused past its estimate: the user decides, so the session needs them (cleared with the run's waits).
         _workflowChildWaiting('wf-$runId-decision', switch (run.state) {
           RunPausing(:final reason) || RunPaused(:final reason) => reason != PauseReason.user,

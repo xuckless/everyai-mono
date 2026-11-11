@@ -188,8 +188,27 @@ final class BoardDoneSince extends Notifier<Map<String, int>?> {
     final before = state ?? const <String, int>{};
     final next = {for (final MapEntry(key: id, value: at) in done.entries) id: before[id] ?? at.millisecondsSinceEpoch};
     if (state != null && mapEquals(next, before)) return;
+    _set(next);
+  }
+
+  void _set(Map<String, int> next) {
     state = next;
     ref.read(preferencesProvider)[key] = jsonEncode(next);
+  }
+
+  /// [id] finished at [at], unless it is known already. Nothing before the Board's first record (that run dates
+  /// sessions already Done from when they started).
+  void mark(String id, DateTime at) {
+    final known = state;
+    if (known == null || known.containsKey(id)) return;
+    _set({...known, id: at.millisecondsSinceEpoch});
+  }
+
+  /// [id] runs again: its next finish counts from then.
+  void forget(String id) {
+    final known = state;
+    if (known == null || !known.containsKey(id)) return;
+    _set({...known}..remove(id));
   }
 }
 

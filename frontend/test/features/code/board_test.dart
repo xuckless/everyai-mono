@@ -7,6 +7,7 @@ import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/features/code/board/board_providers.dart';
 import 'package:every_ai/features/code/board/board_screen.dart';
+import 'package:every_ai/features/code/board/board_state.dart';
 import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
@@ -187,11 +188,20 @@ void main() {
     expect(inColumn('running', 'Session a'), findsOneWidget);
     expect(inColumn('needsYou', 'Session b'), findsOneWidget);
     expect(inColumn('done', 'Session c'), findsOneWidget);
-    // A fork stays off until detached.
-    expect(find.text('Session f'), findsNothing);
+    // A fork stays off until detached (it shows in its lead's family tree meanwhile).
+    expect(find.byKey(const ValueKey('board.slot.f')), findsNothing);
+    expect(find.byKey(const ValueKey('board.work.f')), findsOneWidget);
     c.read(boardDetachedProvider.notifier).toggle('f');
     await tester.pumpAndSettle();
-    expect(inColumn('running', 'Session f'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('board.column.running')),
+        matching: find.byKey(const ValueKey('board.slot.f')),
+      ),
+      findsOneWidget,
+    );
+    // The lead idles while its fork works: "Lead waiting · 1 fork running" once its own status says idle.
+    expect(find.text('Lead working · 1 fork running'), findsOneWidget);
     expect(jsonDecode(prefs[BoardDetached.key]!), ['f']);
     // A waiting session without a live controller can still be opened from its card.
     expect(find.byKey(const ValueKey('board.open.b')), findsOneWidget);
@@ -358,6 +368,82 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     debugDefaultTargetPlatformOverride = null;
     tester.view.reset();
+    c.dispose();
+    await db.close();
+  });
+
+  testWidgets('a card shows its phase: work in flight, unseen finishes, and warnings with their actions', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    final db = AppDatabase(NativeDatabase.memory());
+    final prefs = await Preferences.load(db);
+    prefs['code.projects'] = '[{"id":"p1","name":"Alpha","path":"/tmp/p1"}]';
+    // Three identical commands in a row: the lead is looping.
+    final b = TranscriptBuilder();
+    for (var i = 0; i < 3; i++) {
+      b
+        ..add(actionEvent(id: 'c$i', toolName: 'bash', kind: 'TerminalAction', args: const {'command': 'npm test'}))
+        ..add(resultEvent(id: 'r$i', actionId: 'c$i', toolName: 'bash', text: 'fail'));
+    }
+    final looping = b.snapshot;
+    final c = ProviderContainer(
+      overrides: [
+        preferencesProvider.overrideWithValue(prefs),
+        codeSessionProvider.overrideWithBuild(
+          (ref, n) =>
+              n.sessionId == 'l' ? CodeSessionState(connected: true, transcript: looping) : const CodeSessionState(),
+        ),
+      ],
+    );
+    c.listen(codeSessionProvider('l'), (_, _) {});
+    Future<void> show(String id, BoardPhase phase, {BoardWorkCount work = noBoardWork}) async {
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: c,
+          child: LayoutHost(
+            language: DesignLanguage.material,
+            child: Center(
+              child: SizedBox(
+                width: 420,
+                child: BoardCard(
+                  key: ValueKey('$id.$phase'),
+                  info: _s(id),
+                  status: SessionStatus.done,
+                  phase: phase,
+                  work: work,
+                  harnessLabel: 'EveryAI',
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    await show('a', BoardPhase.waitingOnWork, work: (forks: 3, subagents: 0, workflows: 0));
+    expect(find.text('Lead waiting · 3 forks running'), findsOneWidget);
+    expect(find.byKey(const ValueKey('board.unseen.a')), findsNothing);
+
+    await show('a', BoardPhase.doneUnseen);
+    expect(find.byKey(const ValueKey('board.unseen.a')), findsOneWidget);
+    await show('a', BoardPhase.doneSeen);
+    expect(find.byKey(const ValueKey('board.unseen.a')), findsNothing);
+
+    // A looping lead: an amber line with Nudge and Stop; Compact only for a full context.
+    await show('l', BoardPhase.working);
+    expect(find.textContaining('Same step 3×'), findsOneWidget);
+    expect(find.byKey(const ValueKey('board.nudge.l')), findsOneWidget);
+    expect(find.byKey(const ValueKey('board.stop.l')), findsOneWidget);
+    expect(find.byKey(const ValueKey('board.compact.l')), findsNothing);
+    // The same session done: no warnings.
+    await show('l', BoardPhase.doneSeen);
+    expect(find.textContaining('Same step'), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox());
+    debugDefaultTargetPlatformOverride = null;
     c.dispose();
     await db.close();
   });
