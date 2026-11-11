@@ -95,9 +95,22 @@ final class AcpLauncher {
 /// option when it has one, else every one of `modes.availableModes`. Each
 /// carries the app's nearest name for it ([acpModePolicy]); that is only a
 /// name, and nothing is refused by it.
+///
+/// With the profile's [AcpProfile.autopilot] option on, every mode but its plan mode runs tools without asking:
+/// those show the option's name after their own and its description as the agent reports it. Their app name
+/// ([NativeMode.policy]) stays the mode's own, so picking the mode nearest the app's stays as it was.
 NativeModeSet acpModes(AcpProfile profile, Map<String, Object?>? modes, List<Object?>? config) {
-  NativeMode entry(String id, String label, String description) =>
-      NativeMode(id: id, label: label, description: description, policy: acpModePolicy(profile, id));
+  final pilot = acpAutopilot(profile, config);
+  NativeMode entry(String id, String label, String description) {
+    final policy = acpModePolicy(profile, id);
+    final on = pilot != null && policy != AgentMode.plan;
+    return NativeMode(
+      id: id,
+      label: on ? '$label · ${pilot.name}' : label,
+      description: on ? pilot.description : description,
+      policy: policy,
+    );
+  }
 
   if (acpOption(config, 'mode') case final o?) {
     return (modes: [for (final c in o.choices) entry(c.value, c.name, '')], current: o.current);
@@ -109,6 +122,20 @@ NativeModeSet acpModes(AcpProfile profile, Map<String, Object?>? modes, List<Obj
           entry(id, m['name'] as String? ?? id, m['description'] as String? ?? ''),
     ],
     current: modes?['currentModeId'] as String?,
+  );
+}
+
+/// The agent's [AcpProfile.autopilot] option when it is on: its name and what it does (the agent's description of
+/// the choice, else a plain one). Null when the profile has none or it is off.
+({String name, String description})? acpAutopilot(AcpProfile profile, List<Object?>? config) {
+  final pilot = profile.autopilot;
+  if (pilot == null) return null;
+  final o = acpOption(config, null, id: pilot.option);
+  if (o == null || o.current != pilot.on) return null;
+  final choice = o.choices.where((c) => c.value == pilot.on).firstOrNull;
+  return (
+    name: choice?.name ?? pilot.option,
+    description: acpChoiceDescription(config, pilot.option, pilot.on) ?? 'Runs tools without asking first.',
   );
 }
 
@@ -576,7 +603,7 @@ final class AcpSession implements HarnessSession, PerCallApprovals, AllowsRememb
   });
 
   void _absorb(Map<String, Object?> reply) {
-    if (reply['configOptions'] case final List<Object?> c) _config = c;
+    if (reply['configOptions'] case final List<Object?> c) _config = acpKeepDescriptions(_config, c);
     if (reply['modes'] case final Map<String, Object?> m) _modes = {...m};
     if (reply['models'] case final Map<String, Object?> m) _models = {...m};
     _publishModes();
@@ -1387,7 +1414,7 @@ final class AcpSession implements HarnessSession, PerCallApprovals, AllowsRememb
         _modes?['currentModeId'] = u['currentModeId'];
         _modeMoved();
       case 'config_option_update':
-        if (u['configOptions'] case final List<Object?> c) _config = c;
+        if (u['configOptions'] case final List<Object?> c) _config = acpKeepDescriptions(_config, c);
         _modeMoved();
       case 'available_commands_update':
         final before = _commands.latest;

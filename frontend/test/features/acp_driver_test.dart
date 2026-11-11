@@ -9,6 +9,7 @@ import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/drivers/acp/acp_agents.dart';
 import 'package:every_ai/features/code/drivers/acp/acp_driver.dart';
 import 'package:every_ai/features/code/drivers/acp/acp_files.dart';
+import 'package:every_ai/features/code/drivers/acp/acp_session.dart' show acpModes;
 import 'package:every_ai/features/code/drivers/briefing/briefing_types.dart';
 import 'package:every_ai/features/code/drivers/driver_policy.dart';
 import 'package:every_ai/features/code/drivers/json_rpc.dart';
@@ -822,6 +823,9 @@ void main() {
       r.expectPlayed();
       expect(r.channels.single.sent.where((m) => m['method'] == 'session/set_config_option'), isEmpty);
       expect(seen.notices, isEmpty);
+      // The update mid-turn names the choices only; Kiro's description from the start is kept.
+      final shown = (await (s as NativeModes).nativeModes.first).modes.first;
+      expect((shown.label, shown.description), ('Default · Autopilot', 'Agent executes tools without confirmation'));
       await s.close();
     });
 
@@ -1805,12 +1809,44 @@ void main() {
       final k = rig(['acp/kiro_autopilot.jsonl']);
       final kiro = await k.driver('kiro', 'kiro-cli').start(k.spec());
       final ks = await modesOf(kiro);
+      // Kiro v3 starts with Autopilot on: its default mode says so, with Kiro's own words for it.
       expect(
-        [for (final m in ks.modes) (m.id, m.label, m.policy)],
-        [('vibe', 'Default', AgentMode.ask), ('plan', 'Plan', AgentMode.plan)],
+        [for (final m in ks.modes) (m.id, m.label, m.description, m.policy)],
+        [
+          ('vibe', 'Default · Autopilot', 'Agent executes tools without confirmation', AgentMode.ask),
+          ('plan', 'Plan', '', AgentMode.plan),
+        ],
       );
       expect(ks.current, 'vibe');
       await kiro.close();
+    });
+
+    test('Kiro with Autopilot off (Supervised) shows its modes plainly', () {
+      List<Object?> config(String pilot) => [
+        {
+          'type': 'select',
+          'id': 'mode',
+          'category': 'mode',
+          'currentValue': 'vibe',
+          'options': [
+            {'value': 'vibe', 'name': 'Default'},
+            {'value': 'plan', 'name': 'Plan'},
+          ],
+        },
+        {
+          'type': 'select',
+          'id': 'autopilot',
+          'currentValue': pilot,
+          'options': [
+            {'value': 'on', 'name': 'Autopilot'},
+            {'value': 'off', 'name': 'Supervised'},
+          ],
+        },
+      ];
+      final kiro = acpProfileOf('kiro-cli');
+      expect([for (final m in acpModes(kiro, null, config('off')).modes) m.label], ['Default', 'Plan']);
+      final on = acpModes(kiro, null, config('on')).modes.first;
+      expect((on.label, on.description), ('Default · Autopilot', 'Runs tools without asking first.'));
     });
 
     test('a pick is session/set_mode; the agent moving itself to another mode stands', () async {

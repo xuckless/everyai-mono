@@ -32,6 +32,7 @@ final class AcpProfile {
     this.askMode,
     this.planMode,
     this.modePolicy = const {},
+    this.autopilot,
     this.lateReplay = false,
     this.minVersion,
     this.keyEnv = const [],
@@ -67,6 +68,10 @@ final class AcpProfile {
 
   /// The app's nearest name for its other modes, where a guess from the id would be wrong (`acpModePolicy`).
   final Map<String, AgentMode> modePolicy;
+
+  /// A config option of its own that, set to [on], runs tools without asking in whatever mode it is in (Kiro's
+  /// Autopilot). While it is on, the modes it applies to show it (`acpModes`).
+  final ({String option, String on})? autopilot;
 
   /// What the user does to sign in, as an instruction.
   final String signIn;
@@ -144,6 +149,7 @@ final class AcpProfile {
           askMode: askMode,
           planMode: planMode,
           modePolicy: modePolicy,
+          autopilot: autopilot,
           lateReplay: lateReplay,
           minVersion: minVersion,
           keyEnv: keyEnv,
@@ -318,8 +324,10 @@ const _kiro = AcpProfile._(
   signIn: 'Run `kiro-cli login` in a terminal',
   minVersion: '2.36.0',
   keyEnv: ['KIRO_API_KEY'],
-  // Its `mode` option. Autopilot (a config option of its own) is the user's to set in Kiro.
+  // Its `mode` option. Autopilot (a config option of its own, on when Kiro v3 starts) is the user's to set in Kiro;
+  // while it is on, the mode shown says so (its name and Kiro's own description of it).
   modePolicy: {'vibe': AgentMode.ask, 'plan': AgentMode.plan},
+  autopilot: (option: 'autopilot', on: 'on'),
 );
 
 // Kimi Code CLI (MoonshotAI/kimi-code docs/en/reference/kimi-acp.md). Its

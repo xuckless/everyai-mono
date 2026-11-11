@@ -393,6 +393,52 @@ typedef AcpChoice = ({String value, String name});
   return null;
 }
 
+/// The description the agent gave choice [value] of its config option [optionId], or null (updates often leave it
+/// out).
+String? acpChoiceDescription(List<Object?>? options, String optionId, String value) {
+  String? find(Object? choices) {
+    for (final c in (choices as List<Object?>? ?? const []).whereType<Map<String, Object?>>()) {
+      if (c['options'] != null) {
+        if (find(c['options']) case final d?) return d;
+      } else if (c['value'] == value) {
+        final d = _str(c['description']);
+        if (d != null && d.isNotEmpty) return d;
+      }
+    }
+    return null;
+  }
+
+  for (final o in (options ?? const []).whereType<Map<String, Object?>>()) {
+    if (o['id'] == optionId) return find(o['options']);
+  }
+  return null;
+}
+
+/// [next] (the agent's new config options) with the choice descriptions [previous] had where [next] leaves them out:
+/// an update often sends names only (Kiro's `config_option_update`).
+List<Object?> acpKeepDescriptions(List<Object?>? previous, List<Object?> next) {
+  if (previous == null) return next;
+  Object? keep(Object? option) {
+    if (option is! Map<String, Object?> || option['id'] is! String) return option;
+    final id = option['id']! as String;
+    Object? choices(Object? list) => [
+      for (final c in (list as List<Object?>? ?? const []))
+        if (c is Map<String, Object?> && c['options'] != null)
+          {...c, 'options': choices(c['options'])}
+        else if (c is Map<String, Object?> &&
+            c['description'] == null &&
+            c['value'] is String &&
+            acpChoiceDescription(previous, id, c['value']! as String) != null)
+          {...c, 'description': acpChoiceDescription(previous, id, c['value']! as String)}
+        else
+          c,
+    ];
+    return option['options'] == null ? option : {...option, 'options': choices(option['options'])};
+  }
+
+  return [for (final o in next) keep(o)];
+}
+
 // Grouped options carry their own `options`.
 List<AcpChoice> _choices(Object? options) => [
   for (final c in (options as List<Object?>? ?? const []).whereType<Map<String, Object?>>())
