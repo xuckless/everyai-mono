@@ -514,8 +514,11 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
       });
     }
     final control = b?.control;
-    // Page-acting chrome waits for Take control; the page itself is watch-only until then.
-    final may = control?.phase.userMayAct ?? true;
+    // While the session's browser runs, page-acting chrome waits for Take control and the page itself is watch-only;
+    // the driver bar (Take control) shows the whole time, a blank page included, so the user always has a way in.
+    // Before it runs there is nothing to take: the address bar starts it.
+    final running = b?.running ?? false;
+    final may = !running || (control?.phase.userMayAct ?? true);
     final sourceBar = _apps.isEmpty ? null : PreviewSourceBar(apps: _apps, selected: _source, onSelect: _select);
     if (_source case final src?) {
       return Column(
@@ -671,7 +674,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
         ),
         if (b != null) BrowserTabStrip(browser: b),
         if (_finding && b != null) BrowserFindBar(browser: b, onClose: () => setState(() => _finding = false)),
-        if (control != null && !blank) LiveDriverBar(control: control, noun: 'page'),
+        if (control != null && running) LiveDriverBar(control: control, noun: 'page'),
         Expanded(
           child: _withDialog(
             b,
