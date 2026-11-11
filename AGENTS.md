@@ -1288,6 +1288,31 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   workflow estimate card, figures by id, local server states, one-line installs. Copy follows the owner's marketing plan
   (`marketing-plan.md`, local): no pricing, nothing about the vault, desktop control "macOS and Linux today, Windows
   next", Ultra/Max not pushed. README pitch and badge, CHANGELOG section, `releaseNotes` entry (8 items).
+- **Preview browser: real webview, Take control, agent logins (2026-11-11; branch `feat/real-webview`; owner answers
+  in memory `real-webview-decisions`).** Five lanes. `live/browser_page.dart`: `BrowserPage` (what the agent tool,
+  Preview chrome, sign-ins and login wall use) and `StreamedPage` (screencast + forwarded input, Chrome only);
+  `backendFor` picks `BrowserBackend.osWebview` on macOS and Windows, `chromeStream` on Linux, under `flutter test`
+  and with `EVERYAI_BROWSER=chrome`; Electron stays CDP. `WebviewBrowser` (`live/webview_browser.dart`, model and
+  lifecycles `WebviewLife`/`TabLife` in `webview_model.dart`): each tab is a flutter_inappwebview 6.1.5 view, headless
+  until the Preview shows it (`ui/panes/webview_page_view.dart`), parked in the window when it lets go so it keeps
+  running; agent actions are scripts in content world `everyai` (synthetic events: no native `<select>` list, no
+  user-gesture APIs, no cross-origin iframes; "full page" pictures are the viewport); cookies per session on a
+  non-persistent store, kept in the sealed jar. macOS native side: `WebviewBridge` in `MainFlutterWindow.swift`
+  (channel `everyai/webview`; reads the plugin's view id by reflection, swaps `NSApp.mainWindow` while a headless view
+  is made, hooks WKWebView's context menu). "Sign in in a window" and the project profile are Chrome-only.
+  **Take control:** every live view is watch-only while the agent has it (`LiveControlPhase.userMayAct`,
+  `control.mayAct()` pulses the button); `LiveDriverBar` has the only Take control / Give back; page-acting chrome is
+  greyed. **Logins:** `live/agent_logins.dart` (`AgentLogins` on `SealedStore`, `LoginPolicy` with four switches all
+  on by default: without asking, type into password fields, authenticator codes, fill on any site; `LoginGate`
+  unasked/asking/allowed/denied per session), tool actions `logins` and `fill_login` on the browser and app tools
+  (EveryAI harness and host MCP), `typeSecret`, values scrubbed from results and never on a command line (helpers
+  take text on stdin, Android through scrcpy), `live/totp.dart`, CSV import, Settings > Code > Logins with delete,
+  Delete all and the approvals list, key-menu rows. Chrome stream fixes: a tab opening with a dialog no longer hangs
+  the switch, acks go to the frame's own socket, the opener returns when a pop-up closes, focus emulation
+  (`browser_tabs_alive_test`). Checked: full suite 3140 pass (one load flake), macOS debug build, the live rig
+  `tool/live_apps/webview_rig.dart` 29/29 on macOS. Not checked: a real click against the watch-only layer (the
+  helper refused, another window covered the point), Windows (never run), Google sign-in and passkeys in the
+  webview, the stdin helper path on a real window, Android fills on a device.
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),
