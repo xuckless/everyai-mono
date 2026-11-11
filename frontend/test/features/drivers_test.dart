@@ -114,7 +114,7 @@ void main() {
       final gemini = r.resolve('gemini')! as AcpDriver;
       expect((gemini.info.needsConsent, gemini.command), (true, 'gemini'));
       expect(gemini.info.label, 'Gemini CLI (API key or enterprise)');
-      expect(gemini.resolved.args, ['--acp', '--approval-mode', 'default']);
+      expect(gemini.resolved.args, ['--acp']);
       expect(r.resolve('claude-code')!.info.needsConsent, isTrue);
       expect(r.resolve('codex')!.info.needsConsent, isFalse);
       final acp = r.resolve('acp:goose')!;
@@ -224,7 +224,7 @@ void main() {
       expect(dsh.resolved.args, ['--profile', 'acp']);
       expect((r.resolve('acp:opencode')! as AcpDriver).resolved.args, ['acp']);
       final gemini = r.resolve('gemini')!;
-      expect((gemini as AcpDriver).resolved.args, ['--acp', '--approval-mode', 'default']);
+      expect((gemini as AcpDriver).resolved.args, ['--acp']);
       expect(dsh.caps, {DriverCap.resume, DriverCap.approvals, DriverCap.perCallApprovals});
       expect(gemini.caps.containsAll({DriverCap.mcp, DriverCap.images, DriverCap.switchModel}), isTrue);
       expect(gemini.caps.intersection({DriverCap.usage, DriverCap.effort, DriverCap.steer}), isEmpty);

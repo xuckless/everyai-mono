@@ -54,20 +54,3 @@ Future<bool?> cursorSignedIn() => impl.cursorSignedIn();
 /// once more, since an expired token refreshes in that same run. An API key
 /// is checked before this (the profile's `keyEnv`).
 Future<bool?> grokSignedIn(String executable) => impl.grokSignedIn(executable);
-
-/// Why Kiro CLI must not start in [cwd], or null: the project's
-/// `.kiro/agents/` (agent configs offered as its modes, which can pre-allow
-/// tools and run hooks) or `.kiro/settings/mcp.json`.
-Future<String?> kiroWorkspaceProblem(String cwd) => impl.kiroWorkspaceProblem(cwd);
-
-/// Why Cursor CLI must not start in [cwd], or null: the project's
-/// `.cursor/cli.json` allowing tools, or `.cursor/hooks.json`.
-Future<String?> cursorWorkspaceProblem(String cwd) => impl.cursorWorkspaceProblem(cwd);
-
-/// Why Gemini CLI must not start in [cwd], or null. It counts as headless
-/// under the app, so it trusts the folder and reads its `.gemini/settings.json`
-/// and policies; those can allow tools ahead of time or start MCP commands,
-/// which would never reach the app's approvals. Its forks read their own
-/// [folder] (Qwen Code: `.qwen`), named [label] in the problem.
-Future<String?> geminiWorkspaceProblem(String cwd, {String folder = '.gemini', String label = 'Gemini CLI'}) =>
-    impl.geminiWorkspaceProblem(cwd, folder: folder, label: label);

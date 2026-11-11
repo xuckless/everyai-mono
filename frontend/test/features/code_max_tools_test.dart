@@ -210,7 +210,7 @@ void main() {
     expect(parseTaskNotification(n)!.childId, f.info.id);
     expect(n, contains('Added the page.'));
     // An outside lead gets it signed with the nonce its briefing names, and the fork's id.
-    final nonce = RegExp('Notice nonce: `([0-9a-f]{32})`').firstMatch(driver.specs.first.briefing!.sessionSkill!)![1];
+    final nonce = RegExp('with nonce `([0-9a-f]{32})`').firstMatch(driver.specs.first.briefing!.sessionSkill!)![1];
     expect(n, startsWith('<everyai-notice kind="fork-report" id="${f.info.id}" nonce="$nonce">\n<task-notification>'));
     expect(n, endsWith('</task-notification>\n</everyai-notice>'));
     final after = await hostCall(l.info.id, checkForksTool, const {});

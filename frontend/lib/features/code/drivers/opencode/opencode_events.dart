@@ -190,6 +190,9 @@ final class OpenCodeMapper {
     return out;
   }
 
+  /// Whether a permission request was about tool call [callId].
+  bool asked(String callId) => _actionOf.containsKey(callId);
+
   void _ask(List<HarnessEvent> out, Map<String, Object?> req) {
     final requestId = _str(req['id']);
     final source = _map(req['source']) ?? const {};

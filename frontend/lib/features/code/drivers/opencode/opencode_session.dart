@@ -12,19 +12,15 @@ import '../driver_policy.dart';
 import 'opencode_events.dart';
 import 'opencode_server.dart';
 
-/// The rules every session is created with (the last match wins): OpenCode
-/// asks about every tool call, and the app's own permissions decide each
-/// one. Its question tool and subagents are off (our question cards come
-/// through our MCP server; subagents run as the app's child sessions), the
-/// to-do list and skills need no answer, and our MCP server judges its own
-/// tools, except the two that run a command in the app (bug_check, check):
-/// those ask, so the session's approval sees them before the host runs it.
+/// The rules every session is created with, on top of each agent's own
+/// permissions (the last match wins). The agent's own permissions decide
+/// what asks; what asks comes to the app as a card. OpenCode's question tool
+/// stays off: the app has no card for its questions (ours come through our
+/// MCP server). Our MCP server's tools need no answer, except the two that
+/// run a command in the app (bug_check, check): those ask, so the user sees
+/// them before the host runs it.
 const openCodeSessionRules = [
-  {'action': '*', 'resource': '*', 'effect': 'ask'},
   {'action': 'question', 'resource': '*', 'effect': 'deny'},
-  {'action': 'subagent', 'resource': '*', 'effect': 'deny'},
-  {'action': 'todowrite', 'resource': '*', 'effect': 'allow'},
-  {'action': 'skill', 'resource': '*', 'effect': 'allow'},
   {'action': 'everyai_*', 'resource': '*', 'effect': 'allow'},
   {'action': 'everyai_bug_check', 'resource': '*', 'effect': 'ask'},
   {'action': 'everyai_check', 'resource': '*', 'effect': 'ask'},
@@ -58,10 +54,11 @@ List<NativeCommand> openCodeCommands(Object? data) {
   return out;
 }
 
-/// OpenCode's primary agents (`GET /api/agent`'s `data`; hidden ones and
-/// subagents left out) as modes: `plan` under the app's Plan, every other
-/// one (`build`, the user's own) under Ask. The session's rules (`*: ask`,
-/// last match wins) keep every agent asking, whatever its own permissions say.
+/// OpenCode's agents a session can run as (`GET /api/agent`'s `data`): every
+/// one except hidden ones (OpenCode's own title and summary agents) and
+/// subagent-only ones, which OpenCode runs only under another agent. `plan`
+/// sits under the app's Plan, every other one (`build`, the user's own) under
+/// Ask; that is only a name, as each agent's own permissions decide what asks.
 List<NativeMode> openCodeModes(Object? data) => [
   if (data is List<Object?>)
     for (final a in data)
@@ -80,7 +77,8 @@ List<NativeMode> openCodeModes(Object? data) => [
 /// One OpenCode session on its own server: events from the server's stream
 /// (only this session's), history from its message list, answers through
 /// its permission replies.
-final class OpenCodeSession implements HarnessSession, SteersRuns, PerCallApprovals, HasNativeCommands, NativeModes {
+final class OpenCodeSession
+    implements HarnessSession, SteersRuns, PerCallApprovals, AllowsRemembered, HasNativeCommands, NativeModes {
   OpenCodeSession(
     this._server, {
     required String workingDir,
@@ -254,19 +252,29 @@ final class OpenCodeSession implements HarnessSession, SteersRuns, PerCallApprov
   @override
   Future<void> resume() async {}
 
-  /// Accepting allows the call once (never "always": remembering is the
-  /// app's job). Refusing chosen calls sends the reason, which the model
-  /// reads and carries on. Refusing all of them (no [callIds]) stops the
+  /// [allowRemembered] replies `always`: OpenCode allows the same pattern for the rest of its session itself.
+  @override
+  Future<void> allowRemembered(NativeGrant grant, {List<String>? callIds}) => _reply(callIds, switch (grant) {
+    NativeGrant.session => 'always',
+    // OpenCode's `always` lasts its session; the card offers no longer one.
+    NativeGrant.always => 'once',
+  });
+
+  /// Accepting allows the call once ("for this session" goes through [allowRemembered]). Refusing chosen calls
+  /// sends the reason, which the model reads and carries on. Refusing all of them (no [callIds]) stops the
   /// run: with a reason, the refusals carry it and the run is interrupted
   /// (the model reads it next turn); without one, a bare refusal stops it.
   @override
-  Future<void> respond({required bool accept, String? reason, List<String>? callIds}) async {
+  Future<void> respond({required bool accept, String? reason, List<String>? callIds}) =>
+      _reply(callIds, accept ? 'once' : 'reject', reason: reason);
+
+  Future<void> _reply(List<String>? callIds, String decision, {String? reason}) async {
+    final accept = decision != 'reject';
     final pending = _mapper.pending;
     final targets = [
       for (final e in pending.entries)
         if (callIds == null || callIds.contains(e.key)) e.value,
     ];
-    final decision = accept ? 'once' : 'reject';
     final why = (reason ?? '').trim();
     final stop = !accept && callIds == null && why.isNotEmpty;
     for (final request in targets) {
@@ -275,17 +283,19 @@ final class OpenCodeSession implements HarnessSession, SteersRuns, PerCallApprov
         if (!accept && (callIds != null || stop)) 'message': why.isEmpty ? 'The user refused this call.' : reason,
       };
       try {
-        await _server.call('POST', '/api/session/$_id/permission/$request/reply', body: body);
+        final owner = _requestSession[request] ?? _id;
+        await _server.call('POST', '/api/session/$owner/permission/$request/reply', body: body);
       } on OpenCodeHttpError catch (e) {
         // Already answered, or the run moved on.
         if (e.status != 404) rethrow;
       }
       _mapper.replied(request, decision);
+      _requestSession.remove(request);
     }
     if (stop && targets.isNotEmpty) await interrupt();
   }
 
-  /// The app's policy decides every request, whatever the mode.
+  /// The agent picked in the mode picker ([setNativeMode]) decides; the app's own mode names change nothing here.
   @override
   Future<void> setMode(AgentMode mode, {bool holdClientTools = false}) async {}
 
@@ -339,9 +349,37 @@ final class OpenCodeSession implements HarnessSession, SteersRuns, PerCallApprov
 
   void _handle(Map<String, Object?> frame) {
     final data = frame['data'];
-    if (data is! Map || data['sessionID'] != _id) return;
+    if (data is! Map) return;
+    final from = data['sessionID'];
+    // OpenCode's own subagents run in child sessions of this one (and of its children).
+    if (frame['type'] == 'session.created' && from is String && from != _id) {
+      if (_children.contains(data['parentID']) || data['parentID'] == _id) _children.add(from);
+      return;
+    }
+    if (from != _id && !(_children.contains(from) && _fromChild(frame['type'], data))) return;
+    if (frame['type'] == 'permission.asked' && data['id'] is String && from is String) {
+      _requestSession[data['id'] as String] = from;
+    }
+    if (frame['type'] == 'permission.replied' && data['requestID'] is String) {
+      _requestSession.remove(data['requestID']);
+    }
     _mapper.live(frame).forEach(_emit);
   }
+
+  /// Child sessions (OpenCode's native subagents) by id.
+  final _children = <String>{};
+
+  /// Which session each permission request came from, so the answer goes back to it.
+  final _requestSession = <String, String>{};
+
+  /// What of a subagent's stream reaches the lead's transcript: its permission requests and their answers, the
+  /// tool details a request's card shows, and the end of a call it asked about. Its other work stays in its own
+  /// session.
+  bool _fromChild(Object? type, Map<Object?, Object?> data) => switch (type) {
+    'permission.asked' || 'permission.replied' || 'session.tool.input.started' || 'session.tool.called' => true,
+    'session.tool.success' || 'session.tool.failed' => _mapper.asked('${data['id']}'),
+    _ => false,
+  };
 
   void _flush() {
     _ready = true;
@@ -364,7 +402,46 @@ final class OpenCodeSession implements HarnessSession, SteersRuns, PerCallApprov
     }
     _mapper.history(messages, resync: resync).forEach(_emit);
     final requests = await _server.call('GET', '/api/session/$_id/permission');
-    _mapper.requests(requests is Map ? requests['data'] as List<Object?>? ?? const [] : const []).forEach(_emit);
+    final open = [
+      ..._data(requests),
+      // A subagent created before this attach (an app restart, a dropped stream) was never seen as
+      // `session.created`: its waiting requests would be lost and the run would hang on a prompt nobody sees.
+      ...await _childRequests(),
+    ];
+    // Requests no longer waiting are forgotten (answered, or their session ended).
+    final ids = {for (final r in open.whereType<Map<String, Object?>>()) r['id']};
+    _requestSession.removeWhere((request, _) => !ids.contains(request));
+    _mapper.requests(open).forEach(_emit);
+  }
+
+  static List<Object?> _data(Object? reply) => reply is Map ? reply['data'] as List<Object?>? ?? const [] : const [];
+
+  /// The session's child sessions, listed from the server (`GET /api/session?parentID=`, their children too), and
+  /// the permission requests waiting in them, each remembered as its child's.
+  Future<List<Object?>> _childRequests() async {
+    final out = <Object?>[];
+    final queue = [_id];
+    while (queue.isNotEmpty) {
+      final parent = queue.removeAt(0);
+      Map<String, String> query = {'parentID': parent, 'limit': '100'};
+      while (true) {
+        final page = await _server.call('GET', '/api/session', query: query);
+        for (final s in _data(page).whereType<Map<String, Object?>>()) {
+          if (s['id'] case final String child when child != _id && _children.add(child)) queue.add(child);
+        }
+        final next = page is Map && page['cursor'] is Map ? (page['cursor'] as Map)['next'] : null;
+        if (next is! String) break;
+        query = {'parentID': parent, 'cursor': next, 'limit': '100'};
+      }
+    }
+    for (final child in _children.toList()) {
+      final requests = await _server.call('GET', '/api/session/$child/permission');
+      for (final r in _data(requests).whereType<Map<String, Object?>>()) {
+        if (r['id'] case final String request) _requestSession[request] = child;
+        out.add(r);
+      }
+    }
+    return out;
   }
 
   void _onDrop() {

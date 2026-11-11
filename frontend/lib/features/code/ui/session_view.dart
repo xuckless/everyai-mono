@@ -31,7 +31,6 @@ import '../domain/session_commands.dart' show AsideKind;
 import 'console/session_info_view.dart' show usageLines;
 import '../domain/transcript.dart';
 import '../code_settings_providers.dart' show codeSettingsProvider;
-import '../drivers/driver_policy.dart' show fidelityNote;
 import '../../settings/byok_keys.dart' show modelBillingProvider;
 import '../drivers/driver_registry.dart';
 import '../harness/events.dart' show ExecutionStatus;
@@ -67,6 +66,7 @@ import 'transcript/transcript_items.dart';
 import '../workflows/ui/workflow_card.dart';
 import '../workflows/workflow_engine.dart' show WorkflowStatus;
 import '../workflows/workflow_runs.dart' show workflowRunsProvider;
+import 'skip_permissions_consent.dart';
 
 const _maxWidth = 780.0;
 
@@ -161,12 +161,10 @@ class CodeSessionScreen extends ConsumerWidget {
             onWait: pick.change ? controller.keepLead : controller.waitForLimit,
           );
 
-    // How far the mode holds on an outside lead, in one line under the bar.
+    // The outside lead's driver (its own modes go in the composer).
     final driver = isOutsideLead(info.harness, info.workingDir)
         ? ref.read(driverRegistryProvider).resolve(info.harness)
         : null;
-    // None when it runs in one of its own modes: the harness's name for it says how it holds.
-    final fidelity = driver == null || state.inNativeMode ? null : fidelityNote(driver, state.mode);
 
     // The console fits the width it really has (the sidebar takes some): the
     // panel beside the transcript, then over it, then the view icons in ⋯.
@@ -184,29 +182,11 @@ class CodeSessionScreen extends ConsumerWidget {
             titleWidget: ConsoleTitle(info: info),
             onBack: info.parentId == null ? null : () => context.go(Routes.codeSession(info.parentId!)),
             backTooltip: 'Back to the main chat',
-            header: fidelity == null && info.parentId == null
-                ? null
-                : Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // A fork's or workflow agent's own chat says so, and goes back to the main chat.
-                      if (info.parentId case final parent?)
-                        SubagentBanner(session: info, onBack: () => context.go(Routes.codeSession(parent))),
-                      if (fidelity != null)
-                        Padding(
-                          key: const ValueKey('session.fidelity'),
-                          padding: const EdgeInsets.fromLTRB(16, 4, 16, 2),
-                          child: Text(
-                            fidelity,
-                            textAlign: TextAlign.center,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: theme.type.caption.tint(theme.textMuted),
-                          ),
-                        ),
-                    ],
-                  ),
+            // A fork's or workflow agent's own chat says so, and goes back to the main chat.
+            header: switch (info.parentId) {
+              final parent? => SubagentBanner(session: info, onBack: () => context.go(Routes.codeSession(parent))),
+              null => null,
+            },
             actions: [
               ConsoleActions(info: info, tier: tier),
               StatusPill(status: state.status, dense: tier != ConsoleTier.wide, minWidth: 92),
@@ -331,6 +311,7 @@ class CodeSessionScreen extends ConsumerWidget {
                                                   onDeny: controller.deny,
                                                   onMode: controller.setMode,
                                                   remember: controller.rememberable(),
+                                                  native: controller.nativeAllowOffer(),
                                                   // None for the demo (its commands never run) or an outside lead (no EveryAI spend).
                                                   workingDir: riskLabelDir(info),
                                                   session: info.billingTag,
@@ -449,7 +430,20 @@ class CodeSessionScreen extends ConsumerWidget {
                                                   ?.path,
                                               busy: busy,
                                               mode: state.mode,
-                                              onModeChanged: controller.setMode,
+                                              onModeChanged: (m) async {
+                                                // An outside lead's skip-permissions mode is agreed to once per harness.
+                                                if (driver != null &&
+                                                    !await confirmSkipPermissions(
+                                                      context,
+                                                      ref,
+                                                      harness: driver.info.id,
+                                                      lead: driver.info.label,
+                                                      mode: m,
+                                                    )) {
+                                                  return;
+                                                }
+                                                await controller.setMode(m);
+                                              },
                                               onSend: (text, files) => controller.sendTyped(text, files: files),
                                               onSteer: (text, files) => controller.steer(text, files: files),
                                               onStop: controller.stop,
@@ -489,13 +483,25 @@ class CodeSessionScreen extends ConsumerWidget {
                                               // An outside lead's own commands (empty until listed, never ours); null: EveryAI's.
                                               commands: ref.watch(nativeSlashMenuProvider(sessionId)),
                                               onUnlistedCommand: controller.runTypedCommand,
-                                              // Ours while no native mode carries the session's (Plan on Codex).
-                                              nativeModes: state.inNativeMode ? state.nativeModes : null,
+                                              // An outside lead's own modes, always (once listed); ours on the EveryAI harness.
+                                              nativeModes: driver != null && state.nativeModes.isNotEmpty
+                                                  ? state.nativeModes
+                                                  : null,
                                               nativeMode: state.nativeMode,
                                               harnessLabel: driver?.info.label ?? '',
-                                              nativeBypass: controller.checksBypassed,
-                                              onNativeBypass: controller.setBypassChecks,
                                               onNativeModeChanged: (id) async {
+                                                final picked = state.nativeModes.where((m) => m.id == id).firstOrNull;
+                                                if (driver != null &&
+                                                    picked != null &&
+                                                    !await confirmSkipPermissions(
+                                                      context,
+                                                      ref,
+                                                      harness: driver.info.id,
+                                                      lead: driver.info.label,
+                                                      mode: picked.policy,
+                                                    )) {
+                                                  return;
+                                                }
                                                 final why = await controller.setNativeMode(id);
                                                 if (why != null && context.mounted) showAdaptiveToast(context, why);
                                               },

@@ -21,8 +21,8 @@ enum AgentMode {
   /// user. The EveryAI harness has no reviewer of its own, so there it runs as [fullAuto].
   auto('Auto', "The agent's own reviewer approves; on EveryAI it runs like Full auto"),
 
-  /// Nothing waits (the worktree keeps the main checkout safe), but the
-  /// safety floor and deny rules still hold.
+  /// Nothing waits (the worktree keeps the main checkout safe). On the EveryAI harness the safety floor and deny
+  /// rules still hold; an outside lead runs in its own skip-permissions mode, where no EveryAI rule judges its calls.
   fullAuto('Full auto', 'Runs commands and edits without asking'),
 
   /// Every EveryAI check off: no safety floor, no deny rules, no risk prompts. The harness runs as if EveryAI weren't
@@ -32,6 +32,14 @@ enum AgentMode {
   const AgentMode(this.label, this.description);
   final String label;
   final String description;
+
+  /// [description] for a session led by [outsideLead] (its name; null on the EveryAI harness), where Full auto and
+  /// Bypass are the lead's own skip-permissions mode.
+  String descriptionOn(String? outsideLead) => switch (this) {
+    fullAuto || bypass when outsideLead != null =>
+      "$outsideLead's own skip-permissions mode: everything runs, nothing asks, no EveryAI rule applies",
+    _ => description,
+  };
 
   /// Whether nothing waits for the user in this mode on the EveryAI harness (Full auto, and Auto, which runs as it
   /// there); the floor and deny rules still hold. Bypass is apart: it checks nothing.

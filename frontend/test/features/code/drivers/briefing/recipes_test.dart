@@ -106,14 +106,12 @@ void main() {
     expect(acp(i).args, isEmpty);
   });
 
-  test('every delivery carries the prefer-our-tools and reporting notes', () {
+  test('every delivery carries the briefing', () {
     final full = (
       mcpUrl: i.mcpUrl,
       mcpToken: i.mcpToken,
       skillDir: i.skillDir,
-      sessionText: sessionBriefing(
-        const SessionSkillInput(worktree: '/wt', projectRoot: '/p', lead: (name: 'X', model: 'm'), hostTools: []),
-      ),
+      sessionText: sessionBriefing(const SessionSkillInput(worktree: '/wt')),
     );
     final claudeArgs = claudeCode(full).args;
     final delivered = {
@@ -123,8 +121,8 @@ void main() {
       'acp': acp(full).firstPrompt,
     };
     for (final MapEntry(:key, :value) in delivered.entries) {
-      expect(value, contains("## Prefer EveryAI's tools"), reason: key);
-      expect(value, contains('## Reporting EveryAI problems'), reason: key);
+      expect(value, contains('## EveryAI tools'), reason: key);
+      expect(value, contains('## Commits'), reason: key);
     }
   });
 

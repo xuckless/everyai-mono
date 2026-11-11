@@ -34,6 +34,7 @@ class SessionApprovalCard extends ConsumerWidget {
       onDeny: controller.deny,
       onMode: controller.setMode,
       remember: controller.rememberable(),
+      native: controller.nativeAllowOffer(),
       // None for the demo (its commands never run) or an outside lead (no EveryAI spend).
       workingDir: riskLabelDir(info),
       session: info.billingTag,

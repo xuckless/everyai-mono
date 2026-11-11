@@ -14,6 +14,7 @@ import '../code/automations/webhook_providers.dart' show webhookRunnerProvider;
 import '../code/code_providers.dart' show CodeSessionState, Outgoing;
 import '../code/domain/agent_mode.dart';
 import '../code/domain/code_session.dart';
+import '../code/domain/native_approvals.dart' show NativeAllowScope;
 import '../code/domain/permissions.dart' show ApprovalScope;
 import '../code/domain/questions.dart';
 import '../code/domain/transcript.dart';
@@ -578,6 +579,7 @@ final class RemoteSessionState {
     this.rememberBy = const {},
     this.perCall = false,
     this.forks = false,
+    this.native,
     this.link = RemoteLinkStatus.connecting,
     this.loaded = false,
     this.gone,
@@ -603,6 +605,9 @@ final class RemoteSessionState {
 
   /// A fork's or subagent's: "for this session" covers all the session's forks.
   final bool forks;
+
+  /// An outside lead's card: how its CLI can keep an allow, from the host (null: EveryAI's rules).
+  final List<NativeAllowScope>? native;
   final RemoteLinkStatus link;
 
   /// The host sent the session at least once.
@@ -620,6 +625,8 @@ final class RemoteSessionState {
     Map<String, String>? rememberBy,
     bool? perCall,
     bool? forks,
+    List<NativeAllowScope>? native,
+    bool clearNative = false,
     RemoteLinkStatus? link,
     bool? loaded,
     String? gone,
@@ -631,6 +638,7 @@ final class RemoteSessionState {
     rememberBy: rememberBy ?? this.rememberBy,
     perCall: perCall ?? this.perCall,
     forks: forks ?? this.forks,
+    native: clearNative ? null : native ?? this.native,
     link: link ?? this.link,
     loaded: loaded ?? this.loaded,
     gone: gone ?? this.gone,
@@ -774,6 +782,12 @@ final class MirrorFold {
           },
           perCall: m['per_call'] == true,
           forks: m['forks'] == true,
+          native: [
+            for (final n in m['native'] as List<Object?>? ?? const [])
+              if (n case {'scope': final String scope, 'label': final String label})
+                if (ApprovalScope.values.asNameMap()[scope] case final s?) (scope: s, label: label),
+          ],
+          clearNative: m['native'] == null,
           remember: [
             for (final p in m['remember'] as List<Object?>? ?? const [])
               if (p is String) p,

@@ -75,6 +75,7 @@ sealed class HarnessEvent {
         contextTokens: (json['context_tokens'] as num?)?.toInt(),
         costMicros: (json['cost_micros'] as num?)?.toInt(),
         onPlan: json['on_plan'] == true,
+        estimated: json['estimated'] == true,
       ),
       'PlanLimits' => PlanLimits(
         id: id,
@@ -366,6 +367,7 @@ final class UsageReport extends HarnessEvent {
     this.contextTokens,
     this.costMicros,
     this.onPlan = false,
+    this.estimated = false,
   });
 
   /// One with its [raw] filled in, so the remote mirror carries it.
@@ -377,6 +379,7 @@ final class UsageReport extends HarnessEvent {
     int? contextTokens,
     int? costMicros,
     bool onPlan = false,
+    bool estimated = false,
   }) => UsageReport(
     id: id,
     raw: {
@@ -388,6 +391,7 @@ final class UsageReport extends HarnessEvent {
       'context_tokens': ?contextTokens,
       'cost_micros': ?costMicros,
       'on_plan': onPlan,
+      if (estimated) 'estimated': true,
     },
     input: input,
     output: output,
@@ -395,6 +399,7 @@ final class UsageReport extends HarnessEvent {
     contextTokens: contextTokens,
     costMicros: costMicros,
     onPlan: onPlan,
+    estimated: estimated,
   );
 
   final int input;
@@ -403,6 +408,9 @@ final class UsageReport extends HarnessEvent {
   final int? contextTokens;
   final int? costMicros;
   final bool onPlan;
+
+  /// Counted by us from the text that went by, not reported by the agent (shown with ≈).
+  final bool estimated;
 }
 
 /// One window of a plan's usage limit: how much of it is [used] (0 to 1),
