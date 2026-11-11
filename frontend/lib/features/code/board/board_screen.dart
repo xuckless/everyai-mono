@@ -58,7 +58,23 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     final sessions = ref.watch(codeSessionsProvider);
     final all = boardSessions(sessions, ref.watch(boardDetachedProvider));
     final statuses = ref.watch(codeStatusesProvider);
-    SessionStatus statusOf(CodeSessionInfo s) {
+    final load = ref.watch(codeStatusesLoadProvider);
+    // Until the first poll has answered, a session without a live controller has no status (not "idle", which
+    // would read as Done): it stays off the Board, and nothing is recorded or cleared from it.
+    final settled = load is StatusesLoaded;
+    // A session's own status: live once its controller has connected, else the polled one.
+    SessionStatus? ownOf(CodeSessionInfo s) {
+      final live = ref.exists(codeSessionProvider(s.id))
+          ? ref.watch(codeSessionProvider(s.id).select((st) => st.connected || st.failure != null ? st.status : null))
+          : null;
+      return live ?? statuses[s.id] ?? (load is StatusesLoading ? null : SessionStatus.idle);
+    }
+
+    final childrenOf = childrenByParent(sessions);
+
+    SessionStatus? statusOf(CodeSessionInfo s) {
+      final own = ownOf(s);
+      if (own == null) return null;
       // Waiting sessions are opened, so their card can answer for them.
       if (statuses[s.id] == SessionStatus.needsInput &&
           !isDemoPath(s.workingDir) &&
@@ -68,13 +84,13 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
         });
       }
       // Until an opened session has connected, the polled status stands (no flicker to Done and back).
-      final live = ref.exists(codeSessionProvider(s.id))
-          ? ref.watch(codeSessionProvider(s.id).select((st) => st.connected || st.failure != null ? st.status : null))
-          : null;
-      final own = live ?? statuses[s.id] ?? SessionStatus.idle;
       return boardStatus(
         own,
-        workRunning: ref.watch(workflowRunsProvider(s.id)).any((r) => r.status == WorkflowStatus.running),
+        workRunning:
+            ref.watch(workflowRunsProvider(s.id)).any((r) => r.status == WorkflowStatus.running) ||
+            childRunning(s.id, childrenOf, (c) => ownOf(c) ?? SessionStatus.idle) ||
+            (ref.exists(codeSessionProvider(s.id)) &&
+                ref.watch(codeSessionProvider(s.id).select((st) => subagentsRunning(st.transcript)))),
         childWaits: [
           for (final c in sessions)
             if (c.parentId == s.id) c,
@@ -82,7 +98,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       );
     }
 
-    final status = {for (final s in all) s.id: statusOf(s)};
+    final status = {for (final s in all) s.id: ?statusOf(s)};
     // A cleared session that runs again comes back.
     final back = [
       for (final id in dismissed)
@@ -91,13 +107,33 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     if (back.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => ref.read(boardDismissedProvider.notifier).restore(back));
     }
+    // Old finishes clear by themselves ([staleDone]): Done keeps the last two days, at most [boardDoneKeep].
+    final clock = ref.watch(boardDoneSinceProvider);
+    final now = DateTime.now();
+    final doneSince = <String, DateTime>{
+      for (final s in all)
+        if (status[s.id] case final st? when BoardColumn.of(st) == BoardColumn.done && !dismissed.contains(s.id))
+          s.id: clock.countsFrom(s.id, s.createdAt, now),
+    };
+    final stale = staleDone(doneSince, now: now);
+    if (settled) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        ref.read(boardDoneSinceProvider.notifier).sync({
+          for (final e in doneSince.entries)
+            if (!stale.contains(e.key)) e.key: e.value,
+        });
+        if (stale.isNotEmpty) ref.read(boardDismissedProvider.notifier).dismiss(stale);
+      });
+    }
 
     final harnesses = <String>{for (final s in all) s.harness}.toList();
     final harness = harnesses.contains(_harness) ? _harness : null;
     final shown = [
       for (final s in all)
-        if ((harness == null || s.harness == harness) &&
-            !(dismissed.contains(s.id) && BoardColumn.of(status[s.id]!) == BoardColumn.done))
+        if (status[s.id] case final st?
+            when (harness == null || s.harness == harness) &&
+                !(dismissed.contains(s.id) && BoardColumn.of(st) == BoardColumn.done))
           s,
     ];
     final columns = {

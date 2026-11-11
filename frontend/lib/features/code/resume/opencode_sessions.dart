@@ -32,6 +32,9 @@ const _historySql = 'SELECT id, type, data FROM session_message WHERE session_id
 
 /// OpenCode's sessions for a folder.
 final class OpenCodePastSessions implements PastSessionSource {
+  @override
+  bool get deletes => true;
+
   OpenCodePastSessions({Future<Map<String, String>> Function()? env, this.dbPath}) : _env = env ?? files.resumeEnv;
 
   final Future<Map<String, String>> Function() _env;
@@ -92,6 +95,14 @@ final class OpenCodePastSessions implements PastSessionSource {
     final messages = <Object?>[for (final r in rows) ?_message(r)];
     // The driver's mapper, so tool names, todos and reasoning read as in a live OpenCode session.
     return OpenCodeMapper(workingDir: session.cwd).history(messages);
+  }
+
+  /// Through OpenCode itself (`opencode session delete`, which takes its child sessions too): its database is
+  /// its own to write.
+  @override
+  Future<void> delete(String nativeId, {required String cwd}) async {
+    if (nativeId.isEmpty || nativeId.startsWith('-')) return;
+    await files.runCli('opencode', ['session', 'delete', nativeId]);
   }
 
   static Map<String, Object?>? _message(Map<String, Object?> r) {

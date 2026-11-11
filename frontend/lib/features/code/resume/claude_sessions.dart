@@ -7,6 +7,7 @@ import '../handoff/native/claude_import.dart' show claudeProjectSlug;
 import '../handoff/native/native_files.dart' show envVar, realPath;
 import '../harness/events.dart';
 import 'past_sessions.dart';
+import 'resume_files.dart' show deletePath;
 import 'session_files.dart';
 
 // Claude Code keeps each conversation as JSONL under
@@ -31,6 +32,9 @@ PastSessionSource claudePastSessions({
 }) => ClaudePastSessions(env: env, resolve: resolve);
 
 final class ClaudePastSessions implements PastSessionSource {
+  @override
+  bool get deletes => true;
+
   ClaudePastSessions({Future<String?> Function(String name)? env, Future<String> Function(String path)? resolve})
     : _env = env ?? envVar,
       _resolve = resolve ?? realPath;
@@ -82,6 +86,18 @@ final class ClaudePastSessions implements PastSessionSource {
       if (lines.isNotEmpty) return claudeHistory(lines);
     }
     return const [];
+  }
+
+  /// The session's file and its folder (subagents, tool results).
+  @override
+  Future<void> delete(String nativeId, {required String cwd}) async {
+    final root = await _root();
+    if (root == null || nativeId.isEmpty || nativeId.contains('/')) return;
+    for (final d in {_trim(cwd), _trim(await _resolve(cwd))}) {
+      final base = '$root/projects/${claudeProjectSlug(d)}/$nativeId';
+      await deletePath('$base.jsonl');
+      await deletePath(base);
+    }
   }
 }
 

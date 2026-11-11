@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:ui' show Color;
 
+import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/preferences.dart';
@@ -36,6 +37,36 @@ SessionStatus boardStatus(SessionStatus own, {required bool workRunning, require
   if (workRunning && (own == SessionStatus.idle || own == SessionStatus.done)) return SessionStatus.running;
   return own;
 }
+
+/// Sessions by the session that started them (forks and subagents under their lead).
+Map<String, List<CodeSessionInfo>> childrenByParent(Iterable<CodeSessionInfo> sessions) {
+  final out = <String, List<CodeSessionInfo>>{};
+  for (final c in sessions) {
+    if (c.parentId case final p?) (out[p] ??= []).add(c);
+  }
+  return out;
+}
+
+/// Whether a fork or subagent under [id], at any depth, still works ([statusOf] its own status): the lead may sit
+/// idle meanwhile, and the session isn't done.
+bool childRunning(
+  String id,
+  Map<String, List<CodeSessionInfo>> childrenOf,
+  SessionStatus Function(CodeSessionInfo) statusOf, [
+  Set<String>? seen,
+]) {
+  final visited = seen ?? <String>{};
+  for (final c in childrenOf[id] ?? const <CodeSessionInfo>[]) {
+    if (!visited.add(c.id)) continue;
+    if (statusOf(c) == SessionStatus.running || childRunning(c.id, childrenOf, statusOf, visited)) return true;
+  }
+  return false;
+}
+
+/// Whether an outside lead's own subagents (Claude Code's background agents, which aren't sessions of ours) are
+/// still out: their card stays open until they report. EveryAI's forks are child sessions ([childRunning]); a fork
+/// Stop all ended never reports, so its card doesn't count.
+bool subagentsRunning(Transcript t) => t.items.any((i) => i is SubagentItem && !i.ours && !i.done);
 
 /// A harness's two-letter mark and colour: the fallback for harnesses without a logo ([HarnessLogo]).
 ({String letters, Color color}) harnessMark(String harness) => switch (harness) {
@@ -131,6 +162,86 @@ final class BoardDismissed extends Notifier<Set<String>> {
   void restore(Iterable<String> ids) {
     if (ids.any(state.contains)) _set({...state}..removeAll(ids));
   }
+}
+
+/// The Board's auto-clear clock for Done cards, kept in Preferences `code.board.done_since` (id → epoch ms).
+///
+/// [DoneFirstRun] ─ the Board records a first set ─▶ [DoneTracking]
+///
+/// A session in Done is tracked from when the Board first saw it there; one that leaves Done is forgotten, so its
+/// next finish counts from then. Once the clock clears it ([staleDone]) it is dismissed (`boardDismissedProvider`),
+/// which is the "cleared" state; it comes back when the session runs again.
+sealed class DoneClock {
+  const DoneClock();
+
+  /// When [id], Done now, counts from: the first run counts from when the session was created (what finished before
+  /// the Board recorded anything), a tracked one from its record, a newly seen one from [now].
+  DateTime countsFrom(String id, DateTime createdAt, DateTime now) => switch (this) {
+    DoneFirstRun() => createdAt,
+    DoneTracking(:final since) => switch (since[id]) {
+      final ms? => DateTime.fromMillisecondsSinceEpoch(ms),
+      null => now,
+    },
+  };
+}
+
+/// Nothing recorded yet (no preference).
+final class DoneFirstRun extends DoneClock {
+  const DoneFirstRun();
+}
+
+final class DoneTracking extends DoneClock {
+  const DoneTracking(this.since);
+  final Map<String, int> since;
+}
+
+final boardDoneSinceProvider = NotifierProvider<BoardDoneSince, DoneClock>(BoardDoneSince.new);
+
+final class BoardDoneSince extends Notifier<DoneClock> {
+  static const key = 'code.board.done_since';
+
+  @override
+  DoneClock build() {
+    final raw = ref.read(preferencesProvider)[key];
+    if (raw == null) return const DoneFirstRun();
+    try {
+      return DoneTracking({
+        for (final e in (jsonDecode(raw) as Map<String, Object?>).entries) e.key: (e.value as num).toInt(),
+      });
+    } on Object {
+      return const DoneTracking({});
+    }
+  }
+
+  /// Records [done] (id → when it counts from) for the ids not yet known, and forgets known ids not in [done].
+  void sync(Map<String, DateTime> done) {
+    final before = switch (state) {
+      DoneTracking(:final since) => since,
+      DoneFirstRun() => const <String, int>{},
+    };
+    final next = {for (final MapEntry(key: id, value: at) in done.entries) id: before[id] ?? at.millisecondsSinceEpoch};
+    if (state is DoneTracking && mapEquals(next, before)) return;
+    state = DoneTracking(next);
+    ref.read(preferencesProvider)[key] = jsonEncode(next);
+  }
+}
+
+/// How long a finished session stays in Done, and how many stay at most; older ones clear by themselves.
+const boardDoneFor = Duration(days: 2);
+const boardDoneKeep = 8;
+
+/// The Done sessions to clear by themselves: those done longer than [maxAge] ago, and past the newest [keep].
+Set<String> staleDone(
+  Map<String, DateTime> doneSince, {
+  required DateTime now,
+  Duration maxAge = boardDoneFor,
+  int keep = boardDoneKeep,
+}) {
+  final newest = doneSince.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+  return {
+    for (final (i, e) in newest.indexed)
+      if (i >= keep || now.difference(e.value) > maxAge) e.key,
+  };
 }
 
 /// The Board's column widths as shares of its width (three, summing to 1); Preferences `code.board.columns`.

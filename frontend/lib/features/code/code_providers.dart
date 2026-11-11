@@ -116,7 +116,8 @@ import 'settings/settings.dart';
 import 'session_notifications.dart';
 import 'spill/spill.dart';
 import 'resume/past_sessions.dart';
-import 'resume/resume_providers.dart' show resumedJournal, saveResumedHistory;
+import 'resume/resume_providers.dart'
+    show DeletedConversations, pastSessionSourcesProvider, resumedJournal, saveResumedHistory;
 import 'uploads/uploads.dart';
 import 'workflows/workflow_bridge.dart'
     show WorkflowBridge, appendJournalFile, listJournalFiles, readJournalFile, retireJournalFile;
@@ -1838,12 +1839,30 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       ref.read(preferencesProvider)['$codeLayoutPrefix$g'] = null;
       ref.read(preferencesProvider)['$codeLimitBannerPrefix$g'] = null;
     }
+    // The harnesses' own copies (every lead the session had) go too, so they don't come back under Earlier.
+    final natives = [
+      for (final s in state)
+        if (gone.contains(s.id)) ...[
+          if (s.conversationId.isNotEmpty) (harness: s.harness, id: s.conversationId, cwd: s.workingDir),
+          for (final MapEntry(:key, :value) in s.leads.entries)
+            if (value.conversationId.isNotEmpty) (harness: key, id: value.conversationId, cwd: s.workingDir),
+        ],
+    ];
+    DeletedConversations.add(ref.read(preferencesProvider), [for (final n in natives) '${n.harness}|${n.id}']);
     state = [
       for (final s in state)
         if (!gone.contains(s.id)) s,
     ];
     _save();
-    await Future.wait([for (final g in outside) _unbrief(g), for (final g in switched) _dropTimeline(g)]);
+    final sources = ref.read(pastSessionSourcesProvider);
+    await Future.wait([
+      for (final g in outside) _unbrief(g),
+      for (final g in switched) _dropTimeline(g),
+      for (final n in natives)
+        for (final source in sources)
+          if (source.harness == n.harness && !isDemoPath(n.cwd))
+            source.delete(n.id, cwd: n.cwd).catchError((Object _) {}),
+    ]);
   }
 
   Future<void> _dropTimeline(String id) async {
@@ -7169,11 +7188,48 @@ final class CodeSessionController extends Notifier<CodeSessionState>
 /// have no live controller), refreshed every 10 s while a list shows them.
 final codeStatusesProvider = NotifierProvider.autoDispose<CodeStatuses, Map<String, SessionStatus>>(CodeStatuses.new);
 
+/// Whether [codeStatusesProvider] has heard from the harnesses yet. Until it has, a session without a live
+/// controller has no status at all (not "idle"), so nothing may treat it as finished.
+///
+/// loading ─ first poll answered, or nothing to poll ─▶ loaded
+/// loading ─ first poll failed ─▶ unavailable ─ a later poll answers ─▶ loaded
+sealed class StatusesLoad {
+  const StatusesLoad();
+}
+
+final class StatusesLoading extends StatusesLoad {
+  const StatusesLoading();
+}
+
+final class StatusesLoaded extends StatusesLoad {
+  const StatusesLoaded();
+}
+
+/// The first poll failed (the server isn't up): sessions show as idle, but nothing is recorded or cleared from it.
+final class StatusesUnavailable extends StatusesLoad {
+  const StatusesUnavailable();
+}
+
+final codeStatusesLoadProvider = NotifierProvider.autoDispose<CodeStatusesLoad, StatusesLoad>(CodeStatusesLoad.new);
+
+final class CodeStatusesLoad extends Notifier<StatusesLoad> {
+  @override
+  StatusesLoad build() => const StatusesLoading();
+
+  void loaded() => state = const StatusesLoaded();
+
+  void unavailable() {
+    if (state is StatusesLoading) state = const StatusesUnavailable();
+  }
+}
+
 final class CodeStatuses extends Notifier<Map<String, SessionStatus>> {
   Timer? _timer;
 
   @override
   Map<String, SessionStatus> build() {
+    // Lives as long as the statuses do (it is only read below, which would let an autoDispose provider go).
+    ref.listen(codeStatusesLoadProvider, (_, _) {});
     _timer = Timer.periodic(const Duration(seconds: 10), (_) => unawaited(_refresh()));
     ref.onDispose(() => _timer?.cancel());
     unawaited(Future.microtask(_refresh));
@@ -7185,7 +7241,10 @@ final class CodeStatuses extends Notifier<Map<String, SessionStatus>> {
       for (final s in ref.read(codeSessionsProvider))
         if (!isDemoPath(s.workingDir)) s,
     ];
-    if (sessions.isEmpty) return;
+    if (sessions.isEmpty) {
+      ref.read(codeStatusesLoadProvider.notifier).loaded();
+      return;
+    }
     try {
       final byConversation = await _driverStatuses(ref, sessions);
       if (!ref.mounted) return;
@@ -7194,6 +7253,7 @@ final class CodeStatuses extends Notifier<Map<String, SessionStatus>> {
         for (final s in sessions)
           if (byConversation[s.conversationId] case final status?) s.id: _sessionStatus(status),
       };
+      ref.read(codeStatusesLoadProvider.notifier).loaded();
       // Sessions whose view is closed still tell the user when they need them.
       for (final s in sessions) {
         final now = state[s.id];
@@ -7201,6 +7261,7 @@ final class CodeStatuses extends Notifier<Map<String, SessionStatus>> {
       }
     } on Object {
       // The server isn't up yet; try again on the next tick.
+      if (ref.mounted) ref.read(codeStatusesLoadProvider.notifier).unavailable();
     }
   }
 

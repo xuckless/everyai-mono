@@ -3,7 +3,9 @@
 import 'dart:io';
 
 import 'package:every_ai/features/code/harness/events.dart';
+import 'package:every_ai/features/code/resume/acp_sessions.dart';
 import 'package:every_ai/features/code/resume/claude_sessions.dart';
+import 'package:every_ai/features/code/ui/console/session_actions.dart' show deleteHarnessNote;
 import 'package:every_ai/features/code/resume/codex_sessions.dart';
 import 'package:every_ai/features/code/resume/past_sessions.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -115,6 +117,36 @@ void main() {
       expect(s!.turns, isNull);
       expect(s.title, 'Counter with reset on the home page');
     });
+  });
+
+  test("deleting removes Claude Code's session file and folder and Codex's rollout, nothing else", () async {
+    claudeFile(project, 'gone', _fixture('claude_session.jsonl', project));
+    claudeFile(project, 'gone/subagents/agent-1', _fixture('claude_session.jsonl', project));
+    claudeFile(project, 'kept', _fixture('claude_session.jsonl', project));
+    final claude = claudePastSessions(env: env, resolve: same);
+    await claude.delete('gone', cwd: project);
+    expect((await claude.list(project)).map((s) => s.nativeId), ['kept']);
+    expect(Directory('$home/.claude/projects/${slug(project)}/gone').existsSync(), isFalse);
+
+    for (final id in ['aaa', 'bbb']) {
+      File('$home/.codex/sessions/2026/11/02/rollout-2026-11-02T09-00-00-$id.jsonl')
+        ..createSync(recursive: true)
+        ..writeAsStringSync(_fixture('codex_rollout.jsonl', project, id: id));
+    }
+    final codex = codexPastSessions(env: env, resolve: same);
+    await codex.delete('aaa', cwd: project);
+    expect((await codex.list(project)).map((s) => s.nativeId), ['bbb']);
+  });
+
+  test('only a source that really deletes is promised in the delete dialog', () {
+    final acp = AcpListedSessions(harness: 'acp:x', open: (_) => throw UnimplementedError());
+    expect([claudePastSessions().deletes, codexPastSessions().deletes, acp.deletes], [true, true, false]);
+    expect(
+      deleteHarnessNote([('Claude Code', true), ('Cursor', acp.deletes)]),
+      ' It is deleted from Claude Code too. Cursor keeps its own copy.',
+    );
+    expect(deleteHarnessNote([('A', false), ('B', false)]), ' A and B keep their own copy.');
+    expect(deleteHarnessNote(const []), '');
   });
 
   group('Codex', () {

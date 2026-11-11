@@ -966,6 +966,18 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   (bars): `usageLines` says `Spending cap ($5.00): 40% used`. Codex is asked for fresh limits on `/usage`
   (`RefreshesPlanLimits`, `account/rateLimits/read`); Claude Code's probe gets stdin closed (`EndsInput`; `claude -p`
   waited 3 s for it). OpenCode and ACP leads report no plan limits, so their card shows tokens, cost and the cap.
+- **Board: forks keep their lead running (2026-11-11; branch `fix/board-child-work`).** A session whose lead was idle
+  while a fork or subagent still worked went to Done: the Board only counted workflow runs. Now any child session
+  running at any depth (`childRunning`, `childrenByParent`) and an outside lead's open subagent cards (Claude Code's
+  background agents; `subagentsRunning`, not EveryAI's own forks, which are sessions) keep it Running.
+- **Deleted sessions stay deleted; Done clears itself (2026-11-11; branch `fix/board-child-work`).** Deleting a Code
+  session now deletes the harness's own copy (every lead it had): Claude Code's `<id>.jsonl` and folder, Codex's
+  rollout file, Gemini's chat file, OpenCode through `opencode session delete`; ACP agents can't delete. Every deleted
+  `harness|id` is kept in Preferences `code.deleted_conversations` (`DeletedConversations`, newest 2000) and never
+  listed under Earlier again, even when its copy couldn't be deleted. The Board's Done keeps the last two days, at
+  most eight (`staleDone`); older ones clear by themselves and come back if they run again. When each one finished is
+  Preferences `code.board.done_since` (`BoardDoneSince`), from when the Board first sees it; on the first run, sessions
+  already Done count from when they started, so old clutter goes at once.
 - **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
   `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
   `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,
