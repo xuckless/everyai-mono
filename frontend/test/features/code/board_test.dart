@@ -4,7 +4,13 @@ import 'package:drift/native.dart';
 import 'package:every_ai/app/shell.dart';
 import 'package:every_ai/core/db/app_database.dart';
 import 'package:every_ai/core/platform/platform_kind.dart';
+import 'package:every_ai/core/net/api_client.dart';
 import 'package:every_ai/core/preferences.dart';
+import 'package:every_ai/core/providers.dart' show apiClientProvider;
+import 'package:every_ai/features/usage/usage_totals.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:every_ai/core/ui/kit.dart' show KitButton;
 import 'package:every_ai/features/code/board/board_providers.dart';
 import 'package:every_ai/features/code/board/board_screen.dart';
 import 'package:every_ai/features/code/board/board_state.dart';
@@ -19,6 +25,8 @@ import 'package:every_ai/features/code/workflows/workflow_engine.dart';
 import 'package:every_ai/features/code/workflows/workflow_runs.dart';
 import 'package:every_ai/features/questions/domain/questions.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -491,4 +499,199 @@ void main() {
     c.dispose();
     await db.close();
   });
+
+  testWidgets(
+    'keys move a selection, Enter opens the inspector, Esc steps back; Approve all confirms risky calls once; '
+    'a sweep clears Done cards with Undo',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      tester.view.physicalSize = const Size(1600, 900);
+      tester.view.devicePixelRatio = 1;
+      final db = AppDatabase(NativeDatabase.memory());
+      final prefs = await Preferences.load(db);
+      prefs['code.projects'] = '[{"id":"p1","name":"Alpha","path":"/tmp/p1"}]';
+      prefs[BoardDoneSince.key] = '{}';
+      prefs['code.sessions'] = jsonEncode([
+        _s('n').toJson(),
+        _s('d1', day: 2).toJson(),
+        _s('d2', day: 3).toJson(),
+        _s('d3', day: 4).toJson(),
+      ]);
+      final waiting =
+          (TranscriptBuilder()
+                ..add(
+                  actionEvent(id: 'x1', toolName: 'bash', kind: 'TerminalAction', args: const {'command': 'rm -rf ~'}),
+                )
+                ..add(stateEvent('x1-w', ExecutionStatus.waitingForConfirmation)))
+              .snapshot;
+      // The inspector's status and composer animate for as long as they show: fixed steps, not "settled".
+      Future<void> settle() async {
+        for (var i = 0; i < 12; i++) {
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+      }
+
+      final c = ProviderContainer(
+        overrides: [
+          preferencesProvider.overrideWithValue(prefs),
+          // The inspector's composer reads usage and the server: neither is reached here.
+          codeUsageProvider.overrideWithBuild((ref, n) async => UsageTotals.zero),
+          apiClientProvider.overrideWithValue(
+            ApiClient(
+              baseUrl: Uri.parse('http://backend/'),
+              client: MockClient((req) async => http.Response('no network in this test', 599)),
+            ),
+          ),
+          codeSessionProvider.overrideWithBuild(
+            (ref, n) =>
+                n.sessionId == 'n' ? CodeSessionState(connected: true, transcript: waiting) : const CodeSessionState(),
+          ),
+        ],
+      );
+      c.listen(codeSessionProvider('n'), (_, _) {});
+      c.listen(codeStatusesProvider, (_, _) {});
+      // ignore: invalid_use_of_protected_member
+      c.read(codeStatusesProvider.notifier).state = {
+        'd1': SessionStatus.done,
+        'd2': SessionStatus.done,
+        'd3': SessionStatus.done,
+      };
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: c,
+          child: LayoutHost(
+            language: DesignLanguage.material,
+            child: ShellScope(sidebarVisible: true, compact: false, toggleSidebar: () {}, child: const BoardScreen()),
+          ),
+        ),
+      );
+      await settle();
+      expect(tester.takeException(), isNull);
+      Border? ring(String id) =>
+          (tester.widget<DecoratedBox>(find.byKey(ValueKey('board.ring.$id'))).decoration as BoxDecoration).border
+              as Border?;
+      bool selected(String id) => ring(id)?.top.width == 1.5 && ring(id)!.top.color.a > 0.9;
+
+      // j walks the cards in order (Needs you first, Done newest first); n jumps to the one that needs you.
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyJ);
+      await tester.pump();
+      expect(selected('n'), isTrue);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyJ);
+      await tester.pump();
+      expect(selected('n'), isFalse);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyN);
+      await tester.pump();
+      expect(selected('n'), isTrue);
+
+      // Enter opens the inspector beside the columns, with the approval and a composer; Esc closes it, then deselects.
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await settle();
+      expect(find.byKey(const ValueKey('board.inspector.n')), findsOneWidget);
+      expect(find.byKey(const ValueKey('board.inspector.composer.n')), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('board.inspector.n')),
+          matching: find.textContaining('rm -rf ~', findRichText: true),
+        ),
+        findsWidgets,
+      );
+      expect(find.byKey(const ValueKey('board.column.needsYou')), findsOneWidget);
+      // A reply typed there goes to the session (queued, as the agent waits on an approval); Board keys don't fire
+      // while typing (the j here doesn't move the selection).
+      final reply = find.descendant(
+        of: find.byKey(const ValueKey('board.inspector.composer.n')),
+        matching: find.byType(EditableText),
+      );
+      await tester.enterText(reply, 'just checking');
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyJ);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await settle();
+      expect(selected('n'), isTrue);
+      expect([for (final q in c.read(codeSessionProvider('n')).queued) q.text], ['just checking']);
+      // Esc from the composer closes the inspector too.
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await settle();
+      expect(find.byKey(const ValueKey('board.inspector.n')), findsNothing);
+      expect(selected('n'), isTrue);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(selected('n'), isFalse);
+
+      // A click on a card opens it there too, and its close button shuts it.
+      await tester.tap(find.text('Session d1'));
+      await settle();
+      expect(find.byKey(const ValueKey('board.inspector.d1')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('board.inspector.close')));
+      await settle();
+      expect(find.byKey(const ValueKey('board.inspector.d1')), findsNothing);
+
+      // Approve all: the flagged call is listed in one confirm; Cancel approves nothing.
+      await tester.tap(find.byKey(const ValueKey('board.approve-all')));
+      await settle();
+      expect(find.text('Approve all, risky ones included?'), findsOneWidget);
+      expect(find.textContaining('Session n:'), findsOneWidget);
+      await tester.tap(find.text('Cancel'));
+      await settle();
+      expect(find.text('Approve all, risky ones included?'), findsNothing);
+      // While one run is confirming, the button takes no second press; confirm once, then it approves.
+      await tester.tap(find.byKey(const ValueKey('board.approve-all')));
+      await tester.pump();
+      expect(tester.widget<KitButton>(find.byKey(const ValueKey('board.approve-all'))).onPressed, isNull);
+      await settle();
+      expect(find.text('Approve all, risky ones included?'), findsOneWidget);
+      await tester.tap(find.text('Approve all').last);
+      await settle();
+      expect(find.text('Approved 1 call'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 3));
+
+      // A mouse sweep from the first Done card to the third clears all three; Undo brings them back.
+      final from = tester.getCenter(find.text('Session d3'));
+      final to = tester.getCenter(find.text('Session d1'));
+      final mouse = await tester.startGesture(from, kind: PointerDeviceKind.mouse);
+      await mouse.moveTo(from + const Offset(0, 30));
+      await tester.pump();
+      await mouse.moveTo(to);
+      await tester.pump();
+      await mouse.up();
+      await settle();
+      expect(c.read(boardDismissedProvider), {'d1', 'd2', 'd3'});
+      expect(find.text('Session d2'), findsNothing);
+      expect(find.text('Cleared 3'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('board.undo')));
+      await settle();
+      expect(c.read(boardDismissedProvider), isEmpty);
+      expect(find.text('Session d2'), findsOneWidget);
+
+      // x clears the selected Done card; ⌘Z takes it back.
+      await tester.tap(find.text('Session d2'));
+      await settle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await settle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyX);
+      await settle();
+      expect(c.read(boardDismissedProvider), {'d2'});
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+      await settle();
+      expect(c.read(boardDismissedProvider), isEmpty);
+
+      // The filter narrows the cards; Esc clears it.
+      await tester.sendKeyEvent(LogicalKeyboardKey.slash);
+      await tester.pump();
+      await tester.enterText(find.byKey(const ValueKey('board.search')), 'd2');
+      await settle();
+      expect(find.text('Session d1'), findsNothing);
+      expect(find.text('Session d2'), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await settle();
+      expect(find.text('Session d1'), findsOneWidget);
+
+      await tester.pumpWidget(const SizedBox());
+      debugDefaultTargetPlatformOverride = null;
+      tester.view.reset();
+      c.dispose();
+      await db.close();
+    },
+  );
 }

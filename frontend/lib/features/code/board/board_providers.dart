@@ -285,3 +285,23 @@ final boardRecentTranscriptProvider = FutureProvider.autoDispose.family<Transcri
     return null;
   }
 });
+
+/// The Board's side inspector width in points; Preferences `code.board.inspector`.
+final boardInspectorWidthProvider = NotifierProvider<BoardInspectorWidth, double>(BoardInspectorWidth.new);
+
+final class BoardInspectorWidth extends Notifier<double> {
+  static const key = 'code.board.inspector';
+  static const initial = 440.0;
+  static const min = 340.0;
+  static const max = 760.0;
+
+  @override
+  double build() => (double.tryParse(ref.read(preferencesProvider)[key] ?? '') ?? initial).clamp(min, max);
+
+  void set(double width) {
+    state = width.clamp(min, max);
+    ref.read(preferencesProvider)[key] = state.toStringAsFixed(0);
+  }
+
+  void reset() => set(initial);
+}

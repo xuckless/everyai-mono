@@ -1,5 +1,8 @@
-import 'package:flutter/gestures.dart' show DragStartBehavior;
+import 'dart:async';
+
+import 'package:flutter/gestures.dart' show DragStartBehavior, PointerDeviceKind;
 import 'package:flutter/rendering.dart' show ScrollCacheExtent;
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -23,8 +26,11 @@ import '../domain/fork_state.dart';
 import '../domain/code_session.dart';
 import '../drivers/driver_registry.dart' show driverRegistryProvider;
 import '../ui/harness_logo.dart';
+import '../domain/floor_advice.dart' show approvalFlags;
+import 'board_inspector.dart';
 import 'board_providers.dart';
 import 'board_state.dart';
+import 'board_triage.dart';
 import '../domain/transcript.dart' show QuestionItem, Transcript;
 import '../harness/events.dart' show ActionCall;
 import 'board_work.dart';
@@ -57,6 +63,278 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
 
   /// Column shares while a divider is dragged (written when it ends).
   List<double>? _dragging;
+
+  /// The inspector's width while its edge is dragged (written when it ends).
+  double? _inspectorDragging;
+
+  BoardSelection _selection = const NoSelection();
+  BoardInspector _inspector = const InspectorClosed();
+  DoneSweep _sweep = const SweepIdle();
+  ClearUndo _undo = const NothingToUndo();
+  var _undoGeneration = 0;
+
+  /// Hides the Undo bar of the latest clear.
+  Timer? _undoTimer;
+  var _bulk = BulkApprove.idle;
+
+  /// The cards in keyboard order, and the Done ones, as last built.
+  var _order = const <String>[];
+  var _doneOrder = const <String>[];
+  var _needsYouOrder = const <String>[];
+
+  final _focus = FocusNode(debugLabel: 'board');
+  final _filterFocus = FocusNode(debugLabel: 'board.filter');
+  final _filter = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _filter.addListener(() => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    _undoTimer?.cancel();
+    _focus.dispose();
+    _filterFocus.dispose();
+    _filter.dispose();
+    super.dispose();
+  }
+
+  void _select(String? id) {
+    if (id == null) return;
+    setState(() => _selection = SelectedCard(id));
+    _reveal(id);
+  }
+
+  /// Scrolls the selected card into view.
+  void _reveal(String id) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = _keys[id]?.currentContext;
+      if (ctx != null && ctx.mounted) {
+        unawaited(
+          Scrollable.ensureVisible(
+            ctx,
+            duration: Motion.move,
+            alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+          ),
+        );
+      }
+    });
+  }
+
+  void _inspect(String id) {
+    setState(() {
+      _selection = SelectedCard(id);
+      _inspector = InspectorOpen(id);
+    });
+    _focus.requestFocus();
+  }
+
+  void _closeInspector() {
+    if (_inspector is InspectorClosed) return;
+    setState(() => _inspector = const InspectorClosed());
+    _focus.requestFocus();
+  }
+
+  void _openFull(String id) {
+    ref.read(boardSeenProvider.notifier).see(id);
+    context.go(Routes.codeSession(id));
+  }
+
+  /// Clears [ids] off the Board, with Undo for a few seconds.
+  void _clear(List<String> ids) {
+    if (ids.isEmpty) return;
+    ref.read(boardDismissedProvider.notifier).dismiss(ids);
+    final gen = ++_undoGeneration;
+    setState(() => _undo = Undoable(ids, gen));
+    _undoTimer?.cancel();
+    _undoTimer = Timer(const Duration(seconds: 6), () {
+      if (!mounted) return;
+      if (_undo case Undoable(generation: final g) when g == gen) setState(() => _undo = const NothingToUndo());
+    });
+  }
+
+  void _undoClear() {
+    if (_undo case Undoable(:final ids)) {
+      ref.read(boardDismissedProvider.notifier).restore(ids);
+      setState(() => _undo = const NothingToUndo());
+    }
+  }
+
+  /// The selected card's own approvals, approved or denied as the card shows them.
+  Future<void> _decideSelected({required bool approve}) async {
+    final id = switch (_selection) {
+      SelectedCard(:final id) => id,
+      NoSelection() => null,
+    };
+    if (id == null) return;
+    if (!ref.exists(codeSessionProvider(id))) return;
+    final pending = ref.read(codeSessionProvider(id)).transcript.pending;
+    if (pending.isEmpty) {
+      showAdaptiveToast(context, 'Nothing to ${approve ? 'approve' : 'deny'} here');
+      return;
+    }
+    final controller = ref.read(codeSessionProvider(id).notifier);
+    final ids = [for (final c in pending) c.id];
+    if (approve) {
+      await controller.approve(ApprovalScope.once, ids);
+    } else {
+      await controller.deny(null, ids);
+    }
+  }
+
+  /// Approves every approval waiting on the shown cards; flagged calls are listed in one confirm first.
+  Future<void> _approveAll(List<CodeSessionInfo> shown) async {
+    if (_bulk != BulkApprove.idle) return;
+    final waiting = <WaitingApprovals>[
+      for (final s in shown)
+        if (ref.exists(codeSessionProvider(s.id)))
+          if (ref.read(codeSessionProvider(s.id)).transcript.pending case final pending when pending.isNotEmpty)
+            (
+              sessionId: s.id,
+              title: s.title,
+              pending: pending,
+              flags: approvalFlags(
+                ref.read(codeSessionProvider(s.id).notifier).policy,
+                pending,
+                ref.read(codeSessionProvider(s.id).notifier).checkMode,
+              ),
+            ),
+    ];
+    final plan = bulkApprovePlan(waiting);
+    if (plan.calls == 0) {
+      showAdaptiveToast(context, 'No approvals waiting');
+      return;
+    }
+    if (plan.risky.isNotEmpty) {
+      setState(() => _bulk = BulkApprove.confirming);
+      final ok = await showAdaptiveConfirm(
+        context,
+        title: 'Approve all, risky ones included?',
+        message:
+            '${plan.calls} ${plan.calls == 1 ? 'call' : 'calls'} in ${plan.sessions} '
+            '${plan.sessions == 1 ? 'session' : 'sessions'}. These are flagged:',
+        detail: [for (final r in plan.risky) '${r.title}: ${r.why}'].join('\n'),
+        confirmLabel: 'Approve all',
+        destructive: true,
+      );
+      if (!mounted) return;
+      if (!ok) {
+        setState(() => _bulk = BulkApprove.idle);
+        return;
+      }
+    }
+    setState(() => _bulk = BulkApprove.approving);
+    final failed = <String>[];
+    try {
+      for (final w in waiting) {
+        try {
+          // The calls counted above: a batch that came in since then waits for its own look.
+          await ref.read(codeSessionProvider(w.sessionId).notifier).approve(ApprovalScope.once, [
+            for (final c in w.pending) c.id,
+          ]);
+        } on Object {
+          failed.add(w.title);
+        }
+      }
+    } finally {
+      if (mounted) setState(() => _bulk = BulkApprove.idle);
+    }
+    if (!mounted) return;
+    showAdaptiveToast(
+      context,
+      failed.isEmpty
+          ? 'Approved ${plan.calls} ${plan.calls == 1 ? 'call' : 'calls'}'
+          : "Couldn't approve in ${failed.join(', ')}",
+    );
+  }
+
+  Future<void> _showKeys() => showKitDialog<void>(
+    context,
+    builder: (ctx) {
+      final theme = EveryTheme.of(ctx);
+      return KitDialog(
+        title: 'Board keys',
+        width: 360,
+        body: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final (keys, what) in boardKeyHelp)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Row(
+                  children: [
+                    SizedBox(width: 72, child: Text(keys, style: theme.type.caption.mono.tint(theme.text))),
+                    Expanded(child: Text(what, style: theme.type.caption.tint(theme.textMuted))),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      );
+    },
+  );
+
+  KeyEventResult _onKey(FocusNode node, KeyEvent event, List<CodeSessionInfo> shown) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
+    final keys = HardwareKeyboard.instance;
+    final action = boardKeyOf(
+      event.logicalKey,
+      shift: keys.isShiftPressed,
+      meta: keys.isMetaPressed || keys.isControlPressed,
+    );
+    if (action == null) return KeyEventResult.ignored;
+    // Typing in the filter or the inspector's composer is text, not Board keys (Esc and ⌘Enter aside).
+    if (!_focus.hasPrimaryFocus && action != BoardKey.escape) return KeyEventResult.ignored;
+    final selected = switch (_selection) {
+      SelectedCard(:final id) => id,
+      NoSelection() => null,
+    };
+    switch (action) {
+      case BoardKey.next:
+        _select(stepSelection(_order, _selection, 1));
+      case BoardKey.previous:
+        _select(stepSelection(_order, _selection, -1));
+      case BoardKey.nextNeedingYou:
+        final next = nextNeedingYou(_needsYouOrder, _selection);
+        if (next == null) {
+          showAdaptiveToast(context, 'Nothing needs you');
+        } else {
+          _select(next);
+        }
+      case BoardKey.open:
+        if (selected != null) _inspect(selected);
+      case BoardKey.openFull:
+        if (selected != null) _openFull(selected);
+      case BoardKey.approve:
+        unawaited(_decideSelected(approve: true));
+      case BoardKey.deny:
+        unawaited(_decideSelected(approve: false));
+      case BoardKey.approveAll:
+        unawaited(_approveAll(shown));
+      case BoardKey.clear:
+        if (selected != null && _doneOrder.contains(selected)) _clear([selected]);
+      case BoardKey.undo:
+        _undoClear();
+      case BoardKey.filter:
+        _filterFocus.requestFocus();
+      case BoardKey.help:
+        unawaited(_showKeys());
+      case BoardKey.escape:
+        if (_filterFocus.hasFocus) {
+          _filter.clear();
+          _focus.requestFocus();
+        } else if (_inspector is InspectorOpen) {
+          _closeInspector();
+        } else if (_selection is SelectedCard) {
+          setState(() => _selection = const NoSelection());
+        } else {
+          return KeyEventResult.ignored;
+        }
+    }
+    return KeyEventResult.handled;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -157,10 +435,20 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
 
     final harnesses = <String>{for (final s in all) s.harness}.toList();
     final harness = harnesses.contains(_harness) ? _harness : null;
+    final registry = ref.read(driverRegistryProvider);
+    String labelOf(String h) => h == everyaiHarnessName ? 'EveryAI' : registry.resolve(h)?.info.label ?? h;
+    final projectNames = {for (final p in ref.watch(codeProjectsProvider)) p.id: p.name};
     final shown = [
       for (final s in all)
         if ((harness == null || s.harness == harness) &&
-            !(dismissed.contains(s.id) && columnOf[s.id] == BoardColumn.done))
+            !(dismissed.contains(s.id) && columnOf[s.id] == BoardColumn.done) &&
+            matchesBoardFilter(
+              _filter.text,
+              title: s.title,
+              project: projectNames[s.projectId] ?? '',
+              harness: labelOf(s.harness),
+              branch: s.branch,
+            ))
           s,
     ];
     final columns = {
@@ -170,9 +458,77 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
             if (columnOf[s.id] == c) s,
         ],
     };
-    final registry = ref.read(driverRegistryProvider);
-    String labelOf(String h) => h == everyaiHarnessName ? 'EveryAI' : registry.resolve(h)?.info.label ?? h;
     GlobalKey keyOf(String id) => _keys.putIfAbsent(id, () => GlobalKey(debugLabel: 'board.$id'));
+
+    // The keyboard's order: column by column, top to bottom. A selected card that left moves to its neighbour, and
+    // an inspected session that is gone closes the inspector.
+    final order = [
+      for (final c in BoardColumn.values) ...[for (final s in columns[c]!) s.id],
+    ];
+    final kept = keepSelection(_selection, _order, order);
+    final inspected = switch (_inspector) {
+      InspectorOpen(:final id) when sessions.any((s) => s.id == id) => id,
+      _ => null,
+    };
+    if (kept != _selection || (inspected == null && _inspector is InspectorOpen)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        setState(() {
+          _selection = kept;
+          if (inspected == null) _inspector = const InspectorClosed();
+        });
+      });
+    }
+    _order = order;
+    _doneOrder = [for (final s in columns[BoardColumn.done]!) s.id];
+    _needsYouOrder = [for (final s in columns[BoardColumn.needsYou]!) s.id];
+    final selectedId = switch (_selection) {
+      SelectedCard(:final id) => id,
+      NoSelection() => null,
+    };
+    final swept = switch (_sweep) {
+      Sweeping(:final anchor, :final over) => sweptCards(_doneOrder, anchor, over).toSet(),
+      SweepIdle() => const <String>{},
+    };
+    // The approvals the shown cards wait on (sessions open here), for Approve all.
+    final approvalsWaiting = shown.any(
+      (s) =>
+          ref.exists(codeSessionProvider(s.id)) &&
+          ref.watch(codeSessionProvider(s.id).select((st) => st.transcript.pending.isNotEmpty)),
+    );
+
+    // The Done card under a global point, for a sweep.
+    String? doneCardAt(Offset global) {
+      for (final id in _doneOrder) {
+        final box = _keys[id]?.currentContext?.findRenderObject() as RenderBox?;
+        if (box == null || !box.attached || !box.hasSize) continue;
+        if ((box.localToGlobal(Offset.zero) & box.size).contains(global)) return id;
+      }
+      return null;
+    }
+
+    // Press on a Done card and drag over others (mouse): they clear together when let go.
+    Widget sweepable(String id, Widget child) => GestureDetector(
+      key: ValueKey('board.sweep.$id'),
+      supportedDevices: const {PointerDeviceKind.mouse},
+      onPanStart: (_) => setState(() => _sweep = Sweeping(id, id)),
+      onPanUpdate: (d) {
+        final over = doneCardAt(d.globalPosition);
+        if (_sweep case Sweeping(:final anchor, over: final was) when over != null && over != was) {
+          setState(() => _sweep = Sweeping(anchor, over));
+        }
+      },
+      onPanEnd: (_) {
+        final ids = switch (_sweep) {
+          Sweeping(:final anchor, :final over) => sweptCards(_doneOrder, anchor, over),
+          SweepIdle() => const <String>[],
+        };
+        setState(() => _sweep = const SweepIdle());
+        _clear(ids);
+      },
+      onPanCancel: () => setState(() => _sweep = const SweepIdle()),
+      child: child,
+    );
 
     final filters = harnesses.length < 2
         ? null
@@ -201,17 +557,32 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
             child: _Glide(
               key: keyOf(s.id),
               column: c,
-              child: BoardCard(
-                key: ValueKey('board.card.${s.id}.$_generation'),
-                info: s,
-                status: status[s.id]!,
-                phase: phase[s.id]!,
-                work: work[s.id]!,
-                harnessLabel: labelOf(s.harness),
-                onDismiss: c == BoardColumn.done
-                    ? () => ref.read(boardDismissedProvider.notifier).dismiss([s.id])
-                    : null,
-              ).rowIn(i),
+              // One structure selected or not (a ring over the card), so the card under it keeps its state.
+              child: DecoratedBox(
+                key: ValueKey('board.ring.${s.id}'),
+                position: DecorationPosition.foreground,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(EveryTheme.cardRadius),
+                  border: selectedId == s.id
+                      ? Border.all(color: theme.accent, width: 1.5)
+                      : swept.contains(s.id)
+                      ? Border.all(color: theme.danger.withValues(alpha: 0.7), width: 1.5)
+                      : Border.all(color: const Color(0x00000000), width: 1.5),
+                ),
+                child: sweepable(
+                  s.id,
+                  BoardCard(
+                    key: ValueKey('board.card.${s.id}.$_generation'),
+                    info: s,
+                    status: status[s.id]!,
+                    phase: phase[s.id]!,
+                    work: work[s.id]!,
+                    harnessLabel: labelOf(s.harness),
+                    onInspect: () => _inspect(s.id),
+                    onDismiss: c == BoardColumn.done ? () => _clear([s.id]) : null,
+                  ).rowIn(i),
+                ),
+              ),
             ),
           ),
       ];
@@ -231,12 +602,20 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
               const SizedBox(width: 8),
               TickingCount(items.length, style: theme.type.caption.mono.tint(theme.textSubtle)),
               const Spacer(),
+              if (c == BoardColumn.needsYou && approvalsWaiting)
+                KitButton(
+                  key: const ValueKey('board.approve-all'),
+                  label: 'Approve all',
+                  style: KitButtonStyle.soft,
+                  busy: _bulk == BulkApprove.approving,
+                  onPressed: _bulk != BulkApprove.idle ? null : () => _approveAll(shown),
+                ),
               if (c == BoardColumn.done && items.isNotEmpty)
                 KitButton(
                   key: const ValueKey('board.clear-done'),
                   label: 'Clear',
                   style: KitButtonStyle.ghost,
-                  onPressed: () => ref.read(boardDismissedProvider.notifier).dismiss([for (final s in items) s.id]),
+                  onPressed: () => _clear([for (final s in items) s.id]),
                 ),
             ],
           ),
@@ -283,6 +662,14 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
           ),
         ),
         if (Host.isDesktop)
+          KitIconButton(
+            key: const ValueKey('board.keys'),
+            icon: EveryIcon.help,
+            tooltip: 'Keys (?)',
+            size: 16,
+            onPressed: _showKeys,
+          ),
+        if (Host.isDesktop)
           KitButton(
             key: const ValueKey('board.new'),
             label: 'New session',
@@ -292,72 +679,199 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       ],
       body: all.isEmpty
           ? Center(child: Text('No sessions yet', style: theme.type.callout.tint(theme.textSubtle)))
-          : GlowBackdrop(
-              child: AmbientClock(
-                // One breathing clock for every card, and only while something breathes.
-                running: phase.values.any((p) => p.active || p == BoardPhase.needsYou),
-                child: LayoutBuilder(
-                  builder: (context, box) {
-                    final wide = box.maxWidth >= 860;
-                    final Widget body;
-                    if (wide) {
-                      final List<double> shares = _dragging ?? ref.watch(boardColumnsProvider);
-                      final width = box.maxWidth - 28 - 2 * _Divider.hit;
-                      // Each column keeps at least 220pt.
-                      const min = 220.0;
-                      List<double> moved(int divider, double dx, List<double> from) {
-                        final w = [for (final v in from) v * width];
-                        final a = (w[divider] + dx).clamp(min, w[divider] + w[divider + 1] - min);
-                        w[divider + 1] = w[divider] + w[divider + 1] - a;
-                        w[divider] = a;
-                        return [for (final v in w) v / width];
-                      }
+          : _withInspector(
+              shown: shown,
+              child: GlowBackdrop(
+                child: AmbientClock(
+                  // One breathing clock for every card, and only while something breathes.
+                  running: phase.values.any((p) => p.active || p == BoardPhase.needsYou),
+                  child: LayoutBuilder(
+                    builder: (context, box) {
+                      final wide = box.maxWidth >= 860;
+                      final Widget body;
+                      if (wide) {
+                        final List<double> shares = _dragging ?? ref.watch(boardColumnsProvider);
+                        final width = box.maxWidth - 28 - 2 * _Divider.hit;
+                        // Each column keeps at least 220pt.
+                        const min = 220.0;
+                        List<double> moved(int divider, double dx, List<double> from) {
+                          final w = [for (final v in from) v * width];
+                          final a = (w[divider] + dx).clamp(min, w[divider] + w[divider + 1] - min);
+                          w[divider + 1] = w[divider] + w[divider + 1] - a;
+                          w[divider] = a;
+                          return [for (final v in w) v / width];
+                        }
 
-                      Widget divider(int i) => _Divider(
-                        key: ValueKey('board.divider.$i'),
-                        onDrag: (dx) => setState(() => _dragging = moved(i, dx, _dragging ?? shares)),
-                        onEnd: () {
-                          if (_dragging case final d?) ref.read(boardColumnsProvider.notifier).set(d);
-                          setState(() => _dragging = null);
-                        },
-                        onReset: ref.read(boardColumnsProvider.notifier).reset,
-                      );
-                      body = Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          for (final (i, c) in BoardColumn.values.indexed) ...[
-                            if (i > 0) divider(i - 1),
-                            SizedBox(width: shares[i] * width, child: column(c, scrolls: true)),
+                        Widget divider(int i) => _Divider(
+                          key: ValueKey('board.divider.$i'),
+                          onDrag: (dx) => setState(() => _dragging = moved(i, dx, _dragging ?? shares)),
+                          onEnd: () {
+                            if (_dragging case final d?) ref.read(boardColumnsProvider.notifier).set(d);
+                            setState(() => _dragging = null);
+                          },
+                          onReset: ref.read(boardColumnsProvider.notifier).reset,
+                        );
+                        body = Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            for (final (i, c) in BoardColumn.values.indexed) ...[
+                              if (i > 0) divider(i - 1),
+                              SizedBox(width: shares[i] * width, child: column(c, scrolls: true)),
+                            ],
                           ],
-                        ],
-                      );
-                    } else {
-                      body = ListView(
-                        children: [
-                          for (final c in BoardColumn.values)
-                            if (columns[c]!.isNotEmpty)
-                              Padding(padding: const EdgeInsets.only(bottom: 12), child: column(c, scrolls: false)),
-                        ],
-                      );
-                    }
-                    return Padding(
-                      padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          if (filters != null)
+                        );
+                      } else {
+                        body = ListView(
+                          children: [
+                            for (final c in BoardColumn.values)
+                              if (columns[c]!.isNotEmpty)
+                                Padding(padding: const EdgeInsets.only(bottom: 12), child: column(c, scrolls: false)),
+                          ],
+                        );
+                      }
+                      return Padding(
+                        padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
                             Padding(
                               padding: const EdgeInsets.fromLTRB(4, 0, 4, 14),
-                              child: Align(alignment: Alignment.centerLeft, child: filters),
+                              child: Row(
+                                children: [
+                                  if (filters != null) Flexible(child: filters),
+                                  const Spacer(),
+                                  SizedBox(
+                                    width: 220,
+                                    child: AdaptiveTextField(
+                                      key: const ValueKey('board.search'),
+                                      controller: _filter,
+                                      focusNode: _filterFocus,
+                                      placeholder: 'Filter  /',
+                                      onSubmitted: (_) => _focus.requestFocus(),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                          Expanded(child: body),
+                            Expanded(child: body),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+    );
+  }
+
+  /// The Board with keyboard triage, the Undo bar and the side inspector: beside the columns when there is room,
+  /// over them (with a back control) when there isn't.
+  Widget _withInspector({required List<CodeSessionInfo> shown, required Widget child}) {
+    final theme = EveryTheme.of(context);
+    final inspected = switch (_inspector) {
+      InspectorOpen(:final id) => id,
+      InspectorClosed() => null,
+    };
+    final board = Focus(
+      focusNode: _focus,
+      autofocus: true,
+      onKeyEvent: (node, event) => _onKey(node, event, shown),
+      child: GestureDetector(
+        // A click on empty Board space takes the keys back from the filter.
+        behavior: HitTestBehavior.translucent,
+        onTap: _focus.requestFocus,
+        child: Stack(
+          children: [
+            Positioned.fill(child: child),
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 20,
+              child: Center(
+                child: AnimatedSwitcher(
+                  duration: Motion.reduced(context) ? Duration.zero : Motion.move,
+                  child: switch (_undo) {
+                    Undoable(:final ids, :final generation) => Container(
+                      key: ValueKey('board.undo.$generation'),
+                      padding: const EdgeInsets.fromLTRB(16, 6, 6, 6),
+                      decoration: BoxDecoration(
+                        color: theme.overlay,
+                        borderRadius: BorderRadius.circular(99),
+                        border: Border.all(color: theme.borderStrong),
+                        boxShadow: theme.shadowPop,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            ids.length == 1 ? 'Cleared' : 'Cleared ${ids.length}',
+                            style: theme.type.callout.tint(theme.text),
+                          ),
+                          const SizedBox(width: 10),
+                          KitButton(
+                            key: const ValueKey('board.undo'),
+                            label: 'Undo',
+                            style: KitButtonStyle.ghost,
+                            onPressed: _undoClear,
+                          ),
                         ],
                       ),
-                    );
+                    ),
+                    NothingToUndo() => const SizedBox.shrink(key: ValueKey('board.undo.none')),
                   },
                 ),
               ),
             ),
+          ],
+        ),
+      ),
+    );
+    return LayoutBuilder(
+      builder: (context, box) {
+        final double saved = ref.watch(boardInspectorWidthProvider);
+        final width = (_inspectorDragging ?? saved).clamp(BoardInspectorWidth.min, BoardInspectorWidth.max);
+        // Beside the columns while they keep 520pt; over them otherwise.
+        final beside = box.maxWidth - width >= 520;
+        final pane = inspected == null
+            ? null
+            : BoardInspectorPane(
+                key: ValueKey('board.inspector.pane.$inspected'),
+                sessionId: inspected,
+                cover: !beside,
+                onClose: _closeInspector,
+                onOpenFull: () => _openFull(inspected),
+              );
+        // One structure with the inspector open or not (the Board stays first in a row), so cards keep their state.
+        return Stack(
+          children: [
+            Positioned.fill(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(child: board),
+                  if (pane != null && beside) ...[
+                    InspectorEdge(
+                      key: const ValueKey('board.inspector.edge'),
+                      onDrag: (dx) => setState(() => _inspectorDragging = (_inspectorDragging ?? width) - dx),
+                      onEnd: () {
+                        if (_inspectorDragging case final w?) ref.read(boardInspectorWidthProvider.notifier).set(w);
+                        setState(() => _inspectorDragging = null);
+                      },
+                      onReset: ref.read(boardInspectorWidthProvider.notifier).reset,
+                    ),
+                    SizedBox(width: width, child: pane.settle()),
+                  ],
+                ],
+              ),
+            ),
+            if (pane != null && !beside)
+              Positioned.fill(
+                child: ColoredBox(color: theme.background, child: pane.settle()),
+              ),
+          ],
+        );
+      },
     );
   }
 }
@@ -508,7 +1022,11 @@ class BoardCard extends ConsumerStatefulWidget {
     required this.phase,
     this.work = noBoardWork,
     this.onDismiss,
+    this.onInspect,
   });
+
+  /// A click on the card: opens it in the Board's inspector. Null opens the full session.
+  final VoidCallback? onInspect;
 
   final CodeSessionInfo info;
 
@@ -690,7 +1208,7 @@ class _BoardCardState extends ConsumerState<BoardCard> {
     final waiting = phase == BoardPhase.needsYou;
     final failed = phase == BoardPhase.failed;
     return Pressable(
-      onTap: openSession,
+      onTap: widget.onInspect ?? openSession,
       scale: !asking,
       semanticLabel: '${info.title}, ${widget.status.label}',
       builder: (context, s, child) => AnimatedContainer(
