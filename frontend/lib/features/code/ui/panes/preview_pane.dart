@@ -241,6 +241,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     _detach();
     _browser = b;
     b.page.addListener(_pageChanged);
+    b.tabs.addListener(_watchForFrame);
     b.control.addListener(_controlChanged);
     b.fileChooser.addListener(_fileChooserChanged);
     _activity = b.control.activity.listen(_showGhost);
@@ -254,6 +255,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     final b = _browser;
     if (b == null) return;
     b.page.removeListener(_pageChanged);
+    b.tabs.removeListener(_watchForFrame);
     b.control.removeListener(_controlChanged);
     b.fileChooser.removeListener(_fileChooserChanged);
     unawaited(_activity?.cancel());
