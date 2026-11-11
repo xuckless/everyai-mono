@@ -32,7 +32,11 @@ import '../code_settings_providers.dart' show codeSettingsProvider;
 import '../limit_providers.dart' show codePlanLimitsProvider;
 import 'board_inspector.dart';
 import 'board_limits.dart';
+import 'board_plan.dart';
+import 'board_plan_providers.dart';
+import 'board_plan_view.dart';
 import 'board_pr.dart';
+import 'board_race.dart' show RaceStage;
 import 'board_snooze.dart';
 import 'board_providers.dart';
 import 'board_state.dart';
@@ -66,6 +70,15 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
 
   /// One key per card for this filter: a card keeps its state (and glides) as it moves between columns.
   final _keys = <String, GlobalKey>{};
+
+  /// One key per task card in the Plan lane: a delegated task's session card flies out of it.
+  final _taskKeys = <String, GlobalKey>{};
+
+  /// The sessions the last build showed (null before the first): a session new since then may launch from its task.
+  Set<String>? _seenSessions;
+
+  /// The Plan lane's width while its edge is dragged (written when it ends).
+  double? _laneDragging;
 
   /// Column shares while a divider is dragged (written when it ends).
   List<double>? _dragging;
@@ -540,6 +553,55 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       if (rerun.isNotEmpty) ref.read(boardSeenProvider.notifier).forget(rerun);
     });
 
+    // Plans and races follow their sessions: a task whose session finished lets the tasks waiting on it start. Only
+    // while the Board is open.
+    final goals = ref.watch(boardPlansProvider);
+    final races = ref.watch(boardRacesProvider);
+    final boardIds = {for (final s in all) s.id};
+    SessionOutcome? outcomeOf(String id) {
+      if (!ids.contains(id)) return SessionOutcome.gone;
+      if (!boardIds.contains(id)) return null;
+      if (phase[id] == BoardPhase.failed) return SessionOutcome.failed;
+      // Done, not merely idle: a session that just started reads idle before its first turn.
+      if (columnOf[id] == BoardColumn.done && own[id] == SessionStatus.done) return SessionOutcome.done;
+      return SessionOutcome.running;
+    }
+
+    final goalOf = ref.read(boardPlansProvider.notifier).bySession;
+    final raceOf = ref.read(boardRacesProvider.notifier).bySession;
+    final outcomes = <String, SessionOutcome>{
+      for (final id in {...goalOf.keys, ...raceOf.keys}) id: ?outcomeOf(id),
+    };
+    if (outcomes.values.any((o) => o != SessionOutcome.running)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        ref.read(boardPlansProvider.notifier).observe(outcomes);
+        ref.read(boardRacesProvider.notifier).observe(outcomes);
+      });
+    }
+    // A session a task delegated since the last build flies out of its task card.
+    final taskOf = {
+      for (final g in goals)
+        for (final t in g.tasks) ?sessionOfRun(t.run): t.id,
+    };
+    final fresh = _seenSessions == null ? const <String>{} : boardIds.difference(_seenSessions!);
+    _seenSessions = boardIds;
+    GlobalKey taskKey(String taskId) =>
+        _taskKeys.putIfAbsent(taskId, () => GlobalKey(debugLabel: 'board.task.$taskId'));
+    Offset? Function()? launchOf(String id) => switch (taskOf[id]) {
+      final task? when fresh.contains(id) => () {
+        final box = _taskKeys[task]?.currentContext?.findRenderObject() as RenderBox?;
+        if (box == null || !box.attached || !box.hasSize) return null;
+        return box.localToGlobal(Offset.zero);
+      },
+      _ => null,
+    };
+    String? chipOf(String id) => switch ((goalOf[id], raceOf[id])) {
+      (final g?, _) => goalLabel(g),
+      (null, final _?) => 'Race',
+      _ => null,
+    };
+
     // Sessions stopped on a usage limit (open ones: the limit is in their transcript), and the ones snoozed until it
     // resets ([boardLimitState]). A snooze whose session runs again, or whose reset passed, ends.
     final now = DateTime.now();
@@ -773,6 +835,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
             child: _Glide(
               key: keyOf(s.id),
               column: c,
+              launchFrom: launchOf(s.id),
               // One structure selected or not (a ring over the card), so the card under it keeps its state.
               child: DecoratedBox(
                 key: ValueKey('board.ring.${s.id}'),
@@ -797,6 +860,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
                     limit: limitOf[s.id] ?? const NotLimited(),
                     onInspect: () => _inspect(s.id),
                     onDismiss: c == BoardColumn.done ? () => _clear([s.id]) : null,
+                    goal: chipOf(s.id),
                   ).rowIn(i),
                 ),
               ),
@@ -900,27 +964,49 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
           ),
         if (Host.isDesktop)
           KitButton(
+            key: const ValueKey('board.race'),
+            label: 'Race',
+            style: KitButtonStyle.ghost,
+            icon: EveryIcon.activity,
+            onPressed: () => startRace(context, ref),
+          ),
+        if (Host.isDesktop)
+          KitButton(
             key: const ValueKey('board.new'),
             label: 'New session',
             icon: EveryIcon.add,
             onPressed: () => context.go(Routes.code),
           ),
       ],
-      body: all.isEmpty
+      body: all.isEmpty && goals.isEmpty && races.isEmpty && !Host.isDesktop
           ? Center(child: Text('No sessions yet', style: theme.type.callout.tint(theme.textSubtle)))
           : _withInspector(
               shown: shown,
               child: GlowBackdrop(
                 child: AmbientClock(
                   // One breathing clock for every card, and only while something breathes.
-                  running: phase.values.any((p) => p.active || p == BoardPhase.needsYou),
+                  running:
+                      phase.values.any((p) => p.active || p == BoardPhase.needsYou) ||
+                      goals.any((g) => g.stage == GoalStage.running) ||
+                      races.any((r) => r.stage == RaceStage.running || r.stage == RaceStage.starting),
                   child: LayoutBuilder(
                     builder: (context, box) {
-                      final wide = box.maxWidth >= 860;
+                      final layout = ref.watch(boardPlanLaneProvider);
+                      final laneWidth = _laneDragging ?? layout.width;
+                      // The lane as a column, or folded to a rail; the columns keep the rest.
+                      final laneTotal = layout.collapsed ? _railWidth : laneWidth + _Divider.hit;
+                      final wide = box.maxWidth >= 860 + laneTotal;
+                      final lane = PlanLane(
+                        phases: phase,
+                        taskKey: taskKey,
+                        onInspect: _inspect,
+                        scrolls: wide,
+                        onCollapse: wide ? () => ref.read(boardPlanLaneProvider.notifier).setCollapsed(true) : null,
+                      );
                       final Widget body;
                       if (wide) {
                         final List<double> shares = _dragging ?? ref.watch(boardColumnsProvider);
-                        final width = box.maxWidth - 28 - 2 * _Divider.hit;
+                        final width = box.maxWidth - 28 - 2 * _Divider.hit - laneTotal;
                         // Each column keeps at least 220pt.
                         const min = 220.0;
                         List<double> moved(int divider, double dx, List<double> from) {
@@ -943,6 +1029,31 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
                         body = Row(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
+                            if (layout.collapsed)
+                              SizedBox(
+                                width: _railWidth,
+                                child: PlanRail(
+                                  onExpand: () => ref.read(boardPlanLaneProvider.notifier).setCollapsed(false),
+                                ),
+                              )
+                            else ...[
+                              SizedBox(width: laneWidth, child: lane),
+                              _Divider(
+                                key: const ValueKey('board.divider.plan'),
+                                onDrag: (dx) => setState(
+                                  () => _laneDragging = ((_laneDragging ?? laneWidth) + dx).clamp(
+                                    BoardPlanLane.minWidth,
+                                    BoardPlanLane.maxWidth,
+                                  ),
+                                ),
+                                onEnd: () {
+                                  if (_laneDragging case final w?) ref.read(boardPlanLaneProvider.notifier).setWidth(w);
+                                  setState(() => _laneDragging = null);
+                                },
+                                onReset: () =>
+                                    ref.read(boardPlanLaneProvider.notifier).setWidth(BoardPlanLane.defaultWidth),
+                              ),
+                            ],
                             for (final (i, c) in BoardColumn.values.indexed) ...[
                               if (i > 0) divider(i - 1),
                               SizedBox(width: shares[i] * width, child: column(c, scrolls: true)),
@@ -952,6 +1063,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
                       } else {
                         body = ListView(
                           children: [
+                            Padding(padding: const EdgeInsets.only(bottom: 12), child: lane),
                             for (final c in BoardColumn.values)
                               if (columns[c]!.isNotEmpty)
                                 Padding(padding: const EdgeInsets.only(bottom: 12), child: column(c, scrolls: false)),
@@ -1135,6 +1247,9 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
 }
 
 /// A hairline between two columns; drag it to resize them, double-click to even all three.
+/// The folded Plan lane's width.
+const _railWidth = 40.0;
+
 class _Divider extends StatefulWidget {
   const _Divider({super.key, required this.onDrag, required this.onEnd, required this.onReset});
 
@@ -1189,10 +1304,13 @@ class _DividerState extends State<_Divider> {
 /// Moves its child smoothly to where it now sits when it changes [column]: from its last place on screen to its
 /// new one along a gentle arc, ease-in-out (the same element moves; it isn't drawn twice).
 class _Glide extends StatefulWidget {
-  const _Glide({super.key, required this.column, required this.child});
+  const _Glide({super.key, required this.column, required this.child, this.launchFrom});
 
   final BoardColumn column;
   final Widget child;
+
+  /// Where a new card flies in from (a delegated task's card, in global coordinates); read once, at its first layout.
+  final Offset? Function()? launchFrom;
 
   @override
   State<_Glide> createState() => _GlideState();
@@ -1225,6 +1343,7 @@ class _GlideState extends State<_Glide> with SingleTickerProviderStateMixin {
     final box = context.findRenderObject() as RenderBox?;
     if (box == null || !box.attached || !box.hasSize) return;
     final now = box.localToGlobal(Offset.zero);
+    if (_last == null && !Motion.reduced(context)) _from = widget.launchFrom?.call();
     if (_from case final from?) {
       _from = null;
       setState(() => _delta = from - now);
@@ -1282,7 +1401,11 @@ class BoardCard extends ConsumerStatefulWidget {
     this.limit = const NotLimited(),
     this.onDismiss,
     this.onInspect,
+    this.goal,
   });
+
+  /// The goal (or race) it works for, as a chip under its title.
+  final String? goal;
 
   /// Whether it stopped on a usage limit, and what is offered ([boardLimitState]).
   final BoardLimitState limit;
@@ -1570,6 +1693,12 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: theme.type.caption.tint(theme.textSubtle),
+                        ),
+                      if (widget.goal case final goal?)
+                        Padding(
+                          key: ValueKey('board.goalchip.${info.id}'),
+                          padding: const EdgeInsets.only(top: 4),
+                          child: GoalChip(goal),
                         ),
                     ],
                   ),

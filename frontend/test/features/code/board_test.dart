@@ -241,11 +241,11 @@ void main() {
     expect(inColumn('running', 'Session c'), findsOneWidget);
     expect(c.read(boardDismissedProvider), isEmpty);
 
-    // A hairline between columns resizes them and remembers it.
+    // A hairline between columns resizes them and remembers it (the Plan lane takes 333pt on the left).
     final before = tester.getSize(find.byKey(const ValueKey('board.column.needsYou'))).width;
-    await tester.drag(find.byKey(const ValueKey('board.divider.0')), const Offset(80, 0), touchSlopX: 0);
+    await tester.drag(find.byKey(const ValueKey('board.divider.0')), const Offset(60, 0), touchSlopX: 0);
     await tester.pumpAndSettle();
-    expect(tester.getSize(find.byKey(const ValueKey('board.column.needsYou'))).width, closeTo(before + 80, 1));
+    expect(tester.getSize(find.byKey(const ValueKey('board.column.needsYou'))).width, closeTo(before + 60, 1));
     expect(c.read(boardColumnsProvider).first, greaterThan(1 / 3));
     expect(prefs[BoardColumns.key], isNotNull);
 

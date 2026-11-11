@@ -1059,6 +1059,42 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   stored time alone; deleted sessions' snoozes are dropped. `openCodeSessionsProvider` rebuilds the Board when a
   session's controller opens or closes. Pooling keys by environment too ('host' shares one account; WSL or a container
   may be another).
+- **Board v2, phase 4 (2026-11-11; branch `board-v2/phase4`, on top of `board-v2/phase3`).** Plan lane and Race.
+  - A Plan lane sits left of the Board's columns (`board/board_plan_view.dart` `PlanLane`). It can be resized and
+    folded to a rail, saved in Preferences `code.board.plan_lane`. On narrow windows it sits above the columns. The
+    Board now shows on desktop with no sessions, so a first goal can be written.
+  - Goals (`board/board_plan.dart`, notifier `BoardPlans` in `board_plan_providers.dart`, Preferences
+    `code.board.plans`):
+    - `GoalStage` and `TaskRun` are diagrammed state machines.
+    - New goal: free text, a project, a planner chip (default: the user's default Code lead and model,
+      `defaultLeadProvider`).
+    - Split runs only when pressed. It asks `BoardPlanner` (`board_planner.dart`) for strict JSON with 2–8 tasks
+      (`planSplitPrompt`, `parsePlanSplit`: first JSON object, deps by 1-based number, loops refused, unknown
+      harness/model → default lead). Outside CLIs run headless and read-only on the user's plan (`plannerArgs`: Claude
+      `-p --permission-mode plan --no-session-persistence`, `codex exec --sandbox read-only`, `opencode run`,
+      `gemini -p`; `board_planner_io.dart`, a stub on the web). An EveryAI planner goes through the gateway
+      (`gatewaySummarizer`). Other harnesses are greyed out with the reason. A bad reply keeps the goal as a draft
+      with why, and a late reply is dropped by generation.
+    - Tasks: title, brief, "after" (refused if it would loop), lead chip, "Own branch" (worktree, on by default);
+      reorder, remove, add.
+    - Delegate (one task, plus the drafts it waits on) and Delegate all queue tasks. Queued tasks start through
+      `BoardStarter` → `codeSessionsProvider.start` once their deps are Done (`tasksToStart`), in the project's last
+      mode (else Auto-edit), with `planTaskPrompt` (goal, brief, finished deps). A failed dep blocks its dependents.
+    - Cancel cancels unstarted tasks and asks whether to stop started ones.
+    - Goal chip on session cards, a progress bar and glow on the goal card, curved dependency lines in the task
+      list's gutter, and a delegated task's session card flies out of its task card (`_Glide.launchFrom`).
+  - Race (`board/board_race.dart`, notifier `BoardRaces`, Preferences `code.board.races`):
+    - Started from the Board header or a goal card: one prompt, 2–4 leads (default: the two (harness, model) pairs
+      used most, `defaultRunners`), each in its own worktree. The prompt is sent as typed.
+    - `RaceStage` and `RunnerRun` are diagrammed state machines. The card shows the runners side by side, shimmering
+      while they run.
+    - Compare (`CompareView`) shows, per runner: files and lines from its worktree diff, tests (`testsOf`: the last
+      test-looking command in an open transcript, else "not run"), cost, wall time, and the first hunk.
+    - "Keep this one" is offered on done runners only. After a confirm naming the others, it removes their worktrees
+      and branches (`codeGitProvider.discard`), then runs the session's own `mergeLocally`; `RaceActions` stands in
+      for both in tests.
+  - Progress is driven from the Board's build (`SessionOutcome`: done needs the session's own status Done, not idle),
+    so dependents start only while the Board is open. Not run live: no CLI or gateway planning, no real race or merge.
 - **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
   `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
   `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,
