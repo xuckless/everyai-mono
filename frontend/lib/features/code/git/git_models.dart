@@ -313,6 +313,138 @@ typedef LaneLanding = ({String? head, int laneCommits, List<String> notes});
 /// A branch's latest pull request: still [open], or merged or closed, and the commit it was opened (or merged) at.
 typedef BranchPr = ({int number, String url, bool open, String head});
 
+/// A pull request's checks, all together: none reported, still running, all passed, or one failed.
+enum PrChecks { none, pending, passing, failing }
+
+/// What reviewers decided: nothing asked, a review still needed, approved, or changes asked for.
+enum PrReview { none, required, approved, changesRequested }
+
+/// Where a pull request is: open (a draft or not), merged, or closed without merging.
+enum PrState { open, draft, merged, closed }
+
+/// A pull request as the Board's chip shows it (`gh pr view --json` with [prStatusFields]).
+@immutable
+final class PrStatus {
+  const PrStatus({
+    required this.number,
+    required this.url,
+    required this.state,
+    this.checks = PrChecks.none,
+    this.review = PrReview.none,
+    this.mergeable = false,
+    this.additions = 0,
+    this.deletions = 0,
+  });
+
+  final int number;
+  final String url;
+  final PrState state;
+  final PrChecks checks;
+  final PrReview review;
+
+  /// GitHub says it merges cleanly (`mergeable: MERGEABLE`).
+  final bool mergeable;
+  final int additions;
+  final int deletions;
+
+  bool get open => state == PrState.open || state == PrState.draft;
+
+  /// Open, not a draft, merges cleanly, no failing checks and no changes asked for.
+  bool get readyToMerge =>
+      state == PrState.open && mergeable && checks != PrChecks.failing && review != PrReview.changesRequested;
+
+  @override
+  bool operator ==(Object other) =>
+      other is PrStatus &&
+      other.number == number &&
+      other.url == url &&
+      other.state == state &&
+      other.checks == checks &&
+      other.review == review &&
+      other.mergeable == mergeable &&
+      other.additions == additions &&
+      other.deletions == deletions;
+
+  @override
+  int get hashCode => Object.hash(number, url, state, checks, review, mergeable, additions, deletions);
+}
+
+/// The fields [parsePrStatus] reads.
+const prStatusFields = 'number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup,additions,deletions';
+
+/// [PrStatus] from `gh pr view --json` [prStatusFields] output; null for anything else.
+PrStatus? parsePrStatus(String stdout) {
+  final Object? json;
+  try {
+    json = jsonDecode(stdout);
+  } on FormatException {
+    return null;
+  }
+  if (json case {'number': final int number, 'url': final String url, 'state': final String state}) {
+    return PrStatus(
+      number: number,
+      url: url,
+      state: switch (state) {
+        'MERGED' => PrState.merged,
+        'CLOSED' => PrState.closed,
+        _ => json['isDraft'] == true ? PrState.draft : PrState.open,
+      },
+      checks: prChecksOf(json['statusCheckRollup']),
+      review: switch (json['reviewDecision']) {
+        'APPROVED' => PrReview.approved,
+        'CHANGES_REQUESTED' => PrReview.changesRequested,
+        'REVIEW_REQUIRED' => PrReview.required,
+        _ => PrReview.none,
+      },
+      mergeable: json['mergeable'] == 'MERGEABLE',
+      additions: (json['additions'] as num?)?.toInt() ?? 0,
+      deletions: (json['deletions'] as num?)?.toInt() ?? 0,
+    );
+  }
+  return null;
+}
+
+/// The checks of a `statusCheckRollup`: check runs (`status`, `conclusion`) and commit statuses (`state`). One
+/// failure fails them all; anything still running keeps them pending; skipped and neutral runs count as passed.
+PrChecks prChecksOf(Object? rollup) {
+  if (rollup is! List || rollup.isEmpty) return PrChecks.none;
+  var pending = false;
+  for (final c in rollup) {
+    if (c is! Map) continue;
+    final String result;
+    if (c['state'] case final String s) {
+      result = s; // A commit status: SUCCESS, FAILURE, ERROR, PENDING, EXPECTED.
+    } else if (c['status'] != 'COMPLETED') {
+      result = 'PENDING';
+    } else {
+      result = '${c['conclusion'] ?? ''}';
+    }
+    switch (result) {
+      case 'FAILURE' || 'ERROR' || 'CANCELLED' || 'TIMED_OUT' || 'ACTION_REQUIRED' || 'STARTUP_FAILURE':
+        return PrChecks.failing;
+      case 'PENDING' || 'EXPECTED' || 'QUEUED' || 'IN_PROGRESS' || '':
+        pending = true;
+    }
+  }
+  return pending ? PrChecks.pending : PrChecks.passing;
+}
+
+/// How `gh pr merge` should merge, from what the repository allows (`gh repo view --json
+/// mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed`): a merge commit when allowed, else squash, else rebase;
+/// `--merge` when the output can't be read.
+String prMergeFlag(String repoJson) {
+  try {
+    if (jsonDecode(repoJson) case final Map<String, Object?> r) {
+      if (r['mergeCommitAllowed'] == true) return '--merge';
+      if (r['squashMergeAllowed'] == true) return '--squash';
+      if (r['rebaseMergeAllowed'] == true) return '--rebase';
+    }
+  } on FormatException {
+    // Below.
+  }
+  return '--merge';
+}
+
 /// The pull request in `gh pr view --json number,url,state,headRefOid` output, whatever its state; null for output
 /// that isn't that JSON.
 BranchPr? parsePrView(String stdout) {

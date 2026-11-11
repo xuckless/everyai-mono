@@ -1028,6 +1028,24 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   run (`bulkCallLine`), sends only the counted calls (`bulkTargets`; a whole-batch harness whose batch changed is left
   for the user). Undo restores when cleared cards had finished (`BoardDoneSince.restore`). The inspector edge stops
   before the columns get too narrow; its pane keeps a GlobalKey per session and the Board keeps unsent replies.
+- **Board v2, phase 3 (2026-11-11; branch `board-v2/phase3`, on top of `board-v2/phase2`).** Limits strip under the
+  Board's filter row (`board/board_limits.dart`): one compact `PlanLimitBar` (extracted from `PlanReportView`, amber at
+  75%, red at 90%) per harness and plan window, pooled by `poolPlanLimits` (the latest window, then the fullest; passed
+  resets left out) from `codePlanLimitsProvider` of sessions open on the Board, plus the spending cap closest to full
+  (`busiestCap`: caps are per session, so the one about to stop a session is shown). A click lists the sessions a bar
+  covers and opens the picked one in the inspector. Cards and the inspector header show cost in mono
+  (`boardCostLine`: spend, else tokens on the plan) for sessions whose meter is already up (none is started for it); no
+  sparkline (no spend history to draw). Usage limits (`board/board_snooze.dart`): `BoardLimitState` (notLimited /
+  limited / snoozed / readyToResume, diagram) from the limit notice a session's transcript ends on (`stoppedOnLimit`);
+  the card says "Limit reached · Resets in 1h 12m" with Snooze (when the reset is known), folds into a "Snoozed" list
+  under its column until the reset (Preferences `code.board.snoozed`, Show brings it back; a one-shot timer rebuilds at
+  the next reset), then shows "Limit reset" with Resume (the controller's `retry`; offered, never run by itself). Pull
+  request chip (`board/board_pr.dart`): `boardPrProvider` asks `gh pr view --json` (`GitService.prStatus`,
+  `parsePrStatus`, `prChecksOf`) for the session's PR (`prTarget`: its `prNumber`, else its worktree branch, else a
+  non-default branch) while the card shows: every minute with one, five without, doubling up to ten minutes after a
+  failure, ten when gh isn't signed in; late answers dropped by generation. "PR #12 · Checks pass · Approved", and on a
+  Done card "Ready to merge +120 −30" with Merge (confirm naming the PR; `GitService.mergePr` merges the way the
+  repository allows, `prMergeFlag`). Not seen in the running app; no real gh call was made.
 - **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
   `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
   `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,

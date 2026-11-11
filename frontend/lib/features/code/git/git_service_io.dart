@@ -397,6 +397,43 @@ Future<BranchPr?> prFor(SessionWorktree w) async {
   }
 }
 
+Future<PrStatus?> prStatus(String dir, String target) async {
+  if (target.isEmpty || target.startsWith('-')) return null;
+  try {
+    final res = await Process.run(
+      'gh',
+      ['pr', 'view', target, '--json', prStatusFields],
+      workingDirectory: dir,
+      environment: await guardedEnv(dir),
+    );
+    return res.exitCode == 0 ? parsePrStatus('${res.stdout}') : null;
+  } on ProcessException {
+    return null;
+  }
+}
+
+Future<void> mergePr(String dir, int number) async {
+  final ProcessResult res;
+  try {
+    final env = await guardedEnv(dir);
+    final repo = await Process.run(
+      'gh',
+      ['repo', 'view', '--json', 'mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed'],
+      workingDirectory: dir,
+      environment: env,
+    );
+    res = await Process.run(
+      'gh',
+      ['pr', 'merge', '$number', prMergeFlag(repo.exitCode == 0 ? '${repo.stdout}' : '')],
+      workingDirectory: dir,
+      environment: env,
+    );
+  } on ProcessException {
+    throw const GitError('Merging needs the GitHub CLI: install gh and run `gh auth login`.');
+  }
+  if (res.exitCode != 0) throw GitError("Couldn't merge #$number: ${'${res.stderr}'.trim()}");
+}
+
 Future<bool> ghReady(String dir) async {
   try {
     final res = await Process.run('gh', ['auth', 'status'], workingDirectory: dir);

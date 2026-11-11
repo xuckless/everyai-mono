@@ -27,7 +27,13 @@ import '../domain/code_session.dart';
 import '../drivers/driver_registry.dart' show driverRegistryProvider;
 import '../ui/harness_logo.dart';
 import '../domain/floor_advice.dart' show approvalFlags;
+import '../../usage/usage_totals.dart' show UsageTotals;
+import '../code_settings_providers.dart' show codeSettingsProvider;
+import '../limit_providers.dart' show codePlanLimitsProvider;
 import 'board_inspector.dart';
+import 'board_limits.dart';
+import 'board_pr.dart';
+import 'board_snooze.dart';
 import 'board_providers.dart';
 import 'board_state.dart';
 import 'board_triage.dart';
@@ -75,6 +81,13 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
 
   /// Hides the Undo bar of the latest clear.
   Timer? _undoTimer;
+
+  /// Rebuilds when the next snoozed card's limit resets, so it comes back with Resume.
+  Timer? _wakeTimer;
+  DateTime? _wakeAt;
+
+  /// Columns whose Snoozed fold is open.
+  final _foldsOpen = <BoardColumn>{};
   var _bulk = BulkApprove.idle;
 
   /// The cards in keyboard order, and the Done ones, as last built.
@@ -110,10 +123,25 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
   @override
   void dispose() {
     _undoTimer?.cancel();
+    _wakeTimer?.cancel();
     _focus.dispose();
     _filterFocus.dispose();
     _filter.dispose();
     super.dispose();
+  }
+
+  /// Rebuilds at [at] (the next snoozed card's reset); nothing when none is snoozed. Re-armed only when it moves.
+  void _scheduleWake(DateTime? at) {
+    if (at == _wakeAt) return;
+    _wakeAt = at;
+    _wakeTimer?.cancel();
+    if (at == null) return;
+    final left = at.difference(DateTime.now());
+    _wakeTimer = Timer(left.isNegative ? Duration.zero : left + const Duration(seconds: 1), () {
+      if (!mounted) return;
+      _wakeAt = null;
+      setState(() {});
+    });
   }
 
   void _select(String? id) {
@@ -500,6 +528,39 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       if (rerun.isNotEmpty) ref.read(boardSeenProvider.notifier).forget(rerun);
     });
 
+    // Sessions stopped on a usage limit (open ones: the limit is in their transcript), and the ones snoozed until it
+    // resets ([boardLimitState]). A snooze whose session runs again, or whose reset passed, ends.
+    final now = DateTime.now();
+    final snoozes = ref.watch(boardSnoozedProvider);
+    final limitOf = <String, BoardLimitState>{};
+    for (final s in all) {
+      if (!ref.exists(codeSessionProvider(s.id))) continue;
+      final limit = ref.watch(codeSessionProvider(s.id).select((st) => stoppedOnLimit(st.transcript)));
+      final until = snoozes[s.id];
+      limitOf[s.id] = boardLimitState(
+        limit: limit,
+        snoozedUntil: until == null ? null : DateTime.fromMillisecondsSinceEpoch(until),
+        now: now,
+      );
+    }
+    final snoozed = {
+      for (final MapEntry(:key, :value) in limitOf.entries)
+        if (value is Snoozed) key: value.until,
+    };
+    final wake = [
+      for (final id in snoozes.keys)
+        if (limitOf[id] case NotLimited() || ReadyToResume()) id,
+    ];
+    if (wake.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        for (final id in wake) {
+          ref.read(boardSnoozedProvider.notifier).wake(id);
+        }
+      });
+    }
+    _scheduleWake(snoozed.values.fold<DateTime?>(null, (a, b) => a == null || b.isBefore(a) ? b : a));
+
     final harnesses = <String>{for (final s in all) s.harness}.toList();
     final harness = harnesses.contains(_harness) ? _harness : null;
     final registry = ref.read(driverRegistryProvider);
@@ -522,9 +583,38 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       for (final c in BoardColumn.values)
         c: [
           for (final s in shown)
-            if (columnOf[s.id] == c) s,
+            if (columnOf[s.id] == c && !snoozed.containsKey(s.id)) s,
         ],
     };
+    final folded = {
+      for (final c in BoardColumn.values)
+        c: [
+          for (final s in shown)
+            if (columnOf[s.id] == c && snoozed.containsKey(s.id)) s,
+        ],
+    };
+
+    // The limits strip: each harness's plan windows its sessions reported, and the spending cap closest to full.
+    // Only sessions open here have readings; none are opened for it.
+    final plans = <SessionPlan>[
+      for (final s in all)
+        // Watched for every session open here, so a first report after the Board was built shows too.
+        if (ref.exists(codeSessionProvider(s.id)))
+          if (ref.watch(codePlanLimitsProvider(s.id)) case final plan?)
+            (sessionId: s.id, harness: s.harness, harnessLabel: labelOf(s.harness), plan: plan),
+    ];
+    final budgets = ref.watch(codeSettingsProvider.select((st) => st.budgets));
+    final cap = busiestCap([
+      for (final s in all)
+        if (budgets[s.id] != null && ref.exists(codeSessionProvider(s.id)) && ref.exists(codeUsageProvider(s.id)))
+          (
+            sessionId: s.id,
+            title: s.title,
+            chargedMicros: ref.watch(codeUsageProvider(s.id)).value?.chargedMicros ?? 0,
+            budgetUsd: budgets[s.id],
+          ),
+    ]);
+    final limits = [...poolPlanLimits(plans, now: now), ?cap];
     GlobalKey keyOf(String id) => _keys.putIfAbsent(id, () => GlobalKey(debugLabel: 'board.$id'));
 
     // The keyboard's order: column by column, top to bottom. A selected card that left moves to its neighbour, and
@@ -629,7 +719,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
 
     Widget column(BoardColumn c, {required bool scrolls}) {
       final items = columns[c]!;
-      final list = [
+      final list = <Widget>[
         for (final (i, s) in items.indexed)
           Padding(
             key: ValueKey('board.slot.${s.id}'),
@@ -658,6 +748,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
                     phase: phase[s.id]!,
                     work: work[s.id]!,
                     harnessLabel: labelOf(s.harness),
+                    limit: limitOf[s.id] ?? const NotLimited(),
                     onInspect: () => _inspect(s.id),
                     onDismiss: c == BoardColumn.done ? () => _clear([s.id]) : null,
                   ).rowIn(i),
@@ -701,6 +792,18 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
           ),
         ),
       );
+      if (folded[c]!.isNotEmpty) {
+        list.add(
+          _SnoozedFold(
+            key: ValueKey('board.snoozed.${c.name}'),
+            sessions: folded[c]!,
+            until: snoozed,
+            open: _foldsOpen.contains(c),
+            onToggle: () => setState(() => _foldsOpen.contains(c) ? _foldsOpen.remove(c) : _foldsOpen.add(c)),
+            onWake: (id) => ref.read(boardSnoozedProvider.notifier).wake(id),
+          ),
+        );
+      }
       if (!scrolls) {
         return Column(
           key: ValueKey('board.column.${c.name}'),
@@ -835,6 +938,15 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
                                 ],
                               ),
                             ),
+                            if (limits.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(4, 0, 4, 14),
+                                child: BoardLimitsStrip(
+                                  limits: limits,
+                                  titles: {for (final s in all) s.id: s.title},
+                                  onSession: _inspect,
+                                ),
+                              ),
                             Expanded(child: body),
                           ],
                         ),
@@ -1121,9 +1233,13 @@ class BoardCard extends ConsumerStatefulWidget {
     required this.harnessLabel,
     required this.phase,
     this.work = noBoardWork,
+    this.limit = const NotLimited(),
     this.onDismiss,
     this.onInspect,
   });
+
+  /// Whether it stopped on a usage limit, and what is offered ([boardLimitState]).
+  final BoardLimitState limit;
 
   /// A click on the card: opens it in the Board's inspector. Null opens the full session.
   final VoidCallback? onInspect;
@@ -1148,7 +1264,7 @@ class BoardCard extends ConsumerStatefulWidget {
 }
 
 /// A warning action in flight from a card (a second click meanwhile does nothing).
-enum _Act { idle, nudging, stopping, compacting }
+enum _Act { idle, nudging, stopping, compacting, resuming }
 
 /// What Nudge sends: a short ask for a status.
 /// Prompt reason: a stalled agent should say what it is doing, not start over.
@@ -1227,6 +1343,9 @@ class _BoardCardState extends ConsumerState<BoardCard> {
     final waiting = phase == BoardPhase.needsYou;
     final failed = phase == BoardPhase.failed;
     final phaseLine = boardPhaseLine(phase, widget.work);
+    final cost = open && ref.exists(codeUsageProvider(info.id))
+        ? boardCostLine(ref.watch(codeUsageProvider(info.id)).value ?? UsageTotals.zero)
+        : '';
     // Keeps the progress clock running for an open session (the card reads it on its own clock).
     if (open) ref.watch(boardProgressProvider(info.id).select((_) => 0));
     // Stop all, while an open session runs anything (the lead's turn, forks, a workflow).
@@ -1286,6 +1405,7 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                 activity: activity,
                 where: where,
                 phaseLine: phaseLine,
+                cost: cost,
               ),
             ),
           ),
@@ -1308,6 +1428,7 @@ class _BoardCardState extends ConsumerState<BoardCard> {
     required String activity,
     required String where,
     required String phaseLine,
+    required String cost,
   }) {
     final info = widget.info;
     final phase = widget.phase;
@@ -1385,6 +1506,10 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                             ),
                           ),
                           const SizedBox(width: 8),
+                          if (cost.isNotEmpty) ...[
+                            Text(cost, key: ValueKey('board.cost.${info.id}'), style: boardCostStyle(theme)),
+                            const SizedBox(width: 8),
+                          ],
                           // Room for the clear button on Done cards.
                           Padding(
                             padding: EdgeInsets.only(right: widget.onDismiss == null ? 0 : 14),
@@ -1463,6 +1588,9 @@ class _BoardCardState extends ConsumerState<BoardCard> {
                     !isOutsideLead(info.harness, info.workingDir),
               ),
             BoardWork(sessionId: info.id),
+            if (widget.limit case Limited() || ReadyToResume())
+              _LimitLine(info: info, limit: widget.limit, state: this),
+            BoardPrChip(info: info, done: phase.column == BoardColumn.done),
             Padding(
               padding: const EdgeInsets.only(left: 36, top: 8),
               child: LoginWallCard(
@@ -1618,6 +1746,148 @@ class _Warnings extends StatelessWidget {
                         }),
                 ),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A card stopped on a usage limit: "Limit reached · Resets in 1h 12m" with Snooze (when the reset is known), or, once
+/// it has reset, Resume. Resume is offered, never run by itself; one action at a time ([_Act]).
+class _LimitLine extends StatelessWidget {
+  const _LimitLine({required this.info, required this.limit, required this.state});
+
+  final CodeSessionInfo info;
+  final BoardLimitState limit;
+  final _BoardCardState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final ref = state.ref;
+    final idle = state._act == _Act.idle;
+    final (text, resetsAt) = switch (limit) {
+      Limited(:final resetsAt?) => ('Limit reached · ${resetsInText(resetsAt.difference(DateTime.now()))}', resetsAt),
+      Limited() => ('Limit reached', null),
+      ReadyToResume() => ('Limit reset', null),
+      NotLimited() || Snoozed() => ('', null),
+    };
+    return Padding(
+      key: ValueKey('board.limit.${info.id}'),
+      padding: const EdgeInsets.only(left: 36, top: 8),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 6,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Text(text, style: theme.type.caption.medium.tint(limit is ReadyToResume ? theme.success : theme.warning)),
+          if (resetsAt != null)
+            KitButton(
+              key: ValueKey('board.snooze.${info.id}'),
+              label: 'Snooze',
+              style: KitButtonStyle.ghost,
+              onPressed: () => ref.read(boardSnoozedProvider.notifier).snooze(info.id, resetsAt),
+            ),
+          if (limit is ReadyToResume)
+            KitButton(
+              key: ValueKey('board.resume.${info.id}'),
+              label: 'Resume',
+              style: KitButtonStyle.soft,
+              busy: state._act == _Act.resuming,
+              onPressed: !idle
+                  ? null
+                  : () => state._run(_Act.resuming, () async {
+                      ref.read(boardSnoozedProvider.notifier).wake(info.id);
+                      await ref.read(codeSessionProvider(info.id).notifier).retry();
+                    }),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A column's snoozed cards, folded under it: "Snoozed 2" opens a list of their titles with when each comes back,
+/// and Show brings one back now.
+class _SnoozedFold extends StatelessWidget {
+  const _SnoozedFold({
+    super.key,
+    required this.sessions,
+    required this.until,
+    required this.open,
+    required this.onToggle,
+    required this.onWake,
+  });
+
+  final List<CodeSessionInfo> sessions;
+  final Map<String, DateTime> until;
+  final bool open;
+  final VoidCallback onToggle;
+  final ValueChanged<String> onWake;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = EveryTheme.of(context);
+    final now = DateTime.now();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 4, 4, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Pressable(
+            onTap: onToggle,
+            semanticLabel: 'Snoozed',
+            child: Row(
+              children: [
+                AdaptiveIcon(open ? EveryIcon.chevronDown : EveryIcon.chevronRight, size: 12, color: theme.textMuted),
+                const SizedBox(width: 6),
+                Text('Snoozed', style: theme.type.caption.medium.tint(theme.textMuted)),
+                const SizedBox(width: 6),
+                Text('${sessions.length}', style: theme.type.caption.mono.tint(theme.textSubtle)),
+              ],
+            ),
+          ),
+          AnimatedSize(
+            duration: Motion.reduced(context) ? Duration.zero : Motion.move,
+            curve: Motion.easeInOut,
+            alignment: Alignment.topCenter,
+            child: !open
+                ? const SizedBox(width: double.infinity)
+                : Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      for (final s in sessions)
+                        Padding(
+                          key: ValueKey('board.snoozed.row.${s.id}'),
+                          padding: const EdgeInsets.only(left: 18, top: 6),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  s.title,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: theme.type.caption.tint(theme.text),
+                                ),
+                              ),
+                              if (until[s.id] case final at?)
+                                Text(
+                                  resetsInText(at.difference(now), prefix: 'Back in'),
+                                  style: theme.type.caption.mono.tint(theme.textSubtle),
+                                ),
+                              const SizedBox(width: 6),
+                              KitButton(
+                                key: ValueKey('board.unsnooze.${s.id}'),
+                                label: 'Show',
+                                style: KitButtonStyle.ghost,
+                                onPressed: () => onWake(s.id),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
           ),
         ],
       ),

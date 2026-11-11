@@ -93,6 +93,12 @@ abstract final class GitService {
   /// outside git.
   static Future<Set<String>> ignoredAmong(String dir, List<String> paths) => impl.ignoredAmong(dir, paths);
 
+  /// [target]'s pull request (a number or a branch) as the Board's chip shows it; null without one, gh or a remote.
+  static Future<PrStatus?> prStatus(String dir, String target) => impl.prStatus(dir, target);
+
+  /// Merges pull request [number] the way the repository allows ([prMergeFlag]); throws [GitError] when gh refuses.
+  static Future<void> mergePr(String dir, int number) => impl.mergePr(dir, number);
+
   /// Whether the GitHub CLI is installed and signed in.
   static Future<bool> ghReady(String dir) => impl.ghReady(dir);
 

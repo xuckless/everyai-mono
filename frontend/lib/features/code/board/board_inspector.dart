@@ -14,6 +14,8 @@ import '../ui/harness_logo.dart';
 import '../ui/session_view.dart' show StatusPill, TranscriptList;
 import '../ui/transcript/session_approval.dart';
 import '../ui/transcript/transcript_items.dart' show TranscriptScope;
+import '../../usage/usage_totals.dart' show UsageTotals;
+import 'board_limits.dart' show boardCostLine;
 import 'board_state.dart';
 import 'board_work.dart';
 
@@ -64,6 +66,11 @@ class BoardInspectorPane extends ConsumerWidget {
       if (context.mounted) markBoardSeen(ref, sessionId, seen);
     });
     final model = ref.watch(modelCatalogProvider)[ModelId(info.model)];
+    // What it cost so far, as on its card (read when the session's meter is already up; never started for this).
+    final cost = ref.exists(codeUsageProvider(sessionId))
+        ? boardCostLine(ref.watch(codeUsageProvider(sessionId)).value ?? UsageTotals.zero)
+        : '';
+    final modelName = model?.name ?? info.model;
 
     return Column(
       key: ValueKey('board.inspector.$sessionId'),
@@ -95,9 +102,17 @@ class BoardInspectorPane extends ConsumerWidget {
                       overflow: TextOverflow.ellipsis,
                       style: theme.type.callout.semibold.tint(theme.text),
                     ),
-                    if ((model?.name ?? info.model).isNotEmpty)
-                      Text(
-                        model?.name ?? info.model,
+                    if (modelName.isNotEmpty || cost.isNotEmpty)
+                      Text.rich(
+                        TextSpan(
+                          children: [
+                            if (modelName.isNotEmpty) TextSpan(text: modelName),
+                            if (modelName.isNotEmpty && cost.isNotEmpty) const TextSpan(text: '  ·  '),
+                            if (cost.isNotEmpty)
+                              TextSpan(text: cost, style: theme.type.caption.mono.tint(theme.textSubtle)),
+                          ],
+                        ),
+                        key: const ValueKey('board.inspector.meta'),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: theme.type.caption.tint(theme.textSubtle),

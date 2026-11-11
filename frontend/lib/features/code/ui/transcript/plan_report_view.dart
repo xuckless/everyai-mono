@@ -63,15 +63,39 @@ class _LimitRow extends StatelessWidget {
   final PlanLimit limit;
 
   @override
+  Widget build(BuildContext context) =>
+      PlanLimitBar(label: limit.label, scope: limit.scope, percent: limit.percent, resets: limit.resets);
+}
+
+/// A plan limit as a labelled bar: [label] and [scope], the percent used in mono, a bar that turns amber at 75% and
+/// red at 90%, and [resets] under it. [compact] is the Board's strip (smaller type, thinner bar).
+class PlanLimitBar extends StatelessWidget {
+  const PlanLimitBar({
+    super.key,
+    required this.label,
+    required this.percent,
+    this.scope,
+    this.resets,
+    this.compact = false,
+  });
+
+  final String label;
+  final String? scope;
+  final int percent;
+  final String? resets;
+  final bool compact;
+
+  @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    final color = limit.percent >= 90
-        ? theme.danger
-        : limit.percent >= 75
-        ? theme.warning
-        : theme.accent;
+    final color = planLimitColor(theme, percent);
+    final labelStyle = compact
+        ? theme.type.caption.medium.tint(theme.text)
+        : theme.type.callout.medium.tint(theme.text);
+    final scopeStyle = compact ? theme.type.caption.tint(theme.textMuted) : theme.type.callout.tint(theme.textMuted);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
       children: [
         Row(
           children: [
@@ -79,28 +103,39 @@ class _LimitRow extends StatelessWidget {
               child: Text.rich(
                 TextSpan(
                   children: [
-                    TextSpan(text: limit.label, style: theme.type.callout.medium.tint(theme.text)),
-                    if (limit.scope case final s?)
-                      TextSpan(text: '  ·  $s', style: theme.type.callout.tint(theme.textMuted)),
+                    TextSpan(text: label, style: labelStyle),
+                    if (scope case final s?) TextSpan(text: '  ·  $s', style: scopeStyle),
                   ],
                 ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-            Text('${limit.percent}% used', style: theme.type.caption.mono.tint(theme.textMuted)),
+            Text('$percent% used', style: theme.type.caption.mono.tint(theme.textMuted)),
           ],
         ),
-        const SizedBox(height: 6),
-        _Bar(fraction: limit.percent / 100, color: color, height: 5),
-        if (limit.resets case final r?) ...[
-          const SizedBox(height: 4),
-          Text(_capitalise(r), style: theme.type.caption.tint(theme.textSubtle)),
+        SizedBox(height: compact ? 4 : 6),
+        _Bar(fraction: percent / 100, color: color, height: compact ? 3 : 5),
+        if (resets case final r?) ...[
+          SizedBox(height: compact ? 2 : 4),
+          Text(
+            _capitalise(r),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.type.caption.tint(theme.textSubtle),
+          ),
         ],
       ],
     );
   }
 }
+
+/// A limit's colour: the accent, amber from 75% used, red from 90%.
+Color planLimitColor(EveryTheme theme, int percent) => percent >= 90
+    ? theme.danger
+    : percent >= 75
+    ? theme.warning
+    : theme.accent;
 
 /// A share of usage: the percent in mono beside a short bar, the advice, and its detail under it.
 class _ShareRow extends StatelessWidget {

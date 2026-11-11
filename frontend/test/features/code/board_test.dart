@@ -10,10 +10,14 @@ import 'package:every_ai/core/providers.dart' show apiClientProvider;
 import 'package:every_ai/features/usage/usage_totals.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:every_ai/core/ui/anchored_popover.dart' show PopoverRow;
 import 'package:every_ai/core/ui/kit.dart' show KitButton;
 import 'package:every_ai/features/code/board/board_providers.dart';
 import 'package:every_ai/features/code/board/board_screen.dart';
+import 'package:every_ai/features/code/board/board_snooze.dart' show boardSnoozedProvider;
 import 'package:every_ai/features/code/board/board_state.dart';
+import 'package:every_ai/features/code/drivers/usage_limit.dart' show usageLimitEvent;
+import 'package:every_ai/features/code/limit_providers.dart' show codePlanLimitsProvider;
 import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
@@ -847,6 +851,89 @@ void main() {
     await settle(tester);
     expect(decisions, isEmpty);
 
+    await done(tester, c);
+  });
+
+  testWidgets('the limits strip shows what the sessions reported, and hides with nothing known', (tester) async {
+    final c = await board(
+      tester,
+      sessions: [
+        _s('a', harness: 'claude-code'),
+        _s('b', harness: 'claude-code'),
+      ],
+      live: {'a': const CodeSessionState(connected: true), 'b': const CodeSessionState(connected: true)},
+      statuses: const {'a': SessionStatus.running, 'b': SessionStatus.running},
+      decisions: [],
+    );
+    await settle(tester);
+    expect(find.byKey(const ValueKey('board.limits')), findsNothing);
+
+    final reset = DateTime.now().add(const Duration(days: 2));
+    for (final (id, used) in [('a', 0.4), ('b', 0.8)]) {
+      c
+          .read(codePlanLimitsProvider(id).notifier)
+          .set(
+            PlanLimits.of(
+              id: id,
+              windows: [PlanWindow(name: 'seven_day', used: used, resetsAt: reset, minutes: 10080)],
+            ),
+          );
+    }
+    await settle(tester);
+    expect(find.byKey(const ValueKey('board.limits')), findsOneWidget);
+    // One bar for the harness's window, at the latest reading.
+    expect(find.text('80% used'), findsOneWidget);
+    expect(find.textContaining('This week', findRichText: true), findsOneWidget);
+    // A click lists the sessions it covers; picking one opens it in the inspector.
+    await tester.tap(find.byKey(const ValueKey('board.limit.claude-code|seven_day')));
+    await settle(tester);
+    final row = find.descendant(of: find.byType(PopoverRow), matching: find.text('Session b'));
+    expect(row, findsOneWidget);
+    await tester.tap(row);
+    await settle(tester);
+
+    expect(find.byKey(const ValueKey('board.inspector.b')), findsOneWidget);
+    await done(tester, c);
+  });
+
+  testWidgets('a card stopped on a limit counts down and snoozes into its fold; Resume only once it reset', (
+    tester,
+  ) async {
+    Transcript limited(DateTime resetsAt) =>
+        (TranscriptBuilder()..add(usageLimitEvent('lim', 'You hit your limit', resetsAt: resetsAt))).snapshot;
+    final c = await board(
+      tester,
+      sessions: [_s('a'), _s('b')],
+      live: {
+        'a': CodeSessionState(connected: true, transcript: limited(DateTime.now().add(const Duration(hours: 2)))),
+        'b': CodeSessionState(
+          connected: true,
+          transcript: limited(DateTime.now().subtract(const Duration(minutes: 1))),
+        ),
+      },
+      statuses: const {'a': SessionStatus.failed, 'b': SessionStatus.failed},
+      decisions: [],
+    );
+    await settle(tester);
+    expect(find.textContaining('Limit reached · Resets in 1h'), findsOneWidget);
+    expect(find.byKey(const ValueKey('board.resume.a')), findsNothing);
+    // b has reset: Resume is offered (never run by itself).
+    expect(find.text('Limit reset'), findsOneWidget);
+    expect(find.byKey(const ValueKey('board.resume.b')), findsOneWidget);
+    expect(find.byKey(const ValueKey('board.snooze.b')), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('board.snooze.a')));
+    await settle(tester);
+    expect(find.byKey(const ValueKey('board.card.a.0')), findsNothing);
+    expect(find.text('Snoozed'), findsOneWidget);
+    expect(c.read(boardSnoozedProvider).keys, ['a']);
+    await tester.tap(find.text('Snoozed'));
+    await settle(tester);
+    expect(find.textContaining('Back in 1h'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('board.unsnooze.a')));
+    await settle(tester);
+    expect(find.byKey(const ValueKey('board.card.a.0')), findsOneWidget);
+    expect(find.text('Snoozed'), findsNothing);
     await done(tester, c);
   });
 }
