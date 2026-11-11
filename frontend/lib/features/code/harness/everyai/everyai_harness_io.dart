@@ -222,7 +222,7 @@ final class EveryAISession
   /// The session's own headless browser (browser tool): started on first
   /// use, closed when a run ends or is stopped.
   /// The session's browser page: the Code session's shared one (the Preview paints it), else one of its own.
-  late final HeadlessBrowser _browser = _spec.liveId != null
+  late final BrowserPage _browser = _spec.liveId != null
       ? LiveBrowsers.forSession(_spec.liveId!, profileDir: _spec.browserProfile ?? '${_dir.path}/browser')
       : HeadlessBrowser(profileDir: '${_dir.path}/browser');
 

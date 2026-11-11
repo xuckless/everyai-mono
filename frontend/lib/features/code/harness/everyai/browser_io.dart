@@ -6,6 +6,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart' show ValueNotifier, visibleForTesting;
 
+import '../../live/browser_page.dart';
 import '../../live/frames.dart';
 import '../../live/browser_jar.dart';
 import '../../live/key_map.dart';
@@ -13,6 +14,8 @@ import '../../live/login_wall.dart';
 import '../../live/live_session.dart';
 import '../../live/page_snapshot.dart';
 import '../../../../core/process/child_processes.dart';
+
+export '../../live/browser_page.dart';
 
 /// Where a profile's Chrome is.
 ///
@@ -271,34 +274,6 @@ const noBrowserMessage =
     'No Chrome, Chromium, Edge or Brave found. The user can download one from the Preview tab (or set '
     'EVERYAI_CHROME to a browser\'s path).';
 
-/// A frame of a page's screencast: JPEG bytes, its size, and what to ack.
-typedef ScreencastFrame = ({List<int> jpeg, int width, int height, double scrollY, int session});
-
-/// What the Preview shows about the page: its address and title, and whether it can go back or forward.
-typedef PageState = ({String url, String title, bool canBack, bool canForward, bool loading});
-
-/// A tab of a session's browser: the session's own page, or one a page of it opened (a pop-up, a link to a new tab).
-typedef BrowserTab = ({String id, String url, String title});
-
-/// A dialog the page opened and waits on (`alert`, `confirm`, `prompt`, `beforeunload`).
-typedef PageDialog = ({String type, String message, String defaultPrompt});
-
-/// A file picker the page opened (a click on a file input): what to set the files on.
-typedef FileChooser = ({int backendNodeId, bool multiple});
-
-/// A download of the session's browser, newest last.
-typedef BrowserDownload = ({String guid, String name, String? path, String state, double progress});
-
-/// What is under the pointer for the Preview's right-click menu.
-typedef PageContext = ({
-  bool prevented,
-  String? link,
-  String? image,
-  bool editable,
-  String selection,
-  String description,
-});
-
 /// A headless Chrome the session owns, driven over the DevTools protocol:
 /// its own profile under the session's scratch folder (never the user's
 /// browser or cookies), started on first use and stopped with the session.
@@ -307,7 +282,7 @@ typedef PageContext = ({
 /// and reads what the page logged. It never types into password or payment
 /// fields nor submits their forms ([_guardJs]), and its downloads land in
 /// [downloadDir].
-final class HeadlessBrowser {
+final class HeadlessBrowser implements StreamedPage {
   HeadlessBrowser({required this.profileDir, this.executable, this.jarHome}) : attachTo = null;
 
   /// Drives a page of a Chromium-based app that is already running (an Electron app started with
@@ -318,6 +293,7 @@ final class HeadlessBrowser {
   /// Where the session's own cookie jar is kept: with one, the browser runs in a context of its own in the
   /// project's Chrome (cookies and storage apart from other sessions'), started from the jar and saved back to it.
   /// Without one, it uses the profile's shared cookies.
+  @override
   final JarHome? jarHome;
 
   /// The session's browser context in Chrome, while running with a [jarHome].
@@ -340,6 +316,7 @@ final class HeadlessBrowser {
   Future<void>? _writing;
 
   /// Saved logins this session started from, by site: their refreshed sign-ins are written back.
+  @override
   final usedLogins = <String, String>{};
 
   /// Keeps the jar current while running (a Chrome that stops all at once loses at most this much).
@@ -349,6 +326,7 @@ final class HeadlessBrowser {
   var _forget = false;
 
   /// The login wall: the agent's call waits on a sign-in page until the user signs in or skips.
+  @override
   final loginWall = LoginWall();
 
   /// The running app's DevTools endpoint this browser attaches to, or null for our own Chrome.
@@ -361,27 +339,35 @@ final class HeadlessBrowser {
   ChromeHost get host => ChromeHost.of(profileDir, executable: executable);
 
   /// Who drives the page (agent or user), and the agent's actions for the Preview's ghost cursor.
+  @override
   final control = LiveControl();
 
   /// The pictures of the page the model has seen, for checking and mapping its coordinates.
+  @override
   final frames = FrameBook();
 
   /// The page's address, title and history, for the Preview's bar.
+  @override
   final page = ValueNotifier<PageState>((url: '', title: '', canBack: false, canForward: false, loading: false));
 
   /// The session's tabs, in the order they opened; the active one is [activeTab].
+  @override
   final tabs = ValueNotifier<List<BrowserTab>>(const []);
 
   /// The dialog the active page waits on, or null.
+  @override
   final dialog = ValueNotifier<PageDialog?>(null);
 
   /// The file picker the active page opened, or null.
+  @override
   final fileChooser = ValueNotifier<FileChooser?>(null);
 
   /// This session's downloads (the last 20).
+  @override
   final downloads = ValueNotifier<List<BrowserDownload>>(const []);
 
   /// The tab the agent and the Preview act on.
+  @override
   String? get activeTab => _targetId;
 
   /// The browser's DevTools address (to connect to another tab).
@@ -393,6 +379,7 @@ final class HeadlessBrowser {
   var _casting = false;
 
   /// The page's screencast while [startScreencast] runs.
+  @override
   Stream<ScreencastFrame> get screencast => _screencast.stream;
 
   /// The browser to run; null finds Chrome, Chromium, Edge or Brave.
@@ -400,6 +387,7 @@ final class HeadlessBrowser {
 
   /// Where downloads go, set before the browser starts (the session's scratch
   /// folder); null refuses downloads.
+  @override
   String? downloadDir;
 
   // Closed in close().
@@ -429,9 +417,12 @@ final class HeadlessBrowser {
   final _log = <String>[];
 
   /// Width and height of the viewport, in CSS pixels.
+  @override
   var width = 1280;
+  @override
   var height = 800;
 
+  @override
   bool get running => _socket != null || _switching != null;
 
   /// A tab switch in flight ([switchTab]); [_start] and further switches wait for it.
@@ -681,6 +672,7 @@ final class HeadlessBrowser {
   }
 
   /// The jar as it is now: the context's cookies and the storage read from its pages.
+  @override
   Future<JarData> captureJar() async {
     if (_contextId != null && _browserSocket != null) {
       try {
@@ -725,6 +717,7 @@ final class HeadlessBrowser {
   }
 
   /// Saves the jar now (captured first while running, unless [captured]: the caller just did).
+  @override
   Future<void> saveJar({bool captured = false}) async {
     if (!_jarLoaded) await _loadJar();
     if (running && !captured) await captureJar();
@@ -732,6 +725,7 @@ final class HeadlessBrowser {
   }
 
   /// The session was removed: its jar is deleted, and nothing is saved when the browser closes.
+  @override
   Future<void> forgetJar() async {
     _forget = true;
     _jarTimer?.cancel();
@@ -748,6 +742,7 @@ final class HeadlessBrowser {
   /// Adds [data] (a saved login, or a sign-in made in a real window) to the session: its cookies at once, its
   /// storage now on a page of its origin (which reloads) and otherwise when one first loads. [loginId] records the
   /// saved login it came from, for writing the refreshed sign-in back.
+  @override
   Future<void> applyJar(JarData data, {String? site, String? loginId}) async {
     await _loadJar();
     _jar = jarMerged(_jar, data);
@@ -772,6 +767,7 @@ final class HeadlessBrowser {
   /// Signs the session out of [site] (null: every site): its cookies and storage leave the jar and the browser. A
   /// site's storage is cleared in each of its origins the session knows of (not only the page's); every site gets a
   /// fresh browser context, its tabs opened again where they were.
+  @override
   Future<void> clearJar({String? site}) async {
     await _loadJar();
     final live = running && _browserSocket != null && _contextId != null;
@@ -867,10 +863,12 @@ final class HeadlessBrowser {
   var _noSave = false;
 
   /// The sites this session is signed in to (it has cookies for), from the last reading.
+  @override
   List<String> get signedInSites => jarSites(_jar);
 
   /// The sign-ins in the project's shared profile (the "Sign in in a window" Chrome, and sign-ins made before
   /// sessions had jars of their own): its cookies for [site], or for every site.
+  @override
   Future<JarData> profileSignIns({String? site}) async {
     await _start();
     final r = await _sendOn(_browserSocket, 'Storage.getCookies', const {});
@@ -947,6 +945,7 @@ final class HeadlessBrowser {
 
   /// The dialog another tab waits on that holds up the active one too (they share a renderer), with that tab's
   /// number (from 1), or null.
+  @override
   ({int tab, PageDialog dialog})? get dialogHoldingThis {
     final here = _targetId;
     if (here == null) return null;
@@ -962,6 +961,7 @@ final class HeadlessBrowser {
   }
 
   /// The dialog another tab of the session waits on, with its tab's number (from 1), or null.
+  @override
   ({int tab, PageDialog dialog})? get dialogElsewhere {
     for (final (i, t) in _tabList.indexed) {
       final p = t.id == _targetId ? null : _parked[t.id];
@@ -1020,6 +1020,7 @@ final class HeadlessBrowser {
 
   /// Makes tab [id] the one the agent and the Preview act on. Switches run one after another, and the one in
   /// flight is known at once ([_switching]), so input meanwhile waits for it instead of opening a page.
+  @override
   Future<void> switchTab(String id) {
     final prev = _switching;
     late final Future<void> done;
@@ -1099,6 +1100,7 @@ final class HeadlessBrowser {
   }
 
   /// Opens [url] in a new tab of the session and makes it active (the Preview's "Open link in new tab").
+  @override
   Future<void> openTab(String url) async {
     await _start();
     final created = await _sendOn(_browserSocket, 'Target.createTarget', {
@@ -1113,12 +1115,14 @@ final class HeadlessBrowser {
   }
 
   /// Closes tab [id]; the session's last tab stays.
+  @override
   Future<void> closeTab(String id) async {
     if (_tabList.length < 2 || _browserSocket == null) return;
     await _sendOn(_browserSocket, 'Target.closeTarget', {'targetId': id});
   }
 
   /// Answers the page's dialog: OK ([accept]) or Cancel, with [text] for a prompt.
+  @override
   Future<void> answerDialog({required bool accept, String? text}) async {
     final shown = dialog.value;
     if (shown == null) return;
@@ -1128,6 +1132,7 @@ final class HeadlessBrowser {
   }
 
   /// Gives the page's file picker (or the file input at [selector] or [ref]) the files at [paths].
+  @override
   Future<void> setFiles(List<String> paths, {String? selector, String? ref}) async {
     await _start();
     final chooser = fileChooser.value;
@@ -1156,9 +1161,11 @@ final class HeadlessBrowser {
   }
 
   /// Leaves the page's file picker without files.
+  @override
   void cancelFileChooser() => fileChooser.value = null;
 
   /// What is at [x],[y] (CSS pixels), for the Preview's right-click menu; null when it can't be read.
+  @override
   Future<PageContext?> contextAt(double x, double y) async {
     try {
       final v = await evaluate('($_contextAtJs)($x, $y)');
@@ -1178,6 +1185,7 @@ final class HeadlessBrowser {
 
   /// Finds [text] in the page from the selection on (wrapping), selecting and scrolling to it; how many times the
   /// page's text has it (0: none, nothing selected).
+  @override
   Future<int> findText(String text, {bool backwards = false}) async {
     if (text.isEmpty) {
       await evaluate('getSelection().removeAllRanges()');
@@ -1196,6 +1204,7 @@ final class HeadlessBrowser {
   }
 
   /// Runs Chrome's editing [command] (`selectAll`, `cut`, `undo`…) in the focused field, for the Preview's menu.
+  @override
   Future<void> userCommand(String command) async {
     await _start();
     await _userSend('Input.dispatchKeyEvent', {
@@ -1549,6 +1558,7 @@ final class HeadlessBrowser {
   });
 
   /// What the page logged since the last call; cleared on read (the last 50 lines stay in [history]).
+  @override
   List<String> takeLog() {
     final out = [..._log];
     _logged.addAll(out);
@@ -1560,8 +1570,10 @@ final class HeadlessBrowser {
   final _logged = <String>[];
 
   /// The last 50 lines the page logged, read or not.
+  @override
   List<String> get history => [..._logged, ..._log];
 
+  @override
   Future<String> open(String url) async {
     await _start();
     final loaded = _events.stream.firstWhere((e) => e.method == 'Page.loadEventFired');
@@ -1575,6 +1587,7 @@ final class HeadlessBrowser {
 
   /// The page's address and whether it shows a password field (for the login wall); null when it can't tell (a
   /// dialog, a page loading).
+  @override
   Future<LoginProbe?> loginProbe() async {
     if (_socket == null || dialog.value != null) return null;
     try {
@@ -1595,6 +1608,7 @@ final class HeadlessBrowser {
 
   /// The page's address and title. [bare]: the address without its query and fragment (after a sign-in, where they
   /// can carry tokens).
+  @override
   Future<String> describe({bool bare = false}) async {
     final v = await evaluate(
       bare
@@ -1605,6 +1619,7 @@ final class HeadlessBrowser {
     return '${m['title']} — ${m['url']}';
   }
 
+  @override
   Future<Object?> evaluate(String script) async {
     await _start();
     final r = await _send('Runtime.evaluate', {
@@ -1621,6 +1636,7 @@ final class HeadlessBrowser {
   }
 
   /// PNG bytes of the viewport, or of the whole page with [fullPage].
+  @override
   Future<List<int>> screenshot({bool fullPage = false}) async {
     await _start();
     final params = <String, Object?>{'format': 'png'};
@@ -1643,6 +1659,7 @@ final class HeadlessBrowser {
 
   /// A picture of [region] of the viewport (null: all of it) for the model, sized for it ([agentImageSize]; a
   /// zoomed region at up to twice its CSS size, so small things are legible), and the frame it is recorded as.
+  @override
   Future<(List<int>, AgentFrame)> frameShot({ViewRect? region}) async {
     await _start();
     await _followWindow();
@@ -1680,12 +1697,14 @@ final class HeadlessBrowser {
   }
 
   /// The page's scroll offset now.
+  @override
   Future<({double x, double y})> scrollOffset() async {
     final v = await evaluate('[scrollX, scrollY]');
     return v is List ? (x: (v[0] as num).toDouble(), y: (v[1] as num).toDouble()) : (x: 0.0, y: 0.0);
   }
 
   /// The page's elements now (see [pageSnapshotJs]), for what an action changed; empty when the page gives none.
+  @override
   Future<List<PageElement>> elements() async {
     try {
       final v = await evaluate(pageSnapshotJs);
@@ -1697,6 +1716,7 @@ final class HeadlessBrowser {
   }
 
   /// The page's element list (see [pageSnapshotJs]): what the model clicks by ref.
+  @override
   Future<String> snapshot() async {
     await _followWindow();
     final v = await evaluate(pageSnapshotJs);
@@ -1714,6 +1734,7 @@ final class HeadlessBrowser {
   }
 
   /// The centre of element [ref] of the last element list, scrolled into view.
+  @override
   Future<({double x, double y})> refCentre(String ref) async {
     final v = await evaluate(refCentreJs(ref));
     if (v is! Map) throw BrowserError('No element $ref on the page now: take a new snapshot.');
@@ -1738,6 +1759,7 @@ final class HeadlessBrowser {
 
   /// A real mouse click (press and release) on [selector] or at [x],[y]: it
   /// goes through overlays the way a user's click would.
+  @override
   Future<String> click({String? selector, String? ref, double? x, double? y, int count = 1}) async {
     await _start();
     final at = ref != null
@@ -1792,6 +1814,7 @@ return w ? 'that button submits a form with ' + w : null;''', focus: false);
   }
 
   /// Types [text] into [selector] (clicked first) or the focused element.
+  @override
   Future<String> type(String text, {String? selector, String? ref, bool submit = false}) async {
     await _start();
     if (selector != null || ref != null) await click(selector: selector, ref: ref);
@@ -1810,6 +1833,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : f && sensitiveForm(f) ?
   /// A key press: a key's name ("Enter", "ArrowUp", "Space"), one character ("a", "W", "@"), or a combination
   /// ("Shift+Tab", "Control+a", "Meta+Shift+z"). Characters press the US key that types them, with Shift when it
   /// takes it, so pages that read `key`, `code` or `shiftKey` see what a keyboard sends.
+  @override
   Future<String> press(String key) async {
     await _start();
     final k = parseKeyPress(key);
@@ -1854,6 +1878,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     return 'Pressed $key.';
   }
 
+  @override
   Future<String> scroll(double dy, {double? x, double? y}) async {
     await _start();
     control.report(LiveActivity('scroll', x: x ?? width / 2, y: y ?? height / 2, caption: 'Scrolling'));
@@ -1877,6 +1902,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
   }
 
   /// Waits for [selector] to appear (or [ms] to pass).
+  @override
   Future<String> wait({String? selector, int ms = 5000}) async {
     await _start();
     if (selector == null) {
@@ -1891,6 +1917,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     throw BrowserError('$selector did not appear within ${ms}ms.');
   }
 
+  @override
   Future<String> resize(int w, int h) async {
     if (attachTo != null) return "The app's window keeps its own size ($width×$height).";
     width = w.clamp(200, 3840);
@@ -1978,6 +2005,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
 
   /// Closes this session's page (Chrome itself stops once no session has one).
   /// Closes the page. [captured]: the caller read the jar just now (at quit), so it is saved without reading it again.
+  @override
   Future<void> close({bool captured = false}) async {
     _closing = true;
     try {
@@ -2019,6 +2047,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
   }
 
   /// The page's size now, in CSS pixels.
+  @override
   ViewGeometry get geometry => ViewGeometry(width, height);
 
   Future<void> _refreshPage({String? url, String? title}) async {
@@ -2043,6 +2072,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
   // ----------------------------------------------------------- the Preview (the user's own input, unguarded)
 
   /// Starts painting frames into [screencast] (the Preview is showing), up to [maxWidth]×[maxHeight].
+  @override
   Future<void> startScreencast() async {
     _casting = true;
     await _start();
@@ -2069,6 +2099,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
   }
 
   /// Starts the screencast again with a fresh picture (the Preview saw the page change and no frame came).
+  @override
   Future<void> refreshScreencast() async {
     if (!_casting || _socket == null) return;
     try {
@@ -2080,6 +2111,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
     }
   }
 
+  @override
   Future<void> stopScreencast() async {
     _casting = false;
     if (_socket == null) return;
@@ -2091,6 +2123,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
   }
 
   /// Tells Chrome frame [session] was painted, so it sends the next (the Preview paces the stream this way).
+  @override
   void ackFrame(int session) {
     // 0: the picture taken at the start, not one of Chrome's frames.
     if (_socket == null || session == 0) return;
@@ -2101,6 +2134,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
 
   /// A mouse event from the user's view, in CSS pixels: `mouseMoved`, `mousePressed`, `mouseReleased`,
   /// `mouseWheel`.
+  @override
   Future<void> userMouse(
     String type,
     double x,
@@ -2129,6 +2163,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
 
   /// A key event from the user's view (`keyDown` with [text] for printable keys, `rawKeyDown`, `keyUp`); [commands]
   /// are editing commands Chrome runs for it (`selectAll`, `undo`…), which headless Chrome doesn't map from keys.
+  @override
   Future<void> userKey(
     String type, {
     required String key,
@@ -2154,6 +2189,7 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
   }
 
   /// Text the user pasted or composed (an IME), inserted at the caret.
+  @override
   Future<void> userText(String text) async {
     if (dialog.value != null || dialogHoldingThis != null) return;
     await _start();
@@ -2170,20 +2206,25 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
   }
 
   /// The page's selected text (the user's copy).
+  @override
   Future<String> selectedText() async {
     final v = await evaluate('String(getSelection ? getSelection() : "")');
     return v is String ? v : '';
   }
 
   /// Goes to [url] for the user (the address bar).
+  @override
   Future<void> userOpen(String url) async {
     await _start();
     await _send('Page.navigate', {'url': url});
   }
 
+  @override
   Future<void> back() => _history(-1);
+  @override
   Future<void> forward() => _history(1);
 
+  @override
   Future<void> reload() async {
     await _start();
     await _send('Page.reload');
@@ -2199,22 +2240,11 @@ return sensitive(el) ? 'the field is ' + sensitive(el) : w ? 'Space would press 
   }
 
   /// Sets the page's size (the Preview's size menu): frames taken before no longer map.
+  @override
   Future<void> setSize(int w, int h) async {
     await resize(w, h);
     if (_casting) await _castStart();
   }
-}
-
-/// What the agent is told while the page waits on [d].
-String dialogWaitingText(PageDialog d) {
-  final what = switch (d.type) {
-    'beforeunload' => 'asks whether to leave the page',
-    'confirm' => 'asks to confirm',
-    'prompt' => 'asks for text',
-    _ => 'shows an alert',
-  };
-  return 'The page $what: "${d.message}". It waits until the dialog is answered: browser {action: "dialog", '
-      'accept: true or false${d.type == 'prompt' ? ', text' : ''}}, or the user answers it in the Preview.';
 }
 
 /// Records, on every page, whether the page took the last right-click for its own menu (preventDefault): then the
@@ -2261,76 +2291,9 @@ const _contextAtJs = r'''
   };
 }''';
 
-/// Page helpers for the guards: `sensitive(el)` says what a password, one-time
-/// code or payment field is ("a password field") or null; `sensitiveForm(f)`
-/// the same for a form holding one; `focused()` is the focused element,
-/// through shadow roots and same-origin frames (other frames: see [_guard]);
-/// `submits(el)` is what makes the form a submit control [el] sends sensitive,
-/// or null; `deep(x, y)` is the element at a point, through shadow roots. A
-/// frame also counts by its name (Stripe and the like put card fields in their
-/// own frame). Names in other languages, canvas fields, div "buttons" and
-/// clicks inside another origin's frame are missed: a tripwire, not a sandbox.
-const _guardJs = r'''
-const cardName = /card.?(number|num)|cardno|card.?no(?![a-z])|ccnum|security.?code|sort.?code|routing.?number|account.?number|(?<![a-z])(cvv|cvc|csc|iban)(?![a-z])/i;
-const payFrame = /stripe|braintree|adyen|paypal|checkout|card|payment/i;
-const sensitive = (el) => {
-  if (!el || !el.tagName) return null;
-  const tag = el.tagName.toLowerCase();
-  if (tag === 'iframe') {
-    return payFrame.test([el.src, el.name, el.title].join(' ')) ? 'in a payment frame' : null;
-  }
-  if (tag === 'input' && (el.type || '').toLowerCase() === 'password') return 'a password field';
-  const ac = (el.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/);
-  if (ac.includes('current-password') || ac.includes('new-password')) return 'a password field';
-  if (ac.includes('one-time-code')) return 'a one-time code field';
-  if (ac.some((t) => t.startsWith('cc-'))) return 'a payment card field';
-  const names = [el.getAttribute('name'), el.id, el.getAttribute('aria-label')].filter(Boolean).join(' ');
-  return cardName.test(names) ? 'a payment field' : null;
-};
-const sensitiveForm = (f) => {
-  for (const el of [...(f.elements || []), ...f.querySelectorAll('iframe')]) {
-    const why = sensitive(el);
-    if (why) return why === 'in a payment frame' ? 'a payment frame' : why;
-  }
-  return null;
-};
-const submits = (el) => {
-  const c = el && el.closest && el.closest('button, input[type=submit i], input[type=image i]');
-  const f = c && c.type !== 'button' && c.type !== 'reset' ? c.form : null;
-  return f ? sensitiveForm(f) : null;
-};
-const inside = (el) => {
-  try { return el.contentDocument && el.contentDocument.activeElement; } catch (e) { return null; }
-};
-const focused = () => {
-  let el = document.activeElement;
-  for (;;) {
-    const next = (el && el.shadowRoot && el.shadowRoot.activeElement) || (el && el.tagName === 'IFRAME' && inside(el));
-    if (!next || next === el || next.tagName === 'BODY') return el;
-    el = next;
-  }
-};
-const deep = (x, y) => {
-  let el = document.elementFromPoint(x, y);
-  while (el && el.shadowRoot) {
-    const under = el.shadowRoot.elementFromPoint(x, y);
-    if (!under || under === el) break;
-    el = under;
-  }
-  return el;
-};''';
+/// Page helpers for the guards (see [pageFieldGuardJs]); [_guard] looks into other origins' frames itself.
+const _guardJs = pageFieldGuardJs;
 
-class BrowserError implements Exception {
-  const BrowserError(this.message, {this.fromPage = false});
-  final String message;
-
-  /// The message quotes the page (a script's exception), so it goes in the page's untrusted block.
-  final bool fromPage;
-  @override
-  String toString() => message;
-}
-
-/// [url]'s origin when it is a web page (http or https), else null (file:, about:, data:).
 /// The origin a DOMStorage event's [storageId] is the first-party local storage of, or null: session storage, and
 /// storage partitioned under another top-level site (a key with a '^' part: a frame embedded in another site, even
 /// one in the page's own renderer), are not that origin's own.
@@ -2358,14 +2321,4 @@ bool maySharePageProcess(String a, String b) {
 
   final x = site(a), y = site(b);
   return x == null || y == null || x == y;
-}
-
-String? webOrigin(String url) {
-  final u = Uri.tryParse(url);
-  return u != null && (u.scheme == 'http' || u.scheme == 'https') && u.host.isNotEmpty ? u.origin : null;
-}
-
-/// The tab a call went to closed before it answered (a pop-up that closed itself on the click).
-final class TabClosedError extends BrowserError {
-  const TabClosedError() : super('The tab closed before it answered.');
 }

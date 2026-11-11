@@ -21,7 +21,7 @@ import '../../live/live_session.dart';
 class BrowserTabStrip extends StatelessWidget {
   const BrowserTabStrip({super.key, required this.browser});
 
-  final HeadlessBrowser browser;
+  final BrowserPage browser;
 
   @override
   Widget build(BuildContext context) {
@@ -117,7 +117,7 @@ class _TabChip extends StatelessWidget {
 class PageDialogPanel extends StatefulWidget {
   const PageDialogPanel({super.key, required this.browser, required this.dialog});
 
-  final HeadlessBrowser browser;
+  final BrowserPage browser;
   final PageDialog dialog;
 
   @override
@@ -200,7 +200,7 @@ class _PageDialogPanelState extends State<PageDialogPanel> {
 class BrowserFindBar extends StatefulWidget {
   const BrowserFindBar({super.key, required this.browser, required this.onClose});
 
-  final HeadlessBrowser browser;
+  final BrowserPage browser;
   final VoidCallback onClose;
 
   @override
@@ -291,7 +291,7 @@ typedef PageMenuItem = ({String label, VoidCallback? onSelected});
 
 /// The items of the right-click menu for what is under the pointer ([at]): editing, links, pictures, and asking the
 /// agent about the element. [ask] puts a line about it in the composer.
-List<PageMenuItem> pageMenuItems(HeadlessBrowser b, PageContext at, {required void Function(String text) ask}) {
+List<PageMenuItem> pageMenuItems(BrowserPage b, PageContext at, {required void Function(String text) ask}) {
   Future<void> copy(String text) => Clipboard.setData(ClipboardData(text: text));
   final page = b.page.value;
   return [
@@ -383,7 +383,7 @@ class PageContextMenu extends StatelessWidget {
 class BrowserDownloadsButton extends StatelessWidget {
   const BrowserDownloadsButton({super.key, required this.browser});
 
-  final HeadlessBrowser browser;
+  final BrowserPage browser;
 
   @override
   Widget build(BuildContext context) {

@@ -68,7 +68,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   final _field = TextEditingController();
   final _fieldFocus = FocusNode();
   final _viewFocus = FocusNode(debugLabel: 'preview.page');
-  HeadlessBrowser? _browser;
+  BrowserPage? _browser;
   StreamSubscription<ScreencastFrame>? _frames;
   StreamSubscription<String>? _made;
   StreamSubscription<LiveActivity>? _activity;
@@ -169,7 +169,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     }
   }
 
-  void _switchBrowser(HeadlessBrowser? b) {
+  void _switchBrowser(BrowserPage? b) {
     _detach();
     _image?.dispose();
     _image = null;
@@ -229,14 +229,14 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   }
 
   /// The session's page, made now when the user opens something before the agent did.
-  Future<HeadlessBrowser> _ensure() async {
+  Future<BrowserPage> _ensure() async {
     if (_browser case final b?) return b;
     final b = LiveBrowsers.forSession(_id, profileDir: await _profile());
     _attach(b);
     return b;
   }
 
-  void _attach(HeadlessBrowser? b) {
+  void _attach(BrowserPage? b) {
     if (b == null || identical(b, _browser)) return;
     _detach();
     _browser = b;
@@ -244,7 +244,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     b.control.addListener(_controlChanged);
     b.fileChooser.addListener(_fileChooserChanged);
     _activity = b.control.activity.listen(_showGhost);
-    _frames = b.screencast.listen(_paint);
+    if (b is StreamedPage) _frames = b.screencast.listen(_paint);
     _pageChanged();
     _syncCasting();
     if (mounted) setState(() {});
@@ -258,7 +258,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     b.fileChooser.removeListener(_fileChooserChanged);
     unawaited(_activity?.cancel());
     unawaited(_frames?.cancel());
-    if (_cast != _Cast.off) unawaited(b.stopScreencast().catchError((Object _) {}));
+    if (b is StreamedPage && _cast != _Cast.off) unawaited(b.stopScreencast().catchError((Object _) {}));
     _castOff();
     _browser = null;
   }
@@ -301,11 +301,12 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   void _ask(String text) => ref.read(composerInsertProvider(_id).notifier).insert(text);
 
   /// Paints only while the Preview shows.
-  bool _wantCast(HeadlessBrowser b) => _visible && (b.attachTo != null || b.page.value.url.isNotEmpty || b.running);
+  bool _wantCast(StreamedPage b) =>
+      _visible && ((b is HeadlessBrowser && b.attachTo != null) || b.page.value.url.isNotEmpty || b.running);
 
   void _syncCasting() {
     final b = _browser;
-    if (b == null) return;
+    if (b is! StreamedPage) return;
     final want = _wantCast(b);
     if (want == (_cast != _Cast.off)) return;
     if (!want) {
@@ -340,14 +341,14 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     _staleCheck?.cancel();
     _staleCheck = Timer(const Duration(milliseconds: 1500), () {
       final b = _browser;
-      if (mounted && b != null && _cast == _Cast.on) unawaited(b.refreshScreencast());
+      if (mounted && b is StreamedPage && _cast == _Cast.on) unawaited(b.refreshScreencast());
     });
   }
 
   Future<void> _paint(ScreencastFrame f) async {
     _staleCheck?.cancel();
     if (_decoding) {
-      _browser?.ackFrame(f.session);
+      if (_browser case final StreamedPage b) b.ackFrame(f.session);
       return;
     }
     _decoding = true;
@@ -372,7 +373,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
       final wait = const Duration(milliseconds: 33) - DateTime.now().difference(_lastAck);
       if (wait > Duration.zero) await Future<void>.delayed(wait);
       _lastAck = DateTime.now();
-      _browser?.ackFrame(f.session);
+      if (_browser case final StreamedPage b) b.ackFrame(f.session);
     }
   }
 
@@ -417,7 +418,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   Future<void> _signIn() async {
     if (_signingIn) return;
     setState(() => _signingIn = true);
-    final HeadlessBrowser b;
+    final BrowserPage b;
     try {
       b = await _ensure();
     } on Object {
@@ -426,7 +427,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     }
     try {
       // A real window on the project's profile; the site's sign-in comes over into this session.
-      await signInInWindow(b, b.page.value.url);
+      if (b case final HeadlessBrowser chrome) await signInInWindow(chrome, chrome.page.value.url);
     } on BrowserError catch (e) {
       if (mounted) setState(() => _problem = e.message);
     } finally {
@@ -450,7 +451,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     if (ok != true) return;
     final b = await _ensure();
     await b.close();
-    await b.host.clear();
+    if (b case final HeadlessBrowser chrome) await chrome.host.clear();
     _castOff();
     if (!mounted) return;
     setState(() {
@@ -538,7 +539,13 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
               AppKind.electron =>
                 b == null || (_image == null && _problem != null)
                     ? _Note(_problem ?? 'Connecting to the app…')
-                    : PreviewPageView(image: _image, browser: b, focus: _viewFocus, device: null, ghost: _ghost),
+                    : PreviewPageView(
+                        image: _image,
+                        browser: b as StreamedPage,
+                        focus: _viewFocus,
+                        device: null,
+                        ghost: _ghost,
+                      ),
             },
           ),
         ],
@@ -658,7 +665,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
                 ? _Empty(candidates: candidates, onPick: _go)
                 : PreviewPageView(
                     image: _image,
-                    browser: b!,
+                    browser: b! as StreamedPage,
                     focus: _viewFocus,
                     device: _size.device ? _size : null,
                     ghost: _ghost,
@@ -676,7 +683,7 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   }
 
   /// [page] with the page's dialog over it, while the page waits on one.
-  Widget _withDialog(HeadlessBrowser? b, Widget page) {
+  Widget _withDialog(BrowserPage? b, Widget page) {
     if (b == null) return page;
     return ValueListenableBuilder<PageDialog?>(
       valueListenable: b.dialog,
@@ -732,7 +739,7 @@ class PreviewPageView extends StatefulWidget {
   final void Function(String text)? onAsk;
 
   final ui.Image? image;
-  final HeadlessBrowser browser;
+  final StreamedPage browser;
   final FocusNode focus;
   final PreviewSize? device;
   final LiveActivity? ghost;
@@ -782,7 +789,7 @@ class _PreviewPageViewState extends State<PreviewPageView> {
   DateTime _lastDown = DateTime.fromMillisecondsSinceEpoch(0);
   Offset _lastDownAt = Offset.zero;
 
-  HeadlessBrowser get _b => widget.browser;
+  StreamedPage get _b => widget.browser;
 
   Offset _toPage(Offset local) => (local - _offset) / _scale;
 
