@@ -41,7 +41,8 @@ final class AcpDriver
         StartsInNativeMode,
         AdoptsNativeSession,
         OffersModels,
-        RunsInEnvironments {
+        RunsInEnvironments,
+        RemembersApprovals {
   AcpDriver({
     required this.id,
     required this.label,
@@ -263,6 +264,10 @@ final class AcpDriver
     AgentMode.plan => resolved.profile.planMode != null,
     _ => false,
   };
+
+  /// An ACP agent may offer `allow_always` per request; how long it keeps it is the agent's.
+  @override
+  NativeRemember get remembers => NativeRemember.agentAlways;
 
   @override
   Set<DriverCap> get caps {

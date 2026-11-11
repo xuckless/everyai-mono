@@ -687,6 +687,28 @@ void main() {
     await s.close();
   });
 
+  test("Allow for this session on the card is Codex's own acceptForSession", () async {
+    // approve_command.jsonl with our reply changed to acceptForSession.
+    final channel = ReplayChannel(
+      File('$_fixtures/approve_command.jsonl')
+          .readAsStringSync()
+          .replaceFirst('"result":{"decision":"accept"}', '"result":{"decision":"acceptForSession"}'),
+    );
+    final d = _driver(data, [channel]);
+    expect(d.remembers, NativeRemember.session);
+    final s = await d.start(_spec(work));
+    final events = _listen(s);
+    await s.send(_lsPrompt);
+    await pumpEventQueue();
+    expect(_states(events).last, ExecutionStatus.waitingForConfirmation);
+    await (s as AllowsRemembered).allowRemembered(NativeGrant.session, callIds: ['call_1']);
+    await channel.finished;
+    await pumpEventQueue();
+    channel.expectFinished();
+    expect(events.whereType<ToolResult>().single.outcome, ToolOutcome.ok);
+    await s.close();
+  });
+
   test('file changes: decline by name with the reason as a steer; refusing them all cancels each', () async {
     final channel = _fixture('file_change_refused');
     final s = await _driver(data, [channel]).start(_spec(work));

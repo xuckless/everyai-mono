@@ -872,6 +872,24 @@ void main() {
       await s.close();
     });
 
+    test("Always allow on the card is the agent's own allow_always; without one, allowed once with a notice", () async {
+      final r = rig(['acp/allow_always.jsonl']);
+      final d = r.driver('acp:dsh', 'dsh');
+      expect(d.remembers, NativeRemember.agentAlways);
+      final s = await d.start(r.spec());
+      final seen = _Seen(s);
+      await s.send('go');
+      for (final title in ['Deploy', 'Publish']) {
+        await seen.until(() => _transcript(seen.all).pending.any((c) => c.summary == title));
+        final call = _transcript(seen.all).pending.singleWhere((c) => c.summary == title);
+        await (s as AllowsRemembered).allowRemembered(NativeGrant.always, callIds: [call.id]);
+      }
+      await seen.untilStatus(ExecutionStatus.finished);
+      r.expectPlayed();
+      expect(seen.notices, ['dsh offered no "always" for "Publish", so it was allowed once.']);
+      await s.close();
+    });
+
     test('no allow-once option: refused, with a notice', () async {
       final r = rig(['acp/always_only.jsonl']);
       final d = r.driver('acp:dsh', 'dsh');

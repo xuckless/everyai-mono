@@ -390,6 +390,32 @@ void main() {
     await session.close();
   });
 
+  test("Allow for this session on the card is OpenCode's own `always`", () async {
+    // external_dir_cancel.jsonl with our first reply changed to always.
+    final http = ReplayHttpClient.script(
+      File('$_dir/external_dir_cancel.jsonl')
+          .readAsStringSync()
+          .replaceFirst(RegExp(r'"body":\s*\{"decision":\s*"once"\}'), '"body":{"decision":"always"}'),
+    );
+    final (:driver, data: _) = _driver(http);
+    expect(driver.remembers, NativeRemember.session);
+    final session = await driver.start(_spec(model: 'x', initial: 'Read /etc/hosts.'));
+    final events = await _collect(session);
+    await (session as AllowsRemembered).allowRemembered(
+      NativeGrant.session,
+      callIds: [events.whereType<ActionCall>().single.id],
+    );
+    await pumpEventQueue();
+    await session.respond(accept: false);
+    await pumpEventQueue();
+    http.channel.expectFinished();
+    expect(_replies(http), [
+      {'decision': 'always'},
+      {'decision': 'reject'},
+    ]);
+    await session.close();
+  });
+
   test('refusing every waiting call without a reason sends a bare reject, which parks the run', () async {
     final http = _replay('external_dir_cancel.jsonl');
     final (:driver, data: _) = _driver(http);

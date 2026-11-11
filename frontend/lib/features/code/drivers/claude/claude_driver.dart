@@ -66,7 +66,8 @@ final class ClaudeDriver
         ChecksResume,
         StartsInNativeMode,
         AdoptsNativeSession,
-        RunsInEnvironments {
+        RunsInEnvironments,
+        RemembersApprovals {
   ClaudeDriver({
     this.which,
     this.dataDir = GitService.dataDir,
@@ -137,6 +138,10 @@ final class ClaudeDriver
   /// Every mode starts in one of Claude's own ([permissionModeFor]).
   @override
   bool startsNatively(AgentMode mode) => true;
+
+  /// Claude keeps an allow for the session or saves its suggested rule in its own settings (`updatedPermissions`).
+  @override
+  NativeRemember get remembers => NativeRemember.sessionOrSaved;
 
   @override
   Set<DriverCap> get caps => const {
@@ -537,7 +542,7 @@ final class _Meta {
 typedef _Briefed = Delivery Function(Set<String> skillsOff);
 
 /// A permission prompt the CLI is waiting on us for: the request to answer, the tool and the call's input.
-typedef _Held = ({String requestId, String name, Map<String, Object?> input});
+typedef _Held = ({String requestId, String name, Map<String, Object?> input, List<Object?> suggestions});
 
 /// One Claude Code conversation. Refusing a call doesn't stop the run (the
 /// model is told and carries on); [resume] runs a stopped or failed turn on.
@@ -545,6 +550,7 @@ final class ClaudeSession
     implements
         HarnessSession,
         PerCallApprovals,
+        AllowsRemembered,
         HasNativeCommands,
         NativeModes,
         AnswersSideQuestion,
@@ -790,6 +796,32 @@ final class ClaudeSession
       _waiting = false;
       _stopTurn();
       return;
+    }
+    if (_waiting && _held.isEmpty) {
+      _waiting = false;
+      _emit(stateEvent(const Uuid().v4(), ExecutionStatus.running));
+    }
+  }
+
+  /// Allows with the rules Claude itself suggested for the call (`permission_suggestions`), kept by Claude: for
+  /// this session, or where Claude proposed to save them. A call it offered no rule for is allowed once.
+  @override
+  Future<void> allowRemembered(NativeGrant grant, {List<String>? callIds}) async {
+    for (final callId in callIds ?? _held.keys.toList()) {
+      final h = _held.remove(callId);
+      if (h == null) continue;
+      final rules = claudeRememberedRules(h.suggestions, grant);
+      if (rules.isEmpty) {
+        _emit(
+          HarnessEvent.decode({
+            'kind': 'ConversationErrorEvent',
+            'id': const Uuid().v4(),
+            'source': 'environment',
+            'detail': 'Claude Code offered nothing to remember for ${h.name}, so it was allowed once.',
+          }),
+        );
+      }
+      _answer(callId, h, accept: true, permissions: rules);
     }
     if (_waiting && _held.isEmpty) {
       _waiting = false;
@@ -1089,7 +1121,12 @@ final class ClaudeSession
     final callId = request['tool_use_id'] as String? ?? '';
     final name = request['tool_name'] as String? ?? '';
     final input = request['input'] as Map<String, Object?>? ?? const {};
-    final held = (requestId: requestId, name: name, input: input);
+    final held = (
+      requestId: requestId,
+      name: name,
+      input: input,
+      suggestions: request['permission_suggestions'] as List<Object?>? ?? const [],
+    );
     if (!_decoder.knows(callId)) _emit(_decoder.action(callId, name, input));
     // EveryAI's own tools (questions, plans, todos) are always allowed.
     if (_selfAnswered(name)) return _answer(callId, held, accept: true);
@@ -1100,11 +1137,22 @@ final class ClaudeSession
     _emit(stateEvent(const Uuid().v4(), ExecutionStatus.waitingForConfirmation));
   }
 
-  void _answer(String callId, _Held h, {required bool accept, String? reason}) {
+  void _answer(
+    String callId,
+    _Held h, {
+    required bool accept,
+    String? reason,
+    List<Map<String, Object?>> permissions = const [],
+  }) {
     if (accept) _letRun(callId);
     if (!accept) _decoder.refused[callId] = reason == null || reason.isEmpty ? refusedByUser : reason;
     _channel?.send(
-      jsonEncode(controlResponse(h.requestId, approvalAnswer(accept: accept, reason: reason, input: h.input))),
+      jsonEncode(
+        controlResponse(
+          h.requestId,
+          approvalAnswer(accept: accept, reason: reason, input: h.input, permissions: permissions),
+        ),
+      ),
     );
     // An approved plan: whether Claude leaves plan by itself under `-p` is unverified, so it is moved back.
     if (accept && h.name == 'ExitPlanMode' && _meta.permissionMode == 'plan') {

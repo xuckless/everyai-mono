@@ -934,6 +934,40 @@ void main() {
       await session.close();
     });
 
+    test("Allow for this session sends Claude's suggested rule back for the session, never its mode change", () async {
+      final channel = ReplayChannel(_fixture('prompt_allow_session.jsonl'));
+      final session = await driver(_Spawner([channel]))
+          .start(_spec(message: 'Run the shell command `touch a.txt` with the Bash tool, then reply DONE.'));
+      _record(session, (e) {
+        if (_isState(e, ExecutionStatus.waitingForConfirmation)) {
+          unawaited((session as AllowsRemembered).allowRemembered(NativeGrant.session, callIds: ['toolu_0529b669']));
+        }
+      });
+      await _played(channel);
+      await session.close();
+    });
+
+    test('Always keeps where Claude proposed to save the rule; without a rule offered it is allowed once', () {
+      const rule = {
+        'type': 'addRules',
+        'rules': [
+          {'toolName': 'Bash', 'ruleContent': 'ls'},
+        ],
+        'behavior': 'allow',
+        'destination': 'localSettings',
+      };
+      expect(claudeRememberedRules([rule], NativeGrant.always), [rule]);
+      expect(claudeRememberedRules([rule], NativeGrant.session).single['destination'], 'session');
+      expect(
+        claudeRememberedRules([
+          {'type': 'setMode', 'mode': 'acceptEdits', 'destination': 'session'},
+        ], NativeGrant.always),
+        isEmpty,
+      );
+      expect(approvalAnswer(accept: true).containsKey('updatedPermissions'), isFalse);
+      expect(ClaudeDriver().remembers, NativeRemember.sessionOrSaved);
+    });
+
     test('a refused permission prompt goes back to the model, which carries on', () async {
       final channel = ReplayChannel(_fixture('deny_write.jsonl'));
       final session = await driver(_Spawner([channel])).start(

@@ -2,7 +2,7 @@
 
 import '../../domain/agent_mode.dart';
 import '../../harness/events.dart';
-import '../../harness/harness.dart' show NativeMode;
+import '../../harness/harness.dart' show NativeGrant, NativeMode;
 import '../briefing/briefing_types.dart';
 import '../briefing/recipes.dart';
 import '../driver.dart';
@@ -276,11 +276,31 @@ Map<String, Object?> userLine(String text, {List<String> images = const []}) => 
 
 final _dataUrl = RegExp(r'^data:([^;,]+);base64,(.*)$', dotAll: true);
 
-/// The answer to a held permission prompt (`can_use_tool`), which takes the call's [input] back when allowed.
-Map<String, Object?> approvalAnswer({required bool accept, String? reason, Map<String, Object?> input = const {}}) {
+/// The answer to a held permission prompt (`can_use_tool`), which takes the call's [input] back when allowed, and
+/// with [permissions] the rules Claude keeps from now on (`updatedPermissions`).
+Map<String, Object?> approvalAnswer({
+  required bool accept,
+  String? reason,
+  Map<String, Object?> input = const {},
+  List<Map<String, Object?>> permissions = const [],
+}) {
   final why = reason == null || reason.isEmpty ? refusedByUser : reason;
-  return accept ? {'behavior': 'allow', 'updatedInput': input} : {'behavior': 'deny', 'message': why};
+  return accept
+      ? {'behavior': 'allow', 'updatedInput': input, if (permissions.isNotEmpty) 'updatedPermissions': permissions}
+      : {'behavior': 'deny', 'message': why};
 }
+
+/// The permission updates to send with an allow kept as [grant]: Claude's own suggestions for the call that add
+/// rules or directories (a suggested mode change is left out: the mode stays the user's pick). For this session
+/// their destination becomes `session`; always keeps where Claude proposed to save them.
+List<Map<String, Object?>> claudeRememberedRules(List<Object?> suggestions, NativeGrant grant) => [
+  for (final s in suggestions.whereType<Map<String, Object?>>())
+    if (s['type'] == 'addRules' || s['type'] == 'addDirectories')
+      switch (grant) {
+        NativeGrant.session => {...s, 'destination': 'session'},
+        NativeGrant.always => s,
+      },
+];
 
 const refusedByUser = 'The user refused this.';
 

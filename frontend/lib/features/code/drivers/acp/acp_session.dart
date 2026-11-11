@@ -128,7 +128,7 @@ AgentMode acpModePolicy(AcpProfile profile, String id) {
   return AgentMode.ask;
 }
 
-final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCommands, NativeModes {
+final class AcpSession implements HarnessSession, PerCallApprovals, AllowsRemembered, HasNativeCommands, NativeModes {
   AcpSession({
     required this.id,
     required this.dir,
@@ -972,7 +972,23 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
   // -------------------------------------------------------------- approvals
 
   @override
-  Future<void> respond({required bool accept, String? reason, List<String>? callIds}) async {
+  Future<void> respond({required bool accept, String? reason, List<String>? callIds}) =>
+      _answer(accept: accept, reason: reason, callIds: callIds);
+
+  /// Picks the agent's own `allow_always` where the request offered it (the agent keeps it as it does); a request
+  /// without one is allowed once, with a notice.
+  @override
+  Future<void> allowRemembered(NativeGrant grant, {List<String>? callIds}) => _answer(
+    accept: true,
+    callIds: callIds,
+    always: switch (grant) {
+      NativeGrant.always => true,
+      // ACP has no "for this session"; the card doesn't offer it.
+      NativeGrant.session => false,
+    },
+  );
+
+  Future<void> _answer({required bool accept, String? reason, List<String>? callIds, bool always = false}) async {
     final targets = [
       for (final id in callIds ?? _asking.keys.toList())
         if (_asking.containsKey(id)) id,
@@ -999,11 +1015,20 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
           final quoted = '`${floorAdviceSubject(call)}`';
           _notes.removeWhere((n) => n.startsWith(floorAdviceLead) && n.contains(quoted));
         }
+        if (always) {
+          if (option('allow_always') case final id?) {
+            a.reply.complete(_selected(id));
+            continue;
+          }
+          if (option('allow_once') != null) {
+            _emit(acpNotice(_next('n'), '$_label offered no "always" for ${_quoted(title)}, so it was allowed once.'));
+          }
+        }
         if (option('allow_once') case final id?) {
           a.reply.complete(_selected(id));
           continue;
         }
-        // "Always" would outlast this answer; the app's own rules remember.
+        // "Always" would outlast this answer: only the card's own "Always allow" picks it.
         _emit(acpNotice(_next('n'), '$_label only offered to always allow ${_quoted(title)}, so it was refused.'));
       }
       final refuse = option('reject_once');

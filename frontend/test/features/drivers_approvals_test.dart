@@ -124,6 +124,36 @@ final class _PerCallSession extends _Session implements PerCallApprovals {
   }
 }
 
+/// [_PerCallSession] whose CLI can keep an allow itself: records the grants it was sent.
+final class _RememberingSession extends _PerCallSession implements AllowsRemembered {
+  final grants = <(NativeGrant, List<String>?)>[];
+
+  @override
+  Future<void> allowRemembered(NativeGrant grant, {List<String>? callIds}) async => grants.add((grant, callIds));
+}
+
+/// A driver over [session] whose CLI keeps an allow as [remembers] says.
+final class _RememberingDriver implements HarnessDriver, RemembersApprovals {
+  _RememberingDriver(this.session, this.remembers);
+  final _Session session;
+  @override
+  final NativeRemember remembers;
+  @override
+  Set<DriverCap> get caps => const {DriverCap.approvals, DriverCap.perCallApprovals};
+  @override
+  DriverInfo get info => const DriverInfo(id: 'keeper', label: 'Keeper CLI');
+  @override
+  Future<DriverStatus> detect() async => const DriverStatus(installed: true);
+  @override
+  Future<List<DriverModel>> models() async => const [];
+  @override
+  Future<HarnessSession> start(SessionSpec spec) async => session;
+  @override
+  Future<HarnessSession> attach(String conversationId) async => session;
+  @override
+  Future<Map<String, ExecutionStatus>> statuses(List<String> conversationIds) async => const {};
+}
+
 /// The MCP host for outside sessions reopened here: hands out tokens, serves nothing.
 final class _Host implements HostServer {
   var _n = 0;
@@ -313,6 +343,45 @@ void main() {
     );
     await pumpEventQueue();
     expect(session.answers, isEmpty);
+  });
+
+  test("an outside lead's \"for this session\" / \"always\" go to its CLI; EveryAI keeps no rule", () async {
+    final keeper = _RememberingSession();
+    session = keeper;
+    final c = await open(
+      AgentMode.ask,
+      harness: 'keeper',
+      extra: {'keeper': _RememberingDriver(keeper, NativeRemember.sessionOrSaved)},
+    );
+    session.ask('Bash', 'TerminalAction', {'command': 'ls'});
+    final call = (await pending()).single;
+    expect(c.rememberable(), isNull);
+    expect(c.rememberBy(), isEmpty);
+    expect([for (final n in c.nativeAllowOffer()!) n.scope], [ApprovalScope.session, ApprovalScope.always]);
+    await c.approve(ApprovalScope.session, [call.id]);
+    session.ask('Bash', 'TerminalAction', {'command': 'pwd'});
+    final next = await _when(
+      container,
+      codeSessionProvider('s1').select((s) => s.transcript.pending),
+      (List<ActionCall> p) => p.any((x) => x.str('command') == 'pwd'),
+    );
+    await c.approve(ApprovalScope.always, [next.singleWhere((x) => x.str('command') == 'pwd').id]);
+    expect(keeper.grants.map((g) => g.$1), [NativeGrant.session, NativeGrant.always]);
+    expect(keeper.answers, isEmpty);
+    expect(container.read(codePermissionsProvider).rulesFor('p1').isEmpty, isTrue);
+    expect(c.policy.session, isEmpty);
+  });
+
+  test('an outside lead whose CLI keeps nothing: Allow answers once, and nothing is offered or saved', () async {
+    session = _PerCallSession();
+    final c = await open(AgentMode.ask);
+    session.ask('Bash', 'TerminalAction', {'command': 'ls'});
+    final call = (await pending()).single;
+    expect(c.nativeAllowOffer(), isEmpty);
+    await c.approve(ApprovalScope.always, [call.id]);
+    expect(session.answers.single.accept, isTrue);
+    expect(container.read(codePermissionsProvider).rulesFor('p1').isEmpty, isTrue);
+    expect(c.policy.session, isEmpty);
   });
 
   test('a denied edit is not the lead\'s for the checks; one that ran is', () async {

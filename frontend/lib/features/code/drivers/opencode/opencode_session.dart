@@ -77,7 +77,8 @@ List<NativeMode> openCodeModes(Object? data) => [
 /// One OpenCode session on its own server: events from the server's stream
 /// (only this session's), history from its message list, answers through
 /// its permission replies.
-final class OpenCodeSession implements HarnessSession, SteersRuns, PerCallApprovals, HasNativeCommands, NativeModes {
+final class OpenCodeSession
+    implements HarnessSession, SteersRuns, PerCallApprovals, AllowsRemembered, HasNativeCommands, NativeModes {
   OpenCodeSession(
     this._server, {
     required String workingDir,
@@ -251,18 +252,29 @@ final class OpenCodeSession implements HarnessSession, SteersRuns, PerCallApprov
   @override
   Future<void> resume() async {}
 
-  /// Accepting allows the call once (never "always"). Refusing chosen calls sends the reason, which the model
-  /// reads and carries on. Refusing all of them (no [callIds]) stops the
+  /// [allowRemembered] replies `always`: OpenCode allows the same pattern for the rest of its session itself.
+  @override
+  Future<void> allowRemembered(NativeGrant grant, {List<String>? callIds}) => _reply(callIds, switch (grant) {
+    NativeGrant.session => 'always',
+    // OpenCode's `always` lasts its session; the card offers no longer one.
+    NativeGrant.always => 'once',
+  });
+
+  /// Accepting allows the call once ("for this session" goes through [allowRemembered]). Refusing chosen calls
+  /// sends the reason, which the model reads and carries on. Refusing all of them (no [callIds]) stops the
   /// run: with a reason, the refusals carry it and the run is interrupted
   /// (the model reads it next turn); without one, a bare refusal stops it.
   @override
-  Future<void> respond({required bool accept, String? reason, List<String>? callIds}) async {
+  Future<void> respond({required bool accept, String? reason, List<String>? callIds}) =>
+      _reply(callIds, accept ? 'once' : 'reject', reason: reason);
+
+  Future<void> _reply(List<String>? callIds, String decision, {String? reason}) async {
+    final accept = decision != 'reject';
     final pending = _mapper.pending;
     final targets = [
       for (final e in pending.entries)
         if (callIds == null || callIds.contains(e.key)) e.value,
     ];
-    final decision = accept ? 'once' : 'reject';
     final why = (reason ?? '').trim();
     final stop = !accept && callIds == null && why.isNotEmpty;
     for (final request in targets) {

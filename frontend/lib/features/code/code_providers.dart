@@ -54,6 +54,7 @@ import 'domain/doom_loop.dart';
 import 'domain/git_commands.dart';
 import 'domain/goal.dart';
 import 'domain/local_ports.dart' show detectLocalUrls;
+import 'domain/native_approvals.dart';
 import 'domain/no_spend.dart';
 import 'domain/review.dart';
 import 'domain/rewind.dart';
@@ -6820,6 +6821,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// the pending actions, or null when any of them can't be remembered
   /// (compound commands, dangerous actions).
   List<String>? rememberable([List<ActionCall>? calls]) {
+    // An outside lead's own approvals decide its calls: EveryAI keeps no rule for them ([nativeAllowOffer]).
+    if (_nativeApprovals) return null;
     final pending = calls ?? state.transcript.pending;
     if (pending.isEmpty) return null;
     final dir = policy.workingDir;
@@ -6843,6 +6846,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// What "for this session" / "always" would store for each pending call
   /// that can be remembered (call id → rule), for the card's per-call menus.
   Map<String, String> rememberBy() {
+    if (_nativeApprovals) return const {};
     final dir = policy.workingDir;
     return {
       for (final c in state.transcript.pending)
@@ -6850,15 +6854,44 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     };
   }
 
+  /// What an outside lead's CLI keeps of an allow; null on the EveryAI harness and for workflow agents, whose
+  /// card keeps EveryAI's rules.
+  NativeRemember? get nativeRemember {
+    if (!_nativeApprovals) return null;
+    final d = _driver;
+    return d is RemembersApprovals ? (d as RemembersApprovals).remembers : NativeRemember.onceOnly;
+  }
+
+  /// The card's ways to allow beyond "Just this once" on an outside lead (from what its CLI keeps), or null on
+  /// the EveryAI harness (EveryAI's rules: [rememberable]).
+  List<NativeAllowScope>? nativeAllowOffer() => switch (nativeRemember) {
+    final r? => nativeAllowScopes(r, _driver.info.label),
+    null => null,
+  };
+
   /// Approves the pending actions ([callIds], or every one not answered
   /// yet); with [scope] session or always, also what [rememberable] gives,
-  /// so the same commands run without asking.
+  /// so the same commands run without asking. On an outside lead the scope goes to its CLI instead
+  /// ([nativeGrantOf]), and nothing is stored in EveryAI's rules.
   Future<void> approve([ApprovalScope scope = ApprovalScope.once, List<String>? callIds]) async {
     final pending = state.transcript.pending;
     final targets = [
       for (final c in pending)
         if (callIds == null ? !_decided.containsKey(c.id) : callIds.contains(c.id)) c,
     ];
+    if (nativeRemember case final remembers?) {
+      if (!perCall || callIds == null) _answered = pending.map((c) => c.id).join(',');
+      if (perCall) _markDecided([for (final c in targets) c.id], accept: true);
+      _grantHostRuns(targets);
+      final session = _session;
+      final ids = perCall ? callIds : null;
+      if (nativeGrantOf(remembers, scope) case final grant? when session is AllowsRemembered) {
+        await (session as AllowsRemembered).allowRemembered(grant, callIds: ids);
+      } else {
+        await session?.respond(accept: true, callIds: ids);
+      }
+      return;
+    }
     if (scope != ApprovalScope.once) {
       final patterns = scope == ApprovalScope.sessionAll
           ? broadPatterns(targets)
