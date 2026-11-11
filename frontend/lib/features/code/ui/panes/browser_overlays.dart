@@ -13,6 +13,7 @@ import '../../../../core/ui/anchored_popover.dart';
 import '../../../../core/ui/every_icons.dart';
 import '../../harness/everyai/browser_io.dart';
 import '../../harness/everyai/screen_tools_io.dart' show browserOpenRefusal;
+import '../../live/live_session.dart';
 
 // The Preview browser's own chrome for people: tabs, the page's dialogs, find, the right-click menu and downloads.
 
@@ -29,22 +30,33 @@ class BrowserTabStrip extends StatelessWidget {
       valueListenable: browser.tabs,
       builder: (context, tabs, _) {
         if (tabs.length < 2) return const SizedBox.shrink();
-        return SizedBox(
-          height: 30,
-          child: ListView(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            children: [
-              for (final t in tabs)
-                _TabChip(
-                  key: ValueKey(t.id),
-                  title: t.title.isNotEmpty ? t.title : (Uri.tryParse(t.url)?.host ?? t.url),
-                  active: t.id == browser.activeTab,
-                  onTap: () => unawaited(browser.switchTab(t.id).catchError((Object _) {})),
-                  onClose: () => unawaited(browser.closeTab(t.id).catchError((Object _) {})),
-                  theme: theme,
-                ),
-            ],
+        // Switching and closing tabs act on the page: only while the user has control.
+        return ListenableBuilder(
+          listenable: browser.control,
+          builder: (context, _) => Opacity(
+            opacity: browser.control.phase.userMayAct ? 1 : 0.55,
+            child: SizedBox(
+              height: 30,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                children: [
+                  for (final t in tabs)
+                    _TabChip(
+                      key: ValueKey(t.id),
+                      title: t.title.isNotEmpty ? t.title : (Uri.tryParse(t.url)?.host ?? t.url),
+                      active: t.id == browser.activeTab,
+                      onTap: () {
+                        if (browser.control.mayAct()) unawaited(browser.switchTab(t.id).catchError((Object _) {}));
+                      },
+                      onClose: () {
+                        if (browser.control.mayAct()) unawaited(browser.closeTab(t.id).catchError((Object _) {}));
+                      },
+                      theme: theme,
+                    ),
+                ],
+              ),
+            ),
           ),
         );
       },
@@ -129,14 +141,22 @@ class _PageDialogPanelState extends State<PageDialogPanel> {
     super.dispose();
   }
 
-  void _answer(bool accept) => unawaited(
-    widget.browser
-        .answerDialog(accept: accept, text: widget.dialog.type == 'prompt' && accept ? _text.text : null)
-        .catchError((Object _) {}),
-  );
+  void _answer(bool accept) {
+    if (!widget.browser.control.mayAct()) return;
+    unawaited(_send(accept));
+  }
+
+  Future<void> _send(bool accept) => widget.browser
+      .answerDialog(accept: accept, text: widget.dialog.type == 'prompt' && accept ? _text.text : null)
+      .catchError((Object _) {});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: widget.browser.control,
+    builder: (context, _) => _panel(context, widget.browser.control.phase.userMayAct),
+  );
+
+  Widget _panel(BuildContext context, bool may) {
     final d = widget.dialog;
     final host = Uri.tryParse(widget.browser.page.value.url)?.host ?? '';
     final leave = d.type == 'beforeunload';
@@ -166,9 +186,9 @@ class _PageDialogPanelState extends State<PageDialogPanel> {
               AdaptiveButton(
                 label: leave ? 'Stay' : 'Cancel',
                 emphasis: ButtonEmphasis.secondary,
-                onPressed: () => _answer(false),
+                onPressed: may ? () => _answer(false) : null,
               ),
-            AdaptiveButton(label: leave ? 'Leave' : 'OK', onPressed: () => _answer(true)),
+            AdaptiveButton(label: leave ? 'Leave' : 'OK', onPressed: may ? () => _answer(true) : null),
           ],
         ),
       ),
