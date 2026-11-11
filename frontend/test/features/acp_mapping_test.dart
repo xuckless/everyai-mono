@@ -618,6 +618,13 @@ void main() {
         ])
         ..reported = true;
       expect(e.report('u2'), isNull);
+      // On an API key (billed per token) the guess isn't a plan's.
+      e
+        ..onPlan = false
+        ..start([
+          {'type': 'text', 'text': 'w' * 40},
+        ]);
+      expect(e.report('u3')!.onPlan, isFalse);
     });
 
     test("both of its names get its profile: `acp` pinned, the user's own flags kept", () {

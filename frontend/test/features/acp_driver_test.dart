@@ -954,6 +954,41 @@ void main() {
       await s.close();
     });
   });
+  test(
+    'a failed model ask is kept, not repeated per menu open, and its temp folder is gone; refresh asks again',
+    () async {
+      final r = rig(const []);
+      final cwds = <String>[];
+      final d = r.driver(
+        'cursor',
+        'cursor-agent',
+        connect:
+            ({
+              required executable,
+              required args,
+              required cwd,
+              required sessionTag,
+              required logPath,
+              required env,
+            }) async {
+              cwds.add(cwd);
+              throw const HarnessError('not signed in');
+            },
+      );
+      expect(d.probe, isA<ModelProbeUnasked>());
+      expect(await d.models(), isEmpty);
+      await (d.probe as ModelProbeAsking).done;
+      expect(d.probe, isA<ModelProbeFailed>());
+      expect(await d.models(), isEmpty);
+      await pumpEventQueue();
+      expect(cwds, hasLength(1));
+      expect(Directory(cwds.single).existsSync(), isFalse);
+      await d.refreshModels();
+      expect(cwds, hasLength(2));
+      expect((d.probe as ModelProbeFailed).reason, contains('not signed in'));
+    },
+  );
+
   group('Cursor CLI (derived from its ACP doc)', () {
     test(
       'the handshake: `acp`, Plan pinned to its plan mode, our server in session/new and no .cursor/mcp.json',

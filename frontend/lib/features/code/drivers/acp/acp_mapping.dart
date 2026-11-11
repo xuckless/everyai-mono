@@ -633,6 +633,9 @@ final class AcpUsageEstimate {
   /// The agent sent a usage report of its own this turn: no guess.
   bool reported = false;
 
+  /// Whether the agent runs on its plan (its sign-in) rather than an API key billed per token.
+  bool onPlan = true;
+
   static const charsPerToken = 4;
 
   void start(List<Map<String, Object?>> blocks) {
@@ -663,7 +666,7 @@ final class AcpUsageEstimate {
       input: (_context - _out) ~/ charsPerToken,
       output: _out ~/ charsPerToken,
       contextTokens: _context ~/ charsPerToken,
-      onPlan: true,
+      onPlan: onPlan,
       estimated: true,
     );
     _in = 0;

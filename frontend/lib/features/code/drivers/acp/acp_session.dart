@@ -438,6 +438,12 @@ final class AcpSession implements HarnessSession, PerCallApprovals, AllowsRememb
         }
       }
       _absorb(reply);
+      // An agent run on an API key (one of its key variables set) is billed per token, not on a plan.
+      try {
+        _estimate.onPlan = !await envHasAny(_profile.keyEnv, env: await _launcher.loginEnv());
+      } on Object {
+        // Unknown: counted as a plan, as before.
+      }
       // The models list is a cache: failing to write it doesn't stop the session.
       try {
         await _launcher.offered(reply);

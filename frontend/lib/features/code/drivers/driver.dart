@@ -156,6 +156,10 @@ final class DriverModel {
 /// menu reads it again on [modelsChanged].
 abstract interface class OffersModels {
   Stream<void> get modelsChanged;
+
+  /// Asks the agent for its models again, also after an ask that failed (which [HarnessDriver.models] doesn't
+  /// repeat on its own).
+  Future<void> refreshModels();
 }
 
 abstract interface class HarnessDriver implements Harness {

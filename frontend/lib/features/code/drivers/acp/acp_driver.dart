@@ -321,7 +321,8 @@ final class AcpDriver
   @override
   Future<List<DriverModel>> models() async {
     final json = await readJsonFile(await _modelsPath());
-    if (json == null && execEnv.isHost) unawaited(_probeModels());
+    // Asked once: a failed ask isn't repeated each time the menu opens, only on [refreshModels].
+    if (json == null && execEnv.isHost && _probe is ModelProbeUnasked) unawaited(_probeModels());
     return [
       for (final m in (json?['models'] as List<Object?>? ?? const []).whereType<Map<String, Object?>>())
         DriverModel(
@@ -358,37 +359,68 @@ final class AcpDriver
   @override
   Stream<void> get modelsChanged => _modelsChanged.stream;
 
-  Future<void>? _probing;
+  /// Where asking the agent for its models stands (see [ModelProbe]).
+  ModelProbe get probe => _probe;
+  ModelProbe _probe = const ModelProbeUnasked();
+
+  @override
+  Future<void> refreshModels() {
+    if (_probe case ModelProbeAsking(:final done)) return done;
+    _probe = const ModelProbeUnasked();
+    return _probeModels();
+  }
 
   /// Asks the agent for its models without a conversation: `initialize` and an empty `session/new` (which the agents
-  /// tried keep nothing of) in the temp folder, then it is closed. Once at a time; quietly nothing when it can't run.
-  Future<void> _probeModels() => _probing ??= () async {
-    LineChannel? channel;
-    try {
-      final exe = await _executable();
-      final dir = await Directory.systemTemp.createTemp('everyai-models');
-      channel = await _connect(
-        executable: exe,
-        args: resolved.args,
-        cwd: dir.path,
-        sessionTag: 'models-$id',
-        logPath: '${dir.path}/stderr.log',
-        env: resolved.profile.env(null),
-      );
-      final peer = JsonRpcPeer(channel, onRequest: (_, _) async => null);
-      await peer.request('initialize', {
-        'protocolVersion': 1,
-        'clientCapabilities': const <String, Object?>{},
-      }, initTimeout);
-      final reply = await peer.request('session/new', {'cwd': dir.path, 'mcpServers': const <Object?>[]}, initTimeout);
-      if (reply is Map<String, Object?>) await _offered(reply);
-    } on Object {
-      // Not signed in, not installed, too slow: the list stays empty until a session starts.
-    } finally {
-      await channel?.close();
-      _probing = null;
-    }
-  }();
+  /// tried keep nothing of) in a temp folder, which is deleted after, then it is closed. Once at a time; a failure is
+  /// kept ([ModelProbeFailed]) and quietly leaves the list empty until a session starts or [refreshModels].
+  Future<void> _probeModels() {
+    if (_probe case ModelProbeAsking(:final done)) return done;
+    final done = Completer<void>();
+    _probe = ModelProbeAsking(done.future);
+    () async {
+      LineChannel? channel;
+      Directory? dir;
+      ModelProbe next = const ModelProbeFailed('The agent offered no models.');
+      try {
+        final exe = await _executable();
+        final folder = dir = await Directory.systemTemp.createTemp('everyai-models');
+        channel = await _connect(
+          executable: exe,
+          args: resolved.args,
+          cwd: folder.path,
+          sessionTag: 'models-$id',
+          logPath: '${folder.path}/stderr.log',
+          env: resolved.profile.env(null),
+        );
+        final peer = JsonRpcPeer(channel, onRequest: (_, _) async => null);
+        await peer.request('initialize', {
+          'protocolVersion': 1,
+          'clientCapabilities': const <String, Object?>{},
+        }, initTimeout);
+        final reply = await peer.request('session/new', {
+          'cwd': folder.path,
+          'mcpServers': const <Object?>[],
+        }, initTimeout);
+        if (reply is Map<String, Object?> && acpModels(reply).isNotEmpty) {
+          await _offered(reply);
+          next = const ModelProbeKnown();
+        }
+      } on Object catch (e) {
+        // Not signed in, not installed, too slow.
+        next = ModelProbeFailed('$e');
+      } finally {
+        await channel?.close();
+        try {
+          await dir?.delete(recursive: true);
+        } on FileSystemException {
+          // Left for the system to clear.
+        }
+        _probe = next;
+        done.complete();
+      }
+    }();
+    return done.future;
+  }
 
   /// The executable's path: its own name, else the other names the CLI
   /// installs under ([AcpProfile.alsoNamed]).
@@ -541,4 +573,33 @@ final class AcpDriver
           c: ExecutionStatus.idle,
     };
   }
+}
+
+/// Where asking an ACP agent for its models stands ([AcpDriver.probe]):
+///
+/// unasked → asking → known | failed; [AcpDriver.refreshModels] starts again from failed (or known).
+sealed class ModelProbe {
+  const ModelProbe();
+}
+
+/// Not asked yet: the model menu's first read asks.
+final class ModelProbeUnasked extends ModelProbe {
+  const ModelProbeUnasked();
+}
+
+/// One ask running; [done] completes when it ends.
+final class ModelProbeAsking extends ModelProbe {
+  const ModelProbeAsking(this.done);
+  final Future<void> done;
+}
+
+/// The agent offered its models (kept on disk).
+final class ModelProbeKnown extends ModelProbe {
+  const ModelProbeKnown();
+}
+
+/// The ask failed ([reason]); not repeated until [AcpDriver.refreshModels].
+final class ModelProbeFailed extends ModelProbe {
+  const ModelProbeFailed(this.reason);
+  final String reason;
 }
