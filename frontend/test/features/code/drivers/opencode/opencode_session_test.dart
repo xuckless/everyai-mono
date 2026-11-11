@@ -82,6 +82,24 @@ String _head(String name, String stop) {
 
 String _line(String dir, Map<String, Object?> msg) => jsonEncode({'dir': dir, 'msg': msg});
 
+/// The lines of an attach listing the session's child sessions (request [id]) and finding none.
+List<String> _noChildren(int id) => [
+  _line('out', {
+    'id': id,
+    'method': 'GET',
+    'path': '/api/session',
+    'query': {'parentID': _ses, 'limit': '100'},
+  }),
+  _line('in', {
+    'id': id,
+    'status': 200,
+    'body': {
+      'data': <Object?>[],
+      'cursor': {'previous': null, 'next': null},
+    },
+  }),
+];
+
 /// Collects [session]'s events and waits until everything sent so far has played.
 Future<List<HarnessEvent>> _collect(HarnessSession session) async {
   final events = <HarnessEvent>[];
@@ -623,9 +641,10 @@ void main() {
           'status': 200,
           'body': {'data': <Object?>[]},
         }),
-        _line('out', {'id': 4, 'method': 'GET', 'path': '/api/session/active'}),
+        ..._noChildren(4),
+        _line('out', {'id': 5, 'method': 'GET', 'path': '/api/session/active'}),
         _line('in', {
-          'id': 4,
+          'id': 5,
           'status': 200,
           'body': {'data': <String, Object?>{}},
         }),
@@ -642,6 +661,121 @@ void main() {
     expect(await driver.statuses([_ses]), {_ses: ExecutionStatus.idle});
     await session.close();
   });
+
+  test(
+    "a subagent's request waiting from before the reopen is found through the child list and answered there",
+    () async {
+      const child = 'ses_child';
+      const grandchild = 'ses_grandchild';
+      Map<String, Object?> event(String type, Map<String, Object?> data) => {
+        'event': {'type': type, 'data': data},
+      };
+      Map<String, Object?> page(List<Object?> data) => {
+        'data': data,
+        'cursor': {'previous': null, 'next': null},
+      };
+      // Composed in the 2.1.3 shapes: the child session was created before this attach, so no session.created is
+      // seen; its request is only in its own permission list.
+      final http = ReplayHttpClient.script(
+        [
+          _line('out', {'id': 1, 'method': 'GET', 'path': '/api/event'}),
+          _line('in', event('server.connected', {})),
+          _line('out', {
+            'id': 2,
+            'method': 'GET',
+            'path': '/api/session/$_ses/message',
+            'query': {'order': 'asc', 'limit': '100'},
+          }),
+          _line('in', {
+            'id': 2,
+            'status': 200,
+            'body': {'data': <Object?>[]},
+          }),
+          _line('out', {'id': 3, 'method': 'GET', 'path': '/api/session/$_ses/permission'}),
+          _line('in', {
+            'id': 3,
+            'status': 200,
+            'body': {'data': <Object?>[]},
+          }),
+          _line('out', {
+            'id': 4,
+            'method': 'GET',
+            'path': '/api/session',
+            'query': {'parentID': _ses, 'limit': '100'},
+          }),
+          _line('in', {
+            'id': 4,
+            'status': 200,
+            'body': page([
+              {'id': child, 'parentID': _ses},
+            ]),
+          }),
+          _line('out', {
+            'id': 5,
+            'method': 'GET',
+            'path': '/api/session',
+            'query': {'parentID': child, 'limit': '100'},
+          }),
+          _line('in', {
+            'id': 5,
+            'status': 200,
+            'body': page([
+              {'id': grandchild, 'parentID': child},
+            ]),
+          }),
+          _line('out', {
+            'id': 6,
+            'method': 'GET',
+            'path': '/api/session',
+            'query': {'parentID': grandchild, 'limit': '100'},
+          }),
+          _line('in', {'id': 6, 'status': 200, 'body': page([])}),
+          _line('out', {'id': 7, 'method': 'GET', 'path': '/api/session/$child/permission'}),
+          _line('in', {
+            'id': 7,
+            'status': 200,
+            'body': {'data': <Object?>[]},
+          }),
+          _line('out', {'id': 8, 'method': 'GET', 'path': '/api/session/$grandchild/permission'}),
+          _line('in', {
+            'id': 8,
+            'status': 200,
+            'body': {
+              'data': [
+                {
+                  'id': 'per_g',
+                  'sessionID': grandchild,
+                  'action': 'bash',
+                  'resources': ['npm install'],
+                  'source': {'type': 'tool', 'id': 'call_g'},
+                },
+              ],
+            },
+          }),
+          _line('out', {
+            'id': 9,
+            'method': 'POST',
+            'path': '/api/session/$grandchild/permission/per_g/reply',
+            'body': {'decision': 'once'},
+          }),
+          _line('in', {'id': 9, 'status': 204}),
+        ].join('\n'),
+      );
+      final (:driver, :data) = _driver(http);
+      File('${data.path}/driver-sessions/opencode/$_ses.json')
+        ..createSync(recursive: true)
+        ..writeAsStringSync(jsonEncode({'workingDir': _cwd, 'sessionTag': 'tag-1'}));
+      final session = await driver.attach(_ses);
+      final events = await _collect(session);
+      final call = events.whereType<ActionCall>().single;
+      expect(call.toolCallId, 'call_g');
+      expect(events.whereType<StateChange>().last.executionStatus, ExecutionStatus.waitingForConfirmation);
+      await session.respond(accept: true, callIds: [call.id]);
+      await pumpEventQueue();
+      http.channel.expectFinished();
+      await session.close();
+    },
+  );
 
   test('the executable is looked up once per driver, not for every session', () async {
     var lookups = 0;

@@ -290,6 +290,7 @@ final class OpenCodeSession
         if (e.status != 404) rethrow;
       }
       _mapper.replied(request, decision);
+      _requestSession.remove(request);
     }
     if (stop && targets.isNotEmpty) await interrupt();
   }
@@ -359,6 +360,9 @@ final class OpenCodeSession
     if (frame['type'] == 'permission.asked' && data['id'] is String && from is String) {
       _requestSession[data['id'] as String] = from;
     }
+    if (frame['type'] == 'permission.replied' && data['requestID'] is String) {
+      _requestSession.remove(data['requestID']);
+    }
     _mapper.live(frame).forEach(_emit);
   }
 
@@ -398,7 +402,46 @@ final class OpenCodeSession
     }
     _mapper.history(messages, resync: resync).forEach(_emit);
     final requests = await _server.call('GET', '/api/session/$_id/permission');
-    _mapper.requests(requests is Map ? requests['data'] as List<Object?>? ?? const [] : const []).forEach(_emit);
+    final open = [
+      ..._data(requests),
+      // A subagent created before this attach (an app restart, a dropped stream) was never seen as
+      // `session.created`: its waiting requests would be lost and the run would hang on a prompt nobody sees.
+      ...await _childRequests(),
+    ];
+    // Requests no longer waiting are forgotten (answered, or their session ended).
+    final ids = {for (final r in open.whereType<Map<String, Object?>>()) r['id']};
+    _requestSession.removeWhere((request, _) => !ids.contains(request));
+    _mapper.requests(open).forEach(_emit);
+  }
+
+  static List<Object?> _data(Object? reply) => reply is Map ? reply['data'] as List<Object?>? ?? const [] : const [];
+
+  /// The session's child sessions, listed from the server (`GET /api/session?parentID=`, their children too), and
+  /// the permission requests waiting in them, each remembered as its child's.
+  Future<List<Object?>> _childRequests() async {
+    final out = <Object?>[];
+    final queue = [_id];
+    while (queue.isNotEmpty) {
+      final parent = queue.removeAt(0);
+      Map<String, String> query = {'parentID': parent, 'limit': '100'};
+      while (true) {
+        final page = await _server.call('GET', '/api/session', query: query);
+        for (final s in _data(page).whereType<Map<String, Object?>>()) {
+          if (s['id'] case final String child when child != _id && _children.add(child)) queue.add(child);
+        }
+        final next = page is Map && page['cursor'] is Map ? (page['cursor'] as Map)['next'] : null;
+        if (next is! String) break;
+        query = {'parentID': parent, 'cursor': next, 'limit': '100'};
+      }
+    }
+    for (final child in _children.toList()) {
+      final requests = await _server.call('GET', '/api/session/$child/permission');
+      for (final r in _data(requests).whereType<Map<String, Object?>>()) {
+        if (r['id'] case final String request) _requestSession[request] = child;
+        out.add(r);
+      }
+    }
+    return out;
   }
 
   void _onDrop() {
