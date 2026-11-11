@@ -233,6 +233,21 @@ void main() {
       throw AppError('the field shows "$v"');
     });
     expect(bad.error, isNot(contains('pw-secret-9')));
+    // Asking first: a Stop while the card is up ends the fill at once, typing nothing.
+    final asking = LoginAccess(
+      policy: const LoginPolicy(withoutAsking: false),
+      logins: () async => store,
+      gate: LoginGate.of('s-stop'),
+    );
+    typed = null;
+    final pending = appFill({'login': 'app', 'ref': 's3'}, asking, (ref, v, submit) async => typed = v);
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+    expect(LoginGate.of('s-stop').stateOf('app'), isA<ConsentAsking>());
+    LoginGate.find('s-stop')!.stop();
+    expect((await pending).error, contains('the session stopped'));
+    expect(typed, isNull);
+    expect(LoginGate.of('s-stop').stateOf('app'), isA<ConsentUnasked>());
     final unknown = await appFill({'login': 'nope', 'ref': 's3'}, access, (r, v, s) async {});
     expect(unknown.error, contains('Saved logins: app (localhost)'));
     expect(access.redact('echo pw-secret-9'), isNot(contains('pw-secret-9')));

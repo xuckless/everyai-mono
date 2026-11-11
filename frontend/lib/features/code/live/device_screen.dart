@@ -33,8 +33,9 @@ abstract interface class DeviceScreen {
   Future<String> longPress(String ref);
 
   /// Puts [text] in field [ref]. [secretOk]: password fields take it too (a saved login, or the user lets agents
-  /// type into them).
-  Future<String> type(String ref, String text, {bool submit = false, bool secretOk = false});
+  /// type into them). [hidden]: [text] is a saved login's value, so it never goes on a command line (the host's or
+  /// the device's process list).
+  Future<String> type(String ref, String text, {bool submit = false, bool secretOk = false, bool hidden = false});
   Future<String> submit();
 
   /// A key or shortcut ("Enter", "Escape", "Tab", "Backspace", arrows, "cmd+s", "ctrl+a"), or text to type when it

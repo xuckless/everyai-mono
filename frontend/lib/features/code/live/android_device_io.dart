@@ -315,7 +315,13 @@ final class AndroidDevice implements DeviceScreen {
   }
 
   @override
-  Future<String> type(String ref, String text, {bool submit = false, bool secretOk = false}) async {
+  Future<String> type(
+    String ref,
+    String text, {
+    bool submit = false,
+    bool secretOk = false,
+    bool hidden = false,
+  }) async {
     await _fresh();
     final n = _node(ref);
     if (n.secret && !secretOk) {
@@ -339,6 +345,22 @@ final class AndroidDevice implements DeviceScreen {
     }
     if (text.isEmpty) {
       await _shell(['input', 'keyevent', '67']);
+    } else if (hidden) {
+      // A saved login's value goes over scrcpy's control socket, never in an `adb shell input text` command line
+      // (the host's and the device's process lists show those). ASCII is typed as keys; anything else is pasted, and
+      // the clipboard is emptied straight after.
+      final s = await scrcpy();
+      if (RegExp(r'^[\x20-\x7e]*$').hasMatch(text)) {
+        // One byte a character here; scrcpy takes up to 300 at a time.
+        for (var i = 0; i < text.length; i += 300) {
+          s.text(text.substring(i, i + 300 > text.length ? text.length : i + 300));
+        }
+      } else {
+        s.paste(text);
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        s.paste('', paste: false);
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 300));
     } else if (RegExp(r'^[\x20-\x7e]*$').hasMatch(text) && !text.contains('%')) {
       // `input text` reads %s as a space; plain spaces split nothing once quoted, but older versions drop them.
       await _shell(['input', 'text', text.replaceAll(' ', '%s')]);

@@ -920,7 +920,11 @@ Future<ToolOutput> _device(
         if (ref == null || text == null) return const ToolOutput('Error: type needs a ref and text.', isError: true);
         did = await a.type(ref, text, submit: args['submit'] == true, secretOk: secretOk);
       case 'fill_login':
-        final f = await appFill(args, logins, (ref, v, submit) => a.type(ref, v, submit: submit, secretOk: true));
+        final f = await appFill(
+          args,
+          logins,
+          (ref, v, submit) => a.type(ref, v, submit: submit, secretOk: true, hidden: true),
+        );
         if (f.error case final why?) return ToolOutput('Error: $why', isError: true);
         did = f.did!;
       case 'submit':

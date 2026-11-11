@@ -288,7 +288,13 @@ final class IosSimulator implements DeviceScreen {
 
   /// Types [text] into field [ref], replacing what it held (select all, then the keys), and checks it.
   @override
-  Future<String> type(String ref, String text, {bool submit = false, bool secretOk = false}) async {
+  Future<String> type(
+    String ref,
+    String text, {
+    bool submit = false,
+    bool secretOk = false,
+    bool hidden = false,
+  }) async {
     await _fresh();
     final n = _node(ref);
     if (n.secret && !secretOk) {

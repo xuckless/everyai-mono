@@ -39,20 +39,33 @@ Future<List<String>> _helperCommand(List<String> args) async {
 }
 
 /// Runs the desktop window helper (on X display [display] on Linux); its JSON output, or an [AppError] with what it
-/// said.
-Future<Object?> axHelper(List<String> args, {String? display, Duration timeout = const Duration(seconds: 30)}) async {
-  final cmd = await _helperCommand(args);
-  final r = await Process.run(
-    cmd.first,
-    cmd.sublist(1),
-    environment: display == null ? null : {'DISPLAY': display},
-  ).timeout(timeout);
-  if (r.exitCode != 0) {
-    final why = '${r.stderr}'.trim().replaceFirst(RegExp(r'^error:\s*'), '');
-    throw AppError(why.isEmpty ? 'the window helper failed (exit ${r.exitCode})' : why);
+/// said. [text] goes to the helper on its stdin (with `--text-stdin`), never on its command line: what the agent types
+/// may be a saved password, and a command line is visible to every process on the machine.
+Future<Object?> axHelper(
+  List<String> args, {
+  String? display,
+  String? text,
+  Duration timeout = const Duration(seconds: 30),
+}) async {
+  final cmd = await _helperCommand([...args, if (text != null) '--text-stdin']);
+  final p = await Process.start(cmd.first, cmd.sublist(1), environment: display == null ? null : {'DISPLAY': display});
+  final out = p.stdout.transform(utf8.decoder).join();
+  final err = p.stderr.transform(utf8.decoder).join();
+  if (text != null) p.stdin.add(utf8.encode(text));
+  await p.stdin.close().catchError((Object _) {});
+  final code = await p.exitCode.timeout(
+    timeout,
+    onTimeout: () {
+      p.kill();
+      throw TimeoutException('the window helper took longer than ${timeout.inSeconds} s');
+    },
+  );
+  if (code != 0) {
+    final why = (await err).trim().replaceFirst(RegExp(r'^error:\s*'), '');
+    throw AppError(why.isEmpty ? 'the window helper failed (exit $code)' : why);
   }
-  final out = '${r.stdout}'.trim();
-  return out.isEmpty ? null : jsonDecode(out);
+  final o = (await out).trim();
+  return o.isEmpty ? null : jsonDecode(o);
 }
 
 /// One on-screen window of a process, as the helper lists it (points, screen coordinates).
@@ -148,7 +161,7 @@ final class DesktopWindow implements DeviceScreen {
   String? display;
   bool nested = false;
 
-  Future<Object?> _helper(List<String> args) => axHelper(args, display: display);
+  Future<Object?> _helper(List<String> args, {String? text}) => axHelper(args, display: display, text: text);
 
   /// Clicks per tap for the current call: 2 a double click, 3 a triple click (selects a line of text). More than
   /// one is always real pointer input.
@@ -250,16 +263,8 @@ final class DesktopWindow implements DeviceScreen {
 
   Future<void> _act(String ref, String action, {String? text}) => _actAt(_paths[ref]!, action, text: text);
 
-  Future<void> _actAt(String path, String action, {String? text}) => _helper([
-    'act',
-    '--pid',
-    '$pid',
-    '--path',
-    path,
-    '--action',
-    action,
-    if (text != null) ...['--text', text],
-  ]);
+  Future<void> _actAt(String path, String action, {String? text}) =>
+      _helper(['act', '--pid', '$pid', '--path', path, '--action', action], text: text);
 
   /// Accessibility first (in place, the user's pointer and keyboard stay theirs); the real pointer and keyboard when
   /// accessibility can't do it and the user allows it ([RealInput], asked once). Real input brings the window to
@@ -272,8 +277,8 @@ final class DesktopWindow implements DeviceScreen {
 
   /// Runs a helper input command as real input to the window, its app brought to the front as it is (its key
   /// window, an open pop-up list or dialog, keeps the keyboard).
-  Future<void> _real(String command, List<String> args) =>
-      _helper([command, '--pid', '$pid', ...args, '--front', if (nested) '--nested']);
+  Future<void> _real(String command, List<String> args, {String? text}) =>
+      _helper([command, '--pid', '$pid', ...args, '--front', if (nested) '--nested'], text: text);
 
   /// A named key ("enter", "a") with modifiers, as the helper takes it: macOS key codes, names elsewhere.
   List<String> _keyArgs(String name, [List<String> mods = const []]) {
@@ -384,7 +389,13 @@ final class DesktopWindow implements DeviceScreen {
   }
 
   @override
-  Future<String> type(String ref, String text, {bool submit = false, bool secretOk = false}) async {
+  Future<String> type(
+    String ref,
+    String text, {
+    bool submit = false,
+    bool secretOk = false,
+    bool hidden = false,
+  }) async {
     await _fresh();
     final n = _node(ref);
     if (n.secret && !secretOk) {
@@ -415,7 +426,7 @@ final class DesktopWindow implements DeviceScreen {
       // A triple click selects the field's text where Cmd+A isn't bound (Tk); Cmd+A then covers multi-line fields.
       await _click(n.centreX, n.centreY, count: 3);
       await _real('key', _keyArgs('a', ['cmd']));
-      await _real('key', ['--text', text]);
+      await _real('key', const [], text: text);
     }
     if (submit) {
       if (!real && (_actions[ref]?.contains('AXConfirm') ?? false)) {
@@ -532,7 +543,7 @@ final class DesktopWindow implements DeviceScreen {
     await _needReal('keys are real keyboard input');
     control.report(LiveActivity('type', caption: 'Pressing $combo'));
     if (code == null) {
-      await _real('key', ['--text', combo]);
+      await _real('key', const [], text: combo);
       return 'Typed "$combo" (the window came to the front).';
     }
     await _real('key', _keyArgs(name, mods));
