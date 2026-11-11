@@ -109,6 +109,13 @@ final class GeminiPastSessions implements PastSessionSource {
     if (chat == null) return const [];
     return geminiChatEvents(chat, cwd: session.cwd);
   }
+
+  /// The chat file.
+  @override
+  Future<void> delete(String nativeId, {required String cwd}) async {
+    if (!_files.containsKey(nativeId)) await list(cwd);
+    if (_files.remove(nativeId) case final path?) await files.deletePath(path);
+  }
 }
 
 /// A Gemini CLI chat file as the app's events, in Gemini's own vocabulary (its tool names, its todos, its
@@ -268,6 +275,10 @@ final class AcpListedSessions implements PastSessionSource {
   /// The agent replays the conversation itself on `session/load`; nothing is read ahead of it.
   @override
   Future<List<HarnessEvent>> history(PastSession session) async => const [];
+
+  /// ACP has no delete; the session stays hidden in EveryAI.
+  @override
+  Future<void> delete(String nativeId, {required String cwd}) async {}
 }
 
 /// Whether an `initialize` reply offers both `session/list` and `session/load`.

@@ -6,6 +6,7 @@ import '../drivers/codex/codex_mapping.dart' show callOf, messageOf, planCall, r
 import '../handoff/native/native_files.dart' show envVar, realPath;
 import '../harness/events.dart';
 import 'past_sessions.dart';
+import 'resume_files.dart' show deletePath;
 import 'session_files.dart';
 
 // Codex writes each thread as a rollout file, `<CODEX_HOME or ~/.codex>/sessions/YYYY/MM/DD/rollout-<time>-<thread
@@ -88,6 +89,17 @@ final class CodexPastSessions implements PastSessionSource {
     }
     if (path == null) return const [];
     return codexHistory(await streamLines(path).toList(), cwd: session.cwd);
+  }
+
+  /// The thread's rollout file (Codex's own `thread/delete` needs its app server running).
+  @override
+  Future<void> delete(String nativeId, {required String cwd}) async {
+    final root = await _root();
+    if (root == null || nativeId.isEmpty) return;
+    final known = _paths.remove(nativeId);
+    for (final p in [?known, ...await listJsonl('$root/sessions', recursive: true)]) {
+      if (p.endsWith('-$nativeId.jsonl')) await deletePath(p);
+    }
   }
 }
 

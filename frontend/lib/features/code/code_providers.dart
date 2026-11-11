@@ -116,7 +116,8 @@ import 'settings/settings.dart';
 import 'session_notifications.dart';
 import 'spill/spill.dart';
 import 'resume/past_sessions.dart';
-import 'resume/resume_providers.dart' show resumedJournal, saveResumedHistory;
+import 'resume/resume_providers.dart'
+    show DeletedConversations, pastSessionSourcesProvider, resumedJournal, saveResumedHistory;
 import 'uploads/uploads.dart';
 import 'workflows/workflow_bridge.dart'
     show WorkflowBridge, appendJournalFile, listJournalFiles, readJournalFile, retireJournalFile;
@@ -1838,12 +1839,30 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       ref.read(preferencesProvider)['$codeLayoutPrefix$g'] = null;
       ref.read(preferencesProvider)['$codeLimitBannerPrefix$g'] = null;
     }
+    // The harnesses' own copies (every lead the session had) go too, so they don't come back under Earlier.
+    final natives = [
+      for (final s in state)
+        if (gone.contains(s.id)) ...[
+          if (s.conversationId.isNotEmpty) (harness: s.harness, id: s.conversationId, cwd: s.workingDir),
+          for (final MapEntry(:key, :value) in s.leads.entries)
+            if (value.conversationId.isNotEmpty) (harness: key, id: value.conversationId, cwd: s.workingDir),
+        ],
+    ];
+    DeletedConversations.add(ref.read(preferencesProvider), [for (final n in natives) '${n.harness}|${n.id}']);
     state = [
       for (final s in state)
         if (!gone.contains(s.id)) s,
     ];
     _save();
-    await Future.wait([for (final g in outside) _unbrief(g), for (final g in switched) _dropTimeline(g)]);
+    final sources = ref.read(pastSessionSourcesProvider);
+    await Future.wait([
+      for (final g in outside) _unbrief(g),
+      for (final g in switched) _dropTimeline(g),
+      for (final n in natives)
+        for (final source in sources)
+          if (source.harness == n.harness && !isDemoPath(n.cwd))
+            source.delete(n.id, cwd: n.cwd).catchError((Object _) {}),
+    ]);
   }
 
   Future<void> _dropTimeline(String id) async {

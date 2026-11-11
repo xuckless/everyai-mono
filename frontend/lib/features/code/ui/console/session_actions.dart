@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../code_providers.dart';
 import '../../domain/code_session.dart';
+import '../../drivers/driver_registry.dart' show driverRegistryProvider;
 
 // What the user can do with a whole session, from its title menu in the console and its row in the session list.
 
@@ -44,13 +45,20 @@ Future<void> exportSession(BuildContext context, WidgetRef ref, CodeSessionInfo 
 /// Deletes the session (with its worktree, branch and checkpoints) once the user agrees; true when it is gone.
 Future<bool> deleteSession(BuildContext context, WidgetRef ref, CodeSessionInfo info) async {
   final w = info.worktree;
+  // Its harnesses' own copies are deleted with it (they would come back under Earlier otherwise).
+  final registry = ref.read(driverRegistryProvider);
+  final clis = {
+    for (final h in [info.harness, ...info.leads.keys])
+      if (isOutsideLead(h, info.workingDir)) registry.resolve(h)?.info.label ?? h,
+  }.toList();
+  final from = clis.isEmpty ? '' : ' It is deleted from ${clis.join(' and ')} too.';
   final ok = await showAdaptiveConfirm(
     context,
     title: 'Delete session?',
     message: w == null
-        ? '"${info.title}" will be removed from your sessions.'
+        ? '"${info.title}" will be removed from your sessions.$from'
         : '"${info.title}" will be removed with its worktree, branch ${w.branch} and checkpoints. '
-              'Work already merged stays merged.',
+              'Work already merged stays merged.$from',
     confirmLabel: 'Delete',
     destructive: true,
   );

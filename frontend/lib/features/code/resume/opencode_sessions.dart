@@ -94,6 +94,14 @@ final class OpenCodePastSessions implements PastSessionSource {
     return OpenCodeMapper(workingDir: session.cwd).history(messages);
   }
 
+  /// Through OpenCode itself (`opencode session delete`, which takes its child sessions too): its database is
+  /// its own to write.
+  @override
+  Future<void> delete(String nativeId, {required String cwd}) async {
+    if (nativeId.isEmpty || nativeId.startsWith('-')) return;
+    await files.runCli('opencode', ['session', 'delete', nativeId]);
+  }
+
   static Map<String, Object?>? _message(Map<String, Object?> r) {
     final data = r['data'];
     if (data is! String) return null;

@@ -117,6 +117,25 @@ void main() {
     });
   });
 
+  test("deleting removes Claude Code's session file and folder and Codex's rollout, nothing else", () async {
+    claudeFile(project, 'gone', _fixture('claude_session.jsonl', project));
+    claudeFile(project, 'gone/subagents/agent-1', _fixture('claude_session.jsonl', project));
+    claudeFile(project, 'kept', _fixture('claude_session.jsonl', project));
+    final claude = claudePastSessions(env: env, resolve: same);
+    await claude.delete('gone', cwd: project);
+    expect((await claude.list(project)).map((s) => s.nativeId), ['kept']);
+    expect(Directory('$home/.claude/projects/${slug(project)}/gone').existsSync(), isFalse);
+
+    for (final id in ['aaa', 'bbb']) {
+      File('$home/.codex/sessions/2026/11/02/rollout-2026-11-02T09-00-00-$id.jsonl')
+        ..createSync(recursive: true)
+        ..writeAsStringSync(_fixture('codex_rollout.jsonl', project, id: id));
+    }
+    final codex = codexPastSessions(env: env, resolve: same);
+    await codex.delete('aaa', cwd: project);
+    expect((await codex.list(project)).map((s) => s.nativeId), ['bbb']);
+  });
+
   group('Codex', () {
     void rollout(String day, String time, String id, String body) {
       File('$home/.codex/sessions/2026/11/$day/rollout-2026-11-${day}T$time-$id.jsonl')

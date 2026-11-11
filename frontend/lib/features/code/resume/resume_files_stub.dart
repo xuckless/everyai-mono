@@ -7,3 +7,7 @@ Future<String?> readSmallFile(String path, {required int maxBytes}) async => nul
 Future<List<String>> filesIn(String dir, {required String suffix}) async => const [];
 
 Future<List<Map<String, Object?>>?> sqliteRows(String path, String sql, List<Object?> params) async => null;
+
+Future<void> deletePath(String path) async {}
+
+Future<int?> runCli(String command, List<String> args, {required Duration timeout}) async => null;
