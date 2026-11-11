@@ -572,6 +572,67 @@ void main() {
     });
   });
   group('Cursor', () {
+    // Shapes seen live from cursor-agent 2026.11.05 (`agent acp`).
+    test("a permission request's reason isn't the call's result; the output that comes later is", () {
+      var call = mergeToolCall(const {}, {
+        'toolCallId': 'c1\nfc_1',
+        'kind': 'execute',
+        'status': 'pending',
+        'rawInput': {'command': 'git status | head -3'},
+      });
+      call = mergeToolCall(
+        call,
+        acpWithoutAskText({
+          'toolCallId': 'c1\nfc_1',
+          'content': [
+            {
+              'type': 'content',
+              'content': {'type': 'text', 'text': 'Not in allowlist: git status, head'},
+            },
+          ],
+        }),
+      );
+      call = mergeToolCall(call, {
+        'status': 'completed',
+        'rawOutput': {'exitCode': 0, 'stdout': 'On branch main\n', 'stderr': ''},
+      });
+      expect(acpResultText(call), 'On branch main\n');
+    });
+
+    test('an MCP call is the server and tool it names in its input', () {
+      final s = acpShape({
+        'kind': 'other',
+        'title': 'everyai: diff_stats',
+        'rawInput': {
+          'providerIdentifier': 'everyai',
+          'toolName': 'diff_stats',
+          'args': {'base': 'main'},
+        },
+      });
+      expect((s.kind, s.toolName, s.args['base']), ('MCPToolAction', 'everyai__diff_stats', 'main'));
+    });
+
+    test('usage is guessed from the text that went by, and not when the agent reports its own', () {
+      final e = AcpUsageEstimate()
+        ..start([
+          {'type': 'text', 'text': 'x' * 400},
+        ])
+        ..produced(80)
+        ..toolCall({
+          'rawInput': {'command': 'ls'},
+          'rawOutput': {'stdout': 'y' * 200},
+        });
+      final first = e.report('u1')!;
+      expect((first.estimated, first.onPlan, first.output), (true, true, (80 + 16) ~/ 4));
+      expect(first.contextTokens, (400 + 200 + 80 + 16) ~/ 4);
+      e
+        ..start([
+          {'type': 'text', 'text': 'z' * 40},
+        ])
+        ..reported = true;
+      expect(e.report('u2'), isNull);
+    });
+
     test('both of its names get its profile: `acp` pinned, skip-approval flags dropped, never its ask mode', () {
       for (final exe in ['agent', 'cursor-agent', '/Users/me/.local/bin/agent']) {
         final p = acpProfileOf(exe);

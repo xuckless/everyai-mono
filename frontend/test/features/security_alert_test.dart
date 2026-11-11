@@ -138,8 +138,12 @@ final class _Driver implements HarnessDriver {
 
 final class _Host implements HostServer {
   @override
-  Future<HostToken> mint(String sessionId, HostTools tools, {Set<String>? only}) async =>
-      (url: Uri.parse('http://127.0.0.1:9/mcp'), token: 'tok');
+  Future<HostToken> mint(
+    String sessionId,
+    HostTools tools, {
+    Set<String>? only,
+    Set<String> without = const {},
+  }) async => (url: Uri.parse('http://127.0.0.1:9/mcp'), token: 'tok');
   @override
   bool touch(String token) => true;
   @override

@@ -484,7 +484,7 @@ const _cursor = AcpProfile._(
   // Its headless skip-approval flags, and the ones that trust the folder or
   // approve every MCP server unasked.
   dropped: ['--force', '--yolo', '-f', '--trust', '--approve-mcps'],
-  caps: {..._shared, DriverCap.mcp, DriverCap.switchModel, DriverCap.subagents},
+  caps: {..._shared, DriverCap.mcp, DriverCap.switchModel, DriverCap.subagents, DriverCap.nativeQuestions},
   askMode: 'agent',
   planMode: 'plan',
   // Its Ask mode answers questions and changes nothing.

@@ -184,6 +184,9 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
   String? _native;
   final _modeFeed = NativeModeFeed();
   ({String model, String? effort})? _llm;
+
+  /// What the turns used, guessed from the text that went by, for agents that report nothing (Cursor).
+  final _estimate = AcpUsageEstimate();
   String? _acpSessionId;
   JsonRpcPeer? _peer;
   Future<void>? _connecting;
@@ -860,6 +863,7 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
     _paused = false;
     _waking = false;
     _setStatus(ExecutionStatus.running);
+    _estimate.start(blocks);
     // Grok can leave the reply hanging after it says the prompt is complete;
     // whichever comes first ends the turn.
     final promptId = _profile.agent == AcpAgent.grok ? _next('p') : null;
@@ -885,6 +889,8 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
         _emit(usage);
       } else if (promptId != null) {
         _xaiUnreported = promptId;
+      } else if (_estimate.report(_next('usage')) case final guess?) {
+        _emit(guess);
       }
       final stop = reply['stopReason'];
       final note = switch (stop) {
@@ -1103,11 +1109,22 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
     // Asked about a call that already finished or was cancelled: nobody waits for it.
     if (_done.contains(callId) || _cancelled || _closed) return _cancelledOutcome;
     _wake();
-    final call = _calls[callId] = mergeToolCall(_calls[callId] ?? const {}, tc);
+    // The request's text content says why the agent asks (Cursor: "Not in allowlist: git status"), not what the
+    // call returned: kept off the call, so its result is the output that comes later. Diffs stay (Gemini shows the
+    // edit it asks about that way).
+    final call = _calls[callId] = mergeToolCall(_calls[callId] ?? const {}, acpWithoutAskText(tc));
     _asked.add(callId);
     _afterLoad = false;
     final options = p['options'] as List<Object?>? ?? const [];
     final shown = _shown[callId] ?? _show(callId, call, options: options);
+    // A call to EveryAI's own tools: they guard themselves, so the agent isn't stopped to ask about them.
+    if (shown.actionKind == 'MCPToolAction' && shown.toolName.startsWith('${everyaiServerName}__')) {
+      final allow = [
+        for (final o in options.whereType<Map<String, Object?>>())
+          if (o['kind'] == 'allow_once' && o['optionId'] is String) o['optionId']! as String,
+      ].firstOrNull;
+      if (allow != null) return _selected(allow);
+    }
     final reply = Completer<Object?>();
     _asking[shown.id] = (reply: reply, options: options, callId: callId);
     _setStatus(ExecutionStatus.waitingForConfirmation);
@@ -1418,11 +1435,13 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
         final t = acpChunkText(u['content']);
         if (t.isEmpty) return;
         _text.write(t);
+        _estimate.produced(t.length);
         _emit(acpDelta(content: t));
       case 'agent_thought_chunk':
         final t = acpChunkText(u['content']);
         if (t.isEmpty) return;
         _reasoning.write(t);
+        _estimate.produced(t.length);
         _emit(acpDelta(reasoning: t));
       case 'tool_call' || 'tool_call_update':
         _toolUpdate(u);
@@ -1432,6 +1451,7 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
         _emit(call);
         _emit(result);
       case 'usage_update':
+        _estimate.reported = true;
         final (report, cost) = acpUsageUpdate(u, id: _next('usage'), lastCost: _cost);
         _cost = cost;
         _emit(report);
@@ -1458,7 +1478,6 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
     // A pending call's input may still be streaming: shown once it runs or asks.
     if (status == 'pending') return;
     final shown = _shown[callId] ?? _show(callId, call);
-    if (!_asked.contains(callId)) _unasked(callId, shown);
     if (finished) {
       _done.add(callId);
       _calls.remove(callId);
@@ -1468,6 +1487,7 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
         }
       }
       if (_xaiSpawned(call, shown)) return;
+      _estimate.toolCall(call);
       _emit(acpResultEvent(call, id: 'tr-$callId', actionId: shown.id, toolName: shown.toolName));
     }
   }
@@ -1525,33 +1545,6 @@ final class AcpSession implements HarnessSession, PerCallApprovals, HasNativeCom
       ),
     );
   }
-
-  /// A call that changes things ran without a permission request: the
-  /// agent's own settings let it past the app. The user is told; in Plan the
-  /// turn is stopped.
-  void _unasked(String callId, ActionCall call) {
-    if (!_gated.contains(call.actionKind) || AgentMode.isReadOnly(call) || !_asked.add(callId)) return;
-    final plan = _mode == AgentMode.plan;
-    _emit(
-      acpNotice(
-        _next('n'),
-        '$_label ran ${_quoted(call.summary)} without asking the app first, so its own settings allow it.'
-        '${plan ? ' Plan mode stopped the turn.' : ''}',
-      ),
-    );
-    if (plan) _stopTurn(running: callId);
-  }
-
-  static const _gated = {
-    'TerminalAction',
-    'FileEditorAction',
-    'EditAction',
-    'ApplyPatchAction',
-    'AcpExecuteAction',
-    'AcpEditAction',
-    'AcpDeleteAction',
-    'AcpMoveAction',
-  };
 
   ActionCall _show(String callId, Map<String, Object?> call, {List<Object?> options = const []}) {
     _flush();

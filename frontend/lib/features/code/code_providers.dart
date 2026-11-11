@@ -308,6 +308,11 @@ final _briefingTextsProvider = Provider<Map<String, String>>((ref) => {});
 /// Each outside session's notice nonce (see [wrapNotice]), kept with its briefing folder; empty when none.
 final _noticeNoncesProvider = Provider<Map<String, String>>((ref) => {});
 
+/// The host tools an agent with question and plan requests of its own (Cursor) isn't offered: it uses its own, and
+/// ours would hold its MCP call open until the agent gives up on it.
+Set<String> _ownCards(HarnessDriver driver) =>
+    driver.caps.contains(DriverCap.nativeQuestions) ? const {askUserQuestionTool, presentPlanTool} : const {};
+
 /// What the session text tells an outside agent about each host tool it is
 /// offered, in `hostToolSpecs` order.
 List<HostToolInfo> get _hostToolInfos => [
@@ -522,8 +527,13 @@ final class CodeLead extends Notifier<CodeLeadChoice> {
 /// models come from the catalog, and while a driver can't list them).
 /// Not kept once unwatched, so a CLI signed in since lists its models.
 final driverModelsProvider = FutureProvider.autoDispose.family<List<DriverModel>, String>((ref, id) async {
+  final driver = ref.read(driverRegistryProvider).resolve(id);
+  if (driver is OffersModels) {
+    final sub = (driver as OffersModels).modelsChanged.listen((_) => ref.invalidateSelf());
+    ref.onDispose(sub.cancel);
+  }
   try {
-    return await ref.read(driverRegistryProvider).resolve(id)?.models() ?? const [];
+    return await driver?.models() ?? const [];
   } on Object {
     return const [];
   }
@@ -1060,7 +1070,8 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       if (tokens.remove(id) case final old?) await host.revoke(old);
     }
     final forward = _forwardTo(id, projectDir, ready, workflows: hostOnly == null);
-    final token = await host.mint(id, forward, only: hostOnly);
+    // An agent with question and plan requests of its own (Cursor) uses those: ours would block its MCP call.
+    final token = await host.mint(id, forward, only: hostOnly, without: _ownCards(driver));
     try {
       // Inside an environment the agent gets the host's address from there, and the skills as it sees them
       // (none when it can't see the app's data). Where it can't reach this computer it gets neither the token
@@ -1146,9 +1157,10 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
                   for (final t in _hostToolInfos)
                     if (hostOnly.contains(t.name)) t,
                 ]
-              : asFork
-              ? _forkHostToolInfos
-              : _hostToolInfos,
+              : [
+                  for (final t in asFork ? _forkHostToolInfos : _hostToolInfos)
+                    if (!_ownCards(driver).contains(t.name)) t,
+                ],
           // The bundled ones only: they are fixed per app version, so a resumed
           // conversation's prompt stays the same when the user trusts a project
           // workflow. Those show in prompts/list and run_workflow's errors.
@@ -7400,6 +7412,7 @@ final class CodeUsage extends AsyncNotifier<UsageTotals> {
       ownKey: r.onPlan ? 0 : cost,
       plan: r.onPlan ? cost : 0,
       onPlan: r.onPlan,
+      estimated: r.estimated,
       context: false,
     );
     var next = add(_reported);

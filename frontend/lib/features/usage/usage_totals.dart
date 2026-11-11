@@ -14,6 +14,7 @@ final class UsageTotals {
     this.ownKeyMicros = 0,
     this.planMicros = 0,
     this.planCalls = 0,
+    this.estimatedCalls = 0,
     this.lastPromptTokens = 0,
     this.lastCompletionTokens = 0,
   });
@@ -33,6 +34,7 @@ final class UsageTotals {
       ownKeyMicros: n('byok_cost_micros'),
       planMicros: n('plan_cost_micros'),
       planCalls: n('plan_calls'),
+      estimatedCalls: n('estimated_calls'),
       lastPromptTokens: n('last_prompt_tokens'),
       lastCompletionTokens: n('last_completion_tokens'),
     );
@@ -48,6 +50,7 @@ final class UsageTotals {
     if (ownKeyMicros > 0) 'byok_cost_micros': ownKeyMicros,
     if (planMicros > 0) 'plan_cost_micros': planMicros,
     if (planCalls > 0) 'plan_calls': planCalls,
+    if (estimatedCalls > 0) 'estimated_calls': estimatedCalls,
     'last_prompt_tokens': lastPromptTokens,
     'last_completion_tokens': lastCompletionTokens,
   };
@@ -73,6 +76,15 @@ final class UsageTotals {
   /// Calls an outside harness ran on the user's subscription, priced or not
   /// (some CLIs report tokens without a price).
   final int planCalls;
+
+  /// Calls whose tokens we counted ourselves (an agent that reports none): the totals are a guess.
+  final int estimatedCalls;
+
+  /// Whether any of the tokens are our guess (shown with ≈).
+  bool get estimated => estimatedCalls > 0;
+
+  /// [n] tokens as the meter writes them: "≈12.3K" when any are a guess.
+  String tokens(int n) => '${estimated ? '≈' : ''}${formatTokens(n)}';
 
   /// Whether any call ran on the user's subscription.
   bool get onPlan => planCalls > 0 || planMicros > 0;
@@ -102,6 +114,7 @@ final class UsageTotals {
     int ownKey = 0,
     int plan = 0,
     bool onPlan = false,
+    bool estimated = false,
     bool context = true,
   }) => UsageTotals(
     calls: calls + 1,
@@ -113,6 +126,7 @@ final class UsageTotals {
     ownKeyMicros: ownKeyMicros + ownKey,
     planMicros: planMicros + plan,
     planCalls: planCalls + (onPlan ? 1 : 0),
+    estimatedCalls: estimatedCalls + (estimated ? 1 : 0),
     lastPromptTokens: context ? prompt : lastPromptTokens,
     lastCompletionTokens: context ? completion : lastCompletionTokens,
   );
@@ -128,6 +142,7 @@ final class UsageTotals {
     ownKeyMicros: ownKeyMicros,
     planMicros: planMicros,
     planCalls: planCalls,
+    estimatedCalls: estimatedCalls,
     lastPromptTokens: prompt,
     lastCompletionTokens: completion,
   );
@@ -143,6 +158,7 @@ final class UsageTotals {
     ownKeyMicros: ownKeyMicros + other.ownKeyMicros,
     planMicros: planMicros + other.planMicros,
     planCalls: planCalls + other.planCalls,
+    estimatedCalls: estimatedCalls + other.estimatedCalls,
     lastPromptTokens: other.lastPromptTokens > 0 ? other.lastPromptTokens : lastPromptTokens,
     lastCompletionTokens: other.lastPromptTokens > 0 ? other.lastCompletionTokens : lastCompletionTokens,
   );
@@ -159,6 +175,7 @@ final class UsageTotals {
       other.ownKeyMicros == ownKeyMicros &&
       other.planMicros == planMicros &&
       other.planCalls == planCalls &&
+      other.estimatedCalls == estimatedCalls &&
       other.lastPromptTokens == lastPromptTokens &&
       other.lastCompletionTokens == lastCompletionTokens;
 
@@ -173,6 +190,7 @@ final class UsageTotals {
     ownKeyMicros,
     planMicros,
     planCalls,
+    estimatedCalls,
     lastPromptTokens,
     lastCompletionTokens,
   );

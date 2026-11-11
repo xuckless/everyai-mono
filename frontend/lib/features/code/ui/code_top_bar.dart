@@ -173,7 +173,7 @@ class SessionMeter extends ConsumerWidget {
     // An outside CLI on the user's own subscription: no spend to show.
     final onPlan = totals.onPlan && totals.spentMicros == 0;
     final label = [
-      if (!totals.isEmpty) formatTokens(totals.totalTokens),
+      if (!totals.isEmpty) totals.tokens(totals.totalTokens),
       if (onPlan) 'on your plan' else budget == null ? spent : '$spent / ${formatMicros((budget * 1e6).round())}',
     ].join(' · ');
     final color = fill == null || fill < 0.8
@@ -255,7 +255,7 @@ class SessionMeter extends ConsumerWidget {
 /// One harness's share of a session: "12.4K tokens · \$0.42 credits", or
 /// "· on your plan" for an outside CLI on the user's subscription.
 String harnessUsageLine(UsageTotals t) => [
-  '${formatTokens(t.totalTokens)} tokens',
+  '${t.tokens(t.totalTokens)} tokens',
   if (t.chargedMicros > 0) '${formatMicros(t.chargedMicros)} credits',
   if (t.ownKeyMicros > 0) '${formatMicros(t.ownKeyMicros)} on your key',
   if (t.onPlan) 'on your plan',

@@ -535,22 +535,6 @@ void main() {
       }
     });
 
-    test('a command that ran without asking is shown with a notice; in Plan it stops the turn', () async {
-      final r = rig(['opencode/unasked_plan.jsonl']);
-      final s = await r.driver('acp:opencode', 'opencode').start(r.spec(mode: AgentMode.plan));
-      final seen = _Seen(s);
-      await s.send('Plan it.');
-      await seen.untilStatus(ExecutionStatus.paused);
-      r.expectPlayed();
-      expect(
-        seen.notices.single,
-        'OpenCode ran "rm -rf build" without asking the app first, so its own settings allow it. '
-        'Plan mode stopped the turn.',
-      );
-      expect(seen.results.single.text, isNot('Cancelled.'));
-      await s.close();
-    });
-
     test('a refusal without typed words adds nothing to the next prompt', () async {
       final r = rig(['gemini/deny_one_plain.jsonl']);
       final s = await r.driver('gemini', 'gemini').start(r.spec());

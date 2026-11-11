@@ -25,6 +25,20 @@ Map<String, Object?> mergeToolCall(Map<String, Object?> call, Map<String, Object
     if (e.value != null && e.key != 'sessionUpdate') e.key: e.value,
 };
 
+/// [toolCall] (a permission request's) without its text content, which says why the agent asks; diffs and
+/// terminals stay.
+Map<String, Object?> acpWithoutAskText(Map<String, Object?> toolCall) {
+  final content = toolCall['content'];
+  if (content is! List<Object?>) return toolCall;
+  return {
+    ...toolCall,
+    'content': [
+      for (final c in content)
+        if (c is! Map<String, Object?> || c['type'] != 'content') c,
+    ],
+  };
+}
+
 /// What a call is in the app's terms.
 typedef AcpShape = ({String kind, String toolName, Map<String, Object?> args});
 
@@ -466,6 +480,10 @@ AcpShape? _mcp(Map<String, Object?> call, Set<String> servers, List<Object?> opt
   if ((named('proceed_always_server'), named('proceed_always_tool')) case (final server?, final tool?)) {
     return _mcpShape(server, tool, raw ?? _jsonObject(call['title']) ?? const {});
   }
+  // Cursor: `{providerIdentifier, toolName, args}` in the input (title "MCP: tool", then "<server>: <tool>").
+  if ((_str(raw?['providerIdentifier']), _str(raw?['toolName'])) case (final server?, final tool?)) {
+    return _mcpShape(server, tool, _map(raw?['args']) ?? const {});
+  }
   // OpenCode names them `<server>_<tool>`; others `mcp__<server>__<tool>`.
   final name = _str(call['name']) ?? _str(call['title']);
   if (name == null || !RegExp(r'^[\w.\-/]+$').hasMatch(name)) return null;
@@ -554,3 +572,54 @@ String _pascal(String s) =>
 String? _str(Object? v) => v is String && v.isNotEmpty ? v : null;
 
 Map<String, Object?>? _map(Object? v) => v is Map<String, Object?> ? v : null;
+
+/// A rough count of an agent's tokens from the text we see, for agents whose ACP reports no usage (Cursor): about
+/// four characters a token. The input of a turn is everything in the conversation so far (each model call reads it
+/// again; one call a turn is counted, so this is a floor), the output what the agent wrote, thought and called with.
+/// Its own system prompt and tool definitions aren't seen, so the context ring starts low.
+final class AcpUsageEstimate {
+  int _context = 0;
+  int _in = 0;
+  int _out = 0;
+
+  /// The agent sent a usage report of its own this turn: no guess.
+  bool reported = false;
+
+  static const charsPerToken = 4;
+
+  void start(List<Map<String, Object?>> blocks) {
+    reported = false;
+    _in = 0;
+    _out = 0;
+    for (final b in blocks) {
+      if (b['text'] case final String t) _in += t.length;
+      // A picture costs about a thousand tokens on most models.
+      if (b['type'] == 'image') _in += 1000 * charsPerToken;
+    }
+  }
+
+  void produced(int chars) => _out += chars;
+
+  /// A finished call: its input was written by the agent, its output read back.
+  void toolCall(Map<String, Object?> call) {
+    if (call['rawInput'] case final Map<String, Object?> input when input.isNotEmpty) _out += jsonEncode(input).length;
+    _in += acpResultText(call).length;
+  }
+
+  /// The turn's guess, or null when the agent reported its own or nothing went by.
+  UsageReport? report(String id) {
+    if (reported || _in + _out == 0) return null;
+    _context += _in + _out;
+    final r = UsageReport.of(
+      id: id,
+      input: (_context - _out) ~/ charsPerToken,
+      output: _out ~/ charsPerToken,
+      contextTokens: _context ~/ charsPerToken,
+      onPlan: true,
+      estimated: true,
+    );
+    _in = 0;
+    _out = 0;
+    return r;
+  }
+}

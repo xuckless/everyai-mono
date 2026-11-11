@@ -65,7 +65,7 @@ abstract interface class HostServer {
   /// A new token for [sessionId], whose calls go to [tools]. Binds the
   /// server on first use. With [only], the token sees just those of
   /// [hostToolSpecs] (same order); tools/call refuses the rest.
-  Future<HostToken> mint(String sessionId, HostTools tools, {Set<String>? only});
+  Future<HostToken> mint(String sessionId, HostTools tools, {Set<String>? only, Set<String> without = const {}});
 
   /// Marks [token] as used now, so it doesn't expire while the session idles
   /// (call it at each turn). False when it already expired: the agent then
