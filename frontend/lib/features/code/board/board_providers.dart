@@ -324,3 +324,25 @@ final boardDecideProvider = Provider<BoardDecide>(
       ? ref.read(codeSessionProvider(sessionId).notifier).approve(ApprovalScope.once, callIds)
       : ref.read(codeSessionProvider(sessionId).notifier).deny(null, callIds),
 );
+
+/// Sessions with an approve or deny from the Board in flight: one answer at a time each, whichever way it was asked
+/// (a/d, the card's buttons, Approve all).
+final boardDecidingProvider = Provider<Set<String>>((ref) => <String>{});
+
+/// [decide] for [sessionId] unless an answer for it is already in flight; false when it was skipped. A harness that
+/// answers whole batches would otherwise get a second answer landing on a newer batch nobody saw.
+Future<bool> decideOnce(
+  Set<String> deciding,
+  BoardDecide decide,
+  String sessionId, {
+  required bool approve,
+  required List<String> callIds,
+}) async {
+  if (!deciding.add(sessionId)) return false;
+  try {
+    await decide(sessionId, approve: approve, callIds: callIds);
+    return true;
+  } finally {
+    deciding.remove(sessionId);
+  }
+}

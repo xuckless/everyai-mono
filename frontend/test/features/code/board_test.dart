@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:drift/native.dart';
@@ -714,6 +715,114 @@ void main() {
       await done(tester, c);
     },
   );
+
+  testWidgets('clicking the inspected card again gives its composer the keys: typing a reply approves nothing', (
+    tester,
+  ) async {
+    final decisions = <String>[];
+    final c = await board(
+      tester,
+      sessions: [_s('n')],
+      live: {
+        'n': CodeSessionState(connected: true, transcript: waitingOn([('x1', 'ls')])),
+      },
+      statuses: const {},
+      decisions: decisions,
+    );
+    await settle(tester);
+    final reply = find.descendant(
+      of: find.byKey(const ValueKey('board.inspector.composer.n')),
+      matching: find.byType(EditableText),
+    );
+    // From the keyboard the Board keeps the keys; then a click on empty Board space, then on the same card.
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyN);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await settle(tester);
+    expect(tester.widget<EditableText>(reply).focusNode.hasFocus, isFalse);
+    await tester.tap(find.byKey(const ValueKey('board.card.n.0')));
+    await settle(tester);
+    expect(tester.widget<EditableText>(reply).focusNode.hasFocus, isTrue);
+    await tester.tapAt(const Offset(300, 700));
+    await settle(tester);
+    expect(tester.widget<EditableText>(reply).focusNode.hasFocus, isFalse);
+    await tester.tap(find.byKey(const ValueKey('board.card.n.0')));
+    await settle(tester);
+    expect(tester.widget<EditableText>(reply).focusNode.hasFocus, isTrue);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyA);
+    await tester.pump();
+    expect(decisions, isEmpty);
+
+    await done(tester, c);
+  });
+
+  testWidgets('looking at closed Done cards with j/k attaches no controller; Reply does', (tester) async {
+    final c = await board(
+      tester,
+      sessions: [_s('d1', day: 2), _s('d2', day: 3), _s('d3', day: 4)],
+      live: const {},
+      statuses: {'d1': SessionStatus.done, 'd2': SessionStatus.done, 'd3': SessionStatus.done},
+      decisions: [],
+    );
+    await settle(tester);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyJ);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await settle(tester);
+    for (var i = 0; i < 2; i++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyJ);
+      await settle(tester);
+    }
+    expect(find.byKey(const ValueKey('board.inspector.d1')), findsOneWidget);
+    for (final id in ['d1', 'd2', 'd3']) {
+      expect(c.exists(codeSessionProvider(id)), isFalse, reason: id);
+    }
+    await tester.tap(find.byKey(const ValueKey('board.inspector.reply')));
+    await settle(tester);
+    expect(c.exists(codeSessionProvider('d1')), isTrue);
+    expect(find.byKey(const ValueKey('board.inspector.composer.d1')), findsOneWidget);
+
+    await done(tester, c);
+  });
+
+  testWidgets('one answer per session at a time: a second Approve while one is in flight is dropped', (tester) async {
+    final gate = Completer<void>();
+    final sent = <String>[];
+    final c = await board(
+      tester,
+      sessions: [_s('n')],
+      live: {
+        'n': CodeSessionState(connected: true, transcript: waitingOn([('x1', 'ls')])),
+      },
+      statuses: const {},
+      decisions: [],
+    );
+    final deciding = c.read(boardDecidingProvider);
+    final first = decideOnce(
+      deciding,
+      (id, {required approve, required callIds}) async {
+        sent.add(id);
+        await gate.future;
+      },
+      'n',
+      approve: true,
+      callIds: ['x1'],
+    );
+    expect(
+      await decideOnce(
+        deciding,
+        (id, {required approve, required callIds}) async => sent.add('again'),
+        'n',
+        approve: true,
+        callIds: ['x1'],
+      ),
+      isFalse,
+    );
+    gate.complete();
+    expect(await first, isTrue);
+    expect(sent, ['n']);
+    expect(deciding, isEmpty);
+
+    await done(tester, c);
+  });
 
   testWidgets('a sweep clears Done cards with Undo (as they were); a drifting click opens one; held x clears once', (
     tester,

@@ -80,6 +80,7 @@ class CodeComposer extends ConsumerStatefulWidget {
     this.initialDraft,
     this.onDraftChanged,
     this.takeFocus = false,
+    this.focusRequest = 0,
   });
 
   final bool busy;
@@ -140,6 +141,9 @@ class CodeComposer extends ConsumerStatefulWidget {
   /// Takes the keys once it shows, even from another focused widget in the same scope (which [autofocus] leaves
   /// alone): the Board's inspector opened by a click.
   final bool takeFocus;
+
+  /// A new number asks again for the keys while [takeFocus] stays set (the same card clicked once more).
+  final int focusRequest;
 
   /// What `/` commands can drive in an open session; null: only the mode and Stop.
   final CodeSlashHost? slashHost;
@@ -237,6 +241,11 @@ class _CodeComposerState extends ConsumerState<CodeComposer> {
     if (widget.prefill case final p? when p.seq != old.prefill?.seq) _setDraft(p.text);
     // The harness listed its commands again while the menu may be open.
     if (!identical(old.commands, widget.commands)) _slash.update(_controller.value, _commands);
+    if (widget.takeFocus && (!old.takeFocus || widget.focusRequest != old.focusRequest)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _focus.requestFocus();
+      });
+    }
   }
 
   /// Puts a link's prompt in the box, after anything already typed there.

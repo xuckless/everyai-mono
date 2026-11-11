@@ -1,5 +1,7 @@
 import 'package:every_ai/features/code/board/board_triage.dart';
 import 'package:every_ai/features/code/drivers/driver_events.dart';
+import 'package:every_ai/core/platform/platform_kind.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -31,8 +33,15 @@ void main() {
     expect(boardKeyRepeats(BoardKey.previous), isTrue);
     expect([BoardKey.clear, BoardKey.approve, BoardKey.deny, BoardKey.approveAll].any(boardKeyRepeats), isFalse);
     // The keys overlay writes the host's modifier.
-    expect(boardKeyHelp(apple: true).map((e) => e.$1), contains('⌘ Enter'));
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    expect(boardKeyHelp(apple: true).map((e) => e.$1), containsAll([Host.enterKeys(command: true), '⌘Z']));
+    expect(Host.enterKeys(command: true), startsWith('⌘'));
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
     expect(boardKeyHelp(apple: false).map((e) => e.$1), containsAll(['Ctrl+Enter', 'Ctrl+Z']));
+    debugDefaultTargetPlatformOverride = null;
+    // Option+A types å: Alt held makes it text, not a Board key.
+    expect(boardKeyOf(LogicalKeyboardKey.keyA, alt: true), isNull);
+    expect(boardKeyOf(LogicalKeyboardKey.keyJ, alt: true), isNull);
   });
 
   test('the selection walks the cards in order, stops at the ends, and starts at an end', () {
