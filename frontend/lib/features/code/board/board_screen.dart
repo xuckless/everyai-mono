@@ -82,9 +82,12 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
   /// Hides the Undo bar of the latest clear.
   Timer? _undoTimer;
 
-  /// Rebuilds when the next snoozed card's limit resets, so it comes back with Resume.
+  /// Rebuilds at the next moment something changes by itself (a snooze ends, a limit or a window resets).
   Timer? _wakeTimer;
   DateTime? _wakeAt;
+
+  /// Timers stall while the computer sleeps: back in front, the Board looks again.
+  late final AppLifecycleListener _lifecycle;
 
   /// Columns whose Snoozed fold is open.
   final _foldsOpen = <BoardColumn>{};
@@ -118,12 +121,21 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
   void initState() {
     super.initState();
     _filter.addListener(() => setState(() {}));
+    _lifecycle = AppLifecycleListener(
+      onResume: () {
+        if (!mounted) return;
+        _wakeAt = null;
+        _wakeTimer?.cancel();
+        setState(() {});
+      },
+    );
   }
 
   @override
   void dispose() {
     _undoTimer?.cancel();
     _wakeTimer?.cancel();
+    _lifecycle.dispose();
     _focus.dispose();
     _filterFocus.dispose();
     _filter.dispose();
@@ -532,16 +544,24 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     // resets ([boardLimitState]). A snooze whose session runs again, or whose reset passed, ends.
     final now = DateTime.now();
     final snoozes = ref.watch(boardSnoozedProvider);
+    // Rebuilds when a session's controller opens or closes (from the inspector, a card's question), which
+    // `ref.exists` alone doesn't; `ref.exists` stays the truth (a closed one isn't opened again by watching it).
+    ref.watch(openCodeSessionsProvider);
+    bool isOpen(String id) => ref.exists(codeSessionProvider(id));
     final limitOf = <String, BoardLimitState>{};
     for (final s in all) {
-      if (!ref.exists(codeSessionProvider(s.id))) continue;
+      final until = switch (snoozes[s.id]) {
+        final ms? => DateTime.fromMillisecondsSinceEpoch(ms),
+        null => null,
+      };
+      if (!isOpen(s.id)) {
+        // A closed session (after a restart) has no transcript here: its snooze alone folds it until the reset,
+        // then ends; the card shows its limit again once the session is opened.
+        if (until != null) limitOf[s.id] = now.isBefore(until) ? Snoozed(until) : const NotLimited();
+        continue;
+      }
       final limit = ref.watch(codeSessionProvider(s.id).select((st) => stoppedOnLimit(st.transcript)));
-      final until = snoozes[s.id];
-      limitOf[s.id] = boardLimitState(
-        limit: limit,
-        snoozedUntil: until == null ? null : DateTime.fromMillisecondsSinceEpoch(until),
-        now: now,
-      );
+      limitOf[s.id] = boardLimitState(limit: limit, snoozedUntil: until, now: now);
     }
     final snoozed = {
       for (final MapEntry(:key, :value) in limitOf.entries)
@@ -551,21 +571,28 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
       for (final id in snoozes.keys)
         if (limitOf[id] case NotLimited() || ReadyToResume()) id,
     ];
-    if (wake.isNotEmpty) {
+    // Snoozes of deleted sessions go too.
+    final gone = [
+      for (final id in snoozes.keys)
+        if (!ids.contains(id)) id,
+    ];
+    if (wake.isNotEmpty || gone.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         for (final id in wake) {
           ref.read(boardSnoozedProvider.notifier).wake(id);
         }
+        if (gone.isNotEmpty) ref.read(boardSnoozedProvider.notifier).keepOnly(ids);
       });
     }
-    _scheduleWake(snoozed.values.fold<DateTime?>(null, (a, b) => a == null || b.isBefore(a) ? b : a));
 
     final harnesses = <String>{for (final s in all) s.harness}.toList();
     final harness = harnesses.contains(_harness) ? _harness : null;
     final registry = ref.read(driverRegistryProvider);
     String labelOf(String h) => h == everyaiHarnessName ? 'EveryAI' : registry.resolve(h)?.info.label ?? h;
     final projectNames = {for (final p in ref.watch(codeProjectsProvider)) p.id: p.name};
+    // Where each project's sessions run: another environment (WSL, a container) may be signed in to another account.
+    final environmentOf = {for (final p in ref.watch(codeProjectsProvider)) p.id: p.environment};
     final shown = [
       for (final s in all)
         if ((harness == null || s.harness == harness) &&
@@ -598,15 +625,21 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     // Only sessions open here have readings; none are opened for it.
     final plans = <SessionPlan>[
       for (final s in all)
-        // Watched for every session open here, so a first report after the Board was built shows too.
-        if (ref.exists(codeSessionProvider(s.id)))
+        // Watched for every open session ([openCodeSessionsProvider]), so a first report from one opened later shows.
+        if (isOpen(s.id))
           if (ref.watch(codePlanLimitsProvider(s.id)) case final plan?)
-            (sessionId: s.id, harness: s.harness, harnessLabel: labelOf(s.harness), plan: plan),
+            (
+              sessionId: s.id,
+              harness: s.harness,
+              harnessLabel: labelOf(s.harness),
+              account: environmentOf[s.projectId] ?? '',
+              plan: plan,
+            ),
     ];
     final budgets = ref.watch(codeSettingsProvider.select((st) => st.budgets));
     final cap = busiestCap([
       for (final s in all)
-        if (budgets[s.id] != null && ref.exists(codeSessionProvider(s.id)) && ref.exists(codeUsageProvider(s.id)))
+        if (budgets[s.id] != null && isOpen(s.id) && ref.exists(codeUsageProvider(s.id)))
           (
             sessionId: s.id,
             title: s.title,
@@ -615,6 +648,19 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
           ),
     ]);
     final limits = [...poolPlanLimits(plans, now: now), ?cap];
+    // The Board looks again at the next moment something changes by itself: a snooze ends, a limited card's reset
+    // passes (Limited → Resume), or a window in the strip resets.
+    _scheduleWake(
+      earliest([
+        for (final l in limitOf.values)
+          switch (l) {
+            Snoozed(:final until) => until,
+            Limited(:final resetsAt) => resetsAt,
+            _ => null,
+          },
+        for (final l in limits) l.resetsAt,
+      ], after: now),
+    );
     GlobalKey keyOf(String id) => _keys.putIfAbsent(id, () => GlobalKey(debugLabel: 'board.$id'));
 
     // The keyboard's order: column by column, top to bottom. A selected card that left moves to its neighbour, and
@@ -1799,7 +1845,9 @@ class _LimitLine extends StatelessWidget {
                   ? null
                   : () => state._run(_Act.resuming, () async {
                       ref.read(boardSnoozedProvider.notifier).wake(info.id);
-                      await ref.read(codeSessionProvider(info.id).notifier).retry();
+                      // Not retry(): a Codex, OpenCode or ACP lead's own resume doesn't carry on after a limit.
+                      final why = await ref.read(boardResumeProvider)(info.id);
+                      if (why != null && context.mounted) showAdaptiveToast(context, why);
                     }),
             ),
         ],

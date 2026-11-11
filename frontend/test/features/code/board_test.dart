@@ -539,6 +539,10 @@ void main() {
           (id, {required approve, required callIds}) async =>
               decisions.add('$id ${approve ? 'approve' : 'deny'} ${callIds.join(',')}'),
         ),
+        boardResumeProvider.overrideWithValue((id) async {
+          decisions.add('$id resume');
+          return null;
+        }),
       ],
     );
     for (final id in live.keys) {
@@ -885,7 +889,7 @@ void main() {
     expect(find.text('80% used'), findsOneWidget);
     expect(find.textContaining('This week', findRichText: true), findsOneWidget);
     // A click lists the sessions it covers; picking one opens it in the inspector.
-    await tester.tap(find.byKey(const ValueKey('board.limit.claude-code|seven_day')));
+    await tester.tap(find.byKey(const ValueKey('board.limit.claude-code||seven_day')));
     await settle(tester);
     final row = find.descendant(of: find.byType(PopoverRow), matching: find.text('Session b'));
     expect(row, findsOneWidget);
@@ -901,26 +905,42 @@ void main() {
   ) async {
     Transcript limited(DateTime resetsAt) =>
         (TranscriptBuilder()..add(usageLimitEvent('lim', 'You hit your limit', resetsAt: resetsAt))).snapshot;
+    final decisions = <String>[];
     final c = await board(
       tester,
-      sessions: [_s('a'), _s('b')],
+      sessions: [_s('a'), _s('b'), _s('soon')],
       live: {
         'a': CodeSessionState(connected: true, transcript: limited(DateTime.now().add(const Duration(hours: 2)))),
         'b': CodeSessionState(
           connected: true,
           transcript: limited(DateTime.now().subtract(const Duration(minutes: 1))),
         ),
+        // Resets in a few seconds: the card turns to Resume by itself, with nothing else changing.
+        'soon': CodeSessionState(connected: true, transcript: limited(DateTime.now().add(const Duration(seconds: 3)))),
       },
-      statuses: const {'a': SessionStatus.failed, 'b': SessionStatus.failed},
-      decisions: [],
+      statuses: const {'a': SessionStatus.failed, 'b': SessionStatus.failed, 'soon': SessionStatus.failed},
+      decisions: decisions,
     );
     await settle(tester);
     expect(find.textContaining('Limit reached · Resets in 1h'), findsOneWidget);
     expect(find.byKey(const ValueKey('board.resume.a')), findsNothing);
+    expect(find.byKey(const ValueKey('board.resume.soon')), findsNothing);
     // b has reset: Resume is offered (never run by itself).
-    expect(find.text('Limit reset'), findsOneWidget);
     expect(find.byKey(const ValueKey('board.resume.b')), findsOneWidget);
     expect(find.byKey(const ValueKey('board.snooze.b')), findsNothing);
+    expect(decisions, isEmpty);
+
+    // Time passes the reset of "soon": it offers Resume without anything else rebuilding the Board.
+    await tester.runAsync(() => Future<void>.delayed(const Duration(seconds: 4)));
+    await tester.pump(const Duration(seconds: 5));
+    await settle(tester);
+    expect(find.byKey(const ValueKey('board.resume.soon')), findsOneWidget);
+    expect(decisions, isEmpty);
+
+    // Resume carries the session on (every harness gets a carry-on turn).
+    await tester.tap(find.byKey(const ValueKey('board.resume.b')));
+    await settle(tester);
+    expect(decisions, ['b resume']);
 
     await tester.tap(find.byKey(const ValueKey('board.snooze.a')));
     await settle(tester);
@@ -934,6 +954,34 @@ void main() {
     await settle(tester);
     expect(find.byKey(const ValueKey('board.card.a.0')), findsOneWidget);
     expect(find.text('Snoozed'), findsNothing);
+    await done(tester, c);
+  });
+
+  testWidgets("a closed session's snooze folds it until the reset, then ends; deleted sessions' snoozes go", (
+    tester,
+  ) async {
+    final c = await board(
+      tester,
+      sessions: [_s('a'), _s('closed')],
+      live: {'a': const CodeSessionState(connected: true)},
+      statuses: const {'a': SessionStatus.done, 'closed': SessionStatus.done},
+      decisions: [],
+    );
+    await settle(tester);
+    expect(find.byKey(const ValueKey('board.card.closed.0')), findsOneWidget);
+    c.read(boardSnoozedProvider.notifier)
+      ..snooze('closed', DateTime.now().add(const Duration(seconds: 3)))
+      ..snooze('deleted', DateTime.now().add(const Duration(hours: 1)));
+    await settle(tester);
+    // Folded by its stored snooze alone (no transcript here), and the deleted session's snooze is gone.
+    expect(find.byKey(const ValueKey('board.card.closed.0')), findsNothing);
+    expect(c.read(boardSnoozedProvider).keys, ['closed']);
+
+    await tester.runAsync(() => Future<void>.delayed(const Duration(seconds: 4)));
+    await tester.pump(const Duration(seconds: 5));
+    await settle(tester);
+    expect(find.byKey(const ValueKey('board.card.closed.0')), findsOneWidget);
+    expect(c.read(boardSnoozedProvider), isEmpty);
     await done(tester, c);
   });
 }

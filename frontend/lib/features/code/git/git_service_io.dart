@@ -399,39 +399,86 @@ Future<BranchPr?> prFor(SessionWorktree w) async {
 
 Future<PrStatus?> prStatus(String dir, String target) async {
   if (target.isEmpty || target.startsWith('-')) return null;
+  if (!Directory(dir).existsSync()) throw GitError("The session's folder is gone: $dir");
+  final ProcessResult res;
   try {
-    final res = await Process.run(
+    res = await Process.run(
       'gh',
       ['pr', 'view', target, '--json', prStatusFields],
       workingDirectory: dir,
       environment: await guardedEnv(dir),
     );
-    return res.exitCode == 0 ? parsePrStatus('${res.stdout}') : null;
+  } on ProcessException catch (e) {
+    throw GitError("Couldn't run gh: ${e.message}");
+  }
+  if (res.exitCode == 0) {
+    return parsePrStatus('${res.stdout}') ?? (throw const GitError("gh's answer couldn't be read."));
+  }
+  // No pull request is an answer; a network, rate-limit or sign-in failure is not.
+  final err = '${res.stderr}';
+  if (ghSaysNoPr(err)) return null;
+  throw GitError("Couldn't ask GitHub: ${err.trim()}");
+}
+
+Future<PrMergeMethod> prMergeMethod(String dir, PrStatus pr) async {
+  try {
+    final repo = await Process.run(
+      'gh',
+      [
+        'repo',
+        'view',
+        if (pr.repo.isNotEmpty) pr.repo,
+        '--json',
+        'mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed',
+      ],
+      workingDirectory: Directory(dir).existsSync() ? dir : null,
+      environment: await guardedEnv(dir),
+    );
+    return prMergeMethodOf(repo.exitCode == 0 ? '${repo.stdout}' : '');
   } on ProcessException {
-    return null;
+    return PrMergeMethod.squash;
   }
 }
 
-Future<void> mergePr(String dir, int number) async {
+Future<String?> prMergeBlocker(String dir, PrStatus pr) async {
+  if (!Directory(dir).existsSync()) return "The session's folder is gone, so what it holds can't be checked.";
+  try {
+    if (await _out(dir, ['status', '--porcelain']) case final dirty when dirty.isNotEmpty) {
+      return "The session has changes that aren't committed and pushed. Commit and push them first.";
+    }
+    final head = await _out(dir, ['rev-parse', 'HEAD']);
+    if (pr.head.isNotEmpty && head != pr.head) {
+      return "The session isn't at the pull request's latest commit (it has commits that aren't pushed, or GitHub "
+          'has newer ones). Push or pull first.';
+    }
+  } on Object catch (e) {
+    return "Couldn't check the session's folder: $e";
+  }
+  return null;
+}
+
+Future<void> mergePr(String dir, PrStatus pr, PrMergeMethod method) async {
+  if (!Directory(dir).existsSync()) throw GitError("The session's folder is gone: $dir");
   final ProcessResult res;
   try {
-    final env = await guardedEnv(dir);
-    final repo = await Process.run(
-      'gh',
-      ['repo', 'view', '--json', 'mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed'],
-      workingDirectory: dir,
-      environment: env,
-    );
     res = await Process.run(
       'gh',
-      ['pr', 'merge', '$number', prMergeFlag(repo.exitCode == 0 ? '${repo.stdout}' : '')],
+      [
+        'pr',
+        'merge',
+        '${pr.number}',
+        method.flag,
+        // Only the commit the user saw: GitHub refuses when the branch moved since.
+        if (pr.head.isNotEmpty) ...['--match-head-commit', pr.head],
+        if (pr.repo.isNotEmpty) ...['--repo', pr.repo],
+      ],
       workingDirectory: dir,
-      environment: env,
+      environment: await guardedEnv(dir),
     );
   } on ProcessException {
     throw const GitError('Merging needs the GitHub CLI: install gh and run `gh auth login`.');
   }
-  if (res.exitCode != 0) throw GitError("Couldn't merge #$number: ${'${res.stderr}'.trim()}");
+  if (res.exitCode != 0) throw GitError("Couldn't merge #${pr.number}: ${'${res.stderr}'.trim()}");
 }
 
 Future<bool> ghReady(String dir) async {

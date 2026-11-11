@@ -2182,6 +2182,25 @@ final class LeadSwitchOutcome {
   final String message;
 }
 
+/// The ids of sessions whose controller ([codeSessionProvider]) is open, so a view can react when one opens or closes
+/// (`ref.exists` doesn't). Updated just after a controller builds and after it is disposed; check `ref.exists` too
+/// before watching one, so a closed one isn't opened again in between.
+final openCodeSessionsProvider = NotifierProvider<OpenCodeSessions, Set<String>>(OpenCodeSessions.new);
+
+final class OpenCodeSessions extends Notifier<Set<String>> {
+  @override
+  Set<String> build() => const {};
+
+  // Not once the container is going away (its controllers are disposed with it).
+  void _add(String id) {
+    if (ref.mounted && !state.contains(id)) state = {...state, id};
+  }
+
+  void _remove(String id) {
+    if (ref.mounted && state.contains(id)) state = {...state}..remove(id);
+  }
+}
+
 /// One session's live state; talks to the harness.
 final codeSessionProvider = NotifierProvider.family<CodeSessionController, CodeSessionState, String>(
   CodeSessionController.new,
@@ -2502,7 +2521,11 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   @override
   CodeSessionState build() {
     final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
+    // Not during build or dispose: a provider can't change another then.
+    final open = ref.read(openCodeSessionsProvider.notifier);
+    scheduleMicrotask(() => open._add(sessionId));
     ref.onDispose(() {
+      scheduleMicrotask(() => open._remove(sessionId));
       _sub?.cancel();
       _modesSub?.cancel();
       unawaited(_mirror.close());
@@ -5180,6 +5203,19 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     await _session?.resume();
   }
 
+  /// Carries the session on after its plan's usage limit reset (the Board's Resume). Every harness gets an explicit
+  /// carry-on turn: a driver's own `resume()` only continues a run it paused itself (OpenCode's does nothing, Codex's
+  /// only restarts its server, ACP's only a parked run), so [retry] would leave a limited Codex, OpenCode or ACP lead
+  /// idle. Null when the turn went out (or queued), else why nothing started.
+  /// Prompt reason: the same words as Claude Code's own carry-on (`continueMessage`), so every lead picks up the task
+  /// it was cut off in rather than reading it as a new request.
+  Future<String?> resumeAfterLimit() async {
+    if (state.transcript.running) return 'The agent is already working.';
+    if (!_withinBudget()) return budgetReached ?? "The session's spending cap is reached.";
+    if (_session == null && state.failure != null) return "The session isn't connected: ${state.failure}";
+    return await send(resumeAfterLimitMessage) ? null : "Couldn't send to the agent.";
+  }
+
   /// Sends a model call being retried now instead of after its wait.
   Future<void> retryNow() async {
     if (_session case final RetriesModelCalls s) s.retryNow();
@@ -7317,6 +7353,9 @@ bool editsFiles(String toolName) =>
     const {'file_editor', 'terminal', 'str_replace_editor', 'apply_patch'}.contains(toolName);
 
 /// Prefs key prefix of what outside drivers reported per session (see [CodeUsage]).
+/// The turn [CodeSessionController.resumeAfterLimit] sends: Claude Code's own carry-on words.
+const resumeAfterLimitMessage = 'Carry on from where you stopped.';
+
 const codeUsageReportsPrefix = 'code.usage_reports.';
 
 /// What [CodeSessionController.saveFile] did.

@@ -315,6 +315,15 @@ final class BoardInspectorWidth extends Notifier<double> {
 }
 
 /// Approves or denies calls [callIds] of session [sessionId] from the Board, on the session's own controller.
+/// How the Board carries a session on after its usage limit reset (a card's Resume): why nothing started, or null.
+typedef BoardResume = Future<String?> Function(String sessionId);
+
+/// Every harness's lead gets a carry-on turn ([CodeSessionController.resumeAfterLimit]); tests listen in here.
+final boardResumeProvider = Provider<BoardResume>(
+  (ref) =>
+      (sessionId) => ref.read(codeSessionProvider(sessionId).notifier).resumeAfterLimit(),
+);
+
 typedef BoardDecide = Future<void> Function(String sessionId, {required bool approve, required List<String> callIds});
 
 /// How the Board answers approvals (cards, keys, Approve all); tests listen in here.

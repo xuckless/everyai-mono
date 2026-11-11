@@ -112,3 +112,14 @@ final class BoardSnoozed extends Notifier<Map<String, int>> {
     null => null,
   };
 }
+
+/// The earliest of [times] after [after] (passed ones are due now: the earliest of those is [after] itself), or null.
+DateTime? earliest(Iterable<DateTime?> times, {required DateTime after}) {
+  DateTime? first;
+  for (final t in times) {
+    if (t == null) continue;
+    final at = t.isBefore(after) ? after : t;
+    if (first == null || at.isBefore(first)) first = at;
+  }
+  return first;
+}

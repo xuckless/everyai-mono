@@ -332,6 +332,8 @@ final class PrStatus {
     this.checks = PrChecks.none,
     this.review = PrReview.none,
     this.mergeable = false,
+    this.mergeState = '',
+    this.head = '',
     this.additions = 0,
     this.deletions = 0,
   });
@@ -342,16 +344,44 @@ final class PrStatus {
   final PrChecks checks;
   final PrReview review;
 
-  /// GitHub says it merges cleanly (`mergeable: MERGEABLE`).
+  /// GitHub says it merges without conflicts (`mergeable: MERGEABLE`).
   final bool mergeable;
+
+  /// GitHub's `mergeStateStatus` (CLEAN, BLOCKED, BEHIND, UNSTABLE, HAS_HOOKS, DIRTY, ...); '' when gh didn't say.
+  final String mergeState;
+
+  /// The commit the pull request's branch is at on GitHub (`headRefOid`); a merge is tied to it.
+  final String head;
   final int additions;
   final int deletions;
 
   bool get open => state == PrState.open || state == PrState.draft;
 
-  /// Open, not a draft, merges cleanly, no failing checks and no changes asked for.
+  /// The `owner/repo` the pull request is in, from its URL; '' for a URL that isn't GitHub's shape.
+  String get repo => RegExp(r'^https?://[^/]+/([^/]+/[^/]+)/pull/\d+').firstMatch(url)?.group(1) ?? '';
+
+  /// GitHub would merge it now: open, not a draft, no conflicts, checks passed (or none), no review still needed or
+  /// changes asked for, and, when gh reports it, a merge state of CLEAN or HAS_HOOKS (not blocked by branch
+  /// protection, behind its base, or unstable).
   bool get readyToMerge =>
-      state == PrState.open && mergeable && checks != PrChecks.failing && review != PrReview.changesRequested;
+      state == PrState.open &&
+      mergeable &&
+      (checks == PrChecks.passing || checks == PrChecks.none) &&
+      (review == PrReview.none || review == PrReview.approved) &&
+      (mergeState.isEmpty || mergeState == 'CLEAN' || mergeState == 'HAS_HOOKS');
+
+  PrStatus withState(PrState next) => PrStatus(
+    number: number,
+    url: url,
+    state: next,
+    checks: checks,
+    review: review,
+    mergeable: mergeable,
+    mergeState: mergeState,
+    head: head,
+    additions: additions,
+    deletions: deletions,
+  );
 
   @override
   bool operator ==(Object other) =>
@@ -362,15 +392,19 @@ final class PrStatus {
       other.checks == checks &&
       other.review == review &&
       other.mergeable == mergeable &&
+      other.mergeState == mergeState &&
+      other.head == head &&
       other.additions == additions &&
       other.deletions == deletions;
 
   @override
-  int get hashCode => Object.hash(number, url, state, checks, review, mergeable, additions, deletions);
+  int get hashCode =>
+      Object.hash(number, url, state, checks, review, mergeable, mergeState, head, additions, deletions);
 }
 
 /// The fields [parsePrStatus] reads.
-const prStatusFields = 'number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup,additions,deletions';
+const prStatusFields =
+    'number,url,state,isDraft,mergeable,mergeStateStatus,headRefOid,reviewDecision,statusCheckRollup,additions,deletions';
 
 /// [PrStatus] from `gh pr view --json` [prStatusFields] output; null for anything else.
 PrStatus? parsePrStatus(String stdout) {
@@ -397,6 +431,8 @@ PrStatus? parsePrStatus(String stdout) {
         _ => PrReview.none,
       },
       mergeable: json['mergeable'] == 'MERGEABLE',
+      mergeState: json['mergeStateStatus'] is String ? json['mergeStateStatus']! as String : '',
+      head: json['headRefOid'] is String ? json['headRefOid']! as String : '',
       additions: (json['additions'] as num?)?.toInt() ?? 0,
       deletions: (json['deletions'] as num?)?.toInt() ?? 0,
     );
@@ -429,20 +465,40 @@ PrChecks prChecksOf(Object? rollup) {
   return pending ? PrChecks.pending : PrChecks.passing;
 }
 
-/// How `gh pr merge` should merge, from what the repository allows (`gh repo view --json
-/// mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed`): a merge commit when allowed, else squash, else rebase;
-/// `--merge` when the output can't be read.
-String prMergeFlag(String repoJson) {
+/// How a pull request merges on GitHub.
+enum PrMergeMethod {
+  squash('--squash', 'Squash and merge'),
+  merge('--merge', 'Merge commit'),
+  rebase('--rebase', 'Rebase and merge');
+
+  const PrMergeMethod(this.flag, this.label);
+  final String flag;
+  final String label;
+}
+
+/// How the Board merges, from what the pull request's repository allows (`gh repo view`
+/// with `--json mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed`): the one allowed, or with several squash, then a merge
+/// commit, then rebase (default pending the owner's confirmation). Squash when the output can't be read.
+PrMergeMethod prMergeMethodOf(String repoJson) {
   try {
     if (jsonDecode(repoJson) case final Map<String, Object?> r) {
-      if (r['mergeCommitAllowed'] == true) return '--merge';
-      if (r['squashMergeAllowed'] == true) return '--squash';
-      if (r['rebaseMergeAllowed'] == true) return '--rebase';
+      if (r['squashMergeAllowed'] == true) return PrMergeMethod.squash;
+      if (r['mergeCommitAllowed'] == true) return PrMergeMethod.merge;
+      if (r['rebaseMergeAllowed'] == true) return PrMergeMethod.rebase;
     }
   } on FormatException {
     // Below.
   }
-  return '--merge';
+  return PrMergeMethod.squash;
+}
+
+/// Whether gh's error for `gh pr view <target>` says there is no such pull request (rather than a failure to ask).
+bool ghSaysNoPr(String stderr) {
+  final e = stderr.toLowerCase();
+  return e.contains('no pull requests found') ||
+      e.contains('no open pull requests') ||
+      e.contains('could not resolve to a pullrequest') ||
+      e.contains('could not resolve to a pull request');
 }
 
 /// The pull request in `gh pr view --json number,url,state,headRefOid` output, whatever its state; null for output

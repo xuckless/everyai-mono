@@ -8,6 +8,7 @@ import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/features/code/board/board_limits.dart';
 import 'package:every_ai/features/code/board/board_pr.dart';
 import 'package:every_ai/features/code/board/board_snooze.dart';
+import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
 import 'package:every_ai/features/code/domain/transcript.dart';
@@ -49,6 +50,7 @@ void main() {
           sessionId: 'a',
           harness: 'claude-code',
           harnessLabel: 'Claude Code',
+          account: 'host',
           plan: plan([
             PlanWindow(name: 'seven_day', used: 0.40, resetsAt: now.add(const Duration(days: 2)), minutes: 10080),
             // Reset already: says nothing about now.
@@ -59,6 +61,7 @@ void main() {
           sessionId: 'b',
           harness: 'claude-code',
           harnessLabel: 'Claude Code',
+          account: 'host',
           plan: plan([
             // The same window, read later: more used.
             PlanWindow(name: 'seven_day', used: 0.76, resetsAt: now.add(const Duration(days: 2)), minutes: 10080),
@@ -68,6 +71,7 @@ void main() {
           sessionId: 'c',
           harness: 'codex',
           harnessLabel: 'Codex',
+          account: 'host',
           plan: plan([PlanWindow(name: 'codex/primary', used: 0.9, resetsAt: now.add(const Duration(hours: 2)))]),
         ),
       ], now: now);
@@ -82,18 +86,43 @@ void main() {
       expect(pooled.last.scope, 'This week');
     });
 
+    test('a session in another environment may be another account: its own bar', () {
+      final pooled = poolPlanLimits([
+        for (final (id, account, used) in [('a', 'host', 0.2), ('b', 'wsl:Ubuntu', 0.7)])
+          (
+            sessionId: id,
+            harness: 'claude-code',
+            harnessLabel: 'Claude Code',
+            account: account,
+            plan: plan([PlanWindow(name: 'seven_day', used: used, resetsAt: now.add(const Duration(days: 1)))]),
+          ),
+      ], now: now);
+      expect([for (final l in pooled) (l.label, l.percent)], [('Claude Code · wsl:Ubuntu', 70), ('Claude Code', 20)]);
+    });
+
+    test('the Board looks again at the earliest change to come; one already due is now', () {
+      expect(
+        earliest([null, now.add(const Duration(hours: 2)), now.add(const Duration(minutes: 5))], after: now),
+        now.add(const Duration(minutes: 5)),
+      );
+      expect(earliest([now.subtract(const Duration(minutes: 1))], after: now), now);
+      expect(earliest(const [null], after: now), isNull);
+    });
+
     test('a new window beats a fuller old one; the busiest cap is the one shown', () {
       final pooled = poolPlanLimits([
         (
           sessionId: 'a',
           harness: 'codex',
           harnessLabel: 'Codex',
+          account: 'host',
           plan: plan([PlanWindow(name: 'w', used: 0.95, resetsAt: now.add(const Duration(minutes: 5)))]),
         ),
         (
           sessionId: 'b',
           harness: 'codex',
           harnessLabel: 'Codex',
+          account: 'host',
           plan: plan([PlanWindow(name: 'w', used: 0.05, resetsAt: now.add(const Duration(hours: 5)))]),
         ),
       ], now: now);
@@ -173,6 +202,65 @@ void main() {
       expect(parsePrStatus('{"number":1}'), isNull);
     });
 
+    test('ready to merge only when GitHub would merge it now', () {
+      PrStatus pr({PrChecks checks = PrChecks.passing, PrReview review = PrReview.approved, String state = ''}) =>
+          PrStatus(
+            number: 1,
+            url: 'u',
+            state: PrState.open,
+            mergeable: true,
+            checks: checks,
+            review: review,
+            mergeState: state,
+          );
+      expect(pr().readyToMerge, isTrue);
+      expect(pr(checks: PrChecks.none, review: PrReview.none, state: 'CLEAN').readyToMerge, isTrue);
+      expect(pr(state: 'HAS_HOOKS').readyToMerge, isTrue);
+      expect(pr(checks: PrChecks.pending).readyToMerge, isFalse);
+      expect(pr(review: PrReview.required).readyToMerge, isFalse);
+      for (final blocked in ['BLOCKED', 'BEHIND', 'UNSTABLE', 'DIRTY']) {
+        expect(pr(state: blocked).readyToMerge, isFalse, reason: blocked);
+      }
+      final parsed = parsePrStatus(
+        '{"number":2,"url":"u","state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","headRefOid":"abc"}',
+      )!;
+      expect((parsed.mergeState, parsed.head, parsed.readyToMerge), ('BLOCKED', 'abc', false));
+      expect(ghSaysNoPr('no pull requests found for branch "x"'), isTrue);
+      expect(ghSaysNoPr('HTTP 502: Bad Gateway'), isFalse);
+      expect(ghSaysNoPr('API rate limit exceeded'), isFalse);
+    });
+
+    test('every card shares one sign-in check and at most two gh calls at once', () async {
+      var readies = 0;
+      var running = 0;
+      var most = 0;
+      final hold = Completer<void>();
+      final gate = BoardGhGate((
+        ready: (_) async {
+          readies++;
+          return true;
+        },
+        status: (_, _) async {
+          running++;
+          most = running > most ? running : most;
+          await hold.future;
+          running--;
+          return null;
+        },
+        method: (_, _) async => PrMergeMethod.squash,
+        blocker: (_, _) async => null,
+        merge: (_, _, _) async {},
+      ));
+      await Future.wait([for (var i = 0; i < 4; i++) gate.ready('d')]);
+      expect(readies, 1);
+      final asks = [for (var i = 0; i < 5; i++) gate.status('d', 't$i')];
+      await pumpEventQueue();
+      expect(most, 2);
+      hold.complete();
+      await Future.wait(asks);
+      expect(most, 2);
+    });
+
     test('checks: one failure fails them, anything running keeps them pending', () {
       expect(prChecksOf(const []), PrChecks.none);
       expect(
@@ -195,13 +283,16 @@ void main() {
       expect(conflicting.readyToMerge, isFalse);
     });
 
-    test("merge uses the repository's way; targets and poll delays", () {
+    test("merge uses the pull request's repository's way; targets and poll delays", () {
       expect(
-        prMergeFlag('{"mergeCommitAllowed":false,"squashMergeAllowed":true,"rebaseMergeAllowed":true}'),
-        '--squash',
+        prMergeMethodOf('{"mergeCommitAllowed":true,"squashMergeAllowed":true,"rebaseMergeAllowed":true}'),
+        PrMergeMethod.squash,
       );
-      expect(prMergeFlag('{"mergeCommitAllowed":true}'), '--merge');
-      expect(prMergeFlag(''), '--merge');
+      expect(prMergeMethodOf('{"mergeCommitAllowed":true}'), PrMergeMethod.merge);
+      expect(prMergeMethodOf('{"rebaseMergeAllowed":true}'), PrMergeMethod.rebase);
+      expect(prMergeMethodOf(''), PrMergeMethod.squash);
+      expect(const PrStatus(number: 1, url: 'https://github.com/o/r/pull/1', state: PrState.open).repo, 'o/r');
+      expect(const PrStatus(number: 1, url: 'u', state: PrState.open).repo, '');
       expect(prTarget(_s('a', pr: 7)), '7');
       expect(prTarget(_s('a', branch: 'feature/x')), 'feature/x');
       expect(prTarget(_s('a', branch: 'main')), isNull);
@@ -229,16 +320,19 @@ void main() {
         additions: 5,
         deletions: 1,
       );
-      final merges = <int>[];
+      final merges = <(int, PrMergeMethod)>[];
       final mergeGate = Completer<void>();
+      String? blocker = 'The session has changes that aren\'t committed and pushed. Commit and push them first.';
       final c = ProviderContainer(
         overrides: [
           preferencesProvider.overrideWithValue(prefs),
           boardPrSourceProvider.overrideWithValue((
             ready: (_) async => true,
             status: (_, _) async => pr,
-            merge: (_, n) async {
-              merges.add(n);
+            method: (_, _) async => PrMergeMethod.squash,
+            blocker: (_, _) async => blocker,
+            merge: (_, p, m) async {
+              merges.add((p.number, m));
               await mergeGate.future;
             },
           )),
@@ -261,10 +355,19 @@ void main() {
       expect(find.text('Checks pass'), findsOneWidget);
       expect(find.text('Ready to merge +5 −1'), findsOneWidget);
 
-      // Cancelled: nothing merges.
+      // Something unpushed in the session: no confirm, the reason instead.
+      await tester.tap(find.byKey(const ValueKey('board.pr.merge.a')));
+      await tester.pumpAndSettle();
+      expect(find.text('Merge pull request #12?'), findsNothing);
+      expect(merges, isEmpty);
+      await tester.pump(const Duration(seconds: 5));
+      blocker = null;
+
+      // Cancelled: nothing merges. The confirm says how it merges.
       await tester.tap(find.byKey(const ValueKey('board.pr.merge.a')));
       await tester.pumpAndSettle();
       expect(find.text('Merge pull request #12?'), findsOneWidget);
+      expect(find.textContaining('squash and merge'), findsOneWidget);
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
       expect(merges, isEmpty);
@@ -277,14 +380,87 @@ void main() {
       await tester.pump();
       await tester.tap(find.byKey(const ValueKey('board.pr.merge.a')), warnIfMissed: false);
       await tester.pump();
-      expect(merges, [12]);
+      expect(merges, [(12, PrMergeMethod.squash)]);
       mergeGate.complete();
+      await tester.pump();
+      // Merged at once, before gh is asked again.
+      expect(find.text('Merged'), findsOneWidget);
+      expect(find.byKey(const ValueKey('board.pr.merge.a')), findsNothing);
       await tester.pump(const Duration(seconds: 5));
 
       await tester.pumpWidget(const SizedBox());
       c.dispose();
       await db.close();
       debugDefaultTargetPlatformOverride = null;
+    });
+
+    testWidgets("a failed ask keeps the chip and waits longer; another pull request's chip doesn't stay up", (
+      tester,
+    ) async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final prefs = await Preferences.load(db);
+      final session = _s('a', pr: 12);
+      prefs['code.sessions'] = jsonEncode([session.toJson()]);
+      const pr = PrStatus(number: 12, url: 'u', state: PrState.open, checks: PrChecks.passing, mergeable: true);
+      var asks = 0;
+      var fail = false;
+      final c = ProviderContainer(
+        overrides: [
+          preferencesProvider.overrideWithValue(prefs),
+          boardPrSourceProvider.overrideWithValue((
+            ready: (_) async => true,
+            status: (_, _) async {
+              asks++;
+              if (fail) throw const GitError("Couldn't ask GitHub: HTTP 502");
+              return pr;
+            },
+            method: (_, _) async => PrMergeMethod.squash,
+            blocker: (_, _) async => null,
+            merge: (_, _, _) async {},
+          )),
+        ],
+      );
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: c,
+          child: LayoutHost(
+            language: DesignLanguage.material,
+            // Not Done: no Merge, even for a pull request GitHub would merge.
+            child: Center(
+              child: SizedBox(width: 420, child: BoardPrChip(info: session, done: false)),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+      expect(find.text('PR #12'), findsOneWidget);
+      expect(find.byKey(const ValueKey('board.pr.merge.a')), findsNothing);
+      expect(asks, 1);
+
+      fail = true;
+      await tester.pump(const Duration(minutes: 1, seconds: 1));
+      expect(asks, 2);
+      // The failure keeps what showed.
+      expect(find.text('PR #12'), findsOneWidget);
+      // The next ask waits longer than a minute after a second failure (two minutes).
+      await tester.pump(const Duration(minutes: 1, seconds: 1));
+      expect(asks, 3);
+      await tester.pump(const Duration(minutes: 1, seconds: 1));
+      expect(asks, 3);
+      await tester.pump(const Duration(minutes: 1));
+      expect(asks, 4);
+
+      // The session's pull request changes: the old chip goes until the new one is asked about.
+      fail = false;
+      c.read(codeSessionsProvider.notifier).update(session.copyWith(prNumber: 13));
+      await tester.pump();
+      expect(c.read(boardPrProvider('a')), isA<PrUnknown>());
+      await tester.pump(const Duration(milliseconds: 10));
+
+      await tester.pumpWidget(const SizedBox());
+      c.dispose();
+      await db.close();
     });
   });
 }

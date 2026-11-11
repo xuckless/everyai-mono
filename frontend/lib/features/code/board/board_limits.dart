@@ -24,7 +24,7 @@ final class BoardLimit {
     this.resetsAt,
   });
 
-  /// `harness|window`, or `cap`.
+  /// `harness|account|window`, or `cap`.
   final String key;
   final String label;
   final String? scope;
@@ -50,22 +50,27 @@ final class BoardLimit {
   int get hashCode => Object.hash(key, label, scope, used, resetsAt, Object.hashAll(sessions));
 }
 
-/// A session's latest plan report, for [poolPlanLimits].
-typedef SessionPlan = ({String sessionId, String harness, String harnessLabel, PlanLimits plan});
+/// A session's latest plan report, for [poolPlanLimits]. [account] tells apart sessions that may be signed in to
+/// different accounts of one harness: the environment they run in (every CLI on this computer runs with the user's
+/// one login environment, so 'host' sessions share one; a WSL distro or container may be signed in to another).
+typedef SessionPlan = ({String sessionId, String harness, String harnessLabel, String account, PlanLimits plan});
 
-/// The plan windows the Board's sessions report, one bar per harness and window (sessions on one harness share one
-/// plan): of their readings the one for the latest window (a later reset), then the fullest. A window whose reset has
-/// passed says nothing about now and is left out. Fullest first.
+/// The plan windows the Board's sessions report, one bar per harness, account and window (sessions on one account
+/// share one plan): of their readings the one for the latest window (a later reset), then the fullest. A window whose
+/// reset has passed says nothing about now and is left out. A reading without a reset time is kept: reports carry no
+/// time of their own to age it by, and the harness replaces it with its next one. Fullest first.
 List<BoardLimit> poolPlanLimits(List<SessionPlan> plans, {required DateTime now}) {
   final best = <String, ({String harnessLabel, PlanWindow window})>{};
   final users = <String, List<String>>{};
   for (final p in plans) {
     for (final w in p.plan.windows) {
       if (w.resetsAt case final at? when !at.isAfter(now)) continue;
-      final key = '${p.harness}|${w.name}';
+      final elsewhere = p.account.isNotEmpty && p.account != 'host';
+      final key = '${p.harness}|${elsewhere ? p.account : ''}|${w.name}';
       (users[key] ??= []).add(p.sessionId);
       final had = best[key]?.window;
-      if (had == null || _newer(w, had)) best[key] = (harnessLabel: p.harnessLabel, window: w);
+      final label = elsewhere ? '${p.harnessLabel} · ${p.account}' : p.harnessLabel;
+      if (had == null || _newer(w, had)) best[key] = (harnessLabel: label, window: w);
     }
   }
   return [

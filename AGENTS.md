@@ -1046,6 +1046,19 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   failure, ten when gh isn't signed in; late answers dropped by generation. "PR #12 · Checks pass · Approved", and on a
   Done card "Ready to merge +120 −30" with Merge (confirm naming the PR; `GitService.mergePr` merges the way the
   repository allows, `prMergeFlag`). Not seen in the running app; no real gh call was made.
+  Review fixes: Resume sends a carry-on turn to every lead (`resumeAfterLimit`, `boardResumeProvider`; `retry` left
+  Codex, OpenCode and ACP leads idle) and says why when nothing started. Merge shows only on Done cards, checks the
+  session's folder first (`prMergeBlocker`: uncommitted changes, or HEAD isn't the PR's `headRefOid`), merges only that
+  commit (`--match-head-commit`, `--repo` from the PR's URL) with the method its own repository allows (`PrMergeMethod`:
+  squash, then merge commit, then rebase; named in the confirm; default pending the owner), and `readyToMerge` needs
+  passing or no checks, no review still needed, and `mergeStateStatus` CLEAN or HAS_HOOKS. `prStatus` throws on a
+  failure to ask (only gh's "no pull request" is none), so the chip stays and polling backs off; one `BoardGhGate`
+  shares the sign-in check and runs at most two gh calls at once; no polling while the app is hidden; a changed target
+  shows nothing until asked; the merge is `PrMerging` in the notifier. The Board wakes at the earliest snooze end,
+  limit reset or strip window reset (`earliest`) and again on app resume; a closed session's snooze folds it by its
+  stored time alone; deleted sessions' snoozes are dropped. `openCodeSessionsProvider` rebuilds the Board when a
+  session's controller opens or closes. Pooling keys by environment too ('host' shares one account; WSL or a container
+  may be another).
 - **Shells (2026-11-06; branch `toolbuild`, 02828ac..5e018bc; plan and owner answers in `TODO-toolbuild.md`).**
   `code/shells/`: `ShellRegistry.instance` holds a `ShellEntry` per command the EveryAI harness runs (foreground
   `cmd_N`, background `bg_N`) and for app_run's app; raw output in `<session dir>/shells/<id>.log` (`ShellLog`,
