@@ -172,6 +172,8 @@ String acpResultText(Map<String, Object?> call) {
   if (text.isEmpty) {
     text = switch (call['rawOutput']) {
       final String s => s,
+      // Cursor's MCP calls: only whether it worked (the output went to the model, not the client).
+      {'success': true} => '',
       {'output': final String s} || {'stdout': final String s} || {'error': final String s} => s,
       null => '',
       final other => jsonEncode(other),

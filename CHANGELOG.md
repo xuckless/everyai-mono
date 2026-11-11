@@ -3,6 +3,19 @@
 EveryAI is in alpha. Signed releases start at `0.1.0-alpha.1`; the earlier unsigned dev build was
 `0.1.0-dev-nonsigned`. Earlier changes are listed by date and pull request.
 
+## Unreleased
+
+### Outside agents run their own way
+- **Cursor CLI works.** Its commands and edits show their real output (they looked failed before), its calls to
+  MCP servers show as MCP calls, the model menu lists Cursor's models before the first session, and its usage is
+  counted (shown with ≈: Cursor reports none, so EveryAI estimates it from the text).
+- **Native modes and approvals.** Claude Code, Codex, Cursor, Gemini, OpenCode and other ACP agents run in their
+  own modes (Bypass permissions and Codex's Full Access included) and ask with their own approvals; EveryAI shows
+  the request and passes your answer back. EveryAI's own tools run without asking, except the ones that run a
+  command.
+- **Fewer directives.** An outside agent's briefing names only EveryAI's tools, the working directory and the commit
+  rule; no mode notes or workflow nudges are sent to it. `run_workflow` is still there when it wants a workflow.
+
 ## 0.2.0 (2026-11-08): no account needed, and a browser you can sign in to
 
 ### No account needed

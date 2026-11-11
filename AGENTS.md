@@ -1288,6 +1288,22 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   workflow estimate card, figures by id, local server states, one-line installs. Copy follows the owner's marketing plan
   (`marketing-plan.md`, local): no pricing, nothing about the vault, desktop control "macOS and Linux today, Windows
   next", Ultra/Max not pushed. README pitch and badge, CHANGELOG section, `releaseNotes` entry (8 items).
+- **Cursor CLI + outside agents on their own terms (2026-11-11; branch `feat/cursor-native`, plan
+  `~/.claude/plans/cursor-native.md`).** Owner: EveryAI switches harnesses and offers tools; outside agents keep
+  their own modes, approvals and habits. Cursor (`agent acp`, checked live with
+  `tool/live_drivers/cursor_live_test.dart`): a permission request's text is kept off the call
+  (`acpWithoutAskText`; "Not in allowlist: …" showed as every asked call's result), Cursor's MCP calls
+  (`{providerIdentifier, toolName, args}`) are MCP actions, no "ran without asking" notice, no
+  ask_user_question/present_plan host tools (`DriverCap.nativeQuestions`; it has cursor/ask_question), models probed
+  when nothing is cached (`OffersModels.modelsChanged` reloads the menu), usage estimated (`AcpUsageEstimate`,
+  `UsageReport.estimated` → ≈ on the meter). Controller: no `<everyai-mode>` notes for outside leads,
+  `_nativeApprovals` (their asks go to the user; only our host tools pass, check/bug_check still ask; workflow
+  agents keep our checks), native mode list always shown, no fidelity line, no workflow checkpoint/stall notes to
+  them. Briefing (`session_skill.dart`): tools, workflows, commit rule, working directory, notice nonce only.
+  Drivers: Claude without the gate hook (`can_use_tool` only, Bypass listed), Codex presets real (Full Access
+  allowed), OpenCode without `*: ask` (native subagents' asks routed), ACP modes all listed, no pins or set-backs,
+  no forced asking flags (Gemini/Qwen/Cline/Grok/Copilot/Goose).
+
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),

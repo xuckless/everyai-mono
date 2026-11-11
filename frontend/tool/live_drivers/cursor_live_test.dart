@@ -19,7 +19,12 @@ void main() {
   test('Cursor: shell, edit, MCP', () async {
     final dir = _env['EVAL_DIR']!;
     final data = await Directory.systemTemp.createTemp('everyai-cursor');
-    final driver = AcpDriver(id: 'cursor', label: 'Cursor CLI', command: 'cursor-agent', dataDir: () async => data.path);
+    final driver = AcpDriver(
+      id: 'cursor',
+      label: 'Cursor CLI',
+      command: 'cursor-agent',
+      dataDir: () async => data.path,
+    );
     print('detect: ${await driver.detect()}');
     final s = await driver.start(
       SessionSpec(
@@ -30,7 +35,12 @@ void main() {
         llmApiKey: '',
         sessionTag: 'cursor-live',
         mcpConfig: {
-          if (_env['MCP_ECHO'] case final p?) 'echo': {'command': 'python3', 'args': [p], 'env': <String, String>{}},
+          if (_env['MCP_ECHO'] case final p?)
+            'echo': {
+              'command': 'python3',
+              'args': [p],
+              'env': <String, String>{},
+            },
         },
       ),
     );
@@ -54,7 +64,16 @@ void main() {
     if (_env['SWITCH'] case final m?) {
       await Future<void>.delayed(const Duration(seconds: 3));
       try {
-        await s.switchLlm(SessionSpec(workingDir: dir, model: m, mode: AgentMode.autoEdit, llmBaseUrl: '', llmApiKey: '', sessionTag: 'cursor-live'));
+        await s.switchLlm(
+          SessionSpec(
+            workingDir: dir,
+            model: m,
+            mode: AgentMode.autoEdit,
+            llmBaseUrl: '',
+            llmApiKey: '',
+            sessionTag: 'cursor-live',
+          ),
+        );
         print('SWITCH ok');
       } on Object catch (e) {
         print('SWITCH failed: $e');
@@ -65,6 +84,22 @@ void main() {
     print('data: ${data.path}');
     await s.close();
   }, timeout: const Timeout(Duration(minutes: 6)));
+
+  test('Cursor: models are listed before any session', () async {
+    final data = await Directory.systemTemp.createTemp('everyai-cursor-models');
+    final driver = AcpDriver(
+      id: 'cursor',
+      label: 'Cursor CLI',
+      command: 'cursor-agent',
+      dataDir: () async => data.path,
+    );
+    final changed = driver.modelsChanged.first;
+    expect(await driver.models(), isEmpty);
+    await changed.timeout(const Duration(seconds: 60));
+    final models = await driver.models();
+    print('models: ${models.length}, first: ${models.take(3).map((m) => m.id).toList()}');
+    expect(models, isNotEmpty);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 }
 
 String _short(HarnessEvent e) {
