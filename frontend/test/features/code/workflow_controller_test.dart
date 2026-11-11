@@ -618,7 +618,8 @@ void main() {
       (int n) => n == 1,
     );
     await c.approve(ApprovalScope.session);
-    expect(c.policy.session, contains('npm test *'));
+    // An outside lead's "for this session" is its CLI's to keep (review/cursor-native): nothing in EveryAI's rules.
+    expect(c.policy.session, isEmpty);
     await c.runWorkflow('demo', 'source');
     unawaited(bridge.agent('Review', {'harness': 'fake2', 'readOnly': true}).catchError((Object _) => null));
     final kid = await child();
