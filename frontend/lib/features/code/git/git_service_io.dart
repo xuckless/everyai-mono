@@ -484,7 +484,7 @@ Future<void> mergePr(String dir, PrStatus pr, PrMergeMethod method) async {
 
 Future<bool> ghReady(String dir) async {
   try {
-    final res = await Process.run('gh', ['auth', 'status'], workingDirectory: dir);
+    final res = await Process.run('gh', ['auth', 'status', '--hostname', 'github.com'], workingDirectory: dir);
     return res.exitCode == 0;
   } on ProcessException {
     return false;

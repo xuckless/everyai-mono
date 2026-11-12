@@ -1036,14 +1036,16 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   Board's filter row (`board/board_limits.dart`): one compact `PlanLimitBar` (extracted from `PlanReportView`, amber at
   75%, red at 90%) per harness and plan window, pooled by `poolPlanLimits` (the latest window, then the fullest; passed
   resets left out) from `codePlanLimitsProvider` of sessions open on the Board, plus the spending cap closest to full
-  (`busiestCap`: caps are per session, so the one about to stop a session is shown). A click lists the sessions a bar
+  (`busiestCap`: caps are per session; its bar shows `budgetSpentMicros`, the session plus its forks, the number the cap stops at;
+  no default cap). A click lists the sessions a bar
   covers and opens the picked one in the inspector. Cards and the inspector header show cost in mono
   (`boardCostLine`: spend, else tokens on the plan) for sessions whose meter is already up (none is started for it); no
   sparkline (no spend history to draw). Usage limits (`board/board_snooze.dart`): `BoardLimitState` (notLimited /
   limited / snoozed / readyToResume, diagram) from the limit notice a session's transcript ends on (`stoppedOnLimit`);
   the card says "Limit reached · Resets in 1h 12m" with Snooze (when the reset is known), folds into a "Snoozed" list
   under its column until the reset (Preferences `code.board.snoozed`, Show brings it back; a one-shot timer rebuilds at
-  the next reset), then shows "Limit reset" with Resume (the controller's `retry`; offered, never run by itself). Pull
+  the next reset), then shows "Limit reset" with Resume (`resumeAfterLimit`; offered, never run by itself). A limit with no known reset offers Resume at once
+  (`ReadyToResume.resetKnown` false) and can't be snoozed. Pull
   request chip (`board/board_pr.dart`): `boardPrProvider` asks `gh pr view --json` (`GitService.prStatus`,
   `parsePrStatus`, `prChecksOf`) for the session's PR (`prTarget`: its `prNumber`, else its worktree branch, else a
   non-default branch) while the card shows: every minute with one, five without, doubling up to ten minutes after a
@@ -1054,13 +1056,15 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   Codex, OpenCode and ACP leads idle) and says why when nothing started. Merge shows only on Done cards, checks the
   session's folder first (`prMergeBlocker`: uncommitted changes, or HEAD isn't the PR's `headRefOid`), merges only that
   commit (`--match-head-commit`, `--repo` from the PR's URL) with the method its own repository allows (`PrMergeMethod`:
-  squash, then merge commit, then rebase; named in the confirm; default pending the owner), and `readyToMerge` needs
+  squash, then merge commit, then rebase; named in the confirm), and `readyToMerge` needs
   passing or no checks, no review still needed, and `mergeStateStatus` CLEAN or HAS_HOOKS. `prStatus` throws on a
   failure to ask (only gh's "no pull request" is none), so the chip stays and polling backs off; one `BoardGhGate`
-  shares the sign-in check and runs at most two gh calls at once; no polling while the app is hidden; a changed target
+  shares the sign-in check (`gh auth status --hostname github.com`) and one in-flight `pr view` per folder and
+  target across cards, and runs at most two gh calls at once; no polling while the app is hidden; a changed target
   shows nothing until asked; the merge is `PrMerging` in the notifier. The Board wakes at the earliest snooze end,
   limit reset or strip window reset (`earliest`) and again on app resume; a closed session's snooze folds it by its
-  stored time alone; deleted sessions' snoozes are dropped. `openCodeSessionsProvider` rebuilds the Board when a
+  stored time alone, and so does an open one until it has connected and replayed (`transcriptSettled`), so opening a
+  snoozed session doesn't clear the snooze; deleted sessions' snoozes are dropped. `openCodeSessionsProvider` rebuilds the Board when a
   session's controller opens or closes. Pooling keys by environment too ('host' shares one account; WSL or a container
   may be another).
 - **Board v2, phase 4 (2026-11-11; branch `board-v2/phase4`, on top of `board-v2/phase3`).** Plan lane and Race.

@@ -51,7 +51,15 @@ final class BoardGhGate {
     return ask;
   }
 
-  Future<PrStatus?> status(String dir, String target) => _call(() => _source.status(dir, target));
+  final _asking = <String, Future<PrStatus?>>{};
+
+  /// One ask per folder and target at a time: cards on the same branch share the answer.
+  Future<PrStatus?> status(String dir, String target) {
+    final key = '$dir\x00$target';
+    return _asking[key] ??= _call(() => _source.status(dir, target)).whenComplete(() {
+      _asking.remove(key);
+    });
+  }
 
   /// Runs [job] once fewer than [maxCalls] gh calls are running.
   Future<T> _call<T>(Future<T> Function() job) async {
