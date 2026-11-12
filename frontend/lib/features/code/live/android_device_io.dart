@@ -116,7 +116,10 @@ abstract final class AndroidDevices {
     );
     final out = switch (r) {
       Finished(:final stdout) => stdout,
-      TimedOut() || Cancelled() || StartFailed() => throw AppError("The emulator didn't list its devices: $r"),
+      TimedOut() ||
+      Cancelled() ||
+      StartFailed() ||
+      Refused() => throw AppError("The emulator didn't list its devices: $r"),
     };
     return [
       for (final l in out.split('\n'))
@@ -172,7 +175,10 @@ abstract final class AndroidDevices {
       for (final d in await list()) {
         if (before.contains(d.serial) || !d.emulator || !d.ready) continue;
         if (d.avd != null && norm(d.avd!) != norm(avd)) continue;
-        _booted[avd] = (child: child, serial: d.serial);
+        if (_booted[avd]?.serial != d.serial) {
+          _booted[avd] = (child: child, serial: d.serial);
+          child.annotate(detail: 'avd $avd, serial ${d.serial}');
+        }
         final up = await AndroidSdk.shell(d.serial, ['getprop', 'sys.boot_completed']).catchError((Object _) => '');
         if (up.trim() == '1') {
           _readAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -192,7 +198,7 @@ abstract final class AndroidDevices {
   static Future<void> _emuKill(String avd) async {
     final serial = _booted[avd]?.serial;
     if (serial == null) return; // Not on adb yet: SIGTERM ends it.
-    await AndroidSdk.run(['emu', 'kill'], serial: serial, timeout: const Duration(seconds: 5));
+    await AndroidSdk.run(['emu', 'kill'], serial: serial, timeout: const Duration(seconds: 5), duringQuit: true);
   }
 
   static Future<KillOutcome> _stopBooted(String avd) async {

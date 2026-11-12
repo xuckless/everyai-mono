@@ -17,7 +17,11 @@ import '../../../core/process/supervisor.dart';
 import '../git/git_service.dart';
 
 /// `xcrun simctl args`, bounded: a run past [timeout] is killed (verified). [AppError] when it can't run or times out.
-Future<Finished> _simctl(List<String> args, {Duration timeout = const Duration(seconds: 60)}) async {
+Future<Finished> _simctl(
+  List<String> args, {
+  Duration timeout = const Duration(seconds: 60),
+  bool duringQuit = false,
+}) async {
   final r = await ProcessSupervisor.instance.runBounded(
     'xcrun',
     ['simctl', ...args],
@@ -25,6 +29,7 @@ Future<Finished> _simctl(List<String> args, {Duration timeout = const Duration(s
     owner: const ProbeOwner('simctl'),
     stdoutEncoding: utf8,
     stderrEncoding: utf8,
+    duringQuit: duringQuit,
     label: 'simctl ${args.take(2).join(' ')}',
   );
   return switch (r) {
@@ -34,6 +39,7 @@ Future<Finished> _simctl(List<String> args, {Duration timeout = const Duration(s
       '${kill is Ended ? 'stopped' : 'NOT closed ($kill)'}.',
     ),
     StartFailed(:final error) => throw AppError("simctl couldn't run: $error"),
+    Refused(:final reason) => throw AppError("simctl wasn't run: $reason"),
   };
 }
 
@@ -171,7 +177,7 @@ abstract final class IosSimulators {
   /// `simctl shutdown` [udid], then a check that it is no longer booted: null when it is shut down, else why not.
   static Future<String?> _shutdown(String udid) async {
     try {
-      final r = await _simctl(['shutdown', udid]);
+      final r = await _simctl(['shutdown', udid], duringQuit: true);
       if (r.code != 0 && !r.stderr.contains('current state: Shutdown')) {
         return 'simctl shutdown failed: ${r.stderr.trim()}';
       }
@@ -180,7 +186,7 @@ abstract final class IosSimulators {
     }
     final Finished r;
     try {
-      r = await _simctl(const ['list', 'devices', '-j'], timeout: const Duration(seconds: 30));
+      r = await _simctl(const ['list', 'devices', '-j'], timeout: const Duration(seconds: 30), duringQuit: true);
     } on AppError catch (e) {
       return "Couldn't check it shut down: ${e.message}";
     }
@@ -322,6 +328,8 @@ final class IosSimulator implements DeviceScreen {
         );
       case StartFailed(:final error):
         throw AppError("The simulator action couldn't start: $error");
+      case Refused(:final reason):
+        throw AppError("The simulator action couldn't start: $reason");
     }
   }
 

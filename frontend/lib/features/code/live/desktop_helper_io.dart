@@ -132,6 +132,8 @@ Future<void> _compileWindows(String source, String out) async {
         throw StateError('compiling it took over 2 minutes (${kill is Ended ? 'stopped' : 'NOT closed: $kill'})');
       case StartFailed(:final error):
         throw StateError('the compiler could not start: $error');
+      case Refused(:final reason):
+        throw StateError('the compiler could not start: $reason');
     }
   } finally {
     try {
@@ -165,7 +167,7 @@ Future<Map<int, int>> windowsParents() async {
         debugPrint('The window helper\'s process list did not parse: $e');
         return const {};
       }
-    case Finished() || TimedOut() || Cancelled() || StartFailed():
+    case Finished() || TimedOut() || Cancelled() || StartFailed() || Refused():
       debugPrint('The window helper could not list processes: $r');
       return const {};
   }

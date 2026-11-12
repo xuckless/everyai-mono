@@ -20,32 +20,34 @@ LocalSystem createLocalSystem() => IoLocalSystem();
 
 const fmPath = fmExecutable;
 
-/// What the process ledger and the supervisor's registry call the process of server [id]: `local server ollama`,
-/// with ` :<port>` when it serves one. The registry is the truth about which servers EveryAI started (a run reopened
-/// after a hot restart takes its children back with their labels), so this is how they are found again.
-String localServerLabel(String id, int? port) => 'local server $id${port == null ? '' : ' :$port'}';
+/// What the process ledger and the supervisor's registry call the process of server [id] (`local server ollama`;
+/// its port is the child's own [SupervisedChild.port]). The registry is the truth about which servers EveryAI
+/// started (a run reopened after a hot restart takes its children back with label, kind and port), so this is how
+/// they are found again.
+String localServerLabel(String id) => 'local server $id';
 
-/// [localServerLabel] read back; null for any other label.
-({String id, int? port})? parseLocalServerLabel(String label) {
-  final m = RegExp(r'^local server (\S+?)(?: :(\d+))?$').firstMatch(label);
-  return m == null ? null : (id: m.group(1)!, port: m.group(2) == null ? null : int.parse(m.group(2)!));
-}
+/// The server id in a [localServerLabel]; null for any other label.
+String? parseLocalServerLabel(String label) =>
+    label.startsWith('local server ') ? label.substring('local server '.length) : null;
 
 /// The real computer. Every server process it starts is a child of the process supervisor (own process group,
 /// ledger, verified stop); which servers are EveryAI's is read from the supervisor's registry, never kept here.
 final class IoLocalSystem implements LocalSystem {
   IoLocalSystem({LocalRun? run, ProcessSupervisor? supervisor})
-    : _run = run ?? ((exe, args) => runProgram(exe, args, supervisor: supervisor)),
+    : _given = run,
       _supervisor = supervisor; // ignore: prefer_initializing_formals
 
-  final LocalRun _run;
+  /// A test's stand-in for [runProgram].
+  final LocalRun? _given;
+  Future<({int code, String out})?> _run(String exe, List<String> args, {bool duringQuit = false}) =>
+      _given?.call(exe, args) ?? runProgram(exe, args, supervisor: _supervisor, duringQuit: duringQuit);
   final ProcessSupervisor? _supervisor;
   ProcessSupervisor get _sup => _supervisor ?? ProcessSupervisor.instance;
   String? _launchProblem;
 
   /// Server [id]'s process, while the supervisor lists it (running, stopping, or not closed).
   SupervisedChild? _child(String id) =>
-      _sup.children.where((c) => c.state.live && parseLocalServerLabel(c.spec.label)?.id == id).firstOrNull;
+      _sup.children.where((c) => c.state.live && parseLocalServerLabel(c.spec.label) == id).firstOrNull;
 
   @override
   HostOs get os => Platform.isMacOS
@@ -119,7 +121,8 @@ final class IoLocalSystem implements LocalSystem {
   }
 
   @override
-  Future<({int code, String out})?> run(String exe, List<String> args) => _run(exe, args);
+  Future<({int code, String out})?> run(String exe, List<String> args, {bool duringQuit = false}) =>
+      _run(exe, args, duringQuit: duringQuit);
 
   @override
   String? get launchProblem => _launchProblem;
@@ -150,7 +153,7 @@ final class IoLocalSystem implements LocalSystem {
           exe: shell ? (Platform.isWindows ? 'cmd.exe' : '/bin/sh') : exe,
           args: shell ? (Platform.isWindows ? ['/c', exe] : ['-c', shellStartCommand(exe)]) : args,
           env: {...env, 'EVERYAI_LOCAL_SERVER': id},
-          label: localServerLabel(id, port),
+          label: localServerLabel(id),
           port: port,
           detail: shell ? 'start command: $exe' : null,
         ),
@@ -189,10 +192,7 @@ final class IoLocalSystem implements LocalSystem {
   bool owns(String id) => _child(id) != null;
 
   @override
-  int? ownedPort(String id) => switch (_child(id)) {
-    final c? => c.spec.port ?? parseLocalServerLabel(c.spec.label)?.port,
-    null => null,
-  };
+  int? ownedPort(String id) => _child(id)?.port;
 
   @override
   Future<ServerStopResult> stopOwned(String id, {Duration grace = const Duration(seconds: 5)}) async {
@@ -202,7 +202,11 @@ final class IoLocalSystem implements LocalSystem {
   }
 
   static ServerStopResult _settled(String what, KillOutcome outcome) {
-    if (outcome is Ended) return ServerStopEnded(outcome);
+    if (outcome is Ended) {
+      final ended = ServerStopEnded(outcome);
+      if (ended.warning case final w?) debugPrint('$what: $w');
+      return ended;
+    }
     debugPrint('NOT CLOSED: $what: $outcome');
     return ServerStopNotClosed(outcome);
   }
@@ -260,7 +264,7 @@ final class IoLocalSystem implements LocalSystem {
     final id = row.identity;
     // Ollama's menu-bar app restarts a server it lost: quit the app instead.
     if (Platform.isMacOS && command.contains('/Ollama.app/')) {
-      await _run('/usr/bin/osascript', const ['-e', 'quit app "Ollama"']);
+      await _run('/usr/bin/osascript', const ['-e', 'quit app "Ollama"'], duringQuit: true);
       switch (await _waitGone(id, grace)) {
         case true:
           return ServerStopEnded(Ended([row.pid]));
@@ -270,16 +274,12 @@ final class IoLocalSystem implements LocalSystem {
           break; // Still there: ended below.
       }
     }
-    // Checked again right before the signals: the pid must still be the process whose command was matched.
-    switch (await _sup.scan()) {
-      case ScanFailed(:final why):
-        return ServerStopRefused("Couldn't check the listener again before stopping it ($why), so nothing was sent.");
-      case Listed(table: final now) when !now.alive(id):
-        return ServerStopEnded(Ended([row.pid]));
-      case Listed():
-        break;
-    }
-    return _settled('${server.label} (pid ${row.pid})', await _sup.killTree(row.pid, termWait: grace));
+    // Signalled only while the pid is still the process whose command was matched (its start time); a reused pid
+    // is left alone and the server counts as gone.
+    return _settled(
+      '${server.label} (pid ${row.pid})',
+      await _sup.killTree(row.pid, termWait: grace, expectedStart: row.start),
+    );
   }
 
   static String _short(String command) => command.length <= 80 ? command : '${command.substring(0, 77)}…';
@@ -421,24 +421,21 @@ Future<({int code, String out})?> runProgram(
   List<String> args, {
   Duration timeout = const Duration(seconds: 10),
   ProcessSupervisor? supervisor,
+  bool duringQuit = false,
 }) async {
-  final RunResult r;
-  try {
-    r = await (supervisor ?? ProcessSupervisor.instance).runBounded(
-      exe,
-      args,
-      timeout: timeout,
-      owner: const ProbeOwner('local-models'),
-      stdoutEncoding: utf8,
-      maxOutputBytes: 4 << 20,
-    );
-  } on SupervisorClosed {
-    return null; // TODO(supervisor): drop once runBounded answers Refused instead of throwing.
-  }
+  final r = await (supervisor ?? ProcessSupervisor.instance).runBounded(
+    exe,
+    args,
+    timeout: timeout,
+    owner: const ProbeOwner('local-models'),
+    stdoutEncoding: utf8,
+    maxOutputBytes: 4 << 20,
+    duringQuit: duringQuit,
+  );
   switch (r) {
     case Finished(:final code, :final stdout):
       return (code: code, out: stdout);
-    case StartFailed():
+    case StartFailed() || Refused():
       return null;
     case TimedOut(:final kill) || Cancelled(:final kill):
       final how = kill is Ended ? 'killed' : 'NOT closed: $kill';

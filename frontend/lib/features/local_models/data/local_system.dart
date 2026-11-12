@@ -30,6 +30,14 @@ final class ServerStopEnded extends ServerStopResult {
   final KillOutcome outcome;
   @override
   String? get problem => null;
+
+  /// A line to show beside the stop when processes that may have been started by it were left alone (their
+  /// environment can't be read); null when there are none.
+  String? get warning => switch (outcome) {
+    Ended(:final maybeEscaped) when maybeEscaped.isNotEmpty =>
+      'Stopped; processes that may be its were left alone (pid ${maybeEscaped.join(', ')}).',
+    _ => null,
+  };
   @override
   String toString() => 'ServerStopEnded($outcome)';
 }
@@ -41,7 +49,6 @@ final class ServerStopNotClosed extends ServerStopResult {
   @override
   String get problem => switch (outcome) {
     Survived(:final pids) => 'Not closed: still running after SIGKILL (pid ${pids.join(', ')}).',
-    Unaccounted(:final candidates, :final reason) => 'Not closed: $reason (pid ${candidates.join(', ')}).',
     ScanFailed(:final why) => "Not closed: its end couldn't be checked ($why).",
     Ended() => 'Not closed.',
   };
@@ -78,8 +85,9 @@ abstract interface class LocalSystem {
   Future<FmStatus> fmStatus();
 
   /// Runs a short command (10 s at most; one that takes longer is killed, and the output then says so): its exit
-  /// code and output, null when it couldn't run.
-  Future<({int code, String out})?> run(String exe, List<String> args);
+  /// code and output, null when it couldn't run. [duringQuit] lets a goodbye command (`lms server stop`, quitting
+  /// Ollama.app) run while the app quits.
+  Future<({int code, String out})?> run(String exe, List<String> args, {bool duringQuit = false});
 
   /// Launches the server [id] ([exe] [args]; through `/bin/sh -c` as the leader of its own process group when
   /// [shell], for a user's own start command); its output goes to [logPath] when given; [port] is the port it

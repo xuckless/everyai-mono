@@ -58,8 +58,14 @@ abstract final class AndroidSdk {
       adb ?? (throw const AppError('No adb here: install Android Studio (or the SDK platform-tools).'));
 
   /// `adb [-s serial] args`, its output (throws [AppError] on failure).
-  static Future<String> run(List<String> args, {String? serial, Duration timeout = const Duration(seconds: 60)}) async {
-    final r = await runBytes(args, serial: serial, timeout: timeout);
+  /// [duringQuit] lets a goodbye (`emu kill`) run while the app quits.
+  static Future<String> run(
+    List<String> args, {
+    String? serial,
+    Duration timeout = const Duration(seconds: 60),
+    bool duringQuit = false,
+  }) async {
+    final r = await runBytes(args, serial: serial, timeout: timeout, duringQuit: duringQuit);
     return utf8.decode(r, allowMalformed: true);
   }
 
@@ -67,6 +73,7 @@ abstract final class AndroidSdk {
     List<String> args, {
     String? serial,
     Duration timeout = const Duration(seconds: 60),
+    bool duringQuit = false,
   }) async {
     final r = await ProcessSupervisor.instance.runBounded(
       _need,
@@ -77,6 +84,7 @@ abstract final class AndroidSdk {
       timeout: timeout,
       owner: const ProbeOwner('adb'),
       stderrEncoding: utf8,
+      duringQuit: duringQuit,
       label: 'adb ${args.take(3).join(' ')}',
     );
     switch (r) {
@@ -93,6 +101,8 @@ abstract final class AndroidSdk {
         );
       case StartFailed(:final error):
         throw AppError('adb ${args.first} could not start: $error');
+      case Refused(:final reason):
+        throw AppError('adb ${args.first} could not start: $reason');
     }
   }
 

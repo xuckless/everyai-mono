@@ -77,6 +77,8 @@ Future<Object?> axHelper(
       );
     case StartFailed(:final error):
       throw AppError("the window helper couldn't start: $error");
+    case Refused(:final reason):
+      throw AppError("the window helper couldn't start: $reason");
   }
 }
 

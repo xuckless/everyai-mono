@@ -67,6 +67,8 @@ Future<String> _install(void Function(double progress)? onProgress) async {
         );
       case StartFailed(:final error):
         throw StateError("couldn't unpack AXe: $error");
+      case Refused(:final reason):
+        throw StateError("couldn't unpack AXe: $reason");
     }
     if (!File(exe).existsSync()) throw StateError('AXe was unpacked but its program is missing');
     ok = true;

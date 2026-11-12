@@ -425,7 +425,7 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
         if (r == null || r.code != 0) return "LM Studio didn't start its server: ${r?.out.trim() ?? 'lms failed'}";
         _lmsOurs = true;
         if (_calledOff(server.id)) {
-          final stopped = await _system.run(lms, const ['server', 'stop']);
+          final stopped = await _system.run(lms, const ['server', 'stop'], duringQuit: true);
           if (stopped != null && stopped.code == 0) {
             _lmsOurs = false;
           } else {
@@ -519,7 +519,10 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
       result = _calledOffStop ?? const ServerStopEnded();
       _calledOffStop = null;
     } else if (server.kind == LocalServerKind.lmstudio && await ref.read(lmsPathProvider.future) != null) {
-      final r = await _system.run((await ref.read(lmsPathProvider.future))!, const ['server', 'stop']);
+      final r = await _system.run((await ref.read(lmsPathProvider.future))!, const [
+        'server',
+        'stop',
+      ], duringQuit: true);
       result = r == null || r.code != 0
           ? ServerStopRefused("LM Studio didn't stop its server: ${r?.out.trim() ?? 'lms failed'}")
           : const ServerStopEnded();
@@ -564,7 +567,7 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
     final outcomes = [await _system.stopAllOwned()];
     if (_lmsOurs) {
       final lms = await ref.read(lmsPathProvider.future);
-      final r = lms == null ? null : await _system.run(lms, const ['server', 'stop']);
+      final r = lms == null ? null : await _system.run(lms, const ['server', 'stop'], duringQuit: true);
       if (r != null && r.code == 0) {
         _lmsOurs = false;
       } else {

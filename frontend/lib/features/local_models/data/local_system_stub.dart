@@ -23,7 +23,7 @@ final class _NoLocalSystem implements LocalSystem {
   @override
   Future<FmStatus> fmStatus() async => FmStatus.missing;
   @override
-  Future<({int code, String out})?> run(String exe, List<String> args) async => null;
+  Future<({int code, String out})?> run(String exe, List<String> args, {bool duringQuit = false}) async => null;
   @override
   Future<LaunchedServer?> launch(
     String id,

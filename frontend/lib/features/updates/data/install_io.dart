@@ -74,7 +74,7 @@ Future<void> stageAppImage(Release release, {required http.Client client, void F
         throw UpdateError('Could not make the update executable: $stderr');
       case Finished():
         break;
-      case TimedOut() || Cancelled() || StartFailed():
+      case TimedOut() || Cancelled() || StartFailed() || Refused():
         throw UpdateError('Could not make the update executable: $chmod');
     }
     await part.rename(target);
@@ -90,15 +90,15 @@ Future<void> stageAppImage(Release release, {required http.Client client, void F
 Future<void> restartAppImage() async {
   final target = Platform.environment['APPIMAGE'];
   if (target == null) return;
-  // TODO(supervisor): launchDetached. It must outlive this app (and carry no EVERYAI_* tags), so it isn't a
-  // supervised child.
-  await Process.start('/bin/sh', [
+  // It must outlive this app (and carries no EVERYAI_* tags, so this run's watchdog leaves the new one alone).
+  final launched = await ProcessSupervisor.instance.launchDetached('/bin/sh', [
     '-c',
     'while kill -0 "\$1" 2>/dev/null; do sleep 0.3; done; exec "\$2"',
     'sh',
     '$pid',
     target,
-  ], mode: ProcessStartMode.detached);
+  ], label: 'AppImage restart');
+  if (launched case LaunchFailed(:final error)) throw UpdateError("The update couldn't restart EveryAI: $error");
   await ServicesBinding.instance.exitApplication(AppExitType.cancelable);
 }
 

@@ -84,6 +84,8 @@ Future<void> _download(void Function(double progress)? onProgress) async {
         );
       case StartFailed(:final error):
         throw StateError("couldn't unpack the browser: $error");
+      case Refused(:final reason):
+        throw StateError("couldn't unpack the browser: $reason");
     }
     onProgress?.call(1);
     await loadDownloadedChrome();
