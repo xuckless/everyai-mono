@@ -29,6 +29,22 @@ ProcessSupervisor createSupervisor(SupervisorHooks hooks, {required String? ledg
   );
 }
 
+/// Runs [f] in the root zone (its timers, timeouts and scans on real time, whatever the caller's zone: a widget
+/// test's fake time must not drive them) and answers in the caller's zone, errors too (they can't cross error
+/// zones by themselves).
+Future<T> _inRoot<T>(Future<T> Function() f) {
+  final caller = Zone.current;
+  if (identical(caller, Zone.root)) return f();
+  final answer = Completer<T>();
+  Zone.root.run(
+    () => f().then<void>(
+      (v) => caller.run(() => answer.complete(v)),
+      onError: (Object e, StackTrace s) => caller.run(() => answer.completeError(e, s)),
+    ),
+  );
+  return answer.future;
+}
+
 // ------------------------------------------------------------------ this app
 
 /// This process: its pid, group, user and start token, read once.
@@ -266,12 +282,14 @@ final class _Helper extends _Launcher {
   ProcessGroup get group => const OwnGroup();
 }
 
-/// perl's setsid + exec (macOS ships /usr/bin/perl). Perl's own variables are kept from it and handed to the
-/// program, so they can't change what perl does.
+/// perl's setsid + exec (macOS ships /usr/bin/perl). Perl's own variables ([keys]) are kept from it and handed to
+/// the program, so they can't change what perl does. Perl's exec is execvp, so a file without `#!` runs in /bin/sh.
 final class _Perl extends _Launcher {
   const _Perl();
+  static const keys = ['PERL5OPT', 'PERL5LIB', 'PERLLIB', 'PERL5DB', 'PERL_UNICODE'];
   static const script =
-      r'for (grep { /^EVERYAI_KEEP_/ } keys %ENV) { (my $k = $_) =~ s/^EVERYAI_KEEP_//; $ENV{$k} = delete $ENV{$_} } '
+      r'for my $k (qw(PERL5OPT PERL5LIB PERLLIB PERL5DB PERL_UNICODE)) { '
+      r'$ENV{$k} = delete $ENV{"EVERYAI_KEEP_$k"} if exists $ENV{"EVERYAI_KEEP_$k"} } '
       r'POSIX::setsid(); exec { $ARGV[0] } @ARGV or do { print STDERR "$ARGV[0]: $!\n"; exit 127 }';
   @override
   (String, List<String>) command(String abs, List<String> args) =>
@@ -352,34 +370,78 @@ _Launcher _pickLauncher(LaunchVia via) {
 }
 
 /// [exe] as the absolute path the child's exec will run: a path as given (against [cwd]), else the first match on
-/// the child's PATH. Never through a shell (no functions, builtins or aliases). Missing or not executable throws
-/// like `Process.start`.
+/// the child's PATH. Never through a shell (no functions, builtins or aliases). What the launcher's exec would
+/// refuse and can be checked here throws like `Process.start`: missing, a directory, not executable, a script whose
+/// `#!` interpreter is missing or not executable. Left to the exec (exit 127 with the reason on stderr): a binary
+/// for another architecture, a missing dynamic library, a file that changes in between.
 String _resolveExe(String exe, List<String> args, Map<String, String> env, String? cwd) {
   if (Platform.isWindows) return exe;
   final base = cwd ?? Directory.current.path;
   String abs(String p) => p.startsWith('/') ? p : '$base/$p';
+  String checked(String p) {
+    final interp = _interpreterOf(p);
+    if (interp != null && interp.startsWith('/') && !_isExecutable(interp)) {
+      throw ProcessException(exe, args, 'bad interpreter: $interp', 2);
+    }
+    return p;
+  }
+
   if (exe.contains('/')) {
     final p = abs(exe);
-    if (FileSystemEntity.typeSync(p) != FileSystemEntityType.file) {
-      throw ProcessException(exe, args, 'No such file or directory', 2);
-    }
+    final type = FileSystemEntity.typeSync(p);
+    if (type == FileSystemEntityType.directory) throw ProcessException(exe, args, 'Is a directory', 21);
+    if (type != FileSystemEntityType.file) throw ProcessException(exe, args, 'No such file or directory', 2);
     if (!_isExecutable(p)) throw ProcessException(exe, args, 'Permission denied', 13);
-    return p;
+    return checked(p);
   }
   var denied = false;
   for (final dir in (env['PATH'] ?? '').split(':')) {
     final p = abs('${dir.isEmpty ? '.' : dir}/$exe');
     if (FileSystemEntity.typeSync(p) != FileSystemEntityType.file) continue;
-    if (_isExecutable(p)) return p;
+    if (_isExecutable(p)) return checked(p);
     denied = true;
   }
   throw ProcessException(exe, args, denied ? 'Permission denied' : 'No such file or directory', denied ? 13 : 2);
 }
 
+/// The interpreter a `#!` script names, or null (a binary, or a file that can't be read: then exec decides).
+String? _interpreterOf(String path) {
+  try {
+    final f = File(path).openSync();
+    try {
+      final head = f.readSync(256);
+      if (head.length < 3 || head[0] != 0x23 || head[1] != 0x21) return null;
+      final line = latin1.decode(head.sublist(2)).split('\n').first.trim();
+      return line.isEmpty ? null : line.split(RegExp(r'\s+')).first;
+    } finally {
+      f.closeSync();
+    }
+  } on FileSystemException {
+    return null;
+  }
+}
+
+/// When the process in [row] started (macOS/Linux `lstart`; Windows a FILETIME), or null when unknown.
+DateTime? _startedAt(ScanRow row) {
+  if (!Platform.isWindows) return lstartTime(row.start);
+  final ticks = int.tryParse(row.start);
+  if (ticks == null || ticks == 0) return null;
+  return DateTime.fromMicrosecondsSinceEpoch(ticks ~/ 10 - 11644473600000000);
+}
+
+/// Commands that are services, never something a child of the app started and left behind.
+bool _looksLikeDaemon(String command) {
+  const system = ['/System/', '/usr/libexec/', '/usr/sbin/', '/sbin/', '/Library/', '/Applications/', '/opt/'];
+  if (system.any(command.startsWith) || command.startsWith('(') || command.startsWith('[')) return true;
+  if (command.contains('.app/Contents/') || command.contains('.xpc/') || command.contains('.framework/')) return true;
+  final name = command.split(' ').first.split('/').last;
+  return RegExp(r'(d|Agent|Helper.*|Service|daemon|-server|server)$').hasMatch(name);
+}
+
 // ------------------------------------------------------------------ records
 
 class _Record implements SupervisedChild {
-  _Record(this._sup, this.id, this.spec, {required this.waitsOnExit});
+  _Record(this._sup, this.id, this.spec, {required this.waitsOnExit, this.expectedStart, this.startedWithin});
 
   final _Supervisor _sup;
   @override
@@ -389,6 +451,11 @@ class _Record implements SupervisedChild {
 
   /// Whether its end comes from an exit future (spawned, or adopted with one); otherwise scans see it.
   final bool waitsOnExit;
+
+  /// What an adoption expects of the process at its pid (not met: [ChildDisowned]).
+  final String? expectedStart;
+  final Duration? startedWithin;
+  bool get expects => expectedStart != null || startedWithin != null;
 
   @override
   ChildState state = const ChildStarting();
@@ -413,6 +480,34 @@ class _Record implements SupervisedChild {
   /// The child whose group or tree left this one running (its stop ends this one too).
   int? origin;
 
+  /// When something listed in [tree] was last seen gone (no exit of it is ever seen): a sign that something below
+  /// it may have left the tree too, unseen. Null while nothing has.
+  DateTime? lastVanish;
+
+  /// Its spawn line (repeated when the ledger is compacted).
+  LedgerSpawn? spawnLine;
+
+  // Facts added after the start ([annotate]).
+  int? _port;
+  String? _detail;
+
+  @override
+  int? get port => _port ?? spec.port;
+  @override
+  String? get detail => _detail ?? spec.detail;
+
+  @override
+  void annotate({String? detail, int? port}) {
+    if (detail == null && port == null) return;
+    _detail = detail ?? _detail;
+    _port = port ?? _port;
+    _sup._files.add(LedgerNote(id: id, port: port, detail: detail));
+  }
+
+  /// When its tree was last written to the ledger, and whether it changed since.
+  DateTime treeWrittenAt = DateTime.fromMillisecondsSinceEpoch(0);
+  _TreeLine treeLine = _TreeLine.written;
+
   /// The stop under way (a second stop joins it).
   Future<KillOutcome>? _stopping;
 
@@ -432,7 +527,7 @@ class _Record implements SupervisedChild {
     ChildUnverified(:final pid, :final group) => ProcessIdentity(pid: pid, start: unknownStart, group: group),
     ChildNotClosed(:final survivors) => survivors.first,
     ChildExited() => lastKnown,
-    ChildStarting() || ChildStartFailed() => null,
+    ChildStarting() || ChildStartFailed() || ChildDisowned() => null,
   };
 
   /// What the watchdog and the ledger must still end for it.
@@ -443,7 +538,7 @@ class _Record implements SupervisedChild {
       ],
       ChildRunning(:final id) || ChildTerming(:final id) || ChildKilling(:final id) => [(id: id, at: _launchedAt)],
       ChildNotClosed(:final survivors) => [for (final s in survivors) (id: s, at: _launchedAt)],
-      ChildStarting() || ChildExited() || ChildStartFailed() => const <LedgerProcess>[],
+      ChildStarting() || ChildExited() || ChildStartFailed() || ChildDisowned() => const <LedgerProcess>[],
     },
     if (state.live)
       for (final t in tree.values) (id: t, at: null),
@@ -461,6 +556,7 @@ class _Record implements SupervisedChild {
         _launchedAt = at;
         _launchGroup = group;
         ledger.add(LedgerLaunch(id: id, pid: pid, at: at, ownGroup: group is OwnGroup));
+        _sup._ownerLaunched(spec.owner, at);
       case ChildRunning(:final id):
         _identity = id;
         if (!_landed.isCompleted) _landed.complete(id);
@@ -475,6 +571,12 @@ class _Record implements SupervisedChild {
       case ChildStartFailed(:final error):
         ledger.add(LedgerExit(id: id, code: null));
         _failLanding(error);
+      case ChildDisowned(:final pid, :final why):
+        debugPrint('Process supervisor: ${spec.label} #$id: pid $pid is not the process expected ($why); not touched.');
+        ledger.add(LedgerState(id: id, state: next.name));
+        ledger.add(LedgerExit(id: id, code: null));
+        if (!_ended.isCompleted) _ended.complete(const SeenGone());
+        _failLanding('pid $pid is not the process expected: $why');
       case ChildNotClosed(:final survivors, :final reason):
         debugPrint('NOT CLOSED: ${spec.label} #$id: $survivors still running ($reason)');
         ledger.add(LedgerNotClosed(id: id, survivors: survivors, reason: reason));
@@ -523,6 +625,9 @@ final class _Spawned extends _Record implements SupervisedProcess {
   Future<int> get exitCode => _process.exitCode;
 }
 
+/// A child's tree in the ledger: written, or changed since (written at the next chance, at most every 3 s).
+enum _TreeLine { written, changed }
+
 // ------------------------------------------------------------------ the supervisor's own life
 
 @immutable
@@ -545,7 +650,7 @@ final class _SupOpen extends _SupState {
   final String dir;
 }
 
-/// [stopAll] under way: nothing new is taken.
+/// [stopAll] under way: nothing new is taken, except quit steps (`runBounded(duringQuit: true)`).
 final class _SupQuitting extends _SupState {
   const _SupQuitting(this.done);
   final Future<QuitReport> done;
@@ -593,7 +698,9 @@ final class _TickOn extends _Tick {
 }
 
 final class _Supervisor extends ProcessSupervisor {
-  _Supervisor(this.hooks, String? dir, {required this.app, required this.sweeps}) : _dirChoice = dir {
+  _Supervisor(this.hooks, String? dir, {required this.app, required this.sweeps})
+    : _dirChoice = dir,
+      _treeEvery = hooks.treeEvery {
     _scanner = _Scanner(
       ({required env}) => (hooks.scan ?? _osScan)(env: env),
       Platform.isWindows ? const Duration(seconds: 2) : const Duration(milliseconds: 20),
@@ -615,8 +722,60 @@ final class _Supervisor extends ProcessSupervisor {
   late final _files = _Files(this);
   final _sweep = ValueNotifier<SweepReport?>(null);
   final _children = ValueNotifier<List<SupervisedChild>>(const []);
+  Duration _treeEvery;
+
+  /// The ticker's interval while only children not closed or unverified need it: doubles per tick up to 5 s.
+  Duration _backoff = _fastTick;
+  static const _fastTick = Duration(milliseconds: 250);
+  static const _slowest = Duration(seconds: 5);
+
+  /// Per owner: when its first child of this run started, and whether something left a tree of its unseen.
+  final _owners = <String, ({DateTime since, bool escapeHint})>{};
+
+  /// What dead runs' ledgers named (the sweep's read).
+  var _previous = const <LedgerEntry>[];
 
   StopTimings get t => hooks.timings;
+
+  void _ownerLaunched(ProcessOwner owner, DateTime at) {
+    final o = _owners[owner.key];
+    if (o == null || at.isBefore(o.since)) _owners[owner.key] = (since: at, escapeHint: o?.escapeHint ?? false);
+  }
+
+  void _ownerEscapeHint(ProcessOwner owner) {
+    final o = _owners[owner.key];
+    if (o != null) _owners[owner.key] = (since: o.since, escapeHint: true);
+  }
+
+  @override
+  Duration get treeScanInterval => _treeEvery;
+
+  @override
+  set treeScanInterval(Duration every) {
+    // In the root zone, whatever the caller's: fake time in widget tests must not drive real timeouts.
+    Zone.root.run(() {
+      _treeEvery = every < _fastTick ? _fastTick : every;
+      _retick();
+    });
+  }
+
+  @override
+  List<LedgerEntry> get ledgerEntries => ledgerEntriesOf([
+    for (final r in _list.values)
+      if (r.liveProcesses case final p when p.isNotEmpty)
+        (
+          id: r.id,
+          label: r.spec.label,
+          owner: r.spec.owner.key,
+          kind: r.spec.kind.name,
+          port: r.port,
+          detail: r.detail,
+          processes: p,
+        ),
+  ]);
+
+  @override
+  List<LedgerEntry> get previousRunEntries => _previous;
   bool _signal(int pid, ProcessSignal s) => (hooks.signal ?? _osSignal)(pid, s);
 
   @override
@@ -626,7 +785,9 @@ final class _Supervisor extends ProcessSupervisor {
   }
 
   @override
-  Future<String> get ledgerDirectory => switch (_state) {
+  Future<String> get ledgerDirectory => _inRoot(() => _ledgerDirectory);
+
+  Future<String> get _ledgerDirectory => switch (_state) {
     _SupIdle() => _open(),
     _SupOpening(:final done) => done,
     _SupOpen(:final dir) => Future.value(dir),
@@ -667,10 +828,18 @@ final class _Supervisor extends ProcessSupervisor {
         }
       }
     }
-    try {
-      Directory(dir).createSync(recursive: true);
-    } on FileSystemException catch (e) {
-      debugPrint('Process supervisor: the ledger folder $dir could not be made: $e');
+    // A folder of its own (tests, a temp one): made with the first line, removed again whenever it holds nothing.
+    final owned = _dirChoice == null && (!app || _underTest);
+    _files.removeDirWhenEmpty = owned;
+    if (owned) {
+      _files.markFolderAbsent(dir);
+      if (app) await _clearDeadTestFolders();
+    } else {
+      try {
+        Directory(dir).createSync(recursive: true);
+      } on FileSystemException catch (e) {
+        debugPrint('Process supervisor: the ledger folder $dir could not be made: $e');
+      }
     }
     // The same run reopened (a hot restart): go on with its ledger and take back what it still runs.
     final own = File(_Files.ledgerIn(dir));
@@ -683,6 +852,24 @@ final class _Supervisor extends ProcessSupervisor {
     // After this start has returned (the sweep reads the folder through [ledgerDirectory] too).
     if (sweeps) scheduleMicrotask(() => unawaited(sweepPreviousRuns()));
     return dir;
+  }
+
+  /// `flutter test`: the folders of test processes that have ended (they quit without a stop) go.
+  Future<void> _clearDeadTestFolders() async {
+    final scan = await _scanner.get();
+    if (scan is! Listed) return;
+    final name = RegExp(r'^everyai-processes-test-(\d+)$');
+    try {
+      for (final e in Directory.systemTemp.listSync()) {
+        final m = name.firstMatch(e.uri.pathSegments.where((x) => x.isNotEmpty).last);
+        if (e is! Directory || m == null) continue;
+        final owner = int.parse(m.group(1)!);
+        if (owner == pid || scan.table.rows.containsKey(owner)) continue;
+        e.deleteSync(recursive: true);
+      }
+    } on FileSystemException catch (e) {
+      debugPrint('Process supervisor: old test folders could not be cleared: $e');
+    }
   }
 
   Future<void> _readopt(LedgerFold fold) async {
@@ -701,14 +888,28 @@ final class _Supervisor extends ProcessSupervisor {
         if (row == null || !ours || _list.values.any((r) => r.pid == p.id.pid)) continue;
         _adoptKnown(
           row.identity,
-          SpawnSpec(owner: ProcessOwner.parse(c.owner), kind: ProcessKind.helper, exe: row.command, label: c.label),
+          SpawnSpec(
+            owner: ProcessOwner.parse(c.owner),
+            kind: ProcessKind.values.asNameMap()[c.kind] ?? ProcessKind.helper,
+            exe: row.command,
+            label: c.label,
+            port: c.port,
+            detail: c.detail,
+          ),
         );
       }
     }
   }
 
-  void _refuseWhenClosed(String what) {
-    if (_state case _SupQuitting() || _SupClosed()) throw SupervisorClosed(what);
+  void _refuseWhenClosed(String what, {bool duringQuit = false}) {
+    switch (_state) {
+      case _SupClosed():
+        throw SupervisorClosed(what);
+      case _SupQuitting() when !duringQuit:
+        throw SupervisorClosed(what);
+      default:
+        break;
+    }
   }
 
   void _changed(_Record r) {
@@ -720,6 +921,7 @@ final class _Supervisor extends ProcessSupervisor {
     }
     if (_list.length != before || r.state is ChildStartFailed) _children.value = [..._list.values];
     _files.watchChanged();
+    if (_list.isEmpty) _files.idle();
     _retick();
   }
 
@@ -744,34 +946,41 @@ final class _Supervisor extends ProcessSupervisor {
       put(e.key, e.value);
     }
     put(childEnvVar, '$id');
+    // A user's terminal is never the session's: no session tag, inherited or passed.
+    if (spec.owner is TerminalOwner) {
+      env.removeWhere((k, _) => (Platform.isWindows ? k.toUpperCase() : k) == sessionTagEnvVar);
+    }
     return env;
   }
 
   @override
-  Future<SupervisedProcess> spawn(SpawnSpec spec) async {
-    _refuseWhenClosed('spawn ${spec.label}');
+  Future<SupervisedProcess> spawn(SpawnSpec spec) => _inRoot(() => _spawn(spec, duringQuit: false));
+
+  Future<SupervisedProcess> _spawn(SpawnSpec spec, {required bool duringQuit}) async {
+    _refuseWhenClosed('spawn ${spec.label}', duringQuit: duringQuit);
     final r = _Spawned(this, ++_ids, spec);
     _list[r.id] = r;
+    final first = _files.watchState == _WatchFile.none;
     try {
       await ledgerDirectory;
-      _refuseWhenClosed('spawn ${spec.label}');
-      _files.add(
-        LedgerSpawn(
+      _refuseWhenClosed('spawn ${spec.label}', duringQuit: duringQuit);
+      final env = _envFor(spec, r.id);
+      final abs = _resolveExe(spec.exe, spec.args, env, spec.cwd);
+      // On disk before the process exists: a crash right after the start leaves a trace for the next sweep.
+      await _files.addNow(
+        r.spawnLine = LedgerSpawn(
           id: r.id,
           exe: spec.exe,
           owner: spec.owner.key,
           kind: spec.kind.name,
           label: spec.label,
-          outlivesApp: spec.outlivesApp,
           port: spec.port,
           detail: spec.detail,
         ),
       );
-      final env = _envFor(spec, r.id);
-      final abs = _resolveExe(spec.exe, spec.args, env, spec.cwd);
       final launcher = _launcher;
       if (launcher is _Perl) {
-        for (final k in const ['PERL5OPT', 'PERL5LIB', 'PERLLIB', 'PERL5DB', 'PERL_UNICODE']) {
+        for (final k in _Perl.keys) {
           if (env.remove(k) case final v?) env['EVERYAI_KEEP_$k'] = v;
         }
       }
@@ -785,6 +994,9 @@ final class _Supervisor extends ProcessSupervisor {
         workingDirectory: spec.cwd,
       );
       r.apply(ChildSpawned(r._process.pid, at, group: launcher.group));
+      // The first child: the watchdog's list exists and names it before spawn returns (later ones follow within
+      // 30 ms; a crash in between leaves them to the next launch's sweep, by their tags).
+      if (first) await _files.flushWatch();
     } on Object catch (e) {
       r.apply(ChildFailedToStart('$e'));
       _list.remove(r.id);
@@ -804,7 +1016,7 @@ final class _Supervisor extends ProcessSupervisor {
 
   void _exited(_Record r, ExitSeen how) {
     r.apply(ChildExitSeen(how, DateTime.now()));
-    if (Platform.isWindows || r.spec.outlivesApp) return;
+    if (Platform.isWindows) return;
     // What its group or tree left running is looked for at the next scan.
     final id = r.lastKnown;
     if ((id != null && id.leadsGroup) || r.tree.isNotEmpty) {
@@ -816,45 +1028,104 @@ final class _Supervisor extends ProcessSupervisor {
   // ---------------------------------------------------------------- adopt
 
   @override
-  SupervisedChild adopt(int pid, SpawnSpec spec, {Future<int>? exitCode}) {
-    _refuseWhenClosed('adopt ${spec.label} ($pid)');
-    final r = _Record(this, ++_ids, spec, waitsOnExit: exitCode != null);
-    _list[r.id] = r;
-    unawaited(ledgerDirectory);
-    _files.add(
-      LedgerSpawn(
-        id: r.id,
-        exe: spec.exe,
-        owner: spec.owner.key,
-        kind: spec.kind.name,
-        label: spec.label,
-        outlivesApp: spec.outlivesApp,
-        port: spec.port,
-        detail: [?spec.detail, 'adopted'].join('; '),
-      ),
-    );
-    // Its group is learned from the table (flutter_pty gives its child a session of its own).
-    r.apply(
-      ChildSpawned(pid, DateTime.now(), group: Platform.isWindows ? const NoGroups() : SharedGroup(_Self.it.pgid)),
-    );
-    if (Platform.isWindows) {
-      r.apply(ChildLanded(ProcessIdentity(pid: pid, start: unknownStart, group: const NoGroups()), DateTime.now()));
-    }
-    if (exitCode != null) {
-      unawaited(
-        exitCode.then(
-          (code) => _exited(r, ExitCode(code)),
-          onError: (Object e) {
-            // Its end is then seen by scans (the ticker treats it as one without an exit future).
-            debugPrint('Process supervisor: ${spec.label}: its exit future failed ($e); scans will see its end.');
-            _scanWatched.add(r);
-            _retick();
-          },
+  SupervisedChild adopt(
+    int pid,
+    SpawnSpec spec, {
+    Future<int>? exitCode,
+    String? expectedStart,
+    Duration? startedWithin,
+  }) {
+    // In the root zone, whatever the caller's: fake time in widget tests must not drive real timeouts.
+    return Zone.root.run(() {
+      _refuseWhenClosed('adopt ${spec.label} ($pid)');
+      final r = _Record(
+        this,
+        ++_ids,
+        spec,
+        waitsOnExit: exitCode != null,
+        expectedStart: expectedStart,
+        startedWithin: startedWithin,
+      );
+      _list[r.id] = r;
+      unawaited(ledgerDirectory);
+      _files.add(
+        r.spawnLine = LedgerSpawn(
+          id: r.id,
+          exe: spec.exe,
+          owner: spec.owner.key,
+          kind: spec.kind.name,
+          label: spec.label,
+          port: spec.port,
+          detail: [?spec.detail, 'adopted'].join('; '),
         ),
       );
-    }
-    _children.value = [..._list.values];
-    return r;
+      // Its group is learned from the table (flutter_pty gives its child a session of its own).
+      r.apply(
+        ChildSpawned(pid, DateTime.now(), group: Platform.isWindows ? const NoGroups() : SharedGroup(_Self.it.pgid)),
+      );
+      // Windows lands by pid alone, unless the caller wants the process checked first.
+      if (Platform.isWindows && !r.expects) {
+        r.apply(ChildLanded(ProcessIdentity(pid: pid, start: unknownStart, group: const NoGroups()), DateTime.now()));
+      }
+      if (exitCode != null) {
+        unawaited(
+          exitCode.then(
+            (code) => _exited(r, ExitCode(code)),
+            onError: (Object e) {
+              // Its end is then seen by scans (the ticker treats it as one without an exit future).
+              debugPrint('Process supervisor: ${spec.label}: its exit future failed ($e); scans will see its end.');
+              _scanWatched.add(r);
+              _retick();
+            },
+          ),
+        );
+      }
+      _children.value = [..._list.values];
+      return r;
+    });
+  }
+
+  @override
+  Future<DetachedLaunch> launchDetached(
+    String exe,
+    List<String> args, {
+    Map<String, String> env = const {},
+    bool includeParentEnvironment = true,
+    String? cwd,
+    String? label,
+  }) {
+    // In the root zone, whatever the caller's: fake time in widget tests must not drive real timeouts.
+    return _inRoot(() async {
+      bool ours(String k) => (Platform.isWindows ? k.toUpperCase() : k).startsWith('EVERYAI_');
+      final full = <String, String>{
+        if (includeParentEnvironment)
+          for (final e in Platform.environment.entries)
+            if (!ours(e.key)) e.key: e.value,
+      };
+      for (final e in env.entries) {
+        if (ours(e.key)) continue;
+        if (Platform.isWindows) full.removeWhere((k, _) => k.toUpperCase() == e.key.toUpperCase());
+        full[e.key] = e.value;
+      }
+      final Process p;
+      try {
+        final abs = _resolveExe(exe, args, full, cwd);
+        p = await Process.start(
+          abs,
+          args,
+          environment: full,
+          includeParentEnvironment: false,
+          workingDirectory: cwd,
+          mode: ProcessStartMode.detached,
+        );
+      } on Object catch (e) {
+        return LaunchFailed('$e');
+      }
+      if (_state case _SupOpen() || _SupOpening() || _SupQuitting()) {
+        _files.add(LedgerDetached(pid: p.pid, exe: exe, label: label ?? exe, at: DateTime.now()));
+      }
+      return Launched(p.pid);
+    });
   }
 
   /// Children whose exit future failed: seen gone by scans.
@@ -864,7 +1135,17 @@ final class _Supervisor extends ProcessSupervisor {
   _Record _adoptKnown(ProcessIdentity id, SpawnSpec spec, {int? origin}) {
     final r = _Record(this, ++_ids, spec, waitsOnExit: false)..origin = origin;
     _list[r.id] = r;
-    _files.add(LedgerSpawn(id: r.id, exe: spec.exe, owner: spec.owner.key, kind: spec.kind.name, label: spec.label));
+    _files.add(
+      r.spawnLine = LedgerSpawn(
+        id: r.id,
+        exe: spec.exe,
+        owner: spec.owner.key,
+        kind: spec.kind.name,
+        label: spec.label,
+        port: spec.port,
+        detail: spec.detail,
+      ),
+    );
     r.apply(ChildSpawned(id.pid, DateTime.now(), group: id.group));
     r.apply(ChildLanded(id, DateTime.now()));
     _children.value = [..._list.values];
@@ -873,23 +1154,32 @@ final class _Supervisor extends ProcessSupervisor {
 
   // ---------------------------------------------------------------- the ticker
 
+  /// What the ticker is for now: something new to read (a start time, leftovers, an end only scans see), only
+  /// children not closed or unverified (backing off), only running children (their trees), or nothing.
+  ({bool fresh, bool stuck, bool running}) _needs() {
+    final live = _list.values.where((r) => r.state.live);
+    return (
+      fresh:
+          _lingering.isNotEmpty ||
+          _scanWatched.isNotEmpty ||
+          live.any((r) => r.state is ChildLaunched || (!r.waitsOnExit && r.state is ChildRunning)),
+      stuck: live.any((r) => r.state is ChildNotClosed || r.state is ChildUnverified),
+      running: live.isNotEmpty,
+    );
+  }
+
   void _retick() {
-    final live = _list.values.where((r) => r.state.live && !r.spec.outlivesApp);
-    final fast =
-        _lingering.isNotEmpty ||
-        _scanWatched.isNotEmpty ||
-        live.any(
-          (r) =>
-              r.state is ChildLaunched ||
-              r.state is ChildUnverified ||
-              r.state is ChildNotClosed ||
-              (!r.waitsOnExit && r.state is ChildRunning),
-        );
-    final every = fast
-        ? (Platform.isWindows ? const Duration(seconds: 2) : const Duration(milliseconds: 250))
-        : live.isEmpty
-        ? null
-        : const Duration(seconds: 2);
+    final n = _needs();
+    final Duration? every;
+    if (n.fresh) {
+      _backoff = _fastTick;
+      every = Platform.isWindows ? const Duration(seconds: 2) : _fastTick;
+    } else if (n.stuck) {
+      every = _backoff < _treeEvery ? _backoff : _treeEvery;
+    } else {
+      _backoff = _fastTick;
+      every = n.running ? _treeEvery : null;
+    }
     switch ((_tick, every)) {
       case (_TickOn(every: final e), final want?) when e == want:
         return;
@@ -903,25 +1193,48 @@ final class _Supervisor extends ProcessSupervisor {
 
   Future<void> _onTick() async {
     final scan = await _scanner.get();
+    final now = DateTime.now();
     switch (scan) {
       case Listed(:final table):
         _absorb(table);
       case ScanFailed(:final why):
-        final now = DateTime.now();
         for (final r in [..._list.values]) {
           if (r.state case ChildLaunched(:final at) when now.difference(at) > const Duration(seconds: 3)) {
-            r.apply(ChildUnverifiable('the process table could not be read: $why'));
+            r.apply(
+              r.expects
+                  ? ChildNotOurs('could not be checked: $why')
+                  : ChildUnverifiable('the process table could not be read: $why'),
+            );
           }
         }
     }
+    final n = _needs();
+    if (!n.fresh && n.stuck) {
+      final doubled = _backoff * 2;
+      _backoff = doubled > _slowest ? _slowest : doubled;
+    }
     _retick();
+  }
+
+  /// Whether the process in [row] is the one [r]'s adopter expects; the reason when not.
+  String? _mismatch(_Record r, ScanRow row, DateTime now) {
+    if (r.expectedStart case final want? when row.start != want) return 'started ${row.start}, not $want';
+    if (r.startedWithin case final within?) {
+      final started = _startedAt(row);
+      if (started == null) return 'its start time is unknown';
+      if (started.isBefore(now.subtract(within).subtract(const Duration(seconds: 1)))) {
+        return 'started at $started, longer ago than $within';
+      }
+    }
+    return null;
   }
 
   /// What a fresh table says about every child: landings, trees, ends only scans can see, leftovers.
   void _absorb(ProcessList table) {
     final now = DateTime.now();
     for (final r in [..._list.values]) {
-      if (r._stopping != null) continue; // the stop reads the table itself
+      // The stop reads the table itself (but an adoption's check is still made here: the stop waits for it).
+      if (r._stopping != null && r.state is! ChildLaunched) continue;
       switch (r.state) {
         case ChildLaunched(:final pid, :final at) || ChildUnverified(:final pid, :final at):
           final row = table.rows[pid];
@@ -930,6 +1243,12 @@ final class _Supervisor extends ProcessSupervisor {
             ChildLaunched(group: OwnGroup()) => row != null && row.pgid != pid && now.difference(at).inSeconds < 3,
             _ => false,
           };
+          if (row != null && !row.zombie && !settling && r.expects) {
+            if (_mismatch(r, row, now) case final why?) {
+              r.apply(ChildNotOurs(why));
+              continue;
+            }
+          }
           if (row != null && !row.zombie && !settling) {
             final id = row.identity;
             if (r.state case ChildLaunched(group: OwnGroup()) when !id.leadsGroup) {
@@ -939,10 +1258,16 @@ final class _Supervisor extends ProcessSupervisor {
               );
             }
             r.apply(ChildLanded(id, now));
+          } else if (r.expects && row == null) {
+            r.apply(const ChildNotOurs('no process has that pid'));
           } else if (!r.waitsOnExit && row == null) {
             r.apply(ChildExitSeen(const SeenGone(), now));
           } else if (r.state is ChildLaunched && now.difference(at) > const Duration(seconds: 3)) {
-            r.apply(const ChildUnverifiable('it is not in the process table, and its exit has not been reported'));
+            r.apply(
+              r.expects
+                  ? const ChildNotOurs('could not be checked in time')
+                  : const ChildUnverifiable('it is not in the process table, and its exit has not been reported'),
+            );
           }
         case ChildRunning(:final id) when !r.waitsOnExit || _scanWatched.contains(r):
           if (!table.alive(id)) r.apply(ChildExitSeen(const SeenGone(), now));
@@ -999,6 +1324,9 @@ final class _Supervisor extends ProcessSupervisor {
       if (!table.alive(r.tree[p]!)) {
         r.tree.remove(p);
         changed = true;
+        // Gone without an exit anyone saw: whatever it started may have left the tree as well.
+        r.lastVanish = DateTime.now();
+        _ownerEscapeHint(r.spec.owner);
       }
     }
     if (id != null && table.alive(id)) {
@@ -1010,8 +1338,15 @@ final class _Supervisor extends ProcessSupervisor {
       }
     }
     if (changed) {
-      _files.add(LedgerTree(id: r.id, processes: [...r.tree.values]));
+      r.treeLine = _TreeLine.changed;
       _files.watchChanged();
+    }
+    // The ledger gets the tree at most every 3 s per child (the watch list, which the watchdog reads, at once).
+    final now = DateTime.now();
+    if (r.treeLine == _TreeLine.changed && now.difference(r.treeWrittenAt) >= const Duration(seconds: 3)) {
+      _files.add(LedgerTree(id: r.id, processes: [...r.tree.values]));
+      r.treeLine = _TreeLine.written;
+      r.treeWrittenAt = now;
     }
   }
 
@@ -1019,33 +1354,45 @@ final class _Supervisor extends ProcessSupervisor {
 
   @override
   Future<KillOutcome> stop(SupervisedChild child, {StopTimings? timings}) {
-    if (child is! _Record || !identical(child._sup, this)) {
-      return Future.value(child.state.live ? const ScanFailed('not a child of this supervisor') : const Ended([]));
-    }
-    final r = child;
-    if (r.state is ChildStartFailed) return Future.value(const Ended([]));
-    final running = r._stopping;
-    if (running != null) return running;
-    final f = _stopRecord(r, timings ?? t);
-    r._stopping = f;
-    unawaited(
-      f.whenComplete(() {
-        r._stopping = null;
-        _retick();
-      }),
-    );
-    return f;
+    // In the root zone, whatever the caller's: fake time in widget tests must not drive real timeouts.
+    return _inRoot(() {
+      if (child is! _Record || !identical(child._sup, this)) {
+        return Future.value(child.state.live ? const ScanFailed('not a child of this supervisor') : const Ended([]));
+      }
+      final r = child;
+      if (r.state case ChildStartFailed() || ChildDisowned()) return Future.value(const Ended([]));
+      final running = r._stopping;
+      if (running != null) return running;
+      final f = _stopRecord(r, timings ?? t);
+      r._stopping = f;
+      unawaited(
+        f.whenComplete(() {
+          r._stopping = null;
+          _retick();
+        }),
+      );
+      return f;
+    });
   }
 
   Future<KillOutcome> _stopRecord(_Record r, StopTimings tm) async {
     if (r.state is ChildStarting) await r.states.firstWhere((s) => s is! ChildStarting);
+    // An adoption that must be checked first is never signalled before it is.
+    if (r.expects && r.state is ChildLaunched) {
+      _retick();
+      await r.states
+          .firstWhere((s) => s is! ChildLaunched)
+          .timeout(const Duration(seconds: 5), onTimeout: () => r.state);
+      if (r.state is ChildLaunched) r.apply(const ChildNotOurs('could not be checked in time'));
+    }
+    if (r.state is ChildDisowned) return const Ended([]);
     final origins = [
       for (final x in _list.values)
         if (x.origin == r.id && !identical(x, r)) x,
     ];
     final fromOrigins = await Future.wait([for (final x in origins) stop(x, timings: tm)]);
     switch (r.state) {
-      case ChildStartFailed() || ChildStarting():
+      case ChildStartFailed() || ChildStarting() || ChildDisowned():
         return KillOutcome.merge(fromOrigins);
       case ChildExited(:final at):
         // The program is gone; what its group or tree left running ends with it (the group only right after the
@@ -1070,7 +1417,11 @@ final class _Supervisor extends ProcessSupervisor {
       return KillOutcome.merge([...fromOrigins, await _stopRecord(r, tm)]);
     }
     final id = r.identity!;
+    // A fresh look at its tree first: what vanished from it since the last tick is the sign of an escape.
+    final first = await _scanner.get(after: DateTime.now());
+    if (first case Listed(:final table)) _refreshTree(r, table);
     final res = await _end(
+      first: first,
       roots: [id, ...r.tree.values],
       leaders: [if (id.leadsGroup) id],
       // A child followed since it started: its group is its own even once its leader has gone.
@@ -1078,7 +1429,7 @@ final class _Supervisor extends ProcessSupervisor {
       rec: r,
       timings: tm,
       childTag: r is _Spawned ? (childEnvVar, '${r.id}') : null,
-      escapedSince: r._launchedAt,
+      escapedSince: r.lastVanish == null ? null : r._launchedAt,
     );
     return KillOutcome.merge([...fromOrigins, await _settle(r, res)]);
   }
@@ -1119,45 +1470,69 @@ final class _Supervisor extends ProcessSupervisor {
   }
 
   @override
-  Future<KillOutcome> stopOwner(ProcessOwner owner, {bool tagged = true, bool descendants = true}) async {
-    final mine = [
-      for (final r in _list.values)
-        if (r.spec.owner == owner && !r.spec.outlivesApp) r,
-    ];
-    final since = [for (final r in mine) ?r._launchedAt]
-        .fold<DateTime?>(null, (a, b) => a == null || b.isBefore(a) ? b : a);
-    final outcomes = await Future.wait([for (final r in mine) stop(r)]);
-    if (!tagged) return KillOutcome.merge(outcomes);
-    final tag = appTag;
-    final res = await _end(
-      roots: const [],
-      leaders: const [],
-      tagged: (row) => row.tag(ownerEnvVar) == owner.key && row.tag(appEnvVar) == tag,
-      descendants: descendants,
-      escapedSince: since,
-    );
-    return KillOutcome.merge([...outcomes, res.outcome]);
+  Future<KillOutcome> stopOwner(ProcessOwner owner, {bool tagged = true, bool descendants = true}) {
+    // In the root zone, whatever the caller's: fake time in widget tests must not drive real timeouts.
+    return _inRoot(() async {
+      final mine = [
+        for (final r in _list.values)
+          if (r.spec.owner == owner) r,
+      ];
+      final outcomes = await Future.wait([for (final r in mine) stop(r)]);
+      // Kept past its children's records: when its first child started, and whether a tree of its lost something.
+      final seen = _owners[owner.key];
+      final since = seen != null && seen.escapeHint ? seen.since : null;
+      if (!tagged) return KillOutcome.merge(outcomes);
+      final tag = appTag;
+      final res = await _end(
+        roots: const [],
+        leaders: const [],
+        tagged: (row) => row.tag(ownerEnvVar) == owner.key && row.tag(appEnvVar) == tag,
+        descendants: descendants,
+        escapedSince: since,
+      );
+      return KillOutcome.merge([...outcomes, res.outcome]);
+    });
   }
 
   @override
-  Future<KillOutcome> killTree(int pid, {Duration? termWait}) async {
-    if (byPid(pid) case final r?) return stop(r);
-    if (Platform.isWindows) return _windowsKillTree(pid);
-    final scan = await _scanner.get();
-    final timings = StopTimings(termGrace: termWait ?? t.termGrace, killWait: t.killWait, poll: t.poll);
-    switch (scan) {
-      case ScanFailed(:final why):
-        // Blind, as before: TERM, the grace, KILL; but said to be unchecked.
-        _signal(pid, ProcessSignal.sigterm);
-        await Future<void>.delayed(timings.termGrace);
-        _signal(pid, ProcessSignal.sigkill);
-        return ScanFailed(why);
-      case Listed(:final table):
-        final row = table.rows[pid];
-        if (row == null || row.zombie) return const Ended([]);
-        final id = row.identity;
-        return (await _end(roots: [id], leaders: [if (id.leadsGroup) id], timings: timings, first: scan)).outcome;
-    }
+  Future<KillOutcome> killTree(int pid, {Duration? termWait, String? expectedStart}) {
+    // In the root zone, whatever the caller's: fake time in widget tests must not drive real timeouts.
+    return _inRoot(() async {
+      if (expectedStart != null) {
+        // The kill's own look at the table decides: gone or reused means nothing is signalled.
+        final look = await _scanner.get(after: DateTime.now());
+        switch (look) {
+          case ScanFailed():
+            return look; // can't tell whose it is: nothing signalled
+          case Listed(:final table):
+            final row = table.rows[pid];
+            if (row == null || row.zombie) return Ended(const [], skipped: 'pid $pid is not running');
+            if (row.start != expectedStart) {
+              return Ended(const [], skipped: 'pid $pid is another process now (started ${row.start})');
+            }
+        }
+      }
+      if (byPid(pid) case final r?) return stop(r);
+      if (Platform.isWindows) return _windowsKillTree(pid);
+      final scan = await _scanner.get();
+      final timings = StopTimings(termGrace: termWait ?? t.termGrace, killWait: t.killWait, poll: t.poll);
+      switch (scan) {
+        case ScanFailed(:final why):
+          // Blind, as before: TERM, the grace, KILL; but said to be unchecked.
+          _signal(pid, ProcessSignal.sigterm);
+          await Future<void>.delayed(timings.termGrace);
+          _signal(pid, ProcessSignal.sigkill);
+          return ScanFailed(why);
+        case Listed(:final table):
+          final row = table.rows[pid];
+          if (row == null || row.zombie) return const Ended([]);
+          if (expectedStart != null && row.start != expectedStart) {
+            return Ended(const [], skipped: 'pid $pid is another process now (started ${row.start})');
+          }
+          final id = row.identity;
+          return (await _end(roots: [id], leaders: [if (id.leadsGroup) id], timings: timings, first: scan)).outcome;
+      }
+    });
   }
 
   Future<KillOutcome> _windowsKillTree(int pid) async {
@@ -1172,16 +1547,15 @@ final class _Supervisor extends ProcessSupervisor {
     };
   }
 
-  /// Whether [row] may be something a child started that left its tree with its environment hidden (macOS
-  /// platform binaries): orphaned, this user's, started since [since], and not a system service or app.
+  /// Whether [row] may be something a child started that left its tree unseen, environment hidden (macOS platform
+  /// binaries): orphaned, this user's, started since [since] (and so during the child's life), not a service, and
+  /// not anyone else's child.
   bool _mayHaveEscaped(ScanRow row, DateTime since) {
     if (row.ppid != 1 || row.zombie || row.uid != _Self.it.uid || row.env is! EnvHidden) return false;
-    final started = lstartTime(row.start);
-    if (started == null || started.isBefore(since.subtract(const Duration(seconds: 2)))) return false;
-    final c = row.command;
-    const system = ['/System/', '/usr/libexec/', '/usr/sbin/', '/sbin/', '/Library/Apple/', '/Applications/'];
-    if (system.any(c.startsWith) || c.startsWith('(')) return false;
-    if (c.contains('.app/Contents/') || c.contains('.xpc/') || c.contains('.framework/')) return false;
+    final started = _startedAt(row);
+    if (started == null || started.isBefore(since.subtract(const Duration(seconds: 1)))) return false;
+    if (started.isAfter(DateTime.now().add(const Duration(seconds: 1)))) return false;
+    if (_looksLikeDaemon(row.command)) return false;
     return !_list.values.any((r) => r.pid == row.pid || r.tree.containsKey(row.pid));
   }
 
@@ -1193,8 +1567,9 @@ final class _Supervisor extends ProcessSupervisor {
   /// then for the rest of this kill), or, with [leaderless], its leader is gone (a child followed since it
   /// started). A leader's pid with another start time means the group id is someone else's: never signalled.
   ///
-  /// With [escapedSince] (macOS), orphans started since then whose environment is hidden can't be told apart from
-  /// something the child started: they are not touched, and the outcome says [Unaccounted] instead of [Ended].
+  /// With [escapedSince] (given only when something left the child's tree unseen), orphans started since then whose
+  /// environment is hidden can't be told apart from something the child started: they are not touched, and the
+  /// outcome lists them ([Ended.maybeEscaped]).
   Future<_EndResult> _end({
     required List<ProcessIdentity> roots,
     required List<ProcessIdentity> leaders,
@@ -1243,7 +1618,8 @@ final class _Supervisor extends ProcessSupervisor {
       }
 
       for (final r in roots) {
-        if (table.alive(r)) {
+        // Never the app or what it runs under, whatever a ledger or a tag says.
+        if (table.alive(r) && !spare.contains(r.pid) && r.pid > 1) {
           targets[r.pid] ??= table.rows[r.pid]!.identity;
           if (descendants) table.descendants(r.pid).forEach(add);
         }
@@ -1307,7 +1683,7 @@ final class _Supervisor extends ProcessSupervisor {
       case ScanFailed(:final why):
         lastFailure = why;
         for (final r in roots) {
-          targets[r.pid] = r; // blind: the roots as known
+          if (r.pid > 1 && r.pid != pid) targets[r.pid] = r; // blind: the roots as known
         }
         if (leaderless) groups.addAll([for (final l in candidates) l.pid]);
       case Listed(:final table):
@@ -1341,8 +1717,19 @@ final class _Supervisor extends ProcessSupervisor {
       for (final p in targets.values) {
         await _raw('$root\\System32\\taskkill.exe', ['/PID', '${p.pid}', '/T', '/F']);
       }
-      final now = await waitGone(tm.killWait);
-      return _EndResult(targets.values.toSet(), now ?? targets.values.toSet(), now == null ? lastFailure : null, {});
+      // Not the shared scan (2 s apart there): own children by their exit, the rest by tasklist.
+      final until = DateTime.now().add(tm.killWait);
+      var alive = targets.values.toSet();
+      while (true) {
+        final still = <ProcessIdentity>{};
+        for (final p in alive) {
+          if (await _windowsAlive(p.pid, rec)) still.add(p);
+        }
+        alive = still;
+        if (alive.isEmpty || DateTime.now().isAfter(until)) break;
+        await Future<void>.delayed(tm.poll);
+      }
+      return _EndResult(targets.values.toSet(), alive, null, {});
     }
     if (targets.isEmpty && groups.isEmpty && lastFailure == null) {
       return _EndResult(const {}, const {}, null, unaccounted.values.toSet());
@@ -1357,6 +1744,17 @@ final class _Supervisor extends ProcessSupervisor {
     }
     if (now == null) return _EndResult(targets.values.toSet(), targets.values.toSet(), lastFailure, {});
     return _EndResult(targets.values.toSet(), now, null, unaccounted.values.toSet());
+  }
+
+  /// Windows: whether [p] still runs. A child of [rec] that the app waits on is asked through its exit future.
+  Future<bool> _windowsAlive(int p, _Record? rec) async {
+    if (rec != null && rec.pid == p && rec.waitsOnExit) return rec.state.live && !rec._ended.isCompleted;
+    final root = Platform.environment['SystemRoot'] ?? r'C:\Windows';
+    final r = await _raw('$root\\System32\\tasklist.exe', ['/FI', 'PID eq $p', '/NH', '/FO', 'CSV']);
+    return switch (r) {
+      _RawDone(:final out) => out.contains('"$p"'),
+      _RawFailed() => true, // can't tell: still running as far as anyone knows
+    };
   }
 
   // ---------------------------------------------------------------- bounded runs
@@ -1378,82 +1776,93 @@ final class _Supervisor extends ProcessSupervisor {
     Encoding stderrEncoding = systemEncoding,
     int? maxOutputBytes,
     String? label,
-  }) async {
-    final SupervisedProcess p;
-    try {
-      p = await spawn(
-        SpawnSpec(
-          owner: owner,
-          kind: kind,
-          exe: exe,
-          args: args,
-          env: env,
-          includeParentEnvironment: includeParentEnvironment,
-          cwd: cwd,
-          label: label ?? '$exe ${args.join(' ')}'.trim(),
-        ),
-      );
-    } on SupervisorClosed {
-      rethrow;
-    } on Object catch (e) {
-      return StartFailed('$e');
-    }
-    final out = _Capture(maxOutputBytes), err = _Capture(maxOutputBytes);
-    final outSub = p.stdout.listen(out.add, onDone: out.done.complete, onError: (Object _) {}, cancelOnError: false);
-    final errSub = p.stderr.listen(err.add, onDone: err.done.complete, onError: (Object _) {}, cancelOnError: false);
-    if (stdinBytes != null) p.stdin.add(stdinBytes);
-    if (stdin != null) p.stdin.write(stdin);
-    unawaited(p.stdin.close().catchError((Object _) {}));
-
-    Future<void> drained(Duration within) =>
-        Future.wait([out.done.future, err.done.future]).timeout(within, onTimeout: () => const []);
-    Future<void> release() async {
-      await outSub.cancel();
-      await errSub.cancel();
-    }
-
-    final stopWhy = Completer<bool>(); // true: timed out, false: cancelled
-    final timer = Timer(timeout, () {
-      if (!stopWhy.isCompleted) stopWhy.complete(true);
-    });
-    if (cancel != null) {
-      unawaited(
-        cancel.then((_) {
-          if (!stopWhy.isCompleted) stopWhy.complete(false);
-        }, onError: (Object _) {}),
-      );
-    }
-    final first = await Future.any<Object>([p.exitCode, stopWhy.future]);
-    if (first is int) {
-      // Exited: its pipes close with it, unless something it started still holds them.
-      await drained(const Duration(milliseconds: 200));
-      timer.cancel();
-      if (out.done.isCompleted && err.done.isCompleted) {
-        return Finished(first, out.output, err.output, stdoutEncoding: stdoutEncoding, stderrEncoding: stderrEncoding);
+    bool duringQuit = false,
+  }) {
+    // In the root zone, whatever the caller's: fake time in widget tests must not drive real timeouts.
+    return _inRoot(() async {
+      final SupervisedProcess p;
+      try {
+        p = await _spawn(
+          duringQuit: duringQuit,
+          SpawnSpec(
+            owner: owner,
+            kind: kind,
+            exe: exe,
+            args: args,
+            env: env,
+            includeParentEnvironment: includeParentEnvironment,
+            cwd: cwd,
+            label: label ?? '$exe ${args.join(' ')}'.trim(),
+          ),
+        );
+      } on SupervisorClosed catch (e) {
+        return Refused(e.what);
+      } on Object catch (e) {
+        return StartFailed('$e');
       }
-      final left = await p.stop();
+      final out = _Capture(maxOutputBytes), err = _Capture(maxOutputBytes);
+      final outSub = p.stdout.listen(out.add, onDone: out.done.complete, onError: (Object _) {}, cancelOnError: false);
+      final errSub = p.stderr.listen(err.add, onDone: err.done.complete, onError: (Object _) {}, cancelOnError: false);
+      if (stdinBytes != null) p.stdin.add(stdinBytes);
+      if (stdin != null) p.stdin.write(stdin);
+      unawaited(p.stdin.close().catchError((Object _) {}));
+
+      Future<void> drained(Duration within) =>
+          Future.wait([out.done.future, err.done.future]).timeout(within, onTimeout: () => const []);
+      Future<void> release() async {
+        await outSub.cancel();
+        await errSub.cancel();
+      }
+
+      final stopWhy = Completer<bool>(); // true: timed out, false: cancelled
+      final timer = Timer(timeout, () {
+        if (!stopWhy.isCompleted) stopWhy.complete(true);
+      });
+      if (cancel != null) {
+        unawaited(
+          cancel.then((_) {
+            if (!stopWhy.isCompleted) stopWhy.complete(false);
+          }, onError: (Object _) {}),
+        );
+      }
+      final first = await Future.any<Object>([p.exitCode, stopWhy.future]);
+      if (first is int) {
+        // Exited: its pipes close with it, unless something it started still holds them.
+        await drained(const Duration(milliseconds: 200));
+        timer.cancel();
+        if (out.done.isCompleted && err.done.isCompleted) {
+          return Finished(
+            first,
+            out.output,
+            err.output,
+            stdoutEncoding: stdoutEncoding,
+            stderrEncoding: stderrEncoding,
+          );
+        }
+        final left = await p.stop();
+        await drained(const Duration(milliseconds: 300));
+        await release();
+        return Finished(
+          first,
+          out.output,
+          err.output,
+          stdoutEncoding: stdoutEncoding,
+          stderrEncoding: stderrEncoding,
+          leftRunning: left,
+        );
+      }
+      timer.cancel();
+      final kill = await p.stop();
       await drained(const Duration(milliseconds: 300));
       await release();
-      return Finished(
-        first,
-        out.output,
-        err.output,
-        stdoutEncoding: stdoutEncoding,
-        stderrEncoding: stderrEncoding,
-        leftRunning: left,
-      );
-    }
-    timer.cancel();
-    final kill = await p.stop();
-    await drained(const Duration(milliseconds: 300));
-    await release();
-    return first == true
-        ? TimedOut(kill, out.output, err.output, encoding: stdoutEncoding)
-        : Cancelled(kill, out.output, err.output, encoding: stdoutEncoding);
+      return first == true
+          ? TimedOut(kill, out.output, err.output, stdoutEncoding: stdoutEncoding, stderrEncoding: stderrEncoding)
+          : Cancelled(kill, out.output, err.output, stdoutEncoding: stdoutEncoding, stderrEncoding: stderrEncoding);
+    });
   }
 
   @override
-  Future<ProcessScan> scan({bool env = false}) => _scanner.get(env: env);
+  Future<ProcessScan> scan({bool env = false}) => _inRoot(() => _scanner.get(env: env));
 
   // ---------------------------------------------------------------- the launch sweep
 
@@ -1462,20 +1871,23 @@ final class _Supervisor extends ProcessSupervisor {
 
   @override
   Future<SweepReport> sweepPreviousRuns() {
-    switch (_sweepState) {
-      case _SweepRunning(:final done):
-        return done;
-      case _SweepDone(:final report):
-        return Future.value(report);
-      case _SweepNotRun():
-        final done = _sweepNow().then((r) {
-          _sweepState = _SweepDone(r);
-          _sweep.value = r;
-          return r;
-        });
-        _sweepState = _SweepRunning(done);
-        return done;
-    }
+    // In the root zone, whatever the caller's: fake time in widget tests must not drive real timeouts.
+    return _inRoot(() {
+      switch (_sweepState) {
+        case _SweepRunning(:final done):
+          return done;
+        case _SweepDone(:final report):
+          return Future.value(report);
+        case _SweepNotRun():
+          final done = _sweepNow().then((r) {
+            _sweepState = _SweepDone(r);
+            _sweep.value = r;
+            return r;
+          });
+          _sweepState = _SweepRunning(done);
+          return done;
+      }
+    });
   }
 
   static final _ledgerName = RegExp(r'^ledger-(\d+(?:-[^/]+)?)\.jsonl$');
@@ -1502,6 +1914,7 @@ final class _Supervisor extends ProcessSupervisor {
     final targets = <int, ({ProcessIdentity id, String label, String owner})>{};
     final leftAlone = <SweptProcess>[];
     final swept = <File>[];
+    final previous = <LedgerEntry>[];
     for (final f in files) {
       final List<String> lines;
       try {
@@ -1515,6 +1928,7 @@ final class _Supervisor extends ProcessSupervisor {
         if (a.start == 'unknown' && table.rows.containsKey(a.pid)) continue; // can't tell
       }
       swept.add(f);
+      previous.addAll(ledgerEntriesOf(fold.live));
       for (final c in fold.live) {
         for (final p in c.processes) {
           final row = table.rows[p.id.pid];
@@ -1567,6 +1981,7 @@ final class _Supervisor extends ProcessSupervisor {
         );
       }
       if (res.failure case final why?) {
+        _previous = List.unmodifiable(previous);
         return SweepReport(ended: ended, survived: survived, leftAlone: leftAlone, failure: why);
       }
     }
@@ -1586,6 +2001,7 @@ final class _Supervisor extends ProcessSupervisor {
       leftAlone: leftAlone,
       ledgers: [for (final f in swept) f.path],
     );
+    _previous = List.unmodifiable(previous);
     if (!report.quiet) debugPrint('Process supervisor: launch sweep: $report');
     return report;
   }
@@ -1593,39 +2009,64 @@ final class _Supervisor extends ProcessSupervisor {
   // ---------------------------------------------------------------- quitting
 
   @override
-  Future<QuitReport> stopAll({StopTimings timings = StopTimings.quit}) {
-    switch (_state) {
-      case _SupQuitting(:final done):
-        return done;
-      case _SupClosed(:final report):
-        return Future.value(report);
-      case _SupIdle() || _SupOpening() || _SupOpen():
-        final done = _quit(timings);
-        _state = _SupQuitting(done);
-        return done;
-    }
+  Future<QuitReport> stopAll({
+    StopTimings timings = StopTimings.quit,
+    List<Future<void> Function()> before = const [],
+  }) {
+    // In the root zone, whatever the caller's: fake time in widget tests must not drive real timeouts.
+    return _inRoot(() {
+      switch (_state) {
+        case _SupQuitting(:final done):
+          return done;
+        case _SupClosed(:final report):
+          return Future.value(report);
+        case _SupIdle() || _SupOpen():
+          final done = _quit(timings, before);
+          _state = _SupQuitting(done);
+          return done;
+        case _SupOpening(done: final opening):
+          // The folder being opened is where quit steps' children go.
+          final q = opening.then((_) => _quit(timings, before));
+          _state = _SupQuitting(q);
+          return q;
+      }
+    });
   }
 
-  Future<QuitReport> _quit(StopTimings timings) async {
-    final all = [
-      for (final r in _list.values)
-        if (!r.spec.outlivesApp) r,
-    ];
-    final outcomes = await Future.wait([for (final r in all) stop(r, timings: timings)]);
-    final report = QuitReport([
-      for (var i = 0; i < all.length; i++)
-        (id: all[i].id, label: all[i].spec.label, owner: all[i].spec.owner.key, outcome: outcomes[i]),
-    ], at: DateTime.now());
+  Future<QuitReport> _quit(StopTimings timings, List<Future<void> Function()> before) async {
+    for (final step in before) {
+      try {
+        await step();
+      } on Object catch (e) {
+        debugPrint('Process supervisor: a quit step failed ($e); going on.');
+      }
+    }
+    final entries = <QuitEntry>[];
+    final done = <int>{};
+    // Again while quit steps still start children (bounded: they are refused once the steps are over).
+    for (var round = 0; round < 3; round++) {
+      final all = [
+        for (final r in _list.values)
+          if (!done.contains(r.id)) r,
+      ];
+      if (all.isEmpty) break;
+      final outcomes = await Future.wait([for (final r in all) stop(r, timings: timings)]);
+      for (var i = 0; i < all.length; i++) {
+        done.add(all[i].id);
+        entries.add((id: all[i].id, label: all[i].spec.label, owner: all[i].spec.owner.key, outcome: outcomes[i]));
+      }
+    }
+    final report = QuitReport(entries, at: DateTime.now());
     if (!report.clean) {
       debugPrint(
         'NOT CLOSED at quit: ${[for (final e in report.entries)
           if (e.outcome is! Ended) '${e.label}: ${e.outcome}']}',
       );
     }
-    await _files.quit(report, clean: report.clean && _list.values.every((r) => r.spec.outlivesApp));
+    _state = _SupClosed(report); // no quit step may start anything now
+    await _files.quit(report, clean: report.clean && _list.isEmpty);
     if (_tick case _TickOn(:final timer)) timer.cancel();
     _tick = const _TickOff();
-    _state = _SupClosed(report);
     return report;
   }
 
@@ -1700,7 +2141,7 @@ final class _Capture {
 }
 
 final class _EndResult {
-  const _EndResult(this.targets, this.survivors, this.failure, this.unaccounted);
+  const _EndResult(this.targets, this.survivors, this.failure, this.maybeEscaped);
   final Set<ProcessIdentity> targets;
   final Set<ProcessIdentity> survivors;
 
@@ -1708,7 +2149,7 @@ final class _EndResult {
   final String? failure;
 
   /// Orphans that may be the child's, environment hidden: untouched, still running.
-  final Set<ProcessIdentity> unaccounted;
+  final Set<ProcessIdentity> maybeEscaped;
 
   List<int> get ended => [
     for (final p in targets)
@@ -1722,12 +2163,7 @@ final class _EndResult {
       'still running after SIGKILL',
       ended: ended,
     ),
-    null when unaccounted.isNotEmpty => Unaccounted(
-      [for (final u in unaccounted) u.pid]..sort(),
-      'orphaned while it ran, with environments the OS hides: may be its, so not touched',
-      ended: ended,
-    ),
-    null => Ended(ended),
+    null => Ended(ended, maybeEscaped: [for (final u in maybeEscaped) u.pid]..sort()),
   };
 }
 
@@ -1735,16 +2171,85 @@ final class _EndResult {
 
 enum _Flush { idle, scheduled }
 
+/// A folder of the supervisor's own is removed while it holds nothing, and made again for the next line.
+enum _Folder { present, removed }
+
+/// The watch list: never written yet, or written (it may list nothing now).
+enum _WatchFile { none, written }
+
+/// The ledger file, kept open for appends while it exists.
+@immutable
+sealed class _LedgerHandle {
+  const _LedgerHandle();
+}
+
+final class _LedgerClosed extends _LedgerHandle {
+  const _LedgerClosed();
+}
+
+final class _LedgerOpen extends _LedgerHandle {
+  const _LedgerOpen(this.file);
+  final RandomAccessFile file;
+}
+
 /// The ledger and the watchdog's list, written off the caller's path: ledger lines are queued and appended in
-/// batches, the watch list is rewritten (whole, by rename) at most every 30 ms. Files appear with the first line.
+/// batches, the watch list is rewritten (whole, by rename) at most every 30 ms. Files appear with the first line;
+/// past [compactAfter] lines the ledger is rewritten as a snapshot of what is listed; once nothing has been listed
+/// a folder of the supervisor's own is cleared (see [idle]).
 final class _Files {
   _Files(this._sup);
   final _Supervisor _sup;
   String? dir;
+  bool removeDirWhenEmpty = false;
   final _pending = StringBuffer();
   var _ledgerFlush = _Flush.idle;
   var _watchFlush = _Flush.idle;
   Future<void> _tail = Future.value();
+  var _lines = 0;
+  var _idleRound = 0;
+  var _folder = _Folder.present;
+  var watchState = _WatchFile.none;
+  _LedgerHandle _handle = const _LedgerClosed();
+
+  /// Appends [text] through the open handle (opened, with the app line first, when the file is new).
+  Future<void> _append(String text) async {
+    final RandomAccessFile f;
+    switch (_handle) {
+      case _LedgerOpen(file: final open):
+        f = open;
+      case _LedgerClosed():
+        final file = File(ledgerPath!);
+        final fresh = !await file.exists();
+        f = await file.open(mode: FileMode.append);
+        _handle = _LedgerOpen(f);
+        if (fresh) {
+          text = LedgerApp(pid: pid, start: _Self.it.start).encode() + text;
+          _lines = 0;
+        }
+    }
+    await f.writeString(text);
+    _lines += '\n'.allMatches(text).length;
+  }
+
+  Future<void> _closeHandle() async {
+    if (_handle case _LedgerOpen(:final file)) {
+      _handle = const _LedgerClosed();
+      await file.close();
+    }
+  }
+
+  /// [dir] is made only when something is written there.
+  void markFolderAbsent(String dir) {
+    if (!Directory(dir).existsSync()) _folder = _Folder.removed;
+  }
+
+  Future<void> _ensureFolder() async {
+    if (_folder == _Folder.present) return;
+    await Directory(dir!).create(recursive: true);
+    _folder = _Folder.present;
+  }
+
+  static const compactAfter = 2000;
 
   static String ledgerIn(String dir) => '$dir/ledger-${_Self.it.suffix}.jsonl';
   String? get ledgerPath => dir == null ? null : ledgerIn(dir!);
@@ -1752,13 +2257,22 @@ final class _Files {
 
   void open(String dir) {
     this.dir = dir;
+    final own = File(ledgerIn(dir));
+    if (own.existsSync()) _lines = own.readAsLinesSync().length;
     if (_pending.isNotEmpty) _scheduleLedger();
     watchChanged();
   }
 
   void add(LedgerLine line) {
     _pending.write(line.encode());
+    _idleRound++;
     if (dir != null) _scheduleLedger();
+  }
+
+  /// [add], on disk when this returns (nothing to wait for before the folder is open).
+  Future<void> addNow(LedgerLine line) async {
+    add(line);
+    if (dir != null) await _tail;
   }
 
   void _scheduleLedger() {
@@ -1769,29 +2283,101 @@ final class _Files {
       final text = _pending.toString();
       _pending.clear();
       if (text.isEmpty) return;
-      final f = File(ledgerPath!);
-      final head = await f.exists() ? '' : LedgerApp(pid: pid, start: _Self.it.start).encode();
-      await f.writeAsString('$head$text', mode: FileMode.append);
+      await _ensureFolder();
+      if (_lines + '\n'.allMatches(text).length > compactAfter) {
+        await _compact(File(ledgerPath!));
+        return;
+      }
+      await _append(text);
     });
+  }
+
+  /// The ledger rewritten as what is listed now: each child's spawn line, its pid or identity, its tree and
+  /// survivors. Ids are kept, so the fold reads the same.
+  Future<void> _compact(File f) async {
+    final out = StringBuffer(LedgerApp(pid: pid, start: _Self.it.start).encode());
+    var n = 1;
+    void put(LedgerLine l) {
+      out.write(l.encode());
+      n++;
+    }
+
+    for (final r in _sup._list.values) {
+      final spawn = r.spawnLine;
+      if (spawn == null) continue;
+      put(spawn);
+      if (r._port != null || r._detail != null) put(LedgerNote(id: r.id, port: r._port, detail: r._detail));
+      switch (r.state) {
+        case ChildLaunched(:final pid, :final at, :final group) || ChildUnverified(:final pid, :final at, :final group):
+          put(LedgerLaunch(id: r.id, pid: pid, at: at, ownGroup: group is OwnGroup));
+        case ChildRunning(:final id) || ChildTerming(:final id) || ChildKilling(:final id):
+          put(LedgerRun(id: r.id, identity: id));
+        case ChildNotClosed(:final survivors, :final reason):
+          put(LedgerNotClosed(id: r.id, survivors: survivors, reason: reason));
+        case ChildStarting() || ChildExited() || ChildStartFailed() || ChildDisowned():
+          break;
+      }
+      if (r.tree.isNotEmpty) put(LedgerTree(id: r.id, processes: [...r.tree.values]));
+    }
+    final tmp = File('${f.path}.tmp');
+    await tmp.writeAsString(out.toString());
+    await _closeHandle();
+    await tmp.rename(f.path);
+    _lines = n;
   }
 
   void watchChanged() {
     if (dir == null || _watchFlush == _Flush.scheduled) return;
     _watchFlush = _Flush.scheduled;
-    Timer(const Duration(milliseconds: 30), () {
-      _enqueue(() async {
-        _watchFlush = _Flush.idle;
-        final live = [
-          for (final r in _sup._list.values)
-            if (!r.spec.outlivesApp) ...r.liveProcesses,
-        ];
-        final path = watchPath!;
-        if (live.isEmpty && !await File(path).exists()) return; // nothing ever listed: no file
-        final tmp = File('$path.tmp');
-        await tmp.writeAsString(watchList(live));
-        await tmp.rename(path);
-      });
+    Timer(const Duration(milliseconds: 30), () => _enqueue(_writeWatch));
+  }
+
+  Future<void> _writeWatch() async {
+    _watchFlush = _Flush.idle;
+    final live = [for (final r in _sup._list.values) ...r.liveProcesses];
+    final path = watchPath!;
+    if (live.isEmpty && (_folder == _Folder.removed || !await File(path).exists())) return; // no file needed
+    await _ensureFolder();
+    final tmp = File('$path.tmp');
+    await tmp.writeAsString(watchList(live));
+    await tmp.rename(path);
+    watchState = _WatchFile.written;
+  }
+
+  /// The watch list on disk now (with what was queued before it).
+  Future<void> flushWatch() async {
+    if (dir == null) return;
+    _enqueue(_writeWatch);
+    await _tail;
+  }
+
+  /// Nothing is listed. A folder of the supervisor's own (tests, a temp one) is cleared at once, after what was
+  /// queued, unless something new came meanwhile; the app's folder keeps its ledger (compacted, deleted at a clean
+  /// quit). No timer: nothing is left pending (widget tests check).
+  void idle() {
+    if (!removeDirWhenEmpty || dir == null) return;
+    if (_sup._state case _SupQuitting() || _SupClosed()) return;
+    final round = ++_idleRound;
+    _enqueue(() async {
+      if (round != _idleRound || _sup._list.isNotEmpty || _pending.isNotEmpty) return;
+      await _closeHandle();
+      for (final p in [ledgerPath!, watchPath!]) {
+        if (await File(p).exists()) await File(p).delete();
+      }
+      watchState = _WatchFile.none;
+      _lines = 0;
+      await _removeDirIfEmpty();
     });
+  }
+
+  Future<void> _removeDirIfEmpty() async {
+    final d = dir;
+    if (!removeDirWhenEmpty || d == null) return;
+    final folder = Directory(d);
+    if (await folder.exists() && await folder.list().isEmpty) {
+      await folder.delete();
+      _folder = _Folder.removed;
+    }
   }
 
   void _enqueue(Future<void> Function() op) {
@@ -1800,7 +2386,8 @@ final class _Files {
     });
   }
 
-  /// At quit: `quit.json`, and (everything ended) the ledger and list deleted, after what was queued.
+  /// At quit: `quit.json`, and (everything ended) the ledger and list deleted, after what was queued. A folder of
+  /// the supervisor's own keeps nothing when the quit was clean.
   Future<void> quit(QuitReport report, {required bool clean}) async {
     await _tail;
     final d = dir;
@@ -1808,11 +2395,16 @@ final class _Files {
     final done = Completer<void>();
     _enqueue(() async {
       try {
-        await File('$d/quit.json').writeAsString(const JsonEncoder.withIndent('  ').convert(report.toJson()));
+        if (!(clean && removeDirWhenEmpty)) {
+          await _ensureFolder();
+          await File('$d/quit.json').writeAsString(const JsonEncoder.withIndent('  ').convert(report.toJson()));
+        }
+        await _closeHandle();
         if (clean) {
           for (final p in [ledgerPath!, watchPath!]) {
             if (await File(p).exists()) await File(p).delete();
           }
+          await _removeDirIfEmpty();
         }
       } finally {
         done.complete();

@@ -788,8 +788,9 @@ void main() {
           harness: 'test',
         );
     final host = container.read(hostServerProvider) as FakeHost;
-    for (var i = 0; i < 50 && host.tools.isEmpty; i++) {
-      await pumpEventQueue();
+    // The start touches files (the process ledger) before it registers its tools: wait in real time.
+    for (var i = 0; i < 500 && host.tools.isEmpty; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
     }
     // Gemini over ACP lists prompts inside session/new, which is what the start waits for.
     final prompts = await (host.tools.values.single as HostPrompts).workflowPrompts();
