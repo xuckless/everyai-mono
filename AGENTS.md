@@ -1699,8 +1699,24 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   Capacity (applied at once) and a Holding list with Release per agent lease. Tests cut 3,362 → ~1,060 (kept: core,
   security, state machines, drivers' contracts, one per feature; restored the JSON-RPC peer's pending-request case).
   Not done: the session queue, displays/streams through the pool, a crashed browser's slot, the lead switch awaiting
-  the old lead's close, closing a fork's CLI on stop_fork/release, Android per-session stop, Windows/Linux never run,
-  nothing clicked through live.
+  the old lead's close, closing a fork's CLI on stop_fork/release, Android per-session stop, Windows/Linux never run.
+  **Verified live on macOS (2026-11-12, arm64, debug build; branch `verify/macos`):** the build phase puts a
+  universal, ad-hoc signed `everyai-exec` in `Contents/Resources`, and the app's supervisor launches through it (a
+  `#!`-less probe runs as `/bin/sh <file>`, perl's execvp would show `sh <file>`; no `.tools` copy, no override).
+  `tool/live_apps/process_rig.dart` (the real controller on the EveryAI harness in a temp git repo, no model: tools
+  through `EveryAISession.runToolDirectly`; the app's data folder redirected through path_provider, so nothing of the
+  user's is touched) passed 12/12: a pty background `http.server`, a `nohup … &` orphan (adopted as "left running"),
+  the stdio MCP server, `dart language-server` (diagnostics) and the WKWebView browser page all end on Stop (~0.6 s,
+  `Ended`, states Exited, port closed, lease null, no notice), come back with new pids, end on Stop all, and delete
+  ends `TeardownGone` with nothing tagged left; pool capacity 1 queues the second session ("position 1 of 1; held
+  by …") and grants it after the first's Stop; the 17th background shell is refused; budget 12 stops a 30-fork
+  session (ProcessBudgetExceeded, seen in ~3.7 s); the quit sequence afterwards is clean. `process_rig_life.sh`
+  (the rig as the app, with a shell child and a TERM-ignoring child + grandchild) passed 4/4: a quit Apple event
+  (~0.7 s) and SIGTERM (~0.6 s) run the 11 quit steps and write a clean `quit.json`; SIGKILL → the watchdog ends
+  every child incl. the grandchild in ~3 s; killing app + watchdog leaves them, and the next launch's sweep ends all
+  three ("Cleaned up 3 processes left by the last run"). Still not seen live: the real app's UI (Settings →
+  Processes, toasts), a `claude`/`codex` lead's Stop, Chrome-backed browsers, devices and displays. Known: after a
+  crash, the next launch reads the `quit.json` of the run before the crash (it is only replaced by a quit).
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),
