@@ -5,8 +5,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart' show debugPrint;
-import 'package:flutter_pty/flutter_pty.dart';
 
+import '../../../core/process/pty_spawn_io.dart' show spawnPty;
 import '../../../core/process/supervisor.dart';
 import '../harness/everyai/shell_io.dart' show ShellEnv;
 import '../harness/harness.dart' show HarnessError;
@@ -66,18 +66,16 @@ String _name(String executable) => executable.substring(executable.lastIndexOf(R
 /// wrote to the terminal.
 typedef TtyProgram = ({int pid, Future<int> exitCode, Stream<List<int>> output});
 
-/// Starts [executable] [args] in [cwd] with [env] (exactly) under a pty;
-/// tests start it with plain pipes.
-typedef TtyStart = Future<TtyProgram> Function(
-  String executable,
-  List<String> args,
-  String cwd,
-  Map<String, String> env,
+/// Starts [spec] (its env exactly, plus the owner's tags) under a pty and has [supervisor] adopt it, once; tests
+/// start it with plain pipes. Throws [SupervisorClosed] while the app quits (after ending what it started).
+typedef TtyStart = Future<({TtyProgram program, SupervisedChild child})> Function(
+  ProcessSupervisor supervisor,
+  SpawnSpec spec,
 );
 
-Future<TtyProgram> _ptyStart(String executable, List<String> args, String cwd, Map<String, String> env) async {
-  final pty = Pty.start(executable, arguments: args, workingDirectory: cwd, environment: env);
-  return (pid: pty.pid, exitCode: pty.exitCode, output: pty.output);
+Future<({TtyProgram program, SupervisedChild child})> _ptyStart(ProcessSupervisor supervisor, SpawnSpec spec) async {
+  final p = spawnPty(supervisor, spec);
+  return (program: (pid: p.pty.pid, exitCode: p.pty.exitCode, output: p.pty.output), child: p.child);
 }
 
 /// The shell line that runs the CLI ("$0" "$@") on the pipes named in the
@@ -121,46 +119,30 @@ Future<DriverProcess> spawnDriverTty({
   // Only what this run writes counts as its last words.
   final logStart = _length(logPath);
   final TtyProgram program;
-  final startedAt = DateTime.now();
-  try {
-    program = await start(
-      '/bin/sh',
-      ['-c', _onPipes, executable, ...args],
-      cwd,
-      {
-        ...shell.env,
-        ...env,
-        sessionEnvVar: sessionTag,
-        // flutter_pty starts it, so the supervisor adopts it: it carries the tags a spawn would give it.
-        ...supervisor.tagsFor(owner),
-        'EVERYAI_ACP_IN': input,
-        'EVERYAI_ACP_OUT': output,
-        'EVERYAI_ACP_LOG': logPath,
-      },
-    );
-  } on Object {
-    _removePipes(input, output);
-    rethrow;
-  }
   final SupervisedChild child;
   try {
-    child = supervisor.adopt(
-      program.pid,
+    (:program, :child) = await start(
+      supervisor,
       SpawnSpec(
         owner: owner,
         kind: ProcessKind.leadCli,
-        exe: executable,
-        args: args,
+        exe: '/bin/sh',
+        args: ['-c', _onPipes, executable, ...args],
+        env: {
+          ...shell.env,
+          ...env,
+          sessionEnvVar: sessionTag,
+          'EVERYAI_ACP_IN': input,
+          'EVERYAI_ACP_OUT': output,
+          'EVERYAI_ACP_LOG': logPath,
+        },
+        includeParentEnvironment: false,
+        cwd: cwd,
         label: 'Driver ${_name(executable)} (terminal)',
         detail: sessionTag,
       ),
-      exitCode: program.exitCode,
-      // Our own child, just started: matched by its start time before it is ever signalled.
-      startedWithin: DateTime.now().difference(startedAt) + adoptSlack,
     );
-  } on SupervisorClosed {
-    // Started while the app quits: it must not outlive it.
-    logStop('Driver ${_name(executable)} (terminal)', await supervisor.killTree(program.pid));
+  } on Object {
     _removePipes(input, output);
     rethrow;
   }

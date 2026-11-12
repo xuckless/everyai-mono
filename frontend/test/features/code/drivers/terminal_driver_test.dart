@@ -61,6 +61,10 @@ final class FakePty implements ShellPty {
   final _exit = Completer<int>();
   final writes = <List<int>>[];
 
+  /// Its supervisor record, set when the (fake) pty layer adopts it.
+  @override
+  late final SupervisedChild child;
+
   /// Signals the supervisor sent to it (the session's close goes through the supervisor, never [kill]).
   int get kills => _signals.where((s) => s.$1.abs() == pid).length;
 
@@ -75,7 +79,7 @@ final class FakePty implements ShellPty {
   @override
   void resize(int rows, int columns) {}
   @override
-  void kill() => fail('closed by signal to the pty instead of through the supervisor');
+  Future<KillOutcome> kill() => fail('closed through the pty instead of its supervisor record');
 
   void emit(String s) => _out.add(Uint8List.fromList(utf8.encode(s)));
   void exit(int code) {
@@ -108,11 +112,19 @@ TerminalDriver _driver(
   command: 'aider',
   args: const ['--no-auto-commits'],
   which: (c) async => c == 'aider' ? '/bin/aider' : null,
-  startPty: ({required executable, required args, required workingDir, required sessionTag, env = const {}}) async {
+  startPty: ({required executable, required args, required workingDir, required sessionTag, owner, sup, label}) async {
     started?.add({'exe': executable, 'args': args, 'cwd': workingDir, 'tag': sessionTag});
-    // The supervisor's tags, so the adopted process is found as the session's.
-    expect(env['EVERYAI_SESSION'], sessionTag);
-    expect(env['EVERYAI_OWNER'], 'session:$sessionTag');
+    // The pty layer adopts it once, for the session, with the driver's supervisor (as `startProgram` does).
+    expect(owner, isA<SessionOwner>().having((o) => o.id, 'id', sessionTag));
+    expect(sup, same(_sup));
+    if (pty != null) {
+      pty.child = sup!.adopt(
+        pty.pid,
+        SpawnSpec(owner: owner!, kind: ProcessKind.pty, exe: executable, args: args, label: label),
+        exitCode: pty.exitCode,
+        startedWithin: const Duration(seconds: 10),
+      );
+    }
     return pty;
   },
   supervisor: _sup,

@@ -31,7 +31,6 @@ final class TerminalSession implements HarnessSession, ClosesVerified {
     required this.id,
     required this.label,
     required this.pty,
-    required this.child,
     required this.sessionTag,
     this.briefing,
     this.settle = defaultSettle,
@@ -52,8 +51,9 @@ final class TerminalSession implements HarnessSession, ClosesVerified {
   final String label;
   final ShellPty pty;
 
-  /// [pty]'s process as the supervisor holds it: closing stops it there (verified), never by a signal to the pty.
-  final SupervisedChild child;
+  /// [pty]'s process as the supervisor holds it (adopted once, by the pty layer): closing stops it there
+  /// (verified), never by a signal to the pty.
+  SupervisedChild get child => pty.child;
   final String sessionTag;
 
   /// Reads the session text (null: none); the driver passes the briefing file's reader.

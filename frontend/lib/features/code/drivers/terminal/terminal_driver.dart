@@ -10,7 +10,6 @@ import '../../panes/pty.dart';
 import '../briefing/briefing_types.dart' show briefingRootOf;
 import '../driver.dart';
 import '../driver_process.dart';
-import '../short_run.dart' show adoptSlack, logStop;
 import 'session_text_stub.dart' if (dart.library.io) 'session_text_io.dart' as text;
 import 'terminal_session.dart';
 
@@ -37,13 +36,16 @@ final class TerminalDriver implements HarnessDriver {
   /// Replaces the PATH lookup (tests).
   final Future<String?> Function(String command)? which;
 
-  /// Replaces the pty start (tests). [env] is added to its environment (the supervisor's tags).
+  /// Replaces the pty start (tests). It starts the CLI and has [sup] adopt it for [owner] under [label] (once:
+  /// the session stops it through `ShellPty.child`).
   final Future<ShellPty?> Function({
     required String executable,
     required List<String> args,
     required String workingDir,
     required String sessionTag,
-    Map<String, String> env,
+    ProcessOwner? owner,
+    ProcessSupervisor? sup,
+    String? label,
   })
   startPty;
 
@@ -74,38 +76,24 @@ final class TerminalDriver implements HarnessDriver {
     final status = await detect();
     final path = status.path;
     if (!status.installed || path == null) throw HarnessError("$label isn't installed.");
-    final owner = SessionOwner(spec.procTag);
-    final startedAt = DateTime.now();
+    // The pty layer starts it with the session's tags and the supervisor adopts it there (by its start time); a
+    // start while the app quits ends it at once and throws SupervisorClosed.
     final pty = await startPty(
       executable: path,
       args: args,
       workingDir: spec.workingDir,
       sessionTag: spec.procTag,
-      // flutter_pty starts it, so the supervisor adopts it: it carries the tags a spawn would give it.
-      env: supervisor.tagsFor(owner),
+      owner: SessionOwner(spec.procTag),
+      sup: supervisor,
+      label: '$label (terminal)',
     );
     if (pty == null) throw HarnessError('A terminal session needs a desktop computer.');
-    final SupervisedChild child;
-    try {
-      child = supervisor.adopt(
-        pty.pid,
-        SpawnSpec(owner: owner, kind: ProcessKind.pty, exe: path, args: args, label: '$label (terminal)'),
-        exitCode: pty.exitCode,
-        // Our own child, just started: matched by its start time before it is ever signalled.
-        startedWithin: DateTime.now().difference(startedAt) + adoptSlack,
-      );
-    } on SupervisorClosed {
-      // Started while the app quits: it must not outlive it.
-      logStop('$label (terminal)', await supervisor.killTree(pty.pid));
-      rethrow;
-    }
     registerDriverRoot(spec.procTag, pty.pid);
     final skillDir = spec.briefing?.skillDir;
     final session = TerminalSession(
       id: spec.sessionTag,
       label: label,
       pty: pty,
-      child: child,
       sessionTag: spec.procTag,
       briefing: skillDir == null ? null : () => readText(briefingRootOf(skillDir)),
       settle: settle ?? TerminalSession.defaultSettle,

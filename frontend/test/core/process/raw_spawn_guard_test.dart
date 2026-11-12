@@ -5,64 +5,11 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Processes are started and ended in `lib/core/process/` only (the supervisor: own sessions, the ledger, verified
-/// kills). Files that still do it themselves are listed here, with how many raw calls they hold, until their phase
-/// moves them. The list only shrinks: a new raw call (in a listed file or a new one) fails, and so does a count
-/// that went down (lower it, or drop the file).
-const _allowed = <String, int>{
-  'lib/core/local_backend/local_backend_io.dart': 2,
-  'lib/features/artifacts/script/svg_script_io.dart': 1,
-  'lib/features/code/domain/delivered_files.dart': 1,
-  'lib/features/code/drivers/acp/acp_files_io.dart': 1,
-  'lib/features/code/drivers/briefing/skill_export_io.dart': 1,
-  'lib/features/code/drivers/claude/claude_files_io.dart': 1,
-  'lib/features/code/drivers/detection/cli_scan.dart': 1,
-  'lib/features/code/drivers/detection/desktop_apps_io.dart': 1,
-  'lib/features/code/drivers/driver_process_io.dart': 4,
-  'lib/features/code/drivers/opencode/opencode_host_io.dart': 1,
-  'lib/features/code/drivers/registry_install/registry_install_io.dart': 1,
-  'lib/features/code/environments/environment_io_io.dart': 1,
-  'lib/features/code/git/git_service_io.dart': 8,
-  'lib/features/code/git/repo_check_io.dart': 1,
-  'lib/features/code/harness/everyai/app_tools_io.dart': 1,
-  'lib/features/code/harness/everyai/browser_io.dart': 2,
-  'lib/features/code/harness/everyai/everyai_harness_io.dart': 1,
-  'lib/features/code/harness/everyai/lsp_io.dart': 3,
-  'lib/features/code/harness/everyai/mcp_io.dart': 1,
-  'lib/features/code/harness/everyai/project_notes_io.dart': 1,
-  'lib/features/code/harness/everyai/prompt_io.dart': 1,
-  'lib/features/code/harness/everyai/script_io.dart': 1,
-  'lib/features/code/harness/everyai/shell_io.dart': 6,
-  'lib/features/code/harness/everyai/tools_io.dart': 6,
-  'lib/features/code/harness/everyai/window_ax_io.dart': 1,
-  'lib/features/code/harness/everyai/window_capture_io.dart': 3,
-  'lib/features/code/harness/session_processes_io.dart': 6,
-  'lib/features/code/host/host_screen_io.dart': 1,
-  'lib/features/code/live/adb_io.dart': 1,
-  'lib/features/code/live/android_device_io.dart': 2,
-  'lib/features/code/live/app_sources.dart': 1,
-  'lib/features/code/live/axe_install_io.dart': 1,
-  'lib/features/code/live/chrome_download_io.dart': 3,
-  'lib/features/code/live/desktop_helper_io.dart': 2,
-  'lib/features/code/live/desktop_window_io.dart': 2,
-  'lib/features/code/live/ios_simulator_io.dart': 8,
-  'lib/features/code/live/nested_display_io.dart': 1,
-  'lib/features/code/live/scrcpy_io.dart': 1,
-  'lib/features/code/live/webview_browser.dart': 2,
-  'lib/features/code/panes/file_tree_io.dart': 1,
-  'lib/features/code/panes/processes_io.dart': 4,
-  'lib/features/code/panes/pty_io.dart': 2,
-  'lib/features/code/resume/resume_files_io.dart': 1,
-  'lib/features/code/sample/sample_project_io.dart': 1,
-  'lib/features/code/session_notifications.dart': 2,
-  'lib/features/code/settings/settings_io.dart': 1,
-  'lib/features/code/shells/containers_io.dart': 3,
-  'lib/features/code/shells/pty_spawn_io.dart': 1,
-  'lib/features/code/ui/panes/browser_overlays.dart': 1,
-  'lib/features/code/workflows/workflow_bridge_io.dart': 1,
-  'lib/features/code/workflows/workflow_files_io.dart': 1,
-  'lib/features/local_models/data/local_system_io.dart': 7,
-  'lib/features/updates/data/install_io.dart': 2,
-};
+/// kills; ptys through `pty_spawn_io.dart`'s `spawnPty`, which starts and adopts them in one place). A file that
+/// needs a raw call for a reason the supervisor can't cover is listed here with its count and a one-line reason;
+/// the list only shrinks: a new raw call fails, and so does a count that went down (lower it, or drop the file).
+/// Empty since phase 2: nothing outside `lib/core/process/` starts or signals a process itself.
+const _allowed = <String, int>{};
 
 /// Calls and tear-offs (`run = Process.run`, `io.Process.start(`), across line breaks; `//` comments don't count.
 final _raw = RegExp(r'\bProcess\s*\.\s*(?:start|run|runSync|killPid)\b|\bPty\s*\.\s*start\b');

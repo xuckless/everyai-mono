@@ -11,7 +11,6 @@ import '../models/domain/local_routes.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../core/api/decide_client.dart';
-import '../../core/process/child_processes.dart';
 import 'live/browser_jar.dart' show SealedStore;
 import 'live/android_device_io.dart' show AndroidDevices;
 import 'live/app_sources.dart' show AppSources;
@@ -20,6 +19,7 @@ import 'live/live_browsers.dart';
 import 'live/nested_display_io.dart';
 import 'shells/shell_registry.dart';
 import '../../core/preferences.dart';
+import '../../core/process/supervisor.dart' show ProcessSupervisor;
 import '../../core/providers.dart';
 import '../agents/agents_providers.dart' show AgentDefinition, agentLibrarySettingsProvider, childSetup, codeAgentsFor;
 import '../attachments/attachment.dart';
@@ -434,7 +434,7 @@ final driverShutdownProvider = Provider<void>((ref) {
     closeAllDriverProcesses(),
     LiveBrowsers.stopAll()
         .timeout(const Duration(milliseconds: 2500), onTimeout: () {})
-        .whenComplete(ChildProcesses.stopAll),
+        .whenComplete(ProcessSupervisor.instance.stopAll),
     Future(NestedDisplays.stopAll),
     AndroidDevices.stopAll(),
     AppSources.stopAll(),

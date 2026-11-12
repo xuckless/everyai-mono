@@ -1,16 +1,17 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
-import 'dart:io';
+import 'dart:io' show Platform;
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show debugPrint;
-import 'package:flutter_pty/flutter_pty.dart';
 
+import '../../../core/process/pty_spawn_io.dart' as core;
+import '../../../core/process/pty_spawn_io.dart' show Pty;
 import '../../../core/process/supervisor.dart';
 import '../panes/pty.dart' show ShellPty;
 
 /// Starts [executable] in a pseudo-terminal for the agent's background shells, adopted by [supervisor] as
-/// [owner]'s (its env must already carry `supervisor.tagsFor(owner)`). Null where the native library isn't there
+/// [owner]'s (the owner's tags are added to [env]). Null where the native library isn't there
 /// (`flutter test`, a platform without ptys): the caller falls back to pipes. Throws [SupervisorClosed] once the
 /// app quits (the pty is ended first).
 typedef PtySpawner = Future<ShellPty?> Function(
@@ -40,25 +41,30 @@ Future<ShellPty?> spawnPty(
 }) async {
   if (_unavailable) return null;
   if (!(Platform.isMacOS || Platform.isLinux || Platform.isWindows)) return null;
-  final Pty pty;
   try {
-    pty = Pty.start(executable, arguments: args, workingDirectory: cwd, environment: env, rows: rows, columns: cols);
+    final started = core.spawnPty(
+      supervisor,
+      SpawnSpec(
+        owner: owner,
+        kind: ProcessKind.shell,
+        exe: executable,
+        args: args,
+        env: env,
+        includeParentEnvironment: false,
+        cwd: cwd,
+        label: label,
+      ),
+      rows: rows,
+      columns: cols,
+    );
+    return _PtyShell(started.pty, started.child);
+  } on SupervisorClosed {
+    rethrow;
   } on Object catch (e) {
     // The library didn't load (tests) or the pty couldn't be made: pipes from now on.
     debugPrint('No pseudo-terminal ($e); background shells use pipes from now on.');
     _unavailable = true;
     return null;
-  }
-  final spec = SpawnSpec(owner: owner, kind: ProcessKind.shell, exe: executable, args: args, label: label);
-  try {
-    return _PtyShell(
-      pty,
-      supervisor.adopt(pty.pid, spec, exitCode: pty.exitCode, startedWithin: const Duration(seconds: 60)),
-    );
-  } on SupervisorClosed {
-    // Started while the app quits: nothing would own it.
-    pty.kill(ProcessSignal.sigkill);
-    rethrow;
   }
 }
 

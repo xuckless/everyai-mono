@@ -21,6 +21,17 @@ Future<TtyProgram> _piped(String executable, List<String> args, String cwd, Map<
   return (pid: p.pid, exitCode: p.exitCode, output: p.stdout);
 }
 
+/// [start] (a raw start) as a [TtyStart]: what it started, adopted once by the supervisor like the pty would be.
+TtyStart _adopting(
+  Future<TtyProgram> Function(String executable, List<String> args, String cwd, Map<String, String> env) start,
+) => (supervisor, spec) async {
+  final p = await start(spec.exe, spec.args, spec.cwd!, {...spec.env, ...supervisor.tagsFor(spec.owner)});
+  return (
+    program: p,
+    child: supervisor.adopt(p.pid, spec, exitCode: p.exitCode, startedWithin: const Duration(seconds: 10)),
+  );
+};
+
 void main() {
   late Directory tmp;
   late ProcessSupervisor sup;
@@ -65,7 +76,7 @@ while IFS= read -r line; do printf '%s\n' "$line"; done
       cwd: tmp.path,
       sessionTag: 'tty-test',
       logPath: '${tmp.path}/s/stderr.log',
-      start: _piped,
+      start: _adopting(_piped),
     );
     final first = p.lines.first;
     p.send('{"jsonrpc":"2.0","id":1,"method":"initialize"}');
@@ -83,7 +94,7 @@ while IFS= read -r line; do printf '%s\n' "$line"; done
       cwd: tmp.path,
       sessionTag: 'tty-test-2',
       logPath: '${tmp.path}/s/stderr.log',
-      start: (exe, args, cwd, env) => _piped('/bin/sh', ['-c', 'exit 3'], cwd, env),
+      start: _adopting((exe, args, cwd, env) => _piped('/bin/sh', ['-c', 'exit 3'], cwd, env)),
     );
     expect(await p.lines.toList(), isEmpty);
     expect(await p.exitCode, 3);
@@ -102,10 +113,10 @@ while IFS= read -r line; do printf '%s\n' "$line"; done
       sessionTag: 'tty-test-3',
       logPath: log.path,
       // What it writes to the terminal.
-      start: (exe, args, cwd, env) async {
+      start: _adopting((exe, args, cwd, env) async {
         final t = await _piped(exe, args, cwd, env);
         return (pid: t.pid, exitCode: t.exitCode, output: Stream.value(utf8.encode('terminal noise\n')));
-      },
+      }),
     );
     expect(await p.lines.toList(), isEmpty);
     await p.exitCode;
@@ -136,7 +147,7 @@ while IFS= read -r line; do printf '%s\n' "$line"; done
         cwd: tmp.path,
         sessionTag: 'exited-tty',
         logPath: '${tmp.path}/s/stderr.log',
-        start: (exe, args, cwd, env) => _piped('/bin/sh', ['-c', 'exit 0'], cwd, env),
+        start: _adopting((exe, args, cwd, env) => _piped('/bin/sh', ['-c', 'exit 0'], cwd, env)),
       );
       await p.exitCode;
       expect(await p.close(), isA<Ended>());
@@ -166,7 +177,7 @@ while IFS= read -r line; do printf '%s\n' "$line"; done
         cwd: tmp.path,
         sessionTag: 'running-tty',
         logPath: '${tmp.path}/s/stderr.log',
-        start: _piped,
+        start: _adopting(_piped),
       );
       expect(sup.children.where((c) => c.pid == p.pid), hasLength(1));
       expect(await p.close(), isA<Ended>());

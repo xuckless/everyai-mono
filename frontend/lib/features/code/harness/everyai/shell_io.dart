@@ -919,13 +919,6 @@ Map<String, String> withNestedDisplay(Map<String, String> env, Map<String, Strin
   return out;
 }
 
-/// Ends [pid] and every process below it through the supervisor's verified kill: TERM to its group and tree, up to
-/// [termWait] for them to go, KILL for whatever is left, then a check by pid + start time (Windows: `taskkill /T
-/// /F`, then a check). For a process the app didn't start through the supervisor; a listed child is stopped as
-/// such. Callers act on the outcome: only [Ended] means gone.
-Future<KillOutcome> killTree(int pid, {Duration? termWait, ProcessSupervisor? supervisor}) =>
-    (supervisor ?? ProcessSupervisor.instance).killTree(pid, termWait: termWait);
-
 /// Text that keeps its first half and its newest output once over [cap].
 final class _CappedBuffer {
   _CappedBuffer(this.cap);

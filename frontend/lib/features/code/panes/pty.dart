@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-import '../../../core/process/supervisor.dart' show KillOutcome, ProcessOwner, SupervisedChild;
+import '../../../core/process/supervisor.dart' show KillOutcome, ProcessOwner, ProcessSupervisor, SupervisedChild;
 import '../harness/session_processes.dart' show sessionEnvVar;
 import 'pty_stub.dart' if (dart.library.io) 'pty_io.dart' as impl;
 
@@ -44,7 +44,9 @@ ShellPty? startShell({
 
 /// Starts [executable] (an absolute path) in a pseudo-terminal in [workingDir], for a coding CLI the session owns:
 /// the login shell's PATH, a colour terminal, and `EVERYAI_SESSION` = [sessionTag] so Stop and the Processes pane
-/// own what it runs. Null where there are no ptys.
+/// own what it runs. Null where there are no ptys. It is adopted once, here, by [sup] (the app's supervisor when
+/// null) for [owner] (`SessionOwner(sessionTag)` when null) under [label]; the caller stops it through
+/// [ShellPty.child] / [ShellPty.kill]. Throws `SupervisorClosed` while the app quits.
 Future<ShellPty?> startProgram({
   required String executable,
   required List<String> args,
@@ -53,6 +55,9 @@ Future<ShellPty?> startProgram({
   int rows = 24,
   int columns = 80,
   Map<String, String> env = const {},
+  ProcessOwner? owner,
+  ProcessSupervisor? sup,
+  String? label,
 }) => impl.startProgram(
   executable: executable,
   args: args,
@@ -61,6 +66,9 @@ Future<ShellPty?> startProgram({
   rows: rows,
   columns: columns,
   env: env,
+  owner: owner,
+  sup: sup,
+  label: label,
 );
 
 /// The environment for a CLI in a pty: [base] (the login shell's) made fit for a terminal UI (the shell capture

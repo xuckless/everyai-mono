@@ -28,8 +28,8 @@ ScreenAccess screenAccess() => ScreenAccess(
   sessionPids: ({required tag, required workingDir, required ownsDir}) async =>
       switch (await findSessionProcesses(tag: tag, workingDir: workingDir, ownsDir: ownsDir)) {
         SessionListed(:final pids) => pids.toSet(),
-        // TODO(supervisor): a failed scan reads as no session processes here (host lane to decide).
-        SessionScanFailed() => <int>{},
+        // Unknown is not "none": the tool call reports it.
+        SessionScanFailed(:final why) => throw SessionPidsUnreadable(why),
       },
   processTree: (pid) async {
     // The supervisor's shared scan of the process table.

@@ -1,4 +1,4 @@
-import '../../../core/process/supervisor.dart' show ProcessOwner;
+import '../../../core/process/supervisor.dart' show ProcessOwner, ProcessSupervisor;
 import 'pty.dart';
 
 bool get shellSupported => false;
@@ -19,6 +19,9 @@ Future<ShellPty?> startProgram({
   int rows = 24,
   int columns = 80,
   Map<String, String> env = const {},
+  ProcessOwner? owner,
+  ProcessSupervisor? sup,
+  String? label,
 }) async => null;
 
 String get terminalHomeDir => '';

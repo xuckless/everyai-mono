@@ -155,6 +155,17 @@ abstract interface class ScreenBrowser {
 }
 
 /// What the screen tools reach on this computer; tests fake it.
+/// The process table couldn't be read, so which processes are a session's is unknown: the tool says so instead of
+/// matching against nothing.
+final class SessionPidsUnreadable implements Exception {
+  const SessionPidsUnreadable(this.why);
+  final String why;
+  @override
+  String toString() =>
+      "EveryAI couldn't read the process table ($why), so it can't tell which windows are this "
+      "session's. Try again in a moment.";
+}
+
 final class ScreenAccess {
   const ScreenAccess({
     required this.os,
@@ -183,7 +194,8 @@ final class ScreenAccess {
   /// Captures a window into [root]'s scratch folder; [others] more matched.
   final Future<ScreenResult> Function(ScreenWindow w, String root, int others) capture;
 
-  /// The processes of session [tag]: its shells and what they run.
+  /// The processes of session [tag]: its shells and what they run. Throws [SessionPidsUnreadable] when the process
+  /// table couldn't be read (never an empty set for "unknown").
   final Future<Set<int>> Function({required String tag, required String workingDir, required bool ownsDir}) sessionPids;
 
   /// [pid] and its children.

@@ -1653,6 +1653,33 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   `EVERYAI_SESSION`, untouched by `stopOwner(SessionOwner(id))`. `killTree(pid, expectedStart:)` signals nothing
   for a gone or reused pid (`Ended([], skipped:)`); `child.annotate(port:, detail:)` (ledger `note` lines, carried
   by `ledgerEntries` and hot-restart re-adoption with kind, owner and label).
+- **Process supervisor, phase 2 (2026-11-12; lanes `sup/lane-{harness,drivers,live}` merged in
+  `feat/process-supervisor-p2`).** Every spawner is on the supervisor: the raw-spawn guard's allowlist is **empty**
+  (nothing outside `core/process/` calls `Process.start/run/killPid` or `Pty.start`). Ptys start in one place,
+  `core/process/pty_spawn_io.dart` `spawnPty(supervisor, spec)` (Pty.start + the owner's tags + `adopt(startedWithin:)`;
+  SIGKILL and `SupervisorClosed` while quitting); the terminal driver, `spawnDriverTty`, terminal tabs and background
+  shells use it and are adopted once (`ShellPty.child`, `kill()` → `KillOutcome`). Moved: harness shells (pipes and
+  ptys, `EVERYAI_SHELL` mark; `killAll` also finds a shell's nohup orphans), rg/grep/glob/git probes, LSP (polite
+  shutdown/exit), stdio MCP (stdin closed), run_script/svg_script (Deno), osascript/screencapture, docker/podman, the
+  Processes pane (`killTree(expectedStart:)` from the row's start time), lead CLIs (`spawnDriver`, input closed first),
+  every git/gh and short CLI call (`runShort`, 1/3/10 min), the workflow Deno bridge, local servers (Ollama, fm,
+  manual commands as group leaders), the bundled server, Chrome, Xvfb, scrcpy, the emulator, AXe/helper streams,
+  simctl/adb. Detached opens (open as text, reveal in Finder/Explorer, the AppImage restart waiter) use
+  `launchDetached`. New sealed states: `ShellState` (running/stopping/exited/notClosed), `TerminalPhase`,
+  `RestartResult` (restart refused while the old copy isn't closed), `SessionScan` / `ProcessListing` / `PortScan`
+  (an unreadable table is said, never "nothing running"), `DriverLink` per driver session (close during spawn, EOF
+  before exit), `ServerPhase.NotClosed` + `ServerStopResult`; `SessionPidsUnreadable` makes screenshot/app say the
+  table couldn't be read. Behaviour changes: Not closed is shown and returned (kill_shell, bash results, terminal
+  lines, Processes toasts, server rows) instead of "stopped"; the `app` tool refuses a DevTools address when lsof
+  fails; a memory file counts as tracked (not loaded) when git times out; terminal tabs belong to
+  `TerminalOwner(session)` (`EVERYAI_TERMINAL` kept), so an agent's Stop never ends them; an environment CLI's ssh
+  master still holding its output is stopped after it exits; `stopListener` only touches loopback listeners whose
+  command matches the server kind, rechecks pid + start, names the owner when refusing; `server.owner.json` refuses a
+  second live EveryAI on the same data folder (`BackendBlocked`) instead of killing it; the emulator is no longer
+  detached. Not done: nothing calls `stopOwner(TerminalOwner(id))` on session delete yet; Session Stop ignores a
+  Survived outcome (no notice); phases 3–5 (UI for not-closed children and the ledger, the Windows path, removing
+  `ChildProcesses`, still used only by `memory_lifecycle_test`); Windows and Linux never run; the Xcode build phase
+  for `everyai-exec` checked by one debug build only.
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),
