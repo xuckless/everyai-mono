@@ -9,6 +9,8 @@ import '../../../../core/preferences.dart';
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/every_icons.dart';
+import '../../../processes/process_providers.dart' show OwnedScanFailed, ownedBySessionProvider;
+import '../../../processes/ui/processes_section.dart' show OwnedSessionGroup;
 import '../../domain/code_session.dart';
 import '../../domain/local_ports.dart';
 import '../../panes/panes_providers.dart';
@@ -91,7 +93,9 @@ class ProcessesPane extends ConsumerWidget {
     final done = finishedShells(groups);
     final doneOpen = !ref.watch(processesDoneFoldedProvider);
     final others = otherProcesses(groups, list);
-    final empty = groups.isEmpty && others.isEmpty && containers.isEmpty;
+    final owned = ref.watch(ownedBySessionProvider(session.id));
+    final empty =
+        groups.isEmpty && others.isEmpty && containers.isEmpty && owned.rows.isEmpty && owned is! OwnedScanFailed;
     Widget header(String text) => KitLabel(text, padding: const EdgeInsets.fromLTRB(4, 14, 4, 4));
     Widget shellRow(ShellGroup g) => _ShellRow(
       group: g,
@@ -144,6 +148,8 @@ class ProcessesPane extends ConsumerWidget {
               : ListView(
                   padding: const EdgeInsets.fromLTRB(10, 0, 10, 12),
                   children: [
+                    // What the supervisor owns for this session, in its true state (a child not closed shows here).
+                    OwnedSessionGroup(sessionId: session.id),
                     if (running.isNotEmpty) ...[header('Running'), for (final g in running) shellRow(g)],
                     if (others.isNotEmpty) ...[
                       header(running.isEmpty ? 'Running' : 'Other processes'),
