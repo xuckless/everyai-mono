@@ -1,5 +1,7 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import '../../../../core/process/budget.dart' show backgroundShellCapText, maxBackgroundShells;
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -519,7 +521,11 @@ final class SessionShell {
 
   /// Starts [command] in the background; its output collects in the
   /// returned shell until it ends or is killed.
+  ///
+  /// Refused ([TooManyBackgroundShells]) when [maxBackgroundShells] of them still run (the runaway guard).
   Future<BackgroundShell> start(String command, {String description = ''}) async {
+    final live = _background.values.where((b) => b.running).length;
+    if (live >= maxBackgroundShells) throw TooManyBackgroundShells(live);
     return _startAs('bg_${_nextBg++}', command, description);
   }
 
@@ -612,6 +618,15 @@ final class SessionShell {
 }
 
 enum _StopWhy { timedOut, cancelled }
+
+/// A background shell past [maxBackgroundShells] live ones: refused, with how to free one ([message]).
+final class TooManyBackgroundShells implements Exception {
+  const TooManyBackgroundShells(this.live);
+  final int live;
+  String get message => backgroundShellCapText(live);
+  @override
+  String toString() => message;
+}
 
 /// Thrown when a command is started with no shell to run it in.
 final class ShellMissing implements Exception {

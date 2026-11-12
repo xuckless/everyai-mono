@@ -96,6 +96,8 @@ final class _Browser implements ScreenBrowser {
       // check again.
       loginHold: _outsideWait,
       logins: AgentLogins.accessFor(_session, askFor: _outsideWait),
+      // An outside lead isn't held for a browser: it gets its place in the queue at once.
+      queueWait: Duration.zero,
     ),
   );
 

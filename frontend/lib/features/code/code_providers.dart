@@ -15,10 +15,12 @@ import 'live/browser_jar.dart' show SealedStore;
 import 'live/android_device_io.dart' show AndroidDevices;
 import 'live/app_sources.dart' show AppSources;
 import 'live/agent_logins.dart';
+import 'live/live_pool.dart';
 import 'live/live_browsers.dart';
 import 'live/nested_display_io.dart';
 import 'shells/shell_registry.dart';
 import '../../core/preferences.dart';
+import '../../core/process/budget.dart';
 import '../../core/process/supervisor.dart' show ProcessSupervisor;
 import '../../core/providers.dart';
 import '../agents/agents_providers.dart' show AgentDefinition, agentLibrarySettingsProvider, childSetup, codeAgentsFor;
@@ -427,6 +429,30 @@ final driverShutdownProvider = Provider<void>((ref) {
   AgentLogins.projectOf = (id) => ref.read(codeSessionsProvider.notifier).byId(id)?.projectId;
   // WebView2 folders (session cookies) a crashed or killed run left behind; none is live yet at app start.
   LiveBrowsers.sweepLeftovers();
+  // Capped pools (browser, devices, displays, streams) and the per-session process budget.
+  unawaited(LivePool.configure((k) => ref.read(preferencesProvider)[k]));
+  LivePool.nameOf = (holder) {
+    final id = holder.substring(holder.indexOf(':') + 1);
+    final title = ref.read(codeSessionsProvider.notifier).byId(id)?.title;
+    final name = title == null || title.isEmpty ? id : '"$title"';
+    return holder.startsWith('user:') ? 'the user\'s Preview of $name' : name;
+  };
+  final budget = ProcessBudgetWatch(
+    supervisor: ProcessSupervisor.instance,
+    running: () => {
+      for (final s in ref.read(codeSessionsProvider))
+        if (ref.exists(codeSessionProvider(s.id)) &&
+            const {SessionStatus.running, SessionStatus.starting}.contains(ref.read(codeSessionProvider(s.id)).status))
+          s.id,
+    },
+    limit: () => int.tryParse(ref.read(preferencesProvider)[processBudgetKey] ?? '') ?? defaultProcessBudget,
+    onBreach: (id, over, _) {
+      if (ref.exists(codeSessionProvider(id))) {
+        unawaited(ref.read(codeSessionProvider(id).notifier).processBudgetBreached(over.text));
+      }
+    },
+  )..start();
+  ref.onDispose(budget.stop);
   // The registry's stop runs beside the owners' own (not after them, where one slow stop used up the budget); it only
   // ends children still running, so a child an owner already ended isn't touched again. It waits for the browsers
   // (at most 2.5 s): their jars are read from the running Chrome before it stops.
@@ -1863,7 +1889,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     };
     // Their browser pages and shell rows go with them.
     for (final g in gone) {
-      unawaited(LiveBrowsers.release(g));
+      unawaited(LiveBrowsers.release(g).whenComplete(() => LivePool.releaseSession(g)));
       LoginGate.forget(g);
       NestedDisplays.stop(g);
       ShellRegistry.instance.forget(g);
@@ -1959,6 +1985,12 @@ final class BudgetReached extends SessionNotice {
 
 final class SendFailed extends SessionNotice {
   const SendFailed(super.message);
+}
+
+/// The runaway guard stopped the session: it ran more processes than its budget (`core/process/budget.dart`).
+/// Cleared by the next message the user sends.
+final class ProcessBudgetExceeded extends SessionNotice {
+  const ProcessBudgetExceeded(super.message);
 }
 
 @immutable
@@ -2083,7 +2115,8 @@ final class CodeSessionState {
   String? get brokenBy => link == SessionLink.broken ? (_brokenBy ?? 'The session could not be opened.') : null;
 
   /// What stops the session: it couldn't attach, or its budget is spent.
-  String? get failure => brokenBy ?? (notice is BudgetReached ? notice!.message : null);
+  String? get failure =>
+      brokenBy ?? (notice is BudgetReached || notice is ProcessBudgetExceeded ? notice!.message : null);
 
   /// The line to show over the session, if any: [failure], else a send that failed.
   String? get error => failure ?? notice?.message;
@@ -4002,7 +4035,9 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (info == null) return Outgoing(t);
     try {
       final out = await prepareMessage(ref, text: t, workingDir: info.workingDir, model: info.model, files: files);
-      if (state.notice is SendFailed) state = state.copyWith(clearNotice: true);
+      if (state.notice is SendFailed || state.notice is ProcessBudgetExceeded) {
+        state = state.copyWith(clearNotice: true);
+      }
       return out;
     } on Object catch (e) {
       // A spent budget outranks a failed send: it is what stops the session, and only the budget clears it.
@@ -5322,6 +5357,12 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// Sends a model call being retried now instead of after its wait.
   Future<void> retryNow() async {
     if (_session case final RetriesModelCalls s) s.retryNow();
+  }
+
+  /// The runaway guard ended everything the session started ([ProcessBudgetWatch]): stop the turn and fail loudly.
+  Future<void> processBudgetBreached(String why) async {
+    state = state.copyWith(notice: ProcessBudgetExceeded(why));
+    await stop();
   }
 
   Future<void> stop() async {

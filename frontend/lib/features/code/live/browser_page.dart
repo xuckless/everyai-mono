@@ -8,6 +8,14 @@ import 'live_session.dart';
 import 'login_wall.dart';
 import 'page_snapshot.dart';
 
+/// The most tabs a session's browser keeps open; a pop-up or new tab past it is closed at once, said in the log.
+const maxSessionTabs = 8;
+
+/// The note for a tab refused by [maxSessionTabs].
+String tabCapNote(String url) =>
+    'A new tab ($url) was closed: this browser already has $maxSessionTabs tabs open, the most a session may have. '
+    'Close tabs you are done with (tabs lists them).';
+
 /// A Code session's browser page, whatever runs it: what the agent's browser tool, the host's browser tool, the
 /// login wall and the Preview use. Two kinds:
 ///

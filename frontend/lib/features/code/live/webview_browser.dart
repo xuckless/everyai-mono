@@ -772,6 +772,14 @@ final class WebviewBrowser implements BrowserPage {
   Future<bool> _openWindow(WebTab from, CreateWindowAction a, int generation) async {
     final asked = matchOpenRequest([for (final r in _openRequests) r.url], '${a.request.url ?? ''}');
     final request = asked == null ? null : _openRequests.removeAt(asked);
+    if (_tabs.length >= maxSessionTabs) {
+      // Refused: the webview never makes the window (false), so there is nothing to close.
+      final note = tabCapNote('${a.request.url ?? ''}');
+      _addLog(note);
+      debugPrint('EveryAI browser: $note');
+      if (request != null && !request.made.isCompleted) request.made.completeError(BrowserError(note));
+      return false;
+    }
     try {
       final t = await _newTab(generation, windowId: a.windowId, opener: request == null ? from.id : null);
       _addLog('A new tab opened: ${a.request.url ?? ''} (now the active tab; tabs lists them).');

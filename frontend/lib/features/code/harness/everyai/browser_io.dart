@@ -1493,6 +1493,17 @@ final class HeadlessBrowser implements StreamedPage {
         final t = params['targetInfo'] as Map<String, Object?>? ?? const {};
         final id = '${t['targetId']}';
         if (t['type'] == 'page' && _tabList.any((x) => x.id == t['openerId']) && !_tabList.any((x) => x.id == id)) {
+          if (_tabList.length >= maxSessionTabs) {
+            final note = tabCapNote('${t['url'] ?? ''}');
+            _log.add(note);
+            debugPrint('EveryAI browser: $note');
+            unawaited(
+              _sendOn(_browserSocket, 'Target.closeTarget', {
+                'targetId': id,
+              }).then((_) {}, onError: (Object e) => debugPrint('NOT CLOSED: a tab past the cap ($id): $e')),
+            );
+            return;
+          }
           _tabList.add((id: id, url: '${t['url'] ?? ''}', title: '${t['title'] ?? ''}'));
           // Opened with a handle on its opener (window.open, a link without noopener): they share a renderer, so a
           // dialog in one holds up the other.
