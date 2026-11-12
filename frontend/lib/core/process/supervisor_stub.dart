@@ -27,14 +27,29 @@ final class _NoProcesses extends ProcessSupervisor {
   @override
   Future<SupervisedProcess> spawn(SpawnSpec spec) => Future.error(UnsupportedError(_why));
   @override
-  SupervisedChild adopt(int pid, SpawnSpec spec, {Future<int>? exitCode}) => throw UnsupportedError(_why);
+  SupervisedChild adopt(
+    int pid,
+    SpawnSpec spec, {
+    Future<int>? exitCode,
+    String? expectedStart,
+    Duration? startedWithin,
+  }) => throw UnsupportedError(_why);
+  @override
+  Future<DetachedLaunch> launchDetached(
+    String exe,
+    List<String> args, {
+    Map<String, String> env = const {},
+    bool includeParentEnvironment = true,
+    String? cwd,
+    String? label,
+  }) async => const LaunchFailed(_why);
   @override
   Future<KillOutcome> stop(SupervisedChild child, {StopTimings? timings}) async => const ScanFailed(_why);
   @override
   Future<KillOutcome> stopOwner(ProcessOwner owner, {bool tagged = true, bool descendants = true}) async =>
       const Ended([]);
   @override
-  Future<KillOutcome> killTree(int pid, {Duration? termWait}) async => const ScanFailed(_why);
+  Future<KillOutcome> killTree(int pid, {Duration? termWait, String? expectedStart}) async => const ScanFailed(_why);
   @override
   Future<RunResult> runBounded(
     String exe,
@@ -52,6 +67,7 @@ final class _NoProcesses extends ProcessSupervisor {
     Encoding stderrEncoding = systemEncoding,
     int? maxOutputBytes,
     String? label,
+    bool duringQuit = false,
   }) async => const StartFailed(_why);
   @override
   Future<ProcessScan> scan({bool env = false}) async => const ScanFailed(_why);
@@ -60,8 +76,20 @@ final class _NoProcesses extends ProcessSupervisor {
   @override
   ValueListenable<SweepReport?> get lastSweep => _sweep;
   @override
-  Future<QuitReport> stopAll({StopTimings timings = StopTimings.quit}) async =>
-      QuitReport(const [], at: DateTime.now());
+  Future<QuitReport> stopAll({
+    StopTimings timings = StopTimings.quit,
+    List<Future<void> Function()> before = const [],
+  }) async {
+    for (final step in before) {
+      try {
+        await step();
+      } on Object catch (e) {
+        debugPrint('Process supervisor: a quit step failed ($e); going on.');
+      }
+    }
+    return QuitReport(const [], at: DateTime.now());
+  }
+
   @override
   List<SupervisedChild> get children => const [];
   @override
@@ -70,4 +98,10 @@ final class _NoProcesses extends ProcessSupervisor {
   int liveCount(ProcessOwner owner) => 0;
   @override
   SupervisedChild? byPid(int pid) => null;
+  @override
+  Duration treeScanInterval = const Duration(seconds: 5);
+  @override
+  List<LedgerEntry> get ledgerEntries => const [];
+  @override
+  List<LedgerEntry> get previousRunEntries => const [];
 }

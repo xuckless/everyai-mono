@@ -1638,6 +1638,21 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   delegates. Raw-spawn guard `test/core/process/raw_spawn_guard_test.dart` counts raw calls per allowlisted file.
   Windows: compile-safe only (no groups, no start times, `taskkill /T /F`). Linux: not run. Not migrated: every other
   spawner (phase 2).
+  Second review (same branch): `launchDetached(exe, args)` → `Launched(pid) | LaunchFailed` replaces
+  `outlivesApp` (no pipes, no `EVERYAI_*`, a ledger note nothing acts on, never in `children`); `runBounded` never
+  throws (`Refused` while quitting; `duringQuit: true` for goodbye commands); `stopAll(before: [steps])` runs quit
+  steps first; `Unaccounted` is gone: `Ended(pids, maybeEscaped:)`, filled only when something vanished from the
+  child's tree (evidence of an escape) and the orphan started in its life and isn't a daemon; `adopt(…,
+  expectedStart:, startedWithin:)` → `ChildDisowned` (never signalled) on a mismatch; `ledgerEntries` /
+  `previousRunEntries`; `treeScanInterval` (5 s idle; NotClosed/Unverified back off 250 ms → 5 s). The helper runs
+  ENOEXEC files in /bin/sh; Dart pre-checks a `#!` interpreter; perl maps only its five variables. The spawn line is
+  on disk before `Process.start`; the watch list is flushed on the first child. Ledger compacted past 2000 lines,
+  tree lines at most every 3 s per child; a folder of the supervisor's own (tests) is removed when empty.
+  Every public call runs in `Zone.root` and answers in the caller's zone (`_inRoot`), so widget tests' fake time
+  drives no supervisor timer. `TerminalOwner(sessionId)` (`terminal:<id>`): the user's terminal tabs, tagged without
+  `EVERYAI_SESSION`, untouched by `stopOwner(SessionOwner(id))`. `killTree(pid, expectedStart:)` signals nothing
+  for a gone or reused pid (`Ended([], skipped:)`); `child.annotate(port:, detail:)` (ledger `note` lines, carried
+  by `ledgerEntries` and hot-restart re-adoption with kind, owner and label).
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),
